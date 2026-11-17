@@ -24,6 +24,7 @@ import (
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -277,6 +278,157 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			assert.Equal(t, mark, a.callCount(), "%s: the validator is not called", tc.name)
 		}
 	})
+
+	t.Run("redemption", func(t *testing.T) {
+		require.NotEmpty(t, f.sessionIDJAG)
+		require.NotEmpty(t, f.runIDJAG)
+		wantAct := map[string]any{"iss": flowActIssuer, "sub": flowAgentID}
+
+		// Each ID-JAG redeems at AS-2 into an access token for its resource.
+		for _, tc := range []struct{ name, idjag string }{
+			{"session", f.sessionIDJAG},
+			{"run", f.runIDJAG},
+		} {
+			res := f.as2.redeem(t, f.as2.client, tc.idjag)
+			require.Equal(t, http.StatusOK, res.status, "%s: %v", tc.name, res.body)
+			_, hasRefresh := res.body["refresh_token"]
+			assert.False(t, hasRefresh, "%s: no refresh_token member", tc.name)
+			token := res.str(t, "access_token")
+			header, _ := decodeIDJAG(t, token)
+			assert.Equal(t, "at+jwt", header["typ"], tc.name)
+
+			claims := accessTokenClaims(t, f.as2.embedded, token)
+			_, idjagClaims := decodeIDJAG(t, tc.idjag)
+			assert.Equal(t, f.as2Issuer, claims["iss"], tc.name)
+			assert.Equal(t, []any{xrtIDJAGResource}, claims["aud"], tc.name)
+			assert.Equal(t, xrtTargetClientID, claims["client_id"], tc.name)
+			assert.NotEmpty(t, claims["jti"], tc.name)
+			assert.NotEmpty(t, claims["iat"], tc.name)
+			assert.NotContains(t, claims, "tsid", tc.name)
+			exp, ok := claims["exp"].(float64)
+			require.True(t, ok, tc.name)
+			assert.LessOrEqual(t, int64(exp), intClaim(t, idjagClaims, "exp"), "%s: exp is capped by the ID-JAG", tc.name)
+			// That AS-2 copies act from the ID-JAG is pinned by
+			// TestIDJAGRedemptionCarriesActorAcrossTwoServers. This checks the
+			// value for the session grant's ID-JAG and for the scheduled run's
+			// child grant.
+			assert.Equal(t, wantAct, claims["act"], tc.name)
+			// Until Delegated access: subject mapping at ID-JAG redemption (#6887)
+			// is built, AS-2 has no local user for AS-1's subject, so sub is
+			// the issuer-qualified AS-1 subject. That change flips this.
+			assert.Equal(t, f.as1+"#"+f.sub, claims["sub"], tc.name)
+		}
+
+		// A downstream client expects invalid_assertion for a replayed
+		// ID-JAG. ToolHive sends invalid_grant with a hint only; see
+		// Authorization server: reason codes in error_description for ID-JAG
+		// redemption refusals (#7030).
+		res := f.as2.redeem(t, f.as2.client, f.sessionIDJAG)
+		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+
+		// This ID-JAG has the same issuer, client ID and resource as
+		// a good one and differs only in aud (and in the subject claims its
+		// target does not require, which AS-2 never reads), so the refusal can
+		// only be AS-2's audience check (draft section 4.4.1).
+		a := f.actor
+		mark := a.callCount()
+		res = f.as1Env.requestIDJAGWith(t, broker, f.session, xrtTargetPlain, actorPairWith("accept"))
+		require.Equal(t, http.StatusOK, res.status, res.body)
+		assert.Equal(t, mark+1, a.callCount())
+		res = f.as2.redeem(t, f.as2.client, res.str(t, "access_token"))
+		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+
+		// AS-2 binds exactly one subject, f.sub. Another real user's ID-JAG from
+		// the same AS-1 has the same issuer, client ID, audience and resource as
+		// a good one and differs in its subject (and the subject claims that
+		// follow from it), so the refusal can only be the subject binding.
+		f.oidc.QueueUser(&mockoidc.MockUser{Subject: "other-upstream-subject", Email: "other@example.com"})
+		otherLogin := realLoginAccessToken(t, f.as1Env)
+		grant := f.as1Env.requestRefreshToken(t, broker, otherLogin, entryForm(oauthproto.TokenTypeIDJAG, nil))
+		require.Equal(t, http.StatusOK, grant.status, grant.body)
+		mark = a.callCount()
+		res = f.as1Env.requestIDJAGWith(t, broker, grant.str(t, "access_token"), f.as2Issuer, actorPairWith("accept"))
+		require.Equal(t, http.StatusOK, res.status, res.body)
+		assert.Equal(t, mark+1, a.callCount())
+		otherIDJAG := res.str(t, "access_token")
+		_, otherClaims := decodeIDJAG(t, otherIDJAG)
+		require.NotEqual(t, f.sub, otherClaims["sub"])
+		res = f.as2.redeem(t, f.as2.client, otherIDJAG)
+		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+
+		// An AS-1 login access token is not an ID-JAG. Its typ is at+jwt, so the
+		// plain JWT-bearer handler gets it and refuses the typ.
+		res = f.as2.redeem(t, f.as2.client, f.sessionLogin)
+		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+	})
+
+	t.Run("revoke", func(t *testing.T) {
+		require.NotEmpty(t, f.session)
+		require.NotEmpty(t, f.schedule)
+		require.NotEmpty(t, f.run)
+		require.NotEmpty(t, f.spareIDJAG)
+		a := f.actor
+
+		// A mint token carries neither sub_id nor upstream_subject, so
+		// the target is xrtTargetPlain; f.as2Issuer requires both.
+		res := f.as1Env.requestRefreshToken(t, broker, f.as1Env.mint(t, nil), entryForm(oauthproto.TokenTypeIDJAG, nil))
+		require.Equal(t, http.StatusOK, res.status, res.body)
+		s2 := res.str(t, "access_token")
+		a.setRevokeTarget(s2)
+		// Known gap: the grant is not read again after the validator, so a revoke that
+		// lands during it still issues this one ID-JAG. This pins today's behaviour;
+		// re-reading the grant after the validator would flip it. A client can
+		// drop such an ID-JAG by re-checking its own session after the exchange;
+		// the server does not stop it.
+		res = f.as1Env.requestIDJAGWith(t, broker, s2, xrtTargetPlain, actorPairWith("revoke-during"))
+		require.Equal(t, http.StatusOK, res.status, res.body)
+
+		// A revoked grant's ID-JAG request is refused before the validator runs.
+		mark := a.callCount()
+		res = f.as1Env.requestIDJAGWith(t, broker, s2, xrtTargetPlain, actorPairWith("accept"))
+		requireError(t, res, "invalid_request", "revoked")
+		assert.Equal(t, mark, a.callCount(), "the validator is not called")
+
+		// A revoked session grant is refused before the validator runs.
+		f.as1Env.revoke(t, f.session)
+		mark = a.callCount()
+		res = f.as1Env.requestIDJAGWith(t, broker, f.session, f.as2Issuer, actorPairWith("accept"))
+		requireError(t, res, "invalid_request", "revoked")
+		assert.Equal(t, mark, a.callCount(), "the validator is not called")
+
+		// A run under a revoked schedule is refused with parent_revoked.
+		f.as1Env.revoke(t, f.schedule)
+		mark = a.callCount()
+		res = f.as1Env.requestIDJAGWith(t, broker, f.run, f.as2Issuer, actorPairWith("accept"))
+		requireError(t, res, "invalid_request", "parent_revoked")
+		assert.Equal(t, mark, a.callCount(), "the validator is not called")
+
+		// Another client learns nothing from a revoked grant. It uses derive, because
+		// the other client has no ID-JAG targets. The client check that runs before the
+		// revoked and parent-revoked branches is shared by the derive and ID-JAG paths,
+		// so this pins the ordering for both.
+		for _, tc := range []struct{ name, grant string }{
+			{"derive by another client: revoked session", f.session},
+			{"derive by another client: run under a revoked schedule", f.run},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				res := f.as1Env.derive(t, f.as1Env.otherRefresh, tc.grant, oauthproto.TokenTypeIDJAG, nil)
+				requireError(t, res, "invalid_request", "grant_invalid")
+			})
+		}
+
+		// An ID-JAG issued before the revoke redeems until its own exp.
+		res = f.as2.redeem(t, f.as2.client, f.spareIDJAG)
+		require.Equal(t, http.StatusOK, res.status, res.body)
+
+		// Later work and what each adds to this test:
+		//   - RFC 7009 token revocation endpoint (#6966): the HTTP rows for
+		//     revoking, in place of the store calls above.
+		//   - Per-user revocation time for grants issued by token exchange
+		//     (#6972): rows for revoking all of a user's grants at once.
+		//   - Re-check the user's upstream refresh token when issuing an ID-JAG
+		//     (#6978): the upstream_revoked and owner_action_required reasons.
+	})
 }
 
 // runGrantExpiry checks a grant whose bound passes while the actor
@@ -288,6 +440,7 @@ func runGrantExpiry(t *testing.T, backend string) {
 	env := startXRTServerWith(t, backend, func(cfg *authserver.RunConfig, _ string) {
 		setBrokerActorProfile(cfg)
 	}, withActorTestValidator(a.mock))
+	a.setEnv(env)
 	broker := env.broker
 
 	exp := time.Now().Unix() + 4
@@ -327,7 +480,8 @@ type flow struct {
 
 	// session issues ID-JAGs; schedule issues refresh tokens, with scheduleExp
 	// as its echoed expires_at; run is schedule's child and issues ID-JAGs.
-	// sessionIDJAG, runIDJAG and spareIDJAG are ID-JAGs from session and run.
+	// sessionIDJAG, runIDJAG and spareIDJAG are ID-JAGs from session and run,
+	// redeemed before and after the revokes.
 	session      string
 	schedule     string
 	scheduleExp  int64
@@ -374,6 +528,7 @@ func startFlow(t *testing.T, backend string) *flow {
 			actorTestValidator: {Validator: f.actor.mock, ActIssuer: flowActIssuer},
 		}),
 	)
+	f.actor.setEnv(f.as1Env)
 	require.Equal(t, f.as1, f.as1Env.issuer)
 
 	login1 := realLoginAccessToken(t, f.as1Env)
@@ -430,10 +585,12 @@ type flowActor struct {
 	mock *mocks.MockActorTokenValidator
 	t    *testing.T
 
-	mu        sync.Mutex
-	calls     []tokenexchange.ActorRequest
-	waitUntil time.Time
-	shortExp  time.Time
+	mu           sync.Mutex
+	calls        []tokenexchange.ActorRequest
+	waitUntil    time.Time
+	revokeTarget string
+	shortExp     time.Time
+	env          *xrtEnv
 }
 
 func newFlowActor(t *testing.T, ctrl *gomock.Controller) *flowActor {
@@ -446,7 +603,7 @@ func newFlowActor(t *testing.T, ctrl *gomock.Controller) *flowActor {
 func (a *flowActor) validate(ctx context.Context, req tokenexchange.ActorRequest) (tokenexchange.ActorResult, error) {
 	a.mu.Lock()
 	a.calls = append(a.calls, req)
-	waitUntil, shortExp := a.waitUntil, a.shortExp
+	waitUntil, revokeTarget, shortExp, env := a.waitUntil, a.revokeTarget, a.shortExp, a.env
 	a.mu.Unlock()
 
 	accept := tokenexchange.ActorResult{AgentID: flowAgentID, ExpiresAt: time.Now().Add(time.Hour)}
@@ -470,6 +627,27 @@ func (a *flowActor) validate(ctx context.Context, req tokenexchange.ActorRequest
 		case <-ctx.Done():
 			return tokenexchange.ActorResult{}, ctx.Err()
 		}
+	case "revoke-during":
+		if env == nil {
+			a.t.Errorf("revoke-during before the actor has an env")
+			return tokenexchange.ActorResult{}, errors.New("flow actor has no env")
+		}
+		grants, ok := storage.Unwrap(env.store).(storage.ExchangeGrantStorage)
+		if !ok {
+			a.t.Errorf("the store does not hold exchange grants")
+			return tokenexchange.ActorResult{}, errors.New("no exchange grant storage")
+		}
+		if err := grants.RevokeExchangeGrant(ctx, tokenSignature(revokeTarget), time.Now()); err != nil {
+			// A validator call that outlives its request (the server does not
+			// wait for it after the validator timeout) fails here with a
+			// cancelled context, possibly after the test has finished, and
+			// t.Errorf then panics. The request's own failure reports it.
+			if ctx.Err() == nil {
+				a.t.Errorf("revoke during the validator: %v", err)
+			}
+			return tokenexchange.ActorResult{}, err
+		}
+		return accept, nil
 	default:
 		a.t.Errorf("unexpected actor_token of length %d", len(req.ActorToken))
 		return tokenexchange.ActorResult{}, errors.New("unexpected actor_token")
@@ -491,10 +669,22 @@ func (a *flowActor) callsSince(mark int) []tokenexchange.ActorRequest {
 	return append([]tokenexchange.ActorRequest(nil), a.calls[mark:]...)
 }
 
+func (a *flowActor) setEnv(env *xrtEnv) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.env = env
+}
+
 func (a *flowActor) setWaitUntil(at time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.waitUntil = at
+}
+
+func (a *flowActor) setRevokeTarget(grant string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.revokeTarget = grant
 }
 
 func (a *flowActor) setShortExp(at time.Time) {

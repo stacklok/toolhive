@@ -27,7 +27,7 @@ const (
 
 // recordingHandler stands in for Fosite's stock handler; no gomock mock of
 // fosite.TokenEndpointHandler exists in the repo.
-type recordingHandler struct{ called bool }
+type recordingHandler struct{ called, populated bool }
 
 func (*recordingHandler) CanHandleTokenEndpointRequest(context.Context, fosite.AccessRequester) bool {
 	return true
@@ -39,7 +39,8 @@ func (h *recordingHandler) HandleTokenEndpointRequest(context.Context, fosite.Ac
 	h.called = true
 	return nil
 }
-func (*recordingHandler) PopulateTokenEndpointResponse(context.Context, fosite.AccessRequester, fosite.AccessResponder) error {
+func (h *recordingHandler) PopulateTokenEndpointResponse(context.Context, fosite.AccessRequester, fosite.AccessResponder) error {
+	h.populated = true
 	return nil
 }
 
@@ -131,6 +132,7 @@ func TestHandlerHandleTokenEndpointRequest(t *testing.T) {
 			form:      oneResource,
 			scopes:    fosite.Arguments{"admin"},
 			wantError: fosite.ErrInvalidScope,
+			wantHint:  "is not permitted for this client",
 		},
 		{
 			name:      "ordinary confidential client is unauthorized",
@@ -138,6 +140,7 @@ func TestHandlerHandleTokenEndpointRequest(t *testing.T) {
 			client:    &fosite.DefaultClient{ID: "client", Public: false},
 			form:      oneResource,
 			wantError: fosite.ErrUnauthorizedClient,
+			wantHint:  "only to clients authenticated with a SPIFFE credential",
 		},
 		{
 			name:      "unwrapped static SPIFFE client is unauthorized",
@@ -145,9 +148,10 @@ func TestHandlerHandleTokenEndpointRequest(t *testing.T) {
 			client:    newClient(t, clientOpts{unwrapped: true}),
 			form:      oneResource,
 			wantError: fosite.ErrUnauthorizedClient,
+			wantHint:  "only to clients authenticated with a SPIFFE credential",
 		},
 		{
-			name:      "association grant is rejected",
+			name:      "association without client_credentials is unauthorized",
 			grants:    ccGrant,
 			client:    newClient(t, clientOpts{grants: []string{oauthproto.GrantTypeTokenExchange}}),
 			form:      oneResource,
@@ -161,6 +165,7 @@ func TestHandlerHandleTokenEndpointRequest(t *testing.T) {
 			form:      oneResource,
 			scopes:    fosite.Arguments{"admin"},
 			wantError: fosite.ErrUnauthorizedClient,
+			wantHint:  "not permitted to use the client_credentials grant",
 		},
 		{
 			name:      "client credentials plus another grant is declined",
@@ -189,6 +194,7 @@ func TestHandlerHandleTokenEndpointRequest(t *testing.T) {
 			client:    newClient(t, defaultClient),
 			form:      url.Values{"audience": {testResource}},
 			wantError: server.ErrInvalidTarget,
+			wantHint:  "audience parameter is not accepted",
 		},
 		{
 			name:      "unauthorized resource is invalid target",
@@ -216,6 +222,43 @@ func TestHandlerHandleTokenEndpointRequest(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, stock.called)
 			tt.check(t, req)
+		})
+	}
+}
+
+func TestHandlerPopulateTokenEndpointResponse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		grants     fosite.Arguments
+		wantError  error
+		wantCalled bool
+	}{
+		{
+			name:       "client_credentials delegates to the stock handler",
+			grants:     fosite.Arguments{oauthproto.GrantTypeClientCredentials},
+			wantCalled: true,
+		},
+		{
+			name:      "other grant is declined without calling the stock handler",
+			grants:    fosite.Arguments{oauthproto.GrantTypeTokenExchange},
+			wantError: fosite.ErrUnknownRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stock := &recordingHandler{}
+			req := fosite.NewAccessRequest(&session.Session{})
+			req.GrantTypes = tt.grants
+			err := (&Handler{stock: stock}).PopulateTokenEndpointResponse(context.Background(), req, fosite.NewAccessResponse())
+			if tt.wantError != nil {
+				require.ErrorIs(t, err, tt.wantError)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantCalled, stock.populated)
 		})
 	}
 }

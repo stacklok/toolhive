@@ -332,6 +332,72 @@ func TestEmbeddedAuthServer_SPIFFEOnlyTokenExchangeOverTLS(t *testing.T) {
 	assert.NotEmpty(t, body["access_token"])
 }
 
+// TestEmbeddedAuthServer_SPIFFEClientCredentialsOnlyDoesNotEnableTokenExchange
+// pins that a deployment whose only inbound capability is a SPIFFE association
+// granting client_credentials registers no token-exchange handler: the grant
+// works, and a token-exchange request is refused with no token issued.
+func TestEmbeddedAuthServer_SPIFFEClientCredentialsOnlyDoesNotEnableTokenExchange(t *testing.T) {
+	t.Parallel()
+
+	const resource = "https://mcp.example.com"
+	trusted := newSPIFFETestAuthority(t, "ca-1")
+	tokenURL, roots, srv := startSPIFFEX509TLSServer(t, trusted, func(cfg *authserver.RunConfig) {
+		cfg.Upstreams = nil
+		cfg.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{oauthproto.GrantTypeClientCredentials}
+	})
+
+	tests := []struct {
+		name      string
+		form      func(t *testing.T) url.Values
+		wantCode  int
+		wantError string
+	}{
+		{
+			name: "client_credentials issues a token",
+			form: func(*testing.T) url.Values {
+				return url.Values{
+					"grant_type": {oauthproto.GrantTypeClientCredentials},
+					"client_id":  {spiffeX509TestClientID},
+					"scope":      {"openid"},
+					"resource":   {resource},
+				}
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "token exchange is refused",
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				return url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {signSPIFFESubjectToken(t, srv, spiffeX509TestClientID, "openid", nil, resource)},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+					"client_id":          {spiffeX509TestClientID},
+					"scope":              {"openid"},
+					"resource":           {resource},
+				}
+			},
+			wantCode:  http.StatusBadRequest,
+			wantError: "invalid_request",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svid := trusted.issueSVID(t)
+			status, body := postTokenOverTLS(t, tokenURL, roots, &svid, "", tt.form(t))
+			require.Equal(t, tt.wantCode, status, "token response: %v", body)
+			if tt.wantError == "" {
+				assert.NotEmpty(t, body["access_token"])
+				return
+			}
+			assert.Equal(t, tt.wantError, body["error"], "token response: %v", body)
+			assert.NotContains(t, body, "access_token")
+		})
+	}
+}
+
 // TestEmbeddedAuthServer_SPIFFEAssociationWithoutResourcesIsRejected pins that
 // an association with no resources fails at startup, whatever its grant types.
 func TestEmbeddedAuthServer_SPIFFEAssociationWithoutResourcesIsRejected(t *testing.T) {

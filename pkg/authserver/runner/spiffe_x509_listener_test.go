@@ -640,7 +640,13 @@ func TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS(t *testing.T) {
 			assert.Equal(t, []any{resource}, claims["aud"])
 			act, ok := claims["act"].(map[string]any)
 			require.True(t, ok, "claims: %v", claims)
-			assert.Equal(t, tt.wantIssued, act["sub"])
+			// A SPIFFE client's act.sub names the workload, not the client ID
+			// shared by every workload of the association.
+			wantActor := tt.wantIssued
+			if wantActor == spiffeX509TestClientID {
+				wantActor = spiffeX509TestPrincipal
+			}
+			assert.Equal(t, wantActor, act["sub"])
 		})
 	}
 }

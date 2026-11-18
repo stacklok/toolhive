@@ -755,6 +755,8 @@ permit(principal, action == Action::"call_tool", resource) when {
 };
 ```
 
+For a SPIFFE client, `act.sub` is the workload's SPIFFE ID, including when the client exchanges a token without an `actor_token`. A policy that means "this client" should match `principal.claim_client_id` instead, because every workload that shares the client ID has the same `client_id` claim. See [Workloads that share a client ID](arch/18-spiffe-association-declarations.md).
+
 Policies keyed on upstream attributes do not. A rule guarded on
 `principal has claim_department` simply stops matching, so the request is denied
 — the same outcome as before this fallback existed, reached at policy evaluation

@@ -486,15 +486,15 @@ with a `token_exchange` block, `checkSourcePolicy` and
    external-issuer authorization below is skipped entirely
    (`validateExternalToken` never calls `resolveActorAuthorization` when
    `may_act` is present), and `checkDelegationConsent` enforces `may_act.sub`
-   against the authenticated ToolHive client. A malformed `may_act` is
-   rejected outright by `validateMayActShape`, not silently ignored. On the
-   external path, `may_act.iss` is mandatory, not merely constrained when
-   present as on the self-issued path — `validateMayActShape`'s `requireIss`
-   parameter is `true` there. Without this, an external issuer omitting `iss`
-   could authorize any ToolHive client by naming its ID in a bare
-   `may_act.sub`, bypassing `allowedActors`/`actorMatcher` external
-   authorization entirely. The handler still enforces `allowedDelegateClients`
-   for every external token.
+   against the resolved actor (for a SPIFFE client, the client ID is also
+   accepted). A malformed `may_act` is rejected outright by
+   `validateMayActShape`, not silently ignored. On the external path,
+   `may_act.iss` is mandatory, not merely constrained when present as on the
+   self-issued path — `validateMayActShape`'s `requireIss` parameter is `true`
+   there. Without this, an external issuer omitting `iss` could authorize any
+   ToolHive client by naming its ID in a bare `may_act.sub`, bypassing
+   `allowedActors`/`actorMatcher` external authorization entirely. The handler
+   still enforces `allowedDelegateClients` for every external token.
 2. **External actor authorization.** Otherwise, consent was already
    established by `resolveActorAuthorization`: the claim named by that
    issuer's `actorClaim` (default `azp`; `appid` for Microsoft Entra v1,
@@ -542,6 +542,11 @@ with a `token_exchange` block, `checkSourcePolicy` and
    the self-issued path (`ExternalIssuer == ""`); a delegate client presenting
    an externally-issued
    token with a mismatched `client_id` is still rejected here.
+
+   For a SPIFFE client, a matching `client_id` is not enough. The token must
+   also name the calling workload, because many workloads share one client ID.
+   See [Workloads that share a client ID](18-spiffe-association-declarations.md)
+   in the SPIFFE association declarations.
 4. **No binding.** If none of the above apply, the token carries no
    verifiable client binding and the exchange is rejected.
 
@@ -573,6 +578,13 @@ An authenticated SPIFFE client cannot present a distinct actor this way: its
 actor token's `sub` must equal the client's verified SPIFFE ID, or the request
 fails with `invalid_request`. See [SPIFFE association
 declarations](18-spiffe-association-declarations.md).
+
+A SPIFFE client that sends no `actor_token` is in the same position. Its
+acting party is its verified SPIFFE ID, not its client ID, so the outermost
+`act.sub` of the issued token is the workload's SPIFFE ID. The `client_id`
+claim is still the client ID. Non-SPIFFE clients without an `actor_token` keep
+their client ID as the outermost `act.sub`. See [Workloads that share a client
+ID](18-spiffe-association-declarations.md) for the full rules.
 
 Plain token exchange is unchanged for every client, including a client with an
 `actor_profile`. The profile applies only to ID-JAG issuance from an exchange
@@ -1145,7 +1157,9 @@ delegate_clients:
    disjoint across issuers.
 3. **Provenance is recorded for every external token, but never as a
    phantom actor.** The RFC 8693 §4.1 `act` claim identifies parties that
-   acted: its outer hop always contains ToolHive's issuer and client ID,
+   acted: its outer hop always contains ToolHive's issuer and the acting
+   party's identifier (the client ID, or the workload's SPIFFE ID for a SPIFFE
+   client; see [Workloads that share a client ID](18-spiffe-association-declarations.md)),
    and a genuine external actor — the allowlist path's allowlisted actor
    claim — nests one level in, e.g. `act = {iss: <toolhive-issuer>, sub:
    <toolhive-client>, act: {iss: <external-issuer>, sub: <external-actor>}}`.
@@ -1161,18 +1175,17 @@ delegate_clients:
    is non-empty, regardless of whether an actor was also nested under
    `act` — so operators and policy authors have one consistent place to
    check for "was an external issuer involved," rather than sometimes
-   inside `act` and sometimes not. It is single-hop: it names only the
-   immediate exchange's own external contribution, not a re-exchanged
-   token's earlier external issuer, if any. `act` is not excluded from
+   inside `act` and sometimes not. It is carried forward on re-exchange, so it
+   names the external issuer of the original hop. `act` is not excluded from
    Cedar's generic claim exposure (`preprocessClaims` prefixes every claim
    key, `act` and `external_issuer` included, so they surface as
-   `context.claim_act` and `context.claim_external_issuer`), so a policy
-   CAN key on `context.claim_act.sub` — see
-   `pkg/authz/authorizers/cedar/core_test.go` for worked examples gating on
-   an actor's SPIFFE ID this way. Most policies still key on `sub` alone,
-   since `act` is populated for audit provenance rather than as the
-   primary access-control signal, but an operator authoring delegation
-   policy should not assume it is unreachable.
+   `context.claim_act` and `context.claim_external_issuer`), so a policy CAN
+   key on `context.claim_act.sub` — see
+   `pkg/authz/authorizers/cedar/core_test.go` for worked examples gating on an
+   actor's SPIFFE ID this way. Most policies still key on `sub` alone, since
+   `act` is populated for audit provenance rather than as the primary
+   access-control signal, but an operator authoring delegation policy should
+   not assume it is unreachable.
 4. **`may_act` trust is a per-issuer opt-in, and it bypasses more than one
    thing.** `allow_may_act` is false by default because an enabled issuer
    bypasses BOTH `allowedActors` and `actorMatcher` (external actor
@@ -1555,7 +1568,7 @@ resource checks still apply. Mitigations:
 - **Delegation chain depth and size.** Re-exchanging an already-delegated
   token nests `act` further; `maxDelegationDepth` (10) and the complete
   serialized `act` claim limit (8 KiB) bound it. An exchange exceeding either
-  limit fails with `invalid_grant`.
+  limit fails with `invalid_request`.
 - **Discovery redirects.** The per-issuer HTTP client only follows same-host
   redirects (`networking.SameHostRedirectPolicy()`), so an issuer whose
   `/.well-known/openid-configuration` redirects cross-host cannot be

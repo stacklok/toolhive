@@ -112,7 +112,7 @@ func TestCollector_IncrementToolCall(t *testing.T) {
 func TestCollector_Shutdown(t *testing.T) {
 	t.Parallel()
 
-	collector, _ := newTestCollector(t)
+	collector, rs := newTestCollector(t)
 
 	// Increment some calls
 	collector.IncrementToolCall()
@@ -125,6 +125,23 @@ func TestCollector_Shutdown(t *testing.T) {
 
 	// Second shutdown should be idempotent
 	collector.Shutdown(ctx)
+
+	reports := rs.received()
+	require.Len(t, reports, 1, "shutdown sends one final report")
+	assert.Equal(t, float64(2), reports[0].body["count"])
+}
+
+func TestCollector_ShutdownWithoutCallsSendsNoReport(t *testing.T) {
+	t.Parallel()
+
+	collector, rs := newTestCollector(t)
+	collector.Start()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	collector.Shutdown(ctx)
+
+	assert.Empty(t, rs.received(), "shutdown with no tool calls sends nothing")
 }
 
 func TestCollector_Start_PreventsDuplicateGoroutines(t *testing.T) {

@@ -361,7 +361,7 @@ Filtering a list removes the tools the filter hides and applies the overrides, a
 
 **What each report contains**:
 
-Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. Outside Kubernetes it needs an anonymous ID first: until the first update check creates one, nothing is sent. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
+Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. When it stops, it sends a final report only if it counted tool calls. Outside Kubernetes it needs an anonymous ID first: until the first update check creates one, nothing is sent. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
 
 | Field | Values |
 |-------|--------|

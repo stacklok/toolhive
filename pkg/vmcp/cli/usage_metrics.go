@@ -100,7 +100,7 @@ func (u *usageMetrics) observe(agg aggregator.Aggregator) aggregator.Aggregator 
 	return &toolCountObserver{Aggregator: agg, toolCount: &u.toolCount}
 }
 
-// shutdown sends the final report.
+// shutdown stops the collector, sending a final report if any tool calls were counted.
 func (u *usageMetrics) shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), usageMetricsShutdownTimeout)
 	defer cancel()

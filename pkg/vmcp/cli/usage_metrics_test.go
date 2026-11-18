@@ -328,6 +328,8 @@ func TestNewUsageMetrics_ReportsOnShutdown(t *testing.T) {
 	u := newUsageMetrics(registry, usageFacts{authMode: usagemetrics.ValueNone},
 		usagemetrics.WithEndpoint(server.URL))
 	require.NotNil(t, u)
+	// Shutdown only reports when there is a tool call to report.
+	u.collector.IncrementToolCall()
 	u.shutdown()
 
 	select {

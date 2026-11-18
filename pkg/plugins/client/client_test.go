@@ -25,10 +25,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
 )
 
-// newTestClient returns a *Client pointed at the given test server.
-func newTestClient(t *testing.T, srv *httptest.Server) *Client {
+// newTestClient returns a *Client pointed at the given test server. It uses the
+// server's own transport instead of http.DefaultTransport: httptest.Server.Close
+// calls CloseIdleConnections on the default transport, which would break a
+// connection that a parallel subtest is reusing.
+func newTestClient(t *testing.T, srv *httptest.Server, opts ...Option) *Client {
 	t.Helper()
-	return NewClient(srv.URL)
+	hc := srv.Client()
+	hc.Timeout = defaultTimeout
+	return NewClient(srv.URL, append([]Option{WithHTTPClient(hc)}, opts...)...)
 }
 
 func TestList(t *testing.T) {
@@ -572,7 +577,7 @@ func TestPush(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			c := NewClient(srv.URL, WithKeySigningCapability(tt.clientCapability))
+			c := newTestClient(t, srv, WithKeySigningCapability(tt.clientCapability))
 			err := c.Push(t.Context(), tt.opts)
 
 			if tt.wantErr {
@@ -786,7 +791,7 @@ func TestConnectionError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	srv.Close()
 
-	c := NewClient(srv.URL)
+	c := newTestClient(t, srv)
 	_, err := c.List(t.Context(), plugins.ListOptions{})
 
 	require.Error(t, err)
@@ -994,7 +999,7 @@ func TestTimeoutIsReportedAsTimeoutNotUnreachable(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c := NewClient(srv.URL, WithTimeout(50*time.Millisecond))
+	c := newTestClient(t, srv, WithTimeout(50*time.Millisecond))
 	_, err := c.List(t.Context(), plugins.ListOptions{})
 
 	require.Error(t, err)
@@ -1036,7 +1041,7 @@ func TestCallerCancellationIsNeitherSentinel(t *testing.T) {
 		cancel()
 	}()
 
-	c := NewClient(srv.URL, WithTimeout(30*time.Second))
+	c := newTestClient(t, srv, WithTimeout(30*time.Second))
 	_, err := c.List(ctx, plugins.ListOptions{})
 
 	require.Error(t, err)
@@ -1292,7 +1297,7 @@ func TestPushUnsignedOverRemotePlaintextIsAllowed(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c := NewClient(srv.URL)
+	c := newTestClient(t, srv)
 	require.NoError(t, c.Push(t.Context(), plugins.PushOptions{
 		Reference: "ghcr.io/org/my-plugin:v1.0.0",
 		NoSign:    true,
@@ -1326,7 +1331,7 @@ func TestPushDoesNotFollowRedirectsWithIdentityToken(t *testing.T) {
 	}))
 	t.Cleanup(first.Close)
 
-	c := NewClient(first.URL)
+	c := newTestClient(t, first)
 	err := c.Push(t.Context(), plugins.PushOptions{
 		Reference:     "ghcr.io/org/artifact:v1.0.0",
 		IdentityToken: "a.b.c",
@@ -1360,7 +1365,7 @@ func TestPushDoesNotFollowRedirectsWithKeySigningCapability(t *testing.T) {
 	}))
 	t.Cleanup(first.Close)
 
-	c := NewClient(first.URL, WithKeySigningCapability("protected-discovery-capability"))
+	c := newTestClient(t, first, WithKeySigningCapability("protected-discovery-capability"))
 	err := c.Push(t.Context(), plugins.PushOptions{
 		Reference: "ghcr.io/org/artifact:v1.0.0",
 		Key:       "/home/user/cosign.key",

@@ -6,6 +6,7 @@ package skills
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -45,6 +46,12 @@ var (
 	shellFenceLanguages = map[string]bool{
 		"": true, "bash": true, "sh": true, "shell": true, "zsh": true, "console": true,
 	}
+	// scriptExtensions are the extensions of files that are run as programs,
+	// with the interpreter suggested for them ("" when there is none to name).
+	scriptExtensions = map[string]string{
+		"": "", ".sh": "bash", ".bash": "bash", ".zsh": "zsh", ".py": "python3", ".rb": "ruby",
+		".pl": "perl", ".js": "node", ".mjs": "node", ".cjs": "node", ".php": "php", ".lua": "lua",
+	}
 )
 
 // refChecker scans a skill's SKILL.md and the markdown files it links to for
@@ -53,6 +60,7 @@ var (
 type refChecker struct {
 	skillDir  string
 	root      string // containment root: skillDir, or the plugin dir for bundled skills
+	statRoot  string // code paths are only stat'ed below this: the root's grandparent
 	rootLabel string // "skill" or "plugin", for messages
 	checkExec bool
 	md        parser.Parser
@@ -71,6 +79,7 @@ func newRefChecker(skillDir, root string, checkExec bool) *refChecker {
 	return &refChecker{
 		skillDir:  skillDir,
 		root:      root,
+		statRoot:  filepath.Dir(filepath.Dir(root)),
 		rootLabel: rootLabel,
 		checkExec: checkExec,
 		md:        goldmark.DefaultParser(),
@@ -124,7 +133,10 @@ func (c *refChecker) scan(file string, src []byte, firstLine int) {
 		case *ast.LinkReferenceDefinition:
 			c.checkLink(file, rel, string(n.Destination), lines.at(blockOffset(n)))
 		case *ast.CodeSpan:
-			c.checkCodeSpan(file, rel, codeSpanText(n, src), lines.at(inlineOffset(n)))
+			// A span inside a link is the link text; the destination is checked.
+			if !inLink(n) {
+				c.checkCodeSpan(file, rel, codeSpanText(n, src), lines.at(inlineOffset(n)))
+			}
 			return ast.WalkSkipChildren, nil
 		case *ast.FencedCodeBlock:
 			c.checkCodeBlock(file, rel, fenceLanguage(n, src), n.Lines(), src, lines)
@@ -185,40 +197,47 @@ func (c *refChecker) checkCodeSpan(file, rel, code string, line int) {
 
 // checkCodeBlock checks each command line of a fenced or indented code block.
 // Every block is checked for escaping paths; shell-like blocks are also
-// checked for direct execution. In console blocks only prompt lines ("$ " or
-// "# ") are commands; the rest is output.
+// checked for direct execution. Untagged fences and indented blocks are often
+// listings or plain text, so there, as in inline spans, a command must start
+// with "./". A "$ " prompt is removed in shell-like blocks; in console blocks
+// only prompt lines ("$ " or "# ") are commands, and the rest is output.
 func (c *refChecker) checkCodeBlock(file, rel, lang string, segs *text.Segments, src []byte, lines lineIndex) {
 	shellLike := shellFenceLanguages[lang]
 	var pending strings.Builder
 	pendingLine := 0
+	flush := func() {
+		for _, words := range shellCommands(pending.String()) {
+			c.checkEscapes(file, rel, words, pendingLine)
+			if cmd := commandWord(words); shellLike && (lang != "" || strings.HasPrefix(cmd, "./")) {
+				c.checkExecWord(file, rel, cmd, pendingLine)
+			}
+		}
+		pending.Reset()
+	}
 	for i := 0; i < segs.Len(); i++ {
 		seg := segs.At(i)
 		raw := strings.TrimRight(string(seg.Value(src)), "\r\n")
 		if pending.Len() == 0 {
 			pendingLine = lines.at(seg.Start)
-			if lang == "console" {
-				trimmed := strings.TrimLeft(raw, " \t")
-				if !strings.HasPrefix(trimmed, "$ ") && !strings.HasPrefix(trimmed, "# ") {
-					continue
-				}
+			trimmed := strings.TrimLeft(raw, " \t")
+			switch {
+			case shellLike && (strings.HasPrefix(trimmed, "$ ") ||
+				lang == "console" && strings.HasPrefix(trimmed, "# ")):
 				raw = trimmed[2:]
+			case lang == "console":
+				continue // output
 			}
 		}
 		// Join backslash-continued lines into one command line.
-		if strings.HasSuffix(raw, "\\") {
-			pending.WriteString(strings.TrimSuffix(raw, "\\"))
+		if continued(raw) {
+			pending.WriteString(raw[:len(raw)-1])
 			pending.WriteByte(' ')
 			continue
 		}
 		pending.WriteString(raw)
-		for _, words := range shellCommands(pending.String()) {
-			c.checkEscapes(file, rel, words, pendingLine)
-			if shellLike {
-				c.checkExecWord(file, rel, commandWord(words), pendingLine)
-			}
-		}
-		pending.Reset()
+		flush()
 	}
+	flush()
 }
 
 // checkEscapes reports words that are relative paths leaving the containment
@@ -238,40 +257,45 @@ func (c *refChecker) checkEscapes(file, rel string, words []string, line int) {
 		if !ok || !hasDotDot(target) {
 			continue
 		}
-		escapes, exists := true, false
+		var paths []string
+		escapes := true
 		for _, base := range c.bases(file) {
 			p := filepath.Join(base, filepath.FromSlash(target))
-			if within(c.root, p) {
-				escapes = false
-			}
-			if _, err := os.Lstat(p); err == nil && !within(p, c.root) {
-				exists = true
-			}
+			paths = append(paths, p)
+			escapes = escapes && !within(c.root, p)
 		}
-		if escapes && exists {
+		if escapes && !c.full() && c.anyExists(paths) {
 			c.add(RuleRefEscapesRoot, rel, line,
 				fmt.Sprintf("path %q points outside the %s directory", w, c.rootLabel))
 		}
 	}
 }
 
-// checkExecWord reports cmd when it runs a file shipped in the skill directly
-// instead of through an interpreter. Only files that exist are reported, so
-// examples about the user's own project (./configure) are not.
+// checkExecWord reports cmd when it runs a script shipped in the skill
+// directly instead of through an interpreter. Only files that exist and look
+// executable are reported, so examples about the user's own project
+// (./configure) and documents (references/api.md) are not.
 func (c *refChecker) checkExecWord(file, rel, cmd string, line int) {
 	if !c.checkExec || !strings.Contains(cmd, "/") {
 		return
 	}
 	target, ok := refTarget(cmd, false)
-	if !ok {
+	if !ok || c.full() {
 		return
 	}
 	for _, base := range c.bases(file) {
 		p := filepath.Join(base, filepath.FromSlash(target))
-		if info, err := os.Lstat(p); err == nil && info.Mode().IsRegular() && within(c.root, p) {
+		if !within(c.root, p) {
+			continue
+		}
+		if interp, ok := scriptInterpreter(p); ok {
+			hint := "run it through its interpreter"
+			if interp != "" {
+				hint = fmt.Sprintf("run it through an interpreter (for example %q)",
+					interp+" "+filepath.ToSlash(filepath.Clean(target)))
+			}
 			c.add(RuleScriptDirectExec, rel, line, fmt.Sprintf(
-				"%q is executed directly, but installed skill files are not executable; "+
-					"run it through an interpreter (for example \"bash %s\")", cmd, target))
+				"%q is executed directly, but installed skill files are not executable; %s", cmd, hint))
 			return
 		}
 	}
@@ -285,10 +309,34 @@ func (c *refChecker) bases(file string) []string {
 	return []string{c.skillDir}
 }
 
+// anyExists reports whether one of the code paths exists, is not a parent of
+// the root ("..") and lies below statRoot. Paths elsewhere are not stat'ed, so
+// a crafted path cannot make validation touch arbitrary locations such as
+// automount maps.
+func (c *refChecker) anyExists(paths []string) bool {
+	for _, p := range paths {
+		if within(c.statRoot, p) && !within(p, c.root) {
+			if _, err := os.Lstat(p); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// full reports whether the finding cap has been reached, and records the
+// truncation the first time it is.
+func (c *refChecker) full() bool {
+	if len(c.findings)-len(c.capped) < maxRefFindings {
+		return false
+	}
+	c.truncate("findings", fmt.Sprintf("reference checks stopped after %d findings", maxRefFindings))
+	return true
+}
+
 // add records a warning unless the finding cap has been reached.
 func (c *refChecker) add(rule, file string, line int, msg string) {
-	if len(c.findings)-len(c.capped) >= maxRefFindings {
-		c.truncate("findings", fmt.Sprintf("reference checks stopped after %d findings", maxRefFindings))
+	if c.full() {
 		return
 	}
 	c.findings = append(c.findings, Finding{
@@ -341,6 +389,66 @@ func refTarget(raw string, isLink bool) (string, bool) {
 		}
 	}
 	return s, true
+}
+
+// scriptInterpreter reports whether p is a regular file that looks
+// executable: it starts with "#!", has a script extension, or has no
+// extension. It also returns the interpreter to suggest, or "" if unknown.
+func scriptInterpreter(p string) (string, bool) {
+	info, err := os.Lstat(p)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	if interp, ok := shebangInterpreter(p); ok {
+		return interp, true
+	}
+	interp, ok := scriptExtensions[strings.ToLower(filepath.Ext(p))]
+	return interp, ok
+}
+
+// shebangInterpreter returns the program named by p's "#!" line, skipping
+// env and its flags, and whether p has one.
+func shebangInterpreter(p string) (string, bool) {
+	f, err := os.Open(p) //#nosec G304 -- p is inside the containment root
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = f.Close() }() // read-only; a close error changes nothing
+	buf := make([]byte, 256)
+	n, _ := io.ReadFull(f, buf) // a short or unreadable file just has no shebang
+	line, _, _ := strings.Cut(string(buf[:n]), "\n")
+	rest, ok := strings.CutPrefix(line, "#!")
+	if !ok {
+		return "", false
+	}
+	fields := strings.Fields(rest)
+	for len(fields) > 0 && (filepath.Base(fields[0]) == "env" || strings.HasPrefix(fields[0], "-")) {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return "", true
+	}
+	return filepath.Base(fields[0]), true
+}
+
+// continued reports whether a code line continues on the next one: it ends in
+// an unescaped backslash and is not a comment line.
+func continued(line string) bool {
+	if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+		return false
+	}
+	return (len(line)-len(strings.TrimRight(line, `\`)))%2 == 1
+}
+
+// inLink reports whether n is inside a link or image.
+func inLink(n ast.Node) bool {
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		switch p.(type) {
+		case *ast.Link, *ast.Image:
+			return true
+		}
+	}
+	return false
 }
 
 // hasDotDot reports whether a slash-separated path has a ".." element.

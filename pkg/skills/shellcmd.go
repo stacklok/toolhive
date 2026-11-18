@@ -20,10 +20,10 @@ var commandPrefixes = map[string]bool{
 
 // shellCommands splits one line of shell-like text into simple commands, each
 // a list of words with quoting removed. It is a deliberately small heuristic,
-// not a shell parser: it splits commands on ;, |, &, (, ), backticks and $(,
-// honours single quotes, double quotes and backslash escapes, and stops at
-// a word that starts with #. Expansions are kept verbatim so callers can skip
-// them.
+// not a shell parser: it splits commands on ;, |, &, (, ), backticks and $(
+// (also inside double quotes), honours single quotes, double quotes and
+// backslash escapes, and stops at a word that starts with #. Expansions are
+// kept verbatim so callers can skip them.
 func shellCommands(line string) [][]string {
 	var l shellLexer
 	comment := false
@@ -49,6 +49,14 @@ type shellLexer struct {
 	inWord   bool
 	inSingle bool
 	inDouble bool
+	substs   []subst // open $( and backtick substitutions, innermost last
+}
+
+// subst is an open command substitution: the byte that closes it, and whether
+// it was opened inside double quotes, which resume when it closes.
+type subst struct {
+	closer   byte
+	inDouble bool
 }
 
 // single handles ch inside single quotes.
@@ -68,10 +76,40 @@ func (l *shellLexer) double(line string, i int) int {
 	case ch == '\\' && i+1 < len(line):
 		i++
 		l.word.WriteByte(line[i])
+		l.inWord = true
+	case ch == '$' && i+1 < len(line) && line[i+1] == '(':
+		l.open(')')
+		i++
+	case ch == '`':
+		l.open('`')
 	default:
 		l.word.WriteByte(ch)
+		l.inWord = true
 	}
 	return i
+}
+
+// open starts a command substitution closed by closer.
+func (l *shellLexer) open(closer byte) {
+	if l.inDouble && l.word.Len() == 0 {
+		l.inWord = false // `"$(` starts no word of its own
+	}
+	l.flushCmd()
+	l.substs = append(l.substs, subst{closer: closer, inDouble: l.inDouble})
+	l.inDouble = false
+}
+
+// closes reports whether ch closes the innermost open substitution, and if
+// so closes it, resuming double quotes when it was opened inside them.
+func (l *shellLexer) closes(ch byte) bool {
+	n := len(l.substs)
+	if n == 0 || l.substs[n-1].closer != ch {
+		return false
+	}
+	l.flushCmd()
+	l.inDouble = l.substs[n-1].inDouble
+	l.substs = l.substs[:n-1]
+	return true
 }
 
 // plain handles unquoted line[i]. It returns the last index used and whether
@@ -89,9 +127,12 @@ func (l *shellLexer) plain(line string, i int) (int, bool) {
 	case ch == ' ' || ch == '\t':
 		l.flushWord()
 	case ch == '$' && i+1 < len(line) && line[i+1] == '(':
-		l.flushCmd()
+		l.open(')')
 		i++
-	case strings.IndexByte(";|&()`\n", ch) >= 0:
+	case l.closes(ch):
+	case ch == '`':
+		l.open('`')
+	case strings.IndexByte(";|&()\n", ch) >= 0:
 		l.flushCmd()
 	case ch == '#' && !l.inWord:
 		return i, true
@@ -120,14 +161,18 @@ func (l *shellLexer) flushCmd() {
 
 // commandWord returns the word in command position of a simple command,
 // skipping variable assignments and wrapper words such as sudo or env (and
-// their flags). It returns "" when there is none.
+// their flags). It returns "" when there is none, including for
+// "command -v" and "command -V", which only look the command up. Flags that
+// take an argument (sudo -u user) are not modelled.
 func commandWord(words []string) string {
 	afterPrefix := false
-	for _, w := range words {
+	for i, w := range words {
 		switch {
 		case assignmentRegex.MatchString(w):
 		case commandPrefixes[w]:
 			afterPrefix = true
+		case afterPrefix && (w == "-v" || w == "-V") && words[i-1] == "command":
+			return ""
 		case afterPrefix && strings.HasPrefix(w, "-"):
 		default:
 			return w

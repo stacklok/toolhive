@@ -4,8 +4,12 @@
 package skills
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // FuzzParseSkillMD checks that parsing an untrusted SKILL.md never panics.
@@ -36,11 +40,24 @@ func FuzzReferenceCheck(f *testing.F) {
 		"```bash\ncd a && ./x.sh $(./y) `z` 'q' \"r\" \\\n  w # c\n```\n",
 		"```console\n$ ./x\noutput\n```\n\n    ./indented\n",
 		"[](<a b>) [x](#f) [y](https://e) [z](f.md:1:2)\n",
+		"```bash\nOUT=\"$(./scripts/x.sh)\"\ncat ../outside.md\n```\n\n[d](doc.md)\n",
+		strings.Repeat("`cat ../outside.md`\n\n", maxRefFindings+1),
 	} {
 		f.Add([]byte(seed))
 	}
 
-	dir := filepath.Join(f.TempDir(), "sk")
+	// Files the seeds point at, so the fuzzer reaches the finding and cap paths.
+	root := f.TempDir()
+	dir := filepath.Join(root, "sk")
+	for name, content := range map[string]string{
+		"sk/scripts/x.sh": "#!/bin/sh\n",
+		"sk/doc.md":       "```\n./scripts/x.sh\n```\n",
+		"outside.md":      "",
+	} {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		require.NoError(f, os.MkdirAll(filepath.Dir(p), 0o750))
+		require.NoError(f, os.WriteFile(p, []byte(content), 0o600))
+	}
 	f.Fuzz(func(_ *testing.T, body []byte) {
 		_ = newRefChecker(dir, dir, true).checkReferences(body, 1)
 		_ = shellCommands(string(body))

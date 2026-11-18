@@ -62,6 +62,7 @@ func TestValidateSkillDir_References(t *testing.T) {
 	base := map[string]string{
 		"scripts/x.sh":    "#!/bin/sh\n",
 		"scripts/x.py":    "print(1)\n",
+		"scripts/run":     "",
 		"ref.md":          "# Ref\n",
 		"my file.md":      "# Spaced\n",
 		"assets/logo.png": "png",
@@ -196,6 +197,45 @@ func TestValidateSkillDir_References(t *testing.T) {
 		{name: "continued line is an argument", body: "```bash\nrun \\\n  ./scripts/x.sh\n```\n"},
 		{name: "comment", body: "```bash\n# ./scripts/x.sh\necho hi # ./scripts/x.sh\n```\n"},
 		{name: "quoted argument", body: "```bash\necho './scripts/x.sh'\n```\n"},
+		{name: "untagged listing without dot slash", body: "```\nscripts/x.sh\nref.md\n| scripts/x.sh | Runs X |\n```\n"},
+		{name: "document is not a script", body: "```bash\n./ref.md\nassets/logo.png\n```\n"},
+		{name: "code span in link text", body: "See [`./scripts/x.sh`](scripts/x.sh).\n"},
+		{name: "command -v only looks up", body: "```bash\ncommand -v ./scripts/x.sh\ncommand -V ./scripts/x.sh\n```\n"},
+		{
+			name: "file without extension",
+			body: "```bash\n./scripts/run\n```\n",
+			want: []refHit{{RuleScriptDirectExec, "SKILL.md", 6}},
+		},
+		{
+			name: "substitution inside double quotes",
+			body: "```bash\nOUT=\"$(./scripts/x.sh)\"\necho \"`./scripts/x.py`\"\n```\n",
+			want: []refHit{{RuleScriptDirectExec, "SKILL.md", 6}, {RuleScriptDirectExec, "SKILL.md", 7}},
+		},
+		{
+			name: "prompt in bash fence",
+			body: "```bash\n$ ./scripts/x.sh\n```\n",
+			want: []refHit{{RuleScriptDirectExec, "SKILL.md", 6}},
+		},
+		{
+			name: "continuation on the last line",
+			body: "```bash\n./scripts/x.sh \\\n```\n",
+			want: []refHit{{RuleScriptDirectExec, "SKILL.md", 6}},
+		},
+		{
+			name: "escaped backslash and comment do not continue",
+			body: "```bash\necho a\\\\\n./scripts/x.sh\n# note \\\n./scripts/x.py\n```\n",
+			want: []refHit{{RuleScriptDirectExec, "SKILL.md", 7}, {RuleScriptDirectExec, "SKILL.md", 9}},
+		},
+		{
+			name:    "code span in link reports the link only",
+			body:    "[`../shared/x.md`](../shared/x.md)\n",
+			outside: map[string]string{"shared/x.md": ""},
+			want:    []refHit{{RuleRefEscapesRoot, "SKILL.md", 5}},
+		},
+		{
+			name: "code paths far above the skill are not stat'ed",
+			body: "```bash\ncat ../../../../../../../../../../../../../../etc/hosts\n```\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -213,7 +253,7 @@ func TestValidateSkillDir_References(t *testing.T) {
 func TestValidateSkillDir_ReferenceSkipRules(t *testing.T) {
 	t.Parallel()
 
-	// Each target would otherwise be unresolved, escaping, or executed.
+	// Each link would otherwise be unresolved or escaping.
 	targets := []string{
 		"https://example.com/../x.md",
 		"mailto:a@b.c",
@@ -232,8 +272,7 @@ func TestValidateSkillDir_ReferenceSkipRules(t *testing.T) {
 	for _, target := range targets {
 		t.Run(target, func(t *testing.T) {
 			t.Parallel()
-			body := fmt.Sprintf("[l](%s)\n\n`cat %s`\n\n```bash\n%s\ncat %s\n```\n", target, target, target, target)
-			dir := makeSkillDir(t, "sk", refFrontmatter+body)
+			dir := makeSkillDir(t, "sk", refFrontmatter+fmt.Sprintf("[l](%s)\n", target))
 			assert.Empty(t, refHits(t, dir))
 		})
 	}
@@ -313,8 +352,11 @@ func TestValidateSkillDir_ReferenceLimits(t *testing.T) {
 
 	t.Run("finding cap", func(t *testing.T) {
 		t.Parallel()
-		body := strings.Repeat("[x](gone.md)\n\n", maxRefFindings+5)
-		hits := refHits(t, makeSkillDir(t, "sk", refFrontmatter+body))
+		// Past the cap, code is no longer checked either.
+		body := strings.Repeat("[x](gone.md)\n\n", maxRefFindings+5) + "```bash\n./scripts/x.sh\n```\n"
+		dir := makeSkillDir(t, "sk", refFrontmatter+body)
+		writeTree(t, dir, map[string]string{"scripts/x.sh": ""})
+		hits := refHits(t, dir)
 		require.Len(t, hits, maxRefFindings+1)
 		assert.Equal(t, refHit{RuleRefFindingsTruncated, "SKILL.md", 0}, hits[maxRefFindings])
 	})
@@ -372,11 +414,12 @@ func TestValidateSkillDir_PluginRoot(t *testing.T) {
 		{RuleRefUnresolved, "skills/sk/SKILL.md", 12},
 	}, refHits(t, skillDir, WithPluginRoot(pluginDir)))
 
-	// Standalone, the same skill reports the escape and the direct execution.
+	// Standalone, the same skill reports the escaping link and the direct
+	// execution. outside.md is above the skill's grandparent, where code paths
+	// are not stat'ed.
 	assert.Equal(t, []refHit{
 		{RuleRefEscapesRoot, "SKILL.md", 5},
 		{RuleScriptDirectExec, "SKILL.md", 8},
-		{RuleRefEscapesRoot, "SKILL.md", 9},
 		{RuleRefUnresolved, "SKILL.md", 12},
 	}, refHits(t, skillDir))
 }
@@ -395,6 +438,99 @@ func TestValidateSkillDir_PluginRootInvalid(t *testing.T) {
 			_, err := ValidateSkillDir(skillDir, WithPluginRoot(root))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "plugin root")
+		})
+	}
+}
+
+func TestRefTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		raw    string
+		isLink bool
+		want   string
+		ok     bool
+	}{
+		{"ref.md#top", true, "ref.md", true},
+		{"ref.md?x=1", true, "ref.md", true},
+		{"ref.md:12:3", false, "ref.md", true},
+		{"my%20file.md", true, "my file.md", true},
+		{"my%20file.md", false, "my%20file.md", true},
+		{"../x?.md", false, "", false},
+		{"", false, "", false},
+	}
+	// Skipped in both modes.
+	for _, raw := range []string{
+		"https://example.com/../x.md", "mailto:a@b.c", "#anchor", "<placeholder>/../x.md",
+		"${VAR}/../x.md", "$VAR/../x.md", "{{ dir }}/../x.md", "../*.md", "../[ab].md",
+		"/abs/../x.md", "~/x/../../y.md", "C:/x/../../y.md",
+	} {
+		tests = append(tests, struct {
+			raw    string
+			isLink bool
+			want   string
+			ok     bool
+		}{raw, true, "", false}, struct {
+			raw    string
+			isLink bool
+			want   string
+			ok     bool
+		}{raw, false, "", false})
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s/link=%t", tt.raw, tt.isLink), func(t *testing.T) {
+			t.Parallel()
+			got, ok := refTarget(tt.raw, tt.isLink)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestScriptInterpreter(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"env.txt":  "#!/usr/bin/env -S python3 -u\n",
+		"sh.txt":   "#!/bin/sh\n",
+		"bare.txt": "#!\n",
+		"a.py":     "print(1)\n",
+		"noext":    "",
+		"doc.md":   "# Doc\n",
+		"sub/x":    "",
+	})
+	tests := []struct {
+		file   string
+		interp string
+		ok     bool
+	}{
+		{"env.txt", "python3", true},
+		{"sh.txt", "sh", true},
+		{"bare.txt", "", true},
+		{"a.py", "python3", true},
+		{"noext", "", true},
+		{"doc.md", "", false},
+		{"sub", "", false},
+		{"missing", "", false},
+	}
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		// An unreadable script has no readable shebang; its extension decides.
+		writeTree(t, dir, map[string]string{"locked.sh": "#!/usr/bin/env python3\n"})
+		require.NoError(t, os.Chmod(filepath.Join(dir, "locked.sh"), 0o000))
+		tests = append(tests, struct {
+			file   string
+			interp string
+			ok     bool
+		}{"locked.sh", "bash", true})
+	}
+	for _, tt := range tests {
+		t.Run(tt.file, func(t *testing.T) {
+			t.Parallel()
+			interp, ok := scriptInterpreter(filepath.Join(dir, tt.file))
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.interp, interp)
 		})
 	}
 }
@@ -427,6 +563,9 @@ func TestShellCommands(t *testing.T) {
 		{"if ./t; then ./u; fi", [][]string{{"if", "./t"}, {"then", "./u"}, {"fi"}}, []string{"./t", "./u", "fi"}},
 		{"cat ${DIR}/x # comment", [][]string{{"cat", "${DIR}/x"}}, []string{"cat"}},
 		{"A=1", [][]string{{"A=1"}}, []string{""}},
+		{`OUT="$(./a)"`, [][]string{{"OUT="}, {"./a"}}, []string{"", "./a"}},
+		{"echo \"`./b` c\" d", [][]string{{"echo"}, {"./b"}, {" c", "d"}}, []string{"echo", "./b", " c"}},
+		{"command -v ./x", [][]string{{"command", "-v", "./x"}}, []string{""}},
 		{"", nil, nil},
 	}
 

@@ -16,7 +16,6 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/x/errorsx"
-	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
@@ -447,7 +446,9 @@ func (h *Handler) authorizeDelegation(
 // would let workload B present workload A's client_credentials token as its
 // actor_token and become act.sub = A. For such a caller the actor token's sub
 // must therefore also equal the caller's verified SPIFFE ID, which means it
-// cannot assert a different actor.
+// cannot assert a different actor. Without an actor_token the actor is the
+// caller's SPIFFE ID too, so for a SPIFFE client the outermost act.sub always
+// names the workload making the request. Any other client is its own client ID.
 func (h *Handler) resolveActorIdentity(
 	ctx context.Context, params *formParams, client fosite.Client,
 ) (string, error) {
@@ -479,7 +480,12 @@ func (h *Handler) resolveActorIdentity(
 		return actorClaims.Subject, nil
 	}
 
-	// No actor_token: the authenticated client is the acting party.
+	// No actor_token: the authenticated client is the acting party. A SPIFFE
+	// client is identified by its workload, not by the client ID that many
+	// workloads share.
+	if spiffeClient, ok := client.(*registration.AuthenticatedSPIFFEClient); ok {
+		return spiffeClient.SPIFFEID().String(), nil
+	}
 	return client.GetID(), nil
 }
 
@@ -599,9 +605,11 @@ func delegatedSubject(validatedClaims *ValidatedClaims) string {
 // comment), so for those the act claim stops at the outer, genuinely-acting
 // hop, and the external issuer is reported only via the returned string.
 //
-// The outermost act.sub is always actorID (the ToolHive client) — every
-// downstream consumer reads that as "who is acting", and it must not change
-// regardless of how the subject token was obtained.
+// The outermost act.sub is always actorID (see resolveActorIdentity: the
+// client ID, the asserted actor_token subject, or for a SPIFFE client the
+// workload's SPIFFE ID) — every downstream consumer reads that as "who is
+// acting", and it must not change regardless of how the subject token was
+// obtained.
 //
 // Extracted from HandleTokenEndpointRequest rather than inlined: the external
 // provenance nesting, the prior-chain depth gate, and the encoded-size gate
@@ -874,13 +882,16 @@ func sourceClientAllowed(validatedClaims *ValidatedClaims, clientID string, poli
 // spiffeID is the verified SPIFFE ID of an authenticated SPIFFE client, empty
 // for every other client. A wildcard association gives many workloads the same
 // client ID, so for a SPIFFE client the client_id binding in case 3 alone would
-// let workload B exchange workload A's token and obtain sub = A. For that case,
-// when the subject token names a workload (its sub or outermost act.sub is a
-// SPIFFE ID), it must name this one: its sub must be spiffeID, or its outermost
-// act.sub must be. A token that names only a user and the client ID (act.sub is
-// the client ID) can be exchanged by any workload of that client, because the
-// user consented to the client. The may_act and external actor cases name
-// their party explicitly and are unaffected.
+// let workload B exchange workload A's token. For that case the token must also
+// belong to this workload: its sub or its outermost act.sub must be spiffeID.
+// Only the outermost act entry is read, because it names the party that made the
+// exchange; prior actors in the chain are never used for an access decision
+// (RFC 8693 §4.1). A token whose act.sub is the client ID is refused for a
+// SPIFFE caller, since it does not say which workload it belongs to. For a
+// SPIFFE caller, may_act.sub may name either the workload or the client ID:
+// consent to the client lets any of its workloads act, and the result is still
+// bound to the exchanging workload because act.sub is its SPIFFE ID. The
+// external actor case names its party explicitly and is unaffected.
 func checkDelegationConsent(
 	validatedClaims *ValidatedClaims, clientID, actorSub, spiffeID string, configuredDelegate bool,
 ) error {
@@ -899,8 +910,10 @@ func checkDelegationConsent(
 		// the one binding that is meant to key off the asserted actor —
 		// may_act's whole purpose is authorizing a specific actor, which
 		// actor_token lets the authenticated client name distinctly from
-		// itself.
-		if validatedClaims.MayAct.Sub != actorSub {
+		// itself. A SPIFFE caller may also be named by its client ID: the
+		// consent then covers every workload of that client, and the issued
+		// token still names only the exchanging workload.
+		if validatedClaims.MayAct.Sub != actorSub && (spiffeID == "" || validatedClaims.MayAct.Sub != clientID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"The subject token does not authorize this client to act on behalf of the subject."))
 		}
@@ -936,6 +949,10 @@ func checkDelegationConsent(
 	case validatedClaims.ClientID == "":
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The subject token carries no verifiable client binding: it has neither a 'may_act' claim nor a 'client_id' claim."))
+	// The same hint also covers a token that names no workload, for example one
+	// whose act.sub is the client ID or whose act is malformed. Every token
+	// ToolHive issues with this client ID names a workload, so such a token
+	// cannot be this caller's.
 	case isAnotherWorkloadsToken(validatedClaims, clientID, spiffeID):
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The subject token was issued to a different workload of this client."))
@@ -944,28 +961,26 @@ func checkDelegationConsent(
 }
 
 // isAnotherWorkloadsToken reports whether a ToolHive-issued subject token that
-// is bound to clientID names a SPIFFE workload other than spiffeID. A token
-// names a workload when its sub or the sub of its outermost act entry parses as
-// a SPIFFE ID; it then belongs to the caller only if one of those two is
-// spiffeID. A token that names only a user and the client ID (act.sub is the
-// client ID) names no workload, so it is never another workload's token. It is
-// false for a caller that is not a SPIFFE client (empty spiffeID).
+// is bound to clientID belongs to a different workload than the SPIFFE caller.
+// The token belongs to the caller only if its sub or its outermost act.sub is
+// spiffeID; anything else, including a token whose act.sub is the client ID or
+// whose act entry cannot be read, is refused. Only the outermost act entry is
+// read: prior actors are never used for an access decision (RFC 8693 §4.1). It
+// is false for a caller that is not a SPIFFE client (empty spiffeID), for an
+// external token, and for a token bound to another client.
 func isAnotherWorkloadsToken(validatedClaims *ValidatedClaims, clientID, spiffeID string) bool {
 	if spiffeID == "" || validatedClaims.ExternalIssuer != "" || validatedClaims.ClientID != clientID {
 		return false
 	}
-	act, _ := validatedClaims.Extra["act"].(map[string]any)
-	actSub, _ := act["sub"].(string)
-	if !isSPIFFEID(validatedClaims.Subject) && !isSPIFFEID(actSub) {
+	if validatedClaims.Subject == spiffeID {
 		return false
 	}
-	return validatedClaims.Subject != spiffeID && actSub != spiffeID
-}
-
-// isSPIFFEID reports whether s is a well-formed SPIFFE ID.
-func isSPIFFEID(s string) bool {
-	_, err := spiffeid.FromString(s)
-	return err == nil
+	if act, ok := validatedClaims.Extra["act"].(map[string]any); ok {
+		if sub, ok := act["sub"].(string); ok && sub == spiffeID {
+			return false
+		}
+	}
+	return true
 }
 
 // grantScopes validates that each requested scope is allowed for both the

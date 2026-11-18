@@ -245,6 +245,7 @@ func TestValidatePluginDir_Findings(t *testing.T) {
 				require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "shared", "x.md"), []byte("# X\n"), 0o600))
 				require.NoError(t, os.MkdirAll(filepath.Join(pluginDir, "skills", "foo", "scripts"), 0o750))
 				require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "skills", "foo", "scripts", "x.sh"), nil, 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "..", "outside.md"), nil, 0o600))
 			},
 			wantValid: true,
 			wantFindings: []skills.Finding{

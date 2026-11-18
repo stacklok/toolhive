@@ -103,7 +103,12 @@ skill is installed on its own, so `../shared/x.md` does not exist after
 install. For a skill bundled in a plugin the whole plugin is installed, so a
 reference is only reported when it leaves the plugin directory. Paths in code
 are resolved against both the skill directory and the containing file's
-directory, and reported only when both leave the root.
+directory, and reported only when both leave the root and the path exists
+next to the skill (and is not a parent directory such as `..`). Commands run
+from the agent's working directory, so a code path that does not exist there,
+such as `import '../lib/foo'`, `cd ..` or `git diff ../other-repo`, refers to
+the user's project and is not reported. Links are reported whether or not the
+target exists.
 
 **`script-direct-exec`** reports a command such as `./scripts/run.sh` (also
 after `&&`, `||`, `;`, `|`, `$(`, backticks, variable assignments and `sudo`,

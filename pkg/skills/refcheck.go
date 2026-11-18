@@ -223,7 +223,11 @@ func (c *refChecker) checkCodeBlock(file, rel, lang string, segs *text.Segments,
 
 // checkEscapes reports words that are relative paths leaving the containment
 // root. Code paths are resolved against both the skill directory and the
-// directory of the scanned file, and reported only when both escape.
+// directory of the scanned file, and reported only when both escape and one
+// of them exists and is not a parent of the root. Commands run from the
+// agent's working directory, so a code path that does not exist next to the
+// skill (an import, "cd ..", a sibling repo) is about the user's project, not
+// a file the skill depends on.
 func (c *refChecker) checkEscapes(file, rel string, words []string, line int) {
 	for _, w := range words {
 		w = strings.TrimLeft(w, "<>")
@@ -234,13 +238,17 @@ func (c *refChecker) checkEscapes(file, rel string, words []string, line int) {
 		if !ok || !hasDotDot(target) {
 			continue
 		}
-		escapes := true
+		escapes, exists := true, false
 		for _, base := range c.bases(file) {
-			if within(c.root, filepath.Join(base, filepath.FromSlash(target))) {
+			p := filepath.Join(base, filepath.FromSlash(target))
+			if within(c.root, p) {
 				escapes = false
 			}
+			if _, err := os.Lstat(p); err == nil && !within(p, c.root) {
+				exists = true
+			}
 		}
-		if escapes {
+		if escapes && exists {
 			c.add(RuleRefEscapesRoot, rel, line,
 				fmt.Sprintf("path %q points outside the %s directory", w, c.rootLabel))
 		}

@@ -68,10 +68,11 @@ func TestValidateSkillDir_References(t *testing.T) {
 	}
 
 	tests := []struct {
-		name  string
-		body  string            // SKILL.md body, starting on line 5
-		files map[string]string // extra files
-		want  []refHit
+		name    string
+		body    string            // SKILL.md body, starting on line 5
+		files   map[string]string // extra files
+		outside map[string]string // files next to the skill directory
+		want    []refHit
 	}{
 		// ref-unresolved
 		{name: "existing link", body: "[r](ref.md)\n"},
@@ -122,22 +123,30 @@ func TestValidateSkillDir_References(t *testing.T) {
 			want: []refHit{{RuleRefEscapesRoot, "SKILL.md", 5}},
 		},
 		{
-			name: "code span escapes",
-			body: "see `../shared/x.md`\n",
-			want: []refHit{{RuleRefEscapesRoot, "SKILL.md", 5}},
+			name:    "code span escapes",
+			body:    "see `../shared/x.md`\n",
+			outside: map[string]string{"shared/x.md": ""},
+			want:    []refHit{{RuleRefEscapesRoot, "SKILL.md", 5}},
 		},
 		{name: "link staying inside", body: "[r](scripts/../ref.md)\n"},
 		{name: "code span without slash", body: "go up with `..`\n"},
 		{name: "code span staying inside", body: "`scripts/../ref.md`\n"},
 		{
-			name: "fence argument and flag value escape",
-			body: "```bash\ncat ../a.md\nrun --file=../b.md\n```\n",
-			want: []refHit{{RuleRefEscapesRoot, "SKILL.md", 6}, {RuleRefEscapesRoot, "SKILL.md", 7}},
+			name:    "fence argument and flag value escape",
+			body:    "```bash\ncat ../a.md\nrun --file=../b.md\n```\n",
+			outside: map[string]string{"a.md": "", "b.md": ""},
+			want:    []refHit{{RuleRefEscapesRoot, "SKILL.md", 6}, {RuleRefEscapesRoot, "SKILL.md", 7}},
 		},
 		{
-			name: "non-shell fence still checked for escapes",
-			body: "```yaml\npath: ../shared/x.md\n```\n",
-			want: []refHit{{RuleRefEscapesRoot, "SKILL.md", 6}},
+			name:    "non-shell fence still checked for escapes",
+			body:    "```yaml\npath: ../shared/x.md\n```\n",
+			outside: map[string]string{"shared/x.md": ""},
+			want:    []refHit{{RuleRefEscapesRoot, "SKILL.md", 6}},
+		},
+		{
+			name: "code paths about the user's project are not reported",
+			body: "```ts\nimport { foo } from '../lib/foo'\n```\n\nRun `cd ../ && npm test`.\n\n" +
+				"```bash\ngit diff ../other-repo\ncd .. && cd ../..\n```\n",
 		},
 
 		// script-direct-exec
@@ -195,6 +204,7 @@ func TestValidateSkillDir_References(t *testing.T) {
 			dir := makeSkillDir(t, "sk", refFrontmatter+tt.body)
 			writeTree(t, dir, base)
 			writeTree(t, dir, tt.files)
+			writeTree(t, filepath.Dir(dir), tt.outside)
 			assert.Equal(t, tt.want, refHits(t, dir))
 		})
 	}
@@ -272,6 +282,7 @@ func TestValidateSkillDir_LinkedMarkdown(t *testing.T) {
 				"docs/a.md":    "```bash\n./scripts/x.sh\ncat ../ref.md\ncat ../../out.md\n```\n",
 				"scripts/x.sh": "",
 				"ref.md":       "",
+				"../out.md":    "",
 			},
 			want: []refHit{
 				{RuleScriptDirectExec, "docs/a.md", 2},
@@ -353,6 +364,7 @@ func TestValidateSkillDir_PluginRoot(t *testing.T) {
 			"[shared](../../shared/x.md)\n\n```bash\n./scripts/x.sh\ncat ../../../outside.md\n```\n\n[gone](gone.md)\n",
 		"skills/sk/scripts/x.sh": "",
 		"shared/x.md":            "[not scanned](missing.md)\n",
+		"../outside.md":          "",
 	})
 
 	assert.Equal(t, []refHit{

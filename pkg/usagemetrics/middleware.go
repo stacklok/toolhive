@@ -62,18 +62,31 @@ func (m *Middleware) Handler() types.MiddlewareFunction {
 				ow.before() // a handler that wrote nothing still gets an implicit 200
 				return
 			case "tools/call":
-				// Modern requests carry clientInfo on every request; Legacy
-				// requests are attributed through their session.
-				client := modernClientName(parsed)
-				if client == "" {
-					client = m.sessions.lookup(requestSessionID(r))
-				}
-				m.collector.IncrementToolCallFrom(client)
+				m.collector.IncrementToolCallFrom(m.toolCallClient(r, parsed))
 			}
 
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// toolCallClient returns the client a tool call is attributed to, in order of
+// precedence:
+//  1. clientInfo from _meta, which Modern requests carry on every request.
+//  2. The client recorded at initialize for the request's session (Legacy).
+//  3. A known client named by the User-Agent header. This covers sessionless
+//     servers, which never assign a session ID, and sessions this middleware
+//     does not remember (after a restart, eviction, or on another replica).
+//
+// Otherwise the call is unknown.
+func (m *Middleware) toolCallClient(r *http.Request, parsed *mcp.ParsedMCPRequest) string {
+	if client := modernClientName(parsed); client != "" {
+		return client
+	}
+	if client := m.sessions.lookup(requestSessionID(r)); client != ClientUnknown {
+		return client
+	}
+	return userAgentClient(r)
 }
 
 // initializeSessionID returns the session an initialize request opens, read

@@ -182,6 +182,8 @@ type mcpCall struct {
 	// responseSession is set as the Mcp-Session-Id response header by the
 	// inner handler, the way streamable HTTP servers assign sessions.
 	responseSession string
+	// userAgent is sent as the User-Agent request header.
+	userAgent string
 }
 
 func initializeParams(clientName string) string {
@@ -214,6 +216,9 @@ func serveMCP(t *testing.T, mw *Middleware, calls []mcpCall) {
 		}
 		if call.responseSession != "" {
 			req.Header.Set("X-Test-Response-Session", call.responseSession)
+		}
+		if call.userAgent != "" {
+			req.Header.Set(userAgentHeader, call.userAgent)
 		}
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
@@ -289,6 +294,60 @@ func TestMiddleware_AttributesToolCallsToClients(t *testing.T) {
 				},
 			},
 			want: map[string]int64{"zed": 1},
+		},
+		{
+			name: "sessionless server falls back to a known User-Agent",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), userAgent: "claude-code/2.0.14"},
+				{method: "tools/call", params: toolCall, userAgent: "claude-code/2.0.14"},
+				{method: "tools/call", params: toolCall, userAgent: "claude-code/2.0.14"},
+			},
+			want: map[string]int64{"claude-code": 2},
+		},
+		{
+			name: "sessionless server with a generic User-Agent stays unknown",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), userAgent: "node"},
+				{method: "tools/call", params: toolCall, userAgent: "node"},
+				{method: "tools/call", params: toolCall, userAgent: "python-httpx/0.28.1"},
+				{method: "tools/call", params: toolCall, userAgent: "Go-http-client/1.1"},
+				{method: "tools/call", params: toolCall},
+			},
+			want: map[string]int64{ClientUnknown: 4},
+		},
+		{
+			name: "session not remembered falls back to a known User-Agent",
+			calls: []mcpCall{
+				{method: "tools/call", params: toolCall, sessionHeader: "before-restart", userAgent: "Cursor/1.7.0"},
+			},
+			want: map[string]int64{"cursor": 1},
+		},
+		{
+			name: "session client wins over User-Agent",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("zed"), responseSession: "s1", userAgent: "claude-code/2.0.14"},
+				{method: "tools/call", params: toolCall, sessionHeader: "s1", userAgent: "claude-code/2.0.14"},
+			},
+			want: map[string]int64{"zed": 1},
+		},
+		{
+			name: "Modern clientInfo wins over User-Agent",
+			calls: []mcpCall{
+				{
+					method: "tools/call",
+					params: `{"name":"echo","_meta":{` +
+						`"io.modelcontextprotocol/clientInfo":{"name":"zed"}}}`,
+					userAgent: "claude-code/2.0.14",
+				},
+			},
+			want: map[string]int64{"zed": 1},
+		},
+		{
+			name: "vMCP User-Agent is attributed to vmcp",
+			calls: []mcpCall{
+				{method: "tools/call", params: toolCall, userAgent: "toolhive/vmcp v0.60.0 release (linux/amd64)"},
+			},
+			want: map[string]int64{"vmcp": 1},
 		},
 		{
 			name: "other methods are not counted",

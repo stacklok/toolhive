@@ -31,9 +31,10 @@ const (
 // session ID (see pkg/transport/proxy/transparent/session_id.go).
 var sessionQueryKeys = []string{"sessionId", "sessionid", "session_id"}
 
-// knownClients maps clientInfo.name tokens to a normalized client value. A rule
+// knownClients maps client name tokens to a normalized client value. A rule
 // matches when every one of its tokens appears in the name; rules are checked
-// in order, so more specific rules come first.
+// in order, so more specific rules come first. The same rules match
+// clientInfo.name and the User-Agent header.
 var knownClients = []struct {
 	tokens []string
 	value  string
@@ -65,9 +66,19 @@ func NormalizeClientName(name string) string {
 	if name == "" || name == ClientUnknown {
 		return ClientUnknown
 	}
+	if client, ok := knownClientName(name); ok {
+		return client
+	}
+	return ValueOther
+}
+
+// knownClientName returns the value of the first knownClients rule whose tokens
+// all appear in name, comparing whole tokens case-insensitively, or false when
+// no rule matches. A name that already is a known value maps to itself.
+func knownClientName(name string) (string, bool) {
 	for _, known := range knownClients {
 		if known.value == name {
-			return name
+			return name, true
 		}
 	}
 	tokens := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
@@ -75,10 +86,22 @@ func NormalizeClientName(name string) string {
 	})
 	for _, known := range knownClients {
 		if containsAll(tokens, known.tokens) {
-			return known.value
+			return known.value, true
 		}
 	}
-	return ValueOther
+	return "", false
+}
+
+// userAgentClient returns the known client named by the request's User-Agent
+// header, or "unknown". Unlike clientInfo.name, an unrecognized User-Agent is
+// "unknown" rather than "other": generic HTTP library agents (node,
+// python-httpx, Go-http-client) say nothing about the MCP client. The raw
+// header is never reported.
+func userAgentClient(r *http.Request) string {
+	if client, ok := knownClientName(r.Header.Get(userAgentHeader)); ok {
+		return client
+	}
+	return ClientUnknown
 }
 
 // sessionClients remembers which client opened each session, so tool calls on

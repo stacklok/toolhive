@@ -59,24 +59,30 @@ type Request struct {
 	Entries []json.RawMessage
 	// GrantType is the grant type of the token request.
 	GrantType string
-	// ClientID is the authenticated client.
+	// ClientID is the authenticated client. It is empty on the plain JWT-bearer
+	// grant, which authenticates no client.
 	ClientID string
 	// Actor is the resolved actor. Without an actor_token it equals ClientID, or
-	// the verified SPIFFE ID for a SPIFFE client.
+	// the verified SPIFFE ID for a SPIFFE client. Token exchange only: empty on
+	// JWT-bearer and ID-JAG redemption.
 	Actor string
 	// ActorTokenPresent reports whether the request carried an actor_token.
+	// Token exchange only.
 	ActorTokenPresent bool
-	// RequestedTokenType is the requested_token_type of the request.
+	// RequestedTokenType is the requested_token_type of the request. Token
+	// exchange only.
 	RequestedTokenType string
-	// RequestedScopes are the scopes the client asked for.
+	// RequestedScopes are the scopes the client asked for. Token exchange only.
 	RequestedScopes []string
 	// GrantedAudience is the audience the server has already decided to grant.
+	// On JWT-bearer and ID-JAG redemption it is the granted resource.
 	GrantedAudience []string
 	// Subject describes the validated subject token.
 	Subject Subject
 }
 
-// Subject describes a validated subject token.
+// Subject describes a validated subject token. On JWT-bearer and ID-JAG
+// redemption it describes the validated assertion.
 type Subject struct {
 	Issuer   string
 	Subject  string

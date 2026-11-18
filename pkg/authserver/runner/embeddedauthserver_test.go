@@ -1457,7 +1457,7 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryRequiresTokenExchange(t 
 			server, err := tt.construct(context.Background(), cfg, WithAuthorizationDetailsRegistry(registry))
 			require.Error(t, err)
 			assert.Nil(t, server)
-			assert.ErrorContains(t, err, "authorization details registry requires token exchange")
+			assert.ErrorContains(t, err, "authorization details registry requires token exchange or the JWT-bearer grant")
 			assert.Zero(t, discoveryRequests.Load(), "the check must run before upstream discovery")
 		})
 	}

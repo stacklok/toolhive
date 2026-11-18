@@ -85,13 +85,15 @@ func validIDJAGClaims() *ValidatedClaims {
 
 func newIDJAGTestHandler(
 	t *testing.T, validator *testJWTBearerAssertionValidator, consumer *recordingAssertionConsumer,
+	options ...FactoryOption,
 ) *IDJAGHandler {
 	t.Helper()
-	return newIDJAGTestHandlerWithIssuer(t, validator, consumer, "")
+	return newIDJAGTestHandlerWithIssuer(t, validator, consumer, "", options...)
 }
 
 func newIDJAGTestHandlerWithIssuer(
 	t *testing.T, validator *testJWTBearerAssertionValidator, consumer *recordingAssertionConsumer, asIssuer string,
+	options ...FactoryOption,
 ) *IDJAGHandler {
 	t.Helper()
 	handler, err := newIDJAGIssuanceHandler(
@@ -106,7 +108,7 @@ func newIDJAGTestHandlerWithIssuer(
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		idJAGResolvedIssuers(t),
-		nil, nil, nil,
+		nil, nil, nil, options...,
 	)
 	require.NoError(t, err)
 	return handler

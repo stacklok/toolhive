@@ -68,7 +68,9 @@ type embeddedAuthServerOptions struct {
 }
 
 // WithAuthorizationDetailsRegistry configures the embedded authorization server
-// to pass the registry to its RFC 8693 token-exchange handler.
+// to pass the registry to its RFC 8693 token-exchange handler and to its
+// JWT-bearer and ID-JAG redemption handlers. Each type in the registry declares
+// the grant types it is accepted on.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) EmbeddedAuthServerOption {
 	return func(options *embeddedAuthServerOptions) { options.authorizationDetailsRegistry = registry }
 }
@@ -391,8 +393,8 @@ func newEmbeddedAuthServerWithStorage(
 	if err != nil {
 		return nil, err
 	}
-	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange {
-		return nil, fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange && !normalized.Capabilities.JWTBearer {
+		return nil, fmt.Errorf("authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
 	}
 	// Refuse a required_subject_claims that cannot be satisfied before upstream
 	// resolution, which may register this server at an upstream via DCR.
@@ -730,8 +732,8 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 	if err != nil {
 		return fmt.Errorf("normalize inbound grants: %w", err)
 	}
-	if !normalized.Capabilities.TokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if !normalized.Capabilities.TokenExchange && !normalized.Capabilities.JWTBearer {
+		return fmt.Errorf("authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
 	}
 	return nil
 }

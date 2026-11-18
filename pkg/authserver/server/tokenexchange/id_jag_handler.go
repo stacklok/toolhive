@@ -119,9 +119,10 @@ func newIDJAGIssuanceHandler(
 	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
 	trustedIssuers []TrustedIssuer, explicitGrantClientIDs, allowedAudiences []string, logger *slog.Logger,
+	options ...FactoryOption,
 ) (*IDJAGHandler, error) {
 	core, err := newJWTBearerIssuanceHandler(
-		validator, tokenEndpoint, consumer, config, strategy, tokenStorage, trustedIssuers)
+		validator, tokenEndpoint, consumer, config, strategy, tokenStorage, trustedIssuers, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -223,6 +224,11 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		}
 		return err
 	}
+	details, err := h.core.redemptionDetailsClaim(
+		ctx, requester.GetRequestForm(), claims, requester.GetClient().GetID(), resource)
+	if err != nil {
+		return err
+	}
 	// Consume before issuing — fails closed like the plain handler: if
 	// issuance fails past this point the assertion stays consumed rather
 	// than becoming replayable.
@@ -251,13 +257,19 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	// acted for the subject after redemption. Copied verbatim: act is
 	// defined as a nested-JSON claim and buildValidatedClaims left it
 	// untouched in Extra.
-	if act, ok := claims.Extra["act"]; ok {
-		issuedSession.JWTClaims.Extra["act"] = act
-	}
+	copyActorClaim(issuedSession, claims)
+	setRedemptionDetailsClaim(issuedSession, details)
 	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
 	requester.GrantAudience(resource)
 	requester.SetSession(issuedSession)
 	return nil
+}
+
+// copyActorClaim copies the assertion's act claim, verbatim, into the session.
+func copyActorClaim(issued *session.Session, claims *ValidatedClaims) {
+	if act, ok := claims.Extra["act"]; ok {
+		issued.JWTClaims.Extra["act"] = act
+	}
 }
 
 // PopulateTokenEndpointResponse issues only an access token, sharing the
@@ -272,12 +284,12 @@ func (h *IDJAGHandler) PopulateTokenEndpointResponse(
 }
 
 // checkIDJAGPolicy runs the per-issuer policy checks in the same order as
-// the plain handler (assertion age, then resource, then subject binding) and
+// the plain handler (assertion age and claims, then resource, then subject binding) and
 // returns the resource the token is for.
 func (h *IDJAGHandler) checkIDJAGPolicy(
 	requester fosite.AccessRequester, claims *ValidatedClaims, policy *JWTBearerGrantPolicy,
 ) (string, error) {
-	if err := checkAssertionMaxAge(claims, policy); err != nil {
+	if err := checkAssertionClaims(claims, policy); err != nil {
 		return "", err
 	}
 	resource, err := h.idJAGResource(requester.GetRequestForm(), claims)
@@ -451,6 +463,7 @@ func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims
 // JWTBearerIssuanceFactory for the shared validator's ownership contract.
 func IDJAGIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
+	options ...FactoryOption,
 ) (server.Factory, error) {
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(
@@ -459,7 +472,7 @@ func IDJAGIssuanceFactory(
 			resolvedIssuers []TrustedIssuer, allowedAudiences []string,
 		) (any, error) {
 			return newIDJAGIssuanceHandler(validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
-				resolvedIssuers, explicitGrantClientIDs, allowedAudiences, nil)
+				resolvedIssuers, explicitGrantClientIDs, allowedAudiences, nil, options...)
 		})
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 	"golang.org/x/time/rate"
 
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/clientcredentials"
@@ -890,7 +891,8 @@ func buildProvider(
 	}
 	factories = append(factories, tokenExchangeFactories...)
 	if jwtBearerEnabled {
-		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg))
+		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg),
+			cfg.AuthorizationDetailsRegistry)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -987,13 +989,15 @@ func refreshGrantValidatorChain(
 // whose registered grant_types the ID-JAG handler enforces.
 func buildJWTBearerFactories(
 	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
-	explicitGrantClientIDs []string,
+	explicitGrantClientIDs []string, detailsRegistry *authorizationdetails.Registry,
 ) ([]oauthserver.Factory, error) {
-	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared)
+	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared,
+		tokenexchange.WithAuthorizationDetailsRegistry(detailsRegistry))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 	}
-	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs)
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs,
+		tokenexchange.WithAuthorizationDetailsRegistry(detailsRegistry))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
 	}

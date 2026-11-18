@@ -83,6 +83,15 @@ const (
 	// reasonDelegatedAccessToken is the logged reason where a delegated-access
 	// token is refused as a subject or actor token of the RFC 8693 token-exchange handler.
 	reasonDelegatedAccessToken = "delegated_access_token"
+	// reasonSubjectAuthorizationDetails is sent for a subject token that
+	// carries authorization_details; the grant would not carry them.
+	reasonSubjectAuthorizationDetails = "subject_token_authorization_details"
+	// reasonAuthorizationDetailsToken is the logged reason where such a token
+	// is refused as a subject or actor token of the other handlers.
+	reasonAuthorizationDetailsToken = "authorization_details_token"
+	// reasonActorAuthorizationDetails is sent when such a token is presented
+	// as the actor token for an ID-JAG.
+	reasonActorAuthorizationDetails = "actor_token_authorization_details"
 	// reasonActorDelegatedAccess is sent when a delegated-access token is
 	// presented as the actor token for an ID-JAG.
 	reasonActorDelegatedAccess = "actor_token_delegated_access" //nolint:gosec // G101: not a credential
@@ -464,6 +473,10 @@ func (h *RefreshTokenHandler) decideTopLevel(
 	if hasDelegatedAccessMarker(claims) {
 		return nil, refuse(ctx, log, reasonSubjectDelegatedAccess,
 			errorsx.WithStack(loginSubjectError(reasonSubjectDelegatedAccess)))
+	}
+	if hasAuthorizationDetailsClaim(claims) {
+		return nil, refuse(ctx, log, reasonSubjectAuthorizationDetails,
+			errorsx.WithStack(loginSubjectError(reasonSubjectAuthorizationDetails)))
 	}
 	log = log.With("sub", claims.Subject, "source_jti", claims.JWTID)
 	refusal := checkLoginToken(claims)
@@ -851,7 +864,8 @@ func checkRefreshTokenParams(requester fosite.AccessRequester, form url.Values) 
 // handler.go). The difference is deliberate.
 func loginSubjectError(reason string) error {
 	switch reason {
-	case reasonSubjectAudience, reasonSubjectSourceClient, reasonSubjectOfflineAccess, reasonSubjectDelegatedAccess:
+	case reasonSubjectAudience, reasonSubjectSourceClient, reasonSubjectOfflineAccess, reasonSubjectDelegatedAccess,
+		reasonSubjectAuthorizationDetails:
 		return exactReason(fosite.ErrInvalidRequest.ErrorField, reason)
 	}
 	return exactReason(fosite.ErrInvalidRequest.ErrorField, reasonSubjectInvalid)

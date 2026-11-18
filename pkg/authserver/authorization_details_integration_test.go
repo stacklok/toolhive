@@ -235,7 +235,7 @@ func TestIntegration_AuthorizationDetailsOverHTTP(t *testing.T) {
 	}
 }
 
-func TestIntegration_AuthorizationDetailsIgnoredOnOtherGrants(t *testing.T) {
+func TestIntegration_AuthorizationDetailsRegistryNotUsedOnOtherGrants(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -281,8 +281,9 @@ func TestIntegration_AuthorizationDetailsIgnoredOnOtherGrants(t *testing.T) {
 			t.Cleanup(func() { _ = response.Body.Close() })
 			body := parseTokenResponse(t, response)
 
-			require.Equal(t, http.StatusOK, response.StatusCode, body)
-			assert.NotEmpty(t, body["access_token"])
+			require.Equal(t, http.StatusBadRequest, response.StatusCode, body)
+			assert.Equal(t, "invalid_authorization_details", body["error"])
+			assert.Equal(t, "malformed_entry", body["error_description"])
 			assert.Zero(t, calls.Load(), "the registry must remain specific to RFC 8693 token exchange")
 		})
 	}

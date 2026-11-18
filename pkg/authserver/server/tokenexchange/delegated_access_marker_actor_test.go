@@ -23,13 +23,17 @@ func TestDelegatedAccessMarkerRefusedAsIDJAGActorToken(t *testing.T) {
 		name       string
 		opts       tokenexchange.ActorTokenOptions
 		wantMinted bool
+		wantReason string
 	}{
 		{name: "marked token signed with the server's key",
-			opts: tokenexchange.ActorTokenOptions{Marked: true}},
+			opts: tokenexchange.ActorTokenOptions{Marked: true}, wantReason: "actor_token_delegated_access"},
+		{name: "token with authorization_details signed with the server's key",
+			opts: tokenexchange.ActorTokenOptions{Details: true}, wantReason: "actor_token_authorization_details"},
 		{name: "expired marked token signed with the server's key",
-			opts: tokenexchange.ActorTokenOptions{Marked: true, Expired: true}},
+			opts: tokenexchange.ActorTokenOptions{Marked: true, Expired: true}, wantReason: "actor_token_delegated_access"},
 		{name: "marked token signed with the server's key, audience not allowed",
-			opts: tokenexchange.ActorTokenOptions{Marked: true, Audience: []string{"https://other.example.com"}}},
+			opts:       tokenexchange.ActorTokenOptions{Marked: true, Audience: []string{"https://other.example.com"}},
+			wantReason: "actor_token_delegated_access"},
 		{name: "unmarked token signed with the server's key goes to the validator",
 			wantMinted: true},
 		{name: "marked token signed with another key goes to the validator",
@@ -59,7 +63,7 @@ func TestDelegatedAccessMarkerRefusedAsIDJAGActorToken(t *testing.T) {
 				assert.NotEmpty(t, resp.GetAccessToken())
 				return
 			}
-			requireIssueError(t, err, 400, "invalid_request", "actor_token_delegated_access")
+			requireIssueError(t, err, 400, "invalid_request", tt.wantReason)
 			assert.Empty(t, resp.GetAccessToken())
 		})
 	}

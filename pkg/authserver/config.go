@@ -2038,7 +2038,9 @@ type Config struct {
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
 	// AuthorizationDetailsRegistry validates RFC 9396 authorization_details on
-	// RFC 8693 token-exchange requests. It is Go-only and is not part of RunConfig.
+	// RFC 8693 token-exchange requests and on JWT-bearer and ID-JAG redemption.
+	// Each registered type is accepted only on the grant types it lists. It is
+	// Go-only and is not part of RunConfig.
 	AuthorizationDetailsRegistry *authorizationdetails.Registry
 
 	// AllowConfidentialClientRegistration permits DCR of confidential clients
@@ -2474,12 +2476,13 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 	return nil
 }
 
-// validateAuthorizationDetailsRequiresTokenExchange rejects a registry combined
-// with a disabled token-exchange grant: authorization_details is only handled
-// on token exchange, so the registry could never be reached.
+// validateAuthorizationDetailsRequiresTokenExchange rejects a registry when
+// neither token exchange nor the JWT-bearer grant is enabled:
+// authorization_details is only handled on those grants, so the registry could
+// never be reached.
 func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
-	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange && !JWTBearerGrantEnabled(c.TrustedIssuers) {
+		return fmt.Errorf("authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
 	}
 	return nil
 }

@@ -24,6 +24,14 @@ func markedExtra() map[string]any {
 	return extra
 }
 
+// detailsExtra returns the extra claims of a token that carries an
+// authorization_details claim.
+func detailsExtra() map[string]any {
+	extra := validExtraClaims()
+	extra[authorizationDetailsParam] = []any{map[string]any{"type": "https://example.com/call"}}
+	return extra
+}
+
 func TestDelegatedAccessMarkerRefusedInTokenExchange(t *testing.T) {
 	t.Parallel()
 
@@ -57,6 +65,10 @@ func TestDelegatedAccessMarkerRefusedInTokenExchange(t *testing.T) {
 				return f
 			}()},
 		{name: "marked actor token", hint: hintActorDelegatedAccess, form: actorForm(markedExtra())},
+		{name: "subject token with authorization_details", hint: hintSubjectAuthorizationDetails,
+			form: map[string]string{"subject_token": tj.signToken(t, validClaims(), detailsExtra())}},
+		{name: "actor token with authorization_details", hint: hintActorAuthorizationDetails,
+			form: actorForm(detailsExtra())},
 		// The marker is refused before client_id binding reads the token.
 		{name: "marked actor token bound to another client", hint: hintActorDelegatedAccess,
 			form: actorForm(otherClientExtra)},
@@ -81,6 +93,28 @@ func TestDelegatedAccessMarkerRefusedInTokenExchange(t *testing.T) {
 			assert.Equal(t, tt.hint, rfcErr.HintField)
 		})
 	}
+}
+
+func TestAuthorizationDetailsTokenRefusedAtGrantOpening(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	self, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+	extra := detailsExtra()
+	extra["client_id"] = testRefreshSourceClient
+	claims := validClaims()
+	claims.Audience = []string{testIssuer}
+	store := &fakeGrantStore{}
+	h := newRefreshHandlerForTest(t, &stubSubjectValidator{}, store)
+	h.selfValidator = self
+	req := refreshRequestForTest(brokerClientForTest())
+	req.Form.Set("subject_token", tj.signToken(t, claims, extra))
+
+	err = h.HandleTokenEndpointRequest(t.Context(), req)
+
+	requireOAuthError(t, err, "invalid_request", "subject_token_authorization_details")
+	assert.Empty(t, store.created)
 }
 
 func TestHasDelegatedAccessMarker(t *testing.T) {

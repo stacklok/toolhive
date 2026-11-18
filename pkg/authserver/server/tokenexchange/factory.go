@@ -51,8 +51,11 @@ type factoryOptions struct {
 }
 
 // WithAuthorizationDetailsRegistry configures the factory to pass the registry
-// through to the token-exchange Handler. With no registry (or a nil one) the
-// authorization_details parameter is ignored.
+// through to the token-exchange Handler and to the JWT-bearer and ID-JAG
+// redemption handlers. Each type in the registry declares the grant types it is
+// accepted on. On token exchange, with no registry (or a nil one) the
+// authorization_details parameter is ignored; on redemption it is refused as an
+// unknown type.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) FactoryOption {
 	return func(o *factoryOptions) { o.authorizationDetailsRegistry = registry }
 }

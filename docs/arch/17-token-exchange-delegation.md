@@ -1483,6 +1483,64 @@ parameter or the resource came from the ID-JAG's `resource` claim. Draft -06
 section 4.4.1 requires `access_denied` when none of the requested resources is
 acceptable.
 
+### Call details on redemption
+
+A plain JWT-bearer or ID-JAG redemption may carry RFC 9396
+`authorization_details`. The authorization server checks the shape of the
+entries with the registry it was given, signs them into the access token and
+returns them, so the receiver of the token can enforce them. The server does
+not enforce them itself.
+
+No type is registered by default. With no registry, or with no type registered
+for the JWT-bearer grant, any `authorization_details` is refused as an unknown
+type (RFC 9396). A type declares the grant types it is accepted on, so a type
+registered for RFC 8693 exchange is not valid on redemption, and the reverse.
+The registry is the one passed to `runner.WithAuthorizationDetailsRegistry` (see
+[Authorization details](#authorization-details)).
+
+ToolHive ships one type, in `pkg/mcp/toolcalldetails`, that an embedder adds
+with `toolcalldetails.Register` to the types it passes to
+`authorizationdetails.New`. Its name is `https://toolhive.dev/mcp_tool_call`
+and it is accepted on the JWT-bearer grant only. An entry is one of:
+
+| Shape | Members (all strings, none may be empty) |
+| --- | --- |
+| Tool call | `server`, `tool`, `arguments_sha256` (exactly 64 lowercase hex characters), `operation_id` |
+| List call | `server`, `method` (one of the list methods in the table below) |
+
+The type carries the details of one call and requires exactly one entry. It
+never adds a resource, scope or audience: those come from the `resource`
+parameter, the ID-JAG and the policy as before, and the hook that checks the
+entry does not see or change them. The authorization server does not compute or
+check `arguments_sha256` and never compares it with real arguments. The
+receiver of the token, such as the vMCP, compares it with the call's arguments
+and enforces the single call.
+
+Accepted entries are put into the access token's `authorization_details` claim
+(an array holding the same JSON value as requested, though keys may be
+re-ordered) and returned as the `authorization_details` member of the token
+response. A redemption without the parameter, or with a single empty value, is
+issued exactly as before, with no claim and no response member.
+
+A token that carries the claim is never used as an input to another token. See
+[Delegated-access marker](#delegated-access-marker) for where it is refused.
+
+The check runs after the assertion, resource and subject-binding checks and
+before the assertion is marked used, so a malformed entry does not consume a
+single-use ID-JAG.
+
+| Refusal | Response |
+| --- | --- |
+| `authorization_details` repeated | 400 `invalid_request`, `repeated_parameter` |
+| Not valid JSON, an entry whose `type` is not registered for the grant, or `[]` (or, with the MCP type, a member that is not listed above, tool-call members mixed with `method`, a required member that is absent, or a member that is not a non-empty string) | 400 `invalid_authorization_details`, `malformed_entry` |
+| MCP type: more than one entry | 400 `invalid_authorization_details`, `single_entry_required` |
+| MCP type: `arguments_sha256` is not 64 lowercase hex characters | 400 `invalid_authorization_details`, `invalid_arguments_hash` |
+| MCP type: `method` is not one of `tools/list`, `prompts/list`, `resources/list` or `resources/templates/list` | 400 `invalid_authorization_details`, `invalid_method` |
+
+The description is the reason alone and never echoes request data. Each refusal
+is logged once at WARN with the client ID and a fixed reason, as for token
+exchange.
+
 ### Bound ID-JAG assertions
 
 The grant type has a second assertion form: Identity Assertion Authorization
@@ -1697,16 +1755,18 @@ resource checks still apply. Mitigations:
 
 ## Authorization details
 
-RFC 9396 `authorization_details` is handled only on the RFC 8693 token-exchange
-handler. Without a type registry the parameter is ignored: no validation, no
+RFC 9396 `authorization_details` is handled on the RFC 8693 token-exchange
+handler and, for one built-in type, on the RFC 7523 JWT-bearer grant (see
+[One-call narrowing on redemption](#one-call-narrowing-on-redemption)). On token
+exchange, without a type registry the parameter is ignored: no validation, no
 echo, and repeated values are not rejected.
 
 **With a registry.** The registry (`pkg/authserver/authorizationdetails`) is
 Go-only. It is not part of `RunConfig`, YAML, or CRDs. It maps exact,
 case-sensitive `type` names to a `Type`, which lists the grant types it applies
 to (`GrantTypes`) and a `Grant` hook. Only token exchange uses the registry
-today; other grants, including JWT-bearer ID-JAG redemption, ignore the
-parameter. Nothing is advertised in discovery.
+today. The embedder's registry is never used on the JWT-bearer grant, which has
+its own built-in registry. Nothing is advertised in discovery.
 
 A request value must follow RFC 9396 section 2: one JSON array of objects, each
 with a non-empty string `type` registered for the grant type. `[]` is valid. An
@@ -1751,8 +1811,8 @@ Each rejection is logged once at WARN with `client_id` and a fixed reason code
 also carry `code` and `hook_reason`. The text of a failed hook's error is not
 logged at any level, and the submitted value is never logged.
 
-**Boundary.** Details are not put in issued tokens, not persisted, and not
-conveyed to resource servers yet. Register only types ToolHive itself enforces,
+**Boundary.** On token exchange, details are not put in issued tokens, not
+persisted, and not conveyed to resource servers yet. Register only types ToolHive itself enforces,
 such as a session-binding type. Conveying details to resource servers is
 tracked in [#6909](https://github.com/stacklok/toolhive/issues/6909), and grant
 storage in [#6895](https://github.com/stacklok/toolhive/issues/6895). Refresh
@@ -1762,7 +1822,7 @@ tokens issued through token exchange use their own entry type and registry; see
 **Wiring.** Pass `runner.WithAuthorizationDetailsRegistry` to
 `NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`, or set
 `authserver.Config.AuthorizationDetailsRegistry` before `authserver.New`.
-Setting a registry while token exchange is disabled is a startup error.
+Setting a registry while both token exchange and the JWT-bearer grant are disabled is a startup error.
 
 ```go
 registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
@@ -2690,6 +2750,15 @@ of the token is used:
 | RFC 8693 exchange, as `actor_token` | 400 `invalid_request`, hint "The actor token is a delegated-access token and cannot be exchanged." |
 | Opening an exchange grant, as `subject_token` | 400 `invalid_request`, `subject_token_delegated_access` |
 | ID-JAG issuance, as `actor_token`, before the actor validator is called | 400 `invalid_request`, `actor_token_delegated_access` |
+
+A token that carries an `authorization_details` claim, such as the token from
+a [redemption with call details](#call-details-on-redemption), is terminal in
+the same four places, whatever its issuer, so no exchange can turn it into a
+token without the claim. The responses are the same with these texts: the hints
+"The subject token carries authorization_details and cannot be exchanged." and
+"The actor token carries authorization_details and cannot be exchanged.", and
+the reasons `subject_token_authorization_details` and
+`actor_token_authorization_details`.
 
 The grant-opening refusal runs right after validation, before any other claim is
 read, so it does not depend on the `act` and no-upstream-session claims a

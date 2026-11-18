@@ -22,6 +22,7 @@ import (
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/x/errorsx"
 
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -50,6 +51,9 @@ type JWTBearerHandler struct {
 	consumer      storage.AssertionJWTConsumer
 	config        tokenExchangeConfig
 	policies      map[string]*JWTBearerGrantPolicy
+
+	// detailsRegistry validates authorization_details on redemption; nil refuses any.
+	detailsRegistry *authorizationdetails.Registry
 }
 
 // newJWTBearerHandler constructs the shared plain-assertion-matching core of
@@ -80,7 +84,7 @@ func newJWTBearerHandler(validator JWTBearerAssertionValidator, tokenEndpoint st
 func newJWTBearerIssuanceHandler(
 	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-	trustedIssuers []TrustedIssuer,
+	trustedIssuers []TrustedIssuer, options ...FactoryOption,
 ) (*JWTBearerHandler, error) {
 	handler, err := newJWTBearerHandler(validator, tokenEndpoint)
 	if err != nil {
@@ -109,6 +113,7 @@ func newJWTBearerIssuanceHandler(
 	handler.consumer = consumer
 	handler.config = config
 	handler.policies = policies
+	handler.detailsRegistry = resolveFactoryOptions(options).authorizationDetailsRegistry
 	return handler, nil
 }
 
@@ -183,7 +188,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if h.consumer == nil {
 		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT-bearer grant is not fully configured."))
 	}
-	if err := checkAssertionMaxAge(claims, policy); err != nil {
+	if err := checkAssertionClaims(claims, policy); err != nil {
 		return err
 	}
 	resource, err := requestedResource(requester.GetRequestForm())
@@ -193,22 +198,22 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err := checkSubjectBinding(claims, policy, resource); err != nil {
 		return plainBindingRefusal(err)
 	}
+	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
+	details, err := h.redemptionDetailsClaim(ctx, requester.GetRequestForm(), claims, "", resource)
+	if err != nil {
+		return err
+	}
 	// Consume before issuing. This intentionally fails closed: if issuance fails
 	// after this point, the assertion remains consumed rather than becoming
 	// replayable.
 	replayKey := assertionReplayKey(segments, claims.JWTID)
-	purpose := jwtBearerReplayPurpose
-	if claims.JWTID == "" {
-		purpose = jwtBearerNoJTIReplayPurpose
-	}
-	if err := h.consumeAssertion(ctx, purpose, claims.Issuer, replayKey, claims.Expiry); err != nil {
+	if err := h.consumeAssertion(ctx, replayPurpose(claims.JWTID), claims.Issuer, replayKey, claims.Expiry); err != nil {
 		return err
 	}
 	lifetime, err := h.assertionBoundedLifetime(ctx, claims.Expiry)
 	if err != nil {
 		return err
 	}
-	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
 	issuedSession := session.New(claimnames.QualifySubject(claims.Issuer, claims.Subject), "", clientID, session.UserClaims{})
 	// This grant links to no upstream IdP login, so the issued token can never
 	// carry an upstream credential. Say so in the token rather than leaving a
@@ -216,6 +221,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	// also how an unenriched or foreign-issued identity looks. See
 	// claimnames.NoUpstreamSessionKey.
 	issuedSession.JWTClaims.Extra[claimnames.NoUpstreamSessionKey] = true
+	setRedemptionDetailsClaim(issuedSession, details)
 	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
 	// This grant skips client authentication (CanSkipClientAuth), so fosite
 	// never populates requester's client — attach a synthetic one so every
@@ -232,6 +238,23 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	requester.GrantAudience(resource)
 	requester.SetSession(issuedSession)
 	return nil
+}
+
+// replayPurpose keeps assertions without a jti apart from issuer-supplied jti values.
+func replayPurpose(jti string) string {
+	if jti == "" {
+		return jwtBearerNoJTIReplayPurpose
+	}
+	return jwtBearerReplayPurpose
+}
+
+// checkAssertionClaims runs the per-assertion checks both redemption handlers
+// share before anything is consumed.
+func checkAssertionClaims(claims *ValidatedClaims, policy *JWTBearerGrantPolicy) error {
+	if err := checkAssertionMaxAge(claims, policy); err != nil {
+		return err
+	}
+	return refuseSignedDetails(claims)
 }
 
 // checkAssertionMaxAge rejects assertions whose lifetime exceeds the policy maximum.
@@ -323,8 +346,12 @@ func (h *JWTBearerHandler) populateAccessTokenResponse(
 	if h.HandleHelper == nil {
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint("JWT-bearer token issuance is not configured."))
 	}
-	return issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
-		func() error { return invalidAssertion("The JWT bearer assertion has expired.") })
+	if err := issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
+		func() error { return invalidAssertion("The JWT bearer assertion has expired.") }); err != nil {
+		return err
+	}
+	echoRedemptionDetailsClaim(requester, responder)
+	return nil
 }
 
 // consumeAssertion marks an assertion's replay key used, mapping consumer
@@ -511,7 +538,13 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 // only by its Close — keeps them owned by the caller rather than built and
 // abandoned inside this compose-time closure. Build it once with
 // NewSharedTrustedIssuerValidator and hold it for Close.
-func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator) (server.Factory, error) {
+//
+// WithAuthorizationDetailsRegistry supplies the registry that validates
+// authorization_details on redemption. Without one, any authorization_details
+// is refused as an unknown type.
+func JWTBearerIssuanceFactory(
+	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, options ...FactoryOption,
+) (server.Factory, error) {
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(
 			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
@@ -519,7 +552,7 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 			resolvedIssuers []TrustedIssuer, _ []string,
 		) (any, error) {
 			return newJWTBearerIssuanceHandler(
-				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers)
+				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers, options...)
 		})
 }
 

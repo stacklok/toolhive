@@ -116,6 +116,7 @@ func TestBuildAuthServerRunConfigTLSListener(t *testing.T) {
 			Audiences:        []string{"https://mcp.example.com"},
 			Resources:        []string{"https://mcp.example.com"},
 			Scopes:           []string{"openid"},
+			GrantTypes:       []string{"client_credentials"},
 		}}}
 	}
 

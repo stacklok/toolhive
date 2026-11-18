@@ -1976,7 +1976,8 @@ func TestCheckDelegationConsent(t *testing.T) {
 		// that test the clientID/actorSub split itself.
 		clientID           string
 		actorSub           string
-		configuredDelegate bool // defaults to false, reproducing pre-delegate-exception behavior
+		spiffeID           string // verified SPIFFE ID of the caller; empty for a non-SPIFFE client
+		configuredDelegate bool   // defaults to false, reproducing pre-delegate-exception behavior
 		wantErr            bool
 		errContains        string
 	}{
@@ -2211,6 +2212,99 @@ func TestCheckDelegationConsent(t *testing.T) {
 			wantErr:     true,
 			errContains: "different client",
 		},
+		{
+			// A wildcard association gives both workloads this client ID.
+			name: "SPIFFE client exchanging its own client_credentials token accepted",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "spiffe://example.org/ns/default/agent-a",
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name: "SPIFFE client exchanging a sibling workload's token rejected",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "spiffe://example.org/ns/default/agent-a",
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID:    "spiffe://example.org/ns/default/agent-b",
+			wantErr:     true,
+			errContains: "different workload",
+		},
+		{
+			name: "SPIFFE client re-exchanging a token whose act.sub is its SPIFFE ID accepted",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "user-1",
+				Extra: map[string]any{"act": map[string]any{"sub": "spiffe://example.org/ns/default/agent-a"}},
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name: "SPIFFE client re-exchanging its own delegated token whose act.sub is the client ID accepted",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "user-1",
+				Extra: map[string]any{"act": map[string]any{"sub": "wildcard-client"}},
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			// Consent was given to the client, and RFC 8693 has no notion of
+			// instances within one client.
+			name: "SPIFFE client re-exchanging a sibling's delegated token whose act.sub is the client ID accepted",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "user-1",
+				Extra: map[string]any{"act": map[string]any{"sub": "wildcard-client"}},
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID: "spiffe://example.org/ns/default/agent-b",
+		},
+		{
+			name: "SPIFFE client exchanging a sibling's exchanged token {sub: A, act.sub: client ID} rejected",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "spiffe://example.org/ns/default/agent-a",
+				Extra: map[string]any{"act": map[string]any{"sub": "wildcard-client"}},
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID:    "spiffe://example.org/ns/default/agent-b",
+			wantErr:     true,
+			errContains: "different workload",
+		},
+		{
+			name: "SPIFFE client re-exchanging a token whose act.sub names a sibling workload rejected",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "user-1",
+				Extra: map[string]any{"act": map[string]any{"sub": "spiffe://example.org/ns/default/agent-a"}},
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID:    "spiffe://example.org/ns/default/agent-b",
+			wantErr:     true,
+			errContains: "different workload",
+		},
+		{
+			name: "SPIFFE client with may_act naming it is unaffected",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "user-1", MayAct: &MayActClaim{Sub: "wildcard-client"},
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name: "SPIFFE client with an external issuer token is unaffected",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "ext-user", ExternalIssuer: "https://idp.example.com",
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name: "non-SPIFFE client with another subject is unaffected",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "spiffe://example.org/ns/default/agent-a",
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2223,7 +2317,7 @@ func TestCheckDelegationConsent(t *testing.T) {
 			if actorSub == "" {
 				actorSub = actorID
 			}
-			err := checkDelegationConsent(tt.claims, clientID, actorSub, tt.configuredDelegate)
+			err := checkDelegationConsent(tt.claims, clientID, actorSub, tt.spiffeID, tt.configuredDelegate)
 			if tt.wantErr {
 				require.Error(t, err)
 				var rfcErr *fosite.RFC6749Error
@@ -3224,6 +3318,162 @@ func TestGrantAndBoundAudiences_SPIFFEClient(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantGranted, []string(req.GetGrantedAudience()))
+		})
+	}
+}
+
+// TestHandleTokenEndpointRequest_SPIFFESubjectTokenOwnership proves the SPIFFE
+// ID of the caller reaches the consent check: two workloads share one client ID
+// through a wildcard association, and only the one a client_credentials token
+// was issued to may exchange it.
+func TestHandleTokenEndpointRequest_SPIFFESubjectTokenOwnership(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workloadA = "spiffe://example.org/ns/default/agent-a"
+		workloadB = "spiffe://example.org/ns/default/agent-b"
+	)
+	tests := []struct {
+		name    string
+		caller  string
+		act     map[string]any
+		sub     string
+		wantErr bool
+	}{
+		{name: "the workload the token was issued to", caller: workloadA, sub: workloadA},
+		{name: "a sibling workload with the same client ID", caller: workloadB, sub: workloadA, wantErr: true},
+		{
+			name:   "a sibling re-exchanging a token naming the workload in sub and the client in act",
+			caller: workloadB, sub: workloadA, act: map[string]any{"sub": testAgentClientID}, wantErr: true,
+		},
+		{
+			name:   "the workload re-exchanging its own user-delegated token",
+			caller: workloadA, sub: "user-123", act: map[string]any{"sub": testAgentClientID},
+		},
+		{
+			name:   "a sibling re-exchanging a user-delegated token that names only the client",
+			caller: workloadB, sub: "user-123", act: map[string]any{"sub": testAgentClientID},
+		},
+		{
+			name:   "a sibling re-exchanging a user token whose act.sub names the workload",
+			caller: workloadB, sub: "user-123", act: map[string]any{"sub": workloadA}, wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			claims := validClaims()
+			claims.Subject = tt.sub
+			extra := validExtraClaims()
+			if tt.act != nil {
+				extra["act"] = tt.act
+			}
+			form := url.Values{
+				"grant_type":         {oauthproto.GrantTypeTokenExchange},
+				"subject_token":      {tj.signToken(t, claims, extra)},
+				"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				"resource":           {testIssuer},
+			}
+			client := spiffetest.AuthenticatedClient(t,
+				spiffetest.WithID(testAgentClientID), spiffetest.WithSPIFFEID(tt.caller),
+				spiffetest.WithResources(testIssuer))
+			req := newAccessRequest(t, client, form)
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+
+			if tt.wantErr {
+				require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+				assert.Contains(t, fosite.ErrorToRFC6749Error(err).HintField, "different workload")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestHandleTokenEndpointRequest_SPIFFEActorToken proves an authenticated SPIFFE
+// caller can only present an actor_token whose subject is its own SPIFFE ID, so
+// a sibling workload cannot borrow another workload's identity as act.sub or to
+// satisfy a may_act claim.
+func TestHandleTokenEndpointRequest_SPIFFEActorToken(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workloadA = "spiffe://example.org/ns/default/agent-a"
+		workloadB = "spiffe://example.org/ns/default/agent-b"
+	)
+	tests := []struct {
+		name         string
+		caller       string
+		actorSubject string
+		mayAct       string
+		wantErr      error
+		wantHint     string
+		wantActSub   string
+	}{
+		{
+			name: "caller presents its own client_credentials token", caller: workloadA,
+			actorSubject: workloadA, wantActSub: workloadA,
+		},
+		{
+			name: "caller presents a sibling's client_credentials token", caller: workloadB,
+			actorSubject: workloadA, wantErr: fosite.ErrInvalidRequest,
+			wantHint: "does not match the authenticated workload",
+		},
+		{
+			name: "sibling cannot satisfy a may_act naming the other workload", caller: workloadB,
+			actorSubject: workloadA, mayAct: workloadA, wantErr: fosite.ErrInvalidRequest,
+			wantHint: "does not match the authenticated workload",
+		},
+		{
+			name: "caller's own actor token satisfies a may_act naming it", caller: workloadA,
+			actorSubject: workloadA, mayAct: workloadA, wantActSub: workloadA,
+		},
+		{
+			name: "caller cannot assert a distinct actor", caller: workloadA,
+			actorSubject: "other-agent", wantErr: fosite.ErrInvalidRequest,
+			wantHint: "does not match the authenticated workload",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			extra := validExtraClaims()
+			if tt.mayAct != "" {
+				extra["may_act"] = map[string]any{"sub": tt.mayAct}
+			}
+			form := url.Values{
+				"grant_type":         {oauthproto.GrantTypeTokenExchange},
+				"subject_token":      {tj.signToken(t, validClaims(), extra)},
+				"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				"actor_token":        {signActorToken(t, tj, tt.actorSubject)},
+				"actor_token_type":   {oauthproto.TokenTypeJWT},
+				"resource":           {testIssuer},
+			}
+			client := spiffetest.AuthenticatedClient(t,
+				spiffetest.WithID(testAgentClientID), spiffetest.WithSPIFFEID(tt.caller),
+				spiffetest.WithResources(testIssuer))
+			req := newAccessRequest(t, client, form)
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Contains(t, fosite.ErrorToRFC6749Error(err).HintField, tt.wantHint)
+				return
+			}
+			require.NoError(t, err)
+			sess, ok := req.GetSession().(*session.Session)
+			require.True(t, ok)
+			act, ok := sess.JWTClaims.Extra["act"].(map[string]interface{})
+			require.True(t, ok, "act claim must be a map")
+			assert.Equal(t, tt.wantActSub, act["sub"])
 		})
 	}
 }

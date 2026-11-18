@@ -746,7 +746,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "confidential clients (allow_confidential_client_registration or delegate clients) cannot be combined with insecure_allow_http",
+			errMsg:    "confidential clients (allow_confidential_client_registration, delegate clients or JWT-SVID SPIFFE associations that grant client_credentials) cannot be combined with insecure_allow_http",
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer without opt-in - invalid",
@@ -2099,11 +2099,50 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransp
 		Scopes:          []string{"openid"},
 		Audiences:       []string{"https://api.example.com"},
 	}}
+	spiffeConfig := func(method SPIFFEAuthenticationMethod, mutate func(*EmbeddedAuthServerConfig)) EmbeddedAuthServerConfig {
+		config := EmbeddedAuthServerConfig{
+			Issuer: "http://localhost:8080",
+			SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+				Name: "example", TrustDomain: "example.org",
+				Methods: []SPIFFEAuthenticationMethod{method},
+				BundleSource: SPIFFEBundleSourceConfig{
+					Type: SPIFFEBundleSourceTypeFile,
+					File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+				},
+			}},
+			InboundGrants: &InboundGrantsConfig{
+				SPIFFEClientAuth: []SPIFFEClientConfig{{
+					TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+					ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
+					Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+				}},
+			},
+		}
+		mutate(&config)
+		return config
+	}
 	tests := []struct {
 		name      string
 		config    EmbeddedAuthServerConfig
 		expectErr bool
 	}{
+		{
+			name: "SPIFFE JWT association is admitted with insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+			}),
+		},
+		{
+			name:   "SPIFFE JWT association is admitted on HTTP loopback without explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(*EmbeddedAuthServerConfig) {}),
+		},
+		{
+			name: "SPIFFE X.509-only association is unaffected by insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodX509, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.Issuer = "https://auth.example.com"
+			}),
+		},
 		{
 			name: "delegate clients remain independent of confidential DCR",
 			config: EmbeddedAuthServerConfig{

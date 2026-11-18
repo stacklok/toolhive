@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -112,11 +113,12 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			expiry := time.Now().Add(time.Hour)
 			var registry *SPIFFEAssociationRegistry
 			if !tt.nilRegistry {
 				registry = newTestSPIFFEAssociationRegistry(t, tt.associations)
 			}
-			client, err := registry.Resolve(tt.spiffeID, tt.clientID, tt.method)
+			client, err := registry.Resolve(tt.spiffeID, tt.clientID, tt.method, expiry)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Nil(t, client)
@@ -131,6 +133,7 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 			assert.Equal(t, tt.spiffeID, client.SPIFFEID().String())
 			assert.Equal(t, "example.org", client.SPIFFEID().TrustDomain().String())
 			assert.Equal(t, tt.method, client.AuthenticationMethod())
+			assert.Equal(t, expiry, client.CredentialExpiry())
 			assert.Equal(t, []string{tt.wantScope}, []string(client.GetScopes()))
 			assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, []string(client.GetGrantTypes()))
 			wantResource := tt.wantResource
@@ -147,6 +150,7 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 				spiffetest.WithResources(wantResource...),
 				spiffetest.WithSPIFFEID(tt.spiffeID),
 				spiffetest.WithAuthMethod(tt.method),
+				spiffetest.WithCredentialExpiry(expiry),
 			)
 			assert.Equal(t, want, client)
 		})
@@ -338,6 +342,60 @@ func TestSPIFFEAssociationFingerprintFieldsDoNotConcatenateAmbiguously(t *testin
 	assert.NotEqual(t, a, b, "length prefixing must keep field boundaries unambiguous")
 }
 
+func TestSPIFFEAssociationFingerprintCoversGrantTypes(t *testing.T) {
+	t.Parallel()
+
+	withGrants := func(grantTypes ...string) SPIFFEClientAuthConfig {
+		return SPIFFEClientAuthConfig{
+			trustDomainRef: "production",
+			principal:      "spiffe://example.org/ns/default/agent",
+			authorization:  SPIFFEAuthorizationPolicy{grantTypes: grantTypes},
+		}
+	}
+	methodOnly := withGrants()
+	methodOnly.methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}
+
+	tests := []struct {
+		name      string
+		a, b      SPIFFEClientAuthConfig
+		wantEqual bool
+	}{
+		{
+			name: "grant-types-only change differs",
+			a:    withGrants(oauthproto.GrantTypeTokenExchange),
+			b:    withGrants(oauthproto.GrantTypeClientCredentials),
+		},
+		{
+			name:      "grant type order is ignored",
+			a:         withGrants(oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials),
+			b:         withGrants(oauthproto.GrantTypeClientCredentials, oauthproto.GrantTypeTokenExchange),
+			wantEqual: true,
+		},
+		{
+			// Built directly because config validation admits only known grant types.
+			name: "length prefix keeps grant type boundaries unambiguous",
+			a:    withGrants("a", "bc"),
+			b:    withGrants("ab", "c"),
+		},
+		{
+			name: "grant type cannot alias a method at the list boundary",
+			a:    withGrants(string(SPIFFEAuthenticationMethodX509)),
+			b:    methodOnly,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fa, fb := fingerprintSPIFFEAssociation(tt.a), fingerprintSPIFFEAssociation(tt.b)
+			if tt.wantEqual {
+				assert.Equal(t, fa, fb)
+			} else {
+				assert.NotEqual(t, fa, fb)
+			}
+		})
+	}
+}
+
 // TestNewSPIFFEAssociationRegistryRejectsOverlappingPatterns proves
 // NewSPIFFEAssociationRegistry itself fails closed when two associations'
 // patterns could both match the same concrete SPIFFE ID, since resolution at
@@ -405,7 +463,7 @@ func testNormalizedSPIFFEAssociation(clientID, principal string) SPIFFEClientAut
 		clientID:       clientID,
 		methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		authorization: SPIFFEAuthorizationPolicy{
-			grantTypes: []string{SPIFFEGrantTypeTokenExchange}, scopes: []string{"openid"},
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange}, scopes: []string{"openid"},
 		},
 	}
 }
@@ -439,6 +497,6 @@ func testSPIFFEAssociation(clientID, scope string) SPIFFEClientAuthRunConfig {
 		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		Scopes:           []string{scope},
 		Resources:        []string{"https://audience.example.com"},
-		GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
 	}
 }

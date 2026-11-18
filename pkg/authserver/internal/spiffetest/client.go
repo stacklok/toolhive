@@ -7,6 +7,7 @@ package spiffetest
 
 import (
 	"testing"
+	"time"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,7 @@ type config struct {
 	resources []string
 	spiffeID  string
 	method    spiffeauth.SPIFFEAuthenticationMethod
+	expiry    time.Time
 }
 
 // Option overrides one field of the client built by Client or
@@ -50,6 +52,10 @@ func WithAuthMethod(method spiffeauth.SPIFFEAuthenticationMethod) Option {
 	return func(c *config) { c.method = method }
 }
 
+// WithCredentialExpiry sets the expiry of the verified SVID of the client built
+// by AuthenticatedClient.
+func WithCredentialExpiry(expiry time.Time) Option { return func(c *config) { c.expiry = expiry } }
+
 // Client returns a valid SPIFFE client with id "spiffe-client", the
 // token-exchange grant, scope "openid" and no resources, adjusted by opts.
 func Client(t *testing.T, opts ...Option) *registration.SPIFFEClient {
@@ -62,14 +68,14 @@ func Client(t *testing.T, opts ...Option) *registration.SPIFFEClient {
 
 // AuthenticatedClient returns the SPIFFE client Client would build, bound to a
 // verified SPIFFE ID and method as the client-authentication resolver does. The
-// SPIFFE ID is "spiffe://example.org/workload/test" and the method is JWT
-// unless opts say otherwise.
+// SPIFFE ID is "spiffe://example.org/workload/test", the method is JWT and the
+// credential expires in 24 hours unless opts say otherwise.
 func AuthenticatedClient(t *testing.T, opts ...Option) *registration.AuthenticatedSPIFFEClient {
 	t.Helper()
 	c := newConfig(opts)
 	id, err := spiffeid.FromString(c.spiffeID)
 	require.NoError(t, err)
-	client, err := registration.NewAuthenticatedSPIFFEClient(Client(t, opts...), id, c.method)
+	client, err := registration.NewAuthenticatedSPIFFEClient(Client(t, opts...), id, c.method, c.expiry)
 	require.NoError(t, err)
 	return client
 }
@@ -81,6 +87,7 @@ func newConfig(opts []Option) config {
 		scopes:   []string{"openid"},
 		spiffeID: "spiffe://example.org/workload/test",
 		method:   spiffeauth.SPIFFEAuthenticationMethodJWT,
+		expiry:   time.Now().Add(24 * time.Hour),
 	}
 	for _, opt := range opts {
 		opt(&c)

@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ory/fosite"
 
@@ -81,9 +83,10 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 // clientID must match the association's client ID. It fails closed for
 // unknown IDs, mismatched client ownership, and disabled methods. This
 // method does not validate a credential: the caller must have verified the
-// SVID, because the returned client asserts that it was.
+// SVID, because the returned client asserts that it was. credentialExpiry is
+// the verified SVID's expiry, carried on the returned client.
 func (r *SPIFFEAssociationRegistry) Resolve(
-	spiffeID, clientID string, method SPIFFEAuthenticationMethod,
+	spiffeID, clientID string, method SPIFFEAuthenticationMethod, credentialExpiry time.Time,
 ) (*registration.AuthenticatedSPIFFEClient, error) {
 	if r == nil {
 		return nil, fmt.Errorf("no SPIFFE associations are configured")
@@ -106,7 +109,9 @@ func (r *SPIFFEAssociationRegistry) Resolve(
 		)
 	}
 
-	return registration.NewAuthenticatedSPIFFEClient(r.clients[association.ClientID()].SPIFFEClient, parsedID, method)
+	return registration.NewAuthenticatedSPIFFEClient(
+		r.clients[association.ClientID()].SPIFFEClient, parsedID, method, credentialExpiry,
+	)
 }
 
 // usesX509 reports whether clientID names an association whose methods include
@@ -167,13 +172,15 @@ func (r *SPIFFEAssociationRegistry) staticClients() map[string]fosite.Client {
 }
 
 // fingerprintSPIFFEAssociation hashes the SPIFFE association identity (trust
-// domain reference, principal pattern, and accepted methods). Storage compares
-// it only to set identity_changed in the replacement WARN when an edited
-// association replaces its placeholder. Each value is
+// domain reference, principal pattern, grant types, and accepted methods).
+// Storage compares it only to set identity_changed in the replacement WARN
+// when an edited association replaces its placeholder. Each value is
 // length-prefixed with an unambiguous decimal-and-colon marker so
-// concatenation can't alias two different value sequences to the same hash,
-// and methods are sorted first so their original order never affects the
-// result.
+// concatenation can't alias two different value sequences to the same hash.
+// Grant types and methods are each sorted before hashing so their original
+// order never affects the result. The grant-type count is written before the
+// grant types, since methods follow them with no count and the boundary would
+// otherwise be ambiguous.
 //
 // Note: TrustDomainRef() hashes the trust-domain *reference name* (e.g.
 // "production"), not the trust domain value itself. In practice this doesn't
@@ -190,6 +197,12 @@ func fingerprintSPIFFEAssociation(association SPIFFEClientAuthConfig) string {
 	}
 	write(association.TrustDomainRef())
 	write(association.Principal())
+	grantTypes := association.AuthorizationPolicy().GrantTypes()
+	slices.Sort(grantTypes)
+	write(strconv.Itoa(len(grantTypes)))
+	for _, grantType := range grantTypes {
+		write(grantType)
+	}
 	methods := association.Methods()
 	slices.Sort(methods)
 	for _, method := range methods {

@@ -48,6 +48,9 @@ type testSetupOptions struct {
 	HasStaticPrivateKeyJWTClients       bool
 	DisableTokenExchange                bool
 	JWTBearerGrantEnabled               bool
+	SPIFFEX509ClientAuthentication      bool
+	SPIFFEJWTClientAuthentication       bool
+	SPIFFEClientCredentialsGrant        bool
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -74,23 +77,26 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	require.NoError(t, err)
 
 	cfg := &server.AuthorizationServerParams{
-		Issuer:                              "https://auth.example.com",
-		AuthorizationEndpointBaseURL:        opts.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         opts.CIMDEnabled,
-		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:      opts.AllowPrivateKeyJWTRegistration,
-		HasStaticConfidentialClients:        opts.HasStaticConfidentialClients,
-		HasStaticSecretClients:              opts.HasStaticSecretClients,
-		HasStaticPrivateKeyJWTClients:       opts.HasStaticPrivateKeyJWTClients,
-		DisableTokenExchange:                opts.DisableTokenExchange,
-		JWTBearerGrantEnabled:               opts.JWTBearerGrantEnabled,
-		AccessTokenLifespan:                 time.Hour,
-		RefreshTokenLifespan:                time.Hour * 24,
-		AuthCodeLifespan:                    time.Minute * 10,
-		HMACSecrets:                         servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:                        "test-key-1",
-		SigningKeyAlgorithm:                 "RS256",
-		SigningKey:                          rsaKey,
+		Issuer:                                 "https://auth.example.com",
+		AuthorizationEndpointBaseURL:           opts.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                            opts.CIMDEnabled,
+		AllowConfidentialClientRegistration:    opts.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:         opts.AllowPrivateKeyJWTRegistration,
+		HasStaticConfidentialClients:           opts.HasStaticConfidentialClients,
+		HasStaticSecretClients:                 opts.HasStaticSecretClients,
+		HasStaticPrivateKeyJWTClients:          opts.HasStaticPrivateKeyJWTClients,
+		DisableTokenExchange:                   opts.DisableTokenExchange,
+		JWTBearerGrantEnabled:                  opts.JWTBearerGrantEnabled,
+		SupportsSPIFFEX509ClientAuthentication: opts.SPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:  opts.SPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:   opts.SPIFFEClientCredentialsGrant,
+		AccessTokenLifespan:                    time.Hour,
+		RefreshTokenLifespan:                   time.Hour * 24,
+		AuthCodeLifespan:                       time.Minute * 10,
+		HMACSecrets:                            servercrypto.NewHMACSecrets(secret),
+		SigningKeyID:                           "test-key-1",
+		SigningKeyAlgorithm:                    "RS256",
+		SigningKey:                             rsaKey,
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -302,6 +308,8 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 		hasStaticConfidential bool
 		hasStaticSecret       bool
 		hasStaticPrivateKey   bool
+		spiffeX509            bool
+		spiffeJWT             bool
 		wantMethods           []string
 		wantAlgorithms        []string
 	}{
@@ -331,6 +339,15 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 		{name: "all authentication methods are advertised", allowConfidential: true, allowPrivate: true,
 			hasStaticConfidential: true, hasStaticSecret: true, hasStaticPrivateKey: true,
 			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "SPIFFE X.509 association advertises spiffe_x509", spiffeX509: true,
+			wantMethods: []string{sharedobauth.TokenEndpointAuthMethodNone, sharedobauth.TokenEndpointAuthMethodSPIFFEX509}},
+		{name: "SPIFFE JWT association advertises spiffe_jwt", spiffeJWT: true,
+			wantMethods: []string{sharedobauth.TokenEndpointAuthMethodNone, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT}},
+		{name: "SPIFFE methods follow private_key_jwt", allowPrivate: true, spiffeX509: true, spiffeJWT: true,
+			wantMethods: []string{
+				sharedobauth.TokenEndpointAuthMethodNone, sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT,
+				sharedobauth.TokenEndpointAuthMethodSPIFFEX509, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT,
+			}, wantAlgorithms: wantAlgorithms},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -341,6 +358,8 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 				HasStaticConfidentialClients:        tc.hasStaticConfidential,
 				HasStaticSecretClients:              tc.hasStaticSecret,
 				HasStaticPrivateKeyJWTClients:       tc.hasStaticPrivateKey,
+				SPIFFEX509ClientAuthentication:      tc.spiffeX509,
+				SPIFFEJWTClientAuthentication:       tc.spiffeJWT,
 			})
 
 			// OAuth AS metadata endpoint.
@@ -466,17 +485,20 @@ func TestDiscoveryHandlers_InboundGrantCapabilities(t *testing.T) {
 		name                  string
 		disableTokenExchange  bool
 		jwtBearerGrantEnabled bool
+		clientCredentials     bool
 	}{
 		{name: "historical token exchange default"},
 		{name: "token exchange and JWT bearer", jwtBearerGrantEnabled: true},
 		{name: "all inbound grants disabled", disableTokenExchange: true},
 		{name: "JWT bearer independent of token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
+		{name: "SPIFFE client credentials", clientCredentials: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			handler := testSetupWithOptions(t, testSetupOptions{
-				DisableTokenExchange:  tc.disableTokenExchange,
-				JWTBearerGrantEnabled: tc.jwtBearerGrantEnabled,
+				DisableTokenExchange:         tc.disableTokenExchange,
+				JWTBearerGrantEnabled:        tc.jwtBearerGrantEnabled,
+				SPIFFEClientCredentialsGrant: tc.clientCredentials,
 			})
 
 			for _, endpoint := range []struct {
@@ -499,6 +521,8 @@ func TestDiscoveryHandlers_InboundGrantCapabilities(t *testing.T) {
 						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange))
 					assert.Equal(t, tc.jwtBearerGrantEnabled,
 						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer))
+					assert.Equal(t, tc.clientCredentials,
+						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeClientCredentials))
 				})
 			}
 		})

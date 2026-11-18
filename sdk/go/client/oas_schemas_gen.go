@@ -2396,9 +2396,9 @@ type AuthenticationSPIFFEClientAuthRunConfig struct {
 	// the declared trust domain.
 	PrincipalPattern OptString `json:"principal_pattern"`
 	// Resources are RFC 8707 resource indicators this association may
-	// request. At least one is required for every association: token
-	// exchange takes exactly one resource per request and grants it as the
-	// token audience. Must be a subset of the
+	// request. At least one is required for every association: both
+	// client_credentials and token exchange take exactly one resource per
+	// request and grant it as the token audience. Must be a subset of the
 	// server's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the
 	// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
 	// validated against.

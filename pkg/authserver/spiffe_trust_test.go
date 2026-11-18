@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestNormalizeSPIFFEPrincipal(t *testing.T) {
@@ -126,7 +127,12 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "wrong trust domain", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].PrincipalPattern = "spiffe://other.org/ns/default/agent"
 		}, wantErr: "does not match"},
-		{name: "empty resources rejected", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+		{name: "empty resources rejected for token exchange only", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].GrantTypes = []string{oauthproto.GrantTypeTokenExchange}
+			grants.SPIFFEClientAuth[0].Resources = nil
+		}, wantErr: "spiffe_client_auth[0].resources is required"},
+		{name: "empty resources rejected for client_credentials", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].GrantTypes = []string{oauthproto.GrantTypeClientCredentials}
 			grants.SPIFFEClientAuth[0].Resources = nil
 		}, wantErr: "spiffe_client_auth[0].resources is required"},
 		{name: "duplicate client", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
@@ -166,6 +172,12 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "client_id must not be a malformed client metadata document URL", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].ClientID = "https://example.org/%zz"
 		}, wantErr: "client_id must not be a client metadata document URL"},
+		{name: "client_id must not be an absolute non-HTTP URL", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].ClientID = "spiffe://example.org/reporting"
+		}, wantErr: "client_id must not be an absolute URL"},
+		{name: "client_id without a scheme separator is accepted", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].ClientID = "urn:foo"
+		}},
 		{name: "scope must be supported", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].Scopes = []string{"admin"}
 		}, wantErr: "not in scopes_supported"},
@@ -175,12 +187,6 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "method not enabled by trust domain", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
 		}, wantErr: "not enabled by trust domain"},
-		{name: "grant_types must be exactly token exchange", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
-			grants.SPIFFEClientAuth[0].GrantTypes = []string{"authorization_code"}
-		}, wantErr: "grant_types must be exactly"},
-		{name: "grant_types is required", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
-			grants.SPIFFEClientAuth[0].GrantTypes = nil
-		}, wantErr: "grant_types must be exactly"},
 		{name: "bundle_source type is required", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{}
 		}, wantErr: "unknown source type"},
@@ -222,6 +228,34 @@ func TestValidateSPIFFETrust(t *testing.T) {
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidateSPIFFEGrantsMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		grants  []string
+		wantErr string
+	}{
+		{name: "client credentials only", grants: []string{oauthproto.GrantTypeClientCredentials}},
+		{name: "token exchange only", grants: []string{oauthproto.GrantTypeTokenExchange}},
+		{name: "both grants", grants: []string{oauthproto.GrantTypeClientCredentials, oauthproto.GrantTypeTokenExchange}},
+		{name: "empty", wantErr: "is required"},
+		{name: "duplicate", grants: []string{oauthproto.GrantTypeClientCredentials, oauthproto.GrantTypeClientCredentials}, wantErr: "duplicate"},
+		{name: "unknown", grants: []string{"authorization_code"}, wantErr: "unknown grant"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSPIFFEGrantTypes(tt.grants, "grant_types")
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
 			require.NoError(t, err)
@@ -316,6 +350,73 @@ func TestSPIFFETrustConfigTrustDomainLookup(t *testing.T) {
 	var nilTrust *SPIFFETrustConfig
 	_, ok = nilTrust.TrustDomain("production")
 	assert.False(t, ok)
+}
+
+func TestJWTClientCredentialsAssociation(t *testing.T) {
+	t.Parallel()
+
+	assoc := func(clientID string, method SPIFFEAuthenticationMethod, grants ...string) SPIFFEClientAuthRunConfig {
+		a := withPrincipal(testSPIFFEAssociation(clientID, "openid"), "spiffe://example.org/ns/default/"+clientID)
+		a.Methods = []SPIFFEAuthenticationMethod{method}
+		a.GrantTypes = grants
+		return a
+	}
+	const (
+		tokenExchange     = oauthproto.GrantTypeTokenExchange
+		clientCredentials = oauthproto.GrantTypeClientCredentials
+	)
+	jwtCC := assoc("jwt-cc", SPIFFEAuthenticationMethodJWT, clientCredentials)
+	jwtBoth := assoc("jwt-both", SPIFFEAuthenticationMethodJWT, tokenExchange, clientCredentials)
+	jwtTE := assoc("jwt-te", SPIFFEAuthenticationMethodJWT, tokenExchange)
+	x509CC := assoc("x509-cc", SPIFFEAuthenticationMethodX509, clientCredentials)
+	x509TE := assoc("x509-te", SPIFFEAuthenticationMethodX509, tokenExchange)
+
+	tests := []struct {
+		name         string
+		associations []SPIFFEClientAuthRunConfig
+		want         bool
+	}{
+		{name: "no associations", want: false},
+		{name: "JWT-SVID with client_credentials", associations: []SPIFFEClientAuthRunConfig{jwtCC}, want: true},
+		{name: "JWT-SVID with both grants", associations: []SPIFFEClientAuthRunConfig{jwtBoth}, want: true},
+		{name: "JWT-SVID token exchange only", associations: []SPIFFEClientAuthRunConfig{jwtTE}, want: false},
+		{name: "X.509 with client_credentials", associations: []SPIFFEClientAuthRunConfig{x509CC}, want: false},
+		{name: "X.509 token exchange only", associations: []SPIFFEClientAuthRunConfig{x509TE}, want: false},
+		{
+			name:         "method and grant on different associations",
+			associations: []SPIFFEClientAuthRunConfig{jwtTE, x509CC},
+			want:         false,
+		},
+		{
+			name:         "one qualifying association among others",
+			associations: []SPIFFEClientAuthRunConfig{x509TE, jwtTE, jwtCC},
+			want:         true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runConfig := &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: tt.associations}}
+			assert.Equal(t, tt.want, runConfig.hasJWTClientCredentialsAssociation())
+
+			if len(tt.associations) == 0 {
+				return
+			}
+			trust, err := NewSPIFFETrustConfig([]SPIFFETrustDomainRunConfig{{
+				Name:         "production",
+				TrustDomain:  "example.org",
+				Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
+				BundleSource: validFileBundleSource(),
+			}}, runConfig.InboundGrants, []string{"openid"}, []string{"https://audience.example.com"})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, trust.permitsJWTClientCredentials())
+		})
+	}
+
+	assert.False(t, (*RunConfig)(nil).hasJWTClientCredentialsAssociation())
+	assert.False(t, (&RunConfig{}).hasJWTClientCredentialsAssociation())
+	assert.False(t, (*SPIFFETrustConfig)(nil).permitsJWTClientCredentials())
 }
 
 //nolint:paralleltest // Swaps the process-wide default logger.

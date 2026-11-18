@@ -139,6 +139,49 @@ func mustNewSPIFFETrustConfigWithSource(t *testing.T, source SPIFFEBundleSourceR
 	return trust
 }
 
+func mustNewSPIFFEJWTTrustConfig(t *testing.T, grants ...string) *SPIFFETrustConfig {
+	t.Helper()
+	association := testSPIFFEWildcardAssociation("https://mcp.example.com")
+	association.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+	association.GrantTypes = grants
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT},
+			BundleSource: validFileBundleSource(),
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{association}},
+		[]string{"openid"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	return trust
+}
+
+func mustNewSPIFFETrustConfigWithGrants(t *testing.T, grants []string) *SPIFFETrustConfig {
+	t.Helper()
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			BundleSource: validFileBundleSource(),
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/*",
+			ClientID:         "agent-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Resources:        []string{"https://mcp.example.com"},
+			Scopes:           []string{"openid"},
+			GrantTypes:       grants,
+		}}},
+		[]string{"openid"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	return trust
+}
+
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 
@@ -222,11 +265,18 @@ func TestConfigValidate(t *testing.T) {
 		{name: "CIMD enabled with valid bounds passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: 5 * time.Minute}},
 
 		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
-		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "confidential clients (allow_confidential_client_registration or delegate clients) cannot be combined with insecure_allow_http"},
+		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "confidential clients (allow_confidential_client_registration, delegate clients or JWT-SVID SPIFFE associations that grant client_credentials) cannot be combined with insecure_allow_http"},
 		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
 		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
 
-		{name: "SPIFFE association combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DisableTokenExchange: true}, wantErr: true, errMsg: "SPIFFE client associations require token exchange"},
+		{name: "JWT-SVID client_credentials association with a plain-HTTP loopback issuer rejects without the opt-in", config: Config{Issuer: "http://localhost:8080", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t, oauthproto.GrantTypeClientCredentials)}, wantErr: true, errMsg: "insecure_allow_confidential_over_loopback_http"},
+		{name: "JWT-SVID client_credentials association with a plain-HTTP loopback issuer passes with the opt-in", config: Config{Issuer: "http://localhost:8080", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t, oauthproto.GrantTypeClientCredentials), InsecureAllowConfidentialOverLoopbackHTTP: true}},
+		{name: "JWT-SVID client_credentials association combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t, oauthproto.GrantTypeClientCredentials), InsecureAllowHTTP: true}, wantErr: true, errMsg: "cannot be combined with insecure_allow_http"},
+		{name: "JWT-SVID association with both grants combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t, oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials), InsecureAllowHTTP: true}, wantErr: true, errMsg: "cannot be combined with insecure_allow_http"},
+		{name: "JWT-SVID token-exchange-only association combined with insecure HTTP passes", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t, oauthproto.GrantTypeTokenExchange), InsecureAllowHTTP: true}},
+		{name: "JWT-SVID token-exchange-only association with a plain-HTTP loopback issuer passes without the opt-in", config: Config{Issuer: "http://localhost:8080", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t, oauthproto.GrantTypeTokenExchange)}},
+		{name: "SPIFFE association combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DisableTokenExchange: true}, wantErr: true, errMsg: "grants token exchange, but token exchange is disabled"},
+		{name: "SPIFFE client-credentials-only association combined with token exchange disabled passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfigWithGrants(t, []string{oauthproto.GrantTypeClientCredentials}), DisableTokenExchange: true}},
 
 		// RefreshGrantHandlers
 		{name: "nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}, nil}}, wantErr: true, errMsg: "refresh grant handler 1 is nil"},
@@ -740,6 +790,23 @@ func TestRunConfigValidate(t *testing.T) {
 		return config
 	}
 
+	// jwtConfig is an http-issuer JWT-SVID configuration whose single
+	// association lists grants.
+	jwtConfig := func(grants []string, mutate func(*RunConfig)) RunConfig {
+		return x509Config(func(c *RunConfig) {
+			c.TLSListener = nil
+			c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+			c.InboundGrants.SPIFFEClientAuth[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+			c.InboundGrants.SPIFFEClientAuth[0].GrantTypes = grants
+			if mutate != nil {
+				mutate(c)
+			}
+		})
+	}
+	tokenExchange := []string{oauthproto.GrantTypeTokenExchange}
+	clientCredentials := []string{oauthproto.GrantTypeClientCredentials}
+	bothGrants := []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials}
+
 	tests := []struct {
 		name    string
 		config  RunConfig
@@ -871,12 +938,67 @@ func TestRunConfigValidate(t *testing.T) {
 			errMsg:  "SPIFFE X.509 authentication requires an https issuer",
 		},
 		{
-			name: "JWT-only association with an http issuer passes",
-			config: x509Config(func(c *RunConfig) {
+			name: "JWT-SVID client_credentials association with a non-loopback http issuer is rejected",
+			config: jwtConfig(clientCredentials, func(c *RunConfig) {
 				c.Issuer = "http://auth.example.org"
-				c.TLSListener = nil
-				c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
-				c.InboundGrants.SPIFFEClientAuth[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+			}),
+			wantErr: true,
+			errMsg:  "plain-HTTP non-loopback issuer",
+		},
+		{
+			name: "JWT-SVID association with both grants and insecure_allow_http is rejected",
+			config: jwtConfig(bothGrants, func(c *RunConfig) {
+				c.InsecureAllowHTTP = true
+			}),
+			wantErr: true,
+			errMsg:  "insecure_allow_http",
+		},
+		{
+			name: "JWT-SVID client_credentials association with insecure_allow_http is rejected",
+			config: jwtConfig(clientCredentials, func(c *RunConfig) {
+				c.InsecureAllowHTTP = true
+			}),
+			wantErr: true,
+			errMsg:  "insecure_allow_http",
+		},
+		{
+			name: "JWT-SVID client_credentials association with a loopback http issuer is rejected without the opt-in",
+			config: jwtConfig(clientCredentials, func(c *RunConfig) {
+				c.Issuer = "http://localhost:8080"
+			}),
+			wantErr: true,
+			errMsg:  "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name: "JWT-SVID client_credentials association with a loopback http issuer passes with the opt-in",
+			config: jwtConfig(clientCredentials, func(c *RunConfig) {
+				c.Issuer = "http://localhost:8080"
+				c.InsecureAllowConfidentialOverLoopbackHTTP = true
+			}),
+		},
+		{
+			name: "JWT-SVID token-exchange-only association with insecure_allow_http passes",
+			config: jwtConfig(tokenExchange, func(c *RunConfig) {
+				c.InsecureAllowHTTP = true
+			}),
+		},
+		{
+			name: "JWT-SVID token-exchange-only association with a non-loopback http issuer passes",
+			config: jwtConfig(tokenExchange, func(c *RunConfig) {
+				c.Issuer = "http://auth.example.org"
+			}),
+		},
+		{
+			name: "JWT-SVID token-exchange-only association with a loopback http issuer passes without the opt-in",
+			config: jwtConfig(tokenExchange, func(c *RunConfig) {
+				c.Issuer = "http://localhost:8080"
+			}),
+		},
+		{
+			name: "X.509 client_credentials association with insecure_allow_http passes because X.509 is not counted as confidential",
+			config: x509Config(func(c *RunConfig) {
+				c.InboundGrants.SPIFFEClientAuth[0].GrantTypes = clientCredentials
+				c.InsecureAllowHTTP = true
 			}),
 		},
 		{

@@ -5,6 +5,7 @@ package registration
 
 import (
 	"testing"
+	"time"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/stretchr/testify/assert"
@@ -86,24 +87,27 @@ func TestNewAuthenticatedSPIFFEClient(t *testing.T) {
 		[]string{"openid"}, []string{"https://resource.example.com"})
 	require.NoError(t, err)
 	id := spiffeid.RequireFromString("spiffe://example.org/workload/concrete")
+	expiry := time.Now().Add(time.Hour)
 
 	tests := []struct {
 		name    string
 		client  *SPIFFEClient
 		id      spiffeid.ID
 		method  spiffeauth.SPIFFEAuthenticationMethod
+		expiry  time.Time
 		wantErr string
 	}{
-		{name: "JWT", client: static, id: id, method: spiffeauth.SPIFFEAuthenticationMethodJWT},
-		{name: "X.509", client: static, id: id, method: spiffeauth.SPIFFEAuthenticationMethodX509},
-		{name: "nil client", id: id, method: spiffeauth.SPIFFEAuthenticationMethodJWT, wantErr: "SPIFFE client is required"},
-		{name: "zero ID", client: static, method: spiffeauth.SPIFFEAuthenticationMethodJWT, wantErr: "SPIFFE ID is required"},
-		{name: "unknown method", client: static, id: id, method: "unknown", wantErr: "unknown SPIFFE authentication method"},
+		{name: "JWT", client: static, id: id, method: spiffeauth.SPIFFEAuthenticationMethodJWT, expiry: expiry},
+		{name: "X.509", client: static, id: id, method: spiffeauth.SPIFFEAuthenticationMethodX509, expiry: expiry},
+		{name: "nil client", id: id, method: spiffeauth.SPIFFEAuthenticationMethodJWT, expiry: expiry, wantErr: "SPIFFE client is required"},
+		{name: "zero ID", client: static, method: spiffeauth.SPIFFEAuthenticationMethodJWT, expiry: expiry, wantErr: "SPIFFE ID is required"},
+		{name: "unknown method", client: static, id: id, method: "unknown", expiry: expiry, wantErr: "unknown SPIFFE authentication method"},
+		{name: "zero expiry", client: static, id: id, method: spiffeauth.SPIFFEAuthenticationMethodJWT, wantErr: "credential expiry is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := NewAuthenticatedSPIFFEClient(tt.client, tt.id, tt.method)
+			got, err := NewAuthenticatedSPIFFEClient(tt.client, tt.id, tt.method, tt.expiry)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Nil(t, got)
@@ -112,6 +116,7 @@ func TestNewAuthenticatedSPIFFEClient(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, id, got.SPIFFEID())
 			assert.Equal(t, tt.method, got.AuthenticationMethod())
+			assert.Equal(t, expiry, got.CredentialExpiry())
 			assert.Equal(t, static.GetID(), got.GetID())
 			assert.Equal(t, static.GetGrantTypes(), got.GetGrantTypes())
 			assert.Equal(t, static.GetScopes(), got.GetScopes())

@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2584,6 +2585,89 @@ func TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, srv.Close()) })
 }
 
+func TestNewEmbeddedAuthServer_SPIFFEGrantsDriveTokenExchangeDiscovery(t *testing.T) {
+	t.Parallel()
+
+	clientCredentials := authserver.SPIFFEClientAuthRunConfig{
+		TrustDomainRef:   "production",
+		PrincipalPattern: "spiffe://example.org/ns/default/cc",
+		ClientID:         "spiffe-cc",
+		Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+		Scopes:           []string{"openid"},
+		Resources:        []string{"https://mcp.example.com"},
+		GrantTypes:       []string{oauthproto.GrantTypeClientCredentials},
+	}
+	tokenExchange := testSPIFFEAssociation("spiffe-exchange", "spiffe://example.org/ns/default/exchange")
+
+	tests := []struct {
+		name         string
+		associations []authserver.SPIFFEClientAuthRunConfig
+		wantExchange bool
+	}{
+		{name: "client credentials only", associations: []authserver.SPIFFEClientAuthRunConfig{clientCredentials}},
+		{
+			name:         "token exchange only",
+			associations: []authserver.SPIFFEClientAuthRunConfig{tokenExchange},
+			wantExchange: true,
+		},
+		{
+			name:         "mixed",
+			associations: []authserver.SPIFFEClientAuthRunConfig{clientCredentials, tokenExchange},
+			wantExchange: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &authserver.RunConfig{
+				TLSListener:      writeTestSPIFFEListener(t),
+				SchemaVersion:    authserver.CurrentSchemaVersion,
+				Issuer:           "https://auth.example.com",
+				ScopesSupported:  []string{"openid", "profile"},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				Upstreams: []authserver.UpstreamRunConfig{{
+					Name: "static-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://upstream.example.com/authorize",
+						TokenEndpoint:         "https://upstream.example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "https://auth.example.com/oauth/callback",
+					},
+				}},
+				SPIFFETrustDomains: []authserver.SPIFFETrustDomainRunConfig{{
+					Name:        "production",
+					TrustDomain: "example.org",
+					Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+					BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+						Type: authserver.SPIFFEBundleSourceTypeFile,
+						File: &authserver.SPIFFEFileBundleSourceRunConfig{Path: writeTestSPIFFEBundleFile(t)},
+					},
+				}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: tt.associations},
+			}
+
+			srv, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("localhost"))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, srv.Close()) })
+
+			rec := httptest.NewRecorder()
+			srv.Routes()["/.well-known/oauth-authorization-server"].ServeHTTP(
+				rec, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var metadata struct {
+				GrantTypesSupported []string `json:"grant_types_supported"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &metadata))
+			assert.Equal(t, tt.wantExchange, slices.Contains(metadata.GrantTypesSupported, oauthproto.GrantTypeTokenExchange),
+				"grant_types_supported: %v", metadata.GrantTypesSupported)
+		})
+	}
+}
+
 // TestNewEmbeddedAuthServer_SPIFFEAndCIMD exercises the RunConfig conversion
 // and the production storage-decoration order with both features enabled.
 func TestNewEmbeddedAuthServer_SPIFFEAndCIMD(t *testing.T) {
@@ -2902,7 +2986,7 @@ func TestEmbeddedAuthServer_SPIFFEClientIDAloneDoesNotAuthenticate(t *testing.T)
 				t.Parallel()
 
 				form := url.Values{
-					"grant_type":         {authserver.SPIFFEGrantTypeTokenExchange},
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
 					"subject_token":      {"unvalidated-subject-token"},
 					"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 					"client_id":          {"spiffe-client"},

@@ -5,6 +5,7 @@ package registration
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -23,14 +24,16 @@ type staticSPIFFEClient = SPIFFEClient
 // request is what tells grant handlers a workload credential was verified.
 type AuthenticatedSPIFFEClient struct {
 	*staticSPIFFEClient
-	spiffeID spiffeid.ID
-	method   spiffeauth.SPIFFEAuthenticationMethod
+	spiffeID         spiffeid.ID
+	method           spiffeauth.SPIFFEAuthenticationMethod
+	credentialExpiry time.Time
 }
 
 // NewAuthenticatedSPIFFEClient binds a static SPIFFE client to the verified
-// SPIFFE ID and authentication method of the workload.
+// SPIFFE ID and authentication method of the workload. credentialExpiry is when
+// the verified SVID stops being valid and must not be zero.
 func NewAuthenticatedSPIFFEClient(
-	client *SPIFFEClient, id spiffeid.ID, method spiffeauth.SPIFFEAuthenticationMethod,
+	client *SPIFFEClient, id spiffeid.ID, method spiffeauth.SPIFFEAuthenticationMethod, credentialExpiry time.Time,
 ) (*AuthenticatedSPIFFEClient, error) {
 	if client == nil {
 		return nil, fmt.Errorf("SPIFFE client is required")
@@ -41,7 +44,12 @@ func NewAuthenticatedSPIFFEClient(
 	if method != spiffeauth.SPIFFEAuthenticationMethodX509 && method != spiffeauth.SPIFFEAuthenticationMethodJWT {
 		return nil, fmt.Errorf("unknown SPIFFE authentication method %q", method)
 	}
-	return &AuthenticatedSPIFFEClient{staticSPIFFEClient: client, spiffeID: id, method: method}, nil
+	if credentialExpiry.IsZero() {
+		return nil, fmt.Errorf("credential expiry is required")
+	}
+	return &AuthenticatedSPIFFEClient{
+		staticSPIFFEClient: client, spiffeID: id, method: method, credentialExpiry: credentialExpiry,
+	}, nil
 }
 
 // SPIFFEID returns the verified SPIFFE ID of the workload.
@@ -51,5 +59,8 @@ func (c *AuthenticatedSPIFFEClient) SPIFFEID() spiffeid.ID { return c.spiffeID }
 func (c *AuthenticatedSPIFFEClient) AuthenticationMethod() spiffeauth.SPIFFEAuthenticationMethod {
 	return c.method
 }
+
+// CredentialExpiry returns when the verified SVID stops being valid.
+func (c *AuthenticatedSPIFFEClient) CredentialExpiry() time.Time { return c.credentialExpiry }
 
 var _ fosite.Client = (*AuthenticatedSPIFFEClient)(nil)

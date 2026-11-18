@@ -860,7 +860,7 @@
             "type": "string"
           },
           "resources": {
-            "description": "Resources are RFC 8707 resource indicators this association may\nrequest. At least one is required for every association: token\nexchange takes exactly one resource per request and grants it as the\ntoken audience. Must be a subset of the\nserver's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the\nsame RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is\nvalidated against.",
+            "description": "Resources are RFC 8707 resource indicators this association may\nrequest. At least one is required for every association: both\nclient_credentials and token exchange take exactly one resource per\nrequest and grant it as the token audience. Must be a subset of the\nserver's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the\nsame RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is\nvalidated against.",
             "items": {
               "type": "string"
             },

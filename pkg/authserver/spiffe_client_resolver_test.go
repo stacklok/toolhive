@@ -6,6 +6,7 @@ package authserver
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,7 +51,7 @@ func TestNewSPIFFEClientResolver(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := resolver(context.Background(), tt.spiffeID, tt.clientID, tt.method)
+			got, err := resolver(context.Background(), tt.spiffeID, tt.clientID, tt.method, time.Now().Add(time.Hour))
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Nil(t, got, "an error must return a nil interface, not a typed nil")

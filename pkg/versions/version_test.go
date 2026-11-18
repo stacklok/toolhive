@@ -120,3 +120,32 @@ func TestConstants(t *testing.T) {
 
 	assert.Equal(t, "unknown", unknownStr)
 }
+
+func TestComponentUserAgent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		version string
+		want    string
+	}{
+		{"numeric version gains v prefix", "1.2.3", "toolhive/vmcp v1.2.3 release (linux/amd64)"},
+		{"v-prefixed version kept", "v1.2.3", "toolhive/vmcp v1.2.3 release (linux/amd64)"},
+		{"dev build version kept", "build-abcdef12", "toolhive/vmcp build-abcdef12 release (linux/amd64)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, componentUserAgent("vmcp", tt.version, "release", "linux/amd64"))
+		})
+	}
+}
+
+func TestGetComponentUserAgent(t *testing.T) {
+	t.Parallel()
+
+	got := GetComponentUserAgent("vmcp")
+	assert.True(t, strings.HasPrefix(got, "toolhive/vmcp "), "got %q", got)
+	assert.True(t, strings.HasSuffix(got, " ("+runtime.GOOS+"/"+runtime.GOARCH+")"), "got %q", got)
+	assert.Contains(t, got, " "+BuildType+" ")
+}

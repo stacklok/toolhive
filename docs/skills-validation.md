@@ -79,6 +79,7 @@ share rule IDs; `file` tells them apart.
 | `skill-md-too-long` | warning | `SKILL.md` has more than 500 lines. | `SKILL.md` |
 | `ref-unresolved` | warning | A relative link, image, or link reference definition points at a file that does not exist. | the markdown file |
 | `ref-escapes-root` | warning | A reference leaves the skill directory (the plugin directory for a bundled skill). | the markdown file |
+| `script-direct-exec` | warning | A file shipped in the skill is run directly instead of through an interpreter. Standalone skills only. | the markdown file |
 | `ref-findings-truncated` | warning | Reference checking stopped at a limit (see below). | `SKILL.md` |
 
 ## Reference checks
@@ -96,17 +97,50 @@ definition is reported once, on its own line.
 definitions, resolved against the directory of the file that contains them. A
 link to an existing directory counts as resolved.
 
-**`ref-escapes-root`** checks the same destinations. A standalone skill is
-installed on its own, so `../shared/x.md` does not exist after install. For a
-skill bundled in a plugin the whole plugin is installed, so a reference is
-only reported when it leaves the plugin directory.
+**`ref-escapes-root`** checks the same destinations, plus inline code spans
+that contain `/` (outside link text) and words in fenced or indented code
+blocks (in `console` blocks, prompt lines only). A standalone
+skill is installed on its own, so `../shared/x.md` does not exist after
+install. For a skill bundled in a plugin the whole plugin is installed, so a
+reference is only reported when it leaves the plugin directory. Paths in code
+are resolved against both the skill directory and the containing file's
+directory, and reported only when both leave the root and the path exists
+next to the skill (and is not a parent directory such as `..`). Commands run
+from the agent's working directory, so a code path that does not exist there,
+such as `import '../lib/foo'`, `cd ..` or `git diff ../other-repo`, refers to
+the user's project and is not reported. Code paths more than two levels above
+the root are not looked up at all. Links are reported whether or not the
+target exists.
+
+**`script-direct-exec`** reports a command such as `./scripts/run.sh` (also
+after `&&`, `||`, `;`, `|`, `$(`, backticks, including inside double quotes,
+variable assignments and `sudo`, `env` and similar wrappers) when the file
+exists in the skill and looks like a script: it starts with `#!`, has a script
+extension (`.sh`, `.py`, `.js`, ...), or has no extension. Standalone skills
+are installed without executable bits, so the command fails; run it through an
+interpreter instead (`bash scripts/run.sh`, `python3 scripts/run.py`). The
+message suggests the interpreter from the `#!` line or the extension. It is
+checked in `bash`, `sh`, `shell` and `zsh` fences for any command, and in
+untagged fences, indented code blocks and inline code spans (outside link text)
+only for commands that start with `./`, since those often just list or name
+files. A leading `$ ` prompt is removed; in `console` blocks only lines starting
+with a `$ ` or `# ` prompt are commands. `command -v` and `command -V` only
+look a command up and are not reported. The check is skipped for skills
+bundled in a plugin, which are installed with executable bits.
 
 **Skipped references.** URLs and other schemes, `#anchors`, `<placeholders>`,
-`${VAR}` and `$VAR`, `{{ templates }}`, glob characters (`* [ ] { }`),
-absolute paths, and paths starting with `~`. A `#fragment`, a `?query` and an
-editor-style `:line` or `:line:col` suffix are removed before a path is
-resolved.
+`${VAR}` and `$VAR`, `{{ templates }}`, glob characters (`* ? [ ] { }`),
+absolute paths, and paths starting with `~`. A `#fragment`, a `?query` (in
+links) and an editor-style `:line` or `:line:col` suffix are removed before a
+path is resolved.
 
 **Limits.** At most 100 reference findings and 50 scanned markdown files per
 skill; reaching either adds one `ref-findings-truncated` warning. Linked files
 over 1 MiB, unreadable files, and symlinks are not scanned.
+
+Command detection is a heuristic, not a shell parser: heredocs and complex
+quoting may be misread, and wrapper flags that take an argument
+(`sudo -u user ./x.sh`) are not modelled. `chmod +x scripts/run.sh &&
+./scripts/run.sh` is reported even though it works once installed; running the
+script through an interpreter avoids both the warning and the `chmod`. Because
+the rules are warnings, a misread never blocks a build or a validation.

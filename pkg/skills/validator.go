@@ -38,10 +38,11 @@ type validateConfig struct {
 
 // WithPluginRoot validates the skill as one bundled in the plugin at
 // pluginDir, which must be an absolute path containing the skill directory.
-// It makes two changes, both reflecting that the whole plugin tree is
-// installed together:
+// It makes three changes, all reflecting how plugins are installed (the whole
+// plugin tree is extracted, with executable bits kept):
 //   - references are contained by the plugin directory instead of the skill
 //     directory, so "../shared/x.md" inside the plugin is not reported;
+//   - the script-direct-exec check is disabled;
 //   - Finding.File is relative to pluginDir instead of the skill directory.
 func WithPluginRoot(pluginDir string) ValidateOption {
 	return func(c *validateConfig) { c.pluginRoot = pluginDir }
@@ -77,7 +78,7 @@ func ValidateSkillDir(path string, opts ...ValidateOption) (*ValidationResult, e
 		skillRel = filepath.ToSlash(rel)
 	}
 
-	res, err := validateSkillDir(path, root)
+	res, err := validateSkillDir(path, root, cfg.pluginRoot == "")
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +90,7 @@ func ValidateSkillDir(path string, opts ...ValidateOption) (*ValidationResult, e
 
 // validateSkillDir runs every check on the skill at path, with references
 // contained by root. Finding.File is relative to path.
-func validateSkillDir(path, root string) (*ValidationResult, error) {
+func validateSkillDir(path, root string, checkExec bool) (*ValidationResult, error) {
 	res := &ValidationResult{}
 
 	// Check SKILL.md exists
@@ -119,7 +120,7 @@ func validateSkillDir(path, root string) (*ValidationResult, error) {
 	for _, f := range collectWarnings(result, content) {
 		res.AddFinding(f)
 	}
-	for _, f := range newRefChecker(path, root).checkReferences(result.Body, result.bodyLine) {
+	for _, f := range newRefChecker(path, root, checkExec).checkReferences(result.Body, result.bodyLine) {
 		res.AddFinding(f)
 	}
 

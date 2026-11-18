@@ -352,13 +352,22 @@ func TestValidateSkillDir_ReferenceLimits(t *testing.T) {
 
 	t.Run("finding cap", func(t *testing.T) {
 		t.Parallel()
-		// Past the cap, code is no longer checked either.
+		// Code findings past the cap are dropped too.
 		body := strings.Repeat("[x](gone.md)\n\n", maxRefFindings+5) + "```bash\n./scripts/x.sh\n```\n"
 		dir := makeSkillDir(t, "sk", refFrontmatter+body)
 		writeTree(t, dir, map[string]string{"scripts/x.sh": ""})
 		hits := refHits(t, dir)
 		require.Len(t, hits, maxRefFindings+1)
 		assert.Equal(t, refHit{RuleRefFindingsTruncated, "SKILL.md", 0}, hits[maxRefFindings])
+	})
+
+	t.Run("exactly at the cap is not truncated", func(t *testing.T) {
+		t.Parallel()
+		// Candidates that are never reported do not count as dropped findings.
+		body := strings.Repeat("[x](gone.md)\n\n", maxRefFindings) + "```bash\n./configure\ncat ../none.md\n```\n"
+		hits := refHits(t, makeSkillDir(t, "sk", refFrontmatter+body))
+		require.Len(t, hits, maxRefFindings)
+		assert.NotContains(t, hits, refHit{RuleRefFindingsTruncated, "SKILL.md", 0})
 	})
 
 	t.Run("file cap", func(t *testing.T) {

@@ -264,7 +264,7 @@ func (c *refChecker) checkEscapes(file, rel string, words []string, line int) {
 			paths = append(paths, p)
 			escapes = escapes && !within(c.root, p)
 		}
-		if escapes && !c.full() && c.anyExists(paths) {
+		if escapes && c.anyExists(paths) {
 			c.add(RuleRefEscapesRoot, rel, line,
 				fmt.Sprintf("path %q points outside the %s directory", w, c.rootLabel))
 		}
@@ -280,7 +280,7 @@ func (c *refChecker) checkExecWord(file, rel, cmd string, line int) {
 		return
 	}
 	target, ok := refTarget(cmd, false)
-	if !ok || c.full() {
+	if !ok {
 		return
 	}
 	for _, base := range c.bases(file) {
@@ -324,19 +324,12 @@ func (c *refChecker) anyExists(paths []string) bool {
 	return false
 }
 
-// full reports whether the finding cap has been reached, and records the
-// truncation the first time it is.
-func (c *refChecker) full() bool {
-	if len(c.findings)-len(c.capped) < maxRefFindings {
-		return false
-	}
-	c.truncate("findings", fmt.Sprintf("reference checks stopped after %d findings", maxRefFindings))
-	return true
-}
-
-// add records a warning unless the finding cap has been reached.
+// add records a warning unless the finding cap has been reached, in which
+// case it records the truncation instead, once. Only a finding that is
+// actually dropped is reported as a truncation.
 func (c *refChecker) add(rule, file string, line int, msg string) {
-	if c.full() {
+	if len(c.findings)-len(c.capped) >= maxRefFindings {
+		c.truncate("findings", fmt.Sprintf("reference checks stopped after %d findings", maxRefFindings))
 		return
 	}
 	c.findings = append(c.findings, Finding{

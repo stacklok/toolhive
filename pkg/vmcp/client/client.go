@@ -47,6 +47,7 @@ import (
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/useragent"
 )
 
 const (
@@ -606,8 +607,10 @@ func (*httpBackendClient) newSSEClient(
 // shared by every backend transport (streamable-HTTP, SSE, and the raw Modern
 // shim). Outermost to innermost, in request execution order:
 //
-//	trace propagation → identity propagation → header-forward → authentication → TLS/HTTP
+//	trace propagation → identity propagation → header-forward → User-Agent → authentication → TLS/HTTP
 //
+// The User-Agent stage sits inside header-forward so a User-Agent an operator
+// forwards (passthroughHeaders or headerForward) wins over the vMCP default.
 // The nesting order is load-bearing: identity MUST wrap auth so the fresh
 // per-request identity is on the context before an auth strategy reads it (#5323).
 // The transport is isolated per call so each client gets its own connection pool,
@@ -657,6 +660,10 @@ func (h *httpBackendClient) buildBackendRoundTripper(
 	// runs on every backend call, so forwarding is per-request: each call reflects the current
 	// incoming header value. Restricted names and static-config collisions are rejected by
 	// MergeForwardedHeaders.
+	// Identify vMCP to the backend unless header-forward (outer) already set a
+	// User-Agent; see buildBackendRoundTripper's doc comment for the ordering.
+	baseTransport = useragent.NewRoundTripper(baseTransport)
+
 	mergedHeaderForward, mergeErr := headerforward.MergeForwardedHeaders(
 		target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx),
 	)

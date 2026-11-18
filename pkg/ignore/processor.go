@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -428,35 +429,33 @@ func (p *Processor) GetOverlayPaths(bindMount, containerPath string) []string {
 	return overlayPaths
 }
 
-// getMatchingPaths returns all paths that match the given pattern in the directory
+// getMatchingPaths returns all paths that match the given pattern in the directory.
+// A pattern ending with "/" matches only directories.
 func (*Processor) getMatchingPaths(dir, pattern string) []string {
-	var matchingPaths []string
-
-	// Handle directory patterns (ending with /)
-	if strings.HasSuffix(pattern, "/") {
-		dirPattern := strings.TrimSuffix(pattern, "/")
-		targetPath := filepath.Join(dir, dirPattern)
-		if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
-			matchingPaths = append(matchingPaths, targetPath)
-		}
-		return matchingPaths
-	}
+	dirPattern, dirOnly := strings.CutSuffix(pattern, "/")
 
 	// Handle direct file/directory matches
-	targetPath := filepath.Join(dir, pattern)
-	if _, err := os.Stat(targetPath); err == nil {
-		matchingPaths = append(matchingPaths, targetPath)
-		return matchingPaths
+	targetPath := filepath.Join(dir, dirPattern)
+	if info, err := os.Stat(targetPath); err == nil {
+		if dirOnly && !info.IsDir() {
+			return nil
+		}
+		return []string{targetPath}
 	}
 
 	// Handle glob patterns
-	matches, err := filepath.Glob(filepath.Join(dir, pattern))
+	matches, err := filepath.Glob(targetPath)
 	if err != nil {
 		slog.Debug("Error matching pattern", "pattern", pattern, "error", err)
-		return matchingPaths
+		return nil
 	}
-
-	return matches
+	if !dirOnly {
+		return matches
+	}
+	return slices.DeleteFunc(matches, func(match string) bool {
+		info, err := os.Stat(match)
+		return err != nil || !info.IsDir()
+	})
 }
 
 // patternMatchesInDirectory checks if a pattern matches any files/directories in the given directory

@@ -192,7 +192,10 @@ func (c *Collector) Flush() error {
 	return nil
 }
 
-// Shutdown performs final flush and stops background goroutines
+// Shutdown stops background goroutines and sends a final report if any tool
+// calls were counted. With nothing to report it sends nothing: an idle process
+// already announced itself through the periodic flush, and a process that is
+// restarted repeatedly would otherwise add one empty report per restart.
 func (c *Collector) Shutdown(ctx context.Context) {
 	if c.shutdown.Load() {
 		return
@@ -206,9 +209,11 @@ func (c *Collector) Shutdown(ctx context.Context) {
 		close(c.stopCh)
 	}
 
-	// Perform final flush
-	if err := c.Flush(); err != nil {
-		slog.Warn("failed to flush metrics on shutdown", "error", err)
+	// Perform final flush, unless there is nothing to report
+	if c.GetCurrentCount() > 0 {
+		if err := c.Flush(); err != nil {
+			slog.Warn("failed to flush metrics on shutdown", "error", err)
+		}
 	}
 
 	// Wait for goroutines to finish with timeout (only if started)

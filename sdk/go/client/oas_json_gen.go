@@ -21195,6 +21195,39 @@ func (s *OptSkillsScope) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes SkillsSeverity as json.
+func (o OptSkillsSeverity) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes SkillsSeverity from json.
+func (o *OptSkillsSeverity) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptSkillsSeverity to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptSkillsSeverity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptSkillsSeverity) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes SkillsSkillMetadata as json.
 func (o OptSkillsSkillMetadata) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -25022,6 +25055,16 @@ func (s *PluginsValidationResult) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.Findings != nil {
+			e.FieldStart("findings")
+			e.ArrStart()
+			for _, elem := range s.Findings {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
 		if s.Valid.Set {
 			e.FieldStart("valid")
 			s.Valid.Encode(e)
@@ -25039,10 +25082,11 @@ func (s *PluginsValidationResult) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfPluginsValidationResult = [3]string{
+var jsonFieldsNameOfPluginsValidationResult = [4]string{
 	0: "errors",
-	1: "valid",
-	2: "warnings",
+	1: "findings",
+	2: "valid",
+	3: "warnings",
 }
 
 // Decode decodes PluginsValidationResult from json.
@@ -25071,6 +25115,23 @@ func (s *PluginsValidationResult) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"errors\"")
+			}
+		case "findings":
+			if err := func() error {
+				s.Findings = make([]SkillsFinding, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem SkillsFinding
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Findings = append(s.Findings, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"findings\"")
 			}
 		case "valid":
 			if err := func() error {
@@ -34543,6 +34604,137 @@ func (s *SkillsFailureReason) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode implements json.Marshaler.
+func (s *SkillsFinding) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *SkillsFinding) encodeFields(e *jx.Encoder) {
+	{
+		if s.File.Set {
+			e.FieldStart("file")
+			s.File.Encode(e)
+		}
+	}
+	{
+		if s.Line.Set {
+			e.FieldStart("line")
+			s.Line.Encode(e)
+		}
+	}
+	{
+		if s.Message.Set {
+			e.FieldStart("message")
+			s.Message.Encode(e)
+		}
+	}
+	{
+		if s.Rule.Set {
+			e.FieldStart("rule")
+			s.Rule.Encode(e)
+		}
+	}
+	{
+		if s.Severity.Set {
+			e.FieldStart("severity")
+			s.Severity.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfSkillsFinding = [5]string{
+	0: "file",
+	1: "line",
+	2: "message",
+	3: "rule",
+	4: "severity",
+}
+
+// Decode decodes SkillsFinding from json.
+func (s *SkillsFinding) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode SkillsFinding to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "file":
+			if err := func() error {
+				s.File.Reset()
+				if err := s.File.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"file\"")
+			}
+		case "line":
+			if err := func() error {
+				s.Line.Reset()
+				if err := s.Line.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"line\"")
+			}
+		case "message":
+			if err := func() error {
+				s.Message.Reset()
+				if err := s.Message.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"message\"")
+			}
+		case "rule":
+			if err := func() error {
+				s.Rule.Reset()
+				if err := s.Rule.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rule\"")
+			}
+		case "severity":
+			if err := func() error {
+				s.Severity.Reset()
+				if err := s.Severity.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"severity\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode SkillsFinding")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *SkillsFinding) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *SkillsFinding) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes SkillsInstallStatus as json.
 func (s SkillsInstallStatus) Encode(e *jx.Encoder) {
 	e.Str(string(s))
@@ -35191,6 +35383,46 @@ func (s SkillsScope) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *SkillsScope) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes SkillsSeverity as json.
+func (s SkillsSeverity) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes SkillsSeverity from json.
+func (s *SkillsSeverity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode SkillsSeverity to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch SkillsSeverity(v) {
+	case SkillsSeverityError:
+		*s = SkillsSeverityError
+	case SkillsSeverityWarning:
+		*s = SkillsSeverityWarning
+	default:
+		*s = SkillsSeverity(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s SkillsSeverity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *SkillsSeverity) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -36507,6 +36739,16 @@ func (s *SkillsValidationResult) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.Findings != nil {
+			e.FieldStart("findings")
+			e.ArrStart()
+			for _, elem := range s.Findings {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
 		if s.Valid.Set {
 			e.FieldStart("valid")
 			s.Valid.Encode(e)
@@ -36524,10 +36766,11 @@ func (s *SkillsValidationResult) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfSkillsValidationResult = [3]string{
+var jsonFieldsNameOfSkillsValidationResult = [4]string{
 	0: "errors",
-	1: "valid",
-	2: "warnings",
+	1: "findings",
+	2: "valid",
+	3: "warnings",
 }
 
 // Decode decodes SkillsValidationResult from json.
@@ -36556,6 +36799,23 @@ func (s *SkillsValidationResult) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"errors\"")
+			}
+		case "findings":
+			if err := func() error {
+				s.Findings = make([]SkillsFinding, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem SkillsFinding
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Findings = append(s.Findings, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"findings\"")
 			}
 		case "valid":
 			if err := func() error {

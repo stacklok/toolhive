@@ -2853,6 +2853,14 @@ components:
                         type: string
                     type: array
                     uniqueItems: false
+                findings:
+                    description: |-
+                        Findings lists every error and warning with its rule ID and location.
+                        Each Errors or Warnings entry corresponds to exactly one finding.
+                    items:
+                        $ref: '#/components/schemas/SkillsFinding'
+                    type: array
+                    uniqueItems: false
                 valid:
                     description: Valid indicates whether the skill definition is valid.
                     type: boolean
@@ -4284,6 +4292,25 @@ components:
                 - FailureReasonKeySigned
                 - FailureReasonUnsignedRejected
                 - FailureReasonUnknown
+        SkillsFinding:
+            properties:
+                file:
+                    description: |-
+                        File is the slash-separated path of the affected file, relative to the
+                        validated directory.
+                    type: string
+                line:
+                    description: Line is the 1-based line in File, or 0 when unknown.
+                    type: integer
+                message:
+                    description: Message describes the problem.
+                    type: string
+                rule:
+                    description: Rule is the stable ID of the check that produced the finding.
+                    type: string
+                severity:
+                    $ref: '#/components/schemas/SkillsSeverity'
+            type: object
         SkillsInstallStatus:
             description: Status is the current installation status.
             enum:
@@ -4412,6 +4439,15 @@ components:
             x-enum-varnames:
                 - ScopeUser
                 - ScopeProject
+        SkillsSeverity:
+            description: Severity is "error" or "warning".
+            enum:
+                - error
+                - warning
+            type: string
+            x-enum-varnames:
+                - SeverityError
+                - SeverityWarning
         SkillsSkillContent:
             properties:
                 body:
@@ -4632,6 +4668,14 @@ components:
                     description: Errors is a list of validation errors, if any.
                     items:
                         type: string
+                    type: array
+                    uniqueItems: false
+                findings:
+                    description: |-
+                        Findings lists every error and warning with its rule ID and location.
+                        Each Errors or Warnings entry corresponds to exactly one finding.
+                    items:
+                        $ref: '#/components/schemas/SkillsFinding'
                     type: array
                     uniqueItems: false
                 valid:

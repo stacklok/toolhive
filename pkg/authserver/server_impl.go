@@ -571,11 +571,10 @@ func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, jwtBearerEn
 
 // decorateStorageForSPIFFE resolves the immutable association registry from the
 // validated SPIFFE trust model and installs the static overlay outside CIMD.
-// A nil cfg.SPIFFETrust means no SPIFFE associations are configured, which
-// yields a nil registry and leaves the storage chain unchanged. The returned
+// The registry is nil when no SPIFFE trust is configured or the trust config has
+// no associations, and the storage chain is then left unchanged. The returned
 // registry is also wired onto the fosite client-authentication strategy by the
-// caller (see newSPIFFEClientResolver); it is nil when no SPIFFE trust is
-// configured.
+// caller (see newSPIFFEClientResolver).
 func decorateStorageForSPIFFE(
 	ctx context.Context, cfg Config, stor storage.Storage,
 ) (storage.Storage, *SPIFFEAssociationRegistry, error) {
@@ -603,9 +602,10 @@ func decorateStorageForSPIFFE(
 // X.509-SVID and a JWT-SVID for the same association cannot reach different
 // authorization outcomes.
 //
-// It returns a nil resolver when no SPIFFE trust is configured. Returning a
-// non-nil func closing over a nil registry would make the strategy's
-// resolver != nil check pass when nothing is actually configured.
+// It returns a nil resolver when no SPIFFE trust or no SPIFFE association is
+// configured. Returning a non-nil func closing over a nil registry would make
+// the strategy's resolver != nil check pass when nothing is actually
+// configured.
 //
 // Method uses the shared leaf-package type because package server cannot
 // import authserver (authserver imports server). Package authserver aliases
@@ -627,9 +627,9 @@ func newSPIFFEClientResolver(registry *SPIFFEAssociationRegistry) oauthserver.SP
 }
 
 // newSPIFFEX509ClientMatcher returns the matcher the client-authentication
-// strategy uses to select the X.509 arm, or nil when no SPIFFE trust is
-// configured, like newSPIFFEClientResolver. A method value on a nil registry
-// would be non-nil.
+// strategy uses to select the X.509 arm, or nil when no SPIFFE trust or no
+// SPIFFE association is configured, like newSPIFFEClientResolver. A method
+// value on a nil registry would be non-nil.
 func newSPIFFEX509ClientMatcher(registry *SPIFFEAssociationRegistry) oauthserver.SPIFFEX509ClientMatcher {
 	if registry == nil {
 		return nil

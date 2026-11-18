@@ -281,19 +281,28 @@ reuse IDs between the two mechanisms.
 
 Both `/.well-known/oauth-authorization-server` and
 `/.well-known/openid-configuration` advertise the token-exchange grant in
-`grant_types_supported` by default. Setting `inbound_grants` with
-`token_exchange` omitted disables and stops advertising RFC 8693 entirely
-(`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
-— the same flag governs both registration with fosite and discovery
-advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
+`grant_types_supported` when token exchange is enabled. With no `inbound_grants`
+block it is enabled by default. Once `inbound_grants` is set, omitting its
+`token_exchange` block does not by itself turn RFC 8693 off: it stays enabled,
+and advertised, when a legacy delegate client or legacy trusted-issuer RFC 8693
+policy is present, or when any SPIFFE association lists the token-exchange
+grant. It is disabled, and no longer advertised, only when none of these is
+present (see the enablement rules in the token-only section above).
+`Config.DisableTokenExchange` and `AuthorizationServerConfig.TokenExchangeEnabled`
+carry the result. The same flag governs both registration with fosite and
+discovery advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
 includes `none`. It also includes `client_secret_basic` and
 `client_secret_post` when confidential DCR is enabled or a configured delegate
 client authenticates with a secret, so a deployment whose delegate clients all
 use `private_key_jwt` does not advertise them. It includes `private_key_jwt`, together with
 `token_endpoint_auth_signing_alg_values_supported` (the implemented algorithms),
 when `allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
-uses `private_key_jwt`. The RFC 7523 §2.1 JWT-bearer grant is advertised only
-when a trusted issuer opts into it. A private-key JWT DCR client is limited to
+uses `private_key_jwt`. It lists `spiffe_x509` and `spiffe_jwt` when some SPIFFE
+association enables that method, and `grant_types_supported` lists
+`client_credentials` when some association grants it (see
+[SPIFFE association declarations](18-spiffe-association-declarations.md)). The
+RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted issuer opts
+into it. A private-key JWT DCR client is limited to
 token exchange; it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment

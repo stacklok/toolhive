@@ -2861,7 +2861,7 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 			assert.Empty(t, trust.Associations())
 			registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
 			require.NoError(t, err)
-			require.NotNil(t, registry)
+			assert.Nil(t, registry)
 			// Every restart uses fresh memory. The initial and changed shapes
 			// name listener certificate files that do not exist, so only the
 			// SPIFFE-removed configuration can build a full server here.

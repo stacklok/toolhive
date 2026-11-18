@@ -200,6 +200,13 @@ func TestValidateSkillDir_References(t *testing.T) {
 		{name: "untagged listing without dot slash", body: "```\nscripts/x.sh\nref.md\n| scripts/x.sh | Runs X |\n```\n"},
 		{name: "document is not a script", body: "```bash\n./ref.md\nassets/logo.png\n```\n"},
 		{name: "code span in link text", body: "See [`./scripts/x.sh`](scripts/x.sh).\n"},
+		{name: "skipped command target", body: "```bash\n$DIR/scripts/x.sh\n```\n"},
+		{
+			name:    "script outside the skill is an escape, not direct exec",
+			body:    "```bash\n../scripts/x.sh\n```\n",
+			outside: map[string]string{"scripts/x.sh": ""},
+			want:    []refHit{{RuleRefEscapesRoot, "SKILL.md", 6}},
+		},
 		{name: "command -v only looks up", body: "```bash\ncommand -v ./scripts/x.sh\ncommand -V ./scripts/x.sh\n```\n"},
 		{
 			name: "file without extension",

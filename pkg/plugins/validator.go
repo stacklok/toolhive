@@ -73,14 +73,15 @@ func ValidatePluginDir(path string) (*ValidationResult, error) {
 
 	// Reuse pkg/skills.Validator for bundled skills. Each manifest.Skills entry
 	// is a relative "./..." path; strip the leading "./" to resolve it under
-	// the plugin directory. Bundled findings (errors and warnings) are
-	// reported with File relative to the plugin directory and with the
-	// legacy strings prefixed by the bundled skill path.
+	// the plugin directory. WithPluginRoot contains references by the plugin
+	// directory, because the whole plugin tree is installed. Bundled findings
+	// (errors and warnings) are reported with File relative to the plugin
+	// directory and with the legacy strings prefixed by the bundled skill path.
 	for _, skillPath := range manifest.Skills {
 		relDir := strings.TrimPrefix(skillPath, "./")
 		bundledPath := filepath.Join(path, relDir)
 		prefix := fmt.Sprintf("bundled skill %q: ", skillPath)
-		skillResult, skillErr := skills.ValidateSkillDir(bundledPath)
+		skillResult, skillErr := skills.ValidateSkillDir(bundledPath, skills.WithPluginRoot(path))
 		if skillErr != nil {
 			// I/O error (e.g. bundled path missing) — surface as a validation error,
 			// not a hard error, so the caller still gets a ValidationResult.
@@ -92,7 +93,8 @@ func ValidatePluginDir(path string) (*ValidationResult, error) {
 			}}}, relDir, prefix)
 			continue
 		}
-		res.AddPrefixedFindings(skillResult, relDir, prefix)
+		// WithPluginRoot already reports File relative to the plugin directory.
+		res.AddPrefixedFindings(skillResult, "", prefix)
 	}
 
 	res.Valid = len(res.Errors) == 0

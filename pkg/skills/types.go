@@ -128,6 +128,9 @@ type ParseResult struct {
 	Metadata      map[string]string
 	Requires      []Dependency
 	Body          []byte
+	// bodyLine is the 1-based line of the original content on which Body
+	// starts, used to report file-absolute line numbers.
+	bodyLine int
 }
 
 // SkillMetadata contains metadata about a skill.

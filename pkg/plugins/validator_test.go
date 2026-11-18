@@ -235,6 +235,22 @@ func TestValidatePluginDir_Findings(t *testing.T) {
 			wantPrefix: `bundled skill "./skills/foo": `,
 		},
 		{
+			name:     "bundled skill references are contained by the plugin",
+			manifest: `{"name":"my-plugin","description":"x","skills":["./skills/foo"]}`,
+			setup: func(t *testing.T, pluginDir string) {
+				t.Helper()
+				writeSkill(t, pluginDir, "skills/foo", "---\nname: foo\ndescription: x\n---\n"+
+					"[shared](../../shared/x.md)\n\n[out](../../../outside.md)\n")
+				require.NoError(t, os.MkdirAll(filepath.Join(pluginDir, "shared"), 0o750))
+				require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "shared", "x.md"), []byte("# X\n"), 0o600))
+			},
+			wantValid: true,
+			wantFindings: []skills.Finding{
+				{Severity: skills.SeverityWarning, Rule: skills.RuleRefEscapesRoot, File: "skills/foo/SKILL.md", Line: 7},
+			},
+			wantPrefix: `bundled skill "./skills/foo": `,
+		},
+		{
 			name:      "bundled skill directory missing",
 			manifest:  `{"name":"my-plugin","description":"x","skills":["./skills/gone"]}`,
 			wantValid: false,

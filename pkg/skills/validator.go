@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -28,11 +29,29 @@ const MaxDescriptionLength = 1024
 // Exceeding this generates a warning, not an error.
 const RecommendedMaxSkillMDLines = 500
 
+// ValidateOption configures ValidateSkillDir.
+type ValidateOption func(*validateConfig)
+
+type validateConfig struct {
+	pluginRoot string
+}
+
+// WithPluginRoot validates the skill as one bundled in the plugin at
+// pluginDir, which must be an absolute path containing the skill directory.
+// It makes two changes, both reflecting that the whole plugin tree is
+// installed together:
+//   - references are contained by the plugin directory instead of the skill
+//     directory, so "../shared/x.md" inside the plugin is not reported;
+//   - Finding.File is relative to pluginDir instead of the skill directory.
+func WithPluginRoot(pluginDir string) ValidateOption {
+	return func(c *validateConfig) { c.pluginRoot = pluginDir }
+}
+
 // ValidateSkillDir validates a skill directory at the given path.
 // I/O errors are returned as error; validation issues are returned in
 // ValidationResult, both as legacy strings and as Findings whose File is
-// relative to path.
-func ValidateSkillDir(path string) (*ValidationResult, error) {
+// relative to path (or to the plugin directory, see WithPluginRoot).
+func ValidateSkillDir(path string, opts ...ValidateOption) (*ValidationResult, error) {
 	// Defense-in-depth: sanitize and validate the path before any filesystem access.
 	// The caller (skillsvc.Validate) also validates via validateLocalPath, but we
 	// re-check here because ValidateSkillDir is exported and may be called directly.
@@ -41,11 +60,41 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 		return nil, fmt.Errorf("path must be absolute, got %q", path)
 	}
 
+	var cfg validateConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	root, skillRel := path, "."
+	if cfg.pluginRoot != "" {
+		root = filepath.Clean(cfg.pluginRoot)
+		// ValidatePluginDir only passes manifest paths that parsePluginManifest
+		// has already checked for "..", so this cannot fire through it; it
+		// guards direct callers.
+		rel, ok := relWithin(root, path)
+		if !filepath.IsAbs(root) || !ok {
+			return nil, fmt.Errorf("plugin root %q must be an absolute path containing %q", cfg.pluginRoot, path)
+		}
+		skillRel = filepath.ToSlash(rel)
+	}
+
+	res, err := validateSkillDir(path, root)
+	if err != nil {
+		return nil, err
+	}
+	for i := range res.Findings {
+		res.Findings[i].File = pathpkg.Join(skillRel, res.Findings[i].File)
+	}
+	return res, nil
+}
+
+// validateSkillDir runs every check on the skill at path, with references
+// contained by root. Finding.File is relative to path.
+func validateSkillDir(path, root string) (*ValidationResult, error) {
 	res := &ValidationResult{}
 
 	// Check SKILL.md exists
 	skillMDPath := filepath.Join(path, SkillMDFile)
-	content, err := os.ReadFile(skillMDPath) //#nosec G304 -- path is cleaned and validated as absolute above
+	content, err := os.ReadFile(skillMDPath) //#nosec G304 -- path is cleaned and validated as absolute by the caller
 	if err != nil {
 		if os.IsNotExist(err) {
 			res.AddFinding(skillMDError(RuleSkillMDMissing, "SKILL.md not found in skill directory"))
@@ -68,6 +117,9 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 		res.AddFinding(f)
 	}
 	for _, f := range collectWarnings(result, content) {
+		res.AddFinding(f)
+	}
+	for _, f := range newRefChecker(path, root).checkReferences(result.Body, result.bodyLine) {
 		res.AddFinding(f)
 	}
 

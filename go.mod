@@ -78,6 +78,7 @@ require (
 	github.com/tidwall/gjson v1.20.3
 	github.com/xeipuuv/gojsonschema v1.2.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
+	github.com/yuin/goldmark v1.8.7
 	github.com/zalando/go-keyring v0.2.8
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
 	go.opentelemetry.io/otel v1.47.0

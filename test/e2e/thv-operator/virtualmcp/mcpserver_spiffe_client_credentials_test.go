@@ -40,7 +40,6 @@ import (
 )
 
 const (
-	spiffeClientE2EImage = "kind.local/toolhive-spiffe-e2e-client/spiffe-client:latest"
 	// spiffeClientScope is the scope every SPIFFE e2e association grants and
 	// every SPIFFE token request asks for.
 	spiffeClientScope = "mcp.read"
@@ -300,7 +299,7 @@ var _ = ginkgo.Describe("MCPServer SPIFFE client credentials", ginkgo.Ordered, g
 					{Name: "mcp"},
 					{
 						Name:  "spiffe-client",
-						Image: spiffeClientE2EImage,
+						Image: images.SPIFFEClientImage,
 						// kind.local isn't a resolvable registry — the image only exists
 						// because `kind load docker-image` injected it directly into
 						// containerd. Kubernetes defaults :latest-tagged images to
@@ -448,6 +447,33 @@ var _ = ginkgo.Describe("MCPServer SPIFFE client credentials", ginkgo.Ordered, g
 			expectSPIFFETokenRejected(clientPod.Name, method, spireInfo.AgentSocketPath, issuer,
 				clientID, "https://resource.example/forbidden", http.StatusBadRequest, "invalid_target")
 		}
+	})
+
+	// The forged certificate satisfies every leaf-profile rule and names the
+	// registered SPIFFE ID, so only chain verification against the trust bundle
+	// can reject it: matching the ID text is not enough.
+	ginkgo.It("rejects a self-signed X.509 client certificate that carries the registered SPIFFE ID", func() {
+		clientPod := findSPIFFEClientBackendPod(clientServiceAccountName)
+		expectForgedSPIFFETokenRejected(clientPod.Name, "x509", issuer, clientSPIFFEID, clientID, resource)
+	})
+
+	// The forged assertion names a key ID the bundle contains, has the
+	// registered SPIFFE ID as sub and the issuer as its sole audience, but is
+	// signed by a throwaway key, so only signature verification against the
+	// bundle key can reject it.
+	ginkgo.It("rejects a JWT assertion signed with the wrong key for a key ID the trust bundle contains", func() {
+		clientPod := findSPIFFEClientBackendPod(clientServiceAccountName)
+		var bundleKeyID string
+		gomega.Eventually(func() (string, error) {
+			identity, err := fetchSPIFFEIdentity(clientPod.Name, spireInfo.AgentSocketPath, issuer)
+			bundleKeyID = identity.JWTKeyID
+			return identity.SPIFFEID, err
+		}, timeout, pollInterval).Should(gomega.Equal(clientSPIFFEID))
+		// A missing kid is also invalid_client, so prove the server accepts a
+		// genuine JWT-SVID under this kid before expecting the forged one to fail.
+		requestSPIFFEToken(clientPod.Name, "jwt", spireInfo.AgentSocketPath, issuer, clientID, resource)
+		expectForgedSPIFFETokenRejected(clientPod.Name, "jwt", issuer, clientSPIFFEID, clientID, resource,
+			"--key-id", bundleKeyID)
 	})
 
 	// Upstream swap is disabled for this suite: with it enabled the proxy refuses
@@ -848,11 +874,32 @@ func expectSPIFFETokenRejected(
 	podName, method, socketPath, issuer, clientID, resource string, status int, oauthError string,
 ) {
 	_, err := requestSPIFFETokenE(podName, method, socketPath, issuer, clientID, resource)
-	gomega.ExpectWithOffset(1, err).To(gomega.HaveOccurred(), "%s token request must be rejected", method)
-	gomega.ExpectWithOffset(1, err.Error()).To(gomega.And(
+	expectTokenEndpointRejection(err, method, status, oauthError)
+}
+
+// expectForgedSPIFFETokenRejected asserts that a token request presenting a
+// credential the trust bundle did not issue fails with invalid_client.
+func expectForgedSPIFFETokenRejected(podName, method, issuer, spiffeID, clientID, resource string, extraArgs ...string) {
+	_, err := testutil.ExecutePodCommand(ctx, defaultNamespace, podName, "spiffe-client", append([]string{
+		"/ko-app/spiffe-client",
+		"forged-token",
+		"--method", method,
+		"--spiffe-id", spiffeID,
+		"--issuer", issuer,
+		"--client-id", clientID,
+		"--resource", resource,
+		"--scope", spiffeClientScope,
+		"--server-ca-file", "/var/run/spiffe-ca/ca.crt",
+	}, extraArgs...))
+	expectTokenEndpointRejection(err, "forged "+method, http.StatusUnauthorized, "invalid_client")
+}
+
+func expectTokenEndpointRejection(err error, label string, status int, oauthError string) {
+	gomega.ExpectWithOffset(2, err).To(gomega.HaveOccurred(), "%s token request must be rejected", label)
+	gomega.ExpectWithOffset(2, err.Error()).To(gomega.And(
 		gomega.ContainSubstring(fmt.Sprintf("token endpoint returned HTTP %d", status)),
 		gomega.ContainSubstring(fmt.Sprintf(`"error":%q`, oauthError)),
-	), "%s token request", method)
+	), "%s token request", label)
 }
 
 // postMCPInitialize sends an MCP initialize request with a bearer token to

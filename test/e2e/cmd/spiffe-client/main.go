@@ -6,6 +6,9 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -13,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +28,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
@@ -65,6 +70,8 @@ func run(args []string, stdout io.Writer) error {
 		return identity(args[1:], stdout)
 	case "token":
 		return token(args[1:], stdout)
+	case "forged-token":
+		return forgedToken(args[1:], stdout)
 	default:
 		return errors.New("unknown command")
 	}
@@ -155,12 +162,7 @@ func token(args []string, stdout io.Writer) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
-	form := url.Values{
-		"grant_type": {"client_credentials"},
-		"client_id":  {*clientID},
-		"resource":   {*resource},
-		"scope":      {*scope},
-	}
+	form := clientCredentialsForm(*clientID, *resource, *scope)
 	client, err := tokenHTTPClient(*serverCAFile)
 	if err != nil {
 		return err
@@ -183,11 +185,139 @@ func token(args []string, stdout io.Writer) error {
 		form.Set("client_assertion", assertion)
 	}
 
-	endpoint, err := discoverTokenEndpoint(ctx, client, *issuer, "spiffe_"+*method)
+	return requestAndPrintToken(ctx, client, *issuer, *method, form, stdout)
+}
+
+// forgedToken requests a token with a SPIFFE credential that no trust bundle
+// issued: a self-signed X.509 certificate or a JWT signed by a throwaway key,
+// both carrying the given SPIFFE ID. It never contacts the Workload API.
+func forgedToken(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("forged-token", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	method := flags.String("method", "", "SPIFFE credential method: x509 or jwt")
+	rawSPIFFEID := flags.String("spiffe-id", "", "SPIFFE ID the forged credential claims")
+	issuer := flags.String("issuer", "", "authorization server HTTPS issuer")
+	clientID := flags.String("client-id", "", "OAuth client ID")
+	resource := flags.String("resource", "", "OAuth resource indicator")
+	scope := flags.String("scope", "", "OAuth scope")
+	serverCAFile := flags.String("server-ca-file", "", "authorization server public CA PEM file")
+	keyID := flags.String("key-id", "", "JWS kid for the jwt method; a random one when empty")
+	if err := flags.Parse(args); err != nil {
+		return errors.New("invalid forged-token arguments")
+	}
+	if flags.NArg() != 0 || !validIssuer(*issuer) || anyBlank(*clientID, *resource, *scope, *serverCAFile) {
+		return errors.New("forged-token requires all flags with a valid HTTPS issuer URL")
+	}
+	if *method != "x509" && *method != "jwt" {
+		return errors.New("forged-token method must be x509 or jwt")
+	}
+	id, err := spiffeid.FromString(*rawSPIFFEID)
+	if err != nil {
+		return fmt.Errorf("invalid SPIFFE ID: %w", err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate forged key: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	form := clientCredentialsForm(*clientID, *resource, *scope)
+	client, err := tokenHTTPClient(*serverCAFile)
 	if err != nil {
 		return err
 	}
+	switch *method {
+	case "x509":
+		certificate, err := selfSignedX509SVID(id, key)
+		if err != nil {
+			return err
+		}
+		// GetClientCertificate rather than Certificates: the Go client withholds
+		// a certificate whose issuer is not among the server's advertised client
+		// CAs, and this one never is.
+		client.Transport.(*http.Transport).TLSClientConfig.GetClientCertificate =
+			func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return certificate, nil }
+	case "jwt":
+		assertion, err := forgedJWTSVID(id, *issuer, *keyID, key)
+		if err != nil {
+			return err
+		}
+		form.Set("client_assertion_type", spiffeauth.SPIFFEJWTAssertionType)
+		form.Set("client_assertion", assertion)
+	}
+	return requestAndPrintToken(ctx, client, *issuer, *method, form, stdout)
+}
 
+// selfSignedX509SVID returns a self-signed leaf that satisfies the server's
+// X.509-SVID leaf profile, so chain verification against the trust bundle is
+// the only check it fails.
+func selfSignedX509SVID(id spiffeid.ID, key *ecdsa.PrivateKey) (*tls.Certificate, error) {
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("generate forged certificate serial: %w", err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber:          serial,
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(5 * time.Minute),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		URIs:                  []*url.URL{id.URL()},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
+	if err != nil {
+		return nil, fmt.Errorf("create forged certificate: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse forged certificate: %w", err)
+	}
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
+}
+
+// forgedJWTSVID signs a JWT-SVID-shaped assertion for id with a key no trust
+// bundle carries, within the server's assertion lifetime cap. A keyID naming a
+// bundle key makes the server reach signature verification rather than fail
+// the key lookup.
+func forgedJWTSVID(id spiffeid.ID, issuer, keyID string, key *ecdsa.PrivateKey) (string, error) {
+	if keyID == "" {
+		keyID = "forged-" + rand.Text()
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: keyID}},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create forged JWT signer: %w", err)
+	}
+	now := time.Now()
+	return jwt.Signed(signer).Claims(jwt.Claims{
+		Subject:  id.String(),
+		Audience: jwt.Audience{issuer},
+		IssuedAt: jwt.NewNumericDate(now),
+		Expiry:   jwt.NewNumericDate(now.Add(5 * time.Minute)),
+	}).Serialize()
+}
+
+func clientCredentialsForm(clientID, resource, scope string) url.Values {
+	return url.Values{
+		"grant_type": {"client_credentials"},
+		"client_id":  {clientID},
+		"resource":   {resource},
+		"scope":      {scope},
+	}
+}
+
+func requestAndPrintToken(
+	ctx context.Context, client *http.Client, issuer, method string, form url.Values, stdout io.Writer,
+) error {
+	endpoint, err := discoverTokenEndpoint(ctx, client, issuer, "spiffe_"+method)
+	if err != nil {
+		return err
+	}
 	accessToken, err := requestToken(ctx, client, endpoint, form)
 	if err != nil {
 		return err

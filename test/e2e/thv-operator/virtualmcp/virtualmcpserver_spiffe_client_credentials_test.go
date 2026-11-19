@@ -340,7 +340,7 @@ var _ = ginkgo.Describe("VirtualMCPServer SPIFFE client credentials", ginkgo.Ord
 					{Name: "mcp"},
 					{
 						Name:            "spiffe-client",
-						Image:           spiffeClientE2EImage,
+						Image:           images.SPIFFEClientImage,
 						ImagePullPolicy: corev1.PullNever,
 						Args:            []string{"hold"},
 						Env:             []corev1.EnvVar{socketEnv},

@@ -104,11 +104,6 @@ jobs:
         echo "Loading vmcp image ${VMCP_IMAGE} into kind..."
         kind load docker-image --name toolhive ${VMCP_IMAGE}
 
-        # Build and load the SPIFFE E2E client image
-        echo "Building SPIFFE E2E client image..."
-        KO_DOCKER_REPO=kind.local/toolhive-spiffe-e2e-client ko build --local -B --tags latest ./test/e2e/cmd/spiffe-client
-        kind load docker-image --name toolhive kind.local/toolhive-spiffe-e2e-client/spiffe-client:latest
-
         # Save VMCP_IMAGE for later steps
         echo "VMCP_IMAGE=${VMCP_IMAGE}" >> $GITHUB_ENV
         echo "Built and loaded vmcp image: ${VMCP_IMAGE}"
@@ -118,7 +113,7 @@ jobs:
         docker pull "$YARDSTICK_IMAGE" &
         docker pull ghcr.io/stackloklabs/gofetch/server:1.0.1 &
         docker pull ghcr.io/stackloklabs/osv-mcp/server:0.0.7 &
-        docker pull python:3.9-slim &
+        docker pull python:3.15-slim &
         docker pull curlimages/curl:8.17.0 &
         docker pull ghcr.io/huggingface/text-embeddings-inference:cpu-latest &
         docker pull ghcr.io/dexidp/dex:v2.42.0 &
@@ -130,7 +125,7 @@ jobs:
         kind load docker-image --name toolhive "$YARDSTICK_IMAGE"
         kind load docker-image --name toolhive ghcr.io/stackloklabs/gofetch/server:1.0.1
         kind load docker-image --name toolhive ghcr.io/stackloklabs/osv-mcp/server:0.0.7
-        kind load docker-image --name toolhive python:3.9-slim
+        kind load docker-image --name toolhive python:3.15-slim
         kind load docker-image --name toolhive curlimages/curl:8.17.0
         kind load docker-image --name toolhive ghcr.io/huggingface/text-embeddings-inference:cpu-latest
         kind load docker-image --name toolhive ghcr.io/dexidp/dex:v2.42.0

@@ -103,6 +103,7 @@ tasks:
     cmds:
       - ko build --local -B ./cmd/thv-operator
 
+  # The image name must match images.SPIFFEClientImage in test/e2e/images/images.go.
   build-load-spiffe-e2e-client-image:
     desc: Build and load the SPIFFE E2E client image into Kind
     cmds:
@@ -244,16 +245,14 @@ tasks:
       Full E2E test workflow: setup cluster, deploy operator, run tests, and cleanup.
       For manual testing:
         1. task kind-setup-e2e
-        2. task build-load-spiffe-e2e-client-image
-        3. task operator-install-crds
-        4. task operator-deploy-local
-        5. task thv-operator-e2e-test-run (can run multiple times)
-        6. task kind-destroy
+        2. task operator-install-crds
+        3. task operator-deploy-local
+        4. task thv-operator-e2e-test-run (can run multiple times)
+        5. task kind-destroy
     platforms: [linux, darwin]
     cmds:
       - defer: task kind-destroy
       - task: kind-setup-e2e
-      - task: build-load-spiffe-e2e-client-image
       - task: operator-install-crds
       - task: operator-deploy-local
       - task: thv-operator-e2e-test-run
@@ -267,8 +266,10 @@ tasks:
       - Operator is deployed
       - kconfig.yaml exists in project root
       Use this to re-run tests without recreating the cluster.
+      It builds and loads the SPIFFE E2E client image first.
     platforms: [linux, darwin]
     cmds:
+      - task: build-load-spiffe-e2e-client-image
       - echo "Running Ginkgo E2E tests..."
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       - |

@@ -595,7 +595,9 @@ type AuthenticationDCRUpstreamConfig struct {
 	// registers as "ToolHive MCP Client". It is display-only metadata: the
 	// upstream shows it on its authorization screen, and it is never used as
 	// a key. It is capped at 256 characters, matching the client_name bound
-	// the authserver enforces on inbound registrations.
+	// the authserver enforces on inbound registrations. Names with leading
+	// or trailing whitespace, or containing control or format characters,
+	// are rejected.
 	// Changing it does not rename an already-registered client: the cached
 	// registration is keyed without the client name, so the new value applies
 	// only the next time ToolHive registers a fresh client — for example

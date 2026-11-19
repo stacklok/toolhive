@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -3259,9 +3258,6 @@ func ValidateOIDCDCRConfig(cfg *OIDCUpstreamConfig) error {
 	if l := len(cfg.DCRConfig.SoftwareStatement); l > MaxSoftwareStatementLength {
 		return fmt.Errorf("oidcConfig.dcrConfig.softwareStatement: length %d exceeds maximum %d", l, MaxSoftwareStatementLength)
 	}
-	if l := utf8.RuneCountInString(cfg.DCRConfig.ClientName); l > MaxDCRClientNameLength {
-		return fmt.Errorf("oidcConfig.dcrConfig.clientName: length %d exceeds maximum %d", l, MaxDCRClientNameLength)
-	}
 	if err := registration.ValidateClientName(cfg.DCRConfig.ClientName); err != nil {
 		return fmt.Errorf("oidcConfig.dcrConfig.clientName: %w", err)
 	}
@@ -3318,11 +3314,6 @@ func ValidateOAuth2DCRConfig(cfg *OAuth2UpstreamConfig) error {
 		return fmt.Errorf(
 			"oauth2Config.dcrConfig.softwareStatement: length %d exceeds maximum %d",
 			l, MaxSoftwareStatementLength)
-	}
-	if l := utf8.RuneCountInString(cfg.DCRConfig.ClientName); l > MaxDCRClientNameLength {
-		return fmt.Errorf(
-			"oauth2Config.dcrConfig.clientName: length %d exceeds maximum %d",
-			l, MaxDCRClientNameLength)
 	}
 	if err := registration.ValidateClientName(cfg.DCRConfig.ClientName); err != nil {
 		return fmt.Errorf("oauth2Config.dcrConfig.clientName: %w", err)

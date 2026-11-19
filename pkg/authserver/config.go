@@ -17,7 +17,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
@@ -1554,7 +1553,9 @@ type DCRUpstreamConfig struct {
 	// registers as "ToolHive MCP Client". It is display-only metadata: the
 	// upstream shows it on its authorization screen, and it is never used as
 	// a key. It is capped at 256 characters, matching the client_name bound
-	// the authserver enforces on inbound registrations.
+	// the authserver enforces on inbound registrations. Names with leading
+	// or trailing whitespace, or containing control or format characters,
+	// are rejected.
 	//
 	// Changing it does not rename an already-registered client: the cached
 	// registration is keyed without the client name, so the new value applies
@@ -2773,13 +2774,10 @@ func (c *DCRUpstreamConfig) validateRegistrationMetadata() error {
 		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
 	}
 
-	// Mirrors the CRD's MaxLength marker on clientName and the inbound
+	// Length and character class are enforced by registration.ValidateClientName,
+	// which mirrors the CRD's MaxLength marker on clientName and the inbound
 	// registration bound (registration.MaxClientNameLength). The length is
 	// counted in characters, matching the CRD's maxLength semantics.
-	if l := utf8.RuneCountInString(c.ClientName); l > registration.MaxClientNameLength {
-		return fmt.Errorf("dcr_config: client_name must be at most %d characters",
-			registration.MaxClientNameLength)
-	}
 	if err := registration.ValidateClientName(c.ClientName); err != nil {
 		return fmt.Errorf("dcr_config: client_name: %w", err)
 	}

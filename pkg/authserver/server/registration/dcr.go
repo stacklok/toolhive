@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
@@ -87,10 +88,12 @@ const (
 	MaxSoftwareIDLength = 256
 )
 
-// ValidateClientName rejects client names that would reach an upstream
-// authorization screen verbatim with control or format runes (newlines,
-// NUL, bidi overrides, zero-width characters) or with leading or trailing
-// whitespace, including whitespace-only names that would display blank.
+// ValidateClientName rejects client names longer than MaxClientNameLength
+// characters (counted in runes, matching the CRD's maxLength semantics) and
+// names that would reach an upstream authorization screen verbatim with
+// control or format runes (newlines, NUL, bidi overrides, zero-width
+// characters) or with leading or trailing whitespace, including
+// whitespace-only names that would display blank.
 // It mirrors the consent page's displayClientName stripping
 // (pkg/authserver/server/handlers) as a rejection instead of a silent
 // strip, so a bad value fails fast at admission, reconcile, and run-config
@@ -98,6 +101,9 @@ const (
 func ValidateClientName(name string) error {
 	if name == "" {
 		return nil
+	}
+	if l := utf8.RuneCountInString(name); l > MaxClientNameLength {
+		return fmt.Errorf("must be at most %d characters", MaxClientNameLength)
 	}
 	if strings.TrimSpace(name) != name {
 		return fmt.Errorf("must not have leading or trailing whitespace")

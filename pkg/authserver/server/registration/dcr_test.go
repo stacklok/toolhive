@@ -595,6 +595,10 @@ func TestValidateClientName(t *testing.T) {
 		{name: "NUL is rejected", client: "nul\x00byte", wantErr: true},
 		{name: "bidi override is rejected", client: "a\u202eb", wantErr: true},
 		{name: "zero-width space is rejected", client: "a\u200bb", wantErr: true},
+		{name: "256 ASCII runes are accepted", client: strings.Repeat("a", MaxClientNameLength)},
+		{name: "257 ASCII runes are rejected", client: strings.Repeat("a", MaxClientNameLength+1), wantErr: true},
+		{name: "256 multibyte runes are accepted", client: strings.Repeat("あ", MaxClientNameLength)},
+		{name: "257 multibyte runes are rejected", client: strings.Repeat("あ", MaxClientNameLength+1), wantErr: true},
 	}
 
 	for _, tt := range tests {

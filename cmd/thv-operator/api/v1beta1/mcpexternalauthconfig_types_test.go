@@ -1979,7 +1979,7 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "dcrConfig.clientName: length",
+			errMsg:    "dcrConfig.clientName: must be at most 256 characters",
 		},
 		{
 			name: "OIDC provider with DCRConfig clientName at MaxLength is accepted",
@@ -2010,7 +2010,7 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "oidcConfig.dcrConfig.clientName: length",
+			errMsg:    "oidcConfig.dcrConfig.clientName: must be at most 256 characters",
 		},
 		{
 			name: "OAuth2 provider with DCRConfig clientName of 256 multibyte runes is accepted",
@@ -2045,7 +2045,7 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "dcrConfig.clientName: length",
+			errMsg:    "dcrConfig.clientName: must be at most 256 characters",
 		},
 		{
 			name: "OAuth2 provider with DCRConfig whitespace-only clientName is rejected",

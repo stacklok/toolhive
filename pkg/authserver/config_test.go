@@ -2196,7 +2196,7 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 				ClientName:           strings.Repeat("a", registration.MaxClientNameLength+1),
 			},
 			wantErr: true,
-			errMsg:  "client_name must be at most 256 characters",
+			errMsg:  "client_name: must be at most 256 characters",
 		},
 		{
 			name: "client_name with only whitespace rejects",

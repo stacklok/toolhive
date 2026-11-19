@@ -1422,6 +1422,40 @@ spec:
   `SubjectBindings`, independent of whatever `allowedActors`/`allowMayAct` that
   same issuer may also have configured for delegation.
 
+### Redemption refusal reasons
+
+Both assertion forms refuse with an `error_description` that starts with a
+reason code, so a client can act on the refusal without parsing prose. This
+holds for every refusal that carries a reason; the plain grant's two
+`subject_bindings` refusals do not (see the table). The description matches
+`^[a-z_]+(: .*)?$`: the reason, optionally followed by `: ` and a fixed hint. The hint is printable ASCII without `"` or `\` and never
+contains a claim value (`sub`, `jti`, `client_id`, issuer). The handlers build
+the error as a literal (`redemptionRefusal`) because fosite's `WithHint` puts
+its own default text before the reason.
+
+| Refusal | Plain JWT-bearer | ID-JAG |
+| --- | --- | --- |
+| Not a compact signed JWT, bad `typ` or algorithm (an assertion with such a `typ` is routed to the plain handler, never the ID-JAG one) | 400 `invalid_grant`, `invalid_assertion: <hint>` | n/a |
+| Signature or claim validation fails, issuer not enabled, assertion whose issued lifetime (`exp` − `iat`) exceeds `max_assertion_age`, replayed or expired | 400 `invalid_grant`, `invalid_assertion: <hint>` | same code and reason; the hint names an ID-JAG for the first two |
+| ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| ID-JAG whose single `resource` claim is not a valid resource URI, and the request has no `resource` parameter | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is not a valid resource URI.` |
+| Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
+| Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
+| Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
+
+`invalid_grant` means the assertion failed a validation rule, and a re-issued
+one may succeed. `access_denied` means the ID-JAG is valid but this server's
+allowlist does not permit it, and a re-issued one will not help. A client that
+retries a reasonless `invalid_grant` once with a new ID-JAG therefore stops
+retrying `invalid_assertion` refusals and the two `access_denied` refusals.
+`invalid_assertion` is only ever used with `invalid_grant`. The plain RFC 7523
+grant keeps its codes for the two `subject_bindings` refusals, because it is
+outside the ID-JAG profile. Other refusals (`invalid_request`, `invalid_client`,
+`unauthorized_client`, `server_error`) are unchanged, and so is `invalid_target`
+for a `resource` the client may not target on the plain JWT-bearer grant and on
+other grant types. On the ID-JAG grant that refusal is now `access_denied` with
+`resource_denied`, as the table shows.
+
 ### Bound ID-JAG assertions
 
 The grant type has a second assertion form: Identity Assertion Authorization
@@ -1479,8 +1513,10 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   `resource` claim holds a single valid value: draft §4.4 defines no `resource`
   parameter for redemption, so that value is used. Every other case, including
   an empty or repeated parameter, still needs exactly one parameter. A single
-  claim value that is not an absolute URI is refused with `invalid_target`, the
-  same error a requested resource gets for that. The chosen
+  claim value that is not an absolute URI is refused with `invalid_grant` and
+  `invalid_assertion`, because the fault is in the assertion. The text is fixed
+  and does not quote the claim value. A requested resource that is not a valid
+  URI still gets `invalid_target`. The chosen
   resource goes through the same subject-binding and client-audience checks.
 
 **Departures from the draft are logged, not refused.** The handler accepts some

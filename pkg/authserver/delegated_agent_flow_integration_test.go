@@ -263,7 +263,8 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			})
 		}
 		res = f.as1Env.requestIDJAGWith(t, broker, f.session, f.as2Issuer, actorPairWith("plain-error"))
-		requireRefusal(t, res, http.StatusInternalServerError, "server_error")
+		require.Equal(t, http.StatusInternalServerError, res.status, res.body)
+		assert.Equal(t, "server_error", res.body["error"])
 		// The decoded body re-encoded is equivalent to the raw body for this
 		// plain-ASCII marker.
 		raw, err := json.Marshal(res.body)
@@ -330,12 +331,9 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			assert.Equal(t, f.as1+"#"+f.sub, claims["sub"], tc.name)
 		}
 
-		// A downstream client expects invalid_assertion for a replayed
-		// ID-JAG. ToolHive sends invalid_grant with a hint only; see
-		// Authorization server: reason codes in error_description for ID-JAG
-		// redemption refusals (#7030).
+		// A replayed ID-JAG is refused with the invalid_assertion reason.
 		res := f.as2.redeem(t, f.as2.client, f.sessionIDJAG)
-		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+		requireError(t, res, "invalid_grant", "invalid_assertion: The JWT bearer assertion has already been used.")
 
 		// This ID-JAG has the same issuer, client ID and resource as
 		// a good one and differs only in aud (and in the subject claims its
@@ -347,7 +345,7 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		require.Equal(t, http.StatusOK, res.status, res.body)
 		assert.Equal(t, mark+1, a.callCount())
 		res = f.as2.redeem(t, f.as2.client, res.str(t, "access_token"))
-		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+		requireError(t, res, "invalid_grant", "invalid_assertion: The ID-JAG assertion is invalid or could not be verified.")
 
 		// AS-2 binds exactly one subject, f.sub. Another real user's ID-JAG from
 		// the same AS-1 has the same issuer, client ID, audience and resource as
@@ -365,12 +363,22 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		_, otherClaims := decodeIDJAG(t, otherIDJAG)
 		require.NotEqual(t, f.sub, otherClaims["sub"])
 		res = f.as2.redeem(t, f.as2.client, otherIDJAG)
-		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+		requireError(t, res, "access_denied", "subject_unknown")
+
+		// A requested resource outside the subject's allowed_resources is
+		// refused before the assertion is consumed, so the replayed session
+		// ID-JAG reaches the check.
+		res = postToken(t, f.as2.srv.URL, f.as2.client, url.Values{
+			"grant_type": {oauthproto.GrantTypeJWTBearer},
+			"assertion":  {f.sessionIDJAG},
+			"resource":   {"https://gw.example.net/not-allowed"},
+		})
+		requireError(t, res, "access_denied", "resource_denied")
 
 		// An AS-1 login access token is not an ID-JAG. Its typ is at+jwt, so the
 		// plain JWT-bearer handler gets it and refuses the typ.
 		res = f.as2.redeem(t, f.as2.client, f.sessionLogin)
-		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+		requireError(t, res, "invalid_grant", "invalid_assertion: The assertion JOSE typ header is not supported.")
 	})
 
 	t.Run("revoke", func(t *testing.T) {
@@ -604,14 +612,6 @@ func signMarkedLoginToken(t *testing.T, embedded *authserverrunner.EmbeddedAuthS
 	token, err := signed.CompactSerialize()
 	require.NoError(t, err)
 	return token
-}
-
-// requireRefusal checks status and error only, for refusals whose
-// error_description is a hint clients should not parse.
-func requireRefusal(t *testing.T, res tokenResult, status int, code string) {
-	t.Helper()
-	require.Equal(t, status, res.status, "error=%v error_description=%v", res.body["error"], res.body["error_description"])
-	assert.Equal(t, code, res.body["error"])
 }
 
 // flowActor is the actor validator stub of one AS-1. The actor_token value

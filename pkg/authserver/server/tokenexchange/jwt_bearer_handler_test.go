@@ -176,7 +176,8 @@ func TestJWTBearerHandler_AssertionFormAndType(t *testing.T) {
 		name           string
 		assertions     []string
 		wantCalls      int
-		wantErrContain string
+		wantErrContain string // substring of the reason, for refusals without a reason code
+		wantDesc       string // exact error_description of an invalid_grant refusal
 		wantErrIs      error
 	}{
 		{
@@ -185,11 +186,11 @@ func TestJWTBearerHandler_AssertionFormAndType(t *testing.T) {
 			// never wired into a real token endpoint on its own; see its doc
 			// comment. wantCalls == 1 proves form/type validation passed and
 			// the validator ran.
-			name:           "single plain assertion is validated but the unwired handler fails closed",
-			assertions:     []string{signAssertionWithType(t, tj, nil)},
-			wantCalls:      1,
-			wantErrContain: "issuer is not enabled",
-			wantErrIs:      fosite.ErrInvalidGrant,
+			name:       "single plain assertion is validated but the unwired handler fails closed",
+			assertions: []string{signAssertionWithType(t, tj, nil)},
+			wantCalls:  1,
+			wantDesc:   "invalid_assertion: The JWT bearer assertion issuer is not enabled for this grant.",
+			wantErrIs:  fosite.ErrInvalidGrant,
 		},
 		{
 			name:           "missing assertion is rejected",
@@ -212,22 +213,22 @@ func TestJWTBearerHandler_AssertionFormAndType(t *testing.T) {
 			// RFC 7523: JWT-validity failures (malformed, unsupported
 			// signature/typ) are invalid_grant, not invalid_request — that
 			// code is reserved for malformed request parameters.
-			name:           "malformed assertion is rejected",
-			assertions:     []string{"not-a-jwt"},
-			wantErrContain: "not a valid signed JWT",
-			wantErrIs:      fosite.ErrInvalidGrant,
+			name:       "malformed assertion is rejected",
+			assertions: []string{"not-a-jwt"},
+			wantDesc:   "invalid_assertion: The assertion is not a valid signed JWT.",
+			wantErrIs:  fosite.ErrInvalidGrant,
 		},
 		{
-			name:           "non string typ is rejected",
-			assertions:     []string{signAssertionWithType(t, tj, 1)},
-			wantErrContain: "typ header must be a string",
-			wantErrIs:      fosite.ErrInvalidGrant,
+			name:       "non string typ is rejected",
+			assertions: []string{signAssertionWithType(t, tj, 1)},
+			wantDesc:   "invalid_assertion: The assertion JOSE typ header must be a string.",
+			wantErrIs:  fosite.ErrInvalidGrant,
 		},
 		{
-			name:           "unknown typ is rejected",
-			assertions:     []string{signAssertionWithType(t, tj, "application/example+jwt")},
-			wantErrContain: "typ header is not supported",
-			wantErrIs:      fosite.ErrInvalidGrant,
+			name:       "unknown typ is rejected",
+			assertions: []string{signAssertionWithType(t, tj, "application/example+jwt")},
+			wantDesc:   "invalid_assertion: The assertion JOSE typ header is not supported.",
+			wantErrIs:  fosite.ErrInvalidGrant,
 		},
 	}
 
@@ -240,14 +241,18 @@ func TestJWTBearerHandler_AssertionFormAndType(t *testing.T) {
 			req := newJWTBearerRequest(map[string][]string{"assertion": tt.assertions})
 
 			err = h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantErrIs == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tt.wantErrIs)
+			}
+			if tt.wantDesc != "" {
+				requireRefusal(t, err, "invalid_grant", tt.wantDesc)
+			}
 			if tt.wantErrContain != "" {
-				require.Error(t, err)
 				var rfcErr *fosite.RFC6749Error
 				require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
 				assert.Contains(t, rfcErr.Reason(), tt.wantErrContain)
-				assert.ErrorIs(t, err, tt.wantErrIs)
-			} else {
-				require.NoError(t, err)
 			}
 			assert.Equal(t, tt.wantCalls, validator.calls)
 		})
@@ -339,7 +344,10 @@ func runJWTBearerPolicy(form url.Values, claims *ValidatedClaims, policy *JWTBea
 	if err != nil {
 		return err
 	}
-	return checkSubjectBinding(claims, policy, resource)
+	if err := checkSubjectBinding(claims, policy, resource); err != nil {
+		return plainBindingRefusal(err)
+	}
+	return nil
 }
 
 func TestJWTBearerPolicyChecks_ResourceAndPolicyErrors(t *testing.T) {
@@ -356,6 +364,8 @@ func TestJWTBearerPolicyChecks_ResourceAndPolicyErrors(t *testing.T) {
 		claims   *ValidatedClaims
 		want     error
 		wantCode string
+		wantDesc string
+		wantHint string
 	}{
 		{name: "missing resource", form: url.Values{}, claims: claims, want: fosite.ErrInvalidRequest},
 		{name: "repeated resource", form: url.Values{"resource": {"https://mcp.example.com", "https://mcp.example.com"}}, claims: claims, want: fosite.ErrInvalidRequest},
@@ -365,8 +375,11 @@ func TestJWTBearerPolicyChecks_ResourceAndPolicyErrors(t *testing.T) {
 			claims:   claims,
 			wantCode: "invalid_target",
 		},
-		{name: "unbound subject", form: url.Values{"resource": {"https://mcp.example.com"}}, claims: &ValidatedClaims{Subject: "other", IssuedAt: now, Expiry: now.Add(time.Minute)}, want: fosite.ErrInvalidGrant},
-		{name: "assertion too old", form: url.Values{"resource": {"https://mcp.example.com"}}, claims: &ValidatedClaims{Subject: "subject", IssuedAt: now.Add(-2 * time.Hour), Expiry: now}, want: fosite.ErrInvalidGrant},
+		{name: "unbound subject", form: url.Values{"resource": {"https://mcp.example.com"}}, claims: &ValidatedClaims{Subject: "other", IssuedAt: now, Expiry: now.Add(time.Minute)}, want: fosite.ErrInvalidGrant,
+			// The plain grant keeps fosite's invalid_grant text: no reason code.
+			wantHint: "The JWT bearer assertion subject is not configured for this grant."},
+		{name: "assertion too old", form: url.Values{"resource": {"https://mcp.example.com"}}, claims: &ValidatedClaims{Subject: "subject", IssuedAt: now.Add(-2 * time.Hour), Expiry: now}, want: fosite.ErrInvalidGrant,
+			wantDesc: "invalid_assertion: The JWT bearer assertion exceeds the configured maximum age."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -380,6 +393,14 @@ func TestJWTBearerPolicyChecks_ResourceAndPolicyErrors(t *testing.T) {
 				return
 			}
 			assert.ErrorIs(t, err, tt.want)
+			if tt.wantDesc != "" {
+				requireRefusal(t, err, "invalid_grant", tt.wantDesc)
+			}
+			if tt.wantHint != "" {
+				var oauthErr *fosite.RFC6749Error
+				require.ErrorAs(t, err, &oauthErr)
+				assert.Equal(t, tt.wantHint, oauthErr.HintField)
+			}
 		})
 	}
 }
@@ -398,8 +419,7 @@ func TestValidateAssertionType_RejectsUntrustedAlgorithms(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			err := validateAssertionType(raw)
-			require.Error(t, err)
-			assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+			requireRefusal(t, err, "invalid_grant", "invalid_assertion: The assertion is not a valid signed JWT.")
 		})
 	}
 }
@@ -438,10 +458,7 @@ func TestValidateAssertionType_Typ(t *testing.T) {
 				return
 			}
 			require.Error(t, err)
-			assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
-			var rfcErr *fosite.RFC6749Error
-			require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
-			assert.Contains(t, rfcErr.Reason(), "typ header is not supported")
+			requireRefusal(t, err, "invalid_grant", "invalid_assertion: The assertion JOSE typ header is not supported.")
 		})
 	}
 }
@@ -648,7 +665,7 @@ func TestJWTBearerHandler_RejectsNoncanonicalCompactAssertion(t *testing.T) {
 					require.NoError(t, err)
 					err = handler.HandleTokenEndpointRequest(context.Background(), newJWTBearerRequest(
 						map[string][]string{"assertion": {strings.Join(modified, ".")}}))
-					assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+					requireRefusal(t, err, "invalid_grant", "invalid_assertion: The assertion is not a valid signed JWT.")
 					assert.Zero(t, validator.calls, "noncanonical JWT must be rejected before validation")
 				})
 			}
@@ -668,7 +685,7 @@ func TestJWTBearerHandler_RejectsNoncanonicalCompactAssertion(t *testing.T) {
 			require.NoError(t, err)
 			err = handler.HandleTokenEndpointRequest(context.Background(), newJWTBearerRequest(
 				map[string][]string{"assertion": {tc.raw}}))
-			assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+			requireRefusal(t, err, "invalid_grant", "invalid_assertion: The assertion is not a valid signed JWT.")
 			assert.Zero(t, validator.calls)
 		})
 	}
@@ -698,8 +715,12 @@ func TestJWTBearerHandler_ConsumeAssertionJWTErrors(t *testing.T) {
 		name        string
 		consumerErr error
 		wantErrIs   error
+		wantDesc    string
 	}{
-		{name: "replay is rejected as invalid_grant", consumerErr: fosite.ErrJTIKnown, wantErrIs: fosite.ErrInvalidGrant},
+		{
+			name: "replay is rejected as invalid_grant", consumerErr: fosite.ErrJTIKnown, wantErrIs: fosite.ErrInvalidGrant,
+			wantDesc: "invalid_assertion: The JWT bearer assertion has already been used.",
+		},
 		{name: "storage failure surfaces as a server error", consumerErr: errors.New("redis: connection refused"), wantErrIs: fosite.ErrServerError},
 	}
 	for _, tt := range tests {
@@ -735,6 +756,9 @@ func TestJWTBearerHandler_ConsumeAssertionJWTErrors(t *testing.T) {
 			err = handler.HandleTokenEndpointRequest(context.Background(), req)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, tt.wantErrIs)
+			if tt.wantDesc != "" {
+				requireRefusal(t, err, "invalid_grant", tt.wantDesc)
+			}
 		})
 	}
 }
@@ -867,8 +891,7 @@ func TestJWTBearerHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
 	req.Form = map[string][]string{"assertion": {signAssertionWithType(t, newTestJWKS(t), nil)}}
 
 	err = handler.HandleTokenEndpointRequest(context.Background(), req)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	requireRefusal(t, err, "invalid_grant", "invalid_assertion: The JWT bearer assertion exceeds the configured maximum age.")
 	assert.NotErrorIs(t, err, fosite.ErrInvalidRequest)
 }
 
@@ -961,10 +984,7 @@ func TestJWTBearerHandler_PopulateFailsClosedOnElapsedExpiry(t *testing.T) {
 
 	err = handler.PopulateTokenEndpointResponse(context.Background(), req, responder)
 
-	require.ErrorIs(t, err, fosite.ErrInvalidGrant)
-	var oauthErr *fosite.RFC6749Error
-	require.ErrorAs(t, err, &oauthErr)
-	assert.Equal(t, "The JWT bearer assertion has expired.", oauthErr.HintField)
+	requireRefusal(t, err, "invalid_grant", "invalid_assertion: The JWT bearer assertion has expired.")
 	assert.Empty(t, responder.GetAccessToken())
 	assert.Empty(t, tokenStorage.createdSig)
 }

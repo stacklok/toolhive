@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/url"
 	"slices"
@@ -177,13 +178,13 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	}
 	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
 	if err != nil {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The ID-JAG assertion is invalid or could not be verified."))
+		return invalidAssertion("The ID-JAG assertion is invalid or could not be verified.")
 	}
 	// Same fail-closed nil-map/nil-consumer posture as the plain handler;
 	// see the comments in JWTBearerHandler.HandleTokenEndpointRequest.
 	policy, ok := h.core.policies[claims.Issuer]
 	if !ok {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The ID-JAG assertion issuer is not enabled for this grant."))
+		return invalidAssertion("The ID-JAG assertion issuer is not enabled for this grant.")
 	}
 	if h.core.consumer == nil {
 		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT-bearer grant is not fully configured."))
@@ -193,7 +194,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	// jti, and it is what makes the assertion single-use. Absence means the
 	// token is not a conforming ID-JAG; reject rather than fall back.
 	if claims.JWTID == "" {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The ID-JAG assertion must carry a 'jti' claim."))
+		return invalidAssertion("The ID-JAG assertion must carry a 'jti' claim.")
 	}
 	if err := h.checkClientBinding(requester, claims); err != nil {
 		return err
@@ -204,6 +205,11 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	}
 	if err := server.ValidateIDJAGClientAudience(
 		resource, requester.GetClient(), h.core.config.GetAudienceStrategy(ctx)); err != nil {
+		if errors.Is(err, server.ErrInvalidTarget) {
+			// A valid ID-JAG the client's audiences do not permit. The shared
+			// hint quotes the resource, which may come from the assertion.
+			return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonResourceDenied, ""))
+		}
 		return err
 	}
 	// Consume before issuing — fails closed like the plain handler: if
@@ -268,7 +274,7 @@ func checkIDJAGPolicy(
 		return "", err
 	}
 	if err := checkSubjectBinding(claims, policy, resource); err != nil {
-		return "", err
+		return "", idJAGBindingRefusal(err)
 	}
 	return resource, nil
 }
@@ -294,7 +300,8 @@ func idJAGResource(form url.Values, claims *ValidatedClaims) (string, error) {
 		return requestedResource(form)
 	}
 	if err := server.ValidateAudienceURI(values[0]); err != nil {
-		return "", errorsx.WithStack(err)
+		// The URI error can quote the claim value, which a refusal never does.
+		return "", invalidAssertion("The ID-JAG assertion resource claim is not a valid resource URI.")
 	}
 	return values[0], nil
 }
@@ -398,14 +405,14 @@ func (h *IDJAGHandler) checkClientGrant(requester fosite.AccessRequester) error 
 // handler must not depend on that staying unreachable.
 func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims *ValidatedClaims) error {
 	if claims.ClientID == "" {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The ID-JAG assertion must carry a 'client_id' claim."))
+		return invalidAssertion("The ID-JAG assertion must carry a 'client_id' claim.")
 	}
 	client := requester.GetClient()
 	if client == nil || client.GetID() == "" {
 		return errorsx.WithStack(fosite.ErrInvalidClient.WithHint("The ID-JAG grant requires an authenticated or identified client."))
 	}
 	if claims.ClientID != client.GetID() {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The ID-JAG assertion was not issued to the requesting client."))
+		return invalidAssertion("The ID-JAG assertion was not issued to the requesting client.")
 	}
 	return nil
 }

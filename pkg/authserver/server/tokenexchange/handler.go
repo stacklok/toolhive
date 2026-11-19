@@ -382,10 +382,11 @@ func (h *Handler) PopulateTokenEndpointResponse(
 // computed it, the call fails closed with the error elapsed returns
 // (invalid_grant) instead of signing a token whose exp is already in the past
 // while reporting a negative expires_in. elapsed is a function so the error and
-// its stack capture are built only on this path, not on every issuance. fosite's JWT strategy sets exp directly from the
-// session's expiry (GetExpiresAt), independent of lifespan, so letting this
-// fall through would not simply hand out a longer-lived token, it would issue
-// an already-expired one.
+// its stack capture are built only on this path, not on every issuance.
+// fosite's JWT strategy sets exp directly from the session's expiry
+// (GetExpiresAt), independent of lifespan, so letting this fall through would
+// not simply hand out a longer-lived token, it would issue an already-expired
+// one.
 func issueBoundedAccessToken(
 	ctx context.Context,
 	helper *oauth2.HandleHelper,

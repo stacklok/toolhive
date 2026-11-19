@@ -310,10 +310,11 @@ func (h *IDJAGHandler) idJAGResource(form url.Values, claims *ValidatedClaims) (
 		if values, wellFormed = idjag.ResourceClaim(claim); !wellFormed {
 			return "", invalidAssertion("The ID-JAG assertion resource claim is malformed.")
 		}
-		// The description never quotes a claim value: the URI error can, and a
-		// refusal must not echo what the IdP put in the assertion.
+		// Every governed resource passed ValidateAudienceURI at startup, so
+		// membership alone also refuses a value that is not a valid URI. The
+		// description never quotes a claim value.
 		for _, v := range values {
-			if server.ValidateAudienceURI(v) != nil || !slices.Contains(h.governedResources, v) {
+			if !slices.Contains(h.governedResources, v) {
 				return "", invalidAssertion(
 					"The ID-JAG assertion resource claim names a resource this server does not govern.")
 			}

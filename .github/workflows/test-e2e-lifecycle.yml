@@ -13,6 +13,7 @@ on:
       # image from test/e2e/images. A change there alters what these tests
       # actually deploy, so it has to trigger them.
       - 'test/e2e/images/**'
+      - 'test/e2e/cmd/spiffe-client/**'
       - '.github/workflows/test-e2e-lifecycle.yml'
 
 # Cancel superseded PR runs; keep other events independent.
@@ -112,20 +113,24 @@ jobs:
         docker pull "$YARDSTICK_IMAGE" &
         docker pull ghcr.io/stackloklabs/gofetch/server:1.0.1 &
         docker pull ghcr.io/stackloklabs/osv-mcp/server:0.0.7 &
-        docker pull python:3.9-slim &
+        docker pull python:3.15-slim &
         docker pull curlimages/curl:8.17.0 &
         docker pull ghcr.io/huggingface/text-embeddings-inference:cpu-latest &
         docker pull ghcr.io/dexidp/dex:v2.42.0 &
+        docker pull ghcr.io/spiffe/spire-server:1.15.0 &
+        docker pull ghcr.io/spiffe/spire-agent:1.15.0 &
         wait
 
         # Load all images into kind
         kind load docker-image --name toolhive "$YARDSTICK_IMAGE"
         kind load docker-image --name toolhive ghcr.io/stackloklabs/gofetch/server:1.0.1
         kind load docker-image --name toolhive ghcr.io/stackloklabs/osv-mcp/server:0.0.7
-        kind load docker-image --name toolhive python:3.9-slim
+        kind load docker-image --name toolhive python:3.15-slim
         kind load docker-image --name toolhive curlimages/curl:8.17.0
         kind load docker-image --name toolhive ghcr.io/huggingface/text-embeddings-inference:cpu-latest
         kind load docker-image --name toolhive ghcr.io/dexidp/dex:v2.42.0
+        kind load docker-image --name toolhive ghcr.io/spiffe/spire-server:1.15.0
+        kind load docker-image --name toolhive ghcr.io/spiffe/spire-agent:1.15.0
 
     - name: Deploy operator with VMCP_IMAGE
       run: |

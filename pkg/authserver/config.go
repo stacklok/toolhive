@@ -2482,8 +2482,14 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
 		}
 	}
-	return consentpolicy.Validate(
+	return ValidateConsentPolicy(
 		c.ConsentExemptClientIDs, c.AuthorizationEndpointBaseURL, c.Issuer, len(c.Upstreams))
+}
+
+// ValidateConsentPolicy checks consent-exempt client IDs and their deployment
+// prerequisites without resolving client registrations. An empty list is valid.
+func ValidateConsentPolicy(clientIDs []string, authorizationBase, issuer string, upstreamCount int) error {
+	return consentpolicy.Validate(clientIDs, authorizationBase, issuer, upstreamCount)
 }
 
 // validateDelegationAndTrustConfig groups the delegate-client and SPIFFE

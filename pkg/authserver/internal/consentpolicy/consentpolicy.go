@@ -38,7 +38,7 @@ func Validate(clientIDs []string, authorizationBase, issuer string, upstreamCoun
 		}
 	}
 
-	if upstreamCount == 0 {
+	if upstreamCount < 1 {
 		return fmt.Errorf("consent_exempt_client_ids requires at least one configured upstream")
 	}
 

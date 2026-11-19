@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
@@ -2295,8 +2296,6 @@ func (c *OAuth2UpstreamRunConfig) validateTokenEndpointAuthMethod() error {
 // were accepted, an operator updating the env-var value would not realize
 // the file source still wins (or vice versa) and would silently keep
 // presenting a stale token at registration.
-//
-//nolint:gocyclo // Field-by-field validation: each DCR field adds a branch.
 func (c *DCRUpstreamConfig) Validate() error {
 	hasDiscovery := c.DiscoveryURL != ""
 	hasRegistration := c.RegistrationEndpoint != ""
@@ -2320,17 +2319,8 @@ func (c *DCRUpstreamConfig) Validate() error {
 			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
 	}
 
-	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
-	// YAML and CLI run-config paths, which have no admission-time schema.
-	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
-		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
-	}
-
-	// Mirrors the CRD's MaxLength marker on clientName and the inbound
-	// registration bound (registration.MaxClientNameLength).
-	if len(c.ClientName) > registration.MaxClientNameLength {
-		return fmt.Errorf("dcr_config: client_name must be at most %d characters",
-			registration.MaxClientNameLength)
+	if err := c.validateRegistrationMetadata(); err != nil {
+		return err
 	}
 
 	// Mirrors the CRD's Enum marker on registrationProbe; the resolver owns
@@ -2343,6 +2333,30 @@ func (c *DCRUpstreamConfig) Validate() error {
 		return fmt.Errorf("dcr_config: %w", err)
 	}
 
+	return nil
+}
+
+// validateRegistrationMetadata checks the DCR registration metadata fields:
+// the rotation key shape and the client name length and character class.
+// Split out of Validate to keep that method's cyclomatic complexity down
+// instead of suppressing the linter.
+func (c *DCRUpstreamConfig) validateRegistrationMetadata() error {
+	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
+	// YAML and CLI run-config paths, which have no admission-time schema.
+	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
+		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
+	// Mirrors the CRD's MaxLength marker on clientName and the inbound
+	// registration bound (registration.MaxClientNameLength). The length is
+	// counted in characters, matching the CRD's maxLength semantics.
+	if l := utf8.RuneCountInString(c.ClientName); l > registration.MaxClientNameLength {
+		return fmt.Errorf("dcr_config: client_name must be at most %d characters",
+			registration.MaxClientNameLength)
+	}
+	if err := registration.ValidateClientName(c.ClientName); err != nil {
+		return fmt.Errorf("dcr_config: client_name: %w", err)
+	}
 	return nil
 }
 

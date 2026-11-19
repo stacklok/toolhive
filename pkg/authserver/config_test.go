@@ -2021,6 +2021,24 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			errMsg:  "client_name must be at most 256 characters",
 		},
 		{
+			name: "client_name with only whitespace rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				ClientName:           "   ",
+			},
+			wantErr: true,
+			errMsg:  "client_name: must not have leading or trailing whitespace",
+		},
+		{
+			name: "client_name with a control character rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				ClientName:           "name\nwith-newline",
+			},
+			wantErr: true,
+			errMsg:  "client_name: must not contain control or format characters",
+		},
+		{
 			name: "registration_probe authorizationEndpoint accepts",
 			config: DCRUpstreamConfig{
 				RegistrationEndpoint: "https://idp.example.com/register",

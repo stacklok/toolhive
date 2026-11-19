@@ -1802,8 +1802,11 @@ spec:
                                     upstream shows it on its authorization screen, and it is never used as
                                     a key. Changing it does not rename an already-registered client; the
                                     new value applies only the next time ToolHive registers a fresh client,
-                                    for example after rotating via RotationKey.
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
                                   maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
                                   type: string
                                 discoveryUrl:
                                   description: |-
@@ -2270,8 +2273,11 @@ spec:
                                     upstream shows it on its authorization screen, and it is never used as
                                     a key. Changing it does not rename an already-registered client; the
                                     new value applies only the next time ToolHive registers a fresh client,
-                                    for example after rotating via RotationKey.
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
                                   maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
                                   type: string
                                 discoveryUrl:
                                   description: |-
@@ -4961,8 +4967,11 @@ spec:
                                     upstream shows it on its authorization screen, and it is never used as
                                     a key. Changing it does not rename an already-registered client; the
                                     new value applies only the next time ToolHive registers a fresh client,
-                                    for example after rotating via RotationKey.
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
                                   maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
                                   type: string
                                 discoveryUrl:
                                   description: |-
@@ -5429,8 +5438,11 @@ spec:
                                     upstream shows it on its authorization screen, and it is never used as
                                     a key. Changing it does not rename an already-registered client; the
                                     new value applies only the next time ToolHive registers a fresh client,
-                                    for example after rotating via RotationKey.
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
                                   maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
                                   type: string
                                 discoveryUrl:
                                   description: |-

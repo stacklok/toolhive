@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 )
 
@@ -1923,9 +1925,12 @@ type DCRUpstreamConfig struct {
 	// upstream shows it on its authorization screen, and it is never used as
 	// a key. Changing it does not rename an already-registered client; the
 	// new value applies only the next time ToolHive registers a fresh client,
-	// for example after rotating via RotationKey.
+	// for example after rotating via RotationKey, or when the upstream
+	// rejects the cached registration. Names with leading or trailing
+	// whitespace, or containing control or format characters, are rejected.
 	// +optional
 	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$`
 	ClientName string `json:"clientName,omitempty"`
 
 	// DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -3149,8 +3154,11 @@ func ValidateOIDCDCRConfig(cfg *OIDCUpstreamConfig) error {
 	if l := len(cfg.DCRConfig.SoftwareStatement); l > MaxSoftwareStatementLength {
 		return fmt.Errorf("oidcConfig.dcrConfig.softwareStatement: length %d exceeds maximum %d", l, MaxSoftwareStatementLength)
 	}
-	if l := len(cfg.DCRConfig.ClientName); l > MaxDCRClientNameLength {
+	if l := utf8.RuneCountInString(cfg.DCRConfig.ClientName); l > MaxDCRClientNameLength {
 		return fmt.Errorf("oidcConfig.dcrConfig.clientName: length %d exceeds maximum %d", l, MaxDCRClientNameLength)
+	}
+	if err := registration.ValidateClientName(cfg.DCRConfig.ClientName); err != nil {
+		return fmt.Errorf("oidcConfig.dcrConfig.clientName: %w", err)
 	}
 	return nil
 }
@@ -3206,10 +3214,13 @@ func ValidateOAuth2DCRConfig(cfg *OAuth2UpstreamConfig) error {
 			"oauth2Config.dcrConfig.softwareStatement: length %d exceeds maximum %d",
 			l, MaxSoftwareStatementLength)
 	}
-	if l := len(cfg.DCRConfig.ClientName); l > MaxDCRClientNameLength {
+	if l := utf8.RuneCountInString(cfg.DCRConfig.ClientName); l > MaxDCRClientNameLength {
 		return fmt.Errorf(
 			"oauth2Config.dcrConfig.clientName: length %d exceeds maximum %d",
 			l, MaxDCRClientNameLength)
+	}
+	if err := registration.ValidateClientName(cfg.DCRConfig.ClientName); err != nil {
+		return fmt.Errorf("oauth2Config.dcrConfig.clientName: %w", err)
 	}
 	return nil
 }

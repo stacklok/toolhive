@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"testing"
 	"time"
@@ -38,6 +39,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 // TestMCPRemoteProxyValidateSpec tests the spec validation logic
@@ -416,6 +418,7 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		externalAuth        *mcpv1beta1.MCPExternalAuthConfig
 		interceptorFuncs    *interceptor.Funcs
 		expectError         bool
+		expectValidationErr bool // the error must be a terminal *obo.ValidationError
 		errContains         string
 		expectCondition     bool
 		expectedCondStatus  metav1.ConditionStatus
@@ -562,7 +565,7 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			expectCondition:     true,
 			expectedCondStatus:  metav1.ConditionFalse,
 			expectedCondReason:  testSourceInvalidReason,
-			expectedCondMessage: testSourceInvalidMessage,
+			expectedCondMessage: mirroredConditionMessage("obo-config", testSourceInvalidMessage),
 		},
 		{
 			name: "obo config without incoming OIDC is rejected as InvalidConfig",
@@ -576,6 +579,7 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 				},
 			},
 			expectError:         true,
+			expectValidationErr: true,
 			errContains:         "requires incoming authentication",
 			expectCondition:     true,
 			expectedCondStatus:  metav1.ConditionFalse,
@@ -659,6 +663,11 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 				assert.Error(t, err)
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				if tt.expectValidationErr {
+					var validationErr *obo.ValidationError
+					require.ErrorAs(t, err, &validationErr,
+						"the rejection must be terminal so Reconcile does not requeue")
 				}
 
 				// Verify condition on in-memory object for error cases
@@ -1454,6 +1463,93 @@ func TestMCPRemoteProxyReconciler_InvalidUpstreamCABundleIsTerminal(t *testing.T
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
 	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason)
+}
+
+// TestMCPRemoteProxyReconciler_OBOWithoutIncomingAuthIsTerminal drives
+// Reconcile for an MCPRemoteProxy that references a valid obo config but has no
+// oidcConfigRef. The rejection is a spec defect: Reconcile persists it on status
+// and returns an empty result with no error instead of requeueing with backoff.
+// Only a failure to persist that rejection is returned, so the write is retried.
+func TestMCPRemoteProxyReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	statusErr := stderrors.New("simulated status write failure")
+	// failRejectionWrite fails only the status write that records the obo
+	// rejection, so an unrelated earlier write cannot satisfy the assertion.
+	failRejectionWrite := interceptor.Funcs{
+		SubResourceUpdate: func(
+			ctx context.Context, c client.Client, subResource string, obj client.Object,
+			opts ...client.SubResourceUpdateOption,
+		) error {
+			if p, ok := obj.(*mcpv1beta1.MCPRemoteProxy); ok {
+				cond := meta.FindStatusCondition(p.Status.Conditions,
+					mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+				if cond != nil && cond.Reason == mcpv1beta1.ConditionReasonInvalidConfig {
+					return statusErr
+				}
+			}
+			return c.SubResource(subResource).Update(ctx, obj, opts...)
+		},
+	}
+
+	tests := []struct {
+		name        string
+		interceptor *interceptor.Funcs
+		wantErr     error
+	}{
+		{name: "rejection is persisted and not requeued"},
+		{name: "failed status write is retried", interceptor: &failRejectionWrite, wantErr: statusErr},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-config"),
+			)
+			authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  validOBOSpec(),
+				},
+			}
+			scheme := testutil.NewScheme(t)
+			builder := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(proxy, authConfig).
+				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{})
+			if tt.interceptor != nil {
+				builder = builder.WithInterceptorFuncs(*tt.interceptor)
+			}
+			fakeClient := builder.Build()
+			reconciler := &MCPRemoteProxyReconciler{
+				Client: fakeClient, Scheme: scheme, PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(proxy)})
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr, "an unpersisted rejection must be retried, not dropped")
+				return
+			}
+			require.NoError(t, err, "a spec defect must not be returned as an error (that requeues with backoff)")
+			assert.Equal(t, ctrl.Result{}, result)
+
+			actual := &mcpv1beta1.MCPRemoteProxy{}
+			require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(proxy), actual))
+			assert.Equal(t, mcpv1beta1.MCPRemoteProxyPhaseFailed, actual.Status.Phase)
+			ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+			require.NotNil(t, ready)
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			condition := meta.FindStatusCondition(actual.Status.Conditions,
+				mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+			require.NotNil(t, condition, "the rejection must be persisted, not only set in memory")
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, condition.Reason)
+			assert.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, condition.Message)
+		})
+	}
 }
 
 func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {

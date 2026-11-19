@@ -2592,8 +2592,9 @@ const (
 	// ConditionReasonEnterpriseRequired was set on obo-typed configs before OBO
 	// shipped in ToolHive itself. The operator no longer sets it.
 	//
-	// Deprecated: OBO is built in. Kept for one release so out-of-tree code
-	// that references it keeps compiling; it will be removed.
+	// Deprecated: OBO is built in. Kept only so out-of-tree code that
+	// references it keeps compiling; it will be removed once out-of-tree users
+	// are gone, see stacklok/toolhive#7200.
 	ConditionReasonEnterpriseRequired = "EnterpriseRequired"
 
 	// ConditionReasonInvalidConfig: an obo-typed MCPExternalAuthConfig is

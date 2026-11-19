@@ -269,6 +269,21 @@ func (r *MCPServerReconciler) handleInvalidCABundle(
 	})
 }
 
+// markExternalAuthConfigFailed records a handleExternalAuthConfig failure as
+// Phase=Failed / Ready=False, alongside the ExternalAuthConfigValidated
+// condition the handler already set in memory. It keeps the full-object status
+// Update the other MCPServer config handlers use, so the in-memory conditions
+// are persisted with it.
+func (r *MCPServerReconciler) markExternalAuthConfigFailed(
+	ctx context.Context,
+	mcpServer *mcpv1beta1.MCPServer,
+	err error,
+) error {
+	mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+	setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
+	return r.Status().Update(ctx, mcpServer)
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
@@ -387,23 +402,20 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 
 		// A spec defect the user must fix (e.g. obo without incoming OIDC) is
-		// recorded on status and not requeued.
+		// recorded on status and not requeued; only a failed status write is
+		// retried.
 		var validationErr *obo.ValidationError
-		terminal := stderrors.As(err, &validationErr)
-		if !terminal {
-			ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
-		}
-		// Update status to reflect the error
-		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
-		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
-			if terminal {
+		if stderrors.As(err, &validationErr) {
+			if statusErr := r.markExternalAuthConfigFailed(ctx, mcpServer, err); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
 				return ctrl.Result{}, statusErr
 			}
-		}
-		if terminal {
 			return ctrl.Result{}, nil
+		}
+
+		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
+		if statusErr := r.markExternalAuthConfigFailed(ctx, mcpServer, err); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
 		}
 		return ctrl.Result{}, err
 	}
@@ -2552,6 +2564,9 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 // preserved here: its failing input is ConfigMap content, which neither
 // generation nor configHash tracks, and the check that records it re-runs
 // earlier in this same function. Holding it would make the failure permanent.
+// Neither is an InvalidConfig mirrored from the referenced
+// MCPExternalAuthConfig (see isLocalValidationFailure): the source can heal
+// back to an unchanged ConfigHash, and holding it would then be permanent too.
 func setMCPServerExternalAuthConfigValidCondition(
 	m *mcpv1beta1.MCPServer,
 	configName, configHash string,
@@ -2559,8 +2574,7 @@ func setMCPServerExternalAuthConfigValidCondition(
 	previousCondition := meta.FindStatusCondition(
 		m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 	)
-	if previousCondition != nil &&
-		previousCondition.Status == metav1.ConditionFalse &&
+	if isLocalValidationFailure(previousCondition) &&
 		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
 		previousCondition.ObservedGeneration == m.Generation &&
 		m.Status.ExternalAuthConfigHash == configHash {

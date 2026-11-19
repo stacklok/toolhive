@@ -60,7 +60,9 @@ var _ = Describe("MCPExternalAuthConfig OBO reconcile", Label("k8s", "obo"), fun
 		createOBOConfig("obo-reconcile-valid", validOBO())
 
 		Eventually(validCondition("obo-reconcile-valid"), timeout, interval).Should(
-			And(Not(BeNil()), HaveField("Status", metav1.ConditionTrue)))
+			And(Not(BeNil()),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", "ValidationSucceeded")))
 	})
 
 	DescribeTable("reconciles a malformed obo config to Valid=False / InvalidConfig",

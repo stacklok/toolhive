@@ -7,6 +7,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -1108,7 +1109,43 @@ func TestMCPExternalAuthConfigReconciler_OBO_Validation(t *testing.T) {
 		wantReason  string
 		wantMessage string
 	}{
-		{name: "valid config", spec: validOBOSpec(), wantStatus: metav1.ConditionTrue},
+		{name: "valid config", spec: validOBOSpec(), wantStatus: metav1.ConditionTrue, wantReason: "ValidationSucceeded"},
+		{
+			name: "negative cache skew",
+			spec: func() *mcpv1beta1.OBOConfig {
+				c := validOBOSpec()
+				c.CacheSkew = &metav1.Duration{Duration: -time.Second}
+				return c
+			}(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "obo: cacheSkew must not be negative",
+		},
+		{
+			name: "cache skew above MaxInt32 seconds",
+			spec: func() *mcpv1beta1.OBOConfig {
+				c := validOBOSpec()
+				c.CacheSkew = &metav1.Duration{Duration: (math.MaxInt32 + 1) * time.Second}
+				return c
+			}(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "obo: cacheSkew is too large",
+		},
+		{
+			name:       "tenant neither guid nor domain",
+			spec:       func() *mcpv1beta1.OBOConfig { c := validOBOSpec(); c.TenantID = "not a tenant"; return c }(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "entra obo: TenantID must be a directory GUID or a domain name",
+		},
+		{
+			name: "non-loopback http authority",
+			spec: func() *mcpv1beta1.OBOConfig {
+				c := validOBOSpec()
+				c.Authority = "http://login.microsoftonline.com"
+				return c
+			}(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "entra obo: Authority must use https (http allowed only for loopback)",
+		},
 		{
 			name:       "missing tenant",
 			spec:       func() *mcpv1beta1.OBOConfig { c := validOBOSpec(); c.TenantID = ""; return c }(),
@@ -1170,8 +1207,8 @@ func TestMCPExternalAuthConfigReconciler_OBO_Validation(t *testing.T) {
 			validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 			require.NotNil(t, validCond, "Valid condition must be set for OBO-typed config")
 			assert.Equal(t, tt.wantStatus, validCond.Status)
+			assert.Equal(t, tt.wantReason, validCond.Reason)
 			if tt.wantStatus == metav1.ConditionFalse {
-				assert.Equal(t, tt.wantReason, validCond.Reason)
 				assert.Equal(t, tt.wantMessage, validCond.Message)
 			}
 		})

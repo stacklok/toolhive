@@ -943,7 +943,10 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 	case mcpv1beta1.ExternalAuthTypeOBO:
 		// Per-config name (unlike the proxyrunner pod's fixed
 		// obo.ClientSecretEnvVar): one vMCP can front several OBO backends.
-		return ctrlutil.OBOVMCPSecretEnvVar(externalAuthConfig)
+		// Deliberately bypasses a handler registered through the deprecated
+		// ctrlutil.RegisterOBOHandler: its SecretEnvVars yields one fixed name,
+		// which would collide across OBO backends in this pod.
+		return ctrlutil.OBOVMCPSecretEnvVars(externalAuthConfig)
 
 	case mcpv1beta1.ExternalAuthTypeXAA:
 		return xaaSecretEnvVars(externalAuthConfig, externalAuthConfigName), nil

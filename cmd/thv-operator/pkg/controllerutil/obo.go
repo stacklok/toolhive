@@ -6,8 +6,10 @@ package controllerutil
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,6 +29,7 @@ const (
 	//nolint:gosec // G101: validation message, not a credential.
 	msgOBOClientSecretRef  = "obo: clientSecretRef must set both name and key"
 	msgOBOCacheSkew        = "obo: cacheSkew must not be negative"
+	msgOBOCacheSkewTooBig  = "obo: cacheSkew is too large"
 	msgOBOAudienceOrScopes = "obo: at least one of audience or scopes is required"
 
 	// MsgOBORequiresIncomingAuth is the condition message for an obo external
@@ -40,7 +43,12 @@ const (
 //
 // Deprecated: OBO is built in. OBOHandler and RegisterOBOHandler are kept only
 // so out-of-tree code that still registers a handler keeps compiling; they will
-// be removed in a future release.
+// be removed once out-of-tree users are gone, see stacklok/toolhive#7200. A
+// registered handler applies to MCPServer and MCPRemoteProxy only. Its
+// SecretEnvVars is deliberately not used for VirtualMCPServer, which always
+// mounts each OBO client secret under the built-in per-config name
+// (OBOVMCPSecretEnvVars) so that two OBO backends in one vMCP pod never
+// collide on a single env var name.
 type OBOHandler struct {
 	// Validate verifies an obo-typed MCPExternalAuthConfig is well-formed.
 	Validate func(*mcpv1beta1.MCPExternalAuthConfig) error
@@ -71,7 +79,9 @@ var oboHandler = OBOHandler{
 // RegisterOBOHandler replaces the built-in OBO handler. Last-write-wins.
 // Panics if any of the three function fields is nil.
 //
-// Deprecated: OBO is built in; see OBOHandler.
+// Deprecated: OBO is built in; it will be removed once out-of-tree users are
+// gone, see stacklok/toolhive#7200. As documented on OBOHandler, the
+// registered SecretEnvVars does not apply to VirtualMCPServer.
 func RegisterOBOHandler(h OBOHandler) {
 	switch {
 	case h.Validate == nil:
@@ -162,10 +172,12 @@ func AddOBOSecretEnvVars(
 	return OBOSecretEnvVars(externalAuthConfig)
 }
 
-// OBOVMCPSecretEnvVar returns the env var that mounts an OBO client secret into
-// the vMCP pod. The name is unique per MCPExternalAuthConfig so several OBO
-// backends in one vMCP never collide.
-func OBOVMCPSecretEnvVar(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+// OBOVMCPSecretEnvVars returns the env var that mounts an OBO client secret
+// into the vMCP pod. The name is unique per MCPExternalAuthConfig
+// (GenerateUniqueOBOSecretEnvVarName) so several OBO backends in one vMCP never
+// collide. It never dispatches through a handler registered with the deprecated
+// RegisterOBOHandler: a handler's SecretEnvVars returns a single fixed name.
+func OBOVMCPSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
 	if oboSpec(cfg) == nil {
 		return nil, &obo.ValidationError{Message: msgOBOConfigRequired}
 	}
@@ -222,10 +234,12 @@ func oboProxySecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvV
 }
 
 // buildOBOMiddlewareParameters maps an OBOConfig onto obo.MiddlewareParameters
-// and validates what the CRD schema cannot express: clientId and
-// clientSecretRef presence, a non-negative cacheSkew, a usable tenant and
-// authority, and at least one of audience or scopes. Every rejection is an
-// *obo.ValidationError.
+// and validates what the CRD schema cannot express: a non-blank clientId,
+// a clientSecretRef with a non-blank name and key, a cacheSkew between zero and
+// math.MaxInt32 seconds, a usable tenant and authority, and at least one
+// non-blank audience or scope. Every rejection is an *obo.ValidationError. The
+// cacheSkew bounds match the vMCP OBO converter (cacheSkewToSeconds), so a
+// config the vMCP would reject is InvalidConfig at reconcile time.
 func buildOBOMiddlewareParameters(oboCfg *mcpv1beta1.OBOConfig) (*obo.MiddlewareParameters, error) {
 	if oboCfg == nil {
 		return nil, &obo.ValidationError{Message: msgOBOConfigRequired}
@@ -236,8 +250,13 @@ func buildOBOMiddlewareParameters(oboCfg *mcpv1beta1.OBOConfig) (*obo.Middleware
 	if err := validateOBOSecretRef(oboCfg.ClientSecretRef); err != nil {
 		return nil, err
 	}
-	if oboCfg.CacheSkew != nil && oboCfg.CacheSkew.Duration < 0 {
-		return nil, &obo.ValidationError{Message: msgOBOCacheSkew}
+	if oboCfg.CacheSkew != nil {
+		if oboCfg.CacheSkew.Duration < 0 {
+			return nil, &obo.ValidationError{Message: msgOBOCacheSkew}
+		}
+		if int64(oboCfg.CacheSkew.Duration/time.Second) > math.MaxInt32 {
+			return nil, &obo.ValidationError{Message: msgOBOCacheSkewTooBig}
+		}
 	}
 
 	// entra.TokenURL is the single source of truth for the tenant/authority to

@@ -1093,7 +1093,8 @@ Health-check probes carry no user and skip the exchange. A conditional-access
 or claims challenge fails the backend request and writes an
 `obo_token_exchange` audit event. OBO works for inline `outgoingAuth`
 backends, where the operator mounts each config's client secret under
-`TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>`, and for discovered backends
+`TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>_<HASH8>` (a short hash of the
+config name keeps names such as `my-cfg` and `my.cfg` distinct), and for discovered backends
 (MCPServer, MCPRemoteProxy, and MCPServerEntry in the group), where the
 converter reads the client secret from the referenced Secret.
 

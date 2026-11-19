@@ -16,9 +16,11 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -28,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
@@ -420,19 +423,37 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 			},
 			wantMirrored: true,
 			wantReason:   reason,
-			wantMessage:  message,
+			wantMessage:  mirroredConditionMessage(authName, message),
 		},
 		{
-			name: "source Valid=False/InvalidConfig is mirrored verbatim",
+			name: "source Valid=False/InvalidConfig keeps its reason behind the mirror marker",
 			sourceValid: &metav1.Condition{
 				Type:    mcpv1beta1.ConditionTypeValid,
 				Status:  metav1.ConditionFalse,
 				Reason:  mcpv1beta1.ConditionReasonInvalidConfig,
-				Message: "custom OBO handler rejected the spec",
+				Message: "obo: clientId is required",
 			},
 			wantMirrored: true,
 			wantReason:   mcpv1beta1.ConditionReasonInvalidConfig,
-			wantMessage:  "custom OBO handler rejected the spec",
+			wantMessage:  "Referenced MCPExternalAuthConfig 'obo-config' is invalid: obo: clientId is required",
+		},
+		{
+			// Regression guard for a stale mirror whose Reason collides with a
+			// locally-owned one: the marker, not the Reason, decides ownership.
+			name: "stale mirrored InvalidConfig is cleared when source has healed",
+			sourceValid: &metav1.Condition{
+				Type:   mcpv1beta1.ConditionTypeValid,
+				Status: metav1.ConditionTrue,
+				Reason: "ValidationSucceeded",
+			},
+			preexisting: []metav1.Condition{{
+				Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+				Message:            mirroredConditionMessage(authName, "obo: clientId is required"),
+				ObservedGeneration: 11,
+			}},
+			wantMirrored: false,
 		},
 		{
 			name: "source Valid=True does not produce a mirror",
@@ -905,6 +926,48 @@ func TestMCPServerReconciler_handleExternalAuthConfig_OBORequiresIncomingAuth(t 
 	}
 }
 
+// TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal drives Reconcile for
+// an MCPServer that references a valid obo config but has no oidcConfigRef.
+// The rejection is a spec defect, so Reconcile records it on status and returns
+// an empty result with no error rather than requeueing with backoff.
+func TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("obo-config"),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  validOBOSpec(),
+		},
+	}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authConfig).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
+	require.NoError(t, err, "a spec defect must not be returned as an error (that requeues with backoff)")
+	assert.Equal(t, ctrl.Result{}, result)
+
+	actual := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+	assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, actual.Status.Phase)
+	ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	validated := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, validated)
+	assert.Equal(t, metav1.ConditionFalse, validated.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validated.Reason)
+	assert.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, validated.Message)
+}
+
 // TestMCPServerDeployment_OBOSecretEnvVars verifies that an obo-typed
 // MCPExternalAuthConfig referenced from an MCPServer mounts the OBO client
 // secret into the proxy container under obo.ClientSecretEnvVar, and that the
@@ -997,6 +1060,74 @@ func TestMCPServerDeployment_OBOSecretEnvVars_ErrorDivergence(t *testing.T) {
 
 	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
 		"deploymentNeedsUpdate reports drift while the OBO env var cannot be produced")
+}
+
+// newLogCapturingContext returns a context carrying a controller-runtime logger
+// that records every rendered log line, and the slice it records into.
+func newLogCapturingContext(t *testing.T) (context.Context, *[]string) {
+	t.Helper()
+	var lines []string
+	logger := funcr.New(func(prefix, args string) {
+		lines = append(lines, prefix+" "+args)
+	}, funcr.Options{})
+	return log.IntoContext(t.Context(), logger), &lines
+}
+
+// TestLogOBOSecretEnvVarError verifies that an OBO secret env var error is
+// logged with its detail only when it is an *obo.ValidationError, whose message
+// is safe to surface. Any other error may name a Secret, so it is logged
+// generically with a pointer to the MCPExternalAuthConfig status.
+func TestLogOBOSecretEnvVarError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		validationMsg = "obo: clientSecretRef must set both name and key"
+		sensitiveText = "obo-secret/client-secret"
+		genericHint   = "see the referenced MCPExternalAuthConfig status for details"
+	)
+
+	tests := []struct {
+		name        string
+		err         error
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name:        "ValidationError is logged with its message",
+			err:         &obo.ValidationError{Message: validationMsg},
+			wantContain: []string{validationMsg},
+			wantAbsent:  []string{genericHint},
+		},
+		{
+			name:        "wrapped ValidationError is logged with its message",
+			err:         fmt.Errorf("resolving obo env: %w", &obo.ValidationError{Message: validationMsg}),
+			wantContain: []string{validationMsg},
+			wantAbsent:  []string{genericHint},
+		},
+		{
+			name:        "other error is redacted",
+			err:         fmt.Errorf("secret %s not found", sensitiveText),
+			wantContain: []string{genericHint},
+			wantAbsent:  []string{sensitiveText},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, lines := newLogCapturingContext(t)
+			logOBOSecretEnvVarError(ctx, tt.err)
+
+			require.Len(t, *lines, 1, "the failure must be logged exactly once")
+			for _, want := range tt.wantContain {
+				assert.Contains(t, (*lines)[0], want)
+			}
+			for _, absent := range tt.wantAbsent {
+				assert.NotContains(t, (*lines)[0], absent)
+			}
+		})
+	}
 }
 
 // TestMCPServerDeployment_TLSListenerKeepsHTTPProbes verifies that enabling the

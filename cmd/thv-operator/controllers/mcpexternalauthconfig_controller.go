@@ -348,20 +348,12 @@ func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	})
 }
 
-// triageOBOValidation runs the OBO validation and routes the result through
-// the error contract documented on obo.ValidationError:
-//
-//   - *obo.ValidationError    → permanent, Reason=InvalidConfig (the typed
-//     error's Message is written verbatim into condition.Message)
-//   - anything else           → transient; return the error wrapped so
-//     controller-runtime requeues with backoff and self-heals once the
-//     dependency recovers
-//
-// Returns handled=true to signal the caller to return immediately (with a
-// zero ctrl.Result and the returned error). handled=false means Validate
-// succeeded and the reconciler should continue with the Valid=True path.
-//
-// Extracted from Reconcile so the parent stays under the gocyclo threshold.
+// triageOBOValidation runs ctrlutil.OBOValidate on cfg and hands the result to
+// applyOBOValidationResult. The two are split only so tests can drive
+// applyOBOValidationResult with an injected error (for example a transient,
+// non-ValidationError one, which the built-in validator never returns but a
+// handler registered through the deprecated ctrlutil.RegisterOBOHandler may);
+// Reconcile always enters through this function.
 func (r *MCPExternalAuthConfigReconciler) triageOBOValidation(
 	ctx context.Context,
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
@@ -369,8 +361,19 @@ func (r *MCPExternalAuthConfigReconciler) triageOBOValidation(
 	return r.applyOBOValidationResult(ctx, cfg, ctrlutil.OBOValidate(cfg))
 }
 
-// applyOBOValidationResult routes an OBO validation error into the matching
-// bucket (see triageOBOValidation). A nil validateErr returns handled=false.
+// applyOBOValidationResult routes an OBO validation result through the error
+// contract documented on obo.ValidationError:
+//
+//   - nil                     → handled=false; the reconciler continues with
+//     the Valid=True path
+//   - *obo.ValidationError    → permanent, Reason=InvalidConfig (the typed
+//     error's Message is written verbatim into condition.Message)
+//   - anything else           → transient; return the error wrapped so
+//     controller-runtime requeues with backoff and self-heals once the
+//     dependency recovers
+//
+// handled=true tells the caller to return immediately with a zero ctrl.Result
+// and the returned error.
 func (r *MCPExternalAuthConfigReconciler) applyOBOValidationResult(
 	ctx context.Context,
 	cfg *mcpv1beta1.MCPExternalAuthConfig,

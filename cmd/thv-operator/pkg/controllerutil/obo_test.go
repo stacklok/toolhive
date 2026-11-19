@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -95,10 +96,21 @@ func TestOBOValidate(t *testing.T) {
 		{name: "non-negative cache skew", cfg: mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) {
 			c.CacheSkew = &metav1.Duration{Duration: 30 * time.Second}
 		})},
+		{name: "sub-second cache skew is accepted", cfg: mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) {
+			c.CacheSkew = &metav1.Duration{Duration: 500 * time.Millisecond}
+		})},
+		{name: "cache skew of MaxInt32 seconds is accepted", cfg: mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) {
+			c.CacheSkew = &metav1.Duration{Duration: math.MaxInt32 * time.Second}
+		})},
 		{name: "nil obo config", cfg: nil, wantMsg: msgOBOConfigRequired},
 		{
 			name:    "missing client id",
 			cfg:     mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientID = "" }),
+			wantMsg: msgOBOClientIDRequired,
+		},
+		{
+			name:    "whitespace-only client id",
+			cfg:     mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientID = " \t " }),
 			wantMsg: msgOBOClientIDRequired,
 		},
 		{
@@ -107,9 +119,36 @@ func TestOBOValidate(t *testing.T) {
 			wantMsg: msgOBOClientSecretRef,
 		},
 		{
+			name:    "client secret ref missing name",
+			cfg:     mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientSecretRef.Name = "" }),
+			wantMsg: msgOBOClientSecretRef,
+		},
+		{
+			name:    "client secret ref whitespace-only name",
+			cfg:     mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientSecretRef.Name = "  " }),
+			wantMsg: msgOBOClientSecretRef,
+		},
+		{
 			name:    "client secret ref missing key",
 			cfg:     mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientSecretRef.Key = "" }),
 			wantMsg: msgOBOClientSecretRef,
+		},
+		{
+			name:    "client secret ref whitespace-only key",
+			cfg:     mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientSecretRef.Key = "  " }),
+			wantMsg: msgOBOClientSecretRef,
+		},
+		{
+			name:    "whitespace-only audience and no scopes",
+			cfg:     mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.Audience = "   " }),
+			wantMsg: msgOBOAudienceOrScopes,
+		},
+		{
+			name: "cache skew above MaxInt32 seconds",
+			cfg: mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) {
+				c.CacheSkew = &metav1.Duration{Duration: (math.MaxInt32 + 1) * time.Second}
+			}),
+			wantMsg: msgOBOCacheSkewTooBig,
 		},
 		{
 			name: "no audience and only blank scopes",
@@ -153,6 +192,36 @@ func TestOBOValidate(t *testing.T) {
 			require.ErrorAs(t, err, &vErr, "a malformed config must be a permanent ValidationError")
 			assert.EqualError(t, err, tt.wantMsg)
 			assert.NotContains(t, err.Error(), oboTestSecretName, "the message must not name the Secret")
+		})
+	}
+}
+
+// TestBuildOBOMiddlewareParameters_CacheSkewSeconds pins the cacheSkew to
+// CacheSkewSeconds conversion: whole seconds, truncated toward zero, so a
+// sub-second skew becomes 0 (the runtime's "use the cache default"), the same
+// as the vMCP OBO converter.
+func TestBuildOBOMiddlewareParameters_CacheSkewSeconds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		skew *metav1.Duration
+		want int
+	}{
+		{name: "unset", skew: nil, want: 0},
+		{name: "sub-second truncates to zero", skew: &metav1.Duration{Duration: 999 * time.Millisecond}, want: 0},
+		{name: "fractional seconds truncate", skew: &metav1.Duration{Duration: 1500 * time.Millisecond}, want: 1},
+		{name: "upper bound", skew: &metav1.Duration{Duration: math.MaxInt32 * time.Second}, want: math.MaxInt32},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			params, err := buildOBOMiddlewareParameters(mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) {
+				c.CacheSkew = tt.skew
+			}))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, params.CacheSkewSeconds)
 		})
 	}
 }
@@ -412,22 +481,22 @@ func TestAddOBOSecretEnvVars(t *testing.T) {
 	}
 }
 
-func TestOBOVMCPSecretEnvVar_UniquePerConfig(t *testing.T) {
+func TestOBOVMCPSecretEnvVars_UniquePerConfig(t *testing.T) {
 	t.Parallel()
 
-	first, err := OBOVMCPSecretEnvVar(oboCR("backend-a", validOBOConfig()))
+	first, err := OBOVMCPSecretEnvVars(oboCR("backend-a", validOBOConfig()))
 	require.NoError(t, err)
-	second, err := OBOVMCPSecretEnvVar(oboCR("backend-b", validOBOConfig()))
+	second, err := OBOVMCPSecretEnvVars(oboCR("backend-b", validOBOConfig()))
 	require.NoError(t, err)
 
 	require.Len(t, first, 1)
 	require.Len(t, second, 1)
-	assert.Equal(t, "TOOLHIVE_OBO_CLIENT_SECRET_BACKEND_A", first[0].Name)
-	assert.Equal(t, "TOOLHIVE_OBO_CLIENT_SECRET_BACKEND_B", second[0].Name)
+	assert.NotEqual(t, first[0].Name, second[0].Name)
 	assert.Equal(t, GenerateUniqueOBOSecretEnvVarName("backend-a"), first[0].Name,
 		"the deployment and the converter enrichment must agree on the name")
+	assert.Equal(t, GenerateUniqueOBOSecretEnvVarName("backend-b"), second[0].Name)
 
-	_, err = OBOVMCPSecretEnvVar(oboCR("bad", mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientSecretRef = nil })))
+	_, err = OBOVMCPSecretEnvVars(oboCR("bad", mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientSecretRef = nil })))
 	var vErr *obo.ValidationError
 	assert.ErrorAs(t, err, &vErr)
 }

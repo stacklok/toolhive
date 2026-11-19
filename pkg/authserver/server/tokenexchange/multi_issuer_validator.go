@@ -325,6 +325,10 @@ type externalIssuerConfig struct {
 	// never be gated.
 	fetchFailedAt time.Time
 	fetchErr      error
+	// keysUnusableLoggedAt is guarded by mu and is read only once fetched is
+	// true. It limits the post-fetch "keys unusable" Error line (see
+	// logKeySetUnusable) to one per jwksFetchFailureBackoff.
+	keysUnusableLoggedAt time.Time
 }
 
 // newActorMatcherEngine creates a CEL engine for admin-authored actor matcher
@@ -925,10 +929,11 @@ func (v *MultiIssuerTokenValidator) ensureRegistered(ctx context.Context, issuer
 	}
 
 	if err := v.registerOrRefresh(ctx, issuerConfig); err != nil {
-		// This is the only line logged for an issuer outage. Replayed errors
-		// inside the backoff window return above without reaching it, so an
-		// issuer logs at most one line per jwksFetchFailureBackoff. The
-		// per-request refusal is logged at Debug by the token endpoint.
+		// This is the pre-fetch outage line; logKeySetUnusable logs the
+		// post-fetch one. Replayed errors inside the backoff window return
+		// above without reaching it, so an issuer logs at most one line per
+		// jwksFetchFailureBackoff from each. The per-request refusal is logged
+		// at Debug by the token endpoint.
 		slog.Error("issuer signing keys unavailable; assertions from this issuer are refused until the next fetch attempt",
 			"issuer", issuerConfig.IssuerURL, "error", err, "retry_after", jwksFetchFailureBackoff)
 		issuerConfig.fetchErr = err
@@ -1042,6 +1047,27 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 		return nil, err
 	}
 
+	jwks, err := v.usableJWKS(ctx, issuerConfig)
+	if err != nil {
+		// A request that ended (client disconnect, deadline) is not an issuer
+		// fault, so only log while the request context is still live. mu is
+		// not held here: ensureRegistered has already released it.
+		if ctx.Err() == nil {
+			logKeySetUnusable(issuerConfig, err)
+		}
+		return nil, err
+	}
+	return jwks, nil
+}
+
+// usableJWKS reads issuerConfig's cached key set and converts it to a
+// jose.JSONWebKeySet, refusing a set that is empty after dropping unsupported
+// keys or that exceeds maxJWKSKeys. It runs only after ensureRegistered has
+// succeeded.
+func (*MultiIssuerTokenValidator) usableJWKS(
+	ctx context.Context,
+	issuerConfig *externalIssuerConfig,
+) (*jose.JSONWebKeySet, error) {
 	set, err := issuerConfig.jwksCache.Lookup(ctx, issuerConfig.jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
@@ -1060,6 +1086,22 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 	}
 
 	return jwks, nil
+}
+
+// logKeySetUnusable logs, at Error, that issuerConfig's fetched key set could
+// not be used, at most once per jwksFetchFailureBackoff per issuer. It takes
+// issuerConfig.mu, so the caller must not hold it.
+func logKeySetUnusable(issuerConfig *externalIssuerConfig, err error) {
+	issuerConfig.mu.Lock()
+	if time.Since(issuerConfig.keysUnusableLoggedAt) < jwksFetchFailureBackoff {
+		issuerConfig.mu.Unlock()
+		return
+	}
+	issuerConfig.keysUnusableLoggedAt = time.Now()
+	issuerConfig.mu.Unlock()
+
+	slog.Error("issuer signing keys unusable; assertions from this issuer are refused until its key set changes",
+		"issuer", issuerConfig.IssuerURL, "error", err)
 }
 
 // bridgeJWKSet converts a jwx jwk.Set into the go-jose jose.JSONWebKeySet

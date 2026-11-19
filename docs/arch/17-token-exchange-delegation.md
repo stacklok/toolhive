@@ -1459,7 +1459,11 @@ caller can trigger one. The cause is logged at Error once per 30-second backoff
 window per issuer, naming the issuer, when the server attempts a fetch and it
 fails. That line also covers discovery failures and an invalid or mismatched
 discovery document or `jwks_uri`, which retrying does not fix. It only covers
-failures before a usable key set exists. When keys are in hand and the token's `kid` is
+failures before a usable key set exists. A fetched key set that the server cannot
+use (an empty key set, a cache lookup failure, only unsupported keys, or too many
+keys) also returns this
+503, and its cause is logged at Error once per 30-second window per issuer with the
+message "issuer signing keys unusable". When keys are in hand and the token's `kid` is
 not among them, even after the server refreshes the keys, the refusal stays
 `invalid_assertion`, so a freshly rotated `kid` that arrives while the issuer's
 key endpoint is down gets `invalid_assertion` until the keys are reachable.

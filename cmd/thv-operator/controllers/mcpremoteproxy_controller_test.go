@@ -530,11 +530,9 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			// Mirror added for #5347: when the referenced MCPExternalAuthConfig
-			// has Status.Conditions[Valid]=False (e.g. obo-typed configs that
-			// the default OBO handler rejected with Reason=EnterpriseRequired
-			// in upstream-only builds), the proxy reconciler must surface a
-			// parallel ExternalAuthConfigValidated=False with the same reason
-			// and message.
+			// has Status.Conditions[Valid]=False, the proxy reconciler must
+			// surface a parallel ExternalAuthConfigValidated=False with the
+			// same reason and message.
 			name: "referenced config Valid=False is mirrored onto the proxy",
 			proxy: v1beta1test.NewMCPRemoteProxy("obo-mirror-proxy", "default",
 				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-config"),
@@ -554,17 +552,53 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					Conditions: []metav1.Condition{{
 						Type:    mcpv1beta1.ConditionTypeValid,
 						Status:  metav1.ConditionFalse,
-						Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-						Message: "on-behalf-of (OBO) external auth type requires an enterprise build",
+						Reason:  testSourceInvalidReason,
+						Message: testSourceInvalidMessage,
 					}},
 				},
 			},
 			expectError:         true,
-			errContains:         "EnterpriseRequired",
+			errContains:         testSourceInvalidReason,
 			expectCondition:     true,
 			expectedCondStatus:  metav1.ConditionFalse,
-			expectedCondReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-			expectedCondMessage: "on-behalf-of (OBO) external auth type requires an enterprise build",
+			expectedCondReason:  testSourceInvalidReason,
+			expectedCondMessage: testSourceInvalidMessage,
+		},
+		{
+			name: "obo config without incoming OIDC is rejected as InvalidConfig",
+			proxy: v1beta1test.NewMCPRemoteProxy("obo-no-oidc-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-valid")),
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-valid", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
+				},
+			},
+			expectError:         true,
+			errContains:         "requires incoming authentication",
+			expectCondition:     true,
+			expectedCondStatus:  metav1.ConditionFalse,
+			expectedCondReason:  mcpv1beta1.ConditionReasonInvalidConfig,
+			expectedCondMessage: ctrlutil.MsgOBORequiresIncomingAuth,
+		},
+		{
+			name: "obo config with incoming OIDC is accepted",
+			proxy: v1beta1test.NewMCPRemoteProxy("obo-oidc-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-valid"),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc"}
+				})),
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-valid", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
+				},
+			},
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
 		},
 		{
 			name: "embedded auth server with multiple upstreams rejected",

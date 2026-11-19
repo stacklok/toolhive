@@ -152,12 +152,10 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
 
-	// Dispatch OBO-typed configs through the registered handler. The default
-	// handler returns obo.ErrEnterpriseRequired so upstream-only builds surface
-	// Valid=False / Reason=EnterpriseRequired here rather than failing later
-	// inside a consumer reconciler with a generic "unsupported" error. The OBO
-	// failure path routes through setInvalid, which applies the advisory inside
-	// its own patch closure.
+	// Validate OBO-typed configs beyond what the CRD schema can express (tenant
+	// and authority shape, secret reference, audience or scopes). The failure
+	// path routes through setInvalid, which applies the advisory inside its own
+	// patch closure.
 	if externalAuthConfig.Spec.Type == mcpv1beta1.ExternalAuthTypeOBO {
 		if handled, err := r.triageOBOValidation(ctx, externalAuthConfig); handled {
 			return ctrl.Result{}, err
@@ -350,15 +348,14 @@ func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	})
 }
 
-// triageOBOValidation runs the registered OBO handler's Validate and routes
-// the result through the three-bucket contract documented on OBOHandler:
+// triageOBOValidation runs the OBO validation and routes the result through
+// the error contract documented on obo.ValidationError:
 //
-//   - ErrEnterpriseRequired   → permanent, Reason=EnterpriseRequired
 //   - *obo.ValidationError    → permanent, Reason=InvalidConfig (the typed
 //     error's Message is written verbatim into condition.Message)
 //   - anything else           → transient; return the error wrapped so
 //     controller-runtime requeues with backoff and self-heals once the
-//     upstream dependency (Secret/JWKS/webhook) recovers
+//     dependency recovers
 //
 // Returns handled=true to signal the caller to return immediately (with a
 // zero ctrl.Result and the returned error). handled=false means Validate
@@ -369,31 +366,33 @@ func (r *MCPExternalAuthConfigReconciler) triageOBOValidation(
 	ctx context.Context,
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
 ) (handled bool, err error) {
-	validateErr := ctrlutil.OBOValidate(cfg)
+	return r.applyOBOValidationResult(ctx, cfg, ctrlutil.OBOValidate(cfg))
+}
+
+// applyOBOValidationResult routes an OBO validation error into the matching
+// bucket (see triageOBOValidation). A nil validateErr returns handled=false.
+func (r *MCPExternalAuthConfigReconciler) applyOBOValidationResult(
+	ctx context.Context,
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+	validateErr error,
+) (handled bool, err error) {
 	if validateErr == nil {
 		return false, nil
 	}
-	switch {
-	case stderrors.Is(validateErr, obo.ErrEnterpriseRequired):
-		return true, r.setInvalid(ctx, cfg, validateErr, mcpv1beta1.ConditionReasonEnterpriseRequired)
-	default:
-		var valErr *obo.ValidationError
-		if stderrors.As(validateErr, &valErr) {
-			return true, r.setInvalid(ctx, cfg, valErr, mcpv1beta1.ConditionReasonInvalidConfig)
-		}
-		// Transient: return the error so controller-runtime requeues with
-		// backoff. Locking the resource into a permanent InvalidConfig on a
-		// transient I/O blip would require the user to touch the spec for
-		// the failure to clear, defeating self-healing.
-		return true, fmt.Errorf("OBO handler validation failed: %w", validateErr)
+	var valErr *obo.ValidationError
+	if stderrors.As(validateErr, &valErr) {
+		return true, r.setInvalid(ctx, cfg, valErr, mcpv1beta1.ConditionReasonInvalidConfig)
 	}
+	// Transient: return the error so controller-runtime requeues with backoff.
+	// Locking the resource into a permanent InvalidConfig on a transient I/O
+	// blip would require the user to touch the spec for the failure to clear.
+	return true, fmt.Errorf("OBO validation failed: %w", validateErr)
 }
 
 // setInvalid writes a Valid=False condition through MutateAndPatchStatus,
 // using the supplied reason string and the error's message as the condition
-// message. Returns an empty result with no requeue: the spec must change (or
-// an out-of-tree handler must be registered) for this branch to clear, so
-// requeuing buys nothing.
+// message. Returns an empty result with no requeue: the spec must change for
+// this branch to clear, so requeuing buys nothing.
 //
 // The IdentitySynthesized advisory is recomputed inside the patch closure so
 // both the advisory transition (e.g., when a user switches a config from

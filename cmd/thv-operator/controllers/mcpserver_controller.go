@@ -386,12 +386,24 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, nil
 		}
 
-		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
+		// A spec defect the user must fix (e.g. obo without incoming OIDC) is
+		// recorded on status and not requeued.
+		var validationErr *obo.ValidationError
+		terminal := stderrors.As(err, &validationErr)
+		if !terminal {
+			ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
+		}
 		// Update status to reflect the error
 		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
+			if terminal {
+				return ctrl.Result{}, statusErr
+			}
+		}
+		if terminal {
+			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -1190,13 +1202,12 @@ func (r *MCPServerReconciler) imagePullSecretsForMCPServer(
 }
 
 // logOBOSecretEnvVarError logs an error from OBO secret env var generation
-// without leaking sensitive detail. The OBOHandler error contract only
-// guarantees *obo.ValidationError.Message is safe to surface; the transient
-// bucket (e.g. "secret obo-secret/client-secret not found", JWKS URLs) carries
-// no such guarantee, so anything that is not a ValidationError is logged
-// generically with a pointer to the MCPExternalAuthConfig status, which the
-// MCPExternalAuthConfig reconciler populates with the triaged detail. Shared by
-// the MCPServer and MCPRemoteProxy proxy-env builders.
+// without leaking sensitive detail. Only *obo.ValidationError.Message is
+// guaranteed safe to surface; other errors (e.g. "secret obo-secret/client-secret
+// not found") carry no such guarantee, so anything that is not a
+// ValidationError is logged generically with a pointer to the
+// MCPExternalAuthConfig status, which its reconciler populates with the triaged
+// detail. Shared by the MCPServer and MCPRemoteProxy proxy-env builders.
 func logOBOSecretEnvVarError(ctx context.Context, err error) {
 	logger := log.FromContext(ctx)
 	var validationErr *obo.ValidationError
@@ -1347,9 +1358,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			env = append(env, tokenExchangeEnvVars...)
 		}
 
-		// Add OBO secret environment variables. Dispatched through the
-		// registered OBO handler; inert (no env vars) in builds without one.
-		// Must mirror deploymentNeedsUpdate exactly to avoid reconcile drift.
+		// Add OBO secret environment variables. Must mirror
+		// deploymentNeedsUpdate exactly to avoid reconcile drift.
 		oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
 			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
 		)
@@ -2037,12 +2047,10 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			// Add OBO secret environment variables. Must mirror
 			// deploymentForMCPServer exactly (same call, same position) so a
 			// correctly-configured resource does not look perpetually drifted.
-			// In handler-less builds the dispatcher swallows ErrEnterpriseRequired
-			// to (nil, nil), keeping this path symmetric with the builder. A
-			// genuine handler error returns true here while the builder logs and
-			// continues, so as long as the handler keeps erroring the operator
-			// re-applies an identical (OBO-env-less) Deployment each reconcile; it
-			// stops only once the handler succeeds. This mirrors the token-exchange
+			// An error returns true here while the builder logs and continues,
+			// so as long as it keeps erroring the operator re-applies an
+			// identical (OBO-env-less) Deployment each reconcile; it stops once
+			// the config is fixed. This mirrors the token-exchange
 			// block above; unifying both (requeue on genuine error so neither side
 			// acts) is out of scope for this change.
 			oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
@@ -2458,10 +2466,22 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	}
 
 	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
-	// the MCPServer so the failure is visible on the consumer CR (e.g. obo-typed
-	// configs surface Valid=False/EnterpriseRequired here without the user
-	// having to inspect the referenced MCPExternalAuthConfig).
+	// the MCPServer so the failure is visible on the consumer CR without the
+	// user having to inspect the referenced MCPExternalAuthConfig.
 	if mirrored, err := mirrorInvalidOnMCPServer(m, externalAuthConfig); mirrored {
+		return err
+	}
+
+	// OBO exchanges the authenticated user's token, so it needs incoming OIDC
+	// authentication. Terminal: the caller records it without requeueing.
+	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, m.Spec.OIDCConfigRef != nil); err != nil {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            err.Error(),
+			ObservedGeneration: m.Generation,
+		})
 		return err
 	}
 

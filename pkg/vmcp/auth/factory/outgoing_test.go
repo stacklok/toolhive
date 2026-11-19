@@ -5,14 +5,13 @@ package factory
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/env"
-	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -149,31 +148,21 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		assert.NoError(t, err, "unauthenticated strategy should accept empty strategy")
 	})
 
-	t.Run("obo strategy default stub returns ErrEnterpriseRequired", func(t *testing.T) {
+	t.Run("obo strategy is the built-in Entra OBO strategy", func(t *testing.T) {
 		t.Parallel()
 
-		ctx := context.Background()
-		envReader := &env.OSReader{}
-		registry, err := NewOutgoingAuthRegistry(ctx, envReader)
+		registry, err := NewOutgoingAuthRegistry(context.Background(), &env.OSReader{})
 		require.NoError(t, err)
 
 		strategy, err := registry.GetStrategy(authtypes.StrategyTypeOBO)
 		require.NoError(t, err, "obo strategy should be registered")
-		require.NotNil(t, strategy)
+		assert.IsType(t, &strategies.OBOStrategy{}, strategy)
 
-		assert.Equal(t, authtypes.StrategyTypeOBO, strategy.Name())
-
-		cfg := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO}
-
-		err = strategy.Validate(cfg)
+		// A config with no token URL is rejected by the real validator, not by a
+		// licensing stub.
+		err = strategy.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired, "Validate: default obo stub must return ErrEnterpriseRequired")
-
-		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com", nil)
-		require.NoError(t, reqErr)
-		err = strategy.Authenticate(req.Context(), req, cfg)
-		require.Error(t, err)
-		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired, "Authenticate: default obo stub must return ErrEnterpriseRequired")
+		assert.ErrorContains(t, err, "OBO configuration is required")
 	})
 
 	t.Run("all strategies have correct names", func(t *testing.T) {

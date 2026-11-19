@@ -16,8 +16,8 @@ import (
 // Status Condition Parity machinery for #5347. The probe reads a referenced
 // MCPExternalAuthConfig's Valid condition; the per-consumer mirror functions
 // transcribe its reason+message onto the consumer CR's parallel condition.
-// Without this, an obo-typed MCPExternalAuthConfig in an upstream-only build
-// surfaces EnterpriseRequired only on the referenced resource and the consumer
+// Without this, an invalid MCPExternalAuthConfig (for example a malformed obo
+// config) surfaces its reason only on the referenced resource and the consumer
 // status reports only the generic dispatch failure.
 
 // fallbackInvalidReason is substituted when a source surfaces Valid=False with

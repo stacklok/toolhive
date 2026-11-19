@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 // MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
@@ -182,8 +183,12 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			}
 			return ctrl.Result{}, nil
 		}
+		// A spec defect the user must fix (e.g. obo without incoming OIDC) has
+		// already been recorded on status; do not requeue.
+		var validationErr *obo.ValidationError
 		if stderrors.Is(err, errInvalidMCPRemoteProxyPodTemplateSpec) ||
-			stderrors.Is(err, errTerminalCABundleHandled) {
+			stderrors.Is(err, errTerminalCABundleHandled) ||
+			stderrors.As(err, &validationErr) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -1014,10 +1019,22 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	}
 
 	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
-	// the MCPRemoteProxy so the failure is visible on the consumer CR (e.g.
-	// obo-typed configs surface Valid=False/EnterpriseRequired here without the
-	// user having to inspect the referenced MCPExternalAuthConfig).
+	// the MCPRemoteProxy so the failure is visible on the consumer CR without
+	// the user having to inspect the referenced MCPExternalAuthConfig.
 	if mirrored, err := mirrorInvalidOnRemoteProxy(proxy, externalAuthConfig); mirrored {
+		return err
+	}
+
+	// OBO exchanges the authenticated user's token, so it needs incoming OIDC
+	// authentication. Terminal: Reconcile records it without requeueing.
+	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, proxy.Spec.OIDCConfigRef != nil); err != nil {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            err.Error(),
+			ObservedGeneration: proxy.Generation,
+		})
 		return err
 	}
 

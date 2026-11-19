@@ -802,6 +802,11 @@ func (*Converter) convertExternalAuthConfigToStrategy(
 		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
 		strategy.HeaderInjection.HeaderValueEnv = controllerutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
+	if strategy.OBO != nil &&
+		externalAuthConfig.Spec.OBO != nil &&
+		externalAuthConfig.Spec.OBO.ClientSecretRef != nil {
+		strategy.OBO.ClientSecretEnv = controllerutil.GenerateUniqueOBOEnvVarName(externalAuthConfig.Name)
+	}
 
 	return strategy, nil
 }

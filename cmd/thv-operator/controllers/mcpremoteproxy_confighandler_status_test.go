@@ -75,8 +75,8 @@ func TestMCPRemoteProxyConfigHandlerFailuresClearTheStaleReadyCondition(t *testi
 				Status: mcpv1beta1.MCPExternalAuthConfigStatus{Conditions: []metav1.Condition{{
 					Type:    mcpv1beta1.ConditionTypeValid,
 					Status:  metav1.ConditionFalse,
-					Reason:  "EnterpriseRequired",
-					Message: "this type requires an enterprise license",
+					Reason:  testSourceInvalidReason,
+					Message: testSourceInvalidMessage,
 				}}},
 			}},
 		},

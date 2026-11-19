@@ -16,7 +16,6 @@ package controllers
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -34,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -384,9 +384,8 @@ func TestMCPServerReconciler_handleExternalAuthConfig_NoHashInConfig(t *testing.
 
 // TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition verifies
 // the Status Condition Parity mirror added for #5347: when the referenced
-// MCPExternalAuthConfig has Status.Conditions[Valid]=False (e.g. an obo-typed
-// config that the default OBO handler rejected with Reason=EnterpriseRequired
-// in upstream-only builds), the MCPServer reconciler must surface a parallel
+// MCPExternalAuthConfig has Status.Conditions[Valid]=False, the MCPServer
+// reconciler must surface a parallel
 // ExternalAuthConfigValidated=False condition that carries the same reason and
 // message — instead of silently propagating the dispatch error through the
 // generic phase-Failed path.
@@ -399,8 +398,8 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 	const (
 		authName  = "obo-config"
 		namespace = "default"
-		reason    = mcpv1beta1.ConditionReasonEnterpriseRequired
-		message   = "on-behalf-of (OBO) external auth type requires an enterprise build"
+		reason    = testSourceInvalidReason
+		message   = testSourceInvalidMessage
 	)
 
 	tests := []struct {
@@ -412,7 +411,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 		wantMessage  string
 	}{
 		{
-			name: "source Valid=False/EnterpriseRequired is mirrored",
+			name: "source Valid=False/SourceRejected is mirrored",
 			sourceValid: &metav1.Condition{
 				Type:    mcpv1beta1.ConditionTypeValid,
 				Status:  metav1.ConditionFalse,
@@ -463,7 +462,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 			preexisting: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
-				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Reason:  testSourceInvalidReason,
 				Message: "stale mirror from a previous reconcile",
 			}},
 			wantMirrored: false,
@@ -494,6 +493,9 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Conditions: tt.preexisting}),
 				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 					m.Generation = serverGeneration
+					// obo needs incoming OIDC; without it the handler
+					// rejects the server before the success writer runs.
+					m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc"}
 				}),
 			)
 
@@ -556,7 +558,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnRefRemoved(t
 			Conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
-				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Reason:  testSourceInvalidReason,
 				Message: "stale mirror from when the ref pointed at an obo-typed config",
 			}},
 		}),
@@ -597,7 +599,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 			Conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
-				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Reason:  testSourceInvalidReason,
 				Message: "stale mirror — source has since been deleted",
 			}},
 		}),
@@ -839,32 +841,79 @@ func TestMCPServerReconciler_ExternalAuthConfigRefInvalidEmbeddedConfigSteadySta
 	assert.Equal(t, initial.Status, actual.Status)
 }
 
+// TestMCPServerReconciler_handleExternalAuthConfig_OBORequiresIncomingAuth
+// verifies an MCPServer that references an obo config is rejected with
+// ExternalAuthConfigValidated=False / InvalidConfig when it has no
+// oidcConfigRef, and accepted once it has one.
+func TestMCPServerReconciler_handleExternalAuthConfig_OBORequiresIncomingAuth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		withOIDC   bool
+		wantStatus metav1.ConditionStatus
+		wantReason string
+	}{
+		{name: "no oidcConfigRef is rejected", wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig},
+		{name: "oidcConfigRef set is accepted", withOIDC: true, wantStatus: metav1.ConditionTrue, wantReason: mcpv1beta1.ConditionReasonExternalAuthConfigValid},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := testutil.NewScheme(t)
+			authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
+				},
+			}
+			mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Generation = 3
+					if tt.withOIDC {
+						m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc"}
+					}
+				}),
+			)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(authConfig, mcpServer).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+				Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), mcpServer)
+
+			cond := meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, cond)
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			if !tt.withOIDC {
+				var vErr *obo.ValidationError
+				require.ErrorAs(t, err, &vErr, "the rejection must be terminal so Reconcile does not requeue")
+				assert.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, cond.Message)
+				assert.Equal(t, int64(3), cond.ObservedGeneration)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 // TestMCPServerDeployment_OBOSecretEnvVars verifies that an obo-typed
-// MCPExternalAuthConfig referenced from an MCPServer injects the registered
-// OBOHandler.SecretEnvVars output into the proxy container, and that the
+// MCPExternalAuthConfig referenced from an MCPServer mounts the OBO client
+// secret into the proxy container under obo.ClientSecretEnvVar, and that the
 // deployment builder (deploymentForMCPServer) and the drift check
 // (deploymentNeedsUpdate) agree on it. MCPServer assembles env in two separate
-// functions, so this guards the builder/drift symmetry that prevents a reconcile
-// hot-loop. A stub OBO handler stands in for the out-of-tree enterprise handler.
-//
-//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+// functions, so this guards the builder/drift symmetry that prevents a
+// reconcile hot-loop.
 func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
-	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
-
-	oboEnvVar := corev1.EnvVar{
-		Name: "TOOLHIVE_OBO_CLIENT_SECRET",
-		ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
-				Key:                  "client-secret",
-			},
-		},
-	}
-	stub := defaultOBOHandlerStub()
-	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-		return []corev1.EnvVar{oboEnvVar}, nil
-	}
-	ctrlutil.RegisterOBOHandler(stub)
+	t.Parallel()
 
 	scheme := testutil.NewScheme(t)
 
@@ -872,7 +921,12 @@ func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
-			OBO:  &mcpv1beta1.OBOConfig{},
+			OBO: &mcpv1beta1.OBOConfig{
+				TenantID:        "contoso.onmicrosoft.com",
+				ClientID:        "client-id",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "obo-secret", Key: "client-secret"},
+				Audience:        "api://backend/.default",
+			},
 		},
 	}
 	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
@@ -891,31 +945,28 @@ func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
 	require.NotNil(t, deployment)
 
 	container := deployment.Spec.Template.Spec.Containers[0]
-	assert.Contains(t, container.Env, oboEnvVar,
-		"OBO handler SecretEnvVars output must be injected into the proxy container")
+	assert.Contains(t, container.Env, corev1.EnvVar{
+		Name: obo.ClientSecretEnvVar,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
+				Key:                  "client-secret",
+			},
+		},
+	}, "the OBO client secret must be mounted into the proxy container")
 
 	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
 		"builder and drift check must agree on the OBO env var (no reconcile hot-loop)")
 }
 
-// TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence locks in the
-// documented MCPServer builder/drift behavior when the registered OBO handler
-// returns a genuine (non-ErrEnterpriseRequired) error: the builder logs and
-// continues, producing an OBO-env-less Deployment without failing, while
-// deploymentNeedsUpdate reports the Deployment needs an update. This divergence
-// is described at the drift site and exercised nowhere else at the controller
-// level. (The inert ErrEnterpriseRequired path stays symmetric — see the test
-// above — because AddOBOSecretEnvVars swallows it.)
-//
-//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
-func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.T) {
-	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
-
-	stub := defaultOBOHandlerStub()
-	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-		return nil, errors.New("secret not yet available")
-	}
-	ctrlutil.RegisterOBOHandler(stub)
+// TestMCPServerDeployment_OBOSecretEnvVars_ErrorDivergence locks in the
+// documented MCPServer builder/drift behavior when the OBO secret env var cannot
+// be produced (here: an obo config with no clientSecretRef): the builder logs
+// and continues, producing an OBO-env-less Deployment without failing, while
+// deploymentNeedsUpdate reports the Deployment needs an update. The
+// MCPExternalAuthConfig reconciler surfaces the underlying InvalidConfig.
+func TestMCPServerDeployment_OBOSecretEnvVars_ErrorDivergence(t *testing.T) {
+	t.Parallel()
 
 	scheme := testutil.NewScheme(t)
 
@@ -937,15 +988,15 @@ func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.
 
 	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
-	// Builder logs-and-continues: a Deployment is still produced (no error, no
-	// panic), with no OBO env var injected.
 	deployment, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
-	require.NoError(t, err, "builder must log-and-continue on a genuine OBO handler error, not fail")
+	require.NoError(t, err, "builder must log-and-continue on an OBO env var error, not fail")
 	require.NotNil(t, deployment)
+	for _, ev := range deployment.Spec.Template.Spec.Containers[0].Env {
+		assert.NotEqual(t, obo.ClientSecretEnvVar, ev.Name)
+	}
 
-	// Drift check returns true on the same error — the documented divergence.
 	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
-		"deploymentNeedsUpdate reports drift while the OBO handler errors")
+		"deploymentNeedsUpdate reports drift while the OBO env var cannot be produced")
 }
 
 // TestMCPServerDeployment_TLSListenerKeepsHTTPProbes verifies that enabling the

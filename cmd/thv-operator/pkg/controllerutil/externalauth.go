@@ -68,6 +68,21 @@ func GenerateUniqueXAATargetSecretEnvVarName(configName string) string {
 	return fmt.Sprintf("TOOLHIVE_XAA_TARGET_CLIENT_SECRET_%s", sanitized)
 }
 
+// GenerateUniqueOBOEnvVarName generates a unique environment variable name for
+// an OBO client secret mounted into the vMCP pod, incorporating the
+// ExternalAuthConfig name so several OBO backends in one vMCP never collide.
+// Used by both the converter enrichment and the deployment controller for
+// consistent naming. (The proxyrunner pod carries at most one OBO config and
+// uses the fixed obo.ClientSecretEnvVar.)
+//
+// Example: For an ExternalAuthConfig named "my-auth-config", this returns:
+// "TOOLHIVE_OBO_CLIENT_SECRET_MY_AUTH_CONFIG"
+func GenerateUniqueOBOEnvVarName(configName string) string {
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	sanitized = envVarSanitizer.ReplaceAllString(sanitized, "_")
+	return fmt.Sprintf("TOOLHIVE_OBO_CLIENT_SECRET_%s", sanitized)
+}
+
 // Header-forward env-var helpers (constants + name generators + the shared
 // header-name normalizer) moved to pkg/vmcp/headerforward/wirefmt so the
 // runtime can consume them without inverting Go layering. Operator code

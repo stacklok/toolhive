@@ -876,15 +876,10 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 }
 
 // getExternalAuthConfigSecretEnvVars returns the environment variables for
-// secrets from an ExternalAuthConfig (token exchange client secrets, header
-// injection values, or — for obo — whatever the registered OBO handler asks
-// for). Generates unique env var names per ExternalAuthConfig to avoid conflicts
-// when multiple configs of the same type reference different secrets.
-//
-// The obo arm forwards every env var the handler returns (matching MCPServer and
-// MCPRemoteProxy) and propagates obo.ErrEnterpriseRequired so the wired-but-
-// disabled state is not masked as a no-op (see #5328); callers log-and-continue
-// on error.
+// secrets from an ExternalAuthConfig (token exchange, OBO, and XAA client
+// secrets, or header injection values). Generates unique env var names per
+// ExternalAuthConfig to avoid conflicts when multiple configs of the same type
+// reference different secrets; callers log-and-continue on error.
 func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 	ctx context.Context,
 	namespace string,
@@ -946,13 +941,9 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 		return nil, nil
 
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// Dispatch through the registered OBO handler, forwarding every env var
-		// it returns. OBOSecretEnvVars propagates obo.ErrEnterpriseRequired in
-		// upstream-only builds (unlike ctrlutil.AddOBOSecretEnvVars, which
-		// swallows it for MCPServer/MCPRemoteProxy builder/drift symmetry); vMCP
-		// must propagate it per #5328 so the wired-but-disabled state is not
-		// masked as a no-op.
-		return ctrlutil.OBOSecretEnvVars(externalAuthConfig)
+		// Per-config name (unlike the proxyrunner pod's fixed
+		// obo.ClientSecretEnvVar): one vMCP can front several OBO backends.
+		return ctrlutil.OBOVMCPSecretEnvVar(externalAuthConfig)
 
 	case mcpv1beta1.ExternalAuthTypeXAA:
 		return xaaSecretEnvVars(externalAuthConfig, externalAuthConfigName), nil

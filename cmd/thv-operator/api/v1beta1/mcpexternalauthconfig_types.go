@@ -44,11 +44,9 @@ const (
 	// This injects an upstream IdP access token as the Authorization: Bearer header
 	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
 
-	// ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.
-	// This type requires a build with an OBO handler registered via
-	// controllerutil.RegisterOBOHandler; an upstream-only build surfaces
-	// status.conditions[Valid] = False with Reason: EnterpriseRequired
-	// when an obo-typed MCPExternalAuthConfig is applied.
+	// ExternalAuthTypeOBO is the type for Microsoft Entra on-behalf-of (OBO)
+	// flows: the proxy exchanges the authenticated user's token for a
+	// backend-scoped token issued for that same user.
 	ExternalAuthTypeOBO ExternalAuthType = "obo"
 
 	// ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.
@@ -78,10 +76,6 @@ type ExternalAuthType string
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure.
-	// When set to "obo", the cluster must run a build that has registered an
-	// OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
-	// surface status.conditions[Valid] = False with Reason: EnterpriseRequired
-	// for obo-typed configs.
 	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo;xaa
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
@@ -116,11 +110,8 @@ type MCPExternalAuthConfigSpec struct {
 	// +optional
 	UpstreamInject *UpstreamInjectSpec `json:"upstreamInject,omitempty"`
 
-	// OBO configures On-Behalf-Of (OBO) authentication.
-	// Only used when Type is "obo". Setting this field on an upstream-only build
-	// causes the MCPExternalAuthConfig to transition to
-	// status.conditions[Valid] = False with Reason: EnterpriseRequired, because
-	// no OBO handler is registered. See OBOConfig for the field-to-runtime
+	// OBO configures Microsoft Entra On-Behalf-Of (OBO) authentication.
+	// Only used when Type is "obo". See OBOConfig for the field-to-runtime
 	// contract mapping.
 	// +optional
 	OBO *OBOConfig `json:"obo,omitempty"`
@@ -134,27 +125,25 @@ type MCPExternalAuthConfigSpec struct {
 // OBOConfig holds configuration for the On-Behalf-Of (OBO) external auth type.
 // Only used when Type is "obo".
 //
-// This is the user-facing CRD surface for the Microsoft Entra OBO flow. It is
-// structurally valid in upstream (OSS) builds but inert: an upstream-only build
-// returns obo.ErrEnterpriseRequired at reconcile (Valid=False, Reason:
-// EnterpriseRequired) because no OBO handler is registered via
-// controllerutil.RegisterOBOHandler. A build with the enterprise OBO handler
-// translates these fields into the runtime wire contract obo.MiddlewareParameters,
-// so the field names and semantics here track that contract rather than the
-// upstream TokenExchangeConfig (which uses different names, e.g.
+// This is the user-facing CRD surface for the Microsoft Entra OBO flow. The
+// operator translates these fields into the runtime wire contract
+// obo.MiddlewareParameters (MCPServer, MCPRemoteProxy) or the vMCP OBOConfig
+// (VirtualMCPServer), so the field names and semantics here track that
+// contract rather than TokenExchangeConfig (which uses different names, e.g.
 // subjectProviderName / externalTokenHeaderName). In particular there is no
 // externalTokenHeaderName: the OBO subject is sourced from the authenticated
-// Identity, never from an inbound request header.
+// Identity, never from an inbound request header. An MCPServer or
+// MCPRemoteProxy that references an obo config must also set oidcConfigRef,
+// so it has an authenticated user token to exchange.
 //
-// Field-to-contract mapping performed by the operator's OBO handler:
+// Field-to-contract mapping performed by the operator:
 //   - tenantId (+ optional authority) → tokenUrl
 //     (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token, or the
 //     configured authority base joined with the tenant for sovereign clouds)
 //   - clientSecretRef → resolved into a pod env var; only the env var name
 //     travels in the contract, as clientSecretEnvVar
 //   - audience / scopes → collapsed to a single exchange target by
-//     obo.MiddlewareParameters.ExchangeTarget() (space-joined scopes win,
-//     otherwise audience)
+//     exchange.Target (space-joined scopes win, otherwise audience)
 //   - cacheSkew → the contract's integer-seconds cacheSkewSeconds
 //
 // Every field is optional at the CRD level, and the schema deliberately carries
@@ -163,8 +152,8 @@ type MCPExternalAuthConfigSpec struct {
 // admission rule that rejects {} would be a backward-incompatible narrowing of
 // an already-stored, round-trippable object. Presence and combination
 // requirements — a tenant, a client-auth credential, and at least one of
-// audience/scopes — are therefore enforced by the registered OBO handler at
-// reconcile, which reports a violation as Valid=False / Reason=InvalidConfig.
+// audience/scopes — are therefore enforced by the operator at reconcile, which
+// reports a violation as Valid=False / Reason=InvalidConfig.
 // The per-field patterns below still apply, but only to a value that is present.
 //
 //nolint:lll // the tenantId GUID/domain pattern exceeds the line length limit
@@ -179,7 +168,7 @@ type OBOConfig struct {
 	// interpolates it into the token endpoint
 	// (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
 	// the GUID/domain shape (no path metacharacters); the pattern and 253-char
-	// cap mirror the enterprise exchanger's validateTenant, so any tenantId
+	// cap mirror the Entra exchanger's tenant validation, so any tenantId
 	// admitted here is one the runtime can consume.
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$`
@@ -265,12 +254,10 @@ type OBOConfig struct {
 	// CacheSkew overrides the OBO token cache's default expiry skew (the margin
 	// by which a cached token is treated as expired before its real expiry),
 	// e.g. "30s". The operator converts it to the runtime contract's
-	// integer-seconds cacheSkewSeconds. Should not be negative, but the schema
-	// does not enforce that — metav1.Duration carries no numeric minimum — and
-	// upstream builds do not reject it. A negative value is rejected only by an
-	// enterprise build's OBO handler once that handler validates the converted
-	// parameters; it is not enforced at admission or in upstream-only builds.
-	// When omitted, the cache default applies.
+	// integer-seconds cacheSkewSeconds (truncated toward zero). Must not be
+	// negative; metav1.Duration carries no numeric minimum, so the operator
+	// rejects a negative value at reconcile (Valid=False, Reason: InvalidConfig)
+	// rather than at admission. When omitted, the cache default applies.
 	// +optional
 	CacheSkew *metav1.Duration `json:"cacheSkew,omitempty"`
 }
@@ -2602,16 +2589,18 @@ const (
 // literals are part of the user-facing contract — external consumers and
 // downstream tooling pattern-match on them.
 const (
-	// ConditionReasonEnterpriseRequired: an obo-typed MCPExternalAuthConfig
-	// requires an enterprise build that has registered an OBO handler via
-	// controllerutil.RegisterOBOHandler. Upstream-only builds surface this
-	// reason for every obo-typed config.
+	// ConditionReasonEnterpriseRequired was set on obo-typed configs before OBO
+	// shipped in ToolHive itself. The operator no longer sets it.
+	//
+	// Deprecated: OBO is built in. Kept for one release so out-of-tree code
+	// that references it keeps compiling; it will be removed.
 	ConditionReasonEnterpriseRequired = "EnterpriseRequired"
 
 	// ConditionReasonInvalidConfig: an obo-typed MCPExternalAuthConfig is
-	// well-formed at the CRD level but fails the registered OBO handler's
-	// Validate() with an error other than the enterprise-required sentinel.
-	// Used by out-of-tree handlers; unreachable in upstream-only builds.
+	// well-formed at the CRD level but fails the operator's OBO validation
+	// (for example a missing tenant, client ID, client secret reference, or
+	// both audience and scopes). Also used on a consuming MCPServer or
+	// MCPRemoteProxy that references an obo config without oidcConfigRef.
 	ConditionReasonInvalidConfig = "InvalidConfig"
 
 	// ConditionReasonInvalidCABundle: a referenced CA bundle ConfigMap is
@@ -2797,15 +2786,11 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// subjectTokenProviderName, scopes/cacheSkew bounds) at admission, and
 		// only for values that are present. All presence and combination
 		// requirements (a tenant, a client-auth credential, at least one of
-		// audience/scopes) and protocol-level checks are owned by the registered
-		// handler, not the upstream type. That handler runs at reconcile
-		// time via the controllerutil.OBOValidate function-pointer hook:
-		// upstream-only builds return obo.ErrEnterpriseRequired, which the
-		// reconciler maps to status.conditions[Valid] = False / Reason:
-		// EnterpriseRequired. Out-of-tree builds that register a handler via
-		// controllerutil.RegisterOBOHandler short-circuit the sentinel and
-		// run their own protocol-level checks. Splitting the tiers this way
-		// keeps the upstream CRD schema stable across builds.
+		// audience/scopes) and protocol-level checks are owned by the operator's
+		// reconcile-time OBO validation (controllerutil.OBOValidate), which maps
+		// a violation to status.conditions[Valid] = False / Reason:
+		// InvalidConfig. Splitting the tiers this way keeps the CRD schema
+		// backward compatible with the earlier empty placeholder.
 		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively

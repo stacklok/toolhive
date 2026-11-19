@@ -482,7 +482,53 @@ on `init()` registration. Direct proxy callers use the two host constructors.
 
 **Note**: This middleware is registered in `pkg/runner/middleware.go` and can be configured through the standard middleware configuration system or used directly via the proxy command.
 
-### 9. Audit Middleware
+### 9. On-Behalf-Of (OBO) Middleware
+
+**Purpose**: Exchanges the authenticated user's token for a backend-scoped
+token with the Microsoft Entra on-behalf-of flow (RFC 7523 `jwt-bearer` grant
+with `requested_token_use=on_behalf_of`), so the backend sees a token issued
+for the signed-in user.
+
+**Location**: `pkg/auth/obo/middleware.go` (factory and handler),
+`pkg/auth/obo/entra` (Entra exchanger), `pkg/auth/obo/cache` (token cache),
+and `pkg/auth/obo/exchange` (provider-agnostic contract). These packages do not
+link Kubernetes code; a test in `pkg/auth/obo` enforces that.
+
+**Configuration**: the operator builds an `obo`-typed middleware config from an
+`MCPExternalAuthConfig` of type `obo` and injects it through
+`AdditionalMiddlewareConfigs`, after authentication and before recovery. Its
+parameters are `obo.MiddlewareParameters`: `tokenUrl`, `clientId`, `audience`,
+`scopes` (space-joined scopes win over audience), `clientSecretEnvVar` (the
+name of the env var the operator mounts the client secret under,
+`TOOLHIVE_OBO_CLIENT_SECRET`), optional `subjectTokenProviderName`, and
+optional `cacheSkewSeconds`. The factory fails at startup if the parameters are
+invalid or the secret env var is empty. There are no `thv run` flags for OBO
+yet; a RunConfig carrying the middleware config works.
+
+**Subject token**: `Identity.Token` (the token the client presented) by
+default, or `Identity.UpstreamTokens[subjectTokenProviderName]` when an
+embedded auth server fronts the proxy. The authentication middleware must run
+first, so an MCPServer or MCPRemoteProxy that references an `obo` config must
+also set `oidcConfigRef`; the operator rejects it with
+`ExternalAuthConfigValidated=False / Reason=InvalidConfig` otherwise.
+
+**Behavior**: on success the middleware replaces `Authorization` with
+`Bearer <backend token>`, so the raw user token never reaches the backend.
+Exchanged tokens are cached per (hash of the user token, exchange target)
+until 60 seconds (or `cacheSkewSeconds`) before they expire; concurrent
+identical exchanges share one request. Failures short-circuit with a generic
+body that does not disclose the provider error:
+
+| Condition | Status |
+|---|---|
+| No authenticated identity or no subject token | 401 |
+| Named upstream provider token missing | 401 with `WWW-Authenticate: Bearer error="invalid_token"` |
+| Entra `invalid_grant` (subject token rejected) | 401 |
+| Conditional access, MFA, or claims challenge (`interaction_required`, a `claims` value, AADSTS50076/50079) | 403, plus an `obo_token_exchange` audit event with outcome `denied` |
+| `invalid_client`, Entra 5xx or unreachable, or an unclassified failure | 502 |
+| Client cancelled the request | no response |
+
+### 10. Audit Middleware
 
 **Purpose**: Logs request events for compliance, monitoring, and debugging.
 
@@ -734,7 +780,7 @@ thv run --transport sse --name my-server --audit-config <(echo '{"component":"my
 }
 ```
 
-### 10. Recovery Middleware
+### 11. Recovery Middleware
 
 **Purpose**: Catches panics in HTTP handlers and returns a clean HTTP 500 error response.
 
@@ -757,7 +803,7 @@ thv run --transport sse --name my-server --audit-config <(echo '{"component":"my
 
 **Note**: Recovery middleware has no cleanup requirements (`Close()` is a no-op).
 
-### 11. Header Forward Middleware
+### 12. Header Forward Middleware
 
 **Purpose**: Injects custom headers into requests before they are forwarded to remote MCP servers.
 

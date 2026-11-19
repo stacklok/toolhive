@@ -30,6 +30,9 @@ const (
 	proxySecretName   = "proxy-client"
 	backendOBOConfig  = "obo-backend"
 	vmcpContainerName = "vmcp"
+	// proxyRunnerContainer is the proxyrunner container of an MCPServer's
+	// proxy Deployment.
+	proxyRunnerContainer = "toolhive"
 )
 
 // ensureSharedFixtures creates the MCPOIDCConfig, the middle-tier client
@@ -85,6 +88,32 @@ func createVMCP(name, group string, outgoing *mcpv1beta1.OutgoingAuthConfig) str
 	}, service)).To(gomega.Succeed())
 	gomega.Expect(service.Spec.Ports).NotTo(gomega.BeEmpty())
 	return fmt.Sprintf("http://127.0.0.1:%d/mcp", portForward(service.Name, service.Spec.Ports[0].Port))
+}
+
+// proxyRunnerLogs returns the log of the MCPServer's proxyrunner container,
+// or "" while it cannot be read. The proxyrunner logs Entra's OAuth error
+// code and never the tokens.
+func proxyRunnerLogs(serverName string) string {
+	pods := &corev1.PodList{}
+	if err := k8sClient.List(ctx, pods, client.InNamespace(testNamespace), client.MatchingLabels(map[string]string{
+		"app.kubernetes.io/name":     "mcpserver",
+		"app.kubernetes.io/instance": serverName,
+	})); err != nil {
+		return ""
+	}
+	for _, pod := range pods.Items {
+		for _, c := range pod.Spec.Containers {
+			if c.Name != proxyRunnerContainer {
+				continue
+			}
+			logs, err := testutil.GetPodLogs(ctx, testNamespace, pod.Name, proxyRunnerContainer, false)
+			if err != nil {
+				return ""
+			}
+			return logs
+		}
+	}
+	return ""
 }
 
 // createGroup creates an MCPGroup and waits for it.
@@ -290,7 +319,14 @@ var _ = ginkgo.Describe("Entra OBO: exchange failures", ginkgo.Label(entraLiveLa
 		createOBOConfig(name, name, cfg.backendScope)
 		createOBOMCPServer(name, name, false) // waits for Ready
 		endpoint := proxyEndpoint(controllerutil.CreateProxyServiceName(name))
-		gomega.Expect(initializeStatus(endpoint, user.token)).To(gomega.Equal(http.StatusBadGateway))
+		// A 502 alone could also come from the proxy reaching a backend that
+		// is still starting, or from Entra being unreachable. Require the
+		// proxyrunner to have logged Entra's invalid_client rejection, and
+		// retry until it has, since Ready does not mean the backend serves.
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(initializeStatus(endpoint, user.token)).To(gomega.Equal(http.StatusBadGateway))
+			g.Expect(proxyRunnerLogs(name)).To(gomega.ContainSubstring("invalid_client"))
+		}, 2*time.Minute, pollInterval).Should(gomega.Succeed())
 	})
 
 	ginkgo.It("answers 401 when the scope is not consented for the middle-tier app", func() {
@@ -314,14 +350,7 @@ var _ = ginkgo.Describe("Entra OBO: exchange failures", ginkgo.Label(entraLiveLa
 		endpoint := proxyEndpoint(controllerutil.CreateProxyServiceName(name))
 		gomega.Expect(initializeStatus(endpoint, user.token)).To(gomega.Equal(http.StatusForbidden))
 
-		pods := &corev1.PodList{}
-		gomega.Expect(k8sClient.List(ctx, pods, client.InNamespace(testNamespace), client.MatchingLabels(map[string]string{
-			"app.kubernetes.io/name":     "mcpserver",
-			"app.kubernetes.io/instance": name,
-		}))).To(gomega.Succeed())
-		gomega.Expect(pods.Items).NotTo(gomega.BeEmpty())
-		gomega.Eventually(func() (string, error) {
-			return testutil.GetPodLogs(ctx, testNamespace, pods.Items[0].Name, "toolhive", false)
-		}, time.Minute, pollInterval).Should(gomega.ContainSubstring("obo_token_exchange"))
+		gomega.Eventually(func() string { return proxyRunnerLogs(name) },
+			time.Minute, pollInterval).Should(gomega.ContainSubstring("obo_token_exchange"))
 	})
 })

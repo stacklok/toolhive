@@ -439,6 +439,64 @@ func TestGetOverlayMountsConfinedToMount(t *testing.T) {
 	}
 }
 
+func TestConfinedRelPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.Symlink(filepath.Join(root, "missing"), filepath.Join(root, "dangling")))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "file"), nil, 0o600))
+
+	testCases := []struct {
+		name      string
+		bindMount string
+		matchPath string
+		wantRel   string
+		wantOK    bool
+	}{
+		{name: "match inside the mount", bindMount: root, matchPath: filepath.Join(root, "file"), wantRel: "file", wantOK: true},
+		{name: "mount root itself", bindMount: root, matchPath: root, wantRel: ".", wantOK: true},
+		{name: "mount does not exist", bindMount: filepath.Join(root, "nope"), matchPath: filepath.Join(root, "file")},
+		{name: "dangling symlink match", bindMount: root, matchPath: filepath.Join(root, "dangling")},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rel, ok := confinedRelPath(tc.bindMount, tc.matchPath)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.wantRel, rel)
+		})
+	}
+}
+
+func TestRelWithin(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		dir     string
+		target  string
+		wantRel string
+		wantOK  bool
+	}{
+		{name: "child", dir: "/app", target: "/app/a/b", wantRel: "a/b", wantOK: true},
+		{name: "same directory", dir: "/app", target: "/app", wantRel: ".", wantOK: true},
+		{name: "name starting with dots", dir: "/app", target: "/app/..hidden", wantRel: "..hidden", wantOK: true},
+		{name: "parent", dir: "/app", target: "/"},
+		{name: "sibling", dir: "/app", target: "/apple"},
+		{name: "relative target against absolute dir", dir: "/app", target: "app/x"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rel, ok := relWithin(tc.dir, tc.target)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.wantRel, rel)
+		})
+	}
+}
+
 func TestProcessorCleanup(t *testing.T) {
 	t.Parallel()
 	// Create test directory structure

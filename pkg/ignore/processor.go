@@ -205,13 +205,8 @@ func (p *Processor) createOverlayMount(
 		return nil
 	}
 
-	// Convert to container path
+	// relPath has no ".." segments and no symlinks, so this stays under containerPath.
 	containerOverlayPath := filepath.Join(containerPath, relPath)
-	if !isWithinDir(containerPath, containerOverlayPath) {
-		slog.Warn("Skipping ignore overlay outside the container mount path",
-			"pattern", pattern, "containerPath", containerPath, "overlayPath", containerOverlayPath)
-		return nil
-	}
 
 	// Skip if we already have this overlay
 	if overlaySet[containerOverlayPath] {
@@ -275,23 +270,17 @@ func confinedRelPath(bindMount, matchPath string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if !isWithinDir(realRoot, realMatch) {
-		return "", false
-	}
-	relPath, err := filepath.Rel(realRoot, realMatch)
-	if err != nil {
-		return "", false
-	}
-	return relPath, true
+	return relWithin(realRoot, realMatch)
 }
 
-// isWithinDir reports whether target is dir or a path below it.
-func isWithinDir(dir, target string) bool {
+// relWithin returns the path of target relative to dir and reports whether
+// target is dir or a path below it.
+func relWithin(dir, target string) (string, bool) {
 	rel, err := filepath.Rel(dir, target)
-	if err != nil {
-		return false
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
 	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	return rel, true
 }
 
 // printOverlays prints resolved overlays if requested

@@ -158,8 +158,8 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		require.NoError(t, err, "obo strategy should be registered")
 		assert.IsType(t, &strategies.OBOStrategy{}, strategy)
 
-		// A config with no token URL is rejected by the real validator, not by a
-		// licensing stub.
+		// A strategy with no OBO block at all is rejected by the real validator,
+		// not by a licensing stub.
 		err = strategy.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "OBO configuration is required")

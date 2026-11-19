@@ -156,6 +156,8 @@ func TestOBOConvertToStrategy_Malformed(t *testing.T) {
 	}{
 		{name: "nil obo", nilOBO: true, wantMsg: msgOBONil},
 		{name: "missing client id", mutate: func(o *mcpv1beta1.OBOConfig) { o.ClientID = "" }, wantMsg: msgClientID},
+		{name: "whitespace-only client id", mutate: func(o *mcpv1beta1.OBOConfig) { o.ClientID = " \t " }, wantMsg: msgClientID},
+		{name: "whitespace-only secret ref key", mutate: func(o *mcpv1beta1.OBOConfig) { o.ClientSecretRef.Key = "  " }, wantMsg: msgClientSecretRef},
 		{name: "missing client secret ref", mutate: func(o *mcpv1beta1.OBOConfig) { o.ClientSecretRef = nil }, wantMsg: msgClientSecretRef},
 		{name: "empty secret ref name", mutate: func(o *mcpv1beta1.OBOConfig) { o.ClientSecretRef.Name = "  " }, wantMsg: msgClientSecretRef},
 		{name: "empty secret ref key", mutate: func(o *mcpv1beta1.OBOConfig) { o.ClientSecretRef.Key = "" }, wantMsg: msgClientSecretRef},
@@ -203,6 +205,9 @@ func TestOBOResolveSecrets_PopulatesFromK8s(t *testing.T) {
 	cr := validOBOCR()
 	strategy, err := ConvertToStrategy(cr)
 	require.NoError(t, err)
+	// A stale env-var reference (the inline-mode secret source) must give way to
+	// the resolved value.
+	strategy.OBO.ClientSecretEnv = "STALE_OBO_SECRET_ENV"
 
 	k8sClient := fakeClientWithSecret(t, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: testSecretName, Namespace: testNamespace},
@@ -253,6 +258,95 @@ func TestOBOResolveSecrets_Errors(t *testing.T) {
 		assert.NotContains(t, err.Error(), testSecretValue, "the error must not echo the secret value")
 		assert.Empty(t, strategy.OBO.ClientSecret, "a failed resolve must not set the secret")
 	})
+
+	t.Run("empty secret value", func(t *testing.T) {
+		t.Parallel()
+		cr := validOBOCR()
+		strategy, err := ConvertToStrategy(cr)
+		require.NoError(t, err)
+
+		client := fakeClientWithSecret(t, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: testSecretName, Namespace: testNamespace},
+			Data:       map[string][]byte{testSecretKey: {}},
+		})
+		_, err = ResolveSecretsForStrategy(t.Context(), cr, client, testNamespace, strategy)
+		require.ErrorContains(t, err, "is empty")
+		assert.ErrorContains(t, err, testSecretName)
+		assert.ErrorContains(t, err, testSecretKey)
+		assert.Empty(t, strategy.OBO.ClientSecret)
+	})
+}
+
+// TestOBOResolveSecrets_Guards covers the inputs ResolveSecrets rejects or
+// passes through without contacting Kubernetes. The fake client holds no
+// secrets, so any lookup would fail the passthrough row.
+func TestOBOResolveSecrets_Guards(t *testing.T) {
+	t.Parallel()
+
+	withSecretEnv := func() *authtypes.BackendAuthStrategy {
+		return &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeOBO,
+			OBO:  &authtypes.OBOConfig{TokenURL: testTokenURL, ClientID: testClientID, ClientSecretEnv: "OBO_SECRET_ENV"},
+		}
+	}
+
+	tests := []struct {
+		name            string
+		cr              func() *mcpv1beta1.MCPExternalAuthConfig
+		strategy        func() *authtypes.BackendAuthStrategy
+		wantErrContains string
+	}{
+		{
+			name:            "nil strategy",
+			cr:              validOBOCR,
+			strategy:        func() *authtypes.BackendAuthStrategy { return nil },
+			wantErrContains: msgStrategyNil,
+		},
+		{
+			name: "strategy without OBO",
+			cr:   validOBOCR,
+			strategy: func() *authtypes.BackendAuthStrategy {
+				return &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO}
+			},
+			wantErrContains: msgStrategyNil,
+		},
+		{
+			name: "external auth config without OBO",
+			cr: func() *mcpv1beta1.MCPExternalAuthConfig {
+				cr := validOBOCR()
+				cr.Spec.OBO = nil
+				return cr
+			},
+			strategy:        withSecretEnv,
+			wantErrContains: msgOBONil,
+		},
+		{
+			name: "no client secret reference passes the strategy through",
+			cr: func() *mcpv1beta1.MCPExternalAuthConfig {
+				cr := validOBOCR()
+				cr.Spec.OBO.ClientSecretRef = nil
+				return cr
+			},
+			strategy: withSecretEnv,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			in := tt.strategy()
+			got, err := (&OBOConverter{}).ResolveSecrets(t.Context(), tt.cr(), fakeClientWithSecret(t), testNamespace, in)
+			if tt.wantErrContains != "" {
+				require.ErrorContains(t, err, tt.wantErrContains)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Same(t, in, got)
+			assert.Equal(t, withSecretEnv(), got, "the strategy must be returned unchanged")
+		})
+	}
 }
 
 // fakeClientWithSecret builds a controller-runtime fake client seeded with the

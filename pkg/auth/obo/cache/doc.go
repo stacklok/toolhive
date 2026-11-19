@@ -13,7 +13,7 @@
 //
 // Typical wiring:
 //
-//	exchanger, err := entra.New(cfg)
+//	exchanger, err := entra.NewFromTokenURL(tokenURL, clientID, clientSecret, nil)
 //	if err != nil { ... }
 //	var oboExchanger exchange.Exchanger = cache.New(exchanger)
 //

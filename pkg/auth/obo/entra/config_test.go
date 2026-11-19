@@ -13,124 +13,102 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/obo/entra"
 )
 
-func TestNew_ValidConfigs(t *testing.T) {
+func TestTokenURL_Valid(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		cfg  entra.Config
+		name      string
+		tenantID  string
+		authority string
+		want      string
 	}{
 		{
-			name: "domain tenant with default authority",
-			cfg:  entra.Config{TenantID: testTenant, ClientID: testClientID, ClientSecret: testClientSecret},
+			name:     "domain tenant with default authority",
+			tenantID: testTenant,
+			want:     "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token",
 		},
 		{
-			name: "GUID tenant",
-			cfg: entra.Config{
-				TenantID: "72f988bf-86f1-41af-91ab-2d7cd011db47", ClientID: testClientID, ClientSecret: testClientSecret,
-			},
+			name:     "GUID tenant",
+			tenantID: "72f988bf-86f1-41af-91ab-2d7cd011db47",
+			want:     "https://login.microsoftonline.com/72f988bf-86f1-41af-91ab-2d7cd011db47/oauth2/v2.0/token",
 		},
 		{
-			name: "explicit https authority",
-			cfg: entra.Config{
-				TenantID: testTenant, ClientID: testClientID, ClientSecret: testClientSecret,
-				Authority: "https://login.microsoftonline.us",
-			},
+			name:     "tenant is trimmed",
+			tenantID: "  " + testTenant + " ",
+			want:     "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token",
 		},
 		{
-			name: "loopback http authority permitted for tests",
-			cfg: entra.Config{
-				TenantID: testTenant, ClientID: testClientID, ClientSecret: testClientSecret,
-				Authority: "http://127.0.0.1:8080",
-			},
+			name:      "explicit https authority",
+			tenantID:  testTenant,
+			authority: "https://login.microsoftonline.us",
+			want:      "https://login.microsoftonline.us/contoso.onmicrosoft.com/oauth2/v2.0/token",
+		},
+		{
+			name:      "loopback http authority permitted for tests",
+			tenantID:  testTenant,
+			authority: "http://127.0.0.1:8080",
+			want:      "http://127.0.0.1:8080/contoso.onmicrosoft.com/oauth2/v2.0/token",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ex, err := entra.New(tt.cfg)
+			got, err := entra.TokenURL(tt.tenantID, tt.authority)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+
+			// Every URL TokenURL derives must be accepted by NewFromTokenURL.
+			ex, err := entra.NewFromTokenURL(got, testClientID, testClientSecret, nil)
 			require.NoError(t, err)
 			assert.NotNil(t, ex)
 		})
 	}
 }
 
-func TestNew_InvalidConfigs(t *testing.T) {
+func TestTokenURL_Invalid(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		cfg  entra.Config
+		name      string
+		tenantID  string
+		authority string
+		wantErr   string
 	}{
+		{name: "missing tenant", tenantID: "", wantErr: "TenantID is required"},
+		{name: "whitespace tenant", tenantID: "   ", wantErr: "TenantID is required"},
+		{name: "tenant with path separator", tenantID: "tenant/../evil", wantErr: "GUID or a domain"},
+		{name: "tenant that is neither GUID nor domain", tenantID: "not a real tenant", wantErr: "GUID or a domain"},
+		{name: "single-label tenant", tenantID: "contoso", wantErr: "GUID or a domain"},
+		{name: "tenant longer than the DNS limit", tenantID: strings.Repeat("a", 254), wantErr: "at most 253"},
 		{
-			name: "missing tenant",
-			cfg:  entra.Config{ClientID: testClientID, ClientSecret: testClientSecret},
+			name: "non-https authority scheme", tenantID: testTenant,
+			authority: "ftp://login.microsoftonline.com", wantErr: "Authority scheme must be https",
 		},
 		{
-			name: "missing client id",
-			cfg:  entra.Config{TenantID: testTenant, ClientSecret: testClientSecret},
+			name: "non-loopback http authority", tenantID: testTenant,
+			authority: "http://login.microsoftonline.com", wantErr: "http allowed only for loopback",
 		},
 		{
-			name: "missing client secret",
-			cfg:  entra.Config{TenantID: testTenant, ClientID: testClientID},
+			name: "authority with fragment", tenantID: testTenant,
+			authority: "https://login.microsoftonline.com/#frag", wantErr: "must not contain a fragment",
 		},
 		{
-			name: "tenant with path separator",
-			cfg:  entra.Config{TenantID: "tenant/../evil", ClientID: testClientID, ClientSecret: testClientSecret},
+			name: "authority with query string", tenantID: testTenant,
+			authority: "https://login.microsoftonline.com/?foo=bar", wantErr: "must not contain a query string",
 		},
 		{
-			name: "tenant that is neither GUID nor domain",
-			cfg:  entra.Config{TenantID: "not a real tenant", ClientID: testClientID, ClientSecret: testClientSecret},
-		},
-		{
-			name: "single-label tenant",
-			cfg:  entra.Config{TenantID: "contoso", ClientID: testClientID, ClientSecret: testClientSecret},
-		},
-		{
-			name: "tenant longer than the DNS limit",
-			cfg: entra.Config{
-				TenantID: strings.Repeat("a", 254), ClientID: testClientID, ClientSecret: testClientSecret,
-			},
-		},
-		{
-			name: "non-https authority scheme",
-			cfg: entra.Config{
-				TenantID: testTenant, ClientID: testClientID, ClientSecret: testClientSecret,
-				Authority: "ftp://login.microsoftonline.com",
-			},
-		},
-		{
-			name: "non-loopback http authority",
-			cfg: entra.Config{
-				TenantID: testTenant, ClientID: testClientID, ClientSecret: testClientSecret,
-				Authority: "http://login.microsoftonline.com",
-			},
-		},
-		{
-			name: "authority with fragment",
-			cfg: entra.Config{
-				TenantID: testTenant, ClientID: testClientID, ClientSecret: testClientSecret,
-				Authority: "https://login.microsoftonline.com/#frag",
-			},
-		},
-		{
-			name: "authority with query string",
-			cfg: entra.Config{
-				TenantID: testTenant, ClientID: testClientID, ClientSecret: testClientSecret,
-				Authority: "https://login.microsoftonline.com/?foo=bar",
-			},
+			name: "authority without host", tenantID: testTenant,
+			authority: "https:///", wantErr: "Authority must include a host",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ex, err := entra.New(tt.cfg)
-			require.Error(t, err)
-			assert.Nil(t, ex)
-			// Validation errors never echo the client secret.
-			assert.NotContains(t, err.Error(), testClientSecret)
+			got, err := entra.TokenURL(tt.tenantID, tt.authority)
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Empty(t, got)
 		})
 	}
 }

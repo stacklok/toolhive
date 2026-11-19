@@ -6,6 +6,7 @@ package runner
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -618,6 +619,26 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 	}
 }
 
+// TestOBOFactoryHonorsRegisterFactory verifies the runner's factory map
+// dispatches obo.MiddlewareType through obo.CreateMiddleware rather than
+// binding obo.DefaultFactory directly, so a replacement installed with the
+// deprecated obo.RegisterFactory is still honored.
+//
+//nolint:paralleltest // Replaces the package-level OBO factory; must not overlap other tests.
+func TestOBOFactoryHonorsRegisterFactory(t *testing.T) {
+	sentinel := errors.New("replacement obo factory")
+	//nolint:staticcheck // SA1019: exercising the deprecated override path is the point of this test.
+	obo.RegisterFactory(func(*types.MiddlewareConfig, types.MiddlewareRunner) error { return sentinel })
+	t.Cleanup(func() {
+		obo.RegisterFactory(obo.DefaultFactory) //nolint:staticcheck // SA1019: restores the default.
+	})
+
+	factory, ok := GetSupportedMiddlewareFactories()[obo.MiddlewareType]
+	require.True(t, ok)
+	err := factory(&types.MiddlewareConfig{Type: obo.MiddlewareType}, nil)
+	require.ErrorIs(t, err, sentinel, "the runner must dispatch through obo.CreateMiddleware")
+}
+
 // TestOBORegistration exercises the proxyrunner path for an operator-injected
 // obo middleware: the RunConfig round-trips through JSON, the runner's factory
 // map builds the built-in OBO middleware, and a request through it has its
@@ -627,7 +648,11 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 //nolint:paralleltest // Uses t.Setenv for the client secret the factory reads.
 func TestOBORegistration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, r.ParseForm())
+		// assert, not require: this runs on the server's goroutine.
+		if !assert.NoError(t, r.ParseForm()) {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
 		assert.Equal(t, "urn:ietf:params:oauth:grant-type:jwt-bearer", r.Form.Get("grant_type"))
 		assert.Equal(t, "on_behalf_of", r.Form.Get("requested_token_use"))
 		assert.Equal(t, "user-token", r.Form.Get("assertion"))

@@ -64,6 +64,50 @@ func TestRegisterOBOStrategy_OverridesBuiltIn(t *testing.T) {
 	assert.Equal(t, "second", err.Error(), "the last registered factory must win")
 }
 
+// staticEnv is a map-backed env.Reader, so tests can identify the reader a
+// strategy was given by what it resolves.
+type staticEnv map[string]string
+
+func (e staticEnv) Getenv(key string) string { return e[key] }
+
+func (e staticEnv) LookupEnv(key string) (string, bool) {
+	v, ok := e[key]
+	return v, ok
+}
+
+//nolint:paralleltest // Mutates package-level oboStrategyOverride; must not race other tests.
+func TestNewOBOStrategy_PassesEnvReader(t *testing.T) {
+	withNoOBOOverride(t)
+
+	reader := staticEnv{"OBO_TEST_CLIENT_SECRET": "from-the-injected-reader"}
+
+	t.Run("built-in strategy resolves secrets through the reader", func(t *testing.T) {
+		strategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeOBO,
+			OBO: &authtypes.OBOConfig{
+				TokenURL:        "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token",
+				ClientID:        "client-id",
+				ClientSecretEnv: "OBO_TEST_CLIENT_SECRET",
+				Scopes:          []string{"api://backend/.default"},
+			},
+		}
+		assert.NoError(t, NewOBOStrategy(reader).Validate(strategy),
+			"the secret is only resolvable through the reader passed to NewOBOStrategy")
+		assert.Error(t, NewOBOStrategy(staticEnv{}).Validate(strategy))
+	})
+
+	t.Run("registered factory receives the reader", func(t *testing.T) {
+		var got env.Reader
+		RegisterOBOStrategy(func(r env.Reader) Strategy {
+			got = r
+			return &namedStrategy{tag: "override"}
+		})
+
+		NewOBOStrategy(reader)
+		assert.Equal(t, reader, got, "the factory must receive the env.Reader passed to NewOBOStrategy")
+	})
+}
+
 func TestRegisterOBOStrategy_PanicsOnNil(t *testing.T) {
 	t.Parallel()
 

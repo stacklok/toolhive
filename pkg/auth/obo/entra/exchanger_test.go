@@ -34,15 +34,20 @@ const (
 	successResponseExpires = 3599
 )
 
-// newTestExchanger returns an Exchanger pointed at authority (an httptest URL).
+// newTestExchanger returns an Exchanger for testTenant at authority (an
+// httptest URL), wired the way production wires it: TokenURL derives the
+// endpoint and NewFromTokenURL builds the exchanger.
 func newTestExchanger(t *testing.T, authority string) *entra.Exchanger {
 	t.Helper()
-	ex, err := entra.New(entra.Config{
-		TenantID:     testTenant,
-		ClientID:     testClientID,
-		ClientSecret: testClientSecret,
-		Authority:    authority,
-	})
+	return newTestExchangerWithClient(t, authority, nil)
+}
+
+// newTestExchangerWithClient is newTestExchanger with an injected HTTP client.
+func newTestExchangerWithClient(t *testing.T, authority string, client *http.Client) *entra.Exchanger {
+	t.Helper()
+	tokenURL, err := entra.TokenURL(testTenant, authority)
+	require.NoError(t, err)
+	ex, err := entra.NewFromTokenURL(tokenURL, testClientID, testClientSecret, client)
 	require.NoError(t, err)
 	return ex
 }
@@ -134,20 +139,59 @@ func TestExchanger_Exchange_PropagatesError(t *testing.T) {
 	assert.ErrorIs(t, err, entra.ErrInvalidGrant)
 }
 
-func TestExchanger_ExchangeToken_NoExpiryWhenExpiresInAbsent(t *testing.T) {
+// TestExchanger_ExchangeToken_SuccessVariants pins how the success path treats
+// expires_in values that do not yield a usable expiry, and the case-insensitive
+// token_type check.
+func TestExchanger_ExchangeToken_SuccessVariants(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"token_type":"Bearer","access_token":"`+testAccessToken+`"}`)
-	}))
-	t.Cleanup(srv.Close)
+	tests := []struct {
+		name           string
+		body           string
+		wantZeroExpiry bool
+	}{
+		{
+			name:           "missing expires_in yields a zero expiry",
+			body:           `{"token_type":"Bearer","access_token":"` + testAccessToken + `"}`,
+			wantZeroExpiry: true,
+		},
+		{
+			name:           "zero expires_in yields a zero expiry",
+			body:           `{"token_type":"Bearer","expires_in":0,"access_token":"` + testAccessToken + `"}`,
+			wantZeroExpiry: true,
+		},
+		{
+			name:           "negative expires_in yields a zero expiry",
+			body:           `{"token_type":"Bearer","expires_in":-30,"access_token":"` + testAccessToken + `"}`,
+			wantZeroExpiry: true,
+		},
+		{
+			name: "lower-case bearer token_type is accepted",
+			body: `{"token_type":"bearer","expires_in":3599,"access_token":"` + testAccessToken + `"}`,
+		},
+	}
 
-	ex := newTestExchanger(t, srv.URL)
-	tok, err := ex.ExchangeToken(t.Context(), testUserToken, testAudience)
-	require.NoError(t, err)
-	assert.Equal(t, testAccessToken, tok.AccessToken)
-	assert.True(t, tok.Expiry.IsZero(), "missing expires_in yields a zero (non-cacheable) expiry")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(srv.Close)
+
+			ex := newTestExchanger(t, srv.URL)
+			tok, err := ex.ExchangeToken(t.Context(), testUserToken, testAudience)
+			require.NoError(t, err)
+			assert.Equal(t, testAccessToken, tok.AccessToken)
+			if tt.wantZeroExpiry {
+				assert.True(t, tok.Expiry.IsZero(), "a non-positive or absent expires_in yields a zero (non-cacheable) expiry")
+			} else {
+				assert.WithinDuration(t, time.Now().Add(3599*time.Second), tok.Expiry, 5*time.Second)
+			}
+		})
+	}
 }
 
 func TestExchanger_ExchangeToken_Failures(t *testing.T) {
@@ -240,6 +284,72 @@ func TestExchanger_ExchangeToken_Failures(t *testing.T) {
 			wantSentinel: nil,
 		},
 		{
+			name:         "interaction required via claims challenge alone",
+			status:       http.StatusBadRequest,
+			body:         `{"claims":"{\"access_token\":{\"acrs\":{\"essential\":true}}}"}`,
+			wantKind:     entra.KindInteractionRequired,
+			wantSentinel: entra.ErrInteractionRequired,
+			wantClaims:   `{"access_token":{"acrs":{"essential":true}}}`,
+		},
+		{
+			name:         "interaction required via AADSTS50079 alone",
+			status:       http.StatusBadRequest,
+			body:         `{"error_codes":[50079]}`,
+			wantKind:     entra.KindInteractionRequired,
+			wantSentinel: entra.ErrInteractionRequired,
+		},
+		{
+			name:         "5xx takes precedence over an interaction_required body",
+			status:       http.StatusServiceUnavailable,
+			body:         `{"error":"interaction_required","claims":"c"}`,
+			wantKind:     entra.KindTransient,
+			wantSentinel: entra.ErrTransient,
+			wantClaims:   "c",
+		},
+		{
+			name:         "429 throttling is transient even with an invalid_grant body",
+			status:       http.StatusTooManyRequests,
+			body:         `{"error":"invalid_grant","error_description":"AADSTS50196: loop detected"}`,
+			wantKind:     entra.KindTransient,
+			wantSentinel: entra.ErrTransient,
+		},
+		{
+			name:         "408 request timeout is transient",
+			status:       http.StatusRequestTimeout,
+			body:         `{"error":"invalid_client"}`,
+			wantKind:     entra.KindTransient,
+			wantSentinel: entra.ErrTransient,
+		},
+		{
+			name:         "temporarily_unavailable on a 4xx is transient",
+			status:       http.StatusBadRequest,
+			body:         `{"error":"temporarily_unavailable","error_description":"AADSTS90033: transient"}`,
+			wantKind:     entra.KindTransient,
+			wantSentinel: entra.ErrTransient,
+		},
+		{
+			name:         "2xx with interaction_required error and claims",
+			status:       http.StatusOK,
+			body:         `{"error":"interaction_required","claims":"c"}`,
+			wantKind:     entra.KindInteractionRequired,
+			wantSentinel: entra.ErrInteractionRequired,
+			wantClaims:   "c",
+		},
+		{
+			name:         "2xx with invalid_grant error",
+			status:       http.StatusOK,
+			body:         `{"error":"invalid_grant","error_description":"AADSTS50013"}`,
+			wantKind:     entra.KindInvalidGrant,
+			wantSentinel: entra.ErrInvalidGrant,
+		},
+		{
+			name:         "2xx with an error field and an access_token is still a failure",
+			status:       http.StatusOK,
+			body:         `{"error":"invalid_client","token_type":"Bearer","expires_in":3599,"access_token":"` + testAccessToken + `"}`,
+			wantKind:     entra.KindInvalidClient,
+			wantSentinel: entra.ErrInvalidClient,
+		},
+		{
 			name:         "malformed 2xx JSON body",
 			status:       http.StatusOK,
 			body:         `{not valid json`,
@@ -294,13 +404,13 @@ func TestExchanger_ExchangeToken_Failures(t *testing.T) {
 func TestExchanger_ExchangeToken_CapsResponseBody(t *testing.T) {
 	t.Parallel()
 
-	// A >1 MiB body whose valid-JSON prefix is followed by megabytes of padding.
-	// The 1 MiB LimitReader truncates it mid-stream, so the decode fails and the
-	// result is classified as a malformed (unknown) response rather than hanging
-	// or exhausting memory.
+	// A >1 MiB body that, read in full, is a valid success response: the prefix
+	// carries a Bearer token and the padding is one long string member. Only the
+	// 1 MiB LimitReader truncating it mid-stream makes the decode fail, so the
+	// malformed (unknown) classification proves the cap is applied.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"access_token":"`+testAccessToken+`","expires_in":3599,"pad":"`)
+		_, _ = io.WriteString(w, `{"token_type":"Bearer","access_token":"`+testAccessToken+`","expires_in":3599,"pad":"`)
 		pad := make([]byte, 2<<20) // 2 MiB, past the 1 MiB cap
 		for i := range pad {
 			pad[i] = 'A'
@@ -311,13 +421,46 @@ func TestExchanger_ExchangeToken_CapsResponseBody(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	ex := newTestExchanger(t, srv.URL)
-	_, err := ex.ExchangeToken(t.Context(), testUserToken, testAudience)
+	tok, err := ex.ExchangeToken(t.Context(), testUserToken, testAudience)
 
 	require.Error(t, err)
+	assert.Empty(t, tok.AccessToken)
 	var exErr *entra.ExchangeError
 	require.ErrorAs(t, err, &exErr)
 	assert.Equal(t, entra.KindUnknown, exErr.Kind, "a truncated body is a malformed response")
 	assert.NotContains(t, err.Error(), testAccessToken)
+}
+
+// TestExchanger_ExchangeToken_BodyReadFailureIsTransient covers a connection
+// that drops mid-body: the status line arrived but the body cannot be read in
+// full, which is a transient failure rather than a malformed response.
+func TestExchanger_ExchangeToken_BodyReadFailureIsTransient(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !assert.True(t, ok, "test server must support hijacking") {
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if !assert.NoError(t, err) {
+			return
+		}
+		// Promise 1000 bytes, deliver a few, then drop the connection.
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"access")
+		_ = buf.Flush()
+		_ = conn.Close()
+	}))
+	t.Cleanup(srv.Close)
+
+	ex := newTestExchanger(t, srv.URL)
+	_, err := ex.ExchangeToken(t.Context(), testUserToken, testAudience)
+
+	var exErr *entra.ExchangeError
+	require.ErrorAs(t, err, &exErr)
+	assert.Equal(t, entra.KindTransient, exErr.Kind)
+	assert.Equal(t, http.StatusOK, exErr.HTTPStatus)
+	assert.ErrorIs(t, err, entra.ErrTransient)
 }
 
 func TestExchanger_ExchangeToken_TransientOnTransportFailure(t *testing.T) {
@@ -372,16 +515,9 @@ func TestExchanger_ExchangeToken_ClientTimeoutIsTransient(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { close(release) })
 
-	ex, err := entra.New(entra.Config{
-		TenantID:     testTenant,
-		ClientID:     testClientID,
-		ClientSecret: testClientSecret,
-		Authority:    srv.URL,
-		HTTPClient:   &http.Client{Timeout: 50 * time.Millisecond},
-	})
-	require.NoError(t, err)
+	ex := newTestExchangerWithClient(t, srv.URL, &http.Client{Timeout: 50 * time.Millisecond})
 
-	_, err = ex.ExchangeToken(t.Context(), testUserToken, testAudience)
+	_, err := ex.ExchangeToken(t.Context(), testUserToken, testAudience)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, entra.ErrTransient)
@@ -389,37 +525,52 @@ func TestExchanger_ExchangeToken_ClientTimeoutIsTransient(t *testing.T) {
 		"a token endpoint timeout must not look like caller cancellation")
 }
 
-func TestNew_EnforcesRedirectGuardOnInjectedClient(t *testing.T) {
+// TestNewFromTokenURL_RefusesRedirects proves the redirect guard holds for both
+// the default client and a caller-injected one (which, left alone, would follow
+// redirects), for both body-preserving redirect codes. Following either would
+// replay the client_secret and user assertion to the redirect target.
+func TestNewFromTokenURL_RefusesRedirects(t *testing.T) {
 	t.Parallel()
 
-	var redirectFollowed atomic.Bool
-	mux := http.NewServeMux()
-	mux.HandleFunc("/leaked", func(w http.ResponseWriter, _ *http.Request) {
-		// Reached only if the 307 was followed, replaying the secret-bearing body.
-		redirectFollowed.Store(true)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"access_token":"leaked","token_type":"Bearer","expires_in":3599}`)
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/leaked", http.StatusTemporaryRedirect) // 307 preserves the POST body
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	clients := []struct {
+		name   string
+		client func() *http.Client
+	}{
+		{name: "default client", client: func() *http.Client { return nil }},
+		{name: "injected client", client: func() *http.Client { return &http.Client{} }},
+	}
+	codes := []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect}
 
-	// Inject a client that, left alone, would follow redirects (nil CheckRedirect).
-	ex, err := entra.New(entra.Config{
-		TenantID:     testTenant,
-		ClientID:     testClientID,
-		ClientSecret: testClientSecret,
-		Authority:    srv.URL,
-		HTTPClient:   &http.Client{},
-	})
-	require.NoError(t, err)
+	for _, c := range clients {
+		for _, code := range codes {
+			t.Run(fmt.Sprintf("%s/%d", c.name, code), func(t *testing.T) {
+				t.Parallel()
 
-	_, err = ex.ExchangeToken(t.Context(), testUserToken, testAudience)
-	require.Error(t, err) // the 307 itself is not a usable token response
-	assert.False(t, redirectFollowed.Load(),
-		"New must enforce the no-redirect guard even on a caller-injected client")
+				var redirectFollowed atomic.Bool
+				mux := http.NewServeMux()
+				mux.HandleFunc("/leaked", func(w http.ResponseWriter, _ *http.Request) {
+					// Reached only if the redirect was followed, replaying the
+					// secret-bearing body.
+					redirectFollowed.Store(true)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"access_token":"leaked","token_type":"Bearer","expires_in":3599}`)
+				})
+				mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, "/leaked", code)
+				})
+				srv := httptest.NewServer(mux)
+				t.Cleanup(srv.Close)
+
+				ex, err := entra.NewFromTokenURL(srv.URL+"/token", testClientID, testClientSecret, c.client())
+				require.NoError(t, err)
+
+				tok, err := ex.ExchangeToken(t.Context(), testUserToken, testAudience)
+				require.Error(t, err) // the redirect itself is not a usable token response
+				assert.Empty(t, tok.AccessToken)
+				assert.False(t, redirectFollowed.Load(), "the redirect target must never be contacted")
+			})
+		}
+	}
 }
 
 func TestExchanger_ExchangeToken_RejectsEmptyArguments(t *testing.T) {

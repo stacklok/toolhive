@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,11 +118,19 @@ func inboundIdentity(token string) *auth.Identity {
 	}
 }
 
+// testInboundToken is the inbound token every upstream-provider-mode identity
+// also carries. Provider mode must never fall back to it, so tests assert it is
+// never exchanged.
+const testInboundToken = "INBOUND-TOKEN-NOT-THE-SUBJECT"
+
 // upstreamIdentity returns an Identity carrying token under the given upstream
-// provider name — the upstream-provider-mode subject source.
+// provider name — the upstream-provider-mode subject source. It also carries a
+// non-empty inbound token, as a real authenticated identity would, so a
+// fallback to Identity.Token is observable.
 func upstreamIdentity(provider, token string) *auth.Identity {
 	return &auth.Identity{
 		PrincipalInfo:  auth.PrincipalInfo{Subject: testSubject},
+		Token:          testInboundToken,
 		UpstreamTokens: map[string]string{provider: token},
 	}
 }
@@ -196,7 +205,7 @@ func TestCreateMiddleware_InstallsOBOMiddleware(t *testing.T) {
 
 // TestCreateMiddleware_InstallsUpstreamProviderMode verifies the factory wires the
 // configured subjectTokenProviderName onto the installed middleware.
-func TestRegisterFactory_InstallsUpstreamProviderMode(t *testing.T) {
+func TestCreateMiddleware_InstallsUpstreamProviderMode(t *testing.T) {
 	t.Setenv("TEST_OBO_SECRET_PROVIDER", "the-client-secret")
 
 	ctrl := gomock.NewController(t)
@@ -331,6 +340,93 @@ func TestDefaultFactory_BadTokenURL(t *testing.T) {
 	assert.NotContains(t, err.Error(), "the-client-secret")
 }
 
+// TestDefaultFactory_WiresCacheSkew drives DefaultFactory against a stub Entra
+// token endpoint issuing 30s tokens and counts exchanges for two requests from
+// one session. The default 60s skew exceeds the token lifetime, so every
+// request re-exchanges; only a configured skew shorter than the lifetime lets
+// the second request hit the cache, which proves the factory passes
+// cacheSkewSeconds to the cache and that zero keeps the default.
+func TestDefaultFactory_WiresCacheSkew(t *testing.T) {
+	tests := []struct {
+		name      string
+		skew      *int
+		wantCalls int32
+	}{
+		{name: "unset skew uses the 60s default", skew: nil, wantCalls: 2},
+		{name: "zero skew uses the 60s default", skew: ptrTo(0), wantCalls: 2},
+		{name: "skew shorter than the token lifetime caches", skew: ptrTo(10), wantCalls: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TEST_OBO_SECRET_SKEW", "the-client-secret")
+
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"token_type":"Bearer","expires_in":30,"access_token":"backend-token"}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			params := map[string]any{
+				"tokenUrl":           srv.URL + "/tenant/oauth2/v2.0/token",
+				"clientId":           "client-id",
+				"scopes":             []string{testTarget},
+				"clientSecretEnvVar": "TEST_OBO_SECRET_SKEW",
+			}
+			if tt.skew != nil {
+				params["cacheSkewSeconds"] = *tt.skew
+			}
+			cfg, err := types.NewMiddlewareConfig(MiddlewareType, params)
+			require.NoError(t, err)
+
+			var captured types.Middleware
+			mockRunner := mocks.NewMockMiddlewareRunner(gomock.NewController(t))
+			mockRunner.EXPECT().
+				AddMiddleware(MiddlewareType, gomock.Any()).
+				Do(func(_ string, mw types.Middleware) { captured = mw }).
+				Times(1)
+			require.NoError(t, DefaultFactory(cfg, mockRunner))
+			installed, ok := captured.(*middleware)
+			require.True(t, ok)
+
+			for range 2 {
+				rec, spy := serve(t, installed, request(t, inboundIdentity("same-user-token")))
+				require.Equal(t, http.StatusOK, rec.Code)
+				require.Equal(t, "Bearer backend-token", spy.authHeader)
+			}
+			assert.Equal(t, tt.wantCalls, hits.Load())
+		})
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
+// TestClientAddr verifies the audit source strips the port from RemoteAddr and
+// passes through a RemoteAddr that has none.
+func TestClientAddr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		remoteAddr string
+		want       string
+	}{
+		{remoteAddr: "203.0.113.7:54321", want: "203.0.113.7"},
+		{remoteAddr: "[2001:db8::1]:443", want: "2001:db8::1"},
+		{remoteAddr: "203.0.113.7", want: "203.0.113.7"},
+		{remoteAddr: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.remoteAddr, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = tt.remoteAddr
+			assert.Equal(t, tt.want, clientAddr(r))
+		})
+	}
+}
+
 // TestMiddleware_Success_Inbound verifies the inbound path: the Identity.Token is
 // exchanged and the upstream request carries Authorization: Bearer <backend
 // token>, and the downstream handler runs.
@@ -367,8 +463,10 @@ func TestMiddleware_Success_UpstreamProvider(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.True(t, spy.called)
 	assert.Equal(t, "Bearer backend-token", spy.authHeader)
+	assert.Equal(t, 1, stub.calls)
 	assert.Equal(t, "upstream-entra-token", stub.lastUserToken,
 		"the named upstream provider token is the subject, not the inbound token")
+	assert.NotEqual(t, testInboundToken, stub.lastUserToken)
 }
 
 // TestMiddleware_NoIdentity_401 verifies both modes reject a request without an
@@ -408,7 +506,8 @@ func TestMiddleware_InboundIdentityWithoutToken_401(t *testing.T) {
 
 // TestMiddleware_UpstreamProviderTokenMissing_401Challenge verifies the
 // upstream-provider path returns 401 with a re-auth challenge when the configured
-// provider has no usable token, mirroring upstreamswap.
+// provider has no usable token, mirroring upstreamswap. Every identity carries a
+// non-empty inbound token, so a fallback to it would show up as an exchange.
 func TestMiddleware_UpstreamProviderTokenMissing_401Challenge(t *testing.T) {
 	t.Parallel()
 
@@ -416,7 +515,10 @@ func TestMiddleware_UpstreamProviderTokenMissing_401Challenge(t *testing.T) {
 		name     string
 		identity *auth.Identity
 	}{
-		{name: "provider absent", identity: &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: testSubject}}},
+		{name: "provider absent", identity: &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{Subject: testSubject},
+			Token:         testInboundToken,
+		}},
 		{name: "provider present but empty", identity: upstreamIdentity(testProvider, "")},
 		{name: "different provider", identity: upstreamIdentity("other", "tok")},
 	}
@@ -461,11 +563,25 @@ func TestMiddleware_InteractionRequired_403AndAudit(t *testing.T) {
 	stub := &stubExchanger{err: exErr}
 	mw := newMiddleware(stub, "", testTarget, slog.New(slog.NewJSONHandler(&auditBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
-	rec, spy := serve(t, mw, request(t, inboundIdentity(userToken)))
+	req := request(t, inboundIdentity(userToken))
+	req.RemoteAddr = "203.0.113.7:54321"
+	rec, spy := serve(t, mw, req)
 
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.False(t, spy.called, "downstream must not be called on a claims challenge")
 	assert.Contains(t, rec.Body.String(), forbiddenMessage)
+
+	// The audit source is the client IP with the port stripped.
+	var record struct {
+		Source struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		} `json:"source"`
+		Target map[string]string `json:"target"`
+	}
+	require.NoError(t, json.Unmarshal(auditBuf.Bytes(), &record))
+	assert.Equal(t, "203.0.113.7", record.Source.Value)
+	assert.Equal(t, testTarget, record.Target["audience"])
 
 	// Non-disclosure: neither the response body nor the audit record may leak
 	// the user token or the raw claims challenge.
@@ -669,7 +785,7 @@ func TestMiddleware_RealEntra_InteractionRequired_NonDisclosure(t *testing.T) {
 			`"error_description":"AADSTS50079: due to a configuration change made by your administrator",` +
 			`"claims":"` + claimsBlob + `"}`))
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	ex, err := entra.NewFromTokenURL(srv.URL+"/tenant/oauth2/v2.0/token", "client-id", clientSecret, nil)
 	require.NoError(t, err)

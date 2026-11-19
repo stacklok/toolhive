@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -66,6 +68,75 @@ func (f *fakeExchanger) callCount() int {
 	return f.calls
 }
 
+// testTimeout bounds every blocking wait in these tests so a synchronization
+// regression fails fast instead of hanging until the global go test timeout.
+const testTimeout = 5 * time.Second
+
+// recv receives one value from ch, failing the test if none arrives within
+// testTimeout. Call it only from the test goroutine (it may call t.Fatal).
+func recv[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(testTimeout):
+		t.Fatalf("timed out waiting for %s", what)
+		var zero T
+		return zero
+	}
+}
+
+// waitGroupWithTimeout waits for wg, failing the test if it does not finish
+// within testTimeout. Call it only from the test goroutine.
+func waitGroupWithTimeout(t *testing.T, wg *sync.WaitGroup) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	recv(t, done, "goroutines to finish")
+}
+
+// errBlockTimedOut is returned by a delegate whose test barrier was never
+// released; it turns a hung test into a visible failure.
+var errBlockTimedOut = errors.New("test barrier was never released")
+
+// awaitRelease blocks a delegate until release is closed, giving up after
+// testTimeout. It runs on the cache's detached exchange goroutine, where t.Fatal
+// is not allowed, so it reports the timeout as an error instead.
+func awaitRelease(release <-chan struct{}) error {
+	select {
+	case <-release:
+		return nil
+	case <-time.After(testTimeout):
+		return errBlockTimedOut
+	}
+}
+
+// goroutinesWaitingOnFlight counts goroutines parked in waitFor whose stack
+// also names testName. Filtering by the test function keeps parallel tests in
+// this package from inflating the count. It observes the scheduler rather than
+// production internals, so no test hook is needed in Cache.
+func goroutinesWaitingOnFlight(testName string) int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	count := 0
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "cache.waitFor(") && strings.Contains(g, testName) {
+			count++
+		}
+	}
+	return count
+}
+
 func TestCache_ServesCachedTokenWithinTTL(t *testing.T) {
 	t.Parallel()
 
@@ -86,37 +157,118 @@ func TestCache_ServesCachedTokenWithinTTL(t *testing.T) {
 	assert.Equal(t, 1, fake.callCount(), "second call must be served from the cache")
 }
 
-func TestCache_ReExchangesAfterExpiry(t *testing.T) {
+// TestCache_FreshnessBoundary pins when a cached token stops being served: it
+// is fresh strictly before expiry-skew and stale from that instant on. Each row
+// exchanges once at base, advances the clock, and exchanges again.
+func TestCache_FreshnessBoundary(t *testing.T) {
 	t.Parallel()
 
-	clock := newFakeClock()
-	const ttl = 100 * time.Second
-	fake := &fakeExchanger{fn: func(_ context.Context, _, _ string, call int) (exchange.Token, error) {
-		return exchange.Token{
-			AccessToken: fmt.Sprintf("tok-%d", call),
-			Expiry:      clock.now().Add(ttl),
-		}, nil
+	tests := []struct {
+		name      string
+		ttl       time.Duration
+		opts      []Option
+		advance   time.Duration
+		wantCalls int
+		wantToken string
+	}{
+		{
+			// Default 60s skew on a 100s token: stale from base+40s.
+			name:      "default skew, just before the window",
+			ttl:       100 * time.Second,
+			advance:   39 * time.Second,
+			wantCalls: 1,
+			wantToken: "tok-1",
+		},
+		{
+			name:      "default skew, exactly at expiry minus skew",
+			ttl:       100 * time.Second,
+			advance:   40 * time.Second,
+			wantCalls: 2,
+			wantToken: "tok-2",
+		},
+		{
+			name:      "default skew, inside the window",
+			ttl:       100 * time.Second,
+			advance:   45 * time.Second,
+			wantCalls: 2,
+			wantToken: "tok-2",
+		},
+		{
+			name:      "custom skew, exactly at expiry minus skew",
+			ttl:       100 * time.Second,
+			opts:      []Option{WithSkew(10 * time.Second)},
+			advance:   90 * time.Second,
+			wantCalls: 2,
+			wantToken: "tok-2",
+		},
+		{
+			name:      "custom skew, just before expiry minus skew",
+			ttl:       100 * time.Second,
+			opts:      []Option{WithSkew(10 * time.Second)},
+			advance:   89 * time.Second,
+			wantCalls: 1,
+			wantToken: "tok-1",
+		},
+		{
+			// A token whose whole lifetime is inside the skew is never served
+			// from the cache, even with no time passing.
+			name:      "TTL shorter than skew is never reused",
+			ttl:       30 * time.Second,
+			advance:   0,
+			wantCalls: 2,
+			wantToken: "tok-2",
+		},
+		{
+			name:      "zero skew serves until expiry",
+			ttl:       100 * time.Second,
+			opts:      []Option{WithSkew(0)},
+			advance:   99 * time.Second,
+			wantCalls: 1,
+			wantToken: "tok-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := newFakeClock()
+			fake := &fakeExchanger{fn: func(_ context.Context, _, _ string, call int) (exchange.Token, error) {
+				return exchange.Token{AccessToken: fmt.Sprintf("tok-%d", call), Expiry: clock.now().Add(tt.ttl)}, nil
+			}}
+			c := New(fake, append([]Option{WithClock(clock.now)}, tt.opts...)...)
+
+			v, err := c.Exchange(t.Context(), "user", "aud")
+			require.NoError(t, err)
+			assert.Equal(t, "tok-1", v)
+
+			clock.advance(tt.advance)
+			v, err = c.Exchange(t.Context(), "user", "aud")
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantToken, v)
+			assert.Equal(t, tt.wantCalls, fake.callCount())
+		})
+	}
+}
+
+// TestWithClock_NilKeepsWallClock verifies a nil clock is ignored rather than
+// installed (which would panic on the first lookup), and that the retained
+// wall clock still drives caching.
+func TestWithClock_NilKeepsWallClock(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeExchanger{fn: func(_ context.Context, _, _ string, _ int) (exchange.Token, error) {
+		return exchange.Token{AccessToken: "tok", Expiry: time.Now().Add(time.Hour)}, nil
 	}}
-	c := New(fake, WithClock(clock.now)) // default 60s skew → stale at base+40s
+	c := New(fake, WithClock(nil))
+	require.NotNil(t, c.now)
 
-	v, err := c.Exchange(t.Context(), "user", "aud")
-	require.NoError(t, err)
-	assert.Equal(t, "tok-1", v)
-	assert.Equal(t, 1, fake.callCount())
-
-	// Still fresh just before the skew window opens.
-	clock.advance(39 * time.Second) // now base+39s, threshold base+40s
-	v, err = c.Exchange(t.Context(), "user", "aud")
-	require.NoError(t, err)
-	assert.Equal(t, "tok-1", v)
-	assert.Equal(t, 1, fake.callCount())
-
-	// Inside the skew window the token is treated as stale and re-exchanged.
-	clock.advance(6 * time.Second) // now base+45s, past base+40s
-	v, err = c.Exchange(t.Context(), "user", "aud")
-	require.NoError(t, err)
-	assert.Equal(t, "tok-2", v)
-	assert.Equal(t, 2, fake.callCount())
+	for range 2 {
+		v, err := c.Exchange(t.Context(), "user", "aud")
+		require.NoError(t, err)
+		assert.Equal(t, "tok", v)
+	}
+	assert.Equal(t, 1, fake.callCount(), "the second call must be served from the cache")
 }
 
 func TestCache_PartitionsByUserToken(t *testing.T) {
@@ -228,7 +380,7 @@ func TestCache_ConcurrentExchangesAreRaceFree(t *testing.T) {
 			assert.Equal(t, "tok:"+user+":"+aud, got)
 		}(i)
 	}
-	wg.Wait()
+	waitGroupWithTimeout(t, &wg)
 }
 
 // TestCache_StarterCancellationDoesNotPoisonOthers verifies the detached-exchange
@@ -244,7 +396,9 @@ func TestCache_StarterCancellationDoesNotPoisonOthers(t *testing.T) {
 	proceed := make(chan struct{})
 	fake := &fakeExchanger{fn: func(ctx context.Context, _, _ string, _ int) (exchange.Token, error) {
 		entered <- struct{}{}
-		<-proceed
+		if err := awaitRelease(proceed); err != nil {
+			return exchange.Token{}, err
+		}
 		// The shared exchange must not inherit the starter's cancellation.
 		if err := ctx.Err(); err != nil {
 			return exchange.Token{}, err
@@ -260,7 +414,7 @@ func TestCache_StarterCancellationDoesNotPoisonOthers(t *testing.T) {
 		_, err := c.Exchange(starterCtx, "user", "aud")
 		starterErr <- err
 	}()
-	<-entered // the detached exchange has begun
+	recv(t, entered, "the detached exchange to begin")
 
 	// A second caller with a healthy context coalesces onto the same exchange.
 	followerTok := make(chan string, 1)
@@ -272,55 +426,102 @@ func TestCache_StarterCancellationDoesNotPoisonOthers(t *testing.T) {
 
 	// Cancelling the starter releases it promptly with its own error...
 	cancelStarter()
-	assert.ErrorIs(t, <-starterErr, context.Canceled)
+	assert.ErrorIs(t, recv(t, starterErr, "the starter to return"), context.Canceled)
 
 	// ...while the shared exchange completes and the follower still succeeds.
 	close(proceed)
-	assert.Equal(t, "shared", <-followerTok)
+	assert.Equal(t, "shared", recv(t, followerTok, "the follower's token"))
 	assert.Equal(t, 1, fake.callCount(), "the cancellation must not trigger a second exchange")
 }
 
+// TestCache_CoalescesConcurrentMissesForSameKey proves followers join the
+// leader's flight rather than racing past it: the delegate is held open until
+// every caller is provably parked in waitFor, and only then released. Were the
+// in-flight map removed, each parked caller would own a separate flight and the
+// delegate would run once per caller.
 func TestCache_CoalescesConcurrentMissesForSameKey(t *testing.T) {
 	t.Parallel()
 
-	const followers = 16
+	const callers = 17
 	clock := newFakeClock()
-	// Buffered past the expected count so a (broken) extra exchange cannot
-	// deadlock on the signal — it would surface as a failed call-count assert.
-	entered := make(chan struct{}, followers+1)
 	release := make(chan struct{})
 	var calls atomic.Int32
 
 	fake := &fakeExchanger{fn: func(_ context.Context, _, _ string, _ int) (exchange.Token, error) {
 		calls.Add(1)
-		entered <- struct{}{}
-		<-release // hold the in-flight exchange open while followers pile up
+		// Hold the exchange open while the other callers pile up.
+		if err := awaitRelease(release); err != nil {
+			return exchange.Token{}, err
+		}
 		return exchange.Token{AccessToken: "shared", Expiry: clock.now().Add(time.Hour)}, nil
 	}}
 	c := New(fake, WithClock(clock.now))
 
 	ctx := t.Context()
-	results := make(chan string, followers+1)
-	doExchange := func() {
-		v, err := c.Exchange(ctx, "user", "aud")
-		assert.NoError(t, err)
-		results <- v
+	results := make(chan string, callers)
+	for range callers {
+		go func() {
+			v, err := c.Exchange(ctx, "user", "aud")
+			assert.NoError(t, err)
+			results <- v
+		}()
 	}
 
-	go doExchange() // leader
-	<-entered       // leader is registered in-flight and inside the delegate
+	// Every caller is parked on a flight before any flight can finish, so none
+	// of them can be served from a cache entry the leader wrote.
+	require.Eventually(t, func() bool {
+		return goroutinesWaitingOnFlight(t.Name()) == callers
+	}, testTimeout, 5*time.Millisecond, "all callers must be waiting on an in-flight exchange")
 
-	for i := 0; i < followers; i++ {
-		go doExchange() // each joins the leader's in-flight exchange
-	}
+	close(release)
 
-	close(release) // let the single exchange complete; everyone shares its result
-
-	for i := 0; i < followers+1; i++ {
-		assert.Equal(t, "shared", <-results)
+	for range callers {
+		assert.Equal(t, "shared", recv(t, results, "a caller's result"))
 	}
 	assert.Equal(t, int32(1), calls.Load(),
 		"concurrent misses for one key must collapse to a single underlying exchange")
+}
+
+// TestCache_CoalescedErrorReachesEveryCaller verifies a failed shared exchange
+// hands its error to every coalesced caller and caches nothing.
+func TestCache_CoalescedErrorReachesEveryCaller(t *testing.T) {
+	t.Parallel()
+
+	const callers = 8
+	sentinel := errors.New("delegate boom")
+	release := make(chan struct{})
+	fake := &fakeExchanger{fn: func(_ context.Context, _, _ string, _ int) (exchange.Token, error) {
+		if err := awaitRelease(release); err != nil {
+			return exchange.Token{}, err
+		}
+		return exchange.Token{}, sentinel
+	}}
+	c := New(fake)
+
+	ctx := t.Context()
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			_, err := c.Exchange(ctx, "user", "aud")
+			errs <- err
+		}()
+	}
+
+	require.Eventually(t, func() bool {
+		return goroutinesWaitingOnFlight(t.Name()) == callers
+	}, testTimeout, 5*time.Millisecond, "all callers must be waiting on the in-flight exchange")
+
+	close(release)
+
+	for range callers {
+		assert.ErrorIs(t, recv(t, errs, "a caller's error"), sentinel)
+	}
+	assert.Equal(t, 1, fake.callCount(), "the failed exchange is shared, not repeated per caller")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	assert.Empty(t, c.entries, "a failed exchange caches nothing")
+	assert.Empty(t, c.inflight, "the in-flight slot is freed after a failure")
 }
 
 // TestCache_JoinsExistingInflight deterministically exercises the single-flight

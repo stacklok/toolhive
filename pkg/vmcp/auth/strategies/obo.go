@@ -56,10 +56,12 @@ type OBOStrategy struct {
 	// production uses defaultBuildOBOExchanger.
 	buildExchanger func(cfg *authtypes.OBOConfig, clientSecret string) (exchange.Exchanger, error)
 
-	// exchangers caches the per-backend Exchanger keyed by oboExchangerCacheKey. Each
-	// is shared across all users of that backend (the cache partitions per user
-	// internally).
-	mu         sync.RWMutex
+	// mu guards exchangers.
+	mu sync.RWMutex
+
+	// exchangers caches the per-backend Exchanger keyed by oboExchangerCacheKey.
+	// Each is shared across all users of that backend (the cache partitions per
+	// user internally).
 	exchangers map[string]exchange.Exchanger
 }
 
@@ -104,6 +106,9 @@ func (*OBOStrategy) Name() string { return authtypes.StrategyTypeOBO }
 func (s *OBOStrategy) Authenticate(
 	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {
+	// The config is validated before the health-check skip, as the token-exchange
+	// strategy does: a misconfigured backend fails its health probe instead of
+	// being probed unauthenticated and reported healthy.
 	cfg, clientSecret, err := s.resolveConfig(strategy)
 	if err != nil {
 		return fmt.Errorf("obo: invalid strategy configuration: %w", err)
@@ -211,22 +216,53 @@ func (s *OBOStrategy) getOrCreateExchanger(cfg *authtypes.OBOConfig, clientSecre
 }
 
 // mapExchangeError translates an exchange failure into the error the Strategy
-// returns, without disclosing token or secret material (the Entra error already
-// composes only non-sensitive fields). A conditional-access / claims challenge
-// fails fast with an audit record; a cancelled context propagates
-// as-is so it is not misreported as a backend failure.
+// returns. The returned error wraps only the matching entra sentinel (so
+// errors.Is keeps working) behind a generic message: it reaches MCP clients via
+// the tool error, so it must not carry Entra's error_description or any other
+// provider detail. That detail is recorded server-side instead — in the audit
+// record for a conditional-access / claims challenge, and in the diagnostic log
+// otherwise. A cancelled context propagates as-is so it is not misreported as a
+// backend failure.
 func (s *OBOStrategy) mapExchangeError(
 	ctx context.Context, identity *auth.Identity, target string, err error,
 ) error {
 	switch {
 	case errors.Is(err, entra.ErrInteractionRequired):
+		// The audit record is built from the original error so it keeps the
+		// ExchangeError's safe-to-log fields.
 		s.auditInteractionRequired(ctx, identity, target, err)
-		return fmt.Errorf("obo: token exchange denied: %w", err)
+		return fmt.Errorf("obo: token exchange denied: %w", entra.ErrInteractionRequired)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err
+	case errors.Is(err, entra.ErrInvalidGrant):
+		// The end-user token was rejected (expired, malformed, or not consented):
+		// a per-caller condition, so it is logged at DEBUG only.
+		logExchangeFailure(ctx, slog.LevelDebug, err)
+		return fmt.Errorf("obo: token exchange failed: %w", entra.ErrInvalidGrant)
 	default:
-		return fmt.Errorf("obo: token exchange failed: %w", err)
+		// invalid_client, a transient IdP failure, or an unclassified error.
+		logExchangeFailure(ctx, slog.LevelWarn, err)
+		for _, sentinel := range []error{entra.ErrInvalidClient, entra.ErrTransient} {
+			if errors.Is(err, sentinel) {
+				return fmt.Errorf("obo: token exchange failed: %w", sentinel)
+			}
+		}
+		return errors.New("obo: token exchange failed")
 	}
+}
+
+// logExchangeFailure records an exchange failure in the diagnostic log. Only
+// *entra.ExchangeError detail is logged: its Error() composes solely
+// non-sensitive fields. Any other error is logged without its message so no
+// Exchanger implementation can leak credential material here, matching the
+// proxy middleware.
+func logExchangeFailure(ctx context.Context, level slog.Level, err error) {
+	var exErr *entra.ExchangeError
+	if errors.As(err, &exErr) {
+		slog.Log(ctx, level, "obo: token exchange failed", "error", exErr.Error())
+		return
+	}
+	slog.Log(ctx, level, "obo: token exchange failed with an unclassified error")
 }
 
 // auditInteractionRequired emits the audit record for a fail-fast

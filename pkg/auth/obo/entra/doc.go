@@ -11,11 +11,9 @@
 // wrap it in the sibling cache package to add session-partitioned token
 // caching:
 //
-//	exchanger, err := entra.New(entra.Config{
-//	    TenantID:     "<tenant>",
-//	    ClientID:     "<app-id>",
-//	    ClientSecret: "<secret>",
-//	})
+//	tokenURL, err := entra.TokenURL("<tenant>", "") // "" = public Entra authority
+//	if err != nil { ... }
+//	exchanger, err := entra.NewFromTokenURL(tokenURL, "<app-id>", "<secret>", nil)
 //	if err != nil { ... }
 //	var oboExchanger exchange.Exchanger = cache.New(exchanger)
 //

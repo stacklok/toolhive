@@ -37,8 +37,9 @@ var (
 	// permanent configuration error until the operator fixes the credentials.
 	ErrInvalidClient = errors.New("entra obo: client authentication failed")
 
-	// ErrTransient indicates a retryable failure — a 5xx from the token endpoint
-	// or a transport-level error reaching it. Callers may retry with backoff.
+	// ErrTransient indicates a retryable failure — a 5xx, 429 or 408 from the
+	// token endpoint, an OAuth "temporarily_unavailable" error, or a
+	// transport-level error reaching it. Callers may retry with backoff.
 	ErrTransient = errors.New("entra obo: transient token endpoint failure")
 )
 

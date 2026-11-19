@@ -56,8 +56,10 @@ func (*OBOConverter) ConvertToStrategy(
 	}
 
 	// Check the simple required credentials first, so a config missing a client
-	// credential reports that rather than a downstream tenant-format error.
-	if cfg.ClientID == "" {
+	// credential reports that rather than a downstream tenant-format error. A
+	// whitespace-only clientId is rejected like an empty one, as the operator's
+	// OBO validation does.
+	if strings.TrimSpace(cfg.ClientID) == "" {
 		return nil, fmt.Errorf("vMCP OBO converter: %s", msgClientID)
 	}
 	// OBO is a confidential-client shared-secret flow: clientSecretRef must be
@@ -105,7 +107,8 @@ func (*OBOConverter) ConvertToStrategy(
 // mode, where secrets cannot be mounted as pod env vars because the vMCP pod does
 // not know about backend auth configs at creation time). It clears ClientSecretEnv
 // so the resolved value is the single secret source, and returns the strategy
-// unchanged when no secret reference is configured.
+// unchanged when no secret reference is configured. A missing secret, a missing
+// key, or an empty value is an error.
 //
 // The secret value is never logged and never written to the strategy's
 // non-secret fields, so it does not leak into logs or CR status; error messages
@@ -142,6 +145,13 @@ func (*OBOConverter) ResolveSecrets(
 	value, ok := secret.Data[cfg.ClientSecretRef.Key]
 	if !ok {
 		return nil, fmt.Errorf("vMCP OBO converter: secret %s/%s has no key %s",
+			namespace, cfg.ClientSecretRef.Name, cfg.ClientSecretRef.Key)
+	}
+	// Reject an empty value here, where the secret and key can be named, rather
+	// than resolving to no secret and failing later with a generic
+	// "client secret is required".
+	if len(value) == 0 {
+		return nil, fmt.Errorf("vMCP OBO converter: secret %s/%s key %s is empty",
 			namespace, cfg.ClientSecretRef.Name, cfg.ClientSecretRef.Key)
 	}
 

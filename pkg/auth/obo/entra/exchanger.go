@@ -38,7 +38,7 @@ const (
 
 const (
 	// defaultAuthority is the public Microsoft Entra (Azure AD) authority. It is
-	// overridable via Config.Authority for sovereign clouds and tests.
+	// overridable via TokenURL's authority argument for sovereign clouds and tests.
 	defaultAuthority = "https://login.microsoftonline.com"
 
 	// tokenEndpointPath is the v2.0 token endpoint path appended after the tenant.
@@ -76,34 +76,6 @@ var caInteractionCodes = map[int]struct{}{
 	50079: {}, // AADSTS50079: MFA enrolment required (proof-up).
 }
 
-// Config is the Microsoft Entra confidential-client configuration for the OBO
-// exchange. v1 supports client_secret authentication only; certificate and
-// workload-identity client auth are planned fast-follows.
-type Config struct {
-	// TenantID is the Entra tenant (directory) — a GUID or a verified domain.
-	// Required.
-	TenantID string
-
-	// ClientID is the confidential client's application (client) ID. Required.
-	ClientID string
-
-	// ClientSecret is the confidential client's secret. Required in v1.
-	ClientSecret string //nolint:gosec // G101: field name, not a hardcoded credential.
-
-	// Authority overrides the Entra authority base URL. Defaults to
-	// https://login.microsoftonline.com. Must be https, except http is allowed
-	// for loopback hosts so tests can point at an httptest server.
-	Authority string
-
-	// HTTPClient is the HTTP client used for the exchange. When nil, a client
-	// with a sane default timeout that refuses redirects is used. A
-	// caller-injected client SHOULD likewise refuse redirects: the request body
-	// carries client_secret and the user assertion, which Go replays on a
-	// 307/308 — including to a different host. A legitimate Entra token endpoint
-	// never redirects.
-	HTTPClient *http.Client
-}
-
 // Exchanger performs the Microsoft Entra on-behalf-of token exchange. It
 // implements both exchange.Exchanger (token string only) and exchange.TokenExchanger
 // (token plus expiry, consumed by the caching layer).
@@ -125,33 +97,8 @@ var (
 	_ exchange.TokenExchanger = (*Exchanger)(nil)
 )
 
-// New validates cfg and returns an Exchanger. It fails loudly on missing
-// required fields or a malformed authority rather than deferring the failure to
-// the first exchange. Configuration errors are returned as plain errors, not as
-// *ExchangeError (which classifies exchange-time failures only).
-func New(cfg Config) (*Exchanger, error) {
-	tokenURL, err := TokenURL(cfg.TenantID, cfg.Authority)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(cfg.ClientID) == "" {
-		return nil, fmt.Errorf("entra obo: ClientID is required")
-	}
-	if cfg.ClientSecret == "" {
-		return nil, fmt.Errorf("entra obo: ClientSecret is required")
-	}
-
-	return &Exchanger{
-		tokenURL:     tokenURL,
-		clientID:     cfg.ClientID,
-		clientSecret: cfg.ClientSecret,
-		httpClient:   newHTTPClient(cfg.HTTPClient),
-	}, nil
-}
-
 // TokenURL builds and validates the Entra v2.0 on-behalf-of token endpoint for a
-// tenant, applying exactly the rules New uses so the URL it returns is one
-// NewFromTokenURL (the proxy-runtime constructor) will also accept. The operator's
+// tenant. The URL it returns is one NewFromTokenURL will accept. The operator's
 // OBO validation calls this to derive the runtime contract's tokenUrl from the
 // CRD's tenantId (and optional authority) rather than re-spelling Entra's
 // authority/tenant/path structure — keeping that structure defined in one place.
@@ -172,7 +119,7 @@ func TokenURL(tenantID, authority string) (string, error) {
 	if authority == "" {
 		authority = defaultAuthority
 	}
-	if err := validateAuthority(authority); err != nil {
+	if err := validateHTTPSURL(authority, "Authority"); err != nil {
 		return "", err
 	}
 
@@ -184,18 +131,21 @@ func TokenURL(tenantID, authority string) (string, error) {
 }
 
 // NewFromTokenURL returns an Exchanger that posts the OBO exchange to a
-// fully-formed tenant token endpoint. It is the constructor for callers that
-// already hold the complete token URL — notably the proxy-runtime middleware,
-// which receives tokenURL verbatim from the obo.MiddlewareParameters
-// contract and must not re-derive Entra's authority/tenant URL structure.
-// Use New instead when the caller holds an authority + tenant pair.
+// fully-formed tenant token endpoint. Callers that hold a tenant + authority pair
+// derive the endpoint with TokenURL first; the proxy-runtime middleware receives
+// tokenURL verbatim from the obo.MiddlewareParameters contract and must not
+// re-derive Entra's authority/tenant URL structure. It fails loudly on missing
+// required fields or a malformed URL rather than deferring the failure to the
+// first exchange.
 //
-// tokenURL is validated exactly as New validates its derived endpoint: an
-// absolute https URL (http permitted only for loopback hosts, so tests can point
-// at an httptest server), with a host and no query string or fragment. clientID
-// and clientSecret are required. A nil httpClient gets the same redirect-refusing
-// default New uses. Configuration errors are returned as plain errors, not as
-// *ExchangeError (which classifies exchange-time failures only).
+// tokenURL must be an absolute https URL (http permitted only for loopback
+// hosts, so tests can point at an httptest server), with a host and no query
+// string or fragment. clientID and clientSecret are required (v1 supports
+// client_secret authentication only). A nil httpClient gets a default client
+// with a bounded timeout; an injected client is used for its transport and
+// timeout. Either way redirects are refused (see newHTTPClient). Configuration
+// errors are returned as plain errors, not as *ExchangeError (which classifies
+// exchange-time failures only).
 //
 // SECURITY: tokenURL is a trust boundary. The exchange POSTs the client secret
 // and the end-user assertion in the request body to tokenURL, so the caller must
@@ -203,9 +153,9 @@ func TokenURL(tenantID, authority string) (string, error) {
 // from operator-controlled configuration (the obo.MiddlewareParameters contract), never
 // from end-user input, and the unconditional redirect guard (see newHTTPClient)
 // stops a 3xx from replaying that body to another host. This constructor
-// intentionally does NOT allowlist hosts or enforce a path shape: New already
-// trusts an operator-supplied Authority for arbitrary hosts (sovereign clouds),
-// and a hard allowlist would reject legitimate sovereign / B2C / CIAM endpoints
+// intentionally does NOT allowlist hosts or enforce a path shape: TokenURL
+// already trusts an operator-supplied authority for arbitrary hosts (sovereign
+// clouds), and a hard allowlist would reject legitimate sovereign / B2C / CIAM endpoints
 // (which use different hosts and token paths) while giving only false assurance.
 func NewFromTokenURL(tokenURL, clientID, clientSecret string, httpClient *http.Client) (*Exchanger, error) {
 	if strings.TrimSpace(tokenURL) == "" {
@@ -237,7 +187,8 @@ func NewFromTokenURL(tokenURL, clientID, clientSecret string, httpClient *http.C
 //
 // An injected client is shallow-copied so its Transport/Timeout/Jar are
 // preserved while CheckRedirect is overridden, and the caller's own *http.Client
-// is never mutated (it may be shared). The copy is a snapshot taken at New time.
+// is never mutated (it may be shared). The copy is a snapshot taken at
+// construction time.
 func newHTTPClient(injected *http.Client) *http.Client {
 	if injected == nil {
 		return &http.Client{Timeout: defaultHTTPTimeout, CheckRedirect: refuseRedirects}
@@ -255,8 +206,8 @@ func refuseRedirects(*http.Request, []*http.Request) error {
 
 // validateTenant accepts an Entra tenant identifier in the two forms the v2.0
 // endpoint uses — a directory GUID or a verified domain — capped at the DNS name
-// length. It rejects junk (including the path metacharacters the previous,
-// looser check caught) at wiring time.
+// length. Anything else, including path metacharacters such as "/" or "..", is
+// rejected at wiring time.
 func validateTenant(tenant string) error {
 	if len(tenant) > maxTenantLen {
 		return fmt.Errorf("entra obo: TenantID must be at most %d characters", maxTenantLen)
@@ -301,7 +252,7 @@ func (e *Exchanger) ExchangeToken(ctx context.Context, userToken, audience strin
 
 	req, err := e.buildRequest(ctx, userToken, audience)
 	if err != nil {
-		// Unreachable for a New-built Exchanger (the endpoint was validated), but
+		// Unreachable for a constructed Exchanger (the endpoint was validated), but
 		// classified rather than panicked on if it ever happens.
 		return exchange.Token{}, &ExchangeError{Kind: KindTransient, Description: "unable to build the token request"}
 	}
@@ -332,12 +283,12 @@ func (e *Exchanger) ExchangeToken(ctx context.Context, userToken, audience strin
 		}
 	}
 
-	return e.parseResponse(resp.StatusCode, body)
+	return parseResponse(resp.StatusCode, body, time.Now())
 }
 
 // buildRequest assembles the Entra OBO POST. The subject token and client
 // secret travel in the form body only. It returns an error rather than papering
-// over a request-build failure: New validated the endpoint, so this is
+// over a request-build failure: the constructor validated the endpoint, so this is
 // unreachable in practice, but the caller classifies any failure instead of
 // risking a nil-pointer dereference.
 func (e *Exchanger) buildRequest(ctx context.Context, userToken, audience string) (*http.Request, error) {
@@ -374,10 +325,10 @@ type tokenResponse struct {
 	Claims           string `json:"claims"`
 }
 
-// parseResponse turns a decoded token endpoint reply into a Token or a typed
-// error. It is a method only so the success path can stamp the expiry against
-// the wall clock; it holds no per-request state.
-func (*Exchanger) parseResponse(status int, body []byte) (exchange.Token, error) {
+// parseResponse turns a token endpoint reply into a Token or a typed error. now
+// is the instant the reply was received; a positive expires_in is added to it to
+// stamp the token's expiry.
+func parseResponse(status int, body []byte, now time.Time) (exchange.Token, error) {
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil {
 		// Unparsable body: classify by status alone, without echoing the body.
@@ -418,21 +369,24 @@ func (*Exchanger) parseResponse(status int, body []byte) (exchange.Token, error)
 
 	var expiry time.Time
 	if tr.ExpiresIn > 0 {
-		expiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+		expiry = now.Add(time.Duration(tr.ExpiresIn) * time.Second)
 	}
 	return exchange.Token{AccessToken: tr.AccessToken, Expiry: expiry}, nil
 }
 
-// classifyHTTPError maps an Entra error reply onto an *ExchangeError. A 5xx is
-// transient regardless of body; otherwise the OAuth error code and claims
-// challenge drive the classification.
+// classifyHTTPError maps an Entra error reply onto an *ExchangeError. A 5xx, a
+// 429 (throttled) or a 408 (request timeout) is transient regardless of body;
+// otherwise the OAuth error code and claims challenge drive the classification,
+// with RFC 6749's "temporarily_unavailable" also treated as transient.
 func classifyHTTPError(status int, tr *tokenResponse) *ExchangeError {
 	kind := func() ErrorKind {
 		switch {
-		case status >= http.StatusInternalServerError:
+		case isTransientStatus(status):
 			return KindTransient
 		case isInteractionRequired(tr):
 			return KindInteractionRequired
+		case tr.Error == "temporarily_unavailable":
+			return KindTransient
 		case tr.Error == "invalid_grant":
 			return KindInvalidGrant
 		case tr.Error == "invalid_client" || tr.Error == "unauthorized_client":
@@ -451,6 +405,14 @@ func classifyHTTPError(status int, tr *tokenResponse) *ExchangeError {
 	}
 }
 
+// isTransientStatus reports whether an HTTP status marks a retryable token
+// endpoint failure: any 5xx, 429 Too Many Requests, or 408 Request Timeout.
+func isTransientStatus(status int) bool {
+	return status >= http.StatusInternalServerError ||
+		status == http.StatusTooManyRequests ||
+		status == http.StatusRequestTimeout
+}
+
 // isInteractionRequired reports whether an Entra error reply is a
 // conditional-access / MFA / claims challenge. The canonical signals are the
 // "interaction_required" OAuth error and a non-empty claims challenge; the
@@ -467,17 +429,11 @@ func isInteractionRequired(tr *tokenResponse) bool {
 	return false
 }
 
-// validateAuthority enforces that the authority is an absolute https URL (http
-// permitted only for loopback hosts, so tests can use httptest), with a host and
-// no fragment or query string.
-func validateAuthority(raw string) error {
-	return validateHTTPSURL(raw, "Authority")
-}
-
 // validateHTTPSURL enforces that raw is an absolute https URL (http permitted
 // only for loopback hosts, so tests can use httptest), with a host and no
 // fragment or query string. label names the field in error messages so the same
-// check serves both the authority (New) and the full token URL (NewFromTokenURL).
+// check serves both the authority (TokenURL) and the full token URL
+// (NewFromTokenURL).
 func validateHTTPSURL(raw, label string) error {
 	u, err := url.Parse(raw)
 	if err != nil {

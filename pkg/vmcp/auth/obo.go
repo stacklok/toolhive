@@ -22,8 +22,8 @@ var oboStrategyOverride func(env.Reader) Strategy
 //
 // Deprecated: OBO is built in; NewOBOStrategy returns the Entra OBO strategy
 // from pkg/vmcp/auth/strategies. RegisterOBOStrategy is kept only so
-// out-of-tree code that still calls it keeps compiling; it will be removed in
-// a future release.
+// out-of-tree code that still calls it keeps compiling; it will be removed
+// once out-of-tree users are gone (see stacklok/toolhive#7200).
 func RegisterOBOStrategy(f func(env.Reader) Strategy) {
 	if f == nil {
 		panic("auth.RegisterOBOStrategy: factory is nil")

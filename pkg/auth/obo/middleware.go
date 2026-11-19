@@ -73,15 +73,9 @@ const (
 	badGatewayMessage = "OBO token exchange unavailable"
 )
 
-const (
-	// AuditEventType is the AuditEvent.Type for an OBO exchange decision. The
-	// proxy middleware and the vMCP strategy both emit it.
-	AuditEventType = "obo_token_exchange"
-
-	// auditComponent identifies the OBO proxy middleware as the source
-	// component of the audit record.
-	auditComponent = "toolhive-obo"
-)
+// auditComponent identifies the OBO proxy middleware as the source component
+// of the audit record.
+const auditComponent = "toolhive-obo"
 
 // factoryMu guards reads and writes of currentFactory.
 var factoryMu sync.RWMutex
@@ -106,7 +100,8 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 //
 // Deprecated: OBO is built in and DefaultFactory is the implementation.
 // RegisterFactory is kept only so out-of-tree code that still calls it keeps
-// compiling; it will be removed in a future release.
+// compiling; it will be removed once out-of-tree users are gone (see
+// stacklok/toolhive#7200).
 func RegisterFactory(f types.MiddlewareFactory) {
 	if f == nil {
 		panic("obo.RegisterFactory: factory is nil")
@@ -293,38 +288,6 @@ func (m *middleware) auditInteractionRequired(r *http.Request, err error) {
 		audit.EventSource{Type: audit.SourceTypeNetwork, Value: clientAddr(r)},
 		auditComponent, identity, m.exchangeTarget, err)
 	event.LogTo(r.Context(), m.auditLogger, audit.LevelAudit)
-}
-
-// NewInteractionRequiredAuditEvent builds the audit event for an OBO exchange
-// that Entra refused with a conditional-access or claims challenge. It records
-// the denied subject (an identifier, not a credential) and only the
-// non-sensitive fields the entra error carries: OAuthError, Description,
-// HTTPStatus, and whether a claims challenge was present. It never records the
-// user token, the client secret, an issued token, or the raw claims challenge.
-//
-// Shared by the proxy middleware and the vMCP strategy so both surfaces emit
-// the same record shape. identity may be nil.
-func NewInteractionRequiredAuditEvent(
-	source audit.EventSource, component string, identity *auth.Identity, target string, err error,
-) *audit.AuditEvent {
-	var subjects map[string]string
-	if identity != nil && identity.Subject != "" {
-		subjects = map[string]string{"sub": identity.Subject}
-	}
-
-	event := audit.NewAuditEvent(AuditEventType, source, audit.OutcomeDenied, subjects, component).
-		WithTarget(map[string]string{"audience": target})
-
-	extra := map[string]any{"reason": "interaction_required"}
-	var exErr *entra.ExchangeError
-	if errors.As(err, &exErr) {
-		extra["oauth_error"] = exErr.OAuthError
-		extra["description"] = exErr.Description
-		extra["http_status"] = exErr.HTTPStatus
-		extra["claims_challenge_present"] = exErr.Claims != ""
-	}
-	event.Metadata.Extra = extra
-	return event
 }
 
 // clientAddr returns the client's IP for the audit source, stripping the port

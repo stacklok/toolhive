@@ -526,7 +526,7 @@ body that does not disclose the provider error:
 | Named upstream provider token missing | 401 with `WWW-Authenticate: Bearer error="invalid_token"` |
 | Entra `invalid_grant` (subject token rejected) | 401 |
 | Conditional access, MFA, or claims challenge (`interaction_required`, a `claims` value, AADSTS50076/50079) | 403, plus an `obo_token_exchange` audit event with outcome `denied` |
-| `invalid_client`, Entra 5xx or unreachable, or an unclassified failure | 502 |
+| `invalid_client`, Entra 5xx, 429, 408 or `temporarily_unavailable` (throttling, classed as transient whatever the body says), unreachable, or an unclassified failure | 502 |
 | Client cancelled the request | no response |
 
 ### 10. Audit Middleware

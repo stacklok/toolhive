@@ -6,10 +6,17 @@ package strategies
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -155,35 +162,47 @@ func TestOBOAuthenticate_UpstreamProviderSuccess(t *testing.T) {
 func TestOBOAuthenticate_SubjectErrors(t *testing.T) {
 	t.Parallel()
 
+	withProvider := func() *authtypes.BackendAuthStrategy {
+		s := validOBOStrategy()
+		s.OBO.SubjectTokenProviderName = "entra"
+		return s
+	}
+
 	tests := []struct {
 		name            string
-		ctx             func(t *testing.T) context.Context
+		identity        *auth.Identity // nil means no identity in the context
 		backendStrategy func() *authtypes.BackendAuthStrategy
+		wantErrIs       error
+		wantErrContains string
 	}{
 		{
 			name:            "no identity in context",
-			ctx:             func(t *testing.T) context.Context { t.Helper(); return t.Context() },
 			backendStrategy: validOBOStrategy,
+			wantErrContains: "no identity found in context",
 		},
 		{
-			name: "identity has no inbound token",
-			ctx: func(t *testing.T) context.Context {
-				t.Helper()
-				return auth.WithIdentity(t.Context(), oboInboundIdentity(""))
-			},
+			name:            "identity has no inbound token",
+			identity:        oboInboundIdentity(""),
 			backendStrategy: validOBOStrategy,
+			wantErrContains: "identity has no token",
 		},
 		{
-			name: "named provider token absent",
-			ctx: func(t *testing.T) context.Context {
-				t.Helper()
-				return auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
+			// The inbound token is present but must not be used as a fallback.
+			name:            "named provider token absent",
+			identity:        oboInboundIdentity("user-token"),
+			backendStrategy: withProvider,
+			wantErrIs:       authtypes.ErrUpstreamTokenNotFound,
+			wantErrContains: `provider "entra"`,
+		},
+		{
+			name: "named provider token empty",
+			identity: &auth.Identity{
+				PrincipalInfo:  auth.PrincipalInfo{Subject: oboTestSubject},
+				Token:          "user-token",
+				UpstreamTokens: map[string]string{"entra": ""},
 			},
-			backendStrategy: func() *authtypes.BackendAuthStrategy {
-				s := validOBOStrategy()
-				s.OBO.SubjectTokenProviderName = "entra"
-				return s
-			},
+			backendStrategy: withProvider,
+			wantErrIs:       authtypes.ErrUpstreamTokenNotFound,
 		},
 	}
 
@@ -193,10 +212,127 @@ func TestOBOAuthenticate_SubjectErrors(t *testing.T) {
 			stub := &oboStubExchanger{token: "unused"}
 			s := oboStrategyWithStub(stub, nil)
 
-			req, err := oboServeAuthenticate(tt.ctx(t), t, s, tt.backendStrategy())
+			ctx := t.Context()
+			if tt.identity != nil {
+				ctx = auth.WithIdentity(ctx, tt.identity)
+			}
+			req, err := oboServeAuthenticate(ctx, t, s, tt.backendStrategy())
 			require.Error(t, err)
+			if tt.wantErrIs != nil {
+				assert.ErrorIs(t, err, tt.wantErrIs)
+			}
+			if tt.wantErrContains != "" {
+				assert.ErrorContains(t, err, tt.wantErrContains)
+			}
 			assert.Empty(t, req.Header.Get("Authorization"), "no token may be injected on failure")
 			assert.Zero(t, stub.calls, "no exchange should be attempted")
+		})
+	}
+}
+
+// TestOBOAuthenticate_ConfigAndBuildErrors covers the failures that occur before
+// any exchange: an invalid configuration (also under a health-check context,
+// because the config is validated before the health-check skip), a
+// ClientSecretEnv naming an unset variable, and an Exchanger that fails to build.
+func TestOBOAuthenticate_ConfigAndBuildErrors(t *testing.T) {
+	t.Parallel()
+
+	buildErr := errors.New("exchanger build failed")
+	withSecretEnv := func() *authtypes.BackendAuthStrategy {
+		s := validOBOStrategy()
+		s.OBO.ClientSecret = ""
+		s.OBO.ClientSecretEnv = "OBO_TEST_SECRET_NOT_SET"
+		return s
+	}
+	nilOBO := func() *authtypes.BackendAuthStrategy {
+		return &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO}
+	}
+
+	tests := []struct {
+		name            string
+		healthCheck     bool
+		backendStrategy func() *authtypes.BackendAuthStrategy
+		buildErr        error
+		wantErrIs       error
+		wantErrContains []string
+		wantBuilds      int32
+	}{
+		{
+			name:            "invalid configuration",
+			backendStrategy: nilOBO,
+			wantErrContains: []string{"obo: invalid strategy configuration", "OBO configuration is required"},
+		},
+		{
+			name:            "invalid configuration fails a health check too",
+			healthCheck:     true,
+			backendStrategy: nilOBO,
+			wantErrContains: []string{"obo: invalid strategy configuration", "OBO configuration is required"},
+		},
+		{
+			name:            "client secret env var absent from the environment",
+			backendStrategy: withSecretEnv,
+			wantErrContains: []string{"obo: invalid strategy configuration", "OBO_TEST_SECRET_NOT_SET"},
+		},
+		{
+			name:            "exchanger build fails",
+			backendStrategy: validOBOStrategy,
+			buildErr:        buildErr,
+			wantErrIs:       buildErr,
+			wantErrContains: []string{"obo: build exchanger"},
+			wantBuilds:      1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stub := &oboStubExchanger{token: "unused"}
+			var builds atomic.Int32
+			s := newOBOStrategy(oboMapEnv{}, nil, func(_ *authtypes.OBOConfig, _ string) (exchange.Exchanger, error) {
+				builds.Add(1)
+				if tt.buildErr != nil {
+					return nil, tt.buildErr
+				}
+				return stub, nil
+			})
+
+			ctx := auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
+			if tt.healthCheck {
+				ctx = healthcontext.WithHealthCheckMarker(ctx)
+			}
+			req, err := oboServeAuthenticate(ctx, t, s, tt.backendStrategy())
+			require.Error(t, err)
+			if tt.wantErrIs != nil {
+				assert.ErrorIs(t, err, tt.wantErrIs)
+			}
+			for _, want := range tt.wantErrContains {
+				assert.ErrorContains(t, err, want)
+			}
+			assert.Empty(t, req.Header.Get("Authorization"))
+			assert.Equal(t, tt.wantBuilds, builds.Load())
+			assert.Zero(t, stub.calls, "no exchange may be attempted")
+		})
+	}
+}
+
+// TestOBOAuthenticate_ContextErrorsPassThrough verifies a cancelled or expired
+// caller context surfaces as itself, not as a token exchange failure.
+func TestOBOAuthenticate_ContextErrorsPassThrough(t *testing.T) {
+	t.Parallel()
+
+	for _, ctxErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(ctxErr.Error(), func(t *testing.T) {
+			t.Parallel()
+
+			stub := &oboStubExchanger{err: fmt.Errorf("entra obo: %w", ctxErr)}
+			s := oboStrategyWithStub(stub, nil)
+			ctx := auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
+
+			req, err := oboServeAuthenticate(ctx, t, s, validOBOStrategy())
+			require.ErrorIs(t, err, ctxErr)
+			assert.NotContains(t, err.Error(), "token exchange failed")
+			assert.Empty(t, req.Header.Get("Authorization"))
 		})
 	}
 }
@@ -258,22 +394,74 @@ func TestOBOAuthenticate_ConditionalAccess_FailsFastWithAudit(t *testing.T) {
 	assert.NotContains(t, out, claims, "the audit record must not contain the raw claims challenge")
 }
 
-// TestOBOAuthenticate_OtherExchangeError_NoAudit proves a non-CA exchange failure
-// returns an error and injects nothing, without emitting a D1 audit record.
-func TestOBOAuthenticate_OtherExchangeError_NoAudit(t *testing.T) {
+// TestOBOAuthenticate_ExchangeErrorMapping proves every exchange failure
+// returns an error that still matches its entra sentinel but carries none of
+// Entra's provider detail (the error reaches MCP clients via the tool error),
+// injects nothing, and that only a conditional-access denial emits the audit
+// record — which keeps the detail server-side.
+func TestOBOAuthenticate_ExchangeErrorMapping(t *testing.T) {
 	t.Parallel()
 
-	var auditBuf bytes.Buffer
-	auditLogger := slog.New(slog.NewJSONHandler(&auditBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	stub := &oboStubExchanger{err: &entra.ExchangeError{Kind: entra.KindInvalidGrant, OAuthError: "invalid_grant"}}
-	s := oboStrategyWithStub(stub, auditLogger)
-	ctx := auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
+	const (
+		description = "AADSTS7000215: PROVIDER-DIAGNOSTIC-DETAIL"
+		oauthError  = "provider_error_code_detail"
+	)
+	exErr := func(kind entra.ErrorKind) error {
+		return &entra.ExchangeError{Kind: kind, OAuthError: oauthError, Description: description, HTTPStatus: 400}
+	}
 
-	req, err := oboServeAuthenticate(ctx, t, s, validOBOStrategy())
-	require.Error(t, err)
-	assert.ErrorIs(t, err, entra.ErrInvalidGrant)
-	assert.Empty(t, req.Header.Get("Authorization"))
-	assert.Empty(t, auditBuf.String(), "only conditional-access denials emit the D1 audit record")
+	tests := []struct {
+		name         string
+		err          error
+		wantSentinel error // nil: matches none of the entra sentinels
+		wantAudit    bool
+	}{
+		{name: "interaction required", err: exErr(entra.KindInteractionRequired),
+			wantSentinel: entra.ErrInteractionRequired, wantAudit: true},
+		{name: "invalid grant", err: exErr(entra.KindInvalidGrant), wantSentinel: entra.ErrInvalidGrant},
+		{name: "invalid client", err: exErr(entra.KindInvalidClient), wantSentinel: entra.ErrInvalidClient},
+		{name: "transient", err: exErr(entra.KindTransient), wantSentinel: entra.ErrTransient},
+		{name: "unknown kind", err: exErr(entra.KindUnknown)},
+		{name: "wrapped exchange error", err: fmt.Errorf("cache: %w", exErr(entra.KindInvalidClient)),
+			wantSentinel: entra.ErrInvalidClient},
+		{name: "non-entra error", err: errors.New("unexpected failure " + description)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var auditBuf bytes.Buffer
+			auditLogger := slog.New(slog.NewJSONHandler(&auditBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			stub := &oboStubExchanger{err: tt.err}
+			s := oboStrategyWithStub(stub, auditLogger)
+			ctx := auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
+
+			req, err := oboServeAuthenticate(ctx, t, s, validOBOStrategy())
+			require.Error(t, err)
+			assert.Empty(t, req.Header.Get("Authorization"))
+
+			assert.NotContains(t, err.Error(), description, "Entra's error_description must not reach the client")
+			assert.NotContains(t, err.Error(), oauthError, "Entra's error code must not reach the client")
+			var leaked *entra.ExchangeError
+			assert.NotErrorAs(t, err, &leaked, "the returned error must not wrap the ExchangeError")
+
+			sentinels := []error{entra.ErrInteractionRequired, entra.ErrInvalidGrant, entra.ErrInvalidClient, entra.ErrTransient}
+			for _, sentinel := range sentinels {
+				if sentinel == tt.wantSentinel {
+					assert.ErrorIs(t, err, sentinel)
+				} else {
+					assert.NotErrorIs(t, err, sentinel)
+				}
+			}
+
+			if tt.wantAudit {
+				assert.Contains(t, auditBuf.String(), description, "the audit record keeps the provider detail server-side")
+			} else {
+				assert.Empty(t, auditBuf.String(), "only conditional-access denials emit the audit record")
+			}
+		})
+	}
 }
 
 // TestOBOAuthenticate_CachesExchangerPerConfig proves the per-backend Exchanger is
@@ -298,46 +486,247 @@ func TestOBOAuthenticate_CachesExchangerPerConfig(t *testing.T) {
 
 // TestOBOAuthenticate_RealEntraExchange exercises the production path end-to-end:
 // NewOBOStrategy (default buildExchanger) wires entra.NewFromTokenURL + cache.New /
-// WithSkew, and Authenticate performs a real HTTP OBO exchange against an
-// httptest server standing in for the Entra token endpoint (loopback http, which
-// NewFromTokenURL permits). This is the only test that drives defaultBuildOBOExchanger
-// rather than a stub,
-// including the positive CacheSkewSeconds gate.
+// WithSkew, and Authenticate performs real HTTP OBO exchanges against an httptest
+// server standing in for the Entra token endpoint (loopback http, which
+// NewFromTokenURL permits). The server mints a token per assertion and counts
+// hits, so each row pins how many exchanges a sequence of requests costs: the
+// per-user cache is shared across requests and partitioned by user, and the
+// configured CacheSkewSeconds reaches the cache (zero and unset keep the 60s
+// default).
 func TestOBOAuthenticate_RealEntraExchange(t *testing.T) {
 	t.Parallel()
 
-	var gotAuthHeader, gotGrantType string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuthHeader = r.Header.Get("Authorization")
-		_ = r.ParseForm()
-		gotGrantType = r.Form.Get("grant_type")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"token_type":"Bearer","expires_in":3599,"access_token":"backend-abc"}`))
-	}))
-	defer srv.Close()
-
-	skew := int32(120) // exercise the CacheSkewSeconds > 0 gate in defaultBuildOBOExchanger
-	s := NewOBOStrategy(oboMapEnv{})
-	backendStrategy := &authtypes.BackendAuthStrategy{
-		Type: authtypes.StrategyTypeOBO,
-		OBO: &authtypes.OBOConfig{
-			TokenURL:         srv.URL, // loopback http — accepted by NewFromTokenURL
-			ClientID:         oboTestClientID,
-			ClientSecret:     "resolved-secret",
-			Scopes:           []string{oboTestScope},
-			CacheSkewSeconds: &skew,
-		},
+	tests := []struct {
+		name      string
+		skew      *int32
+		expiresIn int
+		users     []string
+		wantHits  int32
+	}{
+		{name: "unset skew, long-lived token is cached", expiresIn: 3599,
+			users: []string{"alice", "alice"}, wantHits: 1},
+		{name: "zero skew, long-lived token is cached", skew: ptrInt32(0), expiresIn: 3599,
+			users: []string{"alice", "alice"}, wantHits: 1},
+		{name: "zero skew keeps the 60s default", skew: ptrInt32(0), expiresIn: 30,
+			users: []string{"alice", "alice"}, wantHits: 2},
+		{name: "token lifetime shorter than the skew is re-exchanged", skew: ptrInt32(120), expiresIn: 90,
+			users: []string{"alice", "alice"}, wantHits: 2},
+		{name: "skew shorter than the token lifetime caches", skew: ptrInt32(10), expiresIn: 30,
+			users: []string{"alice", "alice"}, wantHits: 1},
+		{name: "a second user gets its own exchange", expiresIn: 3599,
+			users: []string{"alice", "alice", "bob", "bob"}, wantHits: 2},
 	}
-	ctx := auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
 
-	req, err := oboServeAuthenticate(ctx, t, s, backendStrategy)
-	require.NoError(t, err)
-	assert.Equal(t, "Bearer backend-abc", req.Header.Get("Authorization"),
-		"the backend-scoped token from the real exchange must be injected")
-	assert.Equal(t, "urn:ietf:params:oauth:grant-type:jwt-bearer", gotGrantType,
-		"the exchange must use the Entra on-behalf-of (jwt-bearer) grant")
-	assert.NotContains(t, gotAuthHeader, "user-token",
-		"the subject token must travel in the form body, not the request's Authorization header")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				// assert, not require: this runs on the server's goroutine.
+				if !assert.NoError(t, r.ParseForm()) {
+					http.Error(w, "bad form", http.StatusBadRequest)
+					return
+				}
+				assert.Equal(t, "urn:ietf:params:oauth:grant-type:jwt-bearer", r.Form.Get("grant_type"),
+					"the exchange must use the Entra on-behalf-of (jwt-bearer) grant")
+				assert.Empty(t, r.Header.Get("Authorization"),
+					"the subject token must travel in the form body, not an Authorization header")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"token_type":"Bearer","expires_in":%d,"access_token":"backend-for-%s"}`,
+					tt.expiresIn, r.Form.Get("assertion"))
+			}))
+			t.Cleanup(srv.Close)
+
+			s := NewOBOStrategy(oboMapEnv{})
+			backendStrategy := &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeOBO,
+				OBO: &authtypes.OBOConfig{
+					TokenURL:         srv.URL, // loopback http — accepted by NewFromTokenURL
+					ClientID:         oboTestClientID,
+					ClientSecret:     "resolved-secret",
+					Scopes:           []string{oboTestScope},
+					CacheSkewSeconds: tt.skew,
+				},
+			}
+
+			for _, user := range tt.users {
+				ctx := auth.WithIdentity(t.Context(), oboInboundIdentity(user))
+				req, err := oboServeAuthenticate(ctx, t, s, backendStrategy)
+				require.NoError(t, err)
+				assert.Equal(t, "Bearer backend-for-"+user, req.Header.Get("Authorization"),
+					"each user must receive the token exchanged for their own assertion")
+			}
+			assert.Equal(t, tt.wantHits, hits.Load())
+		})
+	}
+}
+
+func ptrInt32(v int32) *int32 { return &v }
+
+// TestOBOExchangerCacheKey verifies every field that determines the Exchanger
+// partitions the per-backend cache, and that the raw client secret never
+// appears in the key.
+func TestOBOExchangerCacheKey(t *testing.T) {
+	t.Parallel()
+
+	const secret = "client-secret-RAW-VALUE"
+	base := func() *authtypes.OBOConfig {
+		return &authtypes.OBOConfig{TokenURL: oboTestTokenURL, ClientID: oboTestClientID, CacheSkewSeconds: ptrInt32(30)}
+	}
+	baseKey := oboExchangerCacheKey(base(), secret)
+	assert.NotContains(t, baseKey, secret, "the raw client secret must not appear in the key")
+	assert.Equal(t, baseKey, oboExchangerCacheKey(base(), secret), "the key must be deterministic")
+
+	tests := []struct {
+		name   string
+		mutate func(*authtypes.OBOConfig)
+		secret string
+	}{
+		{name: "token URL", mutate: func(c *authtypes.OBOConfig) { c.TokenURL = "https://login.microsoftonline.us/t/oauth2/v2.0/token" }},
+		{name: "client ID", mutate: func(c *authtypes.OBOConfig) { c.ClientID = "other-client" }},
+		{name: "cache skew", mutate: func(c *authtypes.OBOConfig) { c.CacheSkewSeconds = ptrInt32(31) }},
+		{name: "client secret", secret: "rotated-secret-RAW-VALUE"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base()
+			if tt.mutate != nil {
+				tt.mutate(cfg)
+			}
+			sec := secret
+			if tt.secret != "" {
+				sec = tt.secret
+			}
+			key := oboExchangerCacheKey(cfg, sec)
+			assert.NotEqual(t, baseKey, key, "changing the %s must select a different Exchanger", tt.name)
+			assert.NotContains(t, key, sec, "the raw client secret must not appear in the key")
+		})
+	}
+}
+
+// TestOBOGetOrCreateExchanger_BuildsOnceUnderContention exercises the
+// double-checked lock: callers released together all miss on the read-locked
+// check, and the builder holds the write lock until every other caller is
+// parked on the mutex. Callers that queued on the write lock must find the
+// Exchanger on the second check rather than building another one.
+//
+// A caller that reached the read lock only after the build began never needs the
+// second check, so an attempt where no caller was parked on the write lock
+// proves nothing; such attempts are retried. Callers busy-wait on a gate rather
+// than block on a channel, so each is already running on its own P when
+// released and their read checks overlap. One P is left free for the test
+// goroutine to open the gate.
+func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
+	t.Parallel()
+
+	procs := runtime.GOMAXPROCS(0)
+	if procs < 3 {
+		t.Skip("needs GOMAXPROCS >= 3 for callers to overlap on the read-locked check")
+	}
+	callers := int32(min(procs-1, 8))
+	const maxAttempts = 200
+	cfg := validOBOStrategy().OBO
+
+	for range maxAttempts {
+		var builds, writeWaiters atomic.Int32
+		s := newOBOStrategy(oboMapEnv{}, nil, func(_ *authtypes.OBOConfig, _ string) (exchange.Exchanger, error) {
+			if builds.Add(1) == 1 {
+				writeWaiters.Store(int32(awaitParkedOnMutex(
+					"TestOBOGetOrCreateExchanger_BuildsOnceUnderContention", int(callers)-1)))
+			}
+			return &oboStubExchanger{}, nil
+		})
+
+		var ready atomic.Int32
+		var gate atomic.Bool
+		var wg sync.WaitGroup
+		for range callers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ready.Add(1)
+				for !gate.Load() {
+					// Busy-wait deliberately: the caller stays on its P, so it
+					// starts the instant the gate opens.
+				}
+				ex, err := s.getOrCreateExchanger(cfg, "resolved-secret")
+				assert.NoError(t, err)
+				assert.NotNil(t, ex)
+			}()
+		}
+		require.Eventually(t, func() bool { return ready.Load() == callers },
+			5*time.Second, time.Millisecond, "callers must reach the gate")
+		gate.Store(true)
+		waitGroupWithTimeout(t, &wg)
+
+		if writeWaiters.Load() == 0 {
+			continue // the second check was not exercised; try again
+		}
+		assert.Equal(t, int32(1), builds.Load(),
+			"callers queued on the write lock must reuse the Exchanger built by the first")
+		return
+	}
+	t.Fatalf("no attempt in %d had a caller parked on the write lock", maxAttempts)
+}
+
+// awaitParkedOnMutex polls goroutine stacks until want goroutines created by
+// testName are blocked on an RWMutex inside getOrCreateExchanger, or a timeout
+// passes. It returns how many of them were waiting on the write lock (Lock)
+// rather than the read lock. It runs inside the builder, on a caller's
+// goroutine, so it reports rather than failing the test.
+func awaitParkedOnMutex(testName string, want int) int {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		parked, writers := 0, 0
+		for _, g := range goroutineStacks() {
+			if !strings.Contains(g, testName) || !strings.Contains(g, "getOrCreateExchanger") {
+				continue
+			}
+			switch {
+			case strings.Contains(g, "(*RWMutex).Lock("):
+				parked++
+				writers++
+			case strings.Contains(g, "(*RWMutex).RLock("):
+				parked++
+			}
+		}
+		if parked >= want || time.Now().After(deadline) {
+			return writers
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// goroutineStacks returns the stack trace of every goroutine, one per element.
+func goroutineStacks() []string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return strings.Split(string(buf[:n]), "\n\n")
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// waitGroupWithTimeout waits for wg, failing the test if it does not finish in
+// time. Call it only from the test goroutine.
+func waitGroupWithTimeout(t *testing.T, wg *sync.WaitGroup) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for goroutines to finish")
+	}
 }
 
 func TestOBOValidate_Valid(t *testing.T) {

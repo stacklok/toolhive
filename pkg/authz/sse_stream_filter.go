@@ -303,37 +303,30 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 		_, _ = w.ResponseWriter.Write(encodeErrorBody(topLevelID(body)))
 		return
 	}
-	message, decodeErr := jsonrpc2.DecodeMessage(body)
+	message, _ := jsonrpc2.DecodeMessage(body)
 	response, isResponse := message.(*jsonrpc2.Response)
 	if !isResponse {
-		switch sniffBodyShape(body) {
-		case bodyShapeSSE:
-		case bodyShapeJSON:
+		// The shared classifier decides for a body that is not a clean Response.
+		action, _ := classifyUnlabeledBody(body)
+		switch action {
+		case sniffRejectJSON:
 			slog.Warn("rejected a 2xx JSON body carrying a result that is not a single JSON-RPC response",
 				"error", errSSEUnrecognizedMediaType)
 			// Answer with an error that carries the request id, so the client does not wait for a timeout.
 			_, _ = w.ResponseWriter.Write(encodeErrorBody(topLevelID(body)))
 			return
-		case bodyShapeNone:
-			fallthrough
-		default:
-			// No result in either shape. A body with data lines is filtered per event,
-			// so a result split across data lines of one event is still seen. Any
-			// other body passes through unchanged, as the buffered path does.
-			switch decideNoShapeBody(body, decodeErr != nil) {
-			case noShapeReject:
-				slog.Warn("dropped a 2xx body naming a result that could not be read",
-					"error", errSSEUnrecognizedMediaType)
-				_, _ = w.ResponseWriter.Write(encodeErrorBody(topLevelID(body)))
-				return
-			case noShapePassThrough:
-				if _, err := w.ResponseWriter.Write(body); err != nil {
-					slog.Debug("stopped writing filtered SSE stream", "error", err)
-				}
-				return
-			case noShapeFilterSSE:
-				// Filtered per event below.
+		case sniffRejectNamed:
+			slog.Warn("dropped a 2xx body naming a result that could not be read",
+				"error", errSSEUnrecognizedMediaType)
+			_, _ = w.ResponseWriter.Write(encodeErrorBody(topLevelID(body)))
+			return
+		case sniffPassThrough:
+			if _, err := w.ResponseWriter.Write(body); err != nil {
+				slog.Debug("stopped writing filtered SSE stream", "error", err)
 			}
+			return
+		case sniffFilterSSE, sniffFilterJSON:
+			// Filtered per event below.
 		}
 		if err := w.writeLines(w.processLines(parseSSELines(body))); err != nil {
 			slog.Debug("stopped writing filtered SSE stream", "error", err)

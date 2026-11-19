@@ -320,6 +320,12 @@ type stubSubjectValidator struct {
 	err    error
 }
 
+// signedByThisServer reports that the stub signs nothing, so opaque actor
+// tokens flow on to the client's actor validator.
+func (*stubSubjectValidator) signedByThisServer(string) (*ValidatedClaims, error) {
+	return nil, errors.New("stub validator signs nothing")
+}
+
 func (v *stubSubjectValidator) Validate(context.Context, string) (*ValidatedClaims, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()

@@ -1422,6 +1422,67 @@ spec:
   `SubjectBindings`, independent of whatever `allowedActors`/`allowMayAct` that
   same issuer may also have configured for delegation.
 
+### Redemption refusal reasons
+
+Both assertion forms refuse with an `error_description` that starts with a
+reason code, so a client can act on the refusal without parsing prose. This
+holds for every refusal that carries a reason; the plain grant's two
+`subject_bindings` refusals do not (see the table). The description matches
+`^[a-z_]+(: .*)?$`: the reason, optionally followed by `: ` and a fixed hint. The hint is printable ASCII without `"` or `\` and never
+contains a claim value (`sub`, `jti`, `client_id`, issuer). The handlers build
+the error as a literal (`redemptionRefusal`) because fosite's `WithHint` puts
+its own default text before the reason.
+
+| Refusal | Plain JWT-bearer | ID-JAG |
+| --- | --- | --- |
+| Not a compact signed JWT, bad `typ` or algorithm (an assertion with such a `typ` is routed to the plain handler, never the ID-JAG one) | 400 `invalid_grant`, `invalid_assertion: <hint>` | n/a |
+| Signature or claim validation fails, issuer not enabled, assertion whose issued lifetime (`exp` − `iat`) exceeds `max_assertion_age`, replayed or expired | 400 `invalid_grant`, `invalid_assertion: <hint>` | same code and reason; the hint names an ID-JAG for the first two |
+| ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
+| Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
+| A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
+| A `resource` claim with a value that is not in `allowed_audiences` or is not a valid resource URI, whatever the request holds | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim names a resource this server does not govern.` |
+| Every `resource` claim value is in `allowed_audiences`, but the claim does not list the requested `resource` | n/a (the plain grant has no `resource` claim) | 400 `invalid_target`, no reason (the description does not name the resource) |
+| Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
+| Issuer's signing keys could not be obtained (key fetch or cache lookup fails, or the key set is empty or too large) | 503 `temporarily_unavailable`, `issuer_unavailable` | same |
+| The request ended (client disconnect or deadline) while the keys were being fetched, or the server has no default audiences configured | 500 `server_error`, generic text | same |
+
+`invalid_grant` means the assertion failed a validation rule, and a re-issued
+one may succeed. `access_denied` means the ID-JAG is valid but this server's
+allowlist does not permit it, and a re-issued one will not help. A client that
+retries a reasonless `invalid_grant` once with a new ID-JAG therefore stops
+retrying `invalid_assertion` refusals and the two `access_denied` refusals.
+`issuer_unavailable` is the retryable one: the assertion was never judged, because
+this server could not reach the issuer's signing keys, so the same ID-JAG may
+succeed once the issuer is reachable again. It is a 503 with no `Retry-After`
+header, and its description never names the issuer. The response body carries
+no cause text. The token endpoint logs each refused request at Debug, since any
+caller can trigger one. The cause is logged at Error once per 30-second backoff
+window per issuer, naming the issuer, when the server attempts a fetch and it
+fails. That line also covers discovery failures and an invalid or mismatched
+discovery document or `jwks_uri`, which retrying does not fix. It only covers
+failures before a usable key set exists. A fetched key set that the server cannot
+use (an empty key set, a cache lookup failure, only unsupported keys, or too many
+keys) also returns this
+503, and its cause is logged at Error once per 30-second window per issuer with the
+message "issuer signing keys unusable". When keys are in hand and the token's `kid` is
+not among them, even after the server refreshes the keys, the refusal stays
+`invalid_assertion`, so a freshly rotated `kid` that arrives while the issuer's
+key endpoint is down gets `invalid_assertion` until the keys are reachable.
+`invalid_assertion` is only ever used with `invalid_grant`. The plain RFC 7523
+grant keeps its codes for the two `subject_bindings` refusals, because it is
+outside the ID-JAG profile. The RFC 8693 token-exchange path is unchanged and
+still reports an unreachable issuer as `invalid_request`. Other refusals
+(`invalid_request`, `invalid_client`, `unauthorized_client`) are unchanged. On the
+plain JWT-bearer grant, the `server_error` row in the table (the request ended,
+or no default audiences are configured) was `invalid_grant` before this change. `invalid_target` for a `resource` the client
+may not target is unchanged on the plain JWT-bearer grant and on other grant
+types. On the ID-JAG grant that refusal is now `access_denied` with
+`resource_denied`, as the table shows, whether the client sent the `resource`
+parameter or the resource came from the ID-JAG's `resource` claim. Draft -06
+section 4.4.1 requires `access_denied` when none of the requested resources is
+acceptable.
+
 ### Bound ID-JAG assertions
 
 The grant type has a second assertion form: Identity Assertion Authorization
@@ -1473,15 +1534,29 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   (an ID-JAG conveys no upstream vendor session at this server),
   consume-before-issue, and the issued token's lifetime being capped by the
   assertion's remaining validity.
-- **One exception to the shared `resource` rule.** The plain handler needs
-  exactly one `resource` parameter. The ID-JAG handler needs the same, except
-  when the request has no `resource` parameter at all and the ID-JAG's
-  `resource` claim holds a single valid value: draft §4.4 defines no `resource`
-  parameter for redemption, so that value is used. Every other case, including
-  an empty or repeated parameter, still needs exactly one parameter. A single
-  claim value that is not an absolute URI is refused with `invalid_target`, the
-  same error a requested resource gets for that. The chosen
-  resource goes through the same subject-binding and client-audience checks.
+- **The `resource` claim.** Draft §4.4.1 restricts the access token to the
+  resources in the `resource` claim, so the handler checks it. A claim that is
+  not a non-empty string or a non-empty array of distinct non-empty strings
+  (a JSON `null` counts) is refused with `invalid_grant`, `invalid_assertion`,
+  whatever the request holds. Draft §4.4.1 also requires every claim value to
+  be a resource this server governs. The governed resources are
+  `allowed_audiences`, and each claim value must equal one of them exactly
+  (draft §4.3: simple string comparison, no normalization). If any value is
+  not in that list, or is not a valid resource URI, the request is refused
+  with `invalid_grant`, `invalid_assertion`, whatever the request holds, even
+  when the requested resource is one of the governed values. A server with no
+  `allowed_audiences` refuses every ID-JAG that has a `resource` claim. When
+  every value is governed, the claim must list the `resource` parameter if the
+  request has one; if it does not, the request is refused with
+  `invalid_target`. None of these refusals names the resource or a claim
+  value. When the request has no `resource` parameter and the claim holds a
+  single value, that value is used (draft §4.4 defines no `resource` parameter
+  for redemption). Every other case needs exactly one `resource` parameter,
+  including an empty or repeated one and a claim with several values. A
+  requested resource that is not a valid URI still gets `invalid_target`. An
+  ID-JAG with no `resource` claim keeps the old rule: the parameter decides.
+  The chosen resource goes through the same subject-binding and
+  client-audience checks. The assertion age is checked first.
 
 **Departures from the draft are logged, not refused.** The handler accepts some
 ID-JAGs that draft §4.4.1 does not allow. It logs these only for a request that
@@ -1506,17 +1581,8 @@ subject, `jti` or claim values. The findings are:
   `allowed_audiences`, because then no `aud` can name it (see
   [JWT-bearer configuration](#jwt-bearer-configuration)); the startup warning
   reports that case instead.
-- `resource_malformed`: the ID-JAG has a `resource` claim (a JSON `null` counts)
-  that is not a non-empty string or a non-empty array of distinct non-empty
-  strings.
-- `resource_not_covered`: the `resource` claim is well formed, and the `resource`
-  the client requested is not in it. When the request has a `resource`
-  parameter, the handler takes the resource from it, so the claim can disagree.
-  A resource defaulted from the claim is always covered.
 
-A malformed claim is never also reported as not covered. An ID-JAG with no
-`resource` claim has no resource finding. The two audience findings can appear
-together.
+The two audience findings can appear together.
 
 This is logging only. It changes nothing about what is accepted.
 
@@ -1531,7 +1597,7 @@ them:
   No code at this server reads `cnf`, so such an ID-JAG is accepted without
   proof of possession.
 
-A strict mode would have to refuse these two as well as the four logged
+A strict mode would have to refuse these two as well as the two logged
 findings.
 
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
@@ -1863,6 +1929,7 @@ client receives them.
 | `expires_at` in the past, fractional, or not a number | `invalid_authorization_details` | `invalid_expires_at` |
 | Kind of token not enabled for the client | `invalid_authorization_details` | `token_type_not_permitted` |
 | Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
+| Subject token carries the delegated-access marker (see [Delegated-access marker](#delegated-access-marker)) | `invalid_request` | `subject_token_delegated_access` |
 | Subject token's `aud` has none of the client's `subject_token_audiences`, or it was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
 | Subject token's scope has neither `offline_access` nor `offline` | `invalid_request` | `subject_token_offline_access` |
 | Subject token already used | `invalid_request` | `token_used` |
@@ -1873,9 +1940,9 @@ client receives them.
 
 Checks run in this order, after the public-client, grant, subject-type and feature
 checks: request parameters, then `authorization_details` presence and parsing,
-then the subject token (validation, then the login-subject checks), then the
-entry content. A request with an expired subject token and a bad entry therefore
-gets the subject-token error.
+then the subject token (validation, then the delegated-access marker refusal, then
+the login-subject checks), then the entry content. A request with an expired
+subject token and a bad entry therefore gets the subject-token error.
 
 A subject token that is expired, invalid, or not a login token gets
 `error_description` `subject_token_invalid`. A fresh login access token fixes
@@ -1888,6 +1955,10 @@ refreshed access token keeps its original scopes. The user must sign in again,
 and the source client must request `offline_access` or `offline` at sign-in. A
 source client that is not registered for the scope cannot request it: sign-in
 fails with `invalid_scope`.
+`subject_token_delegated_access` is not a retry either: the token is a
+delegated-access token (see [Delegated-access marker](#delegated-access-marker)),
+and refreshing it only yields another one. The client must present a user's login
+access token instead.
 
 This path uses `invalid_request` for an expired subject token and for a disallowed
 source client, as RFC 8693 section 2.2.2 requires. The access-token handler uses
@@ -2165,7 +2236,8 @@ The server stops at the first check that fails:
 6. For a client with an actor profile: the actor validator, called once, after
    every check above (see [Why the validator is last](#why-the-validator-is-last)).
    Its answer sets `act` and `iat` and caps `exp`. The bounds check and signing
-   follow.
+   follow. Just before the call, an actor token that is a delegated-access token
+   is refused (see [Delegated-access marker](#delegated-access-marker)).
 
 An `error_description` is either a *stable reason*, the whole text, which is
 safe to match on, or a *hint* that can change (match on `error`). Grant problems
@@ -2310,14 +2382,8 @@ with an empty audience `pkg/auth` skips the audience check.
 See [Bound ID-JAG assertions](#bound-id-jag-assertions) for how AS-2 redeems
 the ID-JAG. A ToolHive AS-2 finds the user by an exact AS-1 `sub` in
 `subject_bindings`, and its `max_assertion_age` must be at least the target's
-`lifetime`. Known gaps:
-
-- AS-2 takes the resource from the request form when it is present, and only
-  logs `resource_not_covered` when the `resource` claim does not list it. So an
-  ID-JAG minted for one resource redeems for any other resource in the subject
-  binding's `allowed_resources` and the client's audiences.
-- An AS-1 access token can redeem as a plain JWT-bearer assertion (see
-  "Keeping AS-2 ID-JAG-only").
+`lifetime`. One gap remains: an AS-1 access token can redeem as a plain
+JWT-bearer assertion (see "Keeping AS-2 ID-JAG-only").
 
 ### Logging
 
@@ -2552,6 +2618,7 @@ The last column is the reason on the Warn line of the log.
 | --- | --- | --- |
 | Refusal `actor_token_expired`, `approval_required` or `denied` | 400 `invalid_request`, with the reason | The same reason |
 | `ExpiresAt` at or before the check, less than 60 seconds earlier | 400 `invalid_request`, `actor_token_expired` | `actor_token_expired` |
+| Actor token is a delegated-access token this server issued (see [Delegated-access marker](#delegated-access-marker)) | 400 `invalid_request`, `actor_token_delegated_access` | `actor_token_delegated_access` |
 | Missing or wrong actor parameters (see [Required actor parameters](#required-actor-parameters)) | 400 `invalid_request`, with the hint | `request_parameter_refused` |
 | Plain error, or a refusal ToolHive cannot read | 500 `server_error`, hint "The actor token could not be validated." | `actor_validator_error` |
 | AgentID in neither form, or `ExpiresAt` zero or 60 seconds or more earlier | 500 `server_error`, the same hint | `actor_result_invalid` |
@@ -2596,6 +2663,54 @@ could still approve it, `denied` otherwise). A validator that only checks the
 credential's signature would let a client pair any user's grant with any
 agent's credential. ID-JAG -06 §9.10 asks profiles to say who authorizes this
 relationship; in ToolHive it is the validator.
+
+## Delegated-access marker
+
+The claim `https://toolhive.dev/claims/delegated_access` marks an access token
+issued through an approved delegated redemption. A gateway that holds a user's
+stored upstream credentials may read them for a marked token. Nothing in the
+shape of `sub` can say this: a synthetic subject, made for an upstream provider
+with no userinfo endpoint, looks like a real one.
+
+**Meaning.** Consumers check only that the claim is present and never read its
+value. The marker counts only on a token the embedded authorization server
+issued and the consumer validated against that server's own keys. The same claim
+on a token from any other issuer means nothing to a consumer. Middleware sees
+the claim in the validated raw claims, but it is left out of `Identity.Claims`,
+and so out of webhook payloads and audit output, like `tsid`.
+
+**A marked token is terminal.** A marked token is never exchanged into another
+token, so the marker cannot become a token that lives longer or names another
+party. Each refusal runs after signature validation and before any other claim
+of the token is used:
+
+| Where | Client sees |
+| --- | --- |
+| RFC 8693 exchange, as `subject_token` | 400 `invalid_request`, hint "The subject token is a delegated-access token and cannot be exchanged." |
+| RFC 8693 exchange, as `actor_token` | 400 `invalid_request`, hint "The actor token is a delegated-access token and cannot be exchanged." |
+| Opening an exchange grant, as `subject_token` | 400 `invalid_request`, `subject_token_delegated_access` |
+| ID-JAG issuance, as `actor_token`, before the actor validator is called | 400 `invalid_request`, `actor_token_delegated_access` |
+
+The grant-opening refusal runs right after validation, before any other claim is
+read, so it does not depend on the `act` and no-upstream-session claims a
+redeemed token also carries.
+
+On the RFC 8693 `subject_token` path, whose validator also accepts trusted external
+issuers, a token with the claim from such an issuer is refused the same way as a
+self-issued one, since no issuer may pass the marker on. The RFC 8693
+`actor_token` and grant-opening paths validate against this server's own keys
+only, so a token from another issuer fails there as an invalid token before the
+marker is read.
+
+At ID-JAG issuance the actor token is opaque to ToolHive, because the client's
+validator decides on it. ToolHive checks only the signature against its own keys
+and the issuer: a marked token it signed is refused even when it has expired or
+names another audience, because a verified signature is enough to refuse a token,
+though not to accept one. A token it did not sign goes to the validator unchanged.
+This costs one signature check per ID-JAG request with an actor token.
+
+The authorization server issues no marker yet. The refusals are in place first
+so that no marked token can ever be exchanged.
 
 ## Implementation
 

@@ -743,6 +743,15 @@ func TestUpstreamTokenRefresher_RowIdentity(t *testing.T) {
 		})
 		store.EXPECT().GetUpstreamTokens(gomock.Any(), "leader", "github").
 			Times(1).Return(expired, storage.ErrExpired)
+		// The test cannot observe when the follower parks inside sfGroup.Do. If
+		// the leader's flight finishes first, the follower starts its own flight
+		// and re-reads the shared row, which the leader's write already made
+		// fresh, so it must return that row without calling the provider.
+		store.EXPECT().GetUpstreamTokens(gomock.Any(), "follower", "github").AnyTimes().
+			Return(&storage.UpstreamTokens{
+				ProviderID: "github", AccessToken: "fresh", RefreshToken: "rotated",
+				ExpiresAt: time.Now().Add(time.Hour),
+			}, nil)
 		provider.EXPECT().RefreshTokens(gomock.Any(), "stale", "subject").Times(1).
 			DoAndReturn(func(ctx context.Context, _, _ string) (*upstream.Tokens, error) {
 				close(leaderEntered)

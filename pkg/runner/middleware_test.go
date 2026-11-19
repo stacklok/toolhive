@@ -6,6 +6,8 @@ package runner
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -28,7 +31,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -556,6 +558,49 @@ func TestWithMiddlewareFromFlags_ExcludesHeaderForward(t *testing.T) {
 	// Verify HeaderForward config is set (used by Runner.Run after secret resolution)
 	require.NotNil(t, cfg.HeaderForward)
 	assert.Equal(t, map[string]string{"X-Key": "val"}, cfg.HeaderForward.AddPlaintextHeaders)
+}
+
+func TestTokenExchangeRegistration(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		assert.Equal(t, "original-token", r.Form.Get("subject_token"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"exchanged-token","token_type":"Bearer","issued_token_type":"urn:ietf:params:oauth:token-type:access_token"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	config := &RunConfig{TokenExchangeConfig: &tokenexchange.Config{TokenURL: server.URL}}
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+	serialized, err := json.Marshal(config)
+	require.NoError(t, err)
+	var restored RunConfig
+	require.NoError(t, json.Unmarshal(serialized, &restored))
+	runner := NewRunner(&restored, nil)
+	for _, config := range restored.MiddlewareConfigs {
+		if config.Type != tokenexchange.MiddlewareType {
+			continue
+		}
+		factory, ok := runner.supportedMiddleware[config.Type]
+		require.True(t, ok)
+		require.NoError(t, factory(&config, runner))
+	}
+	require.Len(t, runner.middlewares, 1)
+	require.IsType(t, &tokenexchange.Middleware{}, runner.middlewares[0])
+	t.Cleanup(func() { require.NoError(t, runner.middlewares[0].Close()) })
+	require.Len(t, runner.namedMiddlewares, 1)
+	assert.Equal(t, tokenexchange.MiddlewareType, runner.namedMiddlewares[0].Name)
+
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer original-token")
+	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{}))
+	rec := httptest.NewRecorder()
+	runner.namedMiddlewares[0].Function(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer exchanged-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
 func TestGetSupportedMiddlewareFactories(t *testing.T) {

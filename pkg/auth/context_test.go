@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/audit"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 )
 
@@ -127,6 +128,26 @@ func TestClaimsToIdentity_PopulatesPlatformUserID(t *testing.T) {
 	id, err := claimsToIdentity(jwt.MapClaims{"sub": "user123"}, "tok")
 	require.NoError(t, err)
 	assert.Equal(t, "user123", id.PlatformUserID)
+}
+
+// TestClaimsToIdentity_StripsInternalClaims verifies that internal claims are
+// kept out of Identity.Claims while the caller's raw claims stay untouched.
+func TestClaimsToIdentity_StripsInternalClaims(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []string{claimnames.TokenSessionIDKey, claimnames.DelegatedAccessKey} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			raw := jwt.MapClaims{"sub": "user123", "aud": "api", key: "value"}
+
+			id, err := claimsToIdentity(raw, "tok")
+			require.NoError(t, err)
+
+			assert.NotContains(t, id.Claims, key)
+			assert.Equal(t, "api", id.Claims["aud"])
+			assert.Contains(t, raw, key)
+		})
+	}
 }
 
 // TestClaimsToIdentity_ParsesActClaim verifies that an RFC 8693 "act" claim is

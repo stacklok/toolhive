@@ -239,6 +239,13 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"The subject token is invalid or could not be verified."))
 	}
 
+	// A delegated-access token is terminal: refuse it before any other claim
+	// of it is read.
+	if hasDelegatedAccessMarker(validatedClaims) {
+		slog.Warn("Subject token refused", "reason", reasonDelegatedAccessToken, "actor", actorID)
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(hintSubjectDelegatedAccess))
+	}
+
 	// Resolve actor identity: explicit actor_token or authenticated client.
 	actorSub, err := h.resolveActorIdentity(ctx, params, client)
 	if err != nil {
@@ -302,6 +309,29 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	return nil
 }
 
+// Hints for a refused delegated-access token. RFC 8693 section 2.2.2 requires
+// invalid_request for a subject or actor token that policy makes unacceptable.
+const (
+	hintSubjectDelegatedAccess = "The subject token is a delegated-access token and cannot be exchanged."
+	hintActorDelegatedAccess   = "The actor token is a delegated-access token and cannot be exchanged."
+)
+
+// hasDelegatedAccessMarker reports whether a validated token carries the
+// delegated-access marker. Only presence counts; the value is never read. The
+// check does not depend on the issuer. On the RFC 8693 subject_token path, which
+// accepts trusted external issuers, an external token carrying the claim is
+// refused too; the other call sites validate against this server's own keys only.
+func hasDelegatedAccessMarker(claims *ValidatedClaims) bool {
+	if claims == nil {
+		return false
+	}
+	// Claims is the full decoded set and Extra a subset of it. Both are checked
+	// so hand-built ValidatedClaims and a later change to assignClaim stay safe.
+	_, inClaims := claims.Claims[claimnames.DelegatedAccessKey]
+	_, inExtra := claims.Extra[claimnames.DelegatedAccessKey]
+	return inClaims || inExtra
+}
+
 // unsupportedTokenType is the invalid_request error for a token-type parameter
 // this client or request cannot use. Both token-exchange handlers return it, so
 // a client sees one text whichever of them refuses.
@@ -328,7 +358,9 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	}
 
 	if err := issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
-		"The delegated token's bound lifetime has already elapsed."); err != nil {
+		func() error {
+			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The delegated token's bound lifetime has already elapsed."))
+		}); err != nil {
 		return err
 	}
 
@@ -347,24 +379,26 @@ func (h *Handler) PopulateTokenEndpointResponse(
 // min(subject_remaining, delegation).
 //
 // If the session's bound has already elapsed since HandleTokenEndpointRequest
-// computed it, the call fails closed with invalid_grant and elapsedHint instead
-// of signing a token whose exp is already in the past while reporting a
-// negative expires_in. fosite's JWT strategy sets exp directly from the
-// session's expiry (GetExpiresAt), independent of lifespan, so letting this
-// fall through would not simply hand out a longer-lived token, it would issue
-// an already-expired one.
+// computed it, the call fails closed with the error elapsed returns
+// (invalid_grant) instead of signing a token whose exp is already in the past
+// while reporting a negative expires_in. elapsed is a function so the error and
+// its stack capture are built only on this path, not on every issuance.
+// fosite's JWT strategy sets exp directly from the session's expiry
+// (GetExpiresAt), independent of lifespan, so letting this fall through would
+// not simply hand out a longer-lived token, it would issue an already-expired
+// one.
 func issueBoundedAccessToken(
 	ctx context.Context,
 	helper *oauth2.HandleHelper,
 	lifespan time.Duration,
 	requester fosite.AccessRequester,
 	responder fosite.AccessResponder,
-	elapsedHint string,
+	elapsed func() error,
 ) error {
 	if sessionExpiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !sessionExpiry.IsZero() {
 		remaining := time.Until(sessionExpiry)
 		if remaining <= 0 {
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(elapsedHint))
+			return elapsed()
 		}
 		if remaining < lifespan {
 			lifespan = remaining
@@ -459,6 +493,12 @@ func (h *Handler) resolveActorIdentity(
 			slog.Debug("Actor token validation failed", "error", fmt.Errorf("actor token: %w", err))
 			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token is invalid or could not be verified."))
+		}
+		// A delegated-access token is terminal, as an actor token too. This
+		// runs before any other claim of the token is used.
+		if hasDelegatedAccessMarker(actorClaims) {
+			slog.Warn("Actor token refused", "reason", reasonDelegatedAccessToken, "actor", client.GetID())
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(hintActorDelegatedAccess))
 		}
 		// Client-ID binding: actor_token's client_id claim MUST match the
 		// authenticated client ID. This prevents replay attacks where a leaked

@@ -169,7 +169,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	}
 	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.tokenEndpoint})
 	if err != nil {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion is invalid or could not be verified."))
+		return assertionValidationRefusal(err, "The JWT bearer assertion is invalid or could not be verified.")
 	}
 	// h.policies is nil when this handler was built by newJWTBearerHandler
 	// directly rather than newJWTBearerIssuanceHandler (the seam tests use it
@@ -178,7 +178,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	// is wired into a real token endpoint; see its doc comment.
 	policy, ok := h.policies[claims.Issuer]
 	if !ok {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion issuer is not enabled for this grant."))
+		return invalidAssertion("The JWT bearer assertion issuer is not enabled for this grant.")
 	}
 	if h.consumer == nil {
 		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT-bearer grant is not fully configured."))
@@ -191,7 +191,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 		return err
 	}
 	if err := checkSubjectBinding(claims, policy, resource); err != nil {
-		return err
+		return plainBindingRefusal(err)
 	}
 	// Consume before issuing. This intentionally fails closed: if issuance fails
 	// after this point, the assertion remains consumed rather than becoming
@@ -237,7 +237,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 // checkAssertionMaxAge rejects assertions whose lifetime exceeds the policy maximum.
 func checkAssertionMaxAge(claims *ValidatedClaims, policy *JWTBearerGrantPolicy) error {
 	if claims.IssuedAt.IsZero() || claims.Expiry.IsZero() || claims.Expiry.Sub(claims.IssuedAt) > policy.maxAssertionAge {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion exceeds the configured maximum age."))
+		return invalidAssertion("The JWT bearer assertion exceeds the configured maximum age.")
 	}
 	return nil
 }
@@ -256,23 +256,51 @@ func requestedResource(form url.Values) (string, error) {
 	return resources[0], nil
 }
 
-// checkSubjectBinding requires the assertion subject to be bound to the given resource.
+var (
+	errSubjectUnbound  = errors.New("assertion subject is not listed in subject_bindings")
+	errResourceUnbound = errors.New("resource is not allowed for the assertion subject")
+)
+
+// checkSubjectBinding requires the assertion subject to be bound to the given
+// resource. It returns errSubjectUnbound or errResourceUnbound; each handler
+// maps them to its own response.
 func checkSubjectBinding(claims *ValidatedClaims, policy *JWTBearerGrantPolicy, resource string) error {
 	for _, binding := range policy.SubjectBindings {
 		if binding.Subject == claims.Subject {
-			for _, allowed := range binding.AllowedResources {
-				if allowed == resource {
-					return nil
-				}
+			if slices.Contains(binding.AllowedResources, resource) {
+				return nil
 			}
-			return errorsx.WithStack(&fosite.RFC6749Error{
-				ErrorField: "invalid_target",
-				CodeField:  http.StatusBadRequest,
-			})
+			return errResourceUnbound
 		}
 	}
-	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
-		"The JWT bearer assertion subject is not configured for this grant."))
+	return errSubjectUnbound
+}
+
+// plainBindingRefusal maps a checkSubjectBinding error for the plain RFC 7523
+// grant, which keeps invalid_grant for an unlisted subject and a bare
+// invalid_target for a resource that is not allowed.
+func plainBindingRefusal(err error) error {
+	switch {
+	case errors.Is(err, errResourceUnbound):
+		return errorsx.WithStack(&fosite.RFC6749Error{ErrorField: "invalid_target", CodeField: http.StatusBadRequest})
+	case errors.Is(err, errSubjectUnbound):
+		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+			"The JWT bearer assertion subject is not configured for this grant."))
+	}
+	return err
+}
+
+// idJAGBindingRefusal maps a checkSubjectBinding error for the ID-JAG path: a
+// valid ID-JAG that the allowlist does not permit is access_denied, because a
+// re-issued one will not help.
+func idJAGBindingRefusal(err error) error {
+	switch {
+	case errors.Is(err, errResourceUnbound):
+		return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonResourceDenied, ""))
+	case errors.Is(err, errSubjectUnbound):
+		return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonSubjectUnknown, ""))
+	}
+	return err
 }
 
 // PopulateTokenEndpointResponse issues only an access token.
@@ -296,7 +324,7 @@ func (h *JWTBearerHandler) populateAccessTokenResponse(
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint("JWT-bearer token issuance is not configured."))
 	}
 	return issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
-		"The JWT bearer assertion has expired.")
+		func() error { return invalidAssertion("The JWT bearer assertion has expired.") })
 }
 
 // consumeAssertion marks an assertion's replay key used, mapping consumer
@@ -307,7 +335,7 @@ func (h *JWTBearerHandler) consumeAssertion(
 ) error {
 	if err := h.consumer.ConsumeAssertionJWT(ctx, purpose, issuer, replayKey, expiry); err != nil {
 		if errors.Is(err, fosite.ErrJTIKnown) {
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion has already been used."))
+			return invalidAssertion("The JWT bearer assertion has already been used.")
 		}
 		// A non-ErrJTIKnown failure here is a storage/operational problem (e.g. a
 		// replay-store outage), not evidence the caller sent a bad assertion —
@@ -324,7 +352,7 @@ func (h *JWTBearerHandler) consumeAssertion(
 func (h *JWTBearerHandler) assertionBoundedLifetime(ctx context.Context, expiry time.Time) (time.Duration, error) {
 	remaining := time.Until(expiry)
 	if remaining <= 0 {
-		return 0, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion has expired."))
+		return 0, invalidAssertion("The JWT bearer assertion has expired.")
 	}
 	lifetime := h.config.GetAccessTokenLifespan(ctx)
 	if remaining < lifetime {
@@ -345,12 +373,12 @@ func canonicalAssertionSegments(assertion string) ([2][]byte, error) {
 	var replaySegments [2][]byte
 	parts := strings.Split(assertion, ".")
 	if len(parts) != 3 {
-		return replaySegments, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion is not a valid signed JWT."))
+		return replaySegments, invalidAssertion("The assertion is not a valid signed JWT.")
 	}
 	for i, part := range parts {
 		decoded, err := base64.RawURLEncoding.DecodeString(part)
 		if err != nil || base64.RawURLEncoding.EncodeToString(decoded) != part {
-			return replaySegments, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion is not a valid signed JWT."))
+			return replaySegments, invalidAssertion("The assertion is not a valid signed JWT.")
 		}
 		if i < len(replaySegments) {
 			replaySegments[i] = decoded
@@ -386,10 +414,10 @@ func validateJWTBearerAssertionForm(form url.Values) (string, error) {
 func validateAssertionType(assertion string) error {
 	parsed, err := jwt.ParseSigned(assertion, allowedSignatureAlgorithms)
 	if err != nil {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion is not a valid signed JWT."))
+		return invalidAssertion("The assertion is not a valid signed JWT.")
 	}
 	if len(parsed.Headers) != 1 {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion must contain exactly one JOSE signature."))
+		return invalidAssertion("The assertion must contain exactly one JOSE signature.")
 	}
 	typ, ok := parsed.Headers[0].ExtraHeaders[jose.HeaderType]
 	if !ok {
@@ -397,7 +425,7 @@ func validateAssertionType(assertion string) error {
 	}
 	value, ok := typ.(string)
 	if !ok {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header must be a string."))
+		return invalidAssertion("The assertion JOSE typ header must be a string.")
 	}
 	// An ID-JAG is not accepted here. Routing sends every assertion whose typ
 	// is exactly oauthproto.JWTTypeIDJAG to IDJAGHandler, so this handler never
@@ -406,7 +434,7 @@ func validateAssertionType(assertion string) error {
 	if value == "" || value == "JWT" {
 		return nil
 	}
-	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header is not supported."))
+	return invalidAssertion("The assertion JOSE typ header is not supported.")
 }
 
 // assertionType returns the raw JOSE typ header of the assertion, with no

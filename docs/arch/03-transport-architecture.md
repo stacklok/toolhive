@@ -263,6 +263,15 @@ Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
 
 ### Middleware Integration
 
+Token exchange's host adapter and host tests live in `pkg/auth/tokenexchange`;
+`factory.go` handles runner setup and lifecycle, while `middleware.go` holds
+runtime behavior and configuration. Reusable RFC 8693 exchange and normalization
+remain in `pkg/oauthproto/tokenexchange`.
+The host depends on the reusable package, never the reverse. Runner startup uses
+`GetSupportedMiddlewareFactories` to select the host factory by `tokenexchange`;
+there is no token-exchange `init()` registration. See the
+[Go API migration](../middleware.md#8-token-exchange-middleware) for moved symbols.
+
 All proxy types integrate with the middleware chain:
 
 ```mermaid

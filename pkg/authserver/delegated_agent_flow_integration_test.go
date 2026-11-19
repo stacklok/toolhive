@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/oauth2-proxy/mockoidc"
 	"github.com/stretchr/testify/assert"
@@ -135,6 +137,13 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		res = f.as1Env.requestRefreshToken(t, broker, f.sessionLogin, entryForm(oauthproto.TokenTypeIDJAG, nil))
 		requireError(t, res, "invalid_request", "token_used")
 		assert.True(t, f.as1Env.grant(t, f.session).RevokedAt.IsZero(), "a reused login token leaves the first grant live")
+
+		// A login-shaped token that carries the delegated-access
+		// marker is refused, with a jti no grant has used. Nothing can mint a
+		// marked token over HTTP, so it is signed with AS-1's own key.
+		marked := signMarkedLoginToken(t, f.as1Env.embedded, sessionClaims)
+		res = f.as1Env.requestRefreshToken(t, broker, marked, entryForm(oauthproto.TokenTypeIDJAG, nil))
+		requireError(t, res, "invalid_request", "subject_token_delegated_access")
 	})
 
 	t.Run("child grant", func(t *testing.T) {
@@ -254,7 +263,8 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			})
 		}
 		res = f.as1Env.requestIDJAGWith(t, broker, f.session, f.as2Issuer, actorPairWith("plain-error"))
-		requireRefusal(t, res, http.StatusInternalServerError, "server_error")
+		require.Equal(t, http.StatusInternalServerError, res.status, res.body)
+		assert.Equal(t, "server_error", res.body["error"])
 		// The decoded body re-encoded is equivalent to the raw body for this
 		// plain-ASCII marker.
 		raw, err := json.Marshal(res.body)
@@ -321,12 +331,9 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			assert.Equal(t, f.as1+"#"+f.sub, claims["sub"], tc.name)
 		}
 
-		// A downstream client expects invalid_assertion for a replayed
-		// ID-JAG. ToolHive sends invalid_grant with a hint only; see
-		// Authorization server: reason codes in error_description for ID-JAG
-		// redemption refusals (#7030).
+		// A replayed ID-JAG is refused with the invalid_assertion reason.
 		res := f.as2.redeem(t, f.as2.client, f.sessionIDJAG)
-		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+		requireError(t, res, "invalid_grant", "invalid_assertion: The JWT bearer assertion has already been used.")
 
 		// This ID-JAG has the same issuer, client ID and resource as
 		// a good one and differs only in aud (and in the subject claims its
@@ -338,7 +345,7 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		require.Equal(t, http.StatusOK, res.status, res.body)
 		assert.Equal(t, mark+1, a.callCount())
 		res = f.as2.redeem(t, f.as2.client, res.str(t, "access_token"))
-		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+		requireError(t, res, "invalid_grant", "invalid_assertion: The ID-JAG assertion is invalid or could not be verified.")
 
 		// AS-2 binds exactly one subject, f.sub. Another real user's ID-JAG from
 		// the same AS-1 has the same issuer, client ID, audience and resource as
@@ -356,12 +363,22 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		_, otherClaims := decodeIDJAG(t, otherIDJAG)
 		require.NotEqual(t, f.sub, otherClaims["sub"])
 		res = f.as2.redeem(t, f.as2.client, otherIDJAG)
-		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+		requireError(t, res, "access_denied", "subject_unknown")
+
+		// A requested resource that the ID-JAG's resource claim does not list is
+		// refused before the assertion is consumed, so the replayed session
+		// ID-JAG reaches the check.
+		res = postToken(t, f.as2.srv.URL, f.as2.client, url.Values{
+			"grant_type": {oauthproto.GrantTypeJWTBearer},
+			"assertion":  {f.sessionIDJAG},
+			"resource":   {"https://gw.example.net/not-allowed"},
+		})
+		requireError(t, res, "invalid_target", "The requested resource is invalid, unknown, or malformed.")
 
 		// An AS-1 login access token is not an ID-JAG. Its typ is at+jwt, so the
 		// plain JWT-bearer handler gets it and refuses the typ.
 		res = f.as2.redeem(t, f.as2.client, f.sessionLogin)
-		requireRefusal(t, res, http.StatusBadRequest, "invalid_grant")
+		requireError(t, res, "invalid_grant", "invalid_assertion: The assertion JOSE typ header is not supported.")
 	})
 
 	t.Run("revoke", func(t *testing.T) {
@@ -573,12 +590,28 @@ func startFlow(t *testing.T, backend string) *flow {
 	return f
 }
 
-// requireRefusal checks status and error only, for refusals whose
-// error_description is a hint clients should not parse.
-func requireRefusal(t *testing.T, res tokenResult, status int, code string) {
+// signMarkedLoginToken re-signs a copy of a login token's claims, with a fresh
+// jti and the delegated-access marker, using the server's own signing key.
+func signMarkedLoginToken(t *testing.T, embedded *authserverrunner.EmbeddedAuthServer, loginClaims map[string]any) string {
 	t.Helper()
-	require.Equal(t, status, res.status, "error=%v error_description=%v", res.body["error"], res.body["error_description"])
-	assert.Equal(t, code, res.body["error"])
+	signingKey, err := embedded.KeyProvider().SigningKey(t.Context())
+	require.NoError(t, err)
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.SignatureAlgorithm(signingKey.Algorithm), Key: signingKey.Key},
+		(&jose.SignerOptions{}).WithType("at+jwt").WithHeader("kid", signingKey.KeyID),
+	)
+	require.NoError(t, err)
+	claims := maps.Clone(loginClaims)
+	claims["jti"] = "marked-" + time.Now().Format(time.RFC3339Nano)
+	claims[claimnames.DelegatedAccessKey] = true
+	// Preserve json.Number timestamps as JSON numbers when re-signing.
+	payload, err := json.Marshal(claims)
+	require.NoError(t, err)
+	signed, err := signer.Sign(payload)
+	require.NoError(t, err)
+	token, err := signed.CompactSerialize()
+	require.NoError(t, err)
+	return token
 }
 
 // flowActor is the actor validator stub of one AS-1. The actor_token value

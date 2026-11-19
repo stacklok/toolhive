@@ -94,7 +94,7 @@ func oboInboundIdentity(token string) *auth.Identity {
 // oboServeAuthenticate runs Authenticate against a request carrying ctx and returns
 // the request (for header inspection) and the error.
 func oboServeAuthenticate(
-	ctx context.Context, t *testing.T, s *OBOStrategy, strat *authtypes.BackendAuthStrategy,
+	ctx context.Context, t *testing.T, s *OBOStrategy, backendStrategy *authtypes.BackendAuthStrategy,
 ) (*http.Request, error) {
 	t.Helper()
 	// Authenticate runs on the outgoing backend-bound request (the vMCP client's
@@ -102,7 +102,7 @@ func oboServeAuthenticate(
 	// RemoteAddr; the audit source is therefore local to the component, not a
 	// network IP.
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://backend.local/", nil)
-	return req, s.Authenticate(ctx, req, strat)
+	return req, s.Authenticate(ctx, req, backendStrategy)
 }
 
 func TestOBOStrategy_Name(t *testing.T) {
@@ -135,8 +135,8 @@ func TestOBOAuthenticate_UpstreamProviderSuccess(t *testing.T) {
 	stub := &oboStubExchanger{token: "backend-token"}
 	s := oboStrategyWithStub(stub, nil)
 
-	strat := validOBOStrategy()
-	strat.OBO.SubjectTokenProviderName = "entra"
+	backendStrategy := validOBOStrategy()
+	backendStrategy.OBO.SubjectTokenProviderName = "entra"
 	identity := &auth.Identity{
 		PrincipalInfo:  auth.PrincipalInfo{Subject: oboTestSubject},
 		Token:          "session-token", // the proxy's own token, not the subject
@@ -144,7 +144,7 @@ func TestOBOAuthenticate_UpstreamProviderSuccess(t *testing.T) {
 	}
 	ctx := auth.WithIdentity(t.Context(), identity)
 
-	req, err := oboServeAuthenticate(ctx, t, s, strat)
+	req, err := oboServeAuthenticate(ctx, t, s, backendStrategy)
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer backend-token", req.Header.Get("Authorization"))
 	assert.Equal(t, "upstream-token", stub.lastUserToken, "the named provider token is the subject")
@@ -156,14 +156,14 @@ func TestOBOAuthenticate_SubjectErrors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		ctx   func(t *testing.T) context.Context
-		strat func() *authtypes.BackendAuthStrategy
+		name            string
+		ctx             func(t *testing.T) context.Context
+		backendStrategy func() *authtypes.BackendAuthStrategy
 	}{
 		{
-			name:  "no identity in context",
-			ctx:   func(t *testing.T) context.Context { t.Helper(); return t.Context() },
-			strat: validOBOStrategy,
+			name:            "no identity in context",
+			ctx:             func(t *testing.T) context.Context { t.Helper(); return t.Context() },
+			backendStrategy: validOBOStrategy,
 		},
 		{
 			name: "identity has no inbound token",
@@ -171,7 +171,7 @@ func TestOBOAuthenticate_SubjectErrors(t *testing.T) {
 				t.Helper()
 				return auth.WithIdentity(t.Context(), oboInboundIdentity(""))
 			},
-			strat: validOBOStrategy,
+			backendStrategy: validOBOStrategy,
 		},
 		{
 			name: "named provider token absent",
@@ -179,7 +179,7 @@ func TestOBOAuthenticate_SubjectErrors(t *testing.T) {
 				t.Helper()
 				return auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
 			},
-			strat: func() *authtypes.BackendAuthStrategy {
+			backendStrategy: func() *authtypes.BackendAuthStrategy {
 				s := validOBOStrategy()
 				s.OBO.SubjectTokenProviderName = "entra"
 				return s
@@ -193,7 +193,7 @@ func TestOBOAuthenticate_SubjectErrors(t *testing.T) {
 			stub := &oboStubExchanger{token: "unused"}
 			s := oboStrategyWithStub(stub, nil)
 
-			req, err := oboServeAuthenticate(tt.ctx(t), t, s, tt.strat())
+			req, err := oboServeAuthenticate(tt.ctx(t), t, s, tt.backendStrategy())
 			require.Error(t, err)
 			assert.Empty(t, req.Header.Get("Authorization"), "no token may be injected on failure")
 			assert.Zero(t, stub.calls, "no exchange should be attempted")
@@ -318,7 +318,7 @@ func TestOBOAuthenticate_RealEntraExchange(t *testing.T) {
 
 	skew := int32(120) // exercise the CacheSkewSeconds > 0 gate in defaultBuildOBOExchanger
 	s := NewOBOStrategy(oboMapEnv{})
-	strat := &authtypes.BackendAuthStrategy{
+	backendStrategy := &authtypes.BackendAuthStrategy{
 		Type: authtypes.StrategyTypeOBO,
 		OBO: &authtypes.OBOConfig{
 			TokenURL:         srv.URL, // loopback http — accepted by NewFromTokenURL
@@ -330,7 +330,7 @@ func TestOBOAuthenticate_RealEntraExchange(t *testing.T) {
 	}
 	ctx := auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
 
-	req, err := oboServeAuthenticate(ctx, t, s, strat)
+	req, err := oboServeAuthenticate(ctx, t, s, backendStrategy)
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer backend-abc", req.Header.Get("Authorization"),
 		"the backend-scoped token from the real exchange must be injected")
@@ -371,9 +371,9 @@ func TestOBOValidate_Invalid(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			strat := validOBOStrategy()
-			tt.mutate(strat)
-			err := s.Validate(strat)
+			backendStrategy := validOBOStrategy()
+			tt.mutate(backendStrategy)
+			err := s.Validate(backendStrategy)
 			require.Error(t, err)
 			assert.ErrorContains(t, err, tt.wantMsg, "the rejection must name the actual reason")
 		})
@@ -412,12 +412,12 @@ func TestOBOExchangeTarget_ParityWithSharedContract(t *testing.T) {
 			// Behavioral parity: Authenticate sends exactly that target to Entra.
 			stub := &oboStubExchanger{token: "backend-token"}
 			s := oboStrategyWithStub(stub, nil)
-			strat := validOBOStrategy()
-			strat.OBO.Audience = tt.audience
-			strat.OBO.Scopes = tt.scopes
+			backendStrategy := validOBOStrategy()
+			backendStrategy.OBO.Audience = tt.audience
+			backendStrategy.OBO.Scopes = tt.scopes
 			ctx := auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
 
-			_, err := oboServeAuthenticate(ctx, t, s, strat)
+			_, err := oboServeAuthenticate(ctx, t, s, backendStrategy)
 			require.NoError(t, err)
 			assert.Equal(t, want, stub.lastAudience)
 		})

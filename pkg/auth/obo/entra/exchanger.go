@@ -380,7 +380,7 @@ type tokenResponse struct {
 func (*Exchanger) parseResponse(status int, body []byte) (exchange.Token, error) {
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil {
-		// Unparseable body: classify by status alone, without echoing the body.
+		// Unparsable body: classify by status alone, without echoing the body.
 		kind := KindUnknown
 		if status >= http.StatusInternalServerError {
 			kind = KindTransient

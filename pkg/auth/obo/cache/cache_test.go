@@ -128,22 +128,22 @@ func TestCache_PartitionsByUserToken(t *testing.T) {
 	}}
 	c := New(fake, WithClock(clock.now))
 
-	a, err := c.Exchange(t.Context(), "userA", "aud")
+	a, err := c.Exchange(t.Context(), "userAlice", "aud")
 	require.NoError(t, err)
-	assert.Equal(t, "tok:userA", a)
+	assert.Equal(t, "tok:userAlice", a)
 
-	b, err := c.Exchange(t.Context(), "userB", "aud")
+	b, err := c.Exchange(t.Context(), "userBob", "aud")
 	require.NoError(t, err)
-	assert.Equal(t, "tok:userB", b)
+	assert.Equal(t, "tok:userBob", b)
 	assert.Equal(t, 2, fake.callCount(), "different user tokens must not share a cache entry")
 
 	// Each user still reads its own cached token; no cross-contamination.
-	a2, err := c.Exchange(t.Context(), "userA", "aud")
+	a2, err := c.Exchange(t.Context(), "userAlice", "aud")
 	require.NoError(t, err)
-	assert.Equal(t, "tok:userA", a2)
-	b2, err := c.Exchange(t.Context(), "userB", "aud")
+	assert.Equal(t, "tok:userAlice", a2)
+	b2, err := c.Exchange(t.Context(), "userBob", "aud")
 	require.NoError(t, err)
-	assert.Equal(t, "tok:userB", b2)
+	assert.Equal(t, "tok:userBob", b2)
 	assert.Equal(t, 2, fake.callCount())
 }
 

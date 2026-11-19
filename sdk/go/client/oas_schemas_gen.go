@@ -10,6 +10,171 @@ import (
 	"github.com/go-faster/jx"
 )
 
+// AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services.
+// Ref: #/components/schemas/AWSSTSConfig
+type AWSSTSConfig struct {
+	// FallbackRoleArn is the IAM role ARN to assume when no role mapping matches.
+	FallbackRoleArn OptString `json:"fallback_role_arn"`
+	// Region is the AWS region for STS and SigV4 signing.
+	Region OptString `json:"region"`
+	// RoleClaim is the JWT claim to use for role mapping (default: "groups").
+	RoleClaim OptString `json:"role_claim"`
+	// RoleMappings maps JWT claim values to IAM roles with priority.
+	RoleMappings []AWSSTSRoleMapping `json:"role_mappings"`
+	// Service is the AWS service name for SigV4 signing (default: "aws-mcp").
+	Service OptString `json:"service"`
+	// SessionDuration is the duration in seconds for assumed role credentials (default: 3600).
+	SessionDuration OptInt `json:"session_duration"`
+	// SessionNameClaim is the JWT claim to use for role session name (default: "sub").
+	SessionNameClaim OptString `json:"session_name_claim"`
+	// SubjectProviderName identifies which upstream provider's access token to use
+	// for STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer
+	// token from the incoming HTTP request is used.
+	SubjectProviderName OptString `json:"subject_provider_name"`
+}
+
+// GetFallbackRoleArn returns the value of FallbackRoleArn.
+func (s *AWSSTSConfig) GetFallbackRoleArn() OptString {
+	return s.FallbackRoleArn
+}
+
+// GetRegion returns the value of Region.
+func (s *AWSSTSConfig) GetRegion() OptString {
+	return s.Region
+}
+
+// GetRoleClaim returns the value of RoleClaim.
+func (s *AWSSTSConfig) GetRoleClaim() OptString {
+	return s.RoleClaim
+}
+
+// GetRoleMappings returns the value of RoleMappings.
+func (s *AWSSTSConfig) GetRoleMappings() []AWSSTSRoleMapping {
+	return s.RoleMappings
+}
+
+// GetService returns the value of Service.
+func (s *AWSSTSConfig) GetService() OptString {
+	return s.Service
+}
+
+// GetSessionDuration returns the value of SessionDuration.
+func (s *AWSSTSConfig) GetSessionDuration() OptInt {
+	return s.SessionDuration
+}
+
+// GetSessionNameClaim returns the value of SessionNameClaim.
+func (s *AWSSTSConfig) GetSessionNameClaim() OptString {
+	return s.SessionNameClaim
+}
+
+// GetSubjectProviderName returns the value of SubjectProviderName.
+func (s *AWSSTSConfig) GetSubjectProviderName() OptString {
+	return s.SubjectProviderName
+}
+
+// SetFallbackRoleArn sets the value of FallbackRoleArn.
+func (s *AWSSTSConfig) SetFallbackRoleArn(val OptString) {
+	s.FallbackRoleArn = val
+}
+
+// SetRegion sets the value of Region.
+func (s *AWSSTSConfig) SetRegion(val OptString) {
+	s.Region = val
+}
+
+// SetRoleClaim sets the value of RoleClaim.
+func (s *AWSSTSConfig) SetRoleClaim(val OptString) {
+	s.RoleClaim = val
+}
+
+// SetRoleMappings sets the value of RoleMappings.
+func (s *AWSSTSConfig) SetRoleMappings(val []AWSSTSRoleMapping) {
+	s.RoleMappings = val
+}
+
+// SetService sets the value of Service.
+func (s *AWSSTSConfig) SetService(val OptString) {
+	s.Service = val
+}
+
+// SetSessionDuration sets the value of SessionDuration.
+func (s *AWSSTSConfig) SetSessionDuration(val OptInt) {
+	s.SessionDuration = val
+}
+
+// SetSessionNameClaim sets the value of SessionNameClaim.
+func (s *AWSSTSConfig) SetSessionNameClaim(val OptString) {
+	s.SessionNameClaim = val
+}
+
+// SetSubjectProviderName sets the value of SubjectProviderName.
+func (s *AWSSTSConfig) SetSubjectProviderName(val OptString) {
+	s.SubjectProviderName = val
+}
+
+// Ref: #/components/schemas/AWSSTSRoleMapping
+type AWSSTSRoleMapping struct {
+	// Claim is the simple claim value to match (e.g., group name).
+	// Internally compiles to a CEL expression: "<claim_value>" in claims["<role_claim>"]
+	// Mutually exclusive with Matcher.
+	Claim OptString `json:"claim"`
+	// Matcher is a CEL expression for complex matching against JWT claims.
+	// The expression has access to a "claims" variable containing all JWT claims.
+	// Examples:
+	// - "admins" in claims["groups"]
+	// - claims["sub"] == "user123" && !("act" in claims)
+	// Mutually exclusive with Claim.
+	Matcher OptString `json:"matcher"`
+	// Priority determines selection order (lower number = higher priority).
+	// When multiple mappings match, the one with the lowest priority is selected.
+	// When nil (omitted), the mapping has the lowest possible priority, and
+	// configuration order acts as tie-breaker via stable sort.
+	Priority OptInt `json:"priority"`
+	// RoleArn is the IAM role ARN to assume when this mapping matches.
+	RoleArn OptString `json:"role_arn"`
+}
+
+// GetClaim returns the value of Claim.
+func (s *AWSSTSRoleMapping) GetClaim() OptString {
+	return s.Claim
+}
+
+// GetMatcher returns the value of Matcher.
+func (s *AWSSTSRoleMapping) GetMatcher() OptString {
+	return s.Matcher
+}
+
+// GetPriority returns the value of Priority.
+func (s *AWSSTSRoleMapping) GetPriority() OptInt {
+	return s.Priority
+}
+
+// GetRoleArn returns the value of RoleArn.
+func (s *AWSSTSRoleMapping) GetRoleArn() OptString {
+	return s.RoleArn
+}
+
+// SetClaim sets the value of Claim.
+func (s *AWSSTSRoleMapping) SetClaim(val OptString) {
+	s.Claim = val
+}
+
+// SetMatcher sets the value of Matcher.
+func (s *AWSSTSRoleMapping) SetMatcher(val OptString) {
+	s.Matcher = val
+}
+
+// SetPriority sets the value of Priority.
+func (s *AWSSTSRoleMapping) SetPriority(val OptInt) {
+	s.Priority = val
+}
+
+// SetRoleArn sets the value of RoleArn.
+func (s *AWSSTSRoleMapping) SetRoleArn(val OptString) {
+	s.RoleArn = val
+}
+
 type AddRegistryNotImplemented struct {
 	Data io.Reader
 }
@@ -173,171 +338,6 @@ func (s *AuditConfig) SetMaxDataSize(val OptInt) {
 // SetMaxDelegationDepth sets the value of MaxDelegationDepth.
 func (s *AuditConfig) SetMaxDelegationDepth(val OptInt) {
 	s.MaxDelegationDepth = val
-}
-
-// AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services.
-// Ref: #/components/schemas/AuthAWSSTSConfig
-type AuthAWSSTSConfig struct {
-	// FallbackRoleArn is the IAM role ARN to assume when no role mapping matches.
-	FallbackRoleArn OptString `json:"fallback_role_arn"`
-	// Region is the AWS region for STS and SigV4 signing.
-	Region OptString `json:"region"`
-	// RoleClaim is the JWT claim to use for role mapping (default: "groups").
-	RoleClaim OptString `json:"role_claim"`
-	// RoleMappings maps JWT claim values to IAM roles with priority.
-	RoleMappings []AuthAWSSTSRoleMapping `json:"role_mappings"`
-	// Service is the AWS service name for SigV4 signing (default: "aws-mcp").
-	Service OptString `json:"service"`
-	// SessionDuration is the duration in seconds for assumed role credentials (default: 3600).
-	SessionDuration OptInt `json:"session_duration"`
-	// SessionNameClaim is the JWT claim to use for role session name (default: "sub").
-	SessionNameClaim OptString `json:"session_name_claim"`
-	// SubjectProviderName identifies which upstream provider's access token to use
-	// for STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer
-	// token from the incoming HTTP request is used.
-	SubjectProviderName OptString `json:"subject_provider_name"`
-}
-
-// GetFallbackRoleArn returns the value of FallbackRoleArn.
-func (s *AuthAWSSTSConfig) GetFallbackRoleArn() OptString {
-	return s.FallbackRoleArn
-}
-
-// GetRegion returns the value of Region.
-func (s *AuthAWSSTSConfig) GetRegion() OptString {
-	return s.Region
-}
-
-// GetRoleClaim returns the value of RoleClaim.
-func (s *AuthAWSSTSConfig) GetRoleClaim() OptString {
-	return s.RoleClaim
-}
-
-// GetRoleMappings returns the value of RoleMappings.
-func (s *AuthAWSSTSConfig) GetRoleMappings() []AuthAWSSTSRoleMapping {
-	return s.RoleMappings
-}
-
-// GetService returns the value of Service.
-func (s *AuthAWSSTSConfig) GetService() OptString {
-	return s.Service
-}
-
-// GetSessionDuration returns the value of SessionDuration.
-func (s *AuthAWSSTSConfig) GetSessionDuration() OptInt {
-	return s.SessionDuration
-}
-
-// GetSessionNameClaim returns the value of SessionNameClaim.
-func (s *AuthAWSSTSConfig) GetSessionNameClaim() OptString {
-	return s.SessionNameClaim
-}
-
-// GetSubjectProviderName returns the value of SubjectProviderName.
-func (s *AuthAWSSTSConfig) GetSubjectProviderName() OptString {
-	return s.SubjectProviderName
-}
-
-// SetFallbackRoleArn sets the value of FallbackRoleArn.
-func (s *AuthAWSSTSConfig) SetFallbackRoleArn(val OptString) {
-	s.FallbackRoleArn = val
-}
-
-// SetRegion sets the value of Region.
-func (s *AuthAWSSTSConfig) SetRegion(val OptString) {
-	s.Region = val
-}
-
-// SetRoleClaim sets the value of RoleClaim.
-func (s *AuthAWSSTSConfig) SetRoleClaim(val OptString) {
-	s.RoleClaim = val
-}
-
-// SetRoleMappings sets the value of RoleMappings.
-func (s *AuthAWSSTSConfig) SetRoleMappings(val []AuthAWSSTSRoleMapping) {
-	s.RoleMappings = val
-}
-
-// SetService sets the value of Service.
-func (s *AuthAWSSTSConfig) SetService(val OptString) {
-	s.Service = val
-}
-
-// SetSessionDuration sets the value of SessionDuration.
-func (s *AuthAWSSTSConfig) SetSessionDuration(val OptInt) {
-	s.SessionDuration = val
-}
-
-// SetSessionNameClaim sets the value of SessionNameClaim.
-func (s *AuthAWSSTSConfig) SetSessionNameClaim(val OptString) {
-	s.SessionNameClaim = val
-}
-
-// SetSubjectProviderName sets the value of SubjectProviderName.
-func (s *AuthAWSSTSConfig) SetSubjectProviderName(val OptString) {
-	s.SubjectProviderName = val
-}
-
-// Ref: #/components/schemas/AuthAWSSTSRoleMapping
-type AuthAWSSTSRoleMapping struct {
-	// Claim is the simple claim value to match (e.g., group name).
-	// Internally compiles to a CEL expression: "<claim_value>" in claims["<role_claim>"]
-	// Mutually exclusive with Matcher.
-	Claim OptString `json:"claim"`
-	// Matcher is a CEL expression for complex matching against JWT claims.
-	// The expression has access to a "claims" variable containing all JWT claims.
-	// Examples:
-	// - "admins" in claims["groups"]
-	// - claims["sub"] == "user123" && !("act" in claims)
-	// Mutually exclusive with Claim.
-	Matcher OptString `json:"matcher"`
-	// Priority determines selection order (lower number = higher priority).
-	// When multiple mappings match, the one with the lowest priority is selected.
-	// When nil (omitted), the mapping has the lowest possible priority, and
-	// configuration order acts as tie-breaker via stable sort.
-	Priority OptInt `json:"priority"`
-	// RoleArn is the IAM role ARN to assume when this mapping matches.
-	RoleArn OptString `json:"role_arn"`
-}
-
-// GetClaim returns the value of Claim.
-func (s *AuthAWSSTSRoleMapping) GetClaim() OptString {
-	return s.Claim
-}
-
-// GetMatcher returns the value of Matcher.
-func (s *AuthAWSSTSRoleMapping) GetMatcher() OptString {
-	return s.Matcher
-}
-
-// GetPriority returns the value of Priority.
-func (s *AuthAWSSTSRoleMapping) GetPriority() OptInt {
-	return s.Priority
-}
-
-// GetRoleArn returns the value of RoleArn.
-func (s *AuthAWSSTSRoleMapping) GetRoleArn() OptString {
-	return s.RoleArn
-}
-
-// SetClaim sets the value of Claim.
-func (s *AuthAWSSTSRoleMapping) SetClaim(val OptString) {
-	s.Claim = val
-}
-
-// SetMatcher sets the value of Matcher.
-func (s *AuthAWSSTSRoleMapping) SetMatcher(val OptString) {
-	s.Matcher = val
-}
-
-// SetPriority sets the value of Priority.
-func (s *AuthAWSSTSRoleMapping) SetPriority(val OptInt) {
-	s.Priority = val
-}
-
-// SetRoleArn sets the value of RoleArn.
-func (s *AuthAWSSTSRoleMapping) SetRoleArn(val OptString) {
-	s.RoleArn = val
 }
 
 // DEPRECATED: Middleware configuration.
@@ -7014,6 +7014,52 @@ func (s *OidcOptions) SetScopes(val []string) {
 	s.Scopes = val
 }
 
+// NewOptAWSSTSConfig returns new OptAWSSTSConfig with value set to v.
+func NewOptAWSSTSConfig(v AWSSTSConfig) OptAWSSTSConfig {
+	return OptAWSSTSConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAWSSTSConfig is optional AWSSTSConfig.
+type OptAWSSTSConfig struct {
+	Value AWSSTSConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAWSSTSConfig was set.
+func (o OptAWSSTSConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAWSSTSConfig) Reset() {
+	var v AWSSTSConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAWSSTSConfig) SetTo(v AWSSTSConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAWSSTSConfig) Get() (v AWSSTSConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAWSSTSConfig) Or(d AWSSTSConfig) AWSSTSConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAuditConfig returns new OptAuditConfig with value set to v.
 func NewOptAuditConfig(v AuditConfig) OptAuditConfig {
 	return OptAuditConfig{
@@ -7054,52 +7100,6 @@ func (o OptAuditConfig) Get() (v AuditConfig, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuditConfig) Or(d AuditConfig) AuditConfig {
-	if v, ok := o.Get(); ok {
-		return v
-	}
-	return d
-}
-
-// NewOptAuthAWSSTSConfig returns new OptAuthAWSSTSConfig with value set to v.
-func NewOptAuthAWSSTSConfig(v AuthAWSSTSConfig) OptAuthAWSSTSConfig {
-	return OptAuthAWSSTSConfig{
-		Value: v,
-		Set:   true,
-	}
-}
-
-// OptAuthAWSSTSConfig is optional AuthAWSSTSConfig.
-type OptAuthAWSSTSConfig struct {
-	Value AuthAWSSTSConfig
-	Set   bool
-}
-
-// IsSet returns true if OptAuthAWSSTSConfig was set.
-func (o OptAuthAWSSTSConfig) IsSet() bool { return o.Set }
-
-// Reset unsets value.
-func (o *OptAuthAWSSTSConfig) Reset() {
-	var v AuthAWSSTSConfig
-	o.Value = v
-	o.Set = false
-}
-
-// SetTo sets value to v.
-func (o *OptAuthAWSSTSConfig) SetTo(v AuthAWSSTSConfig) {
-	o.Set = true
-	o.Value = v
-}
-
-// Get returns value and boolean that denotes whether value was set.
-func (o OptAuthAWSSTSConfig) Get() (v AuthAWSSTSConfig, ok bool) {
-	if !o.Set {
-		return v, false
-	}
-	return o.Value, true
-}
-
-// Or returns value if set, or given parameter if does not.
-func (o OptAuthAWSSTSConfig) Or(d AuthAWSSTSConfig) AuthAWSSTSConfig {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -18278,8 +18278,8 @@ type RunnerRunConfig struct {
 	AuthzConfig     OptAuthorizationConfig `json:"authz_config"`
 	// DEPRECATED: Middleware configuration.
 	// AuthzConfigPath is the path to the authorization configuration file.
-	AuthzConfigPath OptString           `json:"authz_config_path"`
-	AWSStsConfig    OptAuthAWSSTSConfig `json:"aws_sts_config"`
+	AuthzConfigPath OptString       `json:"authz_config_path"`
+	AWSStsConfig    OptAWSSTSConfig `json:"aws_sts_config"`
 	// BaseName is the base name used for the container (without prefixes).
 	BaseName OptString `json:"base_name"`
 	// CmdArgs are the arguments to pass to the container.
@@ -18457,7 +18457,7 @@ func (s *RunnerRunConfig) GetAuthzConfigPath() OptString {
 }
 
 // GetAWSStsConfig returns the value of AWSStsConfig.
-func (s *RunnerRunConfig) GetAWSStsConfig() OptAuthAWSSTSConfig {
+func (s *RunnerRunConfig) GetAWSStsConfig() OptAWSSTSConfig {
 	return s.AWSStsConfig
 }
 
@@ -18772,7 +18772,7 @@ func (s *RunnerRunConfig) SetAuthzConfigPath(val OptString) {
 }
 
 // SetAWSStsConfig sets the value of AWSStsConfig.
-func (s *RunnerRunConfig) SetAWSStsConfig(val OptAuthAWSSTSConfig) {
+func (s *RunnerRunConfig) SetAWSStsConfig(val OptAWSSTSConfig) {
 	s.AWSStsConfig = val
 }
 

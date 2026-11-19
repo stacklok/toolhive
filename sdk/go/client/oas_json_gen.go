@@ -13,6 +13,313 @@ import (
 )
 
 // Encode implements json.Marshaler.
+func (s *AWSSTSConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AWSSTSConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.FallbackRoleArn.Set {
+			e.FieldStart("fallback_role_arn")
+			s.FallbackRoleArn.Encode(e)
+		}
+	}
+	{
+		if s.Region.Set {
+			e.FieldStart("region")
+			s.Region.Encode(e)
+		}
+	}
+	{
+		if s.RoleClaim.Set {
+			e.FieldStart("role_claim")
+			s.RoleClaim.Encode(e)
+		}
+	}
+	{
+		if s.RoleMappings != nil {
+			e.FieldStart("role_mappings")
+			e.ArrStart()
+			for _, elem := range s.RoleMappings {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.Service.Set {
+			e.FieldStart("service")
+			s.Service.Encode(e)
+		}
+	}
+	{
+		if s.SessionDuration.Set {
+			e.FieldStart("session_duration")
+			s.SessionDuration.Encode(e)
+		}
+	}
+	{
+		if s.SessionNameClaim.Set {
+			e.FieldStart("session_name_claim")
+			s.SessionNameClaim.Encode(e)
+		}
+	}
+	{
+		if s.SubjectProviderName.Set {
+			e.FieldStart("subject_provider_name")
+			s.SubjectProviderName.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAWSSTSConfig = [8]string{
+	0: "fallback_role_arn",
+	1: "region",
+	2: "role_claim",
+	3: "role_mappings",
+	4: "service",
+	5: "session_duration",
+	6: "session_name_claim",
+	7: "subject_provider_name",
+}
+
+// Decode decodes AWSSTSConfig from json.
+func (s *AWSSTSConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AWSSTSConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "fallback_role_arn":
+			if err := func() error {
+				s.FallbackRoleArn.Reset()
+				if err := s.FallbackRoleArn.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"fallback_role_arn\"")
+			}
+		case "region":
+			if err := func() error {
+				s.Region.Reset()
+				if err := s.Region.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"region\"")
+			}
+		case "role_claim":
+			if err := func() error {
+				s.RoleClaim.Reset()
+				if err := s.RoleClaim.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"role_claim\"")
+			}
+		case "role_mappings":
+			if err := func() error {
+				s.RoleMappings = make([]AWSSTSRoleMapping, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AWSSTSRoleMapping
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.RoleMappings = append(s.RoleMappings, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"role_mappings\"")
+			}
+		case "service":
+			if err := func() error {
+				s.Service.Reset()
+				if err := s.Service.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"service\"")
+			}
+		case "session_duration":
+			if err := func() error {
+				s.SessionDuration.Reset()
+				if err := s.SessionDuration.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"session_duration\"")
+			}
+		case "session_name_claim":
+			if err := func() error {
+				s.SessionNameClaim.Reset()
+				if err := s.SessionNameClaim.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"session_name_claim\"")
+			}
+		case "subject_provider_name":
+			if err := func() error {
+				s.SubjectProviderName.Reset()
+				if err := s.SubjectProviderName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"subject_provider_name\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AWSSTSConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AWSSTSConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AWSSTSConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AWSSTSRoleMapping) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AWSSTSRoleMapping) encodeFields(e *jx.Encoder) {
+	{
+		if s.Claim.Set {
+			e.FieldStart("claim")
+			s.Claim.Encode(e)
+		}
+	}
+	{
+		if s.Matcher.Set {
+			e.FieldStart("matcher")
+			s.Matcher.Encode(e)
+		}
+	}
+	{
+		if s.Priority.Set {
+			e.FieldStart("priority")
+			s.Priority.Encode(e)
+		}
+	}
+	{
+		if s.RoleArn.Set {
+			e.FieldStart("role_arn")
+			s.RoleArn.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAWSSTSRoleMapping = [4]string{
+	0: "claim",
+	1: "matcher",
+	2: "priority",
+	3: "role_arn",
+}
+
+// Decode decodes AWSSTSRoleMapping from json.
+func (s *AWSSTSRoleMapping) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AWSSTSRoleMapping to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "claim":
+			if err := func() error {
+				s.Claim.Reset()
+				if err := s.Claim.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"claim\"")
+			}
+		case "matcher":
+			if err := func() error {
+				s.Matcher.Reset()
+				if err := s.Matcher.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"matcher\"")
+			}
+		case "priority":
+			if err := func() error {
+				s.Priority.Reset()
+				if err := s.Priority.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"priority\"")
+			}
+		case "role_arn":
+			if err := func() error {
+				s.RoleArn.Reset()
+				if err := s.RoleArn.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"role_arn\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AWSSTSRoleMapping")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AWSSTSRoleMapping) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AWSSTSRoleMapping) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *AuditConfig) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -250,313 +557,6 @@ func (s *AuditConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AuditConfig) UnmarshalJSON(data []byte) error {
-	d := jx.DecodeBytes(data)
-	return s.Decode(d)
-}
-
-// Encode implements json.Marshaler.
-func (s *AuthAWSSTSConfig) Encode(e *jx.Encoder) {
-	e.ObjStart()
-	s.encodeFields(e)
-	e.ObjEnd()
-}
-
-// encodeFields encodes fields.
-func (s *AuthAWSSTSConfig) encodeFields(e *jx.Encoder) {
-	{
-		if s.FallbackRoleArn.Set {
-			e.FieldStart("fallback_role_arn")
-			s.FallbackRoleArn.Encode(e)
-		}
-	}
-	{
-		if s.Region.Set {
-			e.FieldStart("region")
-			s.Region.Encode(e)
-		}
-	}
-	{
-		if s.RoleClaim.Set {
-			e.FieldStart("role_claim")
-			s.RoleClaim.Encode(e)
-		}
-	}
-	{
-		if s.RoleMappings != nil {
-			e.FieldStart("role_mappings")
-			e.ArrStart()
-			for _, elem := range s.RoleMappings {
-				elem.Encode(e)
-			}
-			e.ArrEnd()
-		}
-	}
-	{
-		if s.Service.Set {
-			e.FieldStart("service")
-			s.Service.Encode(e)
-		}
-	}
-	{
-		if s.SessionDuration.Set {
-			e.FieldStart("session_duration")
-			s.SessionDuration.Encode(e)
-		}
-	}
-	{
-		if s.SessionNameClaim.Set {
-			e.FieldStart("session_name_claim")
-			s.SessionNameClaim.Encode(e)
-		}
-	}
-	{
-		if s.SubjectProviderName.Set {
-			e.FieldStart("subject_provider_name")
-			s.SubjectProviderName.Encode(e)
-		}
-	}
-}
-
-var jsonFieldsNameOfAuthAWSSTSConfig = [8]string{
-	0: "fallback_role_arn",
-	1: "region",
-	2: "role_claim",
-	3: "role_mappings",
-	4: "service",
-	5: "session_duration",
-	6: "session_name_claim",
-	7: "subject_provider_name",
-}
-
-// Decode decodes AuthAWSSTSConfig from json.
-func (s *AuthAWSSTSConfig) Decode(d *jx.Decoder) error {
-	if s == nil {
-		return errors.New("invalid: unable to decode AuthAWSSTSConfig to nil")
-	}
-
-	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
-		switch string(k) {
-		case "fallback_role_arn":
-			if err := func() error {
-				s.FallbackRoleArn.Reset()
-				if err := s.FallbackRoleArn.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"fallback_role_arn\"")
-			}
-		case "region":
-			if err := func() error {
-				s.Region.Reset()
-				if err := s.Region.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"region\"")
-			}
-		case "role_claim":
-			if err := func() error {
-				s.RoleClaim.Reset()
-				if err := s.RoleClaim.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"role_claim\"")
-			}
-		case "role_mappings":
-			if err := func() error {
-				s.RoleMappings = make([]AuthAWSSTSRoleMapping, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem AuthAWSSTSRoleMapping
-					if err := elem.Decode(d); err != nil {
-						return err
-					}
-					s.RoleMappings = append(s.RoleMappings, elem)
-					return nil
-				}); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"role_mappings\"")
-			}
-		case "service":
-			if err := func() error {
-				s.Service.Reset()
-				if err := s.Service.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"service\"")
-			}
-		case "session_duration":
-			if err := func() error {
-				s.SessionDuration.Reset()
-				if err := s.SessionDuration.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"session_duration\"")
-			}
-		case "session_name_claim":
-			if err := func() error {
-				s.SessionNameClaim.Reset()
-				if err := s.SessionNameClaim.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"session_name_claim\"")
-			}
-		case "subject_provider_name":
-			if err := func() error {
-				s.SubjectProviderName.Reset()
-				if err := s.SubjectProviderName.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"subject_provider_name\"")
-			}
-		default:
-			return d.Skip()
-		}
-		return nil
-	}); err != nil {
-		return errors.Wrap(err, "decode AuthAWSSTSConfig")
-	}
-
-	return nil
-}
-
-// MarshalJSON implements stdjson.Marshaler.
-func (s *AuthAWSSTSConfig) MarshalJSON() ([]byte, error) {
-	e := jx.Encoder{}
-	s.Encode(&e)
-	return e.Bytes(), nil
-}
-
-// UnmarshalJSON implements stdjson.Unmarshaler.
-func (s *AuthAWSSTSConfig) UnmarshalJSON(data []byte) error {
-	d := jx.DecodeBytes(data)
-	return s.Decode(d)
-}
-
-// Encode implements json.Marshaler.
-func (s *AuthAWSSTSRoleMapping) Encode(e *jx.Encoder) {
-	e.ObjStart()
-	s.encodeFields(e)
-	e.ObjEnd()
-}
-
-// encodeFields encodes fields.
-func (s *AuthAWSSTSRoleMapping) encodeFields(e *jx.Encoder) {
-	{
-		if s.Claim.Set {
-			e.FieldStart("claim")
-			s.Claim.Encode(e)
-		}
-	}
-	{
-		if s.Matcher.Set {
-			e.FieldStart("matcher")
-			s.Matcher.Encode(e)
-		}
-	}
-	{
-		if s.Priority.Set {
-			e.FieldStart("priority")
-			s.Priority.Encode(e)
-		}
-	}
-	{
-		if s.RoleArn.Set {
-			e.FieldStart("role_arn")
-			s.RoleArn.Encode(e)
-		}
-	}
-}
-
-var jsonFieldsNameOfAuthAWSSTSRoleMapping = [4]string{
-	0: "claim",
-	1: "matcher",
-	2: "priority",
-	3: "role_arn",
-}
-
-// Decode decodes AuthAWSSTSRoleMapping from json.
-func (s *AuthAWSSTSRoleMapping) Decode(d *jx.Decoder) error {
-	if s == nil {
-		return errors.New("invalid: unable to decode AuthAWSSTSRoleMapping to nil")
-	}
-
-	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
-		switch string(k) {
-		case "claim":
-			if err := func() error {
-				s.Claim.Reset()
-				if err := s.Claim.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"claim\"")
-			}
-		case "matcher":
-			if err := func() error {
-				s.Matcher.Reset()
-				if err := s.Matcher.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"matcher\"")
-			}
-		case "priority":
-			if err := func() error {
-				s.Priority.Reset()
-				if err := s.Priority.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"priority\"")
-			}
-		case "role_arn":
-			if err := func() error {
-				s.RoleArn.Reset()
-				if err := s.RoleArn.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"role_arn\"")
-			}
-		default:
-			return d.Skip()
-		}
-		return nil
-	}); err != nil {
-		return errors.Wrap(err, "decode AuthAWSSTSRoleMapping")
-	}
-
-	return nil
-}
-
-// MarshalJSON implements stdjson.Marshaler.
-func (s *AuthAWSSTSRoleMapping) MarshalJSON() ([]byte, error) {
-	e := jx.Encoder{}
-	s.Encode(&e)
-	return e.Bytes(), nil
-}
-
-// UnmarshalJSON implements stdjson.Unmarshaler.
-func (s *AuthAWSSTSRoleMapping) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -17492,6 +17492,39 @@ func (s *OidcOptions) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes AWSSTSConfig as json.
+func (o OptAWSSTSConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AWSSTSConfig from json.
+func (o *OptAWSSTSConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAWSSTSConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAWSSTSConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAWSSTSConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes AuditConfig as json.
 func (o OptAuditConfig) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -17521,39 +17554,6 @@ func (s OptAuditConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAuditConfig) UnmarshalJSON(data []byte) error {
-	d := jx.DecodeBytes(data)
-	return s.Decode(d)
-}
-
-// Encode encodes AuthAWSSTSConfig as json.
-func (o OptAuthAWSSTSConfig) Encode(e *jx.Encoder) {
-	if !o.Set {
-		return
-	}
-	o.Value.Encode(e)
-}
-
-// Decode decodes AuthAWSSTSConfig from json.
-func (o *OptAuthAWSSTSConfig) Decode(d *jx.Decoder) error {
-	if o == nil {
-		return errors.New("invalid: unable to decode OptAuthAWSSTSConfig to nil")
-	}
-	o.Set = true
-	if err := o.Value.Decode(d); err != nil {
-		return err
-	}
-	return nil
-}
-
-// MarshalJSON implements stdjson.Marshaler.
-func (s OptAuthAWSSTSConfig) MarshalJSON() ([]byte, error) {
-	e := jx.Encoder{}
-	s.Encode(&e)
-	return e.Bytes(), nil
-}
-
-// UnmarshalJSON implements stdjson.Unmarshaler.
-func (s *OptAuthAWSSTSConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

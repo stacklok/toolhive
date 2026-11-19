@@ -20,7 +20,8 @@ The middleware chain consists of the following components:
 8. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
 9. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
 10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
-11. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
+11. **On-Behalf-Of (OBO) Middleware**: Exchanges the user's token for a backend-scoped Microsoft Entra token and replaces `Authorization` (optional, operator-configured)
+12. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
 ## Dynamic webhook middleware
 
@@ -47,7 +48,7 @@ Multiple webhook definitions of the same type run in configuration order. When m
 
 Configuration files may be written in YAML or JSON. Duration values such as `timeout` accept strings like `5s`, and omitted timeouts default to `10s`.
 
-When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation` field on the principal object, with the same shape as the `delegation` field documented under [Audit Middleware](#9-audit-middleware) below.
+When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation` field on the principal object, with the same shape as the `delegation` field documented under [Audit Middleware](#10-audit-middleware) below.
 
 Example:
 
@@ -1244,7 +1245,8 @@ The middleware chain execution order is critical and controlled by the order in 
 12. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
 13. **Authorization Middleware** (if enabled) - Cedar policy evaluation
 14. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
-15. **Recovery Middleware** (always present) - Catches panics
+15. **On-Behalf-Of (OBO) Middleware** (if an `obo` external auth config is referenced) - Exchanges the user's token at Entra and replaces `Authorization`; spliced in from `AdditionalMiddlewareConfigs`
+16. **Recovery Middleware** (always present) - Catches panics
 
 **Important Ordering Rules**:
 - Audit wraps the whole chain (directly inside the body-size limit): every request that passes the size cap produces an audit event no matter which middleware rejects it. It does not need to run inside auth or the parser — those publish the identity and parsed MCP data back to it via `auth.IdentityHolder` and `mcp.ParsedRequestHolder`.
@@ -1259,9 +1261,10 @@ The middleware chain execution order is critical and controlled by the order in 
 - Mutating webhooks must come before Validating webhooks and before Authorization, so policy evaluation sees the patched request
 - Middleware that rewrites the request body must republish the parsed request via `mcp.RepublishParsedMCPRequest` and refresh `r.ContentLength` — `ParsingMiddleware` deliberately parses only once, so downstream consumers read the refreshed context while outer audit and telemetry wrappers read the refreshed `mcp.ParsedRequestHolder` after the inner chain returns
 - Header Forward executes close to the backend handler (innermost position)
+- OBO comes after Header Forward and before Recovery, so it has the final say on the outbound `Authorization` header; it needs the identity the Authentication Middleware publishes, which is why the operator requires `oidcConfigRef` alongside an `obo` config
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
 - Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. The transparent proxy's `Connection` header check (see [Client `Connection` header](#client-connection-header)) runs before all of them. Their rejections (400/413/403) are the only ones not audited.
-- The list above (steps 1-15) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
+- The list above (steps 1-16) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
 
 ### Client `Connection` header
 

@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/oauth2-proxy/mockoidc"
 	"github.com/stretchr/testify/assert"
@@ -135,6 +137,13 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		res = f.as1Env.requestRefreshToken(t, broker, f.sessionLogin, entryForm(oauthproto.TokenTypeIDJAG, nil))
 		requireError(t, res, "invalid_request", "token_used")
 		assert.True(t, f.as1Env.grant(t, f.session).RevokedAt.IsZero(), "a reused login token leaves the first grant live")
+
+		// A login-shaped token that carries the delegated-access
+		// marker is refused, with a jti no grant has used. Nothing can mint a
+		// marked token over HTTP, so it is signed with AS-1's own key.
+		marked := signMarkedLoginToken(t, f.as1Env.embedded, sessionClaims)
+		res = f.as1Env.requestRefreshToken(t, broker, marked, entryForm(oauthproto.TokenTypeIDJAG, nil))
+		requireError(t, res, "invalid_request", "subject_token_delegated_access")
 	})
 
 	t.Run("child grant", func(t *testing.T) {
@@ -571,6 +580,30 @@ func startFlow(t *testing.T, backend string) *flow {
 	f.as2 = startAS2(t, l2, f.as1, f.sub, authserverrunner.WithAccessTokenType("at+jwt"))
 	require.Equal(t, f.as2Issuer, f.as2.issuer)
 	return f
+}
+
+// signMarkedLoginToken re-signs a copy of a login token's claims, with a fresh
+// jti and the delegated-access marker, using the server's own signing key.
+func signMarkedLoginToken(t *testing.T, embedded *authserverrunner.EmbeddedAuthServer, loginClaims map[string]any) string {
+	t.Helper()
+	signingKey, err := embedded.KeyProvider().SigningKey(t.Context())
+	require.NoError(t, err)
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.SignatureAlgorithm(signingKey.Algorithm), Key: signingKey.Key},
+		(&jose.SignerOptions{}).WithType("at+jwt").WithHeader("kid", signingKey.KeyID),
+	)
+	require.NoError(t, err)
+	claims := maps.Clone(loginClaims)
+	claims["jti"] = "marked-" + time.Now().Format(time.RFC3339Nano)
+	claims[claimnames.DelegatedAccessKey] = true
+	// Preserve json.Number timestamps as JSON numbers when re-signing.
+	payload, err := json.Marshal(claims)
+	require.NoError(t, err)
+	signed, err := signer.Sign(payload)
+	require.NoError(t, err)
+	token, err := signed.CompactSerialize()
+	require.NoError(t, err)
+	return token
 }
 
 // requireRefusal checks status and error only, for refusals whose

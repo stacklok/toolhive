@@ -239,6 +239,13 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"The subject token is invalid or could not be verified."))
 	}
 
+	// A delegated-access token is terminal: refuse it before any other claim
+	// of it is read.
+	if hasDelegatedAccessMarker(validatedClaims) {
+		slog.Warn("Subject token refused", "reason", reasonDelegatedAccessToken, "actor", actorID)
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(hintSubjectDelegatedAccess))
+	}
+
 	// Resolve actor identity: explicit actor_token or authenticated client.
 	actorSub, err := h.resolveActorIdentity(ctx, params, client)
 	if err != nil {
@@ -300,6 +307,29 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	)
 
 	return nil
+}
+
+// Hints for a refused delegated-access token. RFC 8693 section 2.2.2 requires
+// invalid_request for a subject or actor token that policy makes unacceptable.
+const (
+	hintSubjectDelegatedAccess = "The subject token is a delegated-access token and cannot be exchanged."
+	hintActorDelegatedAccess   = "The actor token is a delegated-access token and cannot be exchanged."
+)
+
+// hasDelegatedAccessMarker reports whether a validated token carries the
+// delegated-access marker. Only presence counts; the value is never read. The
+// check does not depend on the issuer. On the RFC 8693 subject_token path, which
+// accepts trusted external issuers, an external token carrying the claim is
+// refused too; the other call sites validate against this server's own keys only.
+func hasDelegatedAccessMarker(claims *ValidatedClaims) bool {
+	if claims == nil {
+		return false
+	}
+	// Claims is the full decoded set and Extra a subset of it. Both are checked
+	// so hand-built ValidatedClaims and a later change to assignClaim stay safe.
+	_, inClaims := claims.Claims[claimnames.DelegatedAccessKey]
+	_, inExtra := claims.Extra[claimnames.DelegatedAccessKey]
+	return inClaims || inExtra
 }
 
 // unsupportedTokenType is the invalid_request error for a token-type parameter
@@ -459,6 +489,12 @@ func (h *Handler) resolveActorIdentity(
 			slog.Debug("Actor token validation failed", "error", fmt.Errorf("actor token: %w", err))
 			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token is invalid or could not be verified."))
+		}
+		// A delegated-access token is terminal, as an actor token too. This
+		// runs before any other claim of the token is used.
+		if hasDelegatedAccessMarker(actorClaims) {
+			slog.Warn("Actor token refused", "reason", reasonDelegatedAccessToken, "actor", client.GetID())
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(hintActorDelegatedAccess))
 		}
 		// Client-ID binding: actor_token's client_id claim MUST match the
 		// authenticated client ID. This prevents replay attacks where a leaked

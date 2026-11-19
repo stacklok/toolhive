@@ -26,11 +26,31 @@ const TokenSessionIDKey = "tsid"
 // to decide whether request-token claims may drive policy. The RFC 8693
 // delegation grant needs no marker: its "act" claim already says so.
 //
-// The name is collision-resistant per RFC 7519 Section 4.3, so a JWT from
+// The name is collision-resistant per RFC 7519 Section 4.2, so a JWT from
 // another issuer the deployment trusts cannot assert it by accident. It is a
 // private claim; RFC 9068 Section 2.2.3 permits additional claims on an
 // access token. The issuing and consuming sides must agree on this spelling.
 const NoUpstreamSessionKey = "https://toolhive.dev/no_upstream_session"
+
+// DelegatedAccessKey marks an access token this authorization server issued
+// through an approved delegated redemption. A resource server that holds the
+// user's stored upstream credentials may read them for such a token and for no
+// other token without an upstream session.
+//
+// Consumers check that the claim is present and never read its value; the
+// value may name the issuer for diagnostics. Presence is honoured only on a
+// token the embedded authorization server issued and the consumer validated
+// against that server's own keys. The same claim on a token from any other
+// issuer means nothing.
+//
+// The marker is terminal. A marked token is refused as the subject or actor
+// token of every exchange, so it cannot be turned into a token that lives
+// longer or names another party. Trust is never inferred from the shape of
+// "sub": a synthetic subject is UUID-shaped like a real one.
+//
+// The name is collision-resistant per RFC 7519 Section 4.2. The issuing and
+// consuming sides must agree on this spelling.
+const DelegatedAccessKey = "https://toolhive.dev/claims/delegated_access"
 
 // ExternalIssuerKey is the JWT claim key recording the external issuer of an
 // externally-asserted subject token, so the fact that an external issuer was

@@ -8,7 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/ory/fosite"
+	"github.com/stretchr/testify/require"
+
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // ValidateActorWithLimiterForTest exposes validateActor to the external test package, which
@@ -88,4 +93,59 @@ func (s *grantsBySignature) GetExchangeGrant(_ context.Context, signature string
 		return nil, storage.ErrNotFound
 	}
 	return &g, nil
+}
+
+// ActorTokenOptions shapes the actor token ActorTokenIDJAGRequestForTest
+// presents. Without options the token is a valid unmarked token signed with the
+// handler's own key.
+type ActorTokenOptions struct {
+	Marked     bool     // adds the delegated-access marker
+	Expired    bool     // gives the token an expiry in the past
+	Audience   []string // replaces the audience when non-empty
+	ForeignKey bool     // signs with a key the handler does not trust
+	Issuer     string   // replaces the issuer when non-empty (default testIssuer)
+}
+
+// ActorTokenIDJAGRequestForTest returns an ID-JAG handler whose client policy
+// uses v as its actor validator, and a request that presents an actor token
+// shaped by opts.
+func ActorTokenIDJAGRequestForTest(
+	t *testing.T, v ActorTokenValidator, opts ActorTokenOptions,
+) (*RefreshTokenHandler, *fosite.AccessRequest) {
+	t.Helper()
+	tj := newTestJWKS(t)
+	store := idJAGStore(idJAGRecord("ok", testRefreshClient, "", time.Now().Add(time.Hour), oauthproto.TokenTypeIDJAG))
+	h := idJAGHandler(t, store)
+	self, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+	h.selfValidator = self
+	policy := h.clientPolicies[testRefreshClient]
+	policy.ActorProfile = &ActorProfile{
+		Name: "test", ActorTokenType: oauthproto.TokenTypeJWT,
+		ActorValidatorRegistration: ActorValidatorRegistration{Validator: v, ActIssuer: "https://agents.example.com"},
+	}
+	h.clientPolicies[testRefreshClient] = policy
+
+	claims := validClaims()
+	if opts.Expired {
+		claims.Expiry = jwt.NewNumericDate(time.Now().Add(-time.Hour))
+	}
+	if len(opts.Audience) > 0 {
+		claims.Audience = opts.Audience
+	}
+	if opts.Issuer != "" {
+		claims.Issuer = opts.Issuer
+	}
+	extra := validExtraClaims()
+	if opts.Marked {
+		extra = markedExtra()
+	}
+	signer := tj
+	if opts.ForeignKey {
+		signer = newTestJWKS(t)
+	}
+	req := idJAGRequest("x.ok")
+	req.Form.Set("actor_token", signer.signToken(t, claims, extra))
+	req.Form.Set("actor_token_type", oauthproto.TokenTypeJWT)
+	return h, req
 }

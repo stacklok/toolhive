@@ -205,10 +205,6 @@ func TestAssertionValidationRefusal(t *testing.T) {
 		wantDebug  string
 	}{
 		{
-			name: "issuer keys unavailable", err: errKeysDown,
-			wantStatus: http.StatusServiceUnavailable, wantCode: "temporarily_unavailable", wantDebug: "connection refused",
-		},
-		{
 			name: "no default audiences", err: errDefaultAudiencesEmpty,
 			wantStatus: http.StatusInternalServerError, wantCode: "server_error", wantDebug: errDefaultAudiencesEmpty.Error(),
 		},
@@ -243,13 +239,20 @@ func TestAssertionValidationRefusal(t *testing.T) {
 	}
 }
 
-func TestIssuerUnavailable_DescriptionKeepsIssuerOut(t *testing.T) {
+func TestIssuerUnavailable_Refusal(t *testing.T) {
 	t.Parallel()
 
-	err := issuerUnavailable(fmt.Errorf("%w: failed to fetch JWKS for issuer %s", errIssuerKeysUnavailable, refusalIssuer))
+	cause := fmt.Errorf("%w: failed to fetch JWKS for issuer %s", errIssuerKeysUnavailable, refusalIssuer)
+	err := assertionValidationRefusal(cause, "A hint.")
 
 	var rfcErr *fosite.RFC6749Error
 	require.True(t, errors.As(err, &rfcErr))
+	assert.Equal(t, "temporarily_unavailable", rfcErr.ErrorField)
+	assert.Equal(t, http.StatusServiceUnavailable, rfcErr.CodeField)
 	assert.Equal(t, reasonIssuerUnavailable, rfcErr.GetDescription())
-	assert.Contains(t, rfcErr.DebugField, refusalIssuer)
+	// The cause stays wrapped for errors.Is but is not copied into the debug
+	// field, so a refused request does not repeat the issuer's error text.
+	assert.ErrorIs(t, err, errIssuerKeysUnavailable)
+	assert.Empty(t, rfcErr.DebugField)
+	assert.NotContains(t, rfcErr.GetDescription(), refusalIssuer)
 }

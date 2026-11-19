@@ -62,12 +62,12 @@ func TestMultiIssuerTokenValidator_IssuerKeysUnavailableSentinel(t *testing.T) {
 	tests := []struct {
 		name         string
 		outage       jwksOutage
-		signWithOwn  bool
+		signerKID    string // empty: sign with the served key
 		wantSentinel bool
 	}{
 		{name: "fetch failure", outage: jwksDown, wantSentinel: true},
 		{name: "empty key set", outage: jwksEmpty, wantSentinel: true},
-		{name: "unknown kid with working keys", outage: jwksServing, signWithOwn: true, wantSentinel: false},
+		{name: "unknown kid with working keys", outage: jwksServing, signerKID: "unknown-kid", wantSentinel: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,8 +75,8 @@ func TestMultiIssuerTokenValidator_IssuerKeysUnavailableSentinel(t *testing.T) {
 			served := newTestJWKS(t)
 			validator := newUnavailabilityValidator(t, tt.outage, served)
 			signer := served
-			if tt.signWithOwn {
-				signer = newTestJWKS(t)
+			if tt.signerKID != "" {
+				signer = newTestJWKSWithKID(t, tt.signerKID)
 			}
 			raw := signer.signTokenWithType(t, "", jwtBearerExternalClaims(), nil)
 

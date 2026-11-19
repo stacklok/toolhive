@@ -23,13 +23,16 @@ import (
 // request/response flow at a level determined by the error's HTTP status:
 // Debug for 4xx (the only class an unauthenticated caller can trigger, so
 // logging every one at Error would let a caller flood the log stream) and
-// Error for 5xx (a storage outage or signing-key failure, which must not be
-// silent at default log level). RFC6749Error.Error() returns only the error
-// code, so the diagnostic fields are read individually.
+// Error for 5xx (a storage outage or server failure, which must not be
+// silent at default log level). The exception is the 503 issuer-unavailable
+// refusal: an unauthenticated caller can trigger it on every request while an
+// issuer is down, so it logs at Debug here, and the validator logs the cause
+// once per backoff window at Error. RFC6749Error.Error() returns only the
+// error code, so the diagnostic fields are read individually.
 func logAccessError(ctx context.Context, msg string, err error) {
 	rfcErr := fosite.ErrorToRFC6749Error(err)
 	lvl := slog.LevelDebug
-	if rfcErr.CodeField >= http.StatusInternalServerError {
+	if rfcErr.CodeField >= http.StatusInternalServerError && !isIssuerUnavailable(rfcErr) {
 		lvl = slog.LevelError
 	}
 	//nolint:gosec // G706: error is request-derived (form parsing, client auth);
@@ -39,6 +42,15 @@ func logAccessError(ctx context.Context, msg string, err error) {
 		"debug", rfcErr.DebugField,
 		"status", rfcErr.CodeField,
 	)
+}
+
+// isIssuerUnavailable reports whether rfcErr is the 503 issuer-unavailable
+// refusal the redemption grants return when an issuer's signing keys cannot
+// be obtained. No other token-endpoint path returns temporarily_unavailable,
+// so matching on the code and status is enough here.
+func isIssuerUnavailable(rfcErr *fosite.RFC6749Error) bool {
+	return rfcErr.ErrorField == fosite.ErrTemporarilyUnavailable.ErrorField &&
+		rfcErr.CodeField == http.StatusServiceUnavailable
 }
 
 // TokenHandler handles POST /oauth/token requests.

@@ -1453,8 +1453,13 @@ retrying `invalid_assertion` refusals and the two `access_denied` refusals.
 `issuer_unavailable` is the retryable one: the assertion was never judged, because
 this server could not reach the issuer's signing keys, so the same ID-JAG may
 succeed once the issuer is reachable again. It is a 503 with no `Retry-After`
-header, and its description never names the issuer. It only covers failures
-before a usable key set exists. When keys are in hand and the token's `kid` is
+header, and its description never names the issuer. The response body carries
+no cause text. The token endpoint logs each refused request at Debug, since any
+caller can trigger one. The cause is logged at Error once per 30-second backoff
+window per issuer, naming the issuer, when the server attempts a fetch and it
+fails. That line also covers discovery failures and an invalid or mismatched
+discovery document or `jwks_uri`, which retrying does not fix. It only covers
+failures before a usable key set exists. When keys are in hand and the token's `kid` is
 not among them, even after the server refreshes the keys, the refusal stays
 `invalid_assertion`, so a freshly rotated `kid` that arrives while the issuer's
 key endpoint is down gets `invalid_assertion` until the keys are reachable.
@@ -1462,10 +1467,15 @@ key endpoint is down gets `invalid_assertion` until the keys are reachable.
 grant keeps its codes for the two `subject_bindings` refusals, because it is
 outside the ID-JAG profile. The RFC 8693 token-exchange path is unchanged and
 still reports an unreachable issuer as `invalid_request`. Other refusals
-(`invalid_request`, `invalid_client`, `unauthorized_client`, `server_error`) are
-unchanged, and so is `invalid_target` for a `resource` the client may not target
-on the plain JWT-bearer grant and on other grant types. On the ID-JAG grant that
-refusal is now `access_denied` with `resource_denied`, as the table shows.
+(`invalid_request`, `invalid_client`, `unauthorized_client`) are unchanged. On the
+plain JWT-bearer grant, the `server_error` row in the table (the request ended,
+or no default audiences are configured) was `invalid_grant` before this change. `invalid_target` for a `resource` the client
+may not target is unchanged on the plain JWT-bearer grant and on other grant
+types. On the ID-JAG grant that refusal is now `access_denied` with
+`resource_denied`, as the table shows, whether the client sent the `resource`
+parameter or the resource came from the ID-JAG's `resource` claim. Draft -06
+section 4.4.1 requires `access_denied` when none of the requested resources is
+acceptable.
 
 ### Bound ID-JAG assertions
 

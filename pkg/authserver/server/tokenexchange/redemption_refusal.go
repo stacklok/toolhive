@@ -54,11 +54,14 @@ func invalidAssertion(hint string) error {
 
 // issuerUnavailable is the refusal for an assertion whose issuer's signing
 // keys could not be obtained: temporarily_unavailable with HTTP 503 and the
-// bare issuer_unavailable description, which never names the issuer.
+// bare issuer_unavailable description, which never names the issuer. The cause
+// is wrapped for errors.Is but not copied into the debug field: the validator
+// logs it once per backoff window, and a per-request copy would repeat it on
+// every refused request.
 func issuerUnavailable(cause error) error {
 	refusal := redemptionRefusal(fosite.ErrTemporarilyUnavailable.ErrorField, reasonIssuerUnavailable, "")
 	refusal.CodeField = fosite.ErrTemporarilyUnavailable.CodeField
-	return errorsx.WithStack(refusal.WithWrap(cause).WithDebug(cause.Error()))
+	return errorsx.WithStack(refusal.WithWrap(cause))
 }
 
 // assertionValidationRefusal maps a failure of assertion validation to its

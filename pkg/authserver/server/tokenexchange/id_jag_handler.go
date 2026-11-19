@@ -206,8 +206,10 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err := server.ValidateIDJAGClientAudience(
 		resource, requester.GetClient(), h.core.config.GetAudienceStrategy(ctx)); err != nil {
 		if errors.Is(err, server.ErrInvalidTarget) {
-			// A valid ID-JAG the client's audiences do not permit. The shared
-			// hint quotes the resource, which may come from the assertion.
+			// A valid ID-JAG whose resource this client may not target. The
+			// resource may come from the request or from the assertion's
+			// resource claim. Draft -06 section 4.4.1 requires access_denied
+			// here, and the description does not echo the resource.
 			return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonResourceDenied, ""))
 		}
 		return err

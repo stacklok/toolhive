@@ -925,6 +925,12 @@ func (v *MultiIssuerTokenValidator) ensureRegistered(ctx context.Context, issuer
 	}
 
 	if err := v.registerOrRefresh(ctx, issuerConfig); err != nil {
+		// This is the only line logged for an issuer outage. Replayed errors
+		// inside the backoff window return above without reaching it, so an
+		// issuer logs at most one line per jwksFetchFailureBackoff. The
+		// per-request refusal is logged at Debug by the token endpoint.
+		slog.Error("issuer signing keys unavailable; assertions from this issuer are refused until the next fetch attempt",
+			"issuer", issuerConfig.IssuerURL, "error", err, "retry_after", jwksFetchFailureBackoff)
 		issuerConfig.fetchErr = err
 		issuerConfig.fetchFailedAt = time.Now()
 		return err

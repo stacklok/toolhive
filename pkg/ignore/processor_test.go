@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewProcessor(t *testing.T) {
@@ -383,6 +385,57 @@ func TestGetOverlayMounts(t *testing.T) {
 	// Clean up processor artifacts
 	if err := processor.Cleanup(); err != nil {
 		t.Errorf("Failed to cleanup processor: %v", err)
+	}
+}
+
+func TestGetOverlayMountsConfinedToMount(t *testing.T) {
+	t.Parallel()
+
+	// Layout:
+	//   root/ws/sub/secret        inside the mount
+	//   root/ws/alias -> sub      symlink that stays inside the mount
+	//   root/ws/link  -> outside  symlink that leaves the mount
+	//   root/outside/secret       outside the mount
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	outside := filepath.Join(root, "outside")
+	require.NoError(t, os.MkdirAll(filepath.Join(ws, "sub"), 0o750))
+	require.NoError(t, os.MkdirAll(outside, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "sub", "secret"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), nil, 0o600))
+	require.NoError(t, os.Symlink("sub", filepath.Join(ws, "alias")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(ws, "link")))
+
+	testCases := []struct {
+		name     string
+		pattern  string
+		expected []string
+	}{
+		{name: "path inside the mount", pattern: "sub/secret", expected: []string{"/app/sub/secret"}},
+		{name: "symlink inside the mount maps to its target", pattern: "alias/secret", expected: []string{"/app/sub/secret"}},
+		{name: "parent directory", pattern: "..", expected: nil},
+		{name: "sibling directory", pattern: "../outside", expected: nil},
+		{name: "file beyond the mount", pattern: "../outside/secret", expected: nil},
+		{name: "directory pattern beyond the mount", pattern: "../outside/", expected: nil},
+		{name: "glob beyond the mount", pattern: "../out*", expected: nil},
+		{name: "deep traversal clamped at root", pattern: "../../../../../../../../../../../../" + outside, expected: nil},
+		{name: "symlink leaving the mount", pattern: "link", expected: nil},
+		{name: "path through a symlink leaving the mount", pattern: "link/secret", expected: nil},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			processor := NewProcessor(&Config{})
+			t.Cleanup(func() { _ = processor.Cleanup() })
+			processor.LocalPatterns = []string{tc.pattern}
+
+			var got []string
+			for _, m := range processor.GetOverlayMounts(ws, "/app") {
+				got = append(got, m.ContainerPath)
+			}
+			require.Equal(t, tc.expected, got)
+		})
 	}
 }
 

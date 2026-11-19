@@ -198,15 +198,20 @@ func (p *Processor) processPattern(bindMount, containerPath, pattern string, ove
 func (p *Processor) createOverlayMount(
 	matchPath, bindMount, containerPath, pattern string, overlaySet map[string]bool,
 ) *OverlayMount {
-	// Calculate relative path from bind mount to matched path
-	relPath, err := filepath.Rel(bindMount, matchPath)
-	if err != nil {
-		slog.Debug("Failed to calculate relative path", "matchPath", matchPath, "error", err)
+	relPath, ok := confinedRelPath(bindMount, matchPath)
+	if !ok {
+		slog.Warn("Skipping ignore pattern match outside the mounted directory",
+			"pattern", pattern, "bindMount", bindMount, "matchPath", matchPath)
 		return nil
 	}
 
 	// Convert to container path
 	containerOverlayPath := filepath.Join(containerPath, relPath)
+	if !isWithinDir(containerPath, containerOverlayPath) {
+		slog.Warn("Skipping ignore overlay outside the container mount path",
+			"pattern", pattern, "containerPath", containerPath, "overlayPath", containerOverlayPath)
+		return nil
+	}
 
 	// Skip if we already have this overlay
 	if overlaySet[containerOverlayPath] {
@@ -252,6 +257,41 @@ func (p *Processor) createOverlayMount(
 		HostPath:      emptyFilePath,
 		Type:          "bind",
 	}
+}
+
+// confinedRelPath returns the path of matchPath relative to bindMount after
+// resolving symlinks on both, and reports whether the match lies inside
+// bindMount. Patterns come from a .thvignore inside the mounted directory, so
+// its author must not be able to reach beyond it with ".." segments or with a
+// symlink. The resolved path is used because the container runtime follows
+// symlinks in a mount destination, so a lexical path through a symlink could
+// land outside the mount target in the container.
+func confinedRelPath(bindMount, matchPath string) (string, bool) {
+	realRoot, err := filepath.EvalSymlinks(bindMount)
+	if err != nil {
+		return "", false
+	}
+	realMatch, err := filepath.EvalSymlinks(matchPath)
+	if err != nil {
+		return "", false
+	}
+	if !isWithinDir(realRoot, realMatch) {
+		return "", false
+	}
+	relPath, err := filepath.Rel(realRoot, realMatch)
+	if err != nil {
+		return "", false
+	}
+	return relPath, true
+}
+
+// isWithinDir reports whether target is dir or a path below it.
+func isWithinDir(dir, target string) bool {
+	rel, err := filepath.Rel(dir, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // printOverlays prints resolved overlays if requested

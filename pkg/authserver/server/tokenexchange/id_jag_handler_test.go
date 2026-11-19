@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -19,7 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
-	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -186,22 +186,21 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 		name           string
 		mutateClaims   func(*ValidatedClaims)
 		requestClient  string
-		wantErrIs      error
-		wantErrContain string
+		wantErrIs      error  // checked alongside wantErrContain
+		wantErrContain string // substring of the reason, for refusals without a reason code
+		wantDesc       string // exact error_description of an invalid_grant refusal
 	}{
 		{
-			name:           "missing jti is rejected",
-			mutateClaims:   func(c *ValidatedClaims) { c.JWTID = "" },
-			requestClient:  idJAGTestClientID,
-			wantErrIs:      fosite.ErrInvalidGrant,
-			wantErrContain: "'jti'",
+			name:          "missing jti is rejected",
+			mutateClaims:  func(c *ValidatedClaims) { c.JWTID = "" },
+			requestClient: idJAGTestClientID,
+			wantDesc:      "invalid_assertion: The ID-JAG assertion must carry a 'jti' claim.",
 		},
 		{
-			name:           "missing client_id claim is rejected",
-			mutateClaims:   func(c *ValidatedClaims) { c.ClientID = "" },
-			requestClient:  idJAGTestClientID,
-			wantErrIs:      fosite.ErrInvalidGrant,
-			wantErrContain: "'client_id'",
+			name:          "missing client_id claim is rejected",
+			mutateClaims:  func(c *ValidatedClaims) { c.ClientID = "" },
+			requestClient: idJAGTestClientID,
+			wantDesc:      "invalid_assertion: The ID-JAG assertion must carry a 'client_id' claim.",
 		},
 		{
 			// fosite initializes an unauthenticated request's client to an
@@ -213,11 +212,10 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 			wantErrContain: "authenticated or identified client",
 		},
 		{
-			name:           "client mismatch is rejected",
-			mutateClaims:   func(*ValidatedClaims) {},
-			requestClient:  "some-other-client",
-			wantErrIs:      fosite.ErrInvalidGrant,
-			wantErrContain: "not issued to the requesting client",
+			name:          "client mismatch is rejected",
+			mutateClaims:  func(*ValidatedClaims) {},
+			requestClient: "some-other-client",
+			wantDesc:      "invalid_assertion: The ID-JAG assertion was not issued to the requesting client.",
 		},
 	}
 	for _, tt := range tests {
@@ -231,11 +229,15 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 			req := newIDJAGRequest(t, tj, tt.requestClient)
 
 			err := h.HandleTokenEndpointRequest(context.Background(), req)
-			require.Error(t, err)
-			assert.ErrorIs(t, err, tt.wantErrIs)
-			var rfcErr *fosite.RFC6749Error
-			require.True(t, errors.As(err, &rfcErr))
-			assert.Contains(t, rfcErr.Reason(), tt.wantErrContain)
+			if tt.wantDesc != "" {
+				requireRefusal(t, err, "invalid_grant", tt.wantDesc)
+			}
+			if tt.wantErrContain != "" {
+				assert.ErrorIs(t, err, tt.wantErrIs)
+				var rfcErr *fosite.RFC6749Error
+				require.True(t, errors.As(err, &rfcErr))
+				assert.Contains(t, rfcErr.Reason(), tt.wantErrContain)
+			}
 			// None of these rejections may consume the assertion: they are all
 			// caller-fixable, and a consumed jti would turn a retry with the
 			// right client into a replay rejection.
@@ -255,7 +257,8 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 		strategy   fosite.AudienceMatchingStrategy // nil keeps the default
 		dcrIssued  bool
 		client     fosite.Client // overrides the client built from grantTypes and audience
-		wantErrIs  error
+		wantErrIs  error         // for refusals without a reason code
+		wantDesc   string        // exact error_description of an access_denied refusal
 	}{
 		{
 			name:       "gated client with jwt-bearer is allowed",
@@ -279,12 +282,12 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 			name:       "resource outside the client audiences is refused",
 			grantTypes: []string{oauthproto.GrantTypeJWTBearer},
 			audience:   []string{"https://other.example.com"},
-			wantErrIs:  server.ErrInvalidTarget,
+			wantDesc:   "resource_denied",
 		},
 		{
 			name:       "client without audiences is refused",
 			grantTypes: []string{oauthproto.GrantTypeJWTBearer},
-			wantErrIs:  server.ErrInvalidTarget,
+			wantDesc:   "resource_denied",
 		},
 		{
 			// Config validation, not the handler, forbids empty audiences with
@@ -300,14 +303,14 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 				require.NoError(t, err)
 				return c
 			}(),
-			wantErrIs: server.ErrInvalidTarget,
+			wantDesc: "resource_denied",
 		},
 		{
 			name:       "configured audience strategy is applied",
 			grantTypes: []string{oauthproto.GrantTypeJWTBearer},
 			audience:   []string{idJAGTestResource},
 			strategy:   func(_, _ []string) error { return fosite.ErrInvalidRequest },
-			wantErrIs:  server.ErrInvalidTarget,
+			wantDesc:   "resource_denied",
 		},
 		{
 			name:       "DCR client with a stale audience copy is not narrowed",
@@ -339,11 +342,15 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 			req.Client = client
 
 			err := h.HandleTokenEndpointRequest(t.Context(), req)
-			if tt.wantErrIs == nil {
+			if tt.wantErrIs == nil && tt.wantDesc == "" {
 				require.NoError(t, err)
 				return
 			}
-			assert.ErrorIs(t, err, tt.wantErrIs)
+			if tt.wantDesc != "" {
+				requireRefusal(t, err, "access_denied", tt.wantDesc)
+			} else {
+				assert.ErrorIs(t, err, tt.wantErrIs)
+			}
 			assert.Empty(t, consumer.key, "a refused client must not consume the assertion")
 		})
 	}
@@ -406,8 +413,12 @@ func TestIDJAGHandler_ConsumeAssertionJWTErrors(t *testing.T) {
 		name        string
 		consumerErr error
 		wantErrIs   error
+		wantDesc    string
 	}{
-		{name: "replay is rejected as invalid_grant", consumerErr: fosite.ErrJTIKnown, wantErrIs: fosite.ErrInvalidGrant},
+		{
+			name: "replay is rejected as invalid_grant", consumerErr: fosite.ErrJTIKnown, wantErrIs: fosite.ErrInvalidGrant,
+			wantDesc: "invalid_assertion: The JWT bearer assertion has already been used.",
+		},
 		{name: "storage failure surfaces as a server error", consumerErr: errors.New("redis: connection refused"), wantErrIs: fosite.ErrServerError},
 	}
 	for _, tt := range tests {
@@ -422,6 +433,9 @@ func TestIDJAGHandler_ConsumeAssertionJWTErrors(t *testing.T) {
 			err := h.HandleTokenEndpointRequest(context.Background(), req)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, tt.wantErrIs)
+			if tt.wantDesc != "" {
+				requireRefusal(t, err, "invalid_grant", tt.wantDesc)
+			}
 		})
 	}
 }
@@ -465,8 +479,7 @@ func TestIDJAGHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
 	delete(req.Form, "resource")
 
 	err := h.HandleTokenEndpointRequest(context.Background(), req)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	requireRefusal(t, err, "invalid_grant", "invalid_assertion: The JWT bearer assertion exceeds the configured maximum age.")
 	assert.NotErrorIs(t, err, fosite.ErrInvalidRequest)
 }
 
@@ -751,6 +764,7 @@ func TestIDJAGHandler_RefusedRedemptionLogsNoDeparture(t *testing.T) {
 		name         string
 		prepare      func(claims *ValidatedClaims, consumer *recordingAssertionConsumer, req *fosite.AccessRequest)
 		wantErr      error
+		wantDesc     string // exact error_description, when set
 		wantConsumed bool
 	}{
 		{
@@ -758,7 +772,7 @@ func TestIDJAGHandler_RefusedRedemptionLogsNoDeparture(t *testing.T) {
 			prepare: func(_ *ValidatedClaims, _ *recordingAssertionConsumer, req *fosite.AccessRequest) {
 				req.Client = &fosite.DefaultClient{ID: idJAGTestClientID, Audience: []string{idJAGTestOtherAud}}
 			},
-			wantErr: server.ErrInvalidTarget,
+			wantDesc: "resource_denied",
 		},
 		{
 			name: "replayed assertion",
@@ -789,7 +803,11 @@ func TestIDJAGHandler_RefusedRedemptionLogsNoDeparture(t *testing.T) {
 
 			err := h.HandleTokenEndpointRequest(t.Context(), req)
 
-			require.ErrorIs(t, err, tt.wantErr)
+			if tt.wantDesc != "" {
+				requireRefusal(t, err, "access_denied", tt.wantDesc)
+			} else {
+				require.ErrorIs(t, err, tt.wantErr)
+			}
 			assert.Empty(t, out.String())
 			if tt.wantConsumed {
 				assert.Equal(t, claims.JWTID, consumer.key, "the lifetime check must run after the assertion is consumed")
@@ -859,6 +877,8 @@ func TestIDJAGHandler_WarnOnceKeyIsIssuerAndFinding(t *testing.T) {
 
 const requestedResourceHint = "Exactly one resource parameter is required for the JWT-bearer grant."
 
+const idJAGClaimResourceDesc = "invalid_assertion: The ID-JAG assertion resource claim is not a valid resource URI."
+
 func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 	t.Parallel()
 
@@ -870,7 +890,7 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 		clientAud    []string
 		wantErrIs    error
 		wantCode     string // OAuth error code, for errors that are not sentinel values
-		wantInvalid  string // input whose ValidateAudienceURI error is expected
+		wantDesc     string // exact error_description, when set
 		wantAudience string
 	}{
 		{
@@ -911,18 +931,27 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 			name:      "claim outside the subject binding is refused as a requested one is",
 			claim:     unboundResource,
 			clientAud: []string{unboundResource},
-			wantCode:  "invalid_target",
+			wantCode:  "access_denied",
+			wantDesc:  "resource_denied",
 		},
 		{
 			name:      "claim outside the client audiences is refused",
 			claim:     idJAGTestResource,
 			clientAud: []string{idJAGTestOtherAud},
-			wantErrIs: server.ErrInvalidTarget,
+			wantCode:  "access_denied",
+			wantDesc:  "resource_denied",
 		},
 		{
-			name:        "claim that is not a valid URI is refused as a requested one is",
-			claim:       "not-a-uri",
-			wantInvalid: "not-a-uri",
+			name:     "claim that is not an absolute URI is refused without quoting it",
+			claim:    "not-a-uri",
+			wantCode: "invalid_grant",
+			wantDesc: idJAGClaimResourceDesc,
+		},
+		{
+			name:     "claim that does not parse as a URI is refused without quoting it",
+			claim:    "https://secret-claim-value.example.com/%zz",
+			wantCode: "invalid_grant",
+			wantDesc: idJAGClaimResourceDesc,
 		},
 	}
 	for _, tt := range tests {
@@ -947,7 +976,7 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 			}
 
 			err := h.HandleTokenEndpointRequest(t.Context(), req)
-			if tt.wantErrIs == nil && tt.wantCode == "" && tt.wantInvalid == "" {
+			if tt.wantErrIs == nil && tt.wantCode == "" {
 				require.NoError(t, err)
 				assert.Equal(t, fosite.Arguments{tt.wantAudience}, req.GetGrantedAudience())
 				assert.NotEmpty(t, consumer.key, "an accepted redemption consumes the assertion")
@@ -956,15 +985,14 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 			}
 			require.Error(t, err)
 			switch {
-			case tt.wantInvalid != "":
-				assert.EqualError(t, err, server.ValidateAudienceURI(tt.wantInvalid).Error())
-				var oauthErr *fosite.RFC6749Error
-				require.True(t, errors.As(err, &oauthErr))
-				assert.Equal(t, "invalid_target", oauthErr.ErrorField)
 			case tt.wantCode != "":
 				var oauthErr *fosite.RFC6749Error
 				require.True(t, errors.As(err, &oauthErr))
 				assert.Equal(t, tt.wantCode, oauthErr.ErrorField)
+				assert.Equal(t, http.StatusBadRequest, oauthErr.CodeField)
+				if tt.wantDesc != "" {
+					assert.Equal(t, tt.wantDesc, oauthErr.GetDescription())
+				}
 			default:
 				assert.ErrorIs(t, err, tt.wantErrIs)
 				if errors.Is(tt.wantErrIs, fosite.ErrInvalidRequest) {

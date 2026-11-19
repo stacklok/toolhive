@@ -1422,6 +1422,65 @@ spec:
   `SubjectBindings`, independent of whatever `allowedActors`/`allowMayAct` that
   same issuer may also have configured for delegation.
 
+### Redemption refusal reasons
+
+Both assertion forms refuse with an `error_description` that starts with a
+reason code, so a client can act on the refusal without parsing prose. This
+holds for every refusal that carries a reason; the plain grant's two
+`subject_bindings` refusals do not (see the table). The description matches
+`^[a-z_]+(: .*)?$`: the reason, optionally followed by `: ` and a fixed hint. The hint is printable ASCII without `"` or `\` and never
+contains a claim value (`sub`, `jti`, `client_id`, issuer). The handlers build
+the error as a literal (`redemptionRefusal`) because fosite's `WithHint` puts
+its own default text before the reason.
+
+| Refusal | Plain JWT-bearer | ID-JAG |
+| --- | --- | --- |
+| Not a compact signed JWT, bad `typ` or algorithm (an assertion with such a `typ` is routed to the plain handler, never the ID-JAG one) | 400 `invalid_grant`, `invalid_assertion: <hint>` | n/a |
+| Signature or claim validation fails, issuer not enabled, assertion whose issued lifetime (`exp` − `iat`) exceeds `max_assertion_age`, replayed or expired | 400 `invalid_grant`, `invalid_assertion: <hint>` | same code and reason; the hint names an ID-JAG for the first two |
+| ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| ID-JAG whose single `resource` claim is not a valid resource URI, and the request has no `resource` parameter | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is not a valid resource URI.` |
+| Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
+| Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
+| Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
+| Issuer's signing keys could not be obtained (key fetch or cache lookup fails, or the key set is empty or too large) | 503 `temporarily_unavailable`, `issuer_unavailable` | same |
+| The request ended (client disconnect or deadline) while the keys were being fetched, or the server has no default audiences configured | 500 `server_error`, generic text | same |
+
+`invalid_grant` means the assertion failed a validation rule, and a re-issued
+one may succeed. `access_denied` means the ID-JAG is valid but this server's
+allowlist does not permit it, and a re-issued one will not help. A client that
+retries a reasonless `invalid_grant` once with a new ID-JAG therefore stops
+retrying `invalid_assertion` refusals and the two `access_denied` refusals.
+`issuer_unavailable` is the retryable one: the assertion was never judged, because
+this server could not reach the issuer's signing keys, so the same ID-JAG may
+succeed once the issuer is reachable again. It is a 503 with no `Retry-After`
+header, and its description never names the issuer. The response body carries
+no cause text. The token endpoint logs each refused request at Debug, since any
+caller can trigger one. The cause is logged at Error once per 30-second backoff
+window per issuer, naming the issuer, when the server attempts a fetch and it
+fails. That line also covers discovery failures and an invalid or mismatched
+discovery document or `jwks_uri`, which retrying does not fix. It only covers
+failures before a usable key set exists. A fetched key set that the server cannot
+use (an empty key set, a cache lookup failure, only unsupported keys, or too many
+keys) also returns this
+503, and its cause is logged at Error once per 30-second window per issuer with the
+message "issuer signing keys unusable". When keys are in hand and the token's `kid` is
+not among them, even after the server refreshes the keys, the refusal stays
+`invalid_assertion`, so a freshly rotated `kid` that arrives while the issuer's
+key endpoint is down gets `invalid_assertion` until the keys are reachable.
+`invalid_assertion` is only ever used with `invalid_grant`. The plain RFC 7523
+grant keeps its codes for the two `subject_bindings` refusals, because it is
+outside the ID-JAG profile. The RFC 8693 token-exchange path is unchanged and
+still reports an unreachable issuer as `invalid_request`. Other refusals
+(`invalid_request`, `invalid_client`, `unauthorized_client`) are unchanged. On the
+plain JWT-bearer grant, the `server_error` row in the table (the request ended,
+or no default audiences are configured) was `invalid_grant` before this change. `invalid_target` for a `resource` the client
+may not target is unchanged on the plain JWT-bearer grant and on other grant
+types. On the ID-JAG grant that refusal is now `access_denied` with
+`resource_denied`, as the table shows, whether the client sent the `resource`
+parameter or the resource came from the ID-JAG's `resource` claim. Draft -06
+section 4.4.1 requires `access_denied` when none of the requested resources is
+acceptable.
+
 ### Bound ID-JAG assertions
 
 The grant type has a second assertion form: Identity Assertion Authorization
@@ -1479,8 +1538,10 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   `resource` claim holds a single valid value: draft §4.4 defines no `resource`
   parameter for redemption, so that value is used. Every other case, including
   an empty or repeated parameter, still needs exactly one parameter. A single
-  claim value that is not an absolute URI is refused with `invalid_target`, the
-  same error a requested resource gets for that. The chosen
+  claim value that is not an absolute URI is refused with `invalid_grant` and
+  `invalid_assertion`, because the fault is in the assertion. The text is fixed
+  and does not quote the claim value. A requested resource that is not a valid
+  URI still gets `invalid_target`. The chosen
   resource goes through the same subject-binding and client-audience checks.
 
 **Departures from the draft are logged, not refused.** The handler accepts some

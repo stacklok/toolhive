@@ -3712,3 +3712,60 @@ func TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource(t *testing.T
 		context.Background(), req, client, &ValidatedClaims{Audience: []string{subPath}}))
 	assert.Equal(t, []string{subPath}, []string(req.GetGrantedAudience()))
 }
+
+func TestIssueBoundedAccessTokenBuildsElapsedErrorOnlyWhenElapsed(t *testing.T) {
+	t.Parallel()
+
+	errElapsed := errors.New("bound lifetime elapsed")
+
+	tests := []struct {
+		name           string
+		sessionExpiry  time.Time
+		wantCalls      int
+		wantErrElapsed bool
+	}{
+		{name: "no session expiry does not call elapsed", wantCalls: 0},
+		{name: "future session expiry does not call elapsed", sessionExpiry: time.Now().Add(time.Hour), wantCalls: 0},
+		{
+			name:           "past session expiry calls elapsed and returns its error",
+			sessionExpiry:  time.Now().Add(-time.Second),
+			wantCalls:      1,
+			wantErrElapsed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			helper := &oauth2.HandleHelper{
+				AccessTokenStrategy: &mockAccessTokenStrategy{},
+				AccessTokenStorage:  &mockAccessTokenStorage{},
+			}
+
+			// session.New initialises the embedded JWT session; a bare
+			// &session.Session{} has a nil one and panics on SetExpiresAt.
+			sess := session.New("", "", "", session.UserClaims{})
+			if !tt.sessionExpiry.IsZero() {
+				sess.SetExpiresAt(fosite.AccessToken, tt.sessionExpiry)
+			}
+			req := fosite.NewAccessRequest(sess)
+
+			calls := 0
+			elapsed := func() error {
+				calls++
+				return errElapsed
+			}
+
+			err := issueBoundedAccessToken(
+				context.Background(), helper, 15*time.Minute, req, fosite.NewAccessResponse(), elapsed)
+
+			assert.Equal(t, tt.wantCalls, calls)
+			if tt.wantErrElapsed {
+				require.ErrorIs(t, err, errElapsed)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

@@ -988,3 +988,26 @@ func TestJWTBearerHandler_PopulateFailsClosedOnElapsedExpiry(t *testing.T) {
 	assert.Empty(t, responder.GetAccessToken())
 	assert.Empty(t, tokenStorage.createdSig)
 }
+
+func TestBindingRefusalMappers_PassUnrecognisedErrorsThrough(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mapper func(error) error
+	}{
+		{name: "plain grant mapper returns an unrecognised error unchanged", mapper: plainBindingRefusal},
+		{name: "ID-JAG mapper returns an unrecognised error unchanged", mapper: idJAGBindingRefusal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			other := errors.New("other")
+
+			got := tt.mapper(other)
+
+			require.ErrorIs(t, got, other)
+			assert.Same(t, other, got)
+		})
+	}
+}

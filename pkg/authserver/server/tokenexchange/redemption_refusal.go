@@ -4,6 +4,9 @@
 package tokenexchange
 
 import (
+	"context"
+	"errors"
+
 	"github.com/ory/fosite"
 	"github.com/ory/x/errorsx"
 )
@@ -20,7 +23,13 @@ const (
 	// reasonResourceDenied marks a valid ID-JAG whose subject may not obtain a
 	// token for the requested resource.
 	reasonResourceDenied = "resource_denied"
+	// reasonIssuerUnavailable marks an assertion whose issuer's signing keys
+	// could not be obtained. The refusal is temporarily_unavailable (HTTP 503)
+	// and the same request may succeed once the issuer is reachable.
+	reasonIssuerUnavailable = "issuer_unavailable"
 )
+
+const hintAssertionValidationFailed = "The assertion could not be validated."
 
 // redemptionRefusal builds a JWT-bearer or ID-JAG redemption refusal whose
 // error_description is reason, followed by ": " and hint when hint is not
@@ -41,4 +50,29 @@ func redemptionRefusal(code, reason, hint string) *fosite.RFC6749Error {
 // rule: invalid_grant with the invalid_assertion reason.
 func invalidAssertion(hint string) error {
 	return errorsx.WithStack(redemptionRefusal(fosite.ErrInvalidGrant.ErrorField, reasonInvalidAssertion, hint))
+}
+
+// issuerUnavailable is the refusal for an assertion whose issuer's signing
+// keys could not be obtained: temporarily_unavailable with HTTP 503 and the
+// bare issuer_unavailable description, which never names the issuer.
+func issuerUnavailable(cause error) error {
+	refusal := redemptionRefusal(fosite.ErrTemporarilyUnavailable.ErrorField, reasonIssuerUnavailable, "")
+	refusal.CodeField = fosite.ErrTemporarilyUnavailable.CodeField
+	return errorsx.WithStack(refusal.WithWrap(cause).WithDebug(cause.Error()))
+}
+
+// assertionValidationRefusal maps a failure of assertion validation to its
+// refusal: issuer_unavailable when the issuer's keys could not be obtained, a
+// server error when the failure is not the assertion's (a misconfigured
+// validator, or a request that ended mid-validation), invalid_assertion with
+// hint otherwise.
+func assertionValidationRefusal(err error, hint string) error {
+	switch {
+	case errors.Is(err, errIssuerKeysUnavailable):
+		return issuerUnavailable(err)
+	case errors.Is(err, errDefaultAudiencesEmpty),
+		errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return serverFailure(hintAssertionValidationFailed, err)
+	}
+	return invalidAssertion(hint)
 }

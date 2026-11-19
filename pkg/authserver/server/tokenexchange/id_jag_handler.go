@@ -178,7 +178,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	}
 	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
 	if err != nil {
-		return invalidAssertion("The ID-JAG assertion is invalid or could not be verified.")
+		return assertionValidationRefusal(err, "The ID-JAG assertion is invalid or could not be verified.")
 	}
 	// Same fail-closed nil-map/nil-consumer posture as the plain handler;
 	// see the comments in JWTBearerHandler.HandleTokenEndpointRequest.

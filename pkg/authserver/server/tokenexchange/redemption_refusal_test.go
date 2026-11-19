@@ -6,6 +6,8 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/url"
 	"testing"
 	"time"
@@ -55,11 +57,16 @@ func refusalPolicies(t *testing.T) []TrustedIssuer {
 	return resolved
 }
 
+// errKeysDown is a validator failure that happened before the issuer's keys
+// were in hand.
+var errKeysDown = fmt.Errorf("%w: connection refused", errIssuerKeysUnavailable)
+
 type refusalCase struct {
 	name        string
 	validatorEr error
 	mutate      func(c *ValidatedClaims)
 	form        func(f url.Values)
+	wantStatus  int // 0 means 400
 	wantCode    string
 	wantDesc    string
 }
@@ -74,7 +81,11 @@ func (tc refusalCase) claims() *ValidatedClaims {
 
 func (tc refusalCase) requireRefusal(t *testing.T, err error) {
 	t.Helper()
-	requireRefusal(t, err, tc.wantCode, tc.wantDesc)
+	status := tc.wantStatus
+	if status == 0 {
+		status = http.StatusBadRequest
+	}
+	requireRefusalStatus(t, err, status, tc.wantCode, tc.wantDesc)
 }
 
 func TestIDJAGRedemptionRefusals(t *testing.T) {
@@ -84,6 +95,10 @@ func TestIDJAGRedemptionRefusals(t *testing.T) {
 		{
 			name: "assertion fails validation", validatorEr: errors.New("signature mismatch"),
 			wantCode: "invalid_grant", wantDesc: "invalid_assertion: The ID-JAG assertion is invalid or could not be verified.",
+		},
+		{
+			name: "issuer keys unavailable", validatorEr: errKeysDown,
+			wantStatus: http.StatusServiceUnavailable, wantCode: "temporarily_unavailable", wantDesc: "issuer_unavailable",
 		},
 		{
 			name: "issuer not enabled", mutate: func(c *ValidatedClaims) { c.Issuer = "https://unlisted.example.com" },
@@ -135,6 +150,10 @@ func TestJWTBearerRedemptionRefusals(t *testing.T) {
 			wantCode: "invalid_grant", wantDesc: "invalid_assertion: The JWT bearer assertion is invalid or could not be verified.",
 		},
 		{
+			name: "issuer keys unavailable", validatorEr: errKeysDown,
+			wantStatus: http.StatusServiceUnavailable, wantCode: "temporarily_unavailable", wantDesc: "issuer_unavailable",
+		},
+		{
 			name: "assertion expired before issuance", mutate: func(c *ValidatedClaims) { c.Expiry = time.Now().Add(-time.Minute) },
 			wantCode: "invalid_grant", wantDesc: "invalid_assertion: The JWT bearer assertion has expired.",
 		},
@@ -166,11 +185,71 @@ func TestJWTBearerRedemptionRefusals(t *testing.T) {
 func TestRedemptionRefusal_Grammar(t *testing.T) {
 	t.Parallel()
 
-	for _, reason := range []string{reasonInvalidAssertion, reasonSubjectUnknown, reasonResourceDenied} {
+	for _, reason := range []string{reasonInvalidAssertion, reasonSubjectUnknown, reasonResourceDenied, reasonIssuerUnavailable} {
 		for _, hint := range []string{"", "A hint."} {
 			description := redemptionRefusal("access_denied", reason, hint).GetDescription()
 			assert.Regexp(t, `^[a-z_]+(: .*)?$`, description)
 			assert.Regexp(t, "^"+reason, description)
 		}
 	}
+}
+
+func TestAssertionValidationRefusal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+		wantDebug  string
+	}{
+		{
+			name: "issuer keys unavailable", err: errKeysDown,
+			wantStatus: http.StatusServiceUnavailable, wantCode: "temporarily_unavailable", wantDebug: "connection refused",
+		},
+		{
+			name: "no default audiences", err: errDefaultAudiencesEmpty,
+			wantStatus: http.StatusInternalServerError, wantCode: "server_error", wantDebug: errDefaultAudiencesEmpty.Error(),
+		},
+		{
+			name: "request canceled", err: fmt.Errorf("lookup: %w", context.Canceled),
+			wantStatus: http.StatusInternalServerError, wantCode: "server_error", wantDebug: context.Canceled.Error(),
+		},
+		{
+			name: "request deadline", err: fmt.Errorf("lookup: %w", context.DeadlineExceeded),
+			wantStatus: http.StatusInternalServerError, wantCode: "server_error", wantDebug: context.DeadlineExceeded.Error(),
+		},
+		{
+			name: "ordinary failure", err: errors.New("signature mismatch"),
+			wantStatus: http.StatusBadRequest, wantCode: "invalid_grant",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := assertionValidationRefusal(tt.err, "A hint.")
+
+			var rfcErr *fosite.RFC6749Error
+			require.True(t, errors.As(err, &rfcErr))
+			assert.Equal(t, tt.wantCode, rfcErr.ErrorField)
+			assert.Equal(t, tt.wantStatus, rfcErr.CodeField)
+			assert.Contains(t, rfcErr.DebugField, tt.wantDebug)
+			if tt.wantDebug != "" {
+				assert.ErrorIs(t, err, tt.err)
+				assert.NotContains(t, rfcErr.GetDescription(), tt.wantDebug)
+			}
+		})
+	}
+}
+
+func TestIssuerUnavailable_DescriptionKeepsIssuerOut(t *testing.T) {
+	t.Parallel()
+
+	err := issuerUnavailable(fmt.Errorf("%w: failed to fetch JWKS for issuer %s", errIssuerKeysUnavailable, refusalIssuer))
+
+	var rfcErr *fosite.RFC6749Error
+	require.True(t, errors.As(err, &rfcErr))
+	assert.Equal(t, reasonIssuerUnavailable, rfcErr.GetDescription())
+	assert.Contains(t, rfcErr.DebugField, refusalIssuer)
 }

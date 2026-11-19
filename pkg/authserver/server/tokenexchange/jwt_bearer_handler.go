@@ -169,7 +169,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	}
 	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.tokenEndpoint})
 	if err != nil {
-		return invalidAssertion("The JWT bearer assertion is invalid or could not be verified.")
+		return assertionValidationRefusal(err, "The JWT bearer assertion is invalid or could not be verified.")
 	}
 	// h.policies is nil when this handler was built by newJWTBearerHandler
 	// directly rather than newJWTBearerIssuanceHandler (the seam tests use it
@@ -324,7 +324,7 @@ func (h *JWTBearerHandler) populateAccessTokenResponse(
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint("JWT-bearer token issuance is not configured."))
 	}
 	return issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
-		invalidAssertion("The JWT bearer assertion has expired."))
+		func() error { return invalidAssertion("The JWT bearer assertion has expired.") })
 }
 
 // consumeAssertion marks an assertion's replay key used, mapping consumer

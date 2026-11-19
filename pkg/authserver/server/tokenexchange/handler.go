@@ -358,7 +358,9 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	}
 
 	if err := issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
-		errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The delegated token's bound lifetime has already elapsed."))); err != nil {
+		func() error {
+			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The delegated token's bound lifetime has already elapsed."))
+		}); err != nil {
 		return err
 	}
 
@@ -377,9 +379,10 @@ func (h *Handler) PopulateTokenEndpointResponse(
 // min(subject_remaining, delegation).
 //
 // If the session's bound has already elapsed since HandleTokenEndpointRequest
-// computed it, the call fails closed with the elapsed error (invalid_grant) instead
-// of signing a token whose exp is already in the past while reporting a
-// negative expires_in. fosite's JWT strategy sets exp directly from the
+// computed it, the call fails closed with the error elapsed returns
+// (invalid_grant) instead of signing a token whose exp is already in the past
+// while reporting a negative expires_in. elapsed is a function so the error and
+// its stack capture are built only on this path, not on every issuance. fosite's JWT strategy sets exp directly from the
 // session's expiry (GetExpiresAt), independent of lifespan, so letting this
 // fall through would not simply hand out a longer-lived token, it would issue
 // an already-expired one.
@@ -389,12 +392,12 @@ func issueBoundedAccessToken(
 	lifespan time.Duration,
 	requester fosite.AccessRequester,
 	responder fosite.AccessResponder,
-	elapsed error,
+	elapsed func() error,
 ) error {
 	if sessionExpiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !sessionExpiry.IsZero() {
 		remaining := time.Until(sessionExpiry)
 		if remaining <= 0 {
-			return elapsed
+			return elapsed()
 		}
 		if remaining < lifespan {
 			lifespan = remaining

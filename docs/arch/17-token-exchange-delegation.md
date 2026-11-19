@@ -1442,19 +1442,30 @@ its own default text before the reason.
 | Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
+| Issuer's signing keys could not be obtained (key fetch or cache lookup fails, or the key set is empty or too large) | 503 `temporarily_unavailable`, `issuer_unavailable` | same |
+| The request ended (client disconnect or deadline) while the keys were being fetched, or the server has no default audiences configured | 500 `server_error`, generic text | same |
 
 `invalid_grant` means the assertion failed a validation rule, and a re-issued
 one may succeed. `access_denied` means the ID-JAG is valid but this server's
 allowlist does not permit it, and a re-issued one will not help. A client that
 retries a reasonless `invalid_grant` once with a new ID-JAG therefore stops
 retrying `invalid_assertion` refusals and the two `access_denied` refusals.
+`issuer_unavailable` is the retryable one: the assertion was never judged, because
+this server could not reach the issuer's signing keys, so the same ID-JAG may
+succeed once the issuer is reachable again. It is a 503 with no `Retry-After`
+header, and its description never names the issuer. It only covers failures
+before a usable key set exists. When keys are in hand and the token's `kid` is
+not among them, even after the server refreshes the keys, the refusal stays
+`invalid_assertion`, so a freshly rotated `kid` that arrives while the issuer's
+key endpoint is down gets `invalid_assertion` until the keys are reachable.
 `invalid_assertion` is only ever used with `invalid_grant`. The plain RFC 7523
 grant keeps its codes for the two `subject_bindings` refusals, because it is
-outside the ID-JAG profile. Other refusals (`invalid_request`, `invalid_client`,
-`unauthorized_client`, `server_error`) are unchanged, and so is `invalid_target`
-for a `resource` the client may not target on the plain JWT-bearer grant and on
-other grant types. On the ID-JAG grant that refusal is now `access_denied` with
-`resource_denied`, as the table shows.
+outside the ID-JAG profile. The RFC 8693 token-exchange path is unchanged and
+still reports an unreachable issuer as `invalid_request`. Other refusals
+(`invalid_request`, `invalid_client`, `unauthorized_client`, `server_error`) are
+unchanged, and so is `invalid_target` for a `resource` the client may not target
+on the plain JWT-bearer grant and on other grant types. On the ID-JAG grant that
+refusal is now `access_denied` with `resource_denied`, as the table shows.
 
 ### Bound ID-JAG assertions
 

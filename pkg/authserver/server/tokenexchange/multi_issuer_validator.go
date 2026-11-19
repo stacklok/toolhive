@@ -679,7 +679,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 	ctx context.Context, rawToken string, defaultAudiences []string,
 ) (*ValidatedClaims, error) {
 	if len(defaultAudiences) == 0 || slices.Contains(defaultAudiences, "") {
-		return nil, errors.New("default audiences must not be empty")
+		return nil, errDefaultAudiencesEmpty
 	}
 
 	issuer, err := peekIssuer(rawToken)
@@ -713,6 +713,16 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 	return buildValidatedClaims(standardClaims, extraClaims), nil
 }
 
+// errDefaultAudiencesEmpty is the precondition failure of
+// ValidateJWTBearerAssertion when the caller passes no usable default
+// audiences. It is a server misconfiguration, not a defect of the assertion.
+var errDefaultAudiencesEmpty = errors.New("default audiences must not be empty")
+
+// errIssuerKeysUnavailable marks a verification failure that happened before a
+// usable key set existed for the issuer (fetch, cache lookup, conversion, empty
+// or oversized set), as opposed to a token that fails against keys in hand.
+var errIssuerKeysUnavailable = errors.New("issuer signing keys unavailable")
+
 // verifyExternalSignature parses and verifies a JWT using the configured
 // issuer's cached JWKS. Both RFC 8693 subject tokens and RFC 7523 assertions
 // use this path so unknown-kid refreshes and key-use/algorithm restrictions
@@ -728,7 +738,15 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 
 	jwks, err := v.lookupJWKS(ctx, issuerConfig)
 	if err != nil {
-		return nil, jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
+		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			// The request ended; this says nothing about the issuer's keys.
+			// Checking ctx.Err() keeps the registration's own timeout, which
+			// is also a DeadlineExceeded, counted as an unreachable issuer.
+			return nil, jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w",
+				issuerConfig.IssuerURL, err)
+		}
+		return nil, jwt.Claims{}, nil, fmt.Errorf("%w: failed to fetch JWKS for issuer %s: %w",
+			errIssuerKeysUnavailable, issuerConfig.IssuerURL, err)
 	}
 
 	standardClaims, extraClaims, kidMatched, err := verifySignature(parsedToken, jwks)
@@ -740,6 +758,10 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 		// spoofed-kid attempt (kidMatched true) never reaches this branch,
 		// since a refresh can't change what signature the token was made
 		// with.
+		//
+		// Accepted trade-off: a rotated kid that arrives while the JWKS
+		// endpoint is down fails here as an ordinary verification error, not
+		// errIssuerKeysUnavailable, until the keys are reachable again.
 		v.refreshOnUnknownKid(ctx, issuerConfig)
 		if refreshedJWKS, lookupErr := v.lookupJWKS(ctx, issuerConfig); lookupErr == nil {
 			standardClaims, extraClaims, _, err = verifySignature(parsedToken, refreshedJWKS)

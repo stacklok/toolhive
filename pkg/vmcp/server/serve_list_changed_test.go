@@ -218,6 +218,35 @@ func TestResyncSessionTools_ReplacesRatherThanMerges(t *testing.T) {
 	assert.Equal(t, 1, sess.setSessionToolsCalls)
 }
 
+// TestResyncSessionTools_KeepsExistingToolsOnPartialSweep verifies (#6829) that
+// resyncSessionTools does NOT replace the session's tool store when the
+// underlying backend sweep was partial — a still-healthy backend that failed its
+// live capability query would otherwise have its tools dropped from the session
+// until the next health transition.
+func TestResyncSessionTools_KeepsExistingToolsOnPartialSweep(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		tools:           []vmcp.Tool{{Name: "kept"}, {Name: "added"}},
+		discoverPartial: true,
+	}
+	srv := &Server{core: fc}
+
+	sess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
+		"kept":    {Tool: mcp.Tool{Name: "kept"}},
+		"removed": {Tool: mcp.Tool{Name: "removed"}}, // must survive a partial sweep
+	}}
+
+	err := srv.resyncSessionTools(context.Background(), sess, "sess-1", nil)
+	require.NoError(t, err)
+
+	got := sess.GetSessionTools()
+	assert.Len(t, got, 2)
+	assert.Contains(t, got, "kept")
+	assert.Contains(t, got, "removed", "a partial sweep must not drop an existing backend's tools")
+	assert.Equal(t, 0, sess.setSessionToolsCalls, "a partial sweep must not replace the tool store")
+}
+
 // TestResyncSessionTools_SessionWithoutToolSupport verifies resyncSessionTools
 // fails loudly (rather than silently no-opping) when the session does not
 // implement server.SessionWithTools.

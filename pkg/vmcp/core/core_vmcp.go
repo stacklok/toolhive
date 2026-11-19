@@ -411,6 +411,7 @@ func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (Disco
 		HasResources:         len(resources) > 0,
 		HasResourceTemplates: len(templates) > 0,
 		HasPrompts:           len(prompts) > 0,
+		Partial:              agg.Metadata != nil && agg.Metadata.Partial,
 	}, nil
 }
 

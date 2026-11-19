@@ -373,6 +373,18 @@ func (*Processor) getMatchingPaths(dir, pattern string) []string {
 		targetPath := filepath.Join(dir, dirPattern)
 		if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
 			matchingPaths = append(matchingPaths, targetPath)
+			return matchingPaths
+		}
+		// Wildcard directory patterns such as "secrets-*/" need glob matching.
+		matches, err := filepath.Glob(targetPath)
+		if err != nil {
+			slog.Debug("Error matching directory pattern", "pattern", pattern, "error", err)
+			return matchingPaths
+		}
+		for _, match := range matches {
+			if info, err := os.Stat(match); err == nil && info.IsDir() {
+				matchingPaths = append(matchingPaths, match)
+			}
 		}
 		return matchingPaths
 	}

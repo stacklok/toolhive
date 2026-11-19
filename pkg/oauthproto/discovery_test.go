@@ -731,3 +731,135 @@ func TestBuildDiscoveryHTTPClient_BoundsIdleConnectionPool(t *testing.T) {
 	custom := &http.Client{}
 	assert.Same(t, custom, buildDiscoveryHTTPClient(custom))
 }
+
+// CIMD discovery must not skip a usable metadata document in search of a DCR
+// endpoint. The existing DCR entry point retains its opposite preference.
+func TestFetchCIMDAuthorizationServerMetadataDoesNotPreferDCR(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	issuer := server.URL + "/tenants/acme"
+	var requests atomic.Int32
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server/tenants/acme":
+			writeJSONMetadata(w, AuthorizationServerMetadata{
+				Issuer: issuer, TokenEndpoint: issuer + "/cimd-token",
+				ClientIDMetadataDocumentSupported: true,
+			})
+		case "/tenants/acme/.well-known/openid-configuration":
+			writeJSONMetadata(w, AuthorizationServerMetadata{
+				Issuer: issuer, TokenEndpoint: issuer + "/dcr-token", RegistrationEndpoint: issuer + "/register",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	metadata, err := FetchCIMDAuthorizationServerMetadata(context.Background(), issuer, server.Client(), false)
+	require.NoError(t, err)
+	require.Equal(t, issuer+"/cimd-token", metadata.TokenEndpoint)
+	require.True(t, metadata.ClientIDMetadataDocumentSupported)
+	require.Empty(t, metadata.RegistrationEndpoint)
+	require.EqualValues(t, 1, requests.Load(), "a valid CIMD-only document must end discovery")
+
+	legacy, err := FetchAuthorizationServerMetadata(context.Background(), issuer, server.Client())
+	require.NoError(t, err)
+	require.Equal(t, issuer+"/dcr-token", legacy.TokenEndpoint, "existing DCR discovery must retain its preference")
+}
+
+func TestFetchCIMDAuthorizationServerMetadataFromURL(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		body        func(string) string
+		wantError   string
+		wantSupport bool
+	}{
+		{name: "CIMD only metadata preserves exact issuer", body: func(issuer string) string {
+			return `{"issuer":"` + issuer + `","client_id_metadata_document_supported":true}`
+		}, wantSupport: true},
+		{name: "CIMD capability is not required for discovery", body: func(issuer string) string {
+			return `{"issuer":"` + issuer + `"}`
+		}},
+		{name: "issuer mismatch remains an error", body: func(string) string {
+			return `{"issuer":"https://other.example.com","client_id_metadata_document_supported":true}`
+		}, wantError: "issuer mismatch"},
+		{name: "invalid metadata remains an error", body: func(string) string { return "{" }, wantError: "decode"},
+		{name: "trailing JSON is rejected", body: func(issuer string) string {
+			return `{"issuer":"` + issuer + `","client_id_metadata_document_supported":true} {}`
+		}, wantError: "decode"},
+		{name: "oversized metadata is rejected", body: func(issuer string) string {
+			return `{"issuer":"` + issuer + `","client_id_metadata_document_supported":true,"padding":"` +
+				strings.Repeat("x", discoveryMaxResponseSize) + `"}`
+		}, wantError: "exceeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.NotFoundHandler())
+			t.Cleanup(server.Close)
+			issuer := server.URL + "/tenant/"
+			server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/explicit-metadata", r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body(issuer)))
+			})
+			metadata, err := FetchCIMDAuthorizationServerMetadataFromURL(
+				context.Background(), server.URL+"/explicit-metadata", issuer, server.Client(), false)
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				require.Nil(t, metadata)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, issuer, metadata.Issuer)
+			require.Equal(t, tc.wantSupport, metadata.ClientIDMetadataDocumentSupported)
+			require.Empty(t, metadata.RegistrationEndpoint)
+		})
+	}
+}
+
+func TestFetchCIMDAuthorizationServerMetadataHTTPPolicy(t *testing.T) {
+	t.Parallel()
+	client := &http.Client{Transport: errSentinelTransport{}}
+	for _, entry := range []struct {
+		name  string
+		fetch func(string, bool) (*AuthorizationServerMetadata, error)
+	}{
+		{name: "candidate discovery", fetch: func(issuer string, insecure bool) (*AuthorizationServerMetadata, error) {
+			return FetchCIMDAuthorizationServerMetadata(context.Background(), issuer, client, insecure)
+		}},
+		{name: "exact discovery URL", fetch: func(issuer string, insecure bool) (*AuthorizationServerMetadata, error) {
+			return FetchCIMDAuthorizationServerMetadataFromURL(
+				context.Background(), issuer+"/metadata", issuer, client, insecure)
+		}},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			t.Parallel()
+			for _, tc := range []struct {
+				name          string
+				issuer        string
+				insecure      bool
+				wantTransport bool
+			}{
+				{name: "HTTP requires opt in", issuer: "http://idp.example.com/tenant"},
+				{name: "HTTP opt in reaches supplied client", issuer: "http://idp.example.com/tenant",
+					insecure: true, wantTransport: true},
+				{name: "opt in does not permit FTP", issuer: "ftp://idp.example.com/tenant", insecure: true},
+				{name: "HTTPS reaches supplied client by default", issuer: "https://idp.example.com/tenant", wantTransport: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					metadata, err := entry.fetch(tc.issuer, tc.insecure)
+					require.Error(t, err)
+					require.Nil(t, metadata)
+					require.Equal(t, tc.wantTransport, errors.Is(err, errSentinelTransportFailure),
+						"only permitted URLs may reach the supplied transport")
+					if !tc.wantTransport {
+						require.ErrorContains(t, err, "must use https")
+					}
+				})
+			}
+		})
+	}
+}

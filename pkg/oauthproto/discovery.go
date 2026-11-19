@@ -83,7 +83,23 @@ func FetchAuthorizationServerMetadata(
 	issuer string,
 	client *http.Client,
 ) (*AuthorizationServerMetadata, error) {
-	urls, err := buildDiscoveryURLs(issuer)
+	return fetchAuthorizationServerMetadata(ctx, issuer, client, false, true)
+}
+
+// FetchCIMDAuthorizationServerMetadata returns the first valid issuer-matching
+// document, without requiring a DCR registration endpoint. The supplied client
+// must enforce the caller's CA and private-address policy. insecureAllowHTTP
+// permits development HTTP issuers; it does not change client metadata URLs.
+func FetchCIMDAuthorizationServerMetadata(
+	ctx context.Context, issuer string, client *http.Client, insecureAllowHTTP bool,
+) (*AuthorizationServerMetadata, error) {
+	return fetchAuthorizationServerMetadata(ctx, issuer, client, insecureAllowHTTP, false)
+}
+
+func fetchAuthorizationServerMetadata(
+	ctx context.Context, issuer string, client *http.Client, insecureAllowHTTP, requireRegistration bool,
+) (*AuthorizationServerMetadata, error) {
+	urls, err := buildDiscoveryURLs(issuer, insecureAllowHTTP)
 	if err != nil {
 		return nil, err
 	}
@@ -97,12 +113,12 @@ func FetchAuthorizationServerMetadata(
 	var attemptErrs []error
 	var partialMetadata *AuthorizationServerMetadata
 	for _, u := range urls {
-		metadata, err := fetchDiscoveryDocument(fetchCtx, httpClient, u, issuer)
+		metadata, err := fetchDiscoveryDocument(fetchCtx, httpClient, u, issuer, !requireRegistration)
 		if err != nil {
 			attemptErrs = append(attemptErrs, fmt.Errorf("%s: %w", u, err))
 			continue
 		}
-		if metadata.RegistrationEndpoint == "" {
+		if requireRegistration && metadata.RegistrationEndpoint == "" {
 			// Stash the first partial doc as a fallback, but keep iterating:
 			// a later URL (e.g. OIDC discovery) may advertise DCR even when
 			// the first hit (e.g. tenant-aware path-insertion) does not.
@@ -126,13 +142,13 @@ func FetchAuthorizationServerMetadata(
 
 // buildDiscoveryURLs constructs the discovery URLs to try per RFC 8414 §3.1
 // and OpenID Connect Discovery 1.0. The issuer must have an "https" scheme
-// (or "http" with a loopback host, for development).
+// (or "http" with a loopback host or insecureAllowHTTP, for development).
 //
 // URLs are returned in priority order with exact duplicates removed: for an
 // issuer with no tenant path, path-insertion (1) and bare RFC 8414 (3)
 // collapse to the same URL, so only two distinct URLs are returned. Callers
 // must not rely on a fixed slice length.
-func buildDiscoveryURLs(issuer string) ([]string, error) {
+func buildDiscoveryURLs(issuer string, insecureAllowHTTP bool) ([]string, error) {
 	if issuer == "" {
 		return nil, fmt.Errorf("issuer is required")
 	}
@@ -144,7 +160,7 @@ func buildDiscoveryURLs(issuer string) ([]string, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("invalid issuer URL: scheme and host are required")
 	}
-	if parsed.Scheme != schemeHTTPS && !IsLoopbackHost(parsed.Host) {
+	if parsed.Scheme != schemeHTTPS && !IsLoopbackHost(parsed.Host) && (!insecureAllowHTTP || parsed.Scheme != "http") {
 		return nil, fmt.Errorf("issuer must use https (got %q)", parsed.Scheme)
 	}
 
@@ -234,6 +250,21 @@ func FetchAuthorizationServerMetadataFromURL(
 	expectedIssuer string,
 	client *http.Client,
 ) (*AuthorizationServerMetadata, error) {
+	return fetchAuthorizationServerMetadataFromURL(ctx, discoveryURL, expectedIssuer, client, false, true)
+}
+
+// FetchCIMDAuthorizationServerMetadataFromURL fetches an exact issuer-validated
+// metadata document without requiring a registration endpoint. The supplied
+// client enforces CA/private-address policy; insecureAllowHTTP is development-only.
+func FetchCIMDAuthorizationServerMetadataFromURL(
+	ctx context.Context, discoveryURL, expectedIssuer string, client *http.Client, insecureAllowHTTP bool,
+) (*AuthorizationServerMetadata, error) {
+	return fetchAuthorizationServerMetadataFromURL(ctx, discoveryURL, expectedIssuer, client, insecureAllowHTTP, false)
+}
+
+func fetchAuthorizationServerMetadataFromURL(
+	ctx context.Context, discoveryURL, expectedIssuer string, client *http.Client, insecureAllowHTTP, requireRegistration bool,
+) (*AuthorizationServerMetadata, error) {
 	if discoveryURL == "" {
 		return nil, fmt.Errorf("discovery URL is required")
 	}
@@ -248,7 +279,7 @@ func FetchAuthorizationServerMetadataFromURL(
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("invalid discovery URL: scheme and host are required")
 	}
-	if parsed.Scheme != schemeHTTPS && !IsLoopbackHost(parsed.Host) {
+	if parsed.Scheme != schemeHTTPS && !IsLoopbackHost(parsed.Host) && (!insecureAllowHTTP || parsed.Scheme != "http") {
 		return nil, fmt.Errorf("discovery URL must use https (got %q)", parsed.Scheme)
 	}
 
@@ -257,11 +288,11 @@ func FetchAuthorizationServerMetadataFromURL(
 	fetchCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
-	metadata, err := fetchDiscoveryDocument(fetchCtx, httpClient, discoveryURL, expectedIssuer)
+	metadata, err := fetchDiscoveryDocument(fetchCtx, httpClient, discoveryURL, expectedIssuer, !requireRegistration)
 	if err != nil {
 		return nil, fmt.Errorf("fetch discovery document from %q: %w", discoveryURL, err)
 	}
-	if metadata.RegistrationEndpoint == "" {
+	if requireRegistration && metadata.RegistrationEndpoint == "" {
 		return metadata, ErrRegistrationEndpointMissing
 	}
 	return metadata, nil
@@ -275,6 +306,7 @@ func fetchDiscoveryDocument(
 	client *http.Client,
 	urlStr string,
 	expectedIssuer string,
+	strict bool,
 ) (*AuthorizationServerMetadata, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
@@ -309,7 +341,7 @@ func fetchDiscoveryDocument(
 	}
 
 	var metadata AuthorizationServerMetadata
-	if err := json.NewDecoder(io.LimitReader(resp.Body, discoveryMaxResponseSize)).Decode(&metadata); err != nil {
+	if err := decodeDiscoveryDocument(resp.Body, &metadata, strict); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
@@ -319,6 +351,22 @@ func fetchDiscoveryDocument(
 	}
 
 	return &metadata, nil
+}
+
+// CIMD preflight rejects truncated, oversized, or trailing JSON. Leave the
+// historical DCR decoder unchanged for existing registration callers.
+func decodeDiscoveryDocument(body io.Reader, metadata *AuthorizationServerMetadata, strict bool) error {
+	if !strict {
+		return json.NewDecoder(io.LimitReader(body, discoveryMaxResponseSize)).Decode(metadata)
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, discoveryMaxResponseSize+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > discoveryMaxResponseSize {
+		return fmt.Errorf("discovery document exceeds %d bytes", discoveryMaxResponseSize)
+	}
+	return json.Unmarshal(raw, metadata)
 }
 
 // AuthorizationServerMetadata represents the OAuth 2.0 Authorization Server Metadata

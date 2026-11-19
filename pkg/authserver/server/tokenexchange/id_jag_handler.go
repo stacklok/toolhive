@@ -90,6 +90,11 @@ type IDJAGHandler struct {
 	// provider above remains the only source of the issuer value.
 	issuerIsResource bool
 
+	// governedResources is the set of resources this server issues tokens for
+	// (allowed_audiences). Every value of an ID-JAG resource claim must be in
+	// it; an empty set refuses every claim.
+	governedResources []string
+
 	// logger receives the draft-departure lines; nil means slog.Default().
 	logger *slog.Logger
 
@@ -103,10 +108,8 @@ type IDJAGHandler struct {
 type draftDeparture string
 
 const (
-	departureMultipleAudiences  draftDeparture = "multiple_audiences"
-	departureAudienceNotIssuer  draftDeparture = "audience_not_issuer"
-	departureResourceMalformed  draftDeparture = "resource_malformed"
-	departureResourceNotCovered draftDeparture = "resource_not_covered"
+	departureMultipleAudiences draftDeparture = "multiple_audiences"
+	departureAudienceNotIssuer draftDeparture = "audience_not_issuer"
 )
 
 // newIDJAGIssuanceHandler constructs the production bound handler over the
@@ -126,7 +129,13 @@ func newIDJAGIssuanceHandler(
 	for _, id := range explicitGrantClientIDs {
 		explicitGrantClients[id] = struct{}{}
 	}
-	h := &IDJAGHandler{core: core, explicitGrantClients: explicitGrantClients, issuer: config, logger: logger}
+	h := &IDJAGHandler{
+		core:                 core,
+		explicitGrantClients: explicitGrantClients,
+		issuer:               config,
+		governedResources:    slices.Clone(allowedAudiences),
+		logger:               logger,
+	}
 	asIssuer := config.GetAccessTokenIssuer(context.Background())
 	h.issuerIsResource = asIssuer != "" && slices.Contains(allowedAudiences, asIssuer)
 	if h.issuerIsResource && slices.ContainsFunc(trustedIssuers, func(ti TrustedIssuer) bool {
@@ -199,7 +208,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err := h.checkClientBinding(requester, claims); err != nil {
 		return err
 	}
-	resource, err := checkIDJAGPolicy(requester, claims, policy)
+	resource, err := h.checkIDJAGPolicy(requester, claims, policy)
 	if err != nil {
 		return err
 	}
@@ -224,7 +233,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
-	h.logDraftDepartures(ctx, claims, policy, requester.GetClient().GetID(), resource)
+	h.logDraftDepartures(ctx, claims, policy, requester.GetClient().GetID())
 	// Subject is namespaced by issuer exactly like the plain handler's, so a
 	// resource server sees one consistent subject form for every
 	// assertion-derived token regardless of which handler minted it. The
@@ -265,13 +274,13 @@ func (h *IDJAGHandler) PopulateTokenEndpointResponse(
 // checkIDJAGPolicy runs the per-issuer policy checks in the same order as
 // the plain handler (assertion age, then resource, then subject binding) and
 // returns the resource the token is for.
-func checkIDJAGPolicy(
+func (h *IDJAGHandler) checkIDJAGPolicy(
 	requester fosite.AccessRequester, claims *ValidatedClaims, policy *JWTBearerGrantPolicy,
 ) (string, error) {
 	if err := checkAssertionMaxAge(claims, policy); err != nil {
 		return "", err
 	}
-	resource, err := idJAGResource(requester.GetRequestForm(), claims)
+	resource, err := h.idJAGResource(requester.GetRequestForm(), claims)
 	if err != nil {
 		return "", err
 	}
@@ -282,28 +291,51 @@ func checkIDJAGPolicy(
 }
 
 // idJAGResource picks the resource an ID-JAG redemption is for. Draft section
-// 4.4 defines no resource parameter for redemption, so a client may leave it
-// out. A resource claim with a single value names the target without
-// ambiguity, so it is used as the default when the request has no resource
-// parameter. Every other case keeps the rule of requestedResource: if the
-// parameter is present in any form (empty or repeated too) it decides, and
-// without a usable single-value claim the request is refused exactly as
-// before. A defaulted value gets the same URI check as a requested one.
-func idJAGResource(form url.Values, claims *ValidatedClaims) (string, error) {
+// 4.4.1 requires every resource claim value to be a resource this server
+// governs, compared as exact strings (section 4.3), and restricts the access
+// token to the resources in the claim. So a malformed claim, or one naming a
+// resource outside allowed_audiences, is refused as an invalid assertion, and
+// a requested resource the claim does not list is refused as invalid_target.
+// Draft section 4.4 defines no resource parameter for redemption, so a client
+// may leave it out: a claim with a single value names the target without
+// ambiguity and is used as the default. Every other case keeps the rule of
+// requestedResource: if the parameter is present in any form (empty or
+// repeated too) it decides, and without a usable single-value claim the
+// request is refused exactly as before.
+func (h *IDJAGHandler) idJAGResource(form url.Values, claims *ValidatedClaims) (string, error) {
+	claim, claimPresent := claims.Extra["resource"]
+	var values []string
+	if claimPresent {
+		var wellFormed bool
+		if values, wellFormed = idjag.ResourceClaim(claim); !wellFormed {
+			return "", invalidAssertion("The ID-JAG assertion resource claim is malformed.")
+		}
+		// Every governed resource passed ValidateAudienceURI at startup, so
+		// membership alone also refuses a value that is not a valid URI. The
+		// description never quotes a claim value.
+		for _, v := range values {
+			if !slices.Contains(h.governedResources, v) {
+				return "", invalidAssertion(
+					"The ID-JAG assertion resource claim names a resource this server does not govern.")
+			}
+		}
+	}
 	if _, present := form["resource"]; present {
-		return requestedResource(form)
+		resource, err := requestedResource(form)
+		if err != nil {
+			return "", err
+		}
+		if claimPresent && !slices.Contains(values, resource) {
+			// Bare invalid_target with no reason code, on purpose: the draft
+			// defines no resource parameter at redemption, so RFC 8707's
+			// invalid_target applies, and the description must not name the
+			// resource.
+			return "", errorsx.WithStack(server.ErrInvalidTarget)
+		}
+		return resource, nil
 	}
-	claim, present := claims.Extra["resource"]
-	if !present {
+	if !claimPresent || len(values) != 1 {
 		return requestedResource(form)
-	}
-	values, wellFormed := idjag.ResourceClaim(claim)
-	if !wellFormed || len(values) != 1 {
-		return requestedResource(form)
-	}
-	if err := server.ValidateAudienceURI(values[0]); err != nil {
-		// The URI error can quote the claim value, which a refusal never does.
-		return "", invalidAssertion("The ID-JAG assertion resource claim is not a valid resource URI.")
 	}
 	return values[0], nil
 }
@@ -314,7 +346,7 @@ func idJAGResource(form url.Values, claims *ValidatedClaims) (string, error) {
 // of each (assertion issuer, finding) pair is logged at Warn and later ones
 // at Debug. The lines carry no subject, jti or claim values.
 func (h *IDJAGHandler) logDraftDepartures(
-	ctx context.Context, claims *ValidatedClaims, policy *JWTBearerGrantPolicy, clientID, resource string,
+	ctx context.Context, claims *ValidatedClaims, policy *JWTBearerGrantPolicy, clientID string,
 ) {
 	var found []draftDeparture
 	if len(claims.Audience) > 1 {
@@ -327,15 +359,6 @@ func (h *IDJAGHandler) logDraftDepartures(
 	asIssuer := h.issuer.GetAccessTokenIssuer(ctx)
 	if asIssuer != "" && !h.issuerIsResource && !slices.Contains(claims.Audience, asIssuer) {
 		found = append(found, departureAudienceNotIssuer)
-	}
-	if claim, present := claims.Extra["resource"]; present {
-		values, wellFormed := idjag.ResourceClaim(claim)
-		switch {
-		case !wellFormed:
-			found = append(found, departureResourceMalformed)
-		case !slices.Contains(values, resource):
-			found = append(found, departureResourceNotCovered)
-		}
 	}
 	if len(found) == 0 {
 		return

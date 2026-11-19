@@ -57,11 +57,20 @@ func (e *as2Env) redeem(t *testing.T, auth clientAuth, assertion string) tokenRe
 // passed to the embedded server.
 func startAS2(t *testing.T, listener net.Listener, as1Issuer, subject string, opts ...authserverrunner.EmbeddedAuthServerOption) *as2Env {
 	t.Helper()
+	return startAS2For(t, listener, as1Issuer, subject, []string{xrtIDJAGResource}, opts...)
+}
+
+// startAS2For is startAS2 with resources as AS-2's allowed audiences, the
+// client's audiences and the subject binding's allowed resources.
+func startAS2For(
+	t *testing.T, listener net.Listener, as1Issuer, subject string, resources []string,
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) *as2Env {
+	t.Helper()
 	key := newAssertionKey(t, "as2-client-key")
 	jwksFile := filepath.Join(t.TempDir(), "as2-client.jwks")
 	writeJWKS(t, jwksFile, key)
 
-	resources := []string{xrtIDJAGResource}
 	// A delegate client must list token exchange; it is the jwt-bearer grant under test.
 	grants := []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}
 	client := authserver.DelegateClientRunConfig{
@@ -126,10 +135,21 @@ func startTwoServerIDJAGWith(
 	t *testing.T, mutate func(cfg *authserver.RunConfig), opts ...authserverrunner.EmbeddedAuthServerOption,
 ) *twoServerIDJAG {
 	t.Helper()
+	return startTwoServerIDJAGFor(t, []string{xrtIDJAGResource}, mutate, opts...)
+}
+
+// startTwoServerIDJAGFor is startTwoServerIDJAGWith with as2Resources as the
+// resources AS-2 governs and binds. AS-1's target still names only
+// xrtIDJAGResource, so its ID-JAGs carry only that resource.
+func startTwoServerIDJAGFor(
+	t *testing.T, as2Resources []string, mutate func(cfg *authserver.RunConfig),
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) *twoServerIDJAG {
+	t.Helper()
 	l1, l2 := listenLoopback(t), listenLoopback(t)
 	as1Issuer := "http://" + l1.Addr().String()
 
-	as2 := startAS2(t, l2, as1Issuer, "user-1")
+	as2 := startAS2For(t, l2, as1Issuer, "user-1", as2Resources)
 
 	as1 := startXRTServerOn(t, "memory", l1, func(cfg *authserver.RunConfig, _ string) {
 		for _, delegate := range cfg.InboundGrants.TokenExchange.DelegateClients {
@@ -193,4 +213,33 @@ func TestIDJAGRedemptionCarriesActorAcrossTwoServers(t *testing.T) {
 	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
 	assert.Equal(t, h.as1.issuer+"#user-1", access["sub"], "sub is <AS-1 iss>#<sub>")
 	assert.Equal(t, map[string]any{"iss": actorTestActIssuer, "sub": agentID}, access["act"])
+}
+
+// TestIDJAGRedemptionRefusesResourceTheClaimDoesNotCover proves AS-2 refuses an
+// ID-JAG for a resource its resource claim does not name, and issues no token.
+// AS-2 governs both resources, the client may have both and the subject is
+// bound to both, so only the claim can refuse. The refusal leaves the
+// assertion unconsumed: the same ID-JAG then redeems for the resource it names.
+func TestIDJAGRedemptionRefusesResourceTheClaimDoesNotCover(t *testing.T) {
+	t.Parallel()
+	const otherResource = "https://gw.example.net/other-mcp"
+	h := startTwoServerIDJAGFor(t, []string{xrtIDJAGResource, otherResource}, nil)
+	assertion := h.mintIDJAG(t)
+	_, claims := decodeIDJAG(t, assertion)
+	require.Equal(t, xrtIDJAGResource, claims["resource"], "the ID-JAG names only the first resource")
+
+	res := postToken(t, h.as2.srv.URL, h.as2.client, url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {assertion},
+		"resource":   {otherResource},
+	})
+	assert.Equal(t, http.StatusBadRequest, res.status, res.body)
+	assert.Equal(t, "invalid_target", res.body["error"])
+	assert.NotContains(t, res.body["error_description"], "other-mcp", "the description must not echo the resource")
+	assert.NotContains(t, res.body, "access_token")
+
+	res = h.as2.redeem(t, h.as2.client, assertion)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
+	assert.Equal(t, []any{xrtIDJAGResource}, access["aud"])
 }

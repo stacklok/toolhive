@@ -1438,9 +1438,11 @@ its own default text before the reason.
 | Not a compact signed JWT, bad `typ` or algorithm (an assertion with such a `typ` is routed to the plain handler, never the ID-JAG one) | 400 `invalid_grant`, `invalid_assertion: <hint>` | n/a |
 | Signature or claim validation fails, issuer not enabled, assertion whose issued lifetime (`exp` − `iat`) exceeds `max_assertion_age`, replayed or expired | 400 `invalid_grant`, `invalid_assertion: <hint>` | same code and reason; the hint names an ID-JAG for the first two |
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
-| ID-JAG whose single `resource` claim is not a valid resource URI, and the request has no `resource` parameter | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is not a valid resource URI.` |
 | Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
+| A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
+| A `resource` claim with a value that is not in `allowed_audiences` or is not a valid resource URI, whatever the request holds | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim names a resource this server does not govern.` |
+| Every `resource` claim value is in `allowed_audiences`, but the claim does not list the requested `resource` | n/a (the plain grant has no `resource` claim) | 400 `invalid_target`, no reason (the description does not name the resource) |
 | Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
 | Issuer's signing keys could not be obtained (key fetch or cache lookup fails, or the key set is empty or too large) | 503 `temporarily_unavailable`, `issuer_unavailable` | same |
 | The request ended (client disconnect or deadline) while the keys were being fetched, or the server has no default audiences configured | 500 `server_error`, generic text | same |
@@ -1532,17 +1534,29 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   (an ID-JAG conveys no upstream vendor session at this server),
   consume-before-issue, and the issued token's lifetime being capped by the
   assertion's remaining validity.
-- **One exception to the shared `resource` rule.** The plain handler needs
-  exactly one `resource` parameter. The ID-JAG handler needs the same, except
-  when the request has no `resource` parameter at all and the ID-JAG's
-  `resource` claim holds a single valid value: draft §4.4 defines no `resource`
-  parameter for redemption, so that value is used. Every other case, including
-  an empty or repeated parameter, still needs exactly one parameter. A single
-  claim value that is not an absolute URI is refused with `invalid_grant` and
-  `invalid_assertion`, because the fault is in the assertion. The text is fixed
-  and does not quote the claim value. A requested resource that is not a valid
-  URI still gets `invalid_target`. The chosen
-  resource goes through the same subject-binding and client-audience checks.
+- **The `resource` claim.** Draft §4.4.1 restricts the access token to the
+  resources in the `resource` claim, so the handler checks it. A claim that is
+  not a non-empty string or a non-empty array of distinct non-empty strings
+  (a JSON `null` counts) is refused with `invalid_grant`, `invalid_assertion`,
+  whatever the request holds. Draft §4.4.1 also requires every claim value to
+  be a resource this server governs. The governed resources are
+  `allowed_audiences`, and each claim value must equal one of them exactly
+  (draft §4.3: simple string comparison, no normalization). If any value is
+  not in that list, or is not a valid resource URI, the request is refused
+  with `invalid_grant`, `invalid_assertion`, whatever the request holds, even
+  when the requested resource is one of the governed values. A server with no
+  `allowed_audiences` refuses every ID-JAG that has a `resource` claim. When
+  every value is governed, the claim must list the `resource` parameter if the
+  request has one; if it does not, the request is refused with
+  `invalid_target`. None of these refusals names the resource or a claim
+  value. When the request has no `resource` parameter and the claim holds a
+  single value, that value is used (draft §4.4 defines no `resource` parameter
+  for redemption). Every other case needs exactly one `resource` parameter,
+  including an empty or repeated one and a claim with several values. A
+  requested resource that is not a valid URI still gets `invalid_target`. An
+  ID-JAG with no `resource` claim keeps the old rule: the parameter decides.
+  The chosen resource goes through the same subject-binding and
+  client-audience checks. The assertion age is checked first.
 
 **Departures from the draft are logged, not refused.** The handler accepts some
 ID-JAGs that draft §4.4.1 does not allow. It logs these only for a request that
@@ -1567,17 +1581,8 @@ subject, `jti` or claim values. The findings are:
   `allowed_audiences`, because then no `aud` can name it (see
   [JWT-bearer configuration](#jwt-bearer-configuration)); the startup warning
   reports that case instead.
-- `resource_malformed`: the ID-JAG has a `resource` claim (a JSON `null` counts)
-  that is not a non-empty string or a non-empty array of distinct non-empty
-  strings.
-- `resource_not_covered`: the `resource` claim is well formed, and the `resource`
-  the client requested is not in it. When the request has a `resource`
-  parameter, the handler takes the resource from it, so the claim can disagree.
-  A resource defaulted from the claim is always covered.
 
-A malformed claim is never also reported as not covered. An ID-JAG with no
-`resource` claim has no resource finding. The two audience findings can appear
-together.
+The two audience findings can appear together.
 
 This is logging only. It changes nothing about what is accepted.
 
@@ -1592,7 +1597,7 @@ them:
   No code at this server reads `cnf`, so such an ID-JAG is accepted without
   proof of possession.
 
-A strict mode would have to refuse these two as well as the four logged
+A strict mode would have to refuse these two as well as the two logged
 findings.
 
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
@@ -2377,14 +2382,8 @@ with an empty audience `pkg/auth` skips the audience check.
 See [Bound ID-JAG assertions](#bound-id-jag-assertions) for how AS-2 redeems
 the ID-JAG. A ToolHive AS-2 finds the user by an exact AS-1 `sub` in
 `subject_bindings`, and its `max_assertion_age` must be at least the target's
-`lifetime`. Known gaps:
-
-- AS-2 takes the resource from the request form when it is present, and only
-  logs `resource_not_covered` when the `resource` claim does not list it. So an
-  ID-JAG minted for one resource redeems for any other resource in the subject
-  binding's `allowed_resources` and the client's audiences.
-- An AS-1 access token can redeem as a plain JWT-bearer assertion (see
-  "Keeping AS-2 ID-JAG-only").
+`lifetime`. One gap remains: an AS-1 access token can redeem as a plain
+JWT-bearer assertion (see "Keeping AS-2 ID-JAG-only").
 
 ### Logging
 

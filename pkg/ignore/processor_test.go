@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewProcessor(t *testing.T) {
@@ -520,4 +523,41 @@ func TestGetOverlayMountsConcurrentCleanup(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestGetMatchingPathsDirectoryPattern(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	for _, d := range []string{"secrets", "secrets-prod", "secrets-dev", "[literal]", "l"} {
+		require.NoError(t, os.Mkdir(filepath.Join(tmpDir, d), 0755))
+	}
+	for _, f := range []string{"secrets.txt", "[file]"} {
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, f), nil, 0644))
+	}
+
+	testCases := []struct {
+		name     string
+		pattern  string
+		expected []string
+	}{
+		{name: "literal file with directory pattern", pattern: "secrets.txt/", expected: nil},
+		{name: "glob matches directories only", pattern: "secrets*/", expected: []string{"secrets", "secrets-dev", "secrets-prod"}},
+		{name: "glob matching only a file", pattern: "*.txt/", expected: nil},
+		{name: "glob matching nothing", pattern: "cache-*/", expected: nil},
+		{name: "literal name is preferred over glob", pattern: "[literal]/", expected: []string{"[literal]"}},
+		{name: "literal file name is not globbed", pattern: "[file]/", expected: nil},
+		{name: "malformed glob", pattern: "[/", expected: nil},
+	}
+
+	processor := NewProcessor(&Config{})
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var expected []string
+			for _, name := range tc.expected {
+				expected = append(expected, filepath.Join(tmpDir, name))
+			}
+			assert.ElementsMatch(t, expected, processor.getMatchingPaths(tmpDir, tc.pattern))
+		})
+	}
 }

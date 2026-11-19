@@ -805,7 +805,7 @@ func (*Converter) convertExternalAuthConfigToStrategy(
 	if strategy.OBO != nil &&
 		externalAuthConfig.Spec.OBO != nil &&
 		externalAuthConfig.Spec.OBO.ClientSecretRef != nil {
-		strategy.OBO.ClientSecretEnv = controllerutil.GenerateUniqueOBOEnvVarName(externalAuthConfig.Name)
+		strategy.OBO.ClientSecretEnv = controllerutil.GenerateUniqueOBOSecretEnvVarName(externalAuthConfig.Name)
 	}
 
 	return strategy, nil

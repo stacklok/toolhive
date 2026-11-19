@@ -2440,8 +2440,8 @@ func TestConvertExternalAuthConfigToStrategy_OBOUsesPerConfigSecretEnv(t *testin
 
 	require.NotNil(t, first.OBO)
 	require.NotNil(t, second.OBO)
-	assert.Equal(t, controllerutil.GenerateUniqueOBOEnvVarName("obo-a"), first.OBO.ClientSecretEnv)
-	assert.Equal(t, controllerutil.GenerateUniqueOBOEnvVarName("obo-b"), second.OBO.ClientSecretEnv)
+	assert.Equal(t, controllerutil.GenerateUniqueOBOSecretEnvVarName("obo-a"), first.OBO.ClientSecretEnv)
+	assert.Equal(t, controllerutil.GenerateUniqueOBOSecretEnvVarName("obo-b"), second.OBO.ClientSecretEnv)
 	assert.NotEqual(t, first.OBO.ClientSecretEnv, second.OBO.ClientSecretEnv)
 	assert.Empty(t, first.OBO.ClientSecret)
 }

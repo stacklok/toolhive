@@ -6,7 +6,6 @@ package entra
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -309,10 +308,13 @@ func (e *Exchanger) ExchangeToken(ctx context.Context, userToken, audience strin
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		// Surface caller-driven cancellation/timeout as-is so it is not
-		// misclassified as a retryable server failure.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return exchange.Token{}, fmt.Errorf("entra obo: %w", err)
+		// Surface caller-driven cancellation or deadline as-is so it is not
+		// misclassified as a retryable server failure. Only when the caller's
+		// own context is done: the HTTP client's Timeout also produces an
+		// error matching context.DeadlineExceeded, and that is a slow or
+		// unreachable token endpoint, which is transient.
+		if ctx.Err() != nil {
+			return exchange.Token{}, fmt.Errorf("entra obo: %w", ctx.Err())
 		}
 		// Transport-level failure (DNS, dial, TLS, read). The raw error is
 		// dropped deliberately: it is not needed to classify the failure as

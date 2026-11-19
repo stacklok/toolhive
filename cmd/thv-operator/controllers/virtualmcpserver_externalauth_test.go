@@ -2042,8 +2042,8 @@ func TestGetExternalAuthConfigSecretEnvVars_OBO(t *testing.T) {
 
 	require.Len(t, envA, 1)
 	require.Len(t, envB, 1)
-	assert.Equal(t, ctrlutil.GenerateUniqueOBOEnvVarName(backendA.Name), envA[0].Name)
-	assert.Equal(t, ctrlutil.GenerateUniqueOBOEnvVarName(backendB.Name), envB[0].Name)
+	assert.Equal(t, ctrlutil.GenerateUniqueOBOSecretEnvVarName(backendA.Name), envA[0].Name)
+	assert.Equal(t, ctrlutil.GenerateUniqueOBOSecretEnvVarName(backendB.Name), envB[0].Name)
 	assert.NotEqual(t, envA[0].Name, envB[0].Name, "two OBO backends must get distinct env vars")
 	assert.Equal(t, "secret-a", envA[0].ValueFrom.SecretKeyRef.Name)
 	assert.Equal(t, "secret-b", envB[0].ValueFrom.SecretKeyRef.Name)

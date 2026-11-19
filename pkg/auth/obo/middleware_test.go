@@ -561,20 +561,27 @@ func TestMiddleware_UnclassifiedError_NotLoggedToDefault(t *testing.T) {
 		"an unclassified error's content must not reach the diagnostic log")
 }
 
-// TestMiddleware_ClientCancellation_NoSpurious502 verifies that a client which
-// disconnects mid-exchange does not produce a 502: context cancellation /
-// deadline errors (including the entra-wrapped form) are treated as benign, with
-// no error response written.
-func TestMiddleware_ClientCancellation_NoSpurious502(t *testing.T) {
+// TestMiddleware_ContextErrors verifies the handling of context-shaped
+// exchange errors. When the client's own request context is done (it
+// disconnected or its deadline passed), no response is written: a 502 would be
+// a misleading 5xx for a request nobody is waiting on. When the request is
+// still live, a context-shaped error (e.g. the HTTP client timing out against
+// the token endpoint) is a backend failure and must be a 502, not an empty 200.
+func TestMiddleware_ContextErrors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		err  error
+		name          string
+		err           error
+		cancelRequest bool
+		wantStatus    int
 	}{
-		{name: "canceled", err: context.Canceled},
-		{name: "deadline exceeded", err: context.DeadlineExceeded},
-		{name: "entra-wrapped canceled", err: fmt.Errorf("entra obo: %w", context.Canceled)},
+		{name: "canceled request", err: context.Canceled, cancelRequest: true, wantStatus: http.StatusOK},
+		{name: "canceled request, entra-wrapped", err: fmt.Errorf("entra obo: %w", context.Canceled),
+			cancelRequest: true, wantStatus: http.StatusOK},
+		{name: "deadline on a canceled request", err: context.DeadlineExceeded, cancelRequest: true, wantStatus: http.StatusOK},
+		{name: "deadline on a live request is a 502", err: context.DeadlineExceeded, wantStatus: http.StatusBadGateway},
+		{name: "canceled error on a live request is a 502", err: context.Canceled, wantStatus: http.StatusBadGateway},
 	}
 
 	for _, tt := range tests {
@@ -583,12 +590,21 @@ func TestMiddleware_ClientCancellation_NoSpurious502(t *testing.T) {
 			stub := &stubExchanger{err: tt.err}
 			mw := newMiddleware(stub, "", testTarget, nil)
 
-			rec, spy := serve(t, mw, request(t, inboundIdentity("user-token")))
+			req := request(t, inboundIdentity("user-token"))
+			if tt.cancelRequest {
+				ctx, cancel := context.WithCancel(req.Context())
+				cancel()
+				req = req.WithContext(ctx)
+			}
+			rec, spy := serve(t, mw, req)
 
-			assert.NotEqual(t, http.StatusBadGateway, rec.Code, "client cancellation must not be a 502")
-			assert.Empty(t, rec.Body.String(), "no error body is written for a cancelled request")
+			// httptest.ResponseRecorder reports 200 when nothing was written.
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			if tt.cancelRequest {
+				assert.Empty(t, rec.Body.String(), "no error body is written for a cancelled request")
+			}
 			assert.False(t, spy.called)
-			assert.Equal(t, 1, stub.calls, "the exchange was attempted before cancellation")
+			assert.Equal(t, 1, stub.calls)
 		})
 	}
 }

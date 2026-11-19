@@ -44,7 +44,7 @@ func (*OBOConverter) StrategyType() string { return authtypes.StrategyTypeOBO }
 //
 // Neither the client secret nor ClientSecretEnv is set here. In inline mode the
 // operator sets ClientSecretEnv to the per-config name it mounts the secret
-// under (controllerutil.GenerateUniqueOBOEnvVarName), so several OBO backends in
+// under (controllerutil.GenerateUniqueOBOSecretEnvVarName), so several OBO backends in
 // one vMCP pod never share an env var. In discovered mode ResolveSecrets sets
 // the resolved ClientSecret instead.
 func (*OBOConverter) ConvertToStrategy(

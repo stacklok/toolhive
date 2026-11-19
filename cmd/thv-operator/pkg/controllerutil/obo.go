@@ -102,7 +102,7 @@ func OBOValidate(cfg *mcpv1beta1.MCPExternalAuthConfig) error {
 
 // OBOSecretEnvVars returns the env var that mounts the OBO client secret into
 // a proxyrunner pod (MCPServer or MCPRemoteProxy) under obo.ClientSecretEnvVar.
-// The vMCP pod uses per-config names instead; see GenerateUniqueOBOEnvVarName.
+// The vMCP pod uses per-config names instead; see GenerateUniqueOBOSecretEnvVarName.
 func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
 	return currentOBOHandler().SecretEnvVars(cfg)
 }
@@ -172,7 +172,7 @@ func OBOVMCPSecretEnvVar(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar
 	if err := validateOBOSecretRef(cfg.Spec.OBO.ClientSecretRef); err != nil {
 		return nil, err
 	}
-	return []corev1.EnvVar{oboSecretEnvVar(GenerateUniqueOBOEnvVarName(cfg.Name), cfg.Spec.OBO.ClientSecretRef)}, nil
+	return []corev1.EnvVar{oboSecretEnvVar(GenerateUniqueOBOSecretEnvVarName(cfg.Name), cfg.Spec.OBO.ClientSecretRef)}, nil
 }
 
 // validateOBO is the built-in OBOHandler.Validate.

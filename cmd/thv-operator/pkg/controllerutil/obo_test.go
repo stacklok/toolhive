@@ -424,7 +424,7 @@ func TestOBOVMCPSecretEnvVar_UniquePerConfig(t *testing.T) {
 	require.Len(t, second, 1)
 	assert.Equal(t, "TOOLHIVE_OBO_CLIENT_SECRET_BACKEND_A", first[0].Name)
 	assert.Equal(t, "TOOLHIVE_OBO_CLIENT_SECRET_BACKEND_B", second[0].Name)
-	assert.Equal(t, GenerateUniqueOBOEnvVarName("backend-a"), first[0].Name,
+	assert.Equal(t, GenerateUniqueOBOSecretEnvVarName("backend-a"), first[0].Name,
 		"the deployment and the converter enrichment must agree on the name")
 
 	_, err = OBOVMCPSecretEnvVar(oboCR("bad", mutatedOBOConfig(func(c *mcpv1beta1.OBOConfig) { c.ClientSecretRef = nil })))

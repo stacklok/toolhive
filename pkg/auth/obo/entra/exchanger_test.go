@@ -357,6 +357,38 @@ func TestExchanger_ExchangeToken_ContextCancelledPropagates(t *testing.T) {
 	assert.NotErrorIs(t, err, entra.ErrTransient)
 }
 
+// TestExchanger_ExchangeToken_ClientTimeoutIsTransient verifies that the HTTP
+// client's own timeout (which net/http reports as matching
+// context.DeadlineExceeded) is classified as a transient token endpoint failure
+// rather than surfaced as caller cancellation, because the caller's context is
+// still live.
+func TestExchanger_ExchangeToken_ClientTimeoutIsTransient(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-release // slower than the client timeout
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	ex, err := entra.New(entra.Config{
+		TenantID:     testTenant,
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		Authority:    srv.URL,
+		HTTPClient:   &http.Client{Timeout: 50 * time.Millisecond},
+	})
+	require.NoError(t, err)
+
+	_, err = ex.ExchangeToken(t.Context(), testUserToken, testAudience)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, entra.ErrTransient)
+	assert.NotErrorIs(t, err, context.DeadlineExceeded,
+		"a token endpoint timeout must not look like caller cancellation")
+}
+
 func TestNew_EnforcesRedirectGuardOnInjectedClient(t *testing.T) {
 	t.Parallel()
 

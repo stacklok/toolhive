@@ -262,10 +262,12 @@ func (m *middleware) writeExchangeError(w http.ResponseWriter, r *http.Request, 
 		slog.DebugContext(r.Context(), "obo: subject token rejected by identity provider")
 		http.Error(w, unauthorizedMessage, http.StatusUnauthorized)
 
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case r.Context().Err() != nil &&
+		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
 		// The client (or its deadline) went away mid-exchange. Write no
 		// response: a 502 would be a misleading 5xx for a request nobody is
-		// waiting on.
+		// waiting on. A context-shaped error on a request that is still live
+		// (e.g. a timeout reaching the token endpoint) falls through to 502.
 		slog.DebugContext(r.Context(), "obo: token exchange cancelled before completion")
 
 	default:

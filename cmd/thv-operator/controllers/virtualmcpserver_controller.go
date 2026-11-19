@@ -2702,7 +2702,7 @@ func setUniqueSecretEnvNames(
 	if strategy.OBO != nil &&
 		externalAuthConfig.Spec.OBO != nil &&
 		externalAuthConfig.Spec.OBO.ClientSecretRef != nil {
-		strategy.OBO.ClientSecretEnv = ctrlutil.GenerateUniqueOBOEnvVarName(externalAuthConfig.Name)
+		strategy.OBO.ClientSecretEnv = ctrlutil.GenerateUniqueOBOSecretEnvVarName(externalAuthConfig.Name)
 	}
 	if strategy.XAA != nil && externalAuthConfig.Spec.XAA != nil {
 		if externalAuthConfig.Spec.XAA.IDPClientSecretRef != nil {

@@ -14,7 +14,7 @@ import (
 // OBO confidential-client secret into for a proxyrunner pod (MCPServer and
 // MCPRemoteProxy). A proxy carries at most one OBO config, so a fixed name is
 // enough. The vMCP pod can carry several OBO backends and therefore uses a
-// per-config name instead (see controllerutil.GenerateUniqueOBOEnvVarName).
+// per-config name instead (see controllerutil.GenerateUniqueOBOSecretEnvVarName).
 //
 //nolint:gosec // G101: this is an environment-variable name, not a credential.
 const ClientSecretEnvVar = "TOOLHIVE_OBO_CLIENT_SECRET"

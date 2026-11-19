@@ -105,7 +105,7 @@ func TestOBOIntegration_InlineTwoBackends(t *testing.T) {
 		// The operator sets this when it renders the vMCP config (see
 		// convertExternalAuthConfigToStrategy) and mounts the secret under the
 		// same name (getExternalAuthConfigSecretEnvVars).
-		strategy.OBO.ClientSecretEnv = controllerutil.GenerateUniqueOBOEnvVarName(name)
+		strategy.OBO.ClientSecretEnv = controllerutil.GenerateUniqueOBOSecretEnvVarName(name)
 		return strategy
 	}
 	strategyA := strategyFor("obo-backend-a", entraA.URL)

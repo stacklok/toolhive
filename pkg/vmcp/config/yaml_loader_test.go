@@ -739,6 +739,37 @@ aggregation:
 			shouldPass: false,
 			errMsg:     "incomingAuth.type must be one of",
 		},
+		{
+			// The operator renders inline OBO backends with only
+			// clientSecretEnv and mounts the Secret under that name.
+			name: "obo backend with clientSecretEnv passes validation",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    entra-api:
+      type: obo
+      obo:
+        tokenUrl: https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token
+        clientId: client-123
+        clientSecretEnv: OBO_SECRET
+        scopes:
+          - api://backend/.default
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			envVars:    map[string]string{"OBO_SECRET": "secret-value"},
+			shouldPass: true,
+		},
 	}
 
 	for _, tt := range tests {

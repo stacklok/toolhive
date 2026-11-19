@@ -25,6 +25,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -43,6 +45,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 const (
@@ -125,6 +128,68 @@ func TestOBOIntegration_InlineTwoBackends(t *testing.T) {
 	assertOBOExchange(t, entraCapB, "secret-b")
 	assert.Equal(t, "Bearer backend-token-a", backendCapA.authHeader())
 	assert.Equal(t, "Bearer backend-token-b", backendCapB.authHeader())
+}
+
+// TestOBOIntegration_InlineConfigFileLoad drives an operator-rendered inline
+// OBO backend through the vMCP startup path: the YAML loader, the config
+// validator, the strategy's own Validate, then a real exchange. The operator
+// writes only clientSecretEnv and mounts the Secret under that name, so the
+// loaded strategy must keep clientSecretEnv and leave clientSecret empty.
+func TestOBOIntegration_InlineConfigFileLoad(t *testing.T) {
+	t.Parallel()
+
+	entra, entraCap := startMockEntra(t, "backend-token-file")
+	backend, backendCap := startMockBackend(t)
+
+	const secretEnv = "TOOLHIVE_OBO_CLIENT_SECRET_ENTRA_API"
+	envReader := oboMapEnv{secretEnv: "file-secret"}
+
+	configYAML := `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    entra-api:
+      type: obo
+      obo:
+        tokenUrl: ` + entra.URL + `
+        clientId: ` + oboTestClientID + `
+        clientSecretEnv: ` + secretEnv + `
+        scopes:
+          - ` + oboTestScope + `
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(configYAML), 0o600))
+
+	cfg, err := vmcpconfig.NewYAMLLoader(path, envReader).Load()
+	require.NoError(t, err)
+	require.NoError(t, vmcpconfig.NewValidator().Validate(cfg))
+
+	strategy := cfg.OutgoingAuth.Backends["entra-api"]
+	require.NotNil(t, strategy)
+	require.NotNil(t, strategy.OBO)
+	assert.Equal(t, secretEnv, strategy.OBO.ClientSecretEnv)
+	assert.Empty(t, strategy.OBO.ClientSecret, "the loader must not copy the env value into clientSecret")
+
+	registry, err := authfactory.NewOutgoingAuthRegistry(t.Context(), envReader)
+	require.NoError(t, err)
+	exec, err := registry.GetStrategy(strategy.Type)
+	require.NoError(t, err)
+	require.NoError(t, exec.Validate(strategy))
+
+	exchangeThroughBackend(t, registry, strategy, backend, backendCap)
+	assertOBOExchange(t, entraCap, "file-secret")
+	assert.Equal(t, "Bearer backend-token-file", backendCap.authHeader())
 }
 
 // exchangeThroughBackend resolves the OBO strategy from the registry,

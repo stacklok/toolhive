@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -20,18 +21,14 @@ import (
 	"github.com/ory/x/errorsx"
 
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Compile-time check that RefreshTokenHandler implements fosite.TokenEndpointHandler.
 var _ fosite.TokenEndpointHandler = (*RefreshTokenHandler)(nil)
-
-// tokenTypeNotApplicable is the RFC 6749 token_type for a response whose
-// access_token member is not an access token (RFC 8693 section 2.2.1).
-const tokenTypeNotApplicable = "N_A"
 
 // Reasons logged with a refusal. They are fixed strings; the
 // authorization_details reasons are the ones returned to the client.
@@ -102,16 +99,21 @@ func isRefreshTokenExchange(form url.Values) bool {
 // token_used. The check and the write are one atomic store call, made in
 // PopulateTokenEndpointResponse, so two concurrent exchanges produce one grant.
 //
-// A refresh-token subject is exchanged for a child grant (decideChild). Two
-// derives from one grant give two independent children, since a child has no
-// replay marker. If the response of a derive is lost, the child stays until its
-// parent ends; this is accepted.
+// A refresh-token subject is exchanged for a child grant (decideChild), or for
+// an ID-JAG (decideIDJAG) when the request asks for one. Two derives from one
+// grant give two independent children, since a child has no replay marker. If
+// the response of a derive is lost, the child stays until its parent ends; this
+// is accepted. Minting an ID-JAG writes nothing, so one grant mints any number
+// of them.
 //
 // A client without exchange_refresh_tokens is refused with the unsupported
 // requested_token_type text (unsupportedTokenType), or with the unsupported
 // subject_token_type text that validateFormParams returns when its subject is a
-// refresh token. A refresh-token subject asking for any type but a refresh
-// token is refused with the same subject text. All are invalid_request.
+// refresh token. A refresh-token subject asking for a type whose cap
+// the client lacks (a refresh token without the refresh_token cap, an ID-JAG
+// without the ID-JAG cap) or for any other type is refused with the same
+// subject text, and one asking for an ID-JAG from a client with the cap but no
+// ID-JAG targets gets the unsupported requested_token_type text. All are invalid_request.
 //
 // The exchange grant is the only profile this handler issues today; a later
 // profile would be chosen where decide checks the client's exchange_refresh_tokens.
@@ -122,6 +124,49 @@ type RefreshTokenHandler struct {
 	registry       *authorizationdetails.Registry
 	clientPolicies map[string]ConfiguredClientPolicy
 	refreshScopes  fosite.RefreshTokenScopesProvider
+	signer         idJAGSigner   // signs ID-JAGs with typ oauth-id-jag+jwt; *server.Signer in production
+	issuer         string        // the access-token issuer
+	actorLimiter   *actorLimiter // one per server, shared by every actor validation
+	actorTimeout   time.Duration // the budget of one actor validation
+	clock          func() time.Time
+}
+
+// RefreshTokenOption configures RefreshTokenFactory. Factory takes FactoryOption
+// instead, so an option cannot be passed to the wrong factory.
+type RefreshTokenOption func(*refreshTokenOptions)
+
+type refreshTokenOptions struct {
+	exchangeGrantStore storage.ExchangeGrantStorage
+	actorCapacity      int
+	actorTimeout       time.Duration
+	clock              func() time.Time
+}
+
+// WithExchangeGrantStorage gives RefreshTokenFactory the store that holds the
+// grants behind issued refresh tokens. It may be nil when no client enables
+// exchange_refresh_tokens; the handler then refuses every request for a refresh
+// token before it needs the store.
+func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.exchangeGrantStore = store }
+}
+
+// withActorValidationTimeout replaces the budget of one actor validation, which
+// is actorValidationTimeout by default.
+func withActorValidationTimeout(timeout time.Duration) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.actorTimeout = timeout }
+}
+
+// withClock replaces time.Now as the handler's clock: the instant that decides
+// a request and the instant an actor validator's answer is checked.
+func withClock(clock func() time.Time) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.clock = clock }
+}
+
+// withActorValidatorCapacity replaces the number of actor validator calls that
+// may run at once, which is defaultActorValidatorCapacity by default. A value
+// below 1 fails RefreshTokenFactory.
+func withActorValidatorCapacity(capacity int) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.actorCapacity = capacity }
 }
 
 // RefreshTokenFactory returns a server.Factory that creates the
@@ -132,19 +177,47 @@ type RefreshTokenHandler struct {
 // WithExchangeGrantStorage; it may be nil only if no client has
 // exchange_refresh_tokens.
 //
-// The authorization_details registry is built here, once, and startup fails if
-// that fails. It is private to this handler.
+// signer is required and must come from server.NewSigner. Construction also
+// fails for any IDJAGTarget in clientPolicies that is not structurally usable
+// (empty issuer, a map key that is not the target's issuer, empty client_id, no
+// or an empty resource, a lifetime that is not positive).
+//
+// The authorization_details registry and the actor validator limiter are built
+// here, once, and startup fails if either fails. Both are private to this
+// handler, so every actor validation on the server shares one limiter.
 func RefreshTokenFactory(
-	clientPolicies map[string]ConfiguredClientPolicy, options ...FactoryOption,
+	clientPolicies map[string]ConfiguredClientPolicy, signer *server.Signer, options ...RefreshTokenOption,
 ) (server.Factory, error) {
+	if signer == nil {
+		return nil, fmt.Errorf("tokenexchange: RefreshTokenFactory requires a signer")
+	}
+	clientIDs := slices.Sorted(maps.Keys(clientPolicies))
+	for _, id := range clientIDs {
+		targets := clientPolicies[id].IDJAGTargets
+		for _, key := range slices.Sorted(maps.Keys(targets)) {
+			if err := checkIDJAGTargetUsable(id, key, targets[key]); err != nil {
+				return nil, err
+			}
+		}
+	}
 	registry, err := newExchangeGrantRegistry()
 	if err != nil {
 		return nil, fmt.Errorf("tokenexchange: failed to build the exchange grant registry: %w", err)
 	}
-	resolved := resolveFactoryOptions(options)
+	resolved := resolveRefreshTokenOptions(options)
+	if resolved.actorTimeout <= 0 {
+		return nil, fmt.Errorf("tokenexchange: the actor validation timeout must be positive, got %s", resolved.actorTimeout)
+	}
+	if resolved.clock == nil {
+		return nil, errors.New("tokenexchange: the clock must not be nil")
+	}
+	limiter, err := newActorLimiter(resolved.actorCapacity)
+	if err != nil {
+		return nil, fmt.Errorf("tokenexchange: %w", err)
+	}
 	if resolved.exchangeGrantStore == nil {
-		for id, policy := range clientPolicies {
-			if len(policy.ExchangeRefreshTokens) > 0 {
+		for _, id := range clientIDs {
+			if len(clientPolicies[id].ExchangeRefreshTokens) > 0 {
 				return nil, fmt.Errorf(
 					"tokenexchange: client %q enables exchange_refresh_tokens but no exchange grant store was given", id)
 			}
@@ -167,6 +240,11 @@ func RefreshTokenFactory(
 			registry:       registry,
 			clientPolicies: clientPolicies,
 			refreshScopes:  config,
+			signer:         signer,
+			issuer:         config.GetAccessTokenIssuer(),
+			actorLimiter:   limiter,
+			actorTimeout:   resolved.actorTimeout,
+			clock:          resolved.clock,
 		}, nil
 	}, nil
 }
@@ -191,13 +269,15 @@ func (h *RefreshTokenHandler) HandleTokenEndpointRequest(ctx context.Context, re
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
-	_, err := h.decide(ctx, requester, time.Now())
+	_, err := h.decide(ctx, requester, h.clock())
 	return err
 }
 
 // PopulateTokenEndpointResponse decides the request again and issues the refresh
-// token. The second decision verifies the subject token right before it is
-// consumed. The grant carries the subject token's (iss, jti), so a reused
+// token or mints the ID-JAG. The second decision verifies the subject token
+// right before it is consumed, and re-reads a presented grant before an ID-JAG
+// is signed; for a client with an actor profile the validator call comes in
+// between, and the grant is not read again after it. The grant carries the subject token's (iss, jti), so a reused
 // subject token fails in issue with token_used. A child grant has no (iss, jti)
 // marker, so token_used applies only to top-level grants. The response is the RFC 8693
 // shape with token_type N_A and no refresh_token member; fosite writes
@@ -208,11 +288,20 @@ func (h *RefreshTokenHandler) PopulateTokenEndpointResponse(
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
-	decision, err := h.decide(ctx, requester, time.Now())
+	decided, err := h.decide(ctx, requester, h.clock())
 	if err != nil {
 		return err
 	}
-	return h.issue(ctx, requester, decision, responder)
+	switch {
+	case decided.grant != nil:
+		return h.issue(ctx, requester, decided.grant, responder)
+	case decided.idJAG != nil:
+		return h.issueIDJAG(ctx, decided.idJAG, responder)
+	default:
+		// Unreachable: decide sets exactly one field or returns an error. Kept so a
+		// future decision kind fails closed instead of issuing nothing.
+		return errorsx.WithStack(fosite.ErrServerError.WithHint("The token could not be issued."))
+	}
 }
 
 // refuse logs a refusal at warn level with a stable reason and returns the error
@@ -237,6 +326,13 @@ type exchangeGrantDecision struct {
 	log   *slog.Logger
 }
 
+// decision is the outcome of decide. Exactly one field is set: grant for a
+// request that issues a grant, idJAG for one that mints an ID-JAG.
+type decision struct {
+	grant *exchangeGrantDecision
+	idJAG *idJAGDecision
+}
+
 // decide validates the request, the subject token and the authorization_details
 // entry, and returns what to issue. It writes nothing to the store and consumes
 // nothing; its only effect is the refusal log line. It runs twice per request
@@ -247,36 +343,41 @@ type exchangeGrantDecision struct {
 // branch (decideTopLevel for a login access token, decideChild for a refresh
 // token) that builds the same exchangeGrantDecision, which issue then writes.
 // That is a different axis from a new profile, which changes what the grant
-// allows, not what it is derived from.
+// allows, not what it is derived from. A refresh-token subject asking for an
+// ID-JAG goes to decideIDJAG instead, whose decision issueIDJAG mints.
 func (h *RefreshTokenHandler) decide(
 	ctx context.Context, requester fosite.AccessRequester, now time.Time,
-) (*exchangeGrantDecision, error) {
+) (decision, error) {
 	client := requester.GetClient()
 	form := requester.GetRequestForm()
 	log := slog.With("client_id", client.GetID())
 
 	if client.IsPublic() {
-		return nil, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		return decision{}, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The OAuth 2.0 Client is marked as public and is thus not allowed to use authorization grant 'token-exchange'."))
 	}
 	if !client.GetGrantTypes().Has(oauthproto.GrantTypeTokenExchange) {
-		return nil, errorsx.WithStack(fosite.ErrUnauthorizedClient.WithHint(
+		return decision{}, errorsx.WithStack(fosite.ErrUnauthorizedClient.WithHint(
 			"The OAuth 2.0 Client is not allowed to use authorization grant 'token-exchange'."))
 	}
 
 	// The policy gate comes first: a client that has not enabled the feature gets
 	// the unsupported-type text. A refresh-token subject is refused too when it
-	// does not ask for a refresh token, or when the client's policy no longer
-	// allows refresh tokens, so removing the cap stops derives from source grants the
-	// client already holds. The text is the one validateFormParams returns for an
-	// unsupported subject type.
+	// asks for neither a refresh token nor an ID-JAG, or when it asks for a
+	// type whose cap the client's policy no longer has, so removing a cap stops
+	// derives and ID-JAG mints from source grants the client already holds.
+	// The text is the one validateFormParams returns for an unsupported subject
+	// type.
 	policy := h.clientPolicies[client.GetID()]
 	subjectType := form.Get("subject_token_type")
+	requestedType := form.Get("requested_token_type")
 	derive := subjectType == oauthproto.TokenTypeRefreshToken
 	_, refreshAllowed := policy.ExchangeRefreshTokens[oauthproto.TokenTypeRefreshToken]
-	if derive && (!refreshAllowed ||
-		form.Get("requested_token_type") != oauthproto.TokenTypeRefreshToken) {
-		return nil, refuse(ctx, log, refuseUnsupportedType, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+	deriveAllowed := requestedType == oauthproto.TokenTypeRefreshToken && refreshAllowed
+	_, idJAGCap := policy.ExchangeRefreshTokens[oauthproto.TokenTypeIDJAG]
+	idJAGAllowed := requestedType == oauthproto.TokenTypeIDJAG && idJAGCap
+	if derive && !deriveAllowed && !idJAGAllowed {
+		return decision{}, refuse(ctx, log, refuseUnsupportedType, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
 			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
 			subjectType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT)))
 	}
@@ -286,13 +387,34 @@ func (h *RefreshTokenHandler) decide(
 	// and checked at startup, not by the shape of the request. A client with no
 	// policy must keep meaning "nothing allowed".
 	if len(policy.ExchangeRefreshTokens) == 0 {
-		return nil, refuse(ctx, log, refuseUnsupportedType,
-			errorsx.WithStack(unsupportedTokenType("requested_token_type", form.Get("requested_token_type"))))
+		return decision{}, refuse(ctx, log, refuseUnsupportedType,
+			errorsx.WithStack(unsupportedTokenType("requested_token_type", requestedType)))
 	}
+	if derive && requestedType == oauthproto.TokenTypeIDJAG {
+		// A client with no ID-JAG targets cannot mint at all, so it gets the
+		// unsupported-type text before any request parameter is checked or any
+		// grant is read.
+		if len(policy.IDJAGTargets) == 0 {
+			return decision{}, refuse(ctx, log, refuseUnsupportedType,
+				errorsx.WithStack(unsupportedTokenType("requested_token_type", requestedType)))
+		}
+		minting, err := h.decideIDJAG(ctx, requester, policy, log, now)
+		if err != nil {
+			return decision{}, err
+		}
+		return decision{idJAG: minting}, nil
+	}
+	var grant *exchangeGrantDecision
+	var err error
 	if derive {
-		return h.decideChild(ctx, requester, policy, log.With("has_parent", true), now)
+		grant, err = h.decideChild(ctx, requester, policy, log.With("has_parent", true), now)
+	} else {
+		grant, err = h.decideTopLevel(ctx, requester, policy, log, now)
 	}
-	return h.decideTopLevel(ctx, requester, policy, log, now)
+	if err != nil {
+		return decision{}, err
+	}
+	return decision{grant: grant}, nil
 }
 
 // decideTopLevel decides a request that exchanges a login access token for a
@@ -348,11 +470,13 @@ func (h *RefreshTokenHandler) decideTopLevel(
 		CreatedAt:          now,
 	}
 	var jsonErr error
-	if grant.SubjectIdentifier, jsonErr = claimJSON(claims.Extra, "sub_id"); jsonErr != nil {
-		return nil, refuse(ctx, log, refuseInternal, issueFailed())
+	if grant.SubjectIdentifier, jsonErr = claimJSON(claims.Extra, claimnames.SubjectIdentifierKey); jsonErr != nil {
+		return nil, refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed,
+			fmt.Errorf("encoding claim %q: %w", claimnames.SubjectIdentifierKey, jsonErr)))
 	}
-	if grant.UpstreamSubject, jsonErr = claimJSON(claims.Extra, session.UpstreamSubjectClaimKey); jsonErr != nil {
-		return nil, refuse(ctx, log, refuseInternal, issueFailed())
+	if grant.UpstreamSubject, jsonErr = claimJSON(claims.Extra, claimnames.UpstreamSubjectKey); jsonErr != nil {
+		return nil, refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed,
+			fmt.Errorf("encoding claim %q: %w", claimnames.UpstreamSubjectKey, jsonErr)))
 	}
 	if grant.SubjectIdentifier != "" {
 		log = log.With("sub_id", grant.SubjectIdentifier)
@@ -376,9 +500,11 @@ func claimJSON(extra map[string]any, key string) (string, error) {
 
 // decideChild decides a request that exchanges a refresh token for a child
 // grant. The request parameters are checked first; they say nothing about the
-// presented token. presentedGrant then applies the checks in the order that
-// reveals nothing before the client check. The presented grant is the source:
-// it becomes the parent of the new child.
+// presented token. presentedGrant then runs its checks in the order its own
+// comment describes, so nothing is revealed before the client check. Only then
+// must the presented grant be top-level and list refresh_token, so a child
+// grant is refused here: depth is 1. The presented grant is the source: it
+// becomes the parent of the new child.
 func (h *RefreshTokenHandler) decideChild(
 	ctx context.Context, requester fosite.AccessRequester, policy ConfiguredClientPolicy,
 	log *slog.Logger, now time.Time,
@@ -396,6 +522,9 @@ func (h *RefreshTokenHandler) decideChild(
 	source, log, err := h.presentedGrant(ctx, clientID, form.Get("subject_token"), now, log)
 	if err != nil {
 		return nil, err
+	}
+	if source.ParentSignature != "" || !slices.Contains(source.IssuableTokenTypes, oauthproto.TokenTypeRefreshToken) {
+		return nil, refuseWithReason(ctx, log, reasonNotIssuable)
 	}
 
 	echo, tokenType, expiresAt, err := decideChildEntry(ctx, pending, clientID, source, policy, now)
@@ -417,25 +546,25 @@ func (h *RefreshTokenHandler) decideChild(
 	return &exchangeGrantDecision{grant: grant, echo: echo, now: now, log: log}, nil
 }
 
-// presentedGrant returns the live grant behind a presented refresh token that
-// may be derived from (the source grant), with the logger extended by what the
-// grant tells. The order is fixed: the HMAC check, which needs no store
+// presentedGrant returns the live grant behind a presented refresh token (the
+// source grant), with the logger extended by what the grant tells. The order is
+// fixed: the HMAC check, which needs no store
 // (ValidateRefreshToken is called with a session that has no refresh expiry, so
 // it checks only the HMAC; RefreshTokenSignature does not verify it); the
 // lookup, which is storage.LiveExchangeGrant: the grant's own liveness and its
 // parent's; the client check; the whole-second check; then checkPresentedGrant,
-// which turns the lookup's result into a refusal and checks the refresh_token
-// type.
+// which turns the lookup's result into a refusal.
 // Nothing about the presented token is revealed before the client check. The
 // whole-second check comes right after it: expires_at is whole seconds, so a
 // grant with no whole second left is refused like an expired one
-// (reasonGrantInvalid), whatever else is wrong with it. A child grant never
-// lists refresh_token, so it fails the last check: depth is 1.
+// (reasonGrantInvalid), whatever else is wrong with it. Which output the grant
+// may produce is not checked here; each caller checks that after
+// this returns.
 func (h *RefreshTokenHandler) presentedGrant(
 	ctx context.Context, clientID, token string, now time.Time, log *slog.Logger,
 ) (*storage.ExchangeGrant, *slog.Logger, error) {
 	if h.store == nil {
-		return nil, log, refuse(ctx, log, refuseInternal, issueFailed())
+		return nil, log, refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed, errNoGrantStore))
 	}
 	hmacOnly := &fosite.Request{Session: &fosite.DefaultSession{}}
 	if err := h.strategy.ValidateRefreshToken(ctx, hmacOnly, token); err != nil {
@@ -447,25 +576,21 @@ func (h *RefreshTokenHandler) presentedGrant(
 	}
 	if grant != nil {
 		log = log.With("sub", grant.Subject)
-		if grant.SubjectIdentifier != "" {
-			log = log.With("sub_id", grant.SubjectIdentifier)
-		}
 	}
 	if grant != nil && grant.ExpiresAt.Unix() <= now.Unix() {
 		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
 	}
-	if err := checkPresentedGrant(ctx, grant, err, log); err != nil {
+	if err := checkPresentedGrant(ctx, err, log); err != nil {
 		return nil, log, err
 	}
 	return grant, log, nil
 }
 
 // checkPresentedGrant maps the result of storage.LiveExchangeGrant for a grant
-// of the presenting client to a refusal, then applies the refresh_token type
-// check. liveErr is the error LiveExchangeGrant returned. ErrParentNotLive
-// means the presented grant's own parent is not live. It logs the refusal it
-// returns.
-func checkPresentedGrant(ctx context.Context, grant *storage.ExchangeGrant, liveErr error, log *slog.Logger) error {
+// of the presenting client to a refusal. liveErr is the error LiveExchangeGrant
+// returned. ErrParentNotLive means the presented grant's own parent is not
+// live. It logs the refusal it returns.
+func checkPresentedGrant(ctx context.Context, liveErr error, log *slog.Logger) error {
 	switch {
 	case liveErr == nil:
 	case errors.Is(liveErr, storage.ErrExpired):
@@ -477,11 +602,7 @@ func checkPresentedGrant(ctx context.Context, grant *storage.ExchangeGrant, live
 	case errors.Is(liveErr, storage.ErrParentNotLive):
 		return refuseWithReason(ctx, log, reasonParentRevoked)
 	default:
-		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", liveErr)
-		return issueFailed()
-	}
-	if grant.ParentSignature != "" || !slices.Contains(grant.IssuableTokenTypes, oauthproto.TokenTypeRefreshToken) {
-		return refuseWithReason(ctx, log, reasonNotIssuable)
+		return refuse(ctx, log, refuseStore, serverFailure(hintIssueFailed, liveErr))
 	}
 	return nil
 }
@@ -567,7 +688,7 @@ func (h *RefreshTokenHandler) issue(
 ) error {
 	log := d.log
 	if h.store == nil {
-		return refuse(ctx, log, refuseInternal, issueFailed())
+		return refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed, errNoGrantStore))
 	}
 	// The token uses fosite's refresh-token format and key, so it looks like an
 	// ordinary refresh token. The format prefix is not covered by the signature
@@ -577,8 +698,7 @@ func (h *RefreshTokenHandler) issue(
 	// fosite's store does not hold them.
 	token, signature, err := h.strategy.GenerateRefreshToken(ctx, requester)
 	if err != nil {
-		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseInternal, "error", err)
-		return issueFailed()
+		return refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed, err))
 	}
 	grant := d.grant
 	grant.Signature = signature
@@ -594,14 +714,13 @@ func (h *RefreshTokenHandler) issue(
 		return refuse(ctx, log, refuseReplay, errorsx.WithStack(exactReason(
 			fosite.ErrInvalidRequest.ErrorField, reasonTokenUsed)))
 	case err != nil:
-		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", err)
-		return issueFailed()
+		return refuse(ctx, log, refuseStore, serverFailure(hintIssueFailed, err))
 	}
 
 	responder.SetAccessToken(token)
-	responder.SetTokenType(tokenTypeNotApplicable)
+	responder.SetTokenType(oauthproto.TokenTypeNotApplicable)
 	responder.SetExpiresIn(exchangeGrantExpiresIn(grant.ExpiresAt, d.now))
-	responder.SetExtra("issued_token_type", oauthproto.TokenTypeRefreshToken)
+	responder.SetExtra(oauthproto.ParamIssuedTokenType, oauthproto.TokenTypeRefreshToken)
 	// RFC 9396 section 7.1: the response member is an array of the granted entries.
 	responder.SetExtra(authorizationDetailsParam, []json.RawMessage{d.echo})
 	if grant.ParentSignature != "" {
@@ -620,10 +739,19 @@ func exactReason(code, reason string) *fosite.RFC6749Error {
 	return &fosite.RFC6749Error{ErrorField: code, DescriptionField: reason, CodeField: http.StatusBadRequest}
 }
 
-// issueFailed is the generic server_error for a failure the client cannot act
-// on; the cause is logged, not returned.
-func issueFailed() error {
-	return errorsx.WithStack(fosite.ErrServerError.WithHint("The refresh token could not be issued."))
+// hintIssueFailed is the client-visible hint when a refresh token could not be
+// issued.
+const hintIssueFailed = "The refresh token could not be issued."
+
+var errNoGrantStore = errors.New("exchange grant store not configured")
+
+// serverFailure is the server_error for a failure the client cannot act on. The
+// client sees only hint. The cause is wrapped and set as the debug field, which
+// the token endpoint logs on its ERROR line for every 5xx (logAccessError) and
+// fosite never sends, because SendDebugMessagesToClients is off. Callers do not
+// log the cause themselves.
+func serverFailure(hint string, cause error) error {
+	return errorsx.WithStack(fosite.ErrServerError.WithHint(hint).WithWrap(cause).WithDebug(cause.Error()))
 }
 
 // checkRefreshTokenRequest checks the request parameters of an access-token
@@ -705,8 +833,9 @@ func loginSubjectError(reason string) error {
 // checkLoginToken reports why a validated subject token is not a user login
 // access token, or "" if it is. A refresh token of any kind needs this, because
 // the token is tied to a real login. A token minted by token exchange (act), by
-// the JWT-bearer or ID-JAG grant (external subject or no upstream session) is
-// refused, since its subject did not log in here.
+// the JWT-bearer or ID-JAG grant (external subject or no upstream session), or
+// by client_credentials (no upstream session), is refused, since its subject
+// did not log in here.
 //
 // The jti is checked here because a later profile must share the single-use
 // (iss, jti) marker, so one login access token cannot open one grant of each
@@ -714,15 +843,15 @@ func loginSubjectError(reason string) error {
 // checkExchangeGrantSubject.
 func checkLoginToken(claims *ValidatedClaims) string {
 	_, hasAct := claims.Extra["act"]
-	_, hasExternalIssuer := claims.Extra["external_issuer"]
-	_, noUpstream := claims.Extra[session.NoUpstreamSessionClaimKey]
+	_, hasExternalIssuer := claims.Extra[claimnames.ExternalIssuerKey]
+	_, noUpstream := claims.Extra[claimnames.NoUpstreamSessionKey]
 	switch {
 	case hasAct:
 		return "subject_token_delegated"
 	// claims.ExternalIssuer is always empty for the self-issued validator; it is
 	// checked as defense in depth. Native login subjects never contain "#"; see
-	// delegatedSubject for the qualified form.
-	case hasExternalIssuer || claims.ExternalIssuer != "" || strings.Contains(claims.Subject, "#"):
+	// claimnames.QualifySubject for the qualified form.
+	case hasExternalIssuer || claims.ExternalIssuer != "" || claimnames.IsQualifiedSubject(claims.Subject):
 		return "subject_token_external"
 	case noUpstream:
 		return "subject_token_no_upstream_session"
@@ -798,4 +927,54 @@ func exchangeGrantDetailsError(err error) (string, error) {
 		return refuseInternal, errorsx.WithStack(fosite.ErrServerError.WithDescription(
 			"The authorization_details could not be processed."))
 	}
+}
+
+func resolveRefreshTokenOptions(options []RefreshTokenOption) refreshTokenOptions {
+	resolved := refreshTokenOptions{
+		actorCapacity: defaultActorValidatorCapacity,
+		actorTimeout:  actorValidationTimeout,
+		clock:         time.Now,
+	}
+	for _, option := range options {
+		option(&resolved)
+	}
+	return resolved
+}
+
+// checkIDJAGTargetUsable checks that a target is safe to use as configured: the
+// zero value of any field would make the handler sign an unusable ID-JAG. It
+// does not check limits that config validation owns.
+func checkIDJAGTargetUsable(clientID, key string, target IDJAGTarget) error {
+	switch {
+	case target.Issuer == "":
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q has an empty issuer", clientID, key)
+	case target.Issuer != key:
+		return fmt.Errorf("tokenexchange: client %q id_jag target is stored under %q but its issuer is %q",
+			clientID, key, target.Issuer)
+	case target.ClientID == "":
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q has an empty client_id", clientID, key)
+	case len(target.Resources) == 0:
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q has no resources", clientID, key)
+	case slices.Contains(target.Resources, ""):
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q has an empty resource", clientID, key)
+	case target.Lifetime <= 0:
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q lifetime must be positive, got %v",
+			clientID, key, target.Lifetime)
+	case target.Lifetime%time.Second != 0:
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q lifetime must be a whole number of seconds, got %v",
+			clientID, key, target.Lifetime)
+	}
+	seen := make(map[string]struct{}, len(target.RequiredSubjectClaims))
+	for _, token := range target.RequiredSubjectClaims {
+		if !IsIDJAGSubjectClaimToken(token) {
+			return fmt.Errorf("tokenexchange: client %q id_jag target %q has an unknown required subject claim %q",
+				clientID, key, token)
+		}
+		if _, dup := seen[token]; dup {
+			return fmt.Errorf("tokenexchange: client %q id_jag target %q lists required subject claim %q twice",
+				clientID, key, token)
+		}
+		seen[token] = struct{}{}
+	}
+	return nil
 }

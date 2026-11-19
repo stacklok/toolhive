@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
@@ -170,7 +170,7 @@ func TestDelegatedTokenEndToEnd(t *testing.T) {
 		// authenticate — but they are not evidence about a grant this deployment's
 		// own authorization server minted, and must not reach the fallback.
 		claims := delegatedClaims(foreignIssuer)
-		claims[upstreamtoken.NoUpstreamSessionClaimKey] = true
+		claims[claimnames.NoUpstreamSessionKey] = true
 
 		v := validatorFor(t, foreignIssuer)
 		identity := identityThroughMiddleware(t, v, signToken(t, claims))

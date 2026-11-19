@@ -298,6 +298,59 @@ components:
             value; validation rejects refresh_token_max_lifetime without it.
           type: string
       type: object
+    authserver.DelegateClientIDJAG:
+      description: |-
+        IDJAG lists the authorization servers this client may ask for an
+        Identity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with
+        restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
+        token exchange enabled.
+      properties:
+        targets:
+          description: |-
+            Targets are the authorization servers the client may ask for an ID-JAG
+            for. At least one is required.
+          items:
+            $ref: '#/components/schemas/authserver.DelegateClientIDJAGTarget'
+          type: array
+          uniqueItems: false
+      type: object
+    authserver.DelegateClientIDJAGTarget:
+      properties:
+        client_id:
+          description: ClientID is this client's client_id at the other authorization
+            server.
+          type: string
+        issuer:
+          description: |-
+            Issuer is the issuer of the other authorization server. The client sends
+            it as the request's audience, and it becomes the ID-JAG's aud exactly as
+            written here. It must be an absolute https URL, or http on a loopback
+            host, with no query, fragment or userinfo. It must be well-formed: lower-case
+            scheme and host, no default port (":443" for https, ":80" for http), no dot
+            segments, empty path segments, unneeded percent-encoding or leading zeros
+            in the port. One trailing slash is allowed and is kept as written. It must
+            be unique within the client, and the (issuer, client_id) pair must be
+            unique across delegate clients; both comparisons ignore one trailing
+            slash. It must not be this server's issuer, token endpoint or one of its
+            allowed_audiences; that comparison ignores case in the scheme and host, a
+            default port and one trailing slash.
+          type: string
+        lifetime:
+          description: |-
+            Lifetime is how long each ID-JAG lives, as a Go duration string in whole
+            seconds (e.g. "60s"). Defaults to 60s; at most 300s.
+          type: string
+        resources:
+          description: |-
+            Resources are the resources behind the other authorization server, such
+            as an MCP endpoint, that the client may name as the request's resource.
+            At least one is required. Each must be a valid RFC 8707 resource URI,
+            listed once.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     authserver.DelegateClientRunConfig:
       properties:
         audiences:
@@ -411,6 +464,8 @@ components:
           uniqueItems: false
         exchange_refresh_tokens:
           $ref: '#/components/schemas/authserver.DelegateClientExchangeRefreshTokens'
+        id_jag:
+          $ref: '#/components/schemas/authserver.DelegateClientIDJAG'
         self_issued_subject_tokens:
           description: |-
             SelfIssuedSubjectTokens is any or restricted, and is required. With
@@ -980,8 +1035,10 @@ components:
         upstreams:
           description: |-
             Upstreams configures connections to upstream Identity Providers for
-            interactive authorization. It may be empty only when DelegateClients or a
-            TrustedIssuer with JWTBearerGrant enables token-only operation.
+            interactive authorization. It may be empty only when token-only operation
+            is enabled by DelegateClients (also under InboundGrants.TokenExchange),
+            InboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant
+            (also under InboundGrants.JWTBearer).
             Multiple upstreams are supported for sequential authorization chains.
           items:
             $ref: '#/components/schemas/authserver.UpstreamRunConfig'
@@ -1004,8 +1061,8 @@ components:
     authserver.SPIFFEBundleSourceRunConfig:
       description: |-
         BundleSource declares exactly one trust-bundle source and is validated for
-        shape here. The standalone file loader exists, but source initialization
-        is not wired into SPIFFE authentication.
+        shape here. Only the file source is loaded in this build; bundle_endpoint
+        and workload_api are rejected by Validate.
       properties:
         endpoint:
           $ref: '#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig'
@@ -1020,10 +1077,9 @@ components:
       properties:
         audiences:
           description: |-
-            Audiences are RFC 8693 token audiences this association may request.
-            This is an independent request dimension from Resources: it is not
-            bounded by allowed_audiences (which is an RFC 8707 resource-URI list)
-            and may contain non-URI logical audience identifiers.
+            Audiences is deprecated and ignored; use Resources. It stays in the
+            schema because v0.65.0 required it, and a warning is logged at startup
+            when it is set.
           items:
             type: string
           type: array
@@ -1054,11 +1110,12 @@ components:
         resources:
           description: |-
             Resources are RFC 8707 resource indicators this association may
-            request. Must be a subset of the server's allowed_audiences allowlist
-            (RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list
-            DelegateClientRunConfig.Audiences is validated against. Distinct from
-            Audiences: a resource permission does not imply the same value is also
-            a permitted token audience, or vice versa.
+            request. At least one is required for every association: both
+            client_credentials and token exchange take exactly one resource per
+            request and grant it as the token audience. Must be a subset of the
+            server's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the
+            same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
+            validated against.
           items:
             type: string
           type: array
@@ -1971,6 +2028,14 @@ components:
             type: string
           type: array
           uniqueItems: false
+        findings:
+          description: |-
+            Findings lists every error and warning with its rule ID and location.
+            Each Errors or Warnings entry corresponds to exactly one finding.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Finding'
+          type: array
+          uniqueItems: false
         valid:
           description: Valid indicates whether the skill definition is valid.
           type: boolean
@@ -2218,6 +2283,13 @@ components:
           description: RateLimitNamespace is the Kubernetes namespace for Redis key
             derivation.
           type: string
+        read_only_rootfs:
+          description: |-
+            ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.
+            /tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.
+            Opt-in: servers that write anywhere else outside their mounted volumes will fail.
+            Only applicable to Docker/Podman deployments.
+          type: boolean
         registry_api_url:
           description: |-
             RegistryAPIURL is the registry API URL that served this server's metadata.
@@ -2426,6 +2498,25 @@ components:
       - FailureReasonKeySigned
       - FailureReasonUnsignedRejected
       - FailureReasonUnknown
+    github_com_stacklok_toolhive_pkg_skills.Finding:
+      properties:
+        file:
+          description: |-
+            File is the slash-separated path of the affected file, relative to the
+            validated directory.
+          type: string
+        line:
+          description: Line is the 1-based line in File, or 0 when unknown.
+          type: integer
+        message:
+          description: Message describes the problem.
+          type: string
+        rule:
+          description: Rule is the stable ID of the check that produced the finding.
+          type: string
+        severity:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Severity'
+      type: object
     github_com_stacklok_toolhive_pkg_skills.InstallStatus:
       description: Status is the current installation status.
       enum:
@@ -2558,6 +2649,15 @@ components:
       x-enum-varnames:
       - ScopeUser
       - ScopeProject
+    github_com_stacklok_toolhive_pkg_skills.Severity:
+      description: Severity is "error" or "warning".
+      enum:
+      - error
+      - warning
+      type: string
+      x-enum-varnames:
+      - SeverityError
+      - SeverityWarning
     github_com_stacklok_toolhive_pkg_skills.SkillContent:
       properties:
         body:
@@ -2773,6 +2873,14 @@ components:
           description: Errors is a list of validation errors, if any.
           items:
             type: string
+          type: array
+          uniqueItems: false
+        findings:
+          description: |-
+            Findings lists every error and warning with its rule ID and location.
+            Each Errors or Warnings entry corresponds to exactly one finding.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Finding'
           type: array
           uniqueItems: false
         valid:
@@ -3487,6 +3595,11 @@ components:
             Empty or zero uses the default timeout of 30 seconds.
           example: 30s
           type: string
+        read_only_rootfs:
+          description: |-
+            Whether to mount the container's root filesystem as read-only.
+            Only applicable to Docker/Podman deployments.
+          type: boolean
         registry:
           description: Registry is the optional registry name to resolve the server
             from (e.g. "default").
@@ -4261,6 +4374,11 @@ components:
             Empty or zero uses the default timeout of 30 seconds.
           example: 30s
           type: string
+        read_only_rootfs:
+          description: |-
+            Whether to mount the container's root filesystem as read-only.
+            Only applicable to Docker/Podman deployments.
+          type: boolean
         runtime_config:
           $ref: '#/components/schemas/templates.RuntimeConfig'
         secrets:
@@ -5601,8 +5719,11 @@ components:
             authorization server for this grant; it is NOT a resource/API
             identifier — a bare resource audience is deliberately not accepted
             here, that would let any RFC 8707 resource-scoped token satisfy the
-            grant instead of only tokens minted for this AS. Defaults to
-            [tokenEndpoint] when empty, preserving prior exact-match behavior.
+            grant instead of only tokens minted for this AS. When empty, the plain
+            JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
+            the token endpoint and this server's issuer identifier, unless the issuer
+            is also an allowed resource audience. A configured list replaces both
+            defaults.
           items:
             type: string
           type: array

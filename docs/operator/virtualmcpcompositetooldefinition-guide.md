@@ -998,5 +998,5 @@ For complete API reference including all fields and validation rules, see the [C
 ## Related Resources
 
 - [VirtualMCPServer Kubernetes Guide](./virtualmcpserver-kubernetes-guide.md)
-- [Composite Tools Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md)
+- [Composite Tools Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/toolhive/THV-0008-virtual-mcp-server.md)
 - [Operator Upgrade Guide](./upgrade-guide/README.md)

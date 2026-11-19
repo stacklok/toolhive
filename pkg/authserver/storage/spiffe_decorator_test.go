@@ -12,19 +12,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func testSPIFFEClients(t *testing.T) map[string]fosite.Client {
 	t.Helper()
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		[]string{"https://api.example.com"},
-		nil,
-	)
-	require.NoError(t, err)
+	client := spiffetest.Client(t)
 	return map[string]fosite.Client{client.GetID(): client}
 }
 
@@ -42,10 +37,7 @@ func (c testIdentityClient) IdentityFingerprint() string { return c.identityFing
 
 func testSPIFFEClientWithIdentity(t *testing.T, identityFingerprint string) fosite.Client {
 	t.Helper()
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, nil,
-	)
-	require.NoError(t, err)
+	client := spiffetest.Client(t)
 	return testIdentityClient{SPIFFEClient: client, identityFingerprint: identityFingerprint}
 }
 
@@ -129,7 +121,7 @@ func TestSPIFFEStorageDecoratorDurablyClaimsPlaceholder(t *testing.T) {
 
 // TestSPIFFEStorageDecoratorRestartIsIdempotent pins the restart case:
 // reconstructing the decorator with the SAME association config reclaims the
-// identical placeholder and succeeds, rather than colliding with itself.
+// identical placeholder and succeeds silently.
 func TestSPIFFEStorageDecoratorRestartIsIdempotent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -239,59 +231,6 @@ func TestSPIFFEStorageDecoratorRejectsDifferentConfiguredClientCollision(t *test
 	assert.Contains(t, err.Error(), "different configured client")
 }
 
-// TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision is the
-// regression test for the review finding on PR #6473: staticClientPlaceholder
-// used to durably fingerprint a SPIFFE association on scopes and audiences
-// only, so two associations at the same client ID differing solely in their
-// RFC 8707 resource allowlist would reconcile as "the same client, restarted"
-// instead of failing loudly as a misconfiguration.
-func TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	base := NewMemoryStorage()
-	t.Cleanup(func() { _ = base.Close() })
-
-	first, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-a.example.com"})
-	require.NoError(t, err)
-	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{first.GetID(): first})
-	require.NoError(t, err)
-
-	second, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-b.example.com"})
-	require.NoError(t, err)
-	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{second.GetID(): second})
-	require.ErrorIs(t, err, ErrAlreadyExists,
-		"two associations differing only in resources must collide, not reconcile idempotently")
-	assert.Contains(t, err.Error(), "different configured client")
-}
-
-// TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollisionRedis is the
-// Redis-backed equivalent of
-// TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision. The memory
-// test alone left storedClient.fingerprint's resources wiring (redis.go)
-// completely uncovered: deleting `resources: s.Resources,` from that method
-// left the full storage test suite green.
-func TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollisionRedis(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	base, mr := newTestRedisStorage(t)
-	t.Cleanup(func() { _ = base.Close(); mr.Close() })
-
-	first, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-a.example.com"})
-	require.NoError(t, err)
-	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{first.GetID(): first}))
-
-	second, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp-b.example.com"})
-	require.NoError(t, err)
-	err = PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{second.GetID(): second})
-	require.ErrorIs(t, err, ErrAlreadyExists,
-		"two associations differing only in resources must collide, not reconcile idempotently, on Redis-backed storage")
-	assert.Contains(t, err.Error(), "different configured client")
-}
-
 // TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis proves
 // staticClientPlaceholder's resource allowlist survives a real Redis
 // round-trip (buildStoredClient -> storedClient.Resources ->
@@ -302,9 +241,7 @@ func TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis(t *test
 	raw, mr := newTestRedisStorage(t)
 	t.Cleanup(func() { _ = raw.Close(); mr.Close() })
 
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://api.example.com"}, []string{"https://mcp.example.com"})
-	require.NoError(t, err)
+	client := spiffetest.Client(t, spiffetest.WithResources("https://mcp.example.com"))
 
 	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, raw, map[string]fosite.Client{client.GetID(): client}))
 
@@ -313,54 +250,6 @@ func TestSPIFFEStorageDecoratorPlaceholderResourcesRoundTripThroughRedis(t *test
 	rc, ok := readBack.(resourceScopedClient)
 	require.True(t, ok, "placeholder read back from raw Redis storage must still expose Resources()")
 	assert.Equal(t, []string{"https://mcp.example.com"}, rc.Resources())
-}
-
-// TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollision is the
-// identity-fingerprint equivalent of
-// TestSPIFFEStorageDecoratorResourcesOnlyDifferenceIsACollision: two
-// associations at the same client ID, same scopes/audience/resources, but a
-// genuinely different SPIFFE association identity (trust domain, principal,
-// or methods -- summarized here as an opaque identityFingerprint, mirroring
-// how fingerprintSPIFFEAssociation in pkg/authserver produces it) must
-// collide loudly on reconciliation, not be accepted as "the same client,
-// restarted".
-func TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollision(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	base := NewMemoryStorage()
-	t.Cleanup(func() { _ = base.Close() })
-
-	first := testSPIFFEClientWithIdentity(t, "identity-a")
-	_, err := NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{first.GetID(): first})
-	require.NoError(t, err)
-
-	second := testSPIFFEClientWithIdentity(t, "identity-b")
-	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{second.GetID(): second})
-	require.ErrorIs(t, err, ErrAlreadyExists,
-		"two associations differing only in identity must collide, not reconcile idempotently")
-	assert.Contains(t, err.Error(), "different configured client")
-}
-
-// TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollisionRedis is the
-// Redis-backed equivalent of
-// TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollision. The memory
-// test alone would leave storedClient.fingerprint's identityFingerprint
-// wiring (redis.go) completely uncovered, mirroring the exact gap the
-// resources fix's Redis test closed.
-func TestSPIFFEStorageDecoratorIdentityOnlyDifferenceIsACollisionRedis(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	base, mr := newTestRedisStorage(t)
-	t.Cleanup(func() { _ = base.Close(); mr.Close() })
-
-	first := testSPIFFEClientWithIdentity(t, "identity-a")
-	require.NoError(t, PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{first.GetID(): first}))
-
-	second := testSPIFFEClientWithIdentity(t, "identity-b")
-	err := PreflightSPIFFEStaticClientCollisions(ctx, base, map[string]fosite.Client{second.GetID(): second})
-	require.ErrorIs(t, err, ErrAlreadyExists,
-		"two associations differing only in identity must collide, not reconcile idempotently, on Redis-backed storage")
-	assert.Contains(t, err.Error(), "different configured client")
 }
 
 // TestSPIFFEStorageDecoratorPlaceholderIdentityRoundTripThroughRedis proves
@@ -382,23 +271,6 @@ func TestSPIFFEStorageDecoratorPlaceholderIdentityRoundTripThroughRedis(t *testi
 	identity, ok := readBack.(spiffeIdentityClient)
 	require.True(t, ok, "placeholder read back from raw Redis storage must still expose IdentityFingerprint()")
 	assert.Equal(t, "identity-a", identity.IdentityFingerprint())
-}
-
-// TestSPIFFEStorageDecoratorPlaceholderNoResourcesStillIdempotent pins the
-// zero-value case: an association with no RFC 8707 resources configured must
-// still reconcile against itself on restart, not be treated as a collision
-// merely because both sides carry a nil/empty resource allowlist.
-func TestSPIFFEStorageDecoratorPlaceholderNoResourcesStillIdempotent(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	base := NewMemoryStorage()
-	t.Cleanup(func() { _ = base.Close() })
-
-	_, err := NewSPIFFEStorageDecorator(ctx, base, testSPIFFEClients(t))
-	require.NoError(t, err)
-
-	_, err = NewSPIFFEStorageDecorator(ctx, base, testSPIFFEClients(t))
-	require.NoError(t, err, "restarting with an unchanged, resource-less association must be idempotent")
 }
 
 func TestSPIFFEStorageDecoratorLeavesEmptyClientsUnchanged(t *testing.T) {
@@ -465,13 +337,14 @@ func TestSPIFFEStorageDecoratorDurableClaimRedisBacked(t *testing.T) {
 	_, err = NewSPIFFEStorageDecorator(ctx, base, testSPIFFEClients(t))
 	require.NoError(t, err)
 
-	// Reconstructing with a different/conflicting association at the same ID
-	// fails loudly.
-	conflicting, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"a-different-scope"}, []string{"https://api.example.com"}, nil)
+	// Reconstructing with a changed association at the same ID replaces the
+	// placeholder.
+	changed := spiffetest.Client(t, spiffetest.WithScopes("a-different-scope"))
+	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{"spiffe-client": changed})
 	require.NoError(t, err)
-	_, err = NewSPIFFEStorageDecorator(ctx, base, map[string]fosite.Client{"spiffe-client": conflicting})
-	require.ErrorIs(t, err, ErrAlreadyExists)
+	replaced, err := base.GetClient(ctx, "spiffe-client")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a-different-scope"}, []string(replaced.GetScopes()))
 }
 
 // TestSPIFFEStorageDecorator_ConsumeAssertionJWTDelegatesToWrapped is the

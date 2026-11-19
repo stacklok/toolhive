@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
-	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 const (
@@ -93,14 +92,30 @@ func newTLSListenerWithCache(
 		GetCertificate: cache.getCertificate,
 	}
 	if requestClientCert {
-		tlsConfig.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		tlsConfig.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			clone := tlsConfig.Clone()
 			clone.ClientCAs = base.caPool()
+			remoteAddr := ""
+			if hello.Conn != nil {
+				remoteAddr = hello.Conn.RemoteAddr().String()
+			}
+			hintCAs := 0
+			if base.authorities != nil {
+				hintCAs = len(base.authorities())
+			}
+			// Installed only when client certificates are requested, so a
+			// listener that never asks for one does not log a misleading
+			// "no certificate". The closure binds the remote address, which
+			// the connection state does not carry.
+			clone.VerifyConnection = func(state tls.ConnectionState) error {
+				logClientCertificate(state, remoteAddr, hintCAs)
+				return nil
+			}
 			return clone, nil
 		}
 	}
 	base.server = &http.Server{
-		Handler:           spiffeauth.Middleware(mux),
+		Handler:           mux,
 		ReadHeaderTimeout: listenerReadHeaderTimeout,
 		ReadTimeout:       listenerReadTimeout,
 		WriteTimeout:      listenerWriteTimeout,
@@ -124,6 +139,8 @@ func (l *tlsListener) start() error {
 	}
 	l.listener = tls.NewListener(listener, l.server.TLSConfig)
 	l.server.Addr = address
+	slog.Debug("auth server TLS listener started",
+		"address", address, "request_client_certificate", l.requestClientCert)
 	go func() {
 		if err := l.server.Serve(l.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("auth server TLS listener stopped unexpectedly", "error", err)
@@ -151,6 +168,39 @@ func (l *tlsListener) shutdown(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+// logClientCertificate records, at debug level, which client certificate (if
+// any) a connection presented. The certificate is unverified at this point: it
+// never rejects a connection, and verification happens later in the OAuth
+// client-authentication strategy. The certificate itself is not logged, only
+// its identity fields.
+//
+// hintCAs is the number of authorities the listener advertised as acceptable
+// client-certificate issuers. A client that holds a certificate not chaining to
+// one of them sends none, so "no client certificate" with a non-zero hintCAs
+// can mean the certificate did not match the hints rather than that the
+// client sent nothing.
+func logClientCertificate(state tls.ConnectionState, remoteAddr string, hintCAs int) {
+	if len(state.PeerCertificates) == 0 {
+		slog.Debug("auth server TLS listener: no client certificate presented",
+			"remote_addr", remoteAddr,
+			"hint_cas", hintCAs,
+			"server_name", state.ServerName,
+			"tls_version", tls.VersionName(state.Version))
+		return
+	}
+	leaf := state.PeerCertificates[0]
+	uris := make([]string, 0, len(leaf.URIs))
+	for _, uri := range leaf.URIs {
+		uris = append(uris, uri.String())
+	}
+	slog.Debug("auth server TLS listener: unverified client certificate presented",
+		"remote_addr", remoteAddr,
+		"uri_sans", uris,
+		"issuer", leaf.Issuer.String(),
+		"chain_length", len(state.PeerCertificates),
+		"not_after", leaf.NotAfter)
 }
 
 func (l *tlsListener) caPool() *x509.CertPool {

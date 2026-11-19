@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ import (
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -3697,77 +3699,151 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 	t.Parallel()
 
-	audiences := []string{"https://mcp.example.com"}
-	scopes := []string{"openid"}
-	resources := []string{"https://backend.example.com"}
-	configs := buildSPIFFEClientAuthRunConfigs([]mcpv1beta1.SPIFFEClientConfig{{
-		TrustDomainRef:   "example",
-		PrincipalPattern: "spiffe://example.org/ns/default/agent",
-		ClientID:         "spiffe-client",
-		Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
-		Resources:        resources,
-		Audiences:        audiences,
-		Scopes:           scopes,
-	}})
-
-	require.Len(t, configs, 1)
-	assert.Equal(t, "example", configs[0].TrustDomainRef)
-	assert.Equal(t, "spiffe://example.org/ns/default/agent", configs[0].PrincipalPattern)
-	assert.Equal(t, "spiffe-client", configs[0].ClientID)
-	assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, configs[0].Methods)
-	assert.Equal(t, []string{"https://backend.example.com"}, configs[0].Resources)
-	assert.Equal(t, []string{"https://mcp.example.com"}, configs[0].Audiences)
-	assert.Equal(t, []string{"openid"}, configs[0].Scopes)
-	// GrantTypes is not a CRD field; the converter always supplies exactly
-	// the RFC 8693 token-exchange grant.
-	assert.Equal(t, []string{authserver.SPIFFEGrantTypeTokenExchange}, configs[0].GrantTypes)
-
-	// The runtime type must not retain the CRD object's backing slices.
-	audiences[0] = "https://mutated.example.com"
-	assert.Equal(t, "https://mcp.example.com", configs[0].Audiences[0])
-}
-
-// TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced covers the
-// "not yet enforced" gate documented in
-// pkg/authserver/config.go's validateSPIFFENotYetEnforced: a well-formed,
-// non-empty SPIFFE trust configuration is admitted by the CRD's CEL rules
-// (see spiffe_cel_test.go), but BuildAuthServerRunConfig's reconcile-time
-// revalidation (validateDelegateClientsAndTrustedIssuers) still rejects it
-// via RunConfig.Validate(), as a terminal InvalidEmbeddedAuthServerConfigError
-// rather than a pod crash loop. This is expected until real SVID verification
-// lands.
-func TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced(t *testing.T) {
-	t.Parallel()
-
-	_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
-		TLSListener: &mcpv1beta1.TLSListenerConfig{
-			CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
-			PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+	const (
+		tokenExchange     = "urn:ietf:params:oauth:grant-type:token-exchange"
+		clientCredentials = "client_credentials"
+	)
+	tests := []struct {
+		name       string
+		grantTypes []string
+		resources  []string
+		audiences  []string
+		wantGrants []string
+	}{
+		{
+			name:       "token exchange only association",
+			grantTypes: []string{tokenExchange},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
 		},
-		SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
-			Name: "example", TrustDomain: "example.org",
-			Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
-			BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
-				Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
-				WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
-			},
-		}},
-		InboundGrants: &mcpv1beta1.InboundGrantsConfig{
-			SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+		{
+			name:       "client credentials only association",
+			grantTypes: []string{clientCredentials},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeClientCredentials},
+		},
+		{
+			name:       "association with both grants",
+			grantTypes: []string{tokenExchange, clientCredentials},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials},
+		},
+		{
+			name:       "nil grantTypes falls back to token exchange",
+			grantTypes: nil,
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+		{
+			name:       "empty grantTypes falls back to token exchange",
+			grantTypes: []string{},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scopes := []string{"openid"}
+			source := mcpv1beta1.SPIFFEClientConfig{
 				TrustDomainRef:   "example",
 				PrincipalPattern: "spiffe://example.org/ns/default/agent",
 				ClientID:         "spiffe-client",
 				Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
-				Audiences:        []string{"https://mcp.example.com"},
-				Scopes:           []string{"openid"},
-			}},
-		},
-	}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
+				Resources:        slices.Clone(tt.resources),
+				Audiences:        tt.audiences, //nolint:staticcheck // Exercises the deprecated pass-through.
+				Scopes:           scopes,
+				GrantTypes:       tt.grantTypes,
+			}
+			configs := buildSPIFFEClientAuthRunConfigs([]mcpv1beta1.SPIFFEClientConfig{source})
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "SPIFFE client authentication is not yet enforced")
-	var invalidConfigErr *InvalidEmbeddedAuthServerConfigError
-	assert.True(t, stderrors.As(err, &invalidConfigErr))
+			require.Len(t, configs, 1)
+			got := configs[0]
+			assert.Equal(t, "example", got.TrustDomainRef)
+			assert.Equal(t, "spiffe://example.org/ns/default/agent", got.PrincipalPattern)
+			assert.Equal(t, "spiffe-client", got.ClientID)
+			assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, got.Methods)
+			assert.Equal(t, tt.wantGrants, got.GrantTypes)
+			assert.ElementsMatch(t, tt.resources, got.Resources)
+			assert.Equal(t, tt.audiences, got.Audiences)
+			assert.Equal(t, []string{"openid"}, got.Scopes)
+
+			// The runtime type must not retain the CRD object's backing slices.
+			if len(source.GrantTypes) > 0 {
+				source.GrantTypes[0] = "mutated"
+			}
+			scopes[0] = "mutated"
+			source.Audiences[0] = "https://mutated.example.com" //nolint:staticcheck // Exercises the deprecated pass-through.
+			source.Resources[0] = "https://mutated.example.com"
+			assert.Equal(t, tt.wantGrants, got.GrantTypes)
+			assert.ElementsMatch(t, tt.resources, got.Resources)
+			assert.Equal(t, []string{"openid"}, got.Scopes)
+			assert.NotEqual(t, "https://mutated.example.com", got.Audiences[0])
+		})
+	}
+}
+
+// TestBuildAuthServerRunConfigRejectsUnsupportedSPIFFEBundleSource covers the
+// reconcile-time rejection of bundle sources this build has no loader for: the
+// error is terminal and names the source type.
+func TestBuildAuthServerRunConfigRejectsUnsupportedSPIFFEBundleSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source mcpv1beta1.SPIFFEBundleSourceConfig
+		want   string
+	}{
+		{
+			name: "workload_api",
+			source: mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+			},
+			want: `bundle_source: type "workload_api" is not supported by this build`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TLSListener: &mcpv1beta1.TLSListenerConfig{
+					CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods:      []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+					BundleSource: tt.source,
+				}},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+						TrustDomainRef:   "example",
+						PrincipalPattern: "spiffe://example.org/ns/default/agent",
+						ClientID:         "spiffe-client",
+						Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						Audiences:        []string{"https://mcp.example.com"},
+						Resources:        []string{"https://mcp.example.com"},
+						Scopes:           []string{"openid"},
+						GrantTypes:       []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					}},
+				},
+			}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
+
+			require.Error(t, err)
+			var invalidConfigErr *InvalidEmbeddedAuthServerConfigError
+			assert.True(t, stderrors.As(err, &invalidConfigErr))
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
 }
 
 // TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValuesExist
@@ -3785,6 +3861,7 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 
 	authConfig := func(resource string) *mcpv1beta1.EmbeddedAuthServerConfig {
 		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
 			TLSListener: &mcpv1beta1.TLSListenerConfig{
 				CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
 				PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
@@ -3793,8 +3870,8 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 				Name: "example", TrustDomain: "example.org",
 				Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
 				BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
-					Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
-					WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+					Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+					File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
 				},
 			}},
 			InboundGrants: &mcpv1beta1.InboundGrantsConfig{
@@ -3808,21 +3885,18 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 					// A custom, non-default scope: rejected by
 					// registration.DefaultScopes but valid once the real
 					// ScopesSupported below is consulted.
-					Scopes: []string{"custom:scope"},
+					Scopes:     []string{"custom:scope"},
+					GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 				}},
 			},
 		}
 	}
 
-	// Resource is in AllowedAudiences and scope is in ScopesSupported: the
-	// only remaining rejection is the unrelated "not yet enforced" gate,
-	// proving resources/scopes passed on real derived values.
+	// Resource is in AllowedAudiences and scope is in ScopesSupported:
+	// resources/scopes pass on real derived values.
 	_, err := BuildAuthServerRunConfig("default", "test-server", authConfig("https://backend.example.com"),
 		[]string{"https://backend.example.com"}, []string{"custom:scope"}, "https://mcp.example.com")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "SPIFFE client authentication is not yet enforced")
-	assert.NotContains(t, err.Error(), "resource")
-	assert.NotContains(t, err.Error(), "scopes")
+	require.NoError(t, err)
 
 	// Resource is NOT in AllowedAudiences: still rejected, but for the
 	// correct reason, proving the check still runs with real derived values.

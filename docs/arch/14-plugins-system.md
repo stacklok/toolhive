@@ -107,7 +107,9 @@ name clobbering; it is not proof of publisher identity.
 
 ### 2. Building
 
-`thv ai-plugin validate <path>` validates a local plugin tree. `thv ai-plugin
+`thv ai-plugin validate <path>` validates a local plugin tree, including each
+bundled skill; see [Skill and plugin validation](../skills-validation.md) for
+the result format and rule IDs. `thv ai-plugin
 build <path>` parses the manifest, packages the complete tree as one tar.gz OCI
 layer, records the component inventory in the OCI config, and writes the
 artifact to the local plugin OCI store. Local-build metadata distinguishes

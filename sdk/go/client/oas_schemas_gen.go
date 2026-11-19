@@ -821,6 +821,94 @@ func (s *AuthenticationDelegateClientExchangeRefreshTokens) SetRefreshTokenMaxLi
 	s.RefreshTokenMaxLifetime = val
 }
 
+// IDJAG lists the authorization servers this client may ask for an
+// Identity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with
+// restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
+// token exchange enabled.
+// Ref: #/components/schemas/AuthenticationDelegateClientIDJAG
+type AuthenticationDelegateClientIDJAG struct {
+	// Targets are the authorization servers the client may ask for an ID-JAG
+	// for. At least one is required.
+	Targets []AuthenticationDelegateClientIDJAGTarget `json:"targets"`
+}
+
+// GetTargets returns the value of Targets.
+func (s *AuthenticationDelegateClientIDJAG) GetTargets() []AuthenticationDelegateClientIDJAGTarget {
+	return s.Targets
+}
+
+// SetTargets sets the value of Targets.
+func (s *AuthenticationDelegateClientIDJAG) SetTargets(val []AuthenticationDelegateClientIDJAGTarget) {
+	s.Targets = val
+}
+
+// Ref: #/components/schemas/AuthenticationDelegateClientIDJAGTarget
+type AuthenticationDelegateClientIDJAGTarget struct {
+	// ClientID is this client's client_id at the other authorization server.
+	ClientID OptString `json:"client_id"`
+	// Issuer is the issuer of the other authorization server. The client sends
+	// it as the request's audience, and it becomes the ID-JAG's aud exactly as
+	// written here. It must be an absolute https URL, or http on a loopback
+	// host, with no query, fragment or userinfo. It must be well-formed: lower-case
+	// scheme and host, no default port (":443" for https, ":80" for http), no dot
+	// segments, empty path segments, unneeded percent-encoding or leading zeros
+	// in the port. One trailing slash is allowed and is kept as written. It must
+	// be unique within the client, and the (issuer, client_id) pair must be
+	// unique across delegate clients; both comparisons ignore one trailing
+	// slash. It must not be this server's issuer, token endpoint or one of its
+	// allowed_audiences; that comparison ignores case in the scheme and host, a
+	// default port and one trailing slash.
+	Issuer OptString `json:"issuer"`
+	// Lifetime is how long each ID-JAG lives, as a Go duration string in whole
+	// seconds (e.g. "60s"). Defaults to 60s; at most 300s.
+	Lifetime OptString `json:"lifetime"`
+	// Resources are the resources behind the other authorization server, such
+	// as an MCP endpoint, that the client may name as the request's resource.
+	// At least one is required. Each must be a valid RFC 8707 resource URI,
+	// listed once.
+	Resources []string `json:"resources"`
+}
+
+// GetClientID returns the value of ClientID.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetClientID() OptString {
+	return s.ClientID
+}
+
+// GetIssuer returns the value of Issuer.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetIssuer() OptString {
+	return s.Issuer
+}
+
+// GetLifetime returns the value of Lifetime.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetLifetime() OptString {
+	return s.Lifetime
+}
+
+// GetResources returns the value of Resources.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetResources() []string {
+	return s.Resources
+}
+
+// SetClientID sets the value of ClientID.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetClientID(val OptString) {
+	s.ClientID = val
+}
+
+// SetIssuer sets the value of Issuer.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetIssuer(val OptString) {
+	s.Issuer = val
+}
+
+// SetLifetime sets the value of Lifetime.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetLifetime(val OptString) {
+	s.Lifetime = val
+}
+
+// SetResources sets the value of Resources.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetResources(val []string) {
+	s.Resources = val
+}
+
 // Ref: #/components/schemas/AuthenticationDelegateClientRunConfig
 type AuthenticationDelegateClientRunConfig struct {
 	// Audiences are output only: the upper bound on the audiences of the
@@ -1005,6 +1093,7 @@ type AuthenticationDelegateClientTokenExchange struct {
 	// the list must be non-empty there.
 	AllowedSourceClients  []string                                             `json:"allowed_source_clients"`
 	ExchangeRefreshTokens OptAuthenticationDelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens"`
+	IDJag                 OptAuthenticationDelegateClientIDJAG                 `json:"id_jag"`
 	// SelfIssuedSubjectTokens is any or restricted, and is required. With
 	// restricted, a self-issued subject token must carry the client's own
 	// client_id or one of AllowedSourceClients, and a may_act claim naming
@@ -1033,6 +1122,11 @@ func (s *AuthenticationDelegateClientTokenExchange) GetExchangeRefreshTokens() O
 	return s.ExchangeRefreshTokens
 }
 
+// GetIDJag returns the value of IDJag.
+func (s *AuthenticationDelegateClientTokenExchange) GetIDJag() OptAuthenticationDelegateClientIDJAG {
+	return s.IDJag
+}
+
 // GetSelfIssuedSubjectTokens returns the value of SelfIssuedSubjectTokens.
 func (s *AuthenticationDelegateClientTokenExchange) GetSelfIssuedSubjectTokens() string {
 	return s.SelfIssuedSubjectTokens
@@ -1051,6 +1145,11 @@ func (s *AuthenticationDelegateClientTokenExchange) SetAllowedSourceClients(val 
 // SetExchangeRefreshTokens sets the value of ExchangeRefreshTokens.
 func (s *AuthenticationDelegateClientTokenExchange) SetExchangeRefreshTokens(val OptAuthenticationDelegateClientExchangeRefreshTokens) {
 	s.ExchangeRefreshTokens = val
+}
+
+// SetIDJag sets the value of IDJag.
+func (s *AuthenticationDelegateClientTokenExchange) SetIDJag(val OptAuthenticationDelegateClientIDJAG) {
+	s.IDJag = val
 }
 
 // SetSelfIssuedSubjectTokens sets the value of SelfIssuedSubjectTokens.
@@ -1942,8 +2041,10 @@ type AuthenticationRunConfig struct {
 	TrustedIssuers []TokenExchangeTrustedIssuer            `json:"trusted_issuers"`
 	UpstreamFilter OptUpstreamfilterGroupBasedFilterConfig `json:"upstream_filter"`
 	// Upstreams configures connections to upstream Identity Providers for
-	// interactive authorization. It may be empty only when DelegateClients or a
-	// TrustedIssuer with JWTBearerGrant enables token-only operation.
+	// interactive authorization. It may be empty only when token-only operation
+	// is enabled by DelegateClients (also under InboundGrants.TokenExchange),
+	// InboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant
+	// (also under InboundGrants.JWTBearer).
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []AuthenticationUpstreamRunConfig `json:"upstreams"`
 }
@@ -2250,8 +2351,8 @@ func (s *AuthenticationSPIFFEBundleEndpointSourceRunConfig) SetURL(val OptString
 }
 
 // BundleSource declares exactly one trust-bundle source and is validated for
-// shape here. The standalone file loader exists, but source initialization
-// is not wired into SPIFFE authentication.
+// shape here. Only the file source is loaded in this build; bundle_endpoint
+// and workload_api are rejected by Validate.
 // Ref: #/components/schemas/AuthenticationSPIFFEBundleSourceRunConfig
 type AuthenticationSPIFFEBundleSourceRunConfig struct {
 	Endpoint    OptAuthenticationSPIFFEBundleEndpointSourceRunConfig  `json:"endpoint"`
@@ -2302,10 +2403,9 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetWorkloadAPI(val *Authenti
 
 // Ref: #/components/schemas/AuthenticationSPIFFEClientAuthRunConfig
 type AuthenticationSPIFFEClientAuthRunConfig struct {
-	// Audiences are RFC 8693 token audiences this association may request.
-	// This is an independent request dimension from Resources: it is not
-	// bounded by allowed_audiences (which is an RFC 8707 resource-URI list)
-	// and may contain non-URI logical audience identifiers.
+	// Audiences is deprecated and ignored; use Resources. It stays in the
+	// schema because v0.65.0 required it, and a warning is logged at startup
+	// when it is set.
 	Audiences []string `json:"audiences"`
 	// ClientID is the explicit OAuth client_id. It is never derived from a
 	// SPIFFE ID.
@@ -2318,11 +2418,12 @@ type AuthenticationSPIFFEClientAuthRunConfig struct {
 	// the declared trust domain.
 	PrincipalPattern OptString `json:"principal_pattern"`
 	// Resources are RFC 8707 resource indicators this association may
-	// request. Must be a subset of the server's allowed_audiences allowlist
-	// (RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list
-	// DelegateClientRunConfig.Audiences is validated against. Distinct from
-	// Audiences: a resource permission does not imply the same value is also
-	// a permitted token audience, or vice versa.
+	// request. At least one is required for every association: both
+	// client_credentials and token exchange take exactly one resource per
+	// request and grant it as the token audience. Must be a subset of the
+	// server's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the
+	// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
+	// validated against.
 	Resources []string `json:"resources"`
 	// Scopes are OAuth scopes granted to this association. They must be a
 	// subset of the server's effective supported scopes.
@@ -4013,6 +4114,9 @@ type CreateRequest struct {
 	// Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
 	// Empty or zero uses the default timeout of 30 seconds.
 	ProxyReadTimeout OptString `json:"proxy_read_timeout"`
+	// Whether to mount the container's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool `json:"read_only_rootfs"`
 	// Registry is the optional registry name to resolve the server from (e.g. "default").
 	Registry      OptString                 `json:"registry"`
 	RuntimeConfig OptTemplatesRuntimeConfig `json:"runtime_config"`
@@ -4127,6 +4231,11 @@ func (s *CreateRequest) GetProxyPort() OptInt {
 // GetProxyReadTimeout returns the value of ProxyReadTimeout.
 func (s *CreateRequest) GetProxyReadTimeout() OptString {
 	return s.ProxyReadTimeout
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *CreateRequest) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRegistry returns the value of Registry.
@@ -4272,6 +4381,11 @@ func (s *CreateRequest) SetProxyPort(val OptInt) {
 // SetProxyReadTimeout sets the value of ProxyReadTimeout.
 func (s *CreateRequest) SetProxyReadTimeout(val OptString) {
 	s.ProxyReadTimeout = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *CreateRequest) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRegistry sets the value of Registry.
@@ -7238,6 +7352,52 @@ func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Get() (v Authentic
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Or(d AuthenticationDelegateClientExchangeRefreshTokens) AuthenticationDelegateClientExchangeRefreshTokens {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationDelegateClientIDJAG returns new OptAuthenticationDelegateClientIDJAG with value set to v.
+func NewOptAuthenticationDelegateClientIDJAG(v AuthenticationDelegateClientIDJAG) OptAuthenticationDelegateClientIDJAG {
+	return OptAuthenticationDelegateClientIDJAG{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationDelegateClientIDJAG is optional AuthenticationDelegateClientIDJAG.
+type OptAuthenticationDelegateClientIDJAG struct {
+	Value AuthenticationDelegateClientIDJAG
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationDelegateClientIDJAG was set.
+func (o OptAuthenticationDelegateClientIDJAG) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationDelegateClientIDJAG) Reset() {
+	var v AuthenticationDelegateClientIDJAG
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationDelegateClientIDJAG) SetTo(v AuthenticationDelegateClientIDJAG) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationDelegateClientIDJAG) Get() (v AuthenticationDelegateClientIDJAG, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationDelegateClientIDJAG) Or(d AuthenticationDelegateClientIDJAG) AuthenticationDelegateClientIDJAG {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -12262,6 +12422,52 @@ func (o OptSkillsScope) Or(d SkillsScope) SkillsScope {
 	return d
 }
 
+// NewOptSkillsSeverity returns new OptSkillsSeverity with value set to v.
+func NewOptSkillsSeverity(v SkillsSeverity) OptSkillsSeverity {
+	return OptSkillsSeverity{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSkillsSeverity is optional SkillsSeverity.
+type OptSkillsSeverity struct {
+	Value SkillsSeverity
+	Set   bool
+}
+
+// IsSet returns true if OptSkillsSeverity was set.
+func (o OptSkillsSeverity) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSkillsSeverity) Reset() {
+	var v SkillsSeverity
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSkillsSeverity) SetTo(v SkillsSeverity) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSkillsSeverity) Get() (v SkillsSeverity, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSkillsSeverity) Or(d SkillsSeverity) SkillsSeverity {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptSkillsSkillMetadata returns new OptSkillsSkillMetadata with value set to v.
 func NewOptSkillsSkillMetadata(v SkillsSkillMetadata) OptSkillsSkillMetadata {
 	return OptSkillsSkillMetadata{
@@ -15013,6 +15219,9 @@ func (*PluginsV01Response) listPublicRegistryPluginsRes() {}
 type PluginsValidationResult struct {
 	// Errors is a list of validation errors, if any.
 	Errors []string `json:"errors"`
+	// Findings lists every error and warning with its rule ID and location.
+	// Each Errors or Warnings entry corresponds to exactly one finding.
+	Findings []SkillsFinding `json:"findings"`
 	// Valid indicates whether the skill definition is valid.
 	Valid OptBool `json:"valid"`
 	// Warnings is a list of non-blocking validation warnings, if any.
@@ -15022,6 +15231,11 @@ type PluginsValidationResult struct {
 // GetErrors returns the value of Errors.
 func (s *PluginsValidationResult) GetErrors() []string {
 	return s.Errors
+}
+
+// GetFindings returns the value of Findings.
+func (s *PluginsValidationResult) GetFindings() []SkillsFinding {
+	return s.Findings
 }
 
 // GetValid returns the value of Valid.
@@ -15037,6 +15251,11 @@ func (s *PluginsValidationResult) GetWarnings() []string {
 // SetErrors sets the value of Errors.
 func (s *PluginsValidationResult) SetErrors(val []string) {
 	s.Errors = val
+}
+
+// SetFindings sets the value of Findings.
+func (s *PluginsValidationResult) SetFindings(val []SkillsFinding) {
+	s.Findings = val
 }
 
 // SetValid sets the value of Valid.
@@ -18156,6 +18375,11 @@ type RunnerRunConfig struct {
 	RateLimitConfig OptV1beta1RateLimitConfig `json:"rate_limit_config"`
 	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
 	RateLimitNamespace OptString `json:"rate_limit_namespace"`
+	// ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.
+	// /tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.
+	// Opt-in: servers that write anywhere else outside their mounted volumes will fail.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool `json:"read_only_rootfs"`
 	// RegistryAPIURL is the registry API URL that served this server's metadata.
 	// Empty when the server was not discovered via registry lookup.
 	RegistryAPIURL OptString `json:"registry_api_url"`
@@ -18407,6 +18631,11 @@ func (s *RunnerRunConfig) GetRateLimitConfig() OptV1beta1RateLimitConfig {
 // GetRateLimitNamespace returns the value of RateLimitNamespace.
 func (s *RunnerRunConfig) GetRateLimitNamespace() OptString {
 	return s.RateLimitNamespace
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *RunnerRunConfig) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRegistryAPIURL returns the value of RegistryAPIURL.
@@ -18717,6 +18946,11 @@ func (s *RunnerRunConfig) SetRateLimitConfig(val OptV1beta1RateLimitConfig) {
 // SetRateLimitNamespace sets the value of RateLimitNamespace.
 func (s *RunnerRunConfig) SetRateLimitNamespace(val OptString) {
 	s.RateLimitNamespace = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *RunnerRunConfig) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRegistryAPIURL sets the value of RegistryAPIURL.
@@ -19417,6 +19651,70 @@ func (s *SkillsFailureReason) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/SkillsFinding
+type SkillsFinding struct {
+	// File is the slash-separated path of the affected file, relative to the
+	// validated directory.
+	File OptString `json:"file"`
+	// Line is the 1-based line in File, or 0 when unknown.
+	Line OptInt `json:"line"`
+	// Message describes the problem.
+	Message OptString `json:"message"`
+	// Rule is the stable ID of the check that produced the finding.
+	Rule     OptString         `json:"rule"`
+	Severity OptSkillsSeverity `json:"severity"`
+}
+
+// GetFile returns the value of File.
+func (s *SkillsFinding) GetFile() OptString {
+	return s.File
+}
+
+// GetLine returns the value of Line.
+func (s *SkillsFinding) GetLine() OptInt {
+	return s.Line
+}
+
+// GetMessage returns the value of Message.
+func (s *SkillsFinding) GetMessage() OptString {
+	return s.Message
+}
+
+// GetRule returns the value of Rule.
+func (s *SkillsFinding) GetRule() OptString {
+	return s.Rule
+}
+
+// GetSeverity returns the value of Severity.
+func (s *SkillsFinding) GetSeverity() OptSkillsSeverity {
+	return s.Severity
+}
+
+// SetFile sets the value of File.
+func (s *SkillsFinding) SetFile(val OptString) {
+	s.File = val
+}
+
+// SetLine sets the value of Line.
+func (s *SkillsFinding) SetLine(val OptInt) {
+	s.Line = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SkillsFinding) SetMessage(val OptString) {
+	s.Message = val
+}
+
+// SetRule sets the value of Rule.
+func (s *SkillsFinding) SetRule(val OptString) {
+	s.Rule = val
+}
+
+// SetSeverity sets the value of Severity.
+func (s *SkillsFinding) SetSeverity(val OptSkillsSeverity) {
+	s.Severity = val
+}
+
 // Status is the current installation status.
 // Ref: #/components/schemas/SkillsInstallStatus
 type SkillsInstallStatus string
@@ -19816,6 +20114,49 @@ func (s *SkillsScope) UnmarshalText(data []byte) error {
 		return nil
 	case SkillsScopeProject:
 		*s = SkillsScopeProject
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Severity is "error" or "warning".
+// Ref: #/components/schemas/SkillsSeverity
+type SkillsSeverity string
+
+const (
+	SkillsSeverityError   SkillsSeverity = "error"
+	SkillsSeverityWarning SkillsSeverity = "warning"
+)
+
+// AllValues returns all SkillsSeverity values.
+func (SkillsSeverity) AllValues() []SkillsSeverity {
+	return []SkillsSeverity{
+		SkillsSeverityError,
+		SkillsSeverityWarning,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SkillsSeverity) MarshalText() ([]byte, error) {
+	switch s {
+	case SkillsSeverityError:
+		return []byte(s), nil
+	case SkillsSeverityWarning:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SkillsSeverity) UnmarshalText(data []byte) error {
+	switch SkillsSeverity(data) {
+	case SkillsSeverityError:
+		*s = SkillsSeverityError
+		return nil
+	case SkillsSeverityWarning:
+		*s = SkillsSeverityWarning
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -20435,6 +20776,9 @@ func (*SkillsV01Response) listPublicRegistrySkillsRes() {}
 type SkillsValidationResult struct {
 	// Errors is a list of validation errors, if any.
 	Errors []string `json:"errors"`
+	// Findings lists every error and warning with its rule ID and location.
+	// Each Errors or Warnings entry corresponds to exactly one finding.
+	Findings []SkillsFinding `json:"findings"`
 	// Valid indicates whether the skill definition is valid.
 	Valid OptBool `json:"valid"`
 	// Warnings is a list of non-blocking validation warnings, if any.
@@ -20444,6 +20788,11 @@ type SkillsValidationResult struct {
 // GetErrors returns the value of Errors.
 func (s *SkillsValidationResult) GetErrors() []string {
 	return s.Errors
+}
+
+// GetFindings returns the value of Findings.
+func (s *SkillsValidationResult) GetFindings() []SkillsFinding {
+	return s.Findings
 }
 
 // GetValid returns the value of Valid.
@@ -20459,6 +20808,11 @@ func (s *SkillsValidationResult) GetWarnings() []string {
 // SetErrors sets the value of Errors.
 func (s *SkillsValidationResult) SetErrors(val []string) {
 	s.Errors = val
+}
+
+// SetFindings sets the value of Findings.
+func (s *SkillsValidationResult) SetFindings(val []SkillsFinding) {
+	s.Findings = val
 }
 
 // SetValid sets the value of Valid.
@@ -21487,8 +21841,11 @@ type TokenExchangeJWTBearerGrantPolicy struct {
 	// authorization server for this grant; it is NOT a resource/API
 	// identifier — a bare resource audience is deliberately not accepted
 	// here, that would let any RFC 8707 resource-scoped token satisfy the
-	// grant instead of only tokens minted for this AS. Defaults to
-	// [tokenEndpoint] when empty, preserving prior exact-match behavior.
+	// grant instead of only tokens minted for this AS. When empty, the plain
+	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
+	// the token endpoint and this server's issuer identifier, unless the issuer
+	// is also an allowed resource audience. A configured list replaces both
+	// defaults.
 	AcceptedAudiences []string                               `json:"accepted_audiences"`
 	MaxAssertionAge   OptString                              `json:"max_assertion_age"`
 	SubjectBindings   []TokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
@@ -22060,8 +22417,11 @@ type UpdateRequest struct {
 	ProxyPort OptInt `json:"proxy_port"`
 	// Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
 	// Empty or zero uses the default timeout of 30 seconds.
-	ProxyReadTimeout OptString                 `json:"proxy_read_timeout"`
-	RuntimeConfig    OptTemplatesRuntimeConfig `json:"runtime_config"`
+	ProxyReadTimeout OptString `json:"proxy_read_timeout"`
+	// Whether to mount the container's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool                   `json:"read_only_rootfs"`
+	RuntimeConfig  OptTemplatesRuntimeConfig `json:"runtime_config"`
 	// Secret parameters to inject.
 	Secrets []SecretsSecretParameter `json:"secrets"`
 	// Port to expose from the container.
@@ -22163,6 +22523,11 @@ func (s *UpdateRequest) GetProxyPort() OptInt {
 // GetProxyReadTimeout returns the value of ProxyReadTimeout.
 func (s *UpdateRequest) GetProxyReadTimeout() OptString {
 	return s.ProxyReadTimeout
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *UpdateRequest) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRuntimeConfig returns the value of RuntimeConfig.
@@ -22293,6 +22658,11 @@ func (s *UpdateRequest) SetProxyPort(val OptInt) {
 // SetProxyReadTimeout sets the value of ProxyReadTimeout.
 func (s *UpdateRequest) SetProxyReadTimeout(val OptString) {
 	s.ProxyReadTimeout = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *UpdateRequest) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRuntimeConfig sets the value of RuntimeConfig.

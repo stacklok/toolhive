@@ -191,6 +191,45 @@
                 },
                 "type": "object"
             },
+            "authserver.DelegateClientIDJAG": {
+                "description": "IDJAG lists the authorization servers this client may ask for an\nIdentity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with\nrestricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with\ntoken exchange enabled.",
+                "properties": {
+                    "targets": {
+                        "description": "Targets are the authorization servers the client may ask for an ID-JAG\nfor. At least one is required.",
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.DelegateClientIDJAGTarget"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.DelegateClientIDJAGTarget": {
+                "properties": {
+                    "client_id": {
+                        "description": "ClientID is this client's client_id at the other authorization server.",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "Issuer is the issuer of the other authorization server. The client sends\nit as the request's audience, and it becomes the ID-JAG's aud exactly as\nwritten here. It must be an absolute https URL, or http on a loopback\nhost, with no query, fragment or userinfo. It must be well-formed: lower-case\nscheme and host, no default port (\":443\" for https, \":80\" for http), no dot\nsegments, empty path segments, unneeded percent-encoding or leading zeros\nin the port. One trailing slash is allowed and is kept as written. It must\nbe unique within the client, and the (issuer, client_id) pair must be\nunique across delegate clients; both comparisons ignore one trailing\nslash. It must not be this server's issuer, token endpoint or one of its\nallowed_audiences; that comparison ignores case in the scheme and host, a\ndefault port and one trailing slash.",
+                        "type": "string"
+                    },
+                    "lifetime": {
+                        "description": "Lifetime is how long each ID-JAG lives, as a Go duration string in whole\nseconds (e.g. \"60s\"). Defaults to 60s; at most 300s.",
+                        "type": "string"
+                    },
+                    "resources": {
+                        "description": "Resources are the resources behind the other authorization server, such\nas an MCP endpoint, that the client may name as the request's resource.\nAt least one is required. Each must be a valid RFC 8707 resource URI,\nlisted once.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "authserver.DelegateClientRunConfig": {
                 "properties": {
                     "audiences": {
@@ -268,6 +307,9 @@
                     },
                     "exchange_refresh_tokens": {
                         "$ref": "#/components/schemas/authserver.DelegateClientExchangeRefreshTokens"
+                    },
+                    "id_jag": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientIDJAG"
                     },
                     "self_issued_subject_tokens": {
                         "description": "SelfIssuedSubjectTokens is any or restricted, and is required. With\nrestricted, a self-issued subject token must carry the client's own\nclient_id or one of AllowedSourceClients, and a may_act claim naming\nthis client does not lift that restriction. With any, the client may\nexchange any self-issued token.",
@@ -667,7 +709,7 @@
                         "$ref": "#/components/schemas/upstreamfilter.GroupBasedFilterConfig"
                     },
                     "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when DelegateClients or a\nTrustedIssuer with JWTBearerGrant enables token-only operation.\nMultiple upstreams are supported for sequential authorization chains.",
+                        "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when token-only operation\nis enabled by DelegateClients (also under InboundGrants.TokenExchange),\nInboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant\n(also under InboundGrants.JWTBearer).\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
                             "$ref": "#/components/schemas/authserver.UpstreamRunConfig"
                         },
@@ -690,7 +732,7 @@
                 "type": "object"
             },
             "authserver.SPIFFEBundleSourceRunConfig": {
-                "description": "BundleSource declares exactly one trust-bundle source and is validated for\nshape here. The standalone file loader exists, but source initialization\nis not wired into SPIFFE authentication.",
+                "description": "BundleSource declares exactly one trust-bundle source and is validated for\nshape here. Only the file source is loaded in this build; bundle_endpoint\nand workload_api are rejected by Validate.",
                 "properties": {
                     "endpoint": {
                         "$ref": "#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig"
@@ -710,7 +752,7 @@
             "authserver.SPIFFEClientAuthRunConfig": {
                 "properties": {
                     "audiences": {
-                        "description": "Audiences are RFC 8693 token audiences this association may request.\nThis is an independent request dimension from Resources: it is not\nbounded by allowed_audiences (which is an RFC 8707 resource-URI list)\nand may contain non-URI logical audience identifiers.",
+                        "description": "Audiences is deprecated and ignored; use Resources. It stays in the\nschema because v0.65.0 required it, and a warning is logged at startup\nwhen it is set.",
                         "items": {
                             "type": "string"
                         },
@@ -741,7 +783,7 @@
                         "type": "string"
                     },
                     "resources": {
-                        "description": "Resources are RFC 8707 resource indicators this association may\nrequest. Must be a subset of the server's allowed_audiences allowlist\n(RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list\nDelegateClientRunConfig.Audiences is validated against. Distinct from\nAudiences: a resource permission does not imply the same value is also\na permitted token audience, or vice versa.",
+                        "description": "Resources are RFC 8707 resource indicators this association may\nrequest. At least one is required for every association: both\nclient_credentials and token exchange take exactly one resource per\nrequest and grant it as the token audience. Must be a subset of the\nserver's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the\nsame RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is\nvalidated against.",
                         "items": {
                             "type": "string"
                         },
@@ -1743,6 +1785,14 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "findings": {
+                        "description": "Findings lists every error and warning with its rule ID and location.\nEach Errors or Warnings entry corresponds to exactly one finding.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Finding"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "valid": {
                         "description": "Valid indicates whether the skill definition is valid.",
                         "type": "boolean"
@@ -1981,6 +2031,10 @@
                         "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
                         "type": "string"
                     },
+                    "read_only_rootfs": {
+                        "description": "ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.\n/tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.\nOpt-in: servers that write anywhere else outside their mounted volumes will fail.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
+                    },
                     "registry_api_url": {
                         "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
                         "type": "string"
@@ -2201,6 +2255,30 @@
                     "FailureReasonUnknown"
                 ]
             },
+            "github_com_stacklok_toolhive_pkg_skills.Finding": {
+                "properties": {
+                    "file": {
+                        "description": "File is the slash-separated path of the affected file, relative to the\nvalidated directory.",
+                        "type": "string"
+                    },
+                    "line": {
+                        "description": "Line is the 1-based line in File, or 0 when unknown.",
+                        "type": "integer"
+                    },
+                    "message": {
+                        "description": "Message describes the problem.",
+                        "type": "string"
+                    },
+                    "rule": {
+                        "description": "Rule is the stable ID of the check that produced the finding.",
+                        "type": "string"
+                    },
+                    "severity": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Severity"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_skills.InstallStatus": {
                 "description": "Status is the current installation status.",
                 "enum": [
@@ -2343,6 +2421,18 @@
                 "x-enum-varnames": [
                     "ScopeUser",
                     "ScopeProject"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_skills.Severity": {
+                "description": "Severity is \"error\" or \"warning\".",
+                "enum": [
+                    "error",
+                    "warning"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "SeverityError",
+                    "SeverityWarning"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_skills.SkillContent": {
@@ -2604,6 +2694,14 @@
                         "description": "Errors is a list of validation errors, if any.",
                         "items": {
                             "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "findings": {
+                        "description": "Findings lists every error and warning with its rule ID and location.\nEach Errors or Warnings entry corresponds to exactly one finding.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Finding"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -3509,6 +3607,10 @@
                         "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
                         "example": "30s",
                         "type": "string"
+                    },
+                    "read_only_rootfs": {
+                        "description": "Whether to mount the container's root filesystem as read-only.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
                     },
                     "registry": {
                         "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
@@ -4438,6 +4540,10 @@
                         "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
                         "example": "30s",
                         "type": "string"
+                    },
+                    "read_only_rootfs": {
+                        "description": "Whether to mount the container's root filesystem as read-only.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
                     },
                     "runtime_config": {
                         "$ref": "#/components/schemas/templates.RuntimeConfig"
@@ -5784,7 +5890,7 @@
                 "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.\n\nThis legacy field is deprecated; configure RFC 7523 policy under\ninbound_grants.jwt_bearer.issuer_policies.",
                 "properties": {
                     "accepted_audiences": {
-                        "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. Defaults to\n[tokenEndpoint] when empty, preserving prior exact-match behavior.",
+                        "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. When empty, the plain\nJWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts\nthe token endpoint and this server's issuer identifier, unless the issuer\nis also an allowed resource audience. A configured list replaces both\ndefaults.",
                         "items": {
                             "type": "string"
                         },

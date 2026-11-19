@@ -167,6 +167,7 @@ sequenceDiagram
 
 **Responsibilities**:
 - Validate JWT token signature and expiration
+- Return 401 Unauthorized for a token whose JOSE `typ` header is `oauth-id-jag+jwt` (compared case-insensitively, with or without the `application/` prefix), even when its signature and claims are valid. This applies to tokens from every configured issuer, including external identity providers, and to vMCP incoming authentication. An ID-JAG is not an access token. An issuer that signs ID-JAGs with the same key as its access tokens (an external identity provider, or the embedded auth server) would otherwise have them accepted in place of access tokens (RFC 8725 Section 3.12). Configuring an expected audience is the main defence against one token type being used in place of another; this check is a backup for deployments without one.
 - Extract JWT claims (sub, name, roles, etc.)
 - Add claims to request context for downstream middleware
 - With the embedded auth server, load the token session's upstream provider credentials (the `tsid` claim) into `Identity.UpstreamTokens` and `Identity.UpstreamIDTokens`, refreshing expired access tokens
@@ -352,15 +353,42 @@ Filtering a list removes the tools the filter hides and applies the overrides, a
 
 **Responsibilities**:
 - Count `tools/call` requests by examining parsed MCP data
-- Aggregate counts in-memory with atomic operations
+- Attribute each call to the MCP client that made it
+- Aggregate counts in-memory
 - Flush metrics to API endpoint periodically (every 15 minutes)
 - Reset counts daily at midnight UTC
 - Manage background flush goroutine lifecycle
+
+**What each report contains**:
+
+Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. When it stops, it sends a final report only if it counted tool calls. Outside Kubernetes it needs an anonymous ID first: until the first update check creates one, nothing is sent. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
+
+| Field | Values |
+|-------|--------|
+| `count` | Tool calls so far today (UTC) |
+| `calls_by_client` | `count` split by MCP client: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `vscode`, `cline`, `roo-code`, `continue`, `zed`, `goose`, `codex`, `gemini-cli`, `jetbrains`, `mcp-inspector`, `toolhive`, `vmcp`, `other`, `unknown` |
+| `transport` | `stdio`, `sse`, `streamable-http`, `other` |
+| `server_kind` | `container`, `remote` |
+| `registry_source` | Where the server definition came from: a registry (`builtin`, `custom_remote`, `custom_api`, `custom_local`), a package `thv` built into an image (`package_uvx`, `package_npx`, `package_go`; the package name is not sent), or `none` (a plain image or URL, and every Kubernetes workload). An image built with `thv build --tag` and run by that name counts as `none` |
+| `catalog_server` | The entry name, only for servers from the registry built into ToolHive; `custom` for servers from any other registry; omitted for package builds and `none` |
+| `runtime` | `docker`, `podman`, `colima`, `kubernetes`, `none`, `other` |
+| `auth_mode` | `none`, `oidc`, `local`, `embedded`, `other` |
+| `authz` | `on`, `off` |
+| `backend_count` | vMCP only: number of backends |
+| `tool_count` | vMCP only: number of backend tools in the most recent aggregation, after conflict resolution and per-backend filters. Excludes composite and optimizer tools and is not filtered per user; it can differ between callers when backends return different tools per user |
+| `features` | vMCP only: any of `optimizer`, `code_mode`, `composite_tools`, `outgoing_auth` |
+
+The client is taken from `clientInfo.name`: from `_meta` on each request for stateless (2026-07-28) requests, or from the `initialize` request for session-based connections (tracked per session ID, in memory only). When neither applies, because the server never assigns a session ID (stateless streamable HTTP servers, including many remote servers) or the proxy no longer remembers the session (after a restart, on another replica, or once more than 4096 sessions are tracked), the call is attributed to the client the request's `User-Agent` header names, if it is one of the clients listed above. Any other `User-Agent`, such as a generic HTTP library agent (`node`, `python-httpx`, `Go-http-client`), leaves the call `unknown`, never `other`. Only the normalized value is reported; the raw `clientInfo.name` and `User-Agent` are not. vMCP reports each call under the client that made it, and the backend proxy it forwards the call to reports it again under the client `vmcp`, including on a session-less Legacy backend, because vMCP's backend requests carry a `User-Agent` of the form `toolhive/vmcp <version> <build type> (<os>/<arch>)`. If `passthroughHeaders` or a backend's `headerForward` forwards a `User-Agent`, that value is sent instead and the session-less call is attributed to the client it names. To rank clients across proxies and vMCP, exclude `vmcp`.
+
+Server names, image references, URLs, hostnames, namespaces, tool, prompt and resource names, raw client names and error messages are never sent. A server from a custom registry is reported as `catalog_server: custom` even if its entry has a name. The one exception is a local registry file entry that reuses the name of a built-in entry: it cannot be told apart from the built-in entry, so it is reported as `registry_source: builtin` with that name, which is already public. `catalog_server` is only reported by servers that `thv` runs; Kubernetes workloads and vMCP never send it.
+
+**vMCP and the operator**: vMCP reports with the `vmcp` component and the same opt-outs. As in `thv`, its version check has its own opt-out (`TOOLHIVE_SKIP_UPDATE_CHECK=true`, or CI), so turning usage metrics off does not stop it. vMCP only reads the thv config file for the opt-out: it never creates or rewrites it, a missing file means no opt-out, and a file it cannot read or parse means it sends no usage reports. The operator passes its instance ID to the workloads it deploys (`TOOLHIVE_ANONYMOUS_ID`), so reports from one installation share an anonymous ID. The ID is read from the operator's telemetry ConfigMap at startup and does not change workload pod templates on later restarts. Errors that may be transient are retried for about 15 seconds; if they persist, the operator exits and its pod restarts, so that no replica runs without the ID and later rolls every workload when it becomes the leader. An error a retry cannot fix (forbidden, unauthorized, invalid) is not retried: the operator starts without the ID, which rolls out every workload that carries it. The ID stored in the ConfigMap is never replaced; if the ConfigMap is deleted, the leader stores the same ID again. Opting the operator out opts the workloads it deploys out as well. Instead of the ID it passes the same setting: `TOOLHIVE_SKIP_UPDATE_CHECK=true` stops their update checks and usage reports, and `TOOLHIVE_USAGE_METRICS_ENABLED=false` stops their usage reports only. Turning either on or off rolls out those workloads once. A value set on the workload itself wins.
 
 **Configuration**:
 - Enabled by default
 - Can be disabled via config: `thv config usage-metrics disable`
 - Can be disabled via environment variable: `TOOLHIVE_USAGE_METRICS_ENABLED=false`
+- Disabled, together with update checks, by `TOOLHIVE_SKIP_UPDATE_CHECK=true`
 - Automatically disabled in CI environments
 
 **Dependencies**:
@@ -368,7 +396,7 @@ Filtering a list removes the tools the filter hides and applies the overrides, a
 
 **Opting Out**:
 
-Users can opt out of anonymous usage metrics in two ways:
+Users can opt out of anonymous usage metrics in three ways:
 
 ```bash
 # Via config (persistent)
@@ -376,6 +404,9 @@ thv config usage-metrics disable
 
 # Via environment variable (session-only)
 export TOOLHIVE_USAGE_METRICS_ENABLED=false
+
+# Turn off update checks as well (session-only)
+export TOOLHIVE_SKIP_UPDATE_CHECK=true
 ```
 
 To re-enable:
@@ -571,6 +602,8 @@ Audit events are logged as structured JSON objects:
   - `user`: User display name (from `name` claim, `preferred_username`, or `email`)
   - `client_name`: MCP client name (from JWT claims)
   - `client_version`: MCP client version (from JWT claims)
+  - Additional keys from a subject enricher, when a vMCP embedder sets one
+    (see [Embedder-supplied subjects](#embedder-supplied-subjects) below)
 - `delegation`: RFC 8693 delegation chain (toolhive-core's canonical schema),
   present only when the caller authenticated with a delegated token (i.e. the
   JWT carries an `act` claim)
@@ -609,9 +642,51 @@ Audit events are logged as structured JSON objects:
   - `duration_ms`: Request duration in milliseconds
   - `transport`: Transport type (`sse`, `streamable-http`, `http`)
   - `response_size_bytes`: Response body size (when capturing response data)
+  - `trace_id`, `span_id`: W3C trace and span IDs of the request (present only when the request carries a valid span context, such as an inbound `traceparent` with tracing enabled)
 - `data`: Captured request/response data (only present if enabled)
   - `request`: Request body (parsed as JSON if possible, otherwise string)
   - `response`: Response body (parsed as JSON if possible, otherwise string)
+
+#### Embedder-supplied subjects
+
+A program that embeds vMCP can add its own caller attributes to `subjects`
+by setting `AuditSubjectEnricher` (an `audit.SubjectEnricher`) on
+`server.Config`, or on both `server.ServerConfig` and `core.Config` when it
+calls `core.New` and `server.Serve` directly. Typical keys are the OAuth
+client id the token was issued to (`client_id` per RFC 9068, `cid` on Okta,
+`azp` on Entra), a workload-versus-user marker, or an internal user id.
+
+```go
+cfg.AuditSubjectEnricher = func(ctx context.Context) map[string]string {
+	id, ok := auth.IdentityFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	cid, _ := id.Claims["azp"].(string)
+	return map[string]string{"client_id": cid}
+}
+```
+
+- It is set from Go only. It has no key in the audit configuration file.
+- It applies to the per-request MCP events and to the composite-tool
+  workflow events.
+- It runs only when `AuditConfig` is set, once per event that passes the
+  event-type filter.
+- It reads the caller with `auth.IdentityFromContext(ctx)`, which returns
+  false when the caller is unauthenticated. The auditor attaches the identity
+  to `ctx` itself, so this works even though the audit middleware runs outside
+  the auth middleware. On composite-tool workflow events the caller is the
+  identity passed to `core.VMCP.CallTool`, even when `ctx` carries none or a
+  different one.
+- It must be fast, must not block, and must be safe for concurrent use:
+  composite-tool workflow steps call it from parallel goroutines. A panic is
+  recovered and logged at ERROR with the event type and a stack trace, and
+  the event is still written without the enricher's subjects.
+- Returned keys are added to `subjects`. Empty keys and values are dropped.
+  The keys the auditor writes itself (`user`, `user_id`, `client_name`,
+  `client_version`) are reserved: the enricher can neither overwrite nor
+  supply them.
+- With no enricher set, events are unchanged.
 
 #### CLI Usage
 

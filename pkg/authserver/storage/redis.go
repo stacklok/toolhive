@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // nullMarker is used to store nil upstream tokens in Redis.
@@ -1023,38 +1024,27 @@ func (s *RedisStorage) ClientAssertionJWTValid(ctx context.Context, jti string) 
 	return nil
 }
 
-// SetClientAssertionJWT extends jti's replay marker to its real expiry,
-// rejecting an exp further than MaxAssertionLifespan in the future. This
-// bounds how long a replay-tracking entry survives regardless of what the
-// client's own assertion claims — otherwise a registered caller could set
-// exp decades out and give Redis a key with a correspondingly enormous TTL.
-// Unconditional overwrite, not a fresh atomic check: only the caller that
-// already won ClientAssertionJWTValid's reservation reaches this call. If
-// the JWT has already expired (exp is in the past), this deletes the
-// reservation instead: there is no need to keep it for replay detection
-// since the assertion will be rejected on expiry checks before reaching the
-// JTI lookup.
-func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error {
-	if time.Until(exp) > server.MaxAssertionLifespan {
-		return fosite.ErrInvalidClient.WithHintf(
-			"The 'client_assertion' lifetime exceeds the maximum of %s.", server.MaxAssertionLifespan)
+// SetClientAssertionJWT extends jti's replay marker to deadline, which becomes
+// the key's TTL as given. The authorization server hands it the marker deadline
+// (server.ClientAssertionRetainUntil of the assertion's exp), so the marker
+// outlives the clock skew in which the assertion is still accepted. A deadline
+// that server.ValidateClientAssertionMarkerDeadline refuses, because it is not
+// in the future or too far ahead, is rejected with invalid_client and the key is
+// left as ClientAssertionJWTValid reserved it. The ahead bound keeps a
+// registered caller from setting a deadline decades out and giving Redis a key
+// with a correspondingly enormous TTL. Unconditional overwrite, not a fresh
+// atomic check: only the caller that already won ClientAssertionJWTValid's
+// reservation reaches this call. The check must precede Set: go-redis sends no
+// expiry for a non-positive duration other than -1ns, which it sends as KEEPTTL.
+func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, deadline time.Time) error {
+	now := time.Now()
+	if err := server.ValidateClientAssertionMarkerDeadline(deadline, now); err != nil {
+		return err
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeJWT, jti)
 
-	ttl := time.Until(exp)
-	if ttl <= 0 {
-		slog.Debug("removing reservation for already-expired client assertion JWT",
-			"jti", jti, "exp", exp)
-		if err := s.client.Del(ctx, key).Err(); err != nil {
-			err = fmt.Errorf("failed to remove client assertion JWT reservation: %w", err)
-			server.RecordClientAssertionStoreFailure(ctx, err)
-			return err
-		}
-		return nil
-	}
-
-	if err := s.client.Set(ctx, key, "1", ttl).Err(); err != nil {
+	if err := s.client.Set(ctx, key, "1", deadline.Sub(now)).Err(); err != nil {
 		err = fmt.Errorf("failed to record client assertion JWT: %w", err)
 		server.RecordClientAssertionStoreFailure(ctx, err)
 		return err
@@ -2235,7 +2225,7 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 		clientSecretExpiresAt = time.Unix(s.ClientSecretExpiresAt, 0)
 	}
 	return &DCRCredentials{
-		Key: DCRKey{
+		Key: dcrkey.Key{
 			Issuer:      s.KeyIssuer,
 			UpstreamID:  s.KeyUpstreamID,
 			RedirectURI: s.KeyRedirectURI,
@@ -2600,7 +2590,7 @@ func (s *RedisStorage) UpdateDCRCredentialsIfUnchanged(
 // any stored row because StoreDCRCredentialsIfAbsent rejects such keys, so a Get
 // against one is a normal miss — ErrNotFound — matching
 // MemoryStorage.GetDCRCredentials and the DCRCredentialStore interface contract.
-func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error) {
+func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key dcrkey.Key) (*DCRCredentials, error) {
 	redisKey := redisDCRKey(s.keyPrefix, key)
 	data, err := s.client.Get(ctx, redisKey).Bytes()
 	if err != nil {

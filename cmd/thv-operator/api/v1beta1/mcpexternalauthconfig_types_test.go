@@ -753,7 +753,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "confidential clients (allow_confidential_client_registration or delegate clients) cannot be combined with insecure_allow_http",
+			errMsg:    "confidential clients (allow_confidential_client_registration, delegate clients or JWT-SVID SPIFFE associations that grant client_credentials) cannot be combined with insecure_allow_http",
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer without opt-in - invalid",
@@ -942,13 +942,13 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			// layer — same precedent as DelegateClients: a meaningful
 			// resources/scopes check needs AllowedAudiences/ScopesSupported,
 			// which only exist once derived at reconcile time. (It does run
-			// the admission-time-safe bundle-URL and principal-overlap
-			// checks below — see validateSPIFFEBundleEndpoints and
-			// validateSPIFFEPrincipalPatternOverlap tests.) A resources
+			// the admission-time-safe principal-overlap check below; the
+			// bundle-URL check is unreachable here until a bundle_endpoint
+			// loader exists, see TestValidateSPIFFEBundleEndpointURLs.) A resources
 			// entry and a non-default scope must therefore pass here even
 			// though they'd need revalidating once those derived values are
 			// known (see
-			// TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced
+			// TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValuesExist
 			// in controllerutil for the reconcile-time revalidation this
 			// relies on). CEL (spiffe_cel_test.go) covers structural
 			// correctness (trust-domain refs, method subsets, etc.) at
@@ -972,8 +972,8 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 							Name: "example", TrustDomain: "example.org",
 							Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 							BundleSource: SPIFFEBundleSourceConfig{
-								Type:        SPIFFEBundleSourceTypeWorkloadAPI,
-								WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceConfig{},
+								Type: SPIFFEBundleSourceTypeFile,
+								File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
 							},
 						}},
 						InboundGrants: &InboundGrantsConfig{
@@ -987,9 +987,10 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 								// admission-time pre-check fabricated a nil
 								// allowlist/default-scopes set instead of
 								// deferring to reconcile time.
-								Resources: []string{"https://backend.example.com"},
-								Audiences: []string{"https://mcp.example.com"},
-								Scopes:    []string{"custom:scope"},
+								Resources:  []string{"https://backend.example.com"},
+								Audiences:  []string{"https://mcp.example.com"},
+								Scopes:     []string{"custom:scope"},
+								GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 							}},
 						},
 					},
@@ -998,57 +999,24 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name:      "spiffe bundle-endpoint URL rejects non-https scheme",
+			// The unsupported-type check runs before the endpoint URL check, so a
+			// bad bundle_endpoint URL is reported as the unsupported type.
+			name:      "spiffe bundle_endpoint source is rejected as unsupported by this build",
 			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("http://bundle.example.com"),
 			expectErr: true,
-			errMsg:    "must be an absolute HTTPS URL",
+			errMsg:    `spiffeTrustDomains[0].bundleSource: type "bundle_endpoint" is not supported by this build`,
 		},
 		{
-			name:      "spiffe bundle-endpoint URL rejects userinfo",
-			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://user:pass@bundle.example.com"),
+			name:      "spiffe x509 client with an http issuer is rejected",
+			config:    mustEmbeddedAuthServerConfigWithSPIFFEX509Client("http://auth.example.com", ""),
 			expectErr: true,
-			errMsg:    "must not contain credentials",
+			errMsg:    "SPIFFE X.509 authentication requires an https issuer",
 		},
 		{
-			name:      "spiffe bundle-endpoint URL rejects a query string",
-			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://bundle.example.com?x=1"),
+			name:      "spiffe client_id equal to a delegate client_id is rejected",
+			config:    mustEmbeddedAuthServerConfigWithSPIFFEX509Client("https://auth.example.com", "spiffe-client"),
 			expectErr: true,
-			errMsg:    "must not contain credentials",
-		},
-		{
-			name:      "spiffe bundle-endpoint URL rejects a fragment",
-			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://bundle.example.com/bundle#frag"),
-			expectErr: true,
-			errMsg:    "must not contain credentials",
-		},
-		{
-			name:      "spiffe bundle-endpoint URL rejects an IP-literal host",
-			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://192.0.2.1"),
-			expectErr: true,
-			errMsg:    "must not contain credentials",
-		},
-		{
-			name:      "spiffe bundle-endpoint URL rejects the localhost host",
-			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://localhost"),
-			expectErr: true,
-			errMsg:    "must not contain credentials",
-		},
-		{
-			name:      "spiffe bundle-endpoint URL rejects the 127.0.0.1 loopback host",
-			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://127.0.0.1"),
-			expectErr: true,
-			errMsg:    "must not contain credentials",
-		},
-		{
-			name:      "spiffe bundle-endpoint URL rejects the [::1] loopback host",
-			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://[::1]"),
-			expectErr: true,
-			errMsg:    "must not contain credentials",
-		},
-		{
-			name:      "spiffe bundle-endpoint URL accepts a valid https URL",
-			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://bundle.example.com"),
-			expectErr: false,
+			errMsg:    `client_id "spiffe-client" is configured both as a SPIFFE client association and as a delegate client`,
 		},
 		{
 			name:      "spiffe file bundle source is valid",
@@ -1115,6 +1083,16 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			config:    mustEmbeddedAuthServerConfigWithResource("https://mcp.example.com/resource#fragment"),
 			expectErr: true,
 			errMsg:    "must be an absolute HTTP(S) URI",
+		},
+		{
+			name: "spiffe association without resources is rejected",
+			config: func() *MCPExternalAuthConfig {
+				c := mustEmbeddedAuthServerConfigWithResource("https://mcp.example.com/resource")
+				c.Spec.EmbeddedAuthServer.InboundGrants.SPIFFEClientAuth[0].Resources = nil
+				return c
+			}(),
+			expectErr: true,
+			errMsg:    "spiffeClientAuth[0].resources is required",
 		},
 		{
 			name:      "spiffe resource indicator accepts a well-formed URI",
@@ -1293,6 +1271,32 @@ func mustEmbeddedAuthServerConfigWithBundleEndpoint(url string) *MCPExternalAuth
 	}
 }
 
+// mustEmbeddedAuthServerConfigWithSPIFFEX509Client builds an MCPExternalAuthConfig
+// with a listener and one X.509 SPIFFE client named "spiffe-client", and, when
+// delegateClientID is not empty, a legacy delegate client with that ID.
+func mustEmbeddedAuthServerConfigWithSPIFFEX509Client(issuer, delegateClientID string) *MCPExternalAuthConfig {
+	config := mustEmbeddedAuthServerConfigWithFileBundleSource("spire-bundle", "bundle.json")
+	auth := config.Spec.EmbeddedAuthServer
+	auth.Issuer = issuer
+	auth.TLSListener = &TLSListenerConfig{
+		CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+		PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+	}
+	auth.InboundGrants = &InboundGrantsConfig{SPIFFEClientAuth: []SPIFFEClientConfig{{
+		TrustDomainRef:   "example",
+		PrincipalPattern: "spiffe://example.org/ns/default/agent",
+		ClientID:         "spiffe-client",
+		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		Audiences:        []string{"https://mcp.example.com"},
+		Resources:        []string{"https://mcp.example.com"},
+		Scopes:           []string{"openid"},
+	}}}
+	if delegateClientID != "" {
+		auth.DelegateClients = []DelegateClientConfig{{ClientID: delegateClientID}}
+	}
+	return config
+}
+
 // mustEmbeddedAuthServerConfigWithFileBundleSource builds a minimal valid
 // MCPExternalAuthConfig with a single spiffeTrustDomains entry whose
 // bundleSource is a file source referencing the given ConfigMap name and key.
@@ -1346,8 +1350,8 @@ func mustEmbeddedAuthServerConfigWithPrincipalPatterns(first, second string) *MC
 					Name: "example", TrustDomain: "example.org",
 					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 					BundleSource: SPIFFEBundleSourceConfig{
-						Type:        SPIFFEBundleSourceTypeWorkloadAPI,
-						WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceConfig{},
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
 					},
 				}},
 				InboundGrants: &InboundGrantsConfig{
@@ -1355,12 +1359,14 @@ func mustEmbeddedAuthServerConfigWithPrincipalPatterns(first, second string) *MC
 						{
 							TrustDomainRef: "example", PrincipalPattern: first, ClientID: "spiffe-client-1",
 							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-							Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 						},
 						{
 							TrustDomainRef: "example", PrincipalPattern: second, ClientID: "spiffe-client-2",
 							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-							Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 						},
 					},
 				},
@@ -1392,8 +1398,8 @@ func mustEmbeddedAuthServerConfigWithResource(resource string) *MCPExternalAuthC
 					Name: "example", TrustDomain: "example.org",
 					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 					BundleSource: SPIFFEBundleSourceConfig{
-						Type:        SPIFFEBundleSourceTypeWorkloadAPI,
-						WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceConfig{},
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
 					},
 				}},
 				InboundGrants: &InboundGrantsConfig{
@@ -1402,7 +1408,8 @@ func mustEmbeddedAuthServerConfigWithResource(resource string) *MCPExternalAuthC
 						ClientID:  "spiffe-client",
 						Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 						Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
-						Resources: []string{resource},
+						Resources:  []string{resource},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 					}},
 				},
 			},
@@ -1448,6 +1455,33 @@ func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
 			},
 		},
 		{
+			name: "SPIFFE client associations permit token-only operation",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TLSListener: &TLSListenerConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: SPIFFEBundleSourceConfig{
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+					},
+				}},
+				InboundGrants: &InboundGrantsConfig{
+					SPIFFEClientAuth: []SPIFFEClientConfig{{
+						TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+						ClientID:  "spiffe-client",
+						Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+						Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					}},
+				},
+			},
+		},
+		{
 			name:      "no token-only alternative is rejected",
 			config:    EmbeddedAuthServerConfig{Issuer: "https://auth.example.com"},
 			wantError: "at least one upstream provider or inbound grant family is required",
@@ -1466,6 +1500,42 @@ func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+		})
+	}
+}
+
+// TestValidateSPIFFEBundleEndpointURLs exercises the bundle_endpoint URL checks
+// directly. validateEmbeddedAuthServer reports the unsupported bundle-source
+// type first, so these cases never reach the URL check through it.
+func TestValidateSPIFFEBundleEndpointURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		url     string
+		wantErr string
+	}{
+		{name: "valid https URL passes", url: "https://bundle.example.com"},
+		{name: "non-https scheme rejected", url: "http://bundle.example.com", wantErr: "must be an absolute HTTPS URL"},
+		{name: "userinfo rejected", url: "https://user:pass@bundle.example.com", wantErr: "must not contain credentials"},
+		{name: "query string rejected", url: "https://bundle.example.com?x=1", wantErr: "must not contain credentials"},
+		{name: "fragment rejected", url: "https://bundle.example.com/bundle#frag", wantErr: "must not contain credentials"},
+		{name: "IP-literal host rejected", url: "https://192.0.2.1", wantErr: "must not contain credentials"},
+		{name: "localhost host rejected", url: "https://localhost", wantErr: "must not contain credentials"},
+		{name: "127.0.0.1 loopback host rejected", url: "https://127.0.0.1", wantErr: "must not contain credentials"},
+		{name: "[::1] loopback host rejected", url: "https://[::1]", wantErr: "must not contain credentials"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			domains := mustEmbeddedAuthServerConfigWithBundleEndpoint(tt.url).Spec.EmbeddedAuthServer.SPIFFETrustDomains
+			err := validateSPIFFEBundleEndpoints(domains)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }
@@ -2176,11 +2246,91 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransp
 		Scopes:          []string{"openid"},
 		Audiences:       []string{"https://api.example.com"},
 	}}
+	spiffeConfig := func(method SPIFFEAuthenticationMethod, mutate func(*EmbeddedAuthServerConfig)) EmbeddedAuthServerConfig {
+		config := EmbeddedAuthServerConfig{
+			Issuer: "http://localhost:8080",
+			SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+				Name: "example", TrustDomain: "example.org",
+				Methods: []SPIFFEAuthenticationMethod{method},
+				BundleSource: SPIFFEBundleSourceConfig{
+					Type: SPIFFEBundleSourceTypeFile,
+					File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+				},
+			}},
+			InboundGrants: &InboundGrantsConfig{
+				SPIFFEClientAuth: []SPIFFEClientConfig{{
+					TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+					ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
+					Resources: []string{"https://mcp.example.com"},
+					Scopes:    []string{"openid"}, GrantTypes: []string{"client_credentials"},
+				}},
+			},
+		}
+		mutate(&config)
+		return config
+	}
+	splitSPIFFEMethodAndGrant := func(c *EmbeddedAuthServerConfig) {
+		c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT, SPIFFEAuthenticationMethodX509}
+		first := &c.InboundGrants.SPIFFEClientAuth[0]
+		first.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+		second := *first
+		second.PrincipalPattern = "spiffe://example.org/ns/default/other"
+		second.ClientID = "spiffe-client-x509"
+		second.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}
+		second.GrantTypes = []string{"client_credentials"}
+		c.InboundGrants.SPIFFEClientAuth = append(c.InboundGrants.SPIFFEClientAuth, second)
+	}
 	tests := []struct {
 		name      string
 		config    EmbeddedAuthServerConfig
 		expectErr bool
 	}{
+		{
+			name: "SPIFFE JWT client_credentials association rejects insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+			}),
+			expectErr: true,
+		},
+		{
+			name:      "SPIFFE JWT client_credentials association rejects HTTP loopback without explicit opt in",
+			config:    spiffeConfig(SPIFFEAuthenticationMethodJWT, func(*EmbeddedAuthServerConfig) {}),
+			expectErr: true,
+		},
+		{
+			name: "SPIFFE JWT client_credentials association allows HTTP loopback with explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowConfidentialOverLoopbackHTTP = true
+			}),
+		},
+		{
+			name: "SPIFFE JWT token-exchange-only association is admitted with insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+			}),
+		},
+		{
+			name: "SPIFFE JWT token-exchange-only association is admitted on HTTP loopback without explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+			}),
+		},
+		{
+			name: "SPIFFE JWT token exchange plus X.509 client_credentials on separate associations is admitted with insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.Issuer = "https://auth.example.com"
+				splitSPIFFEMethodAndGrant(c)
+			}),
+		},
+		{
+			name: "SPIFFE X.509 client_credentials association is unaffected by insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodX509, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.Issuer = "https://auth.example.com"
+			}),
+		},
 		{
 			name: "delegate clients remain independent of confidential DCR",
 			config: EmbeddedAuthServerConfig{
@@ -2439,14 +2589,15 @@ func TestEmbeddedAuthServerConfig_ValidateTLSListener(t *testing.T) {
 		return &InboundGrantsConfig{SPIFFEClientAuth: []SPIFFEClientConfig{{
 			TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
 			ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
+			GrantTypes: []string{"client_credentials"},
 		}}}
 	}
 	trustDomains := []SPIFFETrustDomainConfig{{
 		Name: "example", TrustDomain: "example.org",
 		Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		BundleSource: SPIFFEBundleSourceConfig{
-			Type:        SPIFFEBundleSourceTypeWorkloadAPI,
-			WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceConfig{},
+			Type: SPIFFEBundleSourceTypeFile,
+			File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
 		},
 	}}
 

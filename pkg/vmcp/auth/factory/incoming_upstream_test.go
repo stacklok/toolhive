@@ -21,6 +21,7 @@ import (
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	upstreamtokenmocks "github.com/stacklok/toolhive/pkg/auth/upstreamtoken/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -126,11 +127,11 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		}))
 
 		token := signJWT(t, privateKey, jwt.MapClaims{
-			"iss":                                issuer,
-			"aud":                                "test-audience",
-			"sub":                                "test-user",
-			"exp":                                time.Now().Add(time.Hour).Unix(),
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"iss":                        issuer,
+			"aud":                        "test-audience",
+			"sub":                        "test-user",
+			"exp":                        time.Now().Add(time.Hour).Unix(),
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -160,11 +161,11 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		}))
 
 		token := signJWT(t, privateKey, jwt.MapClaims{
-			"iss":                                issuer,
-			"aud":                                "test-audience",
-			"sub":                                "test-user",
-			"exp":                                time.Now().Add(time.Hour).Unix(),
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"iss":                        issuer,
+			"aud":                        "test-audience",
+			"sub":                        "test-user",
+			"exp":                        time.Now().Add(time.Hour).Unix(),
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)

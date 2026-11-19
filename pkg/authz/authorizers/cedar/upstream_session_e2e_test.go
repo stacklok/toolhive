@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
@@ -80,12 +81,12 @@ func TestUpstreamSessionWithoutRowsEndToEnd(t *testing.T) {
 	sessionToken := func(t *testing.T, sessionID string) string {
 		t.Helper()
 		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-			"iss":                                embeddedIssuer,
-			"aud":                                audience,
-			"sub":                                "alice",
-			"email":                              "alice@example.com",
-			"exp":                                time.Now().Add(time.Hour).Unix(),
-			upstreamtoken.TokenSessionIDClaimKey: sessionID,
+			"iss":                        embeddedIssuer,
+			"aud":                        audience,
+			"sub":                        "alice",
+			"email":                      "alice@example.com",
+			"exp":                        time.Now().Add(time.Hour).Unix(),
+			claimnames.TokenSessionIDKey: sessionID,
 		})
 		tok.Header["kid"] = keyID
 		signed, sErr := tok.SignedString(privateKey)

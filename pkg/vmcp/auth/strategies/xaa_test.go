@@ -757,7 +757,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 				})
 			},
 			expectError:   true,
-			errorContains: []string{"N_A"},
+			errorContains: []string{"want N_A (draft §4.3.4)"},
 		},
 		{
 			name: "IdP exchange rejects empty access_token",
@@ -1058,7 +1058,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			errorContains: []string{"IdP exchange", "resource"},
 		},
 		// resource check skipped when TargetResource is not configured
-		// (wantResource == "" early-return branch in validateIDJAGClaims).
+		// (the empty-resource case in idjag.FromExchange).
 		{
 			name: "IdP exchange accepts ID-JAG when TargetResource is not configured",
 			setupCtx: func() context.Context {
@@ -1200,10 +1200,10 @@ func buildIDJAGJWT(t *testing.T, typ string, aud, resource any) string {
 
 // setClaim sets a string-or-array claim on a MapClaims, omitting it when v is
 // nil or an empty string. []string is marshalled as a JSON array (decoded back
-// by golang-jwt as []interface{}, exercising the array branch of
-// claimContainsString). []interface{} is set directly, allowing heterogeneous
-// arrays (e.g. mixing strings with non-string elements) to exercise the
-// type-guard in claimContainsString's array branch.
+// by golang-jwt as []interface{}, exercising the array branch of the resource
+// check in idjag.FromExchange). []interface{} is set directly, allowing
+// heterogeneous arrays (e.g. mixing strings with non-string elements) to
+// exercise the skipping of non-string elements in that same check.
 func setClaim(t *testing.T, claims jwt.MapClaims, key string, v any) {
 	t.Helper()
 	switch c := v.(type) {

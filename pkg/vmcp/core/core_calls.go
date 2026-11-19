@@ -97,7 +97,7 @@ func (c *coreVMCP) CallTool(
 	// through to backend routing, matching the legacy decorator.
 	if def, ok := composites[name]; ok {
 		engine := c.composerFactory(agg.RoutingTable, agg.Tools)
-		return executeComposite(ctx, engine, def, argsCopy)
+		return executeComposite(ctx, identity, engine, def, argsCopy)
 	}
 
 	// Backend tool: route through a session router bound to the fresh table. The
@@ -273,12 +273,21 @@ func emptyCompletion() *vmcp.CompletionResult {
 // ToolCallResult. Workflow failures are returned as an IsError result (not a
 // transport error), mirroring the legacy compositeToolsDecorator
 // (internal/compositetools/decorator.go:76-114).
+//
+// identity is the caller passed to CallTool; the workflow runs on a context
+// carrying it, per the identity rule on the VMCP interface. The core still
+// never reads identity from ctx: it only hands its explicit identity to
+// components that do. context.WithValue is used rather than auth.WithIdentity,
+// which would also write any auth.IdentityHolder in ctx and skips a nil
+// identity.
 func executeComposite(
 	ctx context.Context,
+	identity *auth.Identity,
 	engine composer.Composer,
 	def *composer.WorkflowDefinition,
 	params map[string]any,
 ) (*vmcp.ToolCallResult, error) {
+	ctx = context.WithValue(ctx, auth.IdentityContextKey{}, identity)
 	result, err := engine.ExecuteWorkflow(ctx, def, params)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {

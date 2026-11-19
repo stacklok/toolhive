@@ -32,9 +32,7 @@ type spiffeMultiDomainBundleSource struct {
 	byTrustDomain map[spiffeid.TrustDomain]*spiffeLiveBundleSource
 	cancel        context.CancelFunc
 	workers       sync.WaitGroup
-	closers       []func() error
 	closeOnce     sync.Once
-	closeErr      error
 }
 
 type spiffeLiveBundleSource struct {
@@ -46,6 +44,10 @@ type spiffeLiveBundleSource struct {
 type bundleHolder struct {
 	current atomic.Pointer[bundleSnapshot]
 }
+
+// errSPIFFEBundleSequence marks a reload with a missing, lower or conflicting
+// sequence number.
+var errSPIFFEBundleSequence = errors.New("SPIFFE bundle sequence rejected")
 
 type bundleSnapshot struct {
 	bundle    *spiffebundle.Bundle
@@ -78,13 +80,16 @@ func validateBundleSnapshotUpdate(current *bundleSnapshot, bundle *spiffebundle.
 	}
 	sequence, hasSequence := bundle.SequenceNumber()
 	if !hasSequence {
-		return fmt.Errorf("SPIFFE bundle omits sequence number after sequence %d was observed", currentSequence)
+		return fmt.Errorf("%w: bundle omits sequence number after sequence %d was observed",
+			errSPIFFEBundleSequence, currentSequence)
 	}
 	if sequence < currentSequence {
-		return fmt.Errorf("SPIFFE bundle sequence %d is lower than current sequence %d", sequence, currentSequence)
+		return fmt.Errorf("%w: sequence %d is lower than current sequence %d",
+			errSPIFFEBundleSequence, sequence, currentSequence)
 	}
 	if sequence == currentSequence && !bundle.Equal(current.bundle) {
-		return fmt.Errorf("SPIFFE bundle sequence %d conflicts with the current bundle", sequence)
+		return fmt.Errorf("%w: sequence %d conflicts with the current bundle",
+			errSPIFFEBundleSequence, sequence)
 	}
 	return nil
 }
@@ -93,8 +98,6 @@ func validateBundleSnapshotUpdate(current *bundleSnapshot, bundle *spiffebundle.
 // completes their initial load before returning. The supplied context controls
 // refresh workers. Initial regular-file reads are synchronous and cannot be
 // canceled.
-//
-//nolint:unused // wired into server construction in the next PR of the stack
 func newSPIFFEMultiDomainBundleSource(
 	ctx context.Context, cfg *SPIFFETrustConfig,
 ) (*spiffeMultiDomainBundleSource, error) {
@@ -134,14 +137,11 @@ func newSPIFFEMultiDomainBundleSource(
 	return source, nil
 }
 
-// closeSPIFFEBundleSourceAfterError preserves the construction failure while
-// reporting a secondary resource-cleanup failure.
-//
-//nolint:unused // wired into server construction in the next PR of the stack
+// closeSPIFFEBundleSourceAfterError stops the workers of a partially built
+// source and returns primary. Close cannot fail because a file source holds no
+// external client to release.
 func closeSPIFFEBundleSourceAfterError(source *spiffeMultiDomainBundleSource, primary error) error {
-	if err := source.Close(); err != nil {
-		slog.Warn("failed to clean up SPIFFE bundle source after construction failure", "error", err)
-	}
+	_ = source.Close()
 	return primary
 }
 
@@ -198,8 +198,9 @@ func (s *spiffeMultiDomainBundleSource) GetJWTBundleForTrustDomain(
 	return live.jwt.GetJWTBundleForTrustDomain(trustDomain)
 }
 
-// Close stops all bundle refresh workers and releases their clients. It is safe
-// to call more than once.
+// Close cancels the bundle refresh workers and waits for them to exit. It is
+// safe to call more than once. A file source has no clients to release, so it
+// always returns nil.
 func (s *spiffeMultiDomainBundleSource) Close() error {
 	if s == nil {
 		return nil
@@ -207,15 +208,8 @@ func (s *spiffeMultiDomainBundleSource) Close() error {
 	s.closeOnce.Do(func() {
 		s.cancel()
 		s.workers.Wait()
-		errs := make([]error, 0, len(s.closers))
-		for index := len(s.closers) - 1; index >= 0; index-- {
-			if err := s.closers[index](); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		s.closeErr = errors.Join(errs...)
 	})
-	return s.closeErr
+	return nil
 }
 
 func newSPIFFELiveBundleSource(
@@ -343,10 +337,19 @@ func (h *bundleHolder) bundle(trustDomain spiffeid.TrustDomain) (*spiffebundle.B
 	if snapshot == nil || snapshot.bundle == nil {
 		return nil, fmt.Errorf("no SPIFFE bundle loaded for trust domain %q", trustDomain)
 	}
-	if time.Since(snapshot.fetchedAt) > spiffeBundleMaxStaleAge {
+	if snapshotStale(snapshot) {
 		return nil, fmt.Errorf("SPIFFE bundle for trust domain %q is older than %s", trustDomain, spiffeBundleMaxStaleAge)
 	}
 	return snapshot.bundle, nil
+}
+
+func (h *bundleHolder) stale() bool {
+	snapshot := h.current.Load()
+	return snapshot != nil && snapshotStale(snapshot)
+}
+
+func snapshotStale(snapshot *bundleSnapshot) bool {
+	return time.Since(snapshot.fetchedAt) > spiffeBundleMaxStaleAge
 }
 
 // pollFileBundle reloads a locally mounted SPIFFE bundle file on a fixed
@@ -363,7 +366,7 @@ func pollFileBundle(
 	worker *sync.WaitGroup,
 ) {
 	defer worker.Done()
-	failed := false
+	reporter := &bundleReloadReporter{trustDomain: trustDomain, path: path}
 	ticker := time.NewTicker(spiffeBundleFilePollInterval)
 	defer ticker.Stop()
 	for {
@@ -373,20 +376,74 @@ func pollFileBundle(
 		case <-ticker.C:
 		}
 
-		err := reloadSPIFFEBundleFile(trustDomain, path, holder, methods)
-		if err != nil {
-			if !failed {
-				slog.Warn("SPIFFE bundle file reload failed; retaining last known good bundle",
-					"trust_domain", trustDomain, "path", path, "error", err)
-				failed = true
-			}
-			continue
-		}
-		if failed {
-			slog.Debug("SPIFFE bundle file reload recovered", "trust_domain", trustDomain)
-			failed = false
-		}
+		reporter.observe(reloadSPIFFEBundleFile(trustDomain, path, holder, methods), holder)
 	}
+}
+
+type bundleReloadFailure int
+
+const (
+	bundleReloadHealthy bundleReloadFailure = iota
+	bundleReloadFailed
+	bundleReloadSequenceRejected
+)
+
+// bundleReloadReporter logs each poll outcome without per-poll volume: WARN once
+// when a failure begins or its kind changes (a rejected sequence number is its
+// own kind), WARN once each time the held bundle goes stale, Debug on recovery.
+// It belongs to a single polling goroutine.
+type bundleReloadReporter struct {
+	trustDomain spiffeid.TrustDomain
+	path        string
+	failure     bundleReloadFailure
+	stale       bool
+}
+
+// observe records one reload result, then re-checks staleness of holder's bundle.
+func (r *bundleReloadReporter) observe(err error, holder *bundleHolder) {
+	r.observeReload(err)
+	r.observeStale(holder.stale())
+}
+
+func (r *bundleReloadReporter) observeReload(err error) {
+	failure := func() bundleReloadFailure {
+		switch {
+		case err == nil:
+			return bundleReloadHealthy
+		case errors.Is(err, errSPIFFEBundleSequence):
+			return bundleReloadSequenceRejected
+		default:
+			return bundleReloadFailed
+		}
+	}()
+	if failure == r.failure {
+		return
+	}
+	r.failure = failure
+	switch failure {
+	case bundleReloadHealthy:
+		slog.Debug("SPIFFE bundle file reload recovered", "trust_domain", r.trustDomain)
+	case bundleReloadSequenceRejected:
+		slog.Warn("SPIFFE bundle file reload rejected: sequence number rejected; "+
+			"retaining last known good bundle, which stops authenticating once it goes stale",
+			"trust_domain", r.trustDomain, "path", r.path, "max_age", spiffeBundleMaxStaleAge, "error", err)
+	case bundleReloadFailed:
+		slog.Warn("SPIFFE bundle file reload failed; retaining last known good bundle",
+			"trust_domain", r.trustDomain, "path", r.path, "error", err)
+	}
+}
+
+func (r *bundleReloadReporter) observeStale(stale bool) {
+	if stale == r.stale {
+		return
+	}
+	r.stale = stale
+	if stale {
+		slog.Warn("SPIFFE trust bundle is stale; SPIFFE client authentication fails closed until a fresh bundle loads",
+			"trust_domain", r.trustDomain, "path", r.path, "max_age", spiffeBundleMaxStaleAge)
+		return
+	}
+	slog.Debug("SPIFFE trust bundle is fresh again", "trust_domain", r.trustDomain)
 }
 
 var _ x509bundle.Source = (*spiffeMultiDomainBundleSource)(nil)

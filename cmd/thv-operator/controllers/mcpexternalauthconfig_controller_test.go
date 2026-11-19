@@ -1585,6 +1585,44 @@ func TestMCPExternalAuthConfigReconciler_DeprecatedInboundGrantTransitions(t *te
 	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
 }
 
+func TestDeprecatedInboundGrantFields_SPIFFEAudiences(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		cfg   *mcpv1beta1.EmbeddedAuthServerConfig
+		paths []deprecatedInboundGrantField
+	}{
+		{name: "nil config"},
+		{
+			name: "no audiences",
+			cfg: &mcpv1beta1.EmbeddedAuthServerConfig{InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+				SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{ClientID: "a", Resources: []string{"https://api.example.com"}}},
+			}},
+		},
+		{
+			name: "audiences on the second association only",
+			cfg: &mcpv1beta1.EmbeddedAuthServerConfig{InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+				SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{
+					{ClientID: "a"},
+					{ClientID: "b", Audiences: []string{"https://api.example.com"}},
+				},
+			}},
+			paths: []deprecatedInboundGrantField{{
+				path:        "spec.embeddedAuthServer.inboundGrants.spiffeClientAuth[1].audiences",
+				replacement: "spec.embeddedAuthServer.inboundGrants.spiffeClientAuth[1].resources",
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := deprecatedInboundGrantFields(tt.cfg, "spec.embeddedAuthServer")
+			assert.ElementsMatch(t, tt.paths, got)
+		})
+	}
+}
+
 func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
 	t.Parallel()
 

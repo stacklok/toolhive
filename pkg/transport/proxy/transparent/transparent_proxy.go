@@ -109,7 +109,7 @@ type TransparentProxy struct {
 	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
 
-	// stripConsentCookie prevents the embedded AS session from reaching the backend.
+	// stripConsentCookie prevents remembered-consent cookies (__Host-thv_consent_*) from reaching the backend.
 	stripConsentCookie bool
 
 	// Callback when health check fails (for remote servers)
@@ -264,8 +264,9 @@ func WithRemoteRawQuery(rawQuery string) Option {
 	}
 }
 
-// WithStripConsentCookie removes the entire embedded auth server browser session
-// cookie family from outbound backend requests. Enable only when that server is mounted.
+// WithStripConsentCookie removes the embedded auth server's remembered-consent
+// cookie family (__Host-thv_consent_*) from outbound backend requests, not all
+// auth server browser cookies. Enable only when that server is mounted.
 func WithStripConsentCookie() Option {
 	return func(p *TransparentProxy) {
 		p.stripConsentCookie = true
@@ -1177,8 +1178,9 @@ func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest, upstr
 	}
 }
 
-// stripConsentCookie removes the embedded AS cookie family, retaining other cookie
-// pairs across all Cookie header lines. The caller supplies the outbound header.
+// stripConsentCookie removes only remembered-consent cookies (__Host-thv_consent_*),
+// retaining other cookie pairs across all Cookie header lines.
+// The caller supplies the outbound header.
 func stripConsentCookie(header http.Header) {
 	var kept []string
 	removed := false

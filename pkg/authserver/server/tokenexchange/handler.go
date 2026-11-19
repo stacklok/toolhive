@@ -19,7 +19,9 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -109,6 +111,32 @@ type ConfiguredClientPolicy struct {
 	// Every present value is > 0 and <= 720h, as config validation enforces. Nil
 	// when the client has no exchange_refresh_tokens block.
 	ExchangeRefreshTokens map[string]time.Duration
+	// IDJAGTargets are the authorization servers this client may ask for an
+	// ID-JAG for, keyed by the issuer exactly as configured. Request-time
+	// lookup of the audience parameter is exact. Nil when the client has no
+	// id_jag block.
+	IDJAGTargets map[string]IDJAGTarget
+	// ActorProfile is the actor-token check ID-JAG issuance runs for this
+	// client. Nil when the client has no actor profile. It is set only for
+	// clients configured at startup, never for dynamically registered ones.
+	ActorProfile *ActorProfile
+}
+
+// IDJAGTarget is one authorization server a delegate client may ask for an
+// ID-JAG for, and the limits of what it may ask.
+type IDJAGTarget struct {
+	// Issuer is the target authorization server's issuer as configured. It is
+	// the request's audience and the ID-JAG's aud.
+	Issuer string
+	// ClientID is the delegate client's client_id at the target.
+	ClientID string
+	// Resources are the resource values the client may request.
+	Resources []string
+	// Lifetime is how long each ID-JAG lives.
+	Lifetime time.Duration
+	// RequiredSubjectClaims are the subject claims every ID-JAG for this target
+	// must carry, as configuration tokens (upstream_subject, sub_id).
+	RequiredSubjectClaims []string
 }
 
 // formParams holds the validated RFC 8693 form parameters extracted from a
@@ -248,7 +276,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// (see buildActClaim's doc comment for why this is not nested inside
 	// act, and for how it is carried forward across re-exchanges).
 	if externalIssuer != "" {
-		delegatedSession.JWTClaims.Extra["external_issuer"] = externalIssuer
+		delegatedSession.JWTClaims.Extra[claimnames.ExternalIssuerKey] = externalIssuer
 	}
 
 	// Compute the delegated token lifetime: the shorter of the subject token's
@@ -299,38 +327,51 @@ func (h *Handler) PopulateTokenEndpointResponse(
 			"The OAuth 2.0 Client is not allowed to use authorization grant 'token-exchange'."))
 	}
 
-	// Use the session's ExpiresAt (set during HandleTokenEndpointRequest) as the
-	// authoritative lifetime. This respects the min(subject_remaining, delegation)
-	// bound computed earlier. Fall back to the configured access token lifespan
-	// only if no expiry was set on the session.
-	atLifespan := h.config.GetAccessTokenLifespan(ctx)
-	if sessionExpiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !sessionExpiry.IsZero() {
-		remaining := time.Until(sessionExpiry)
-		if remaining <= 0 {
-			// The session's bound has already elapsed since HandleTokenEndpointRequest
-			// computed it. Fail closed instead of signing a token whose exp is already
-			// in the past while reporting a negative expires_in — fosite's JWT strategy
-			// sets exp directly from this session's expiry (GetExpiresAt), independent
-			// of atLifespan, so letting this fall through would not simply hand out a
-			// longer-lived token, it would issue an already-expired one.
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
-				"The delegated token's bound lifetime has already elapsed."))
-		}
-		if remaining < atLifespan {
-			atLifespan = remaining
-		}
-	}
-
-	if _, err := h.IssueAccessToken(ctx, atLifespan, requester, responder); err != nil {
+	if err := issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
+		"The delegated token's bound lifetime has already elapsed."); err != nil {
 		return err
 	}
 
 	// Per RFC 8693 Section 2.2.1, the response MUST include issued_token_type.
-	responder.SetExtra("issued_token_type", oauthproto.TokenTypeAccessToken)
+	responder.SetExtra(oauthproto.ParamIssuedTokenType, oauthproto.TokenTypeAccessToken)
 
 	h.echoAuthorizationDetails(requester, responder)
 
 	return nil
+}
+
+// issueBoundedAccessToken issues an access token whose lifetime is the
+// session's access-token expiry (set during HandleTokenEndpointRequest) when
+// that is sooner than lifespan, and lifespan otherwise. The session expiry is
+// the authoritative bound, so it respects limits computed earlier such as
+// min(subject_remaining, delegation).
+//
+// If the session's bound has already elapsed since HandleTokenEndpointRequest
+// computed it, the call fails closed with invalid_grant and elapsedHint instead
+// of signing a token whose exp is already in the past while reporting a
+// negative expires_in. fosite's JWT strategy sets exp directly from the
+// session's expiry (GetExpiresAt), independent of lifespan, so letting this
+// fall through would not simply hand out a longer-lived token, it would issue
+// an already-expired one.
+func issueBoundedAccessToken(
+	ctx context.Context,
+	helper *oauth2.HandleHelper,
+	lifespan time.Duration,
+	requester fosite.AccessRequester,
+	responder fosite.AccessResponder,
+	elapsedHint string,
+) error {
+	if sessionExpiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !sessionExpiry.IsZero() {
+		remaining := time.Until(sessionExpiry)
+		if remaining <= 0 {
+			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(elapsedHint))
+		}
+		if remaining < lifespan {
+			lifespan = remaining
+		}
+	}
+	_, err := helper.IssueAccessToken(ctx, lifespan, requester, responder)
+	return err
 }
 
 // authorizeDelegation runs the source policy (for clients that have one), then
@@ -355,7 +396,11 @@ func (h *Handler) authorizeDelegation(
 			return err
 		}
 	}
-	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
+	spiffeID := ""
+	if spiffeClient, ok := client.(*registration.AuthenticatedSPIFFEClient); ok {
+		spiffeID = spiffeClient.SPIFFEID().String()
+	}
+	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, spiffeID, configuredDelegate); err != nil {
 		return err
 	}
 
@@ -395,6 +440,15 @@ func (h *Handler) authorizeDelegation(
 // actor identity still has to satisfy checkDelegationConsent (may_act,
 // ExternalActor, client_id binding, or the configured-delegate exemption)
 // like any other actor identity would.
+//
+// An authenticated SPIFFE client is held to a stricter rule: a wildcard
+// association gives many workloads one client ID, so the client_id claim alone
+// would let workload B present workload A's client_credentials token as its
+// actor_token and become act.sub = A. For such a caller the actor token's sub
+// must therefore also equal the caller's verified SPIFFE ID, which means it
+// cannot assert a different actor. Without an actor_token the actor is the
+// caller's SPIFFE ID too, so for a SPIFFE client the outermost act.sub always
+// names the workload making the request. Any other client is its own client ID.
 func (h *Handler) resolveActorIdentity(
 	ctx context.Context, params *formParams, client fosite.Client,
 ) (string, error) {
@@ -416,10 +470,22 @@ func (h *Handler) resolveActorIdentity(
 			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token's client_id claim does not match the authenticated client identity."))
 		}
+		if spiffeClient, ok := client.(*registration.AuthenticatedSPIFFEClient); ok &&
+			actorClaims.Subject != spiffeClient.SPIFFEID().String() {
+			slog.Debug("Actor token subject does not match the authenticated workload",
+				"client_id", client.GetID())
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+				"The actor token's subject does not match the authenticated workload."))
+		}
 		return actorClaims.Subject, nil
 	}
 
-	// No actor_token: the authenticated client is the acting party.
+	// No actor_token: the authenticated client is the acting party. A SPIFFE
+	// client is identified by its workload, not by the client ID that many
+	// workloads share.
+	if spiffeClient, ok := client.(*registration.AuthenticatedSPIFFEClient); ok {
+		return spiffeClient.SPIFFEID().String(), nil
+	}
 	return client.GetID(), nil
 }
 
@@ -504,41 +570,14 @@ func (h *Handler) computeLifetime(subjectExpiry time.Time) (time.Duration, error
 	return h.delegationLifespan, nil
 }
 
-// delegatedSubject returns the "sub" to embed in the delegated token.
-//
-// Self-issued tokens pass through unchanged: their subject is already a
-// UUID from UserResolver.ResolveUser's (providerID, providerSubject)
-// mapping (pkg/authserver/server/handlers/user.go), ToolHive's own native
-// subject namespace.
-//
-// A subject token from a trusted external issuer is qualified as
-// "<issuerURL>#<sub>" instead, because the issued token's "sub" is the only
-// signal Cedar's extractClientIDFromClaims (pkg/authz/authorizers/cedar/core.go)
-// keys on — it reads "sub" alone, not "iss" — and the external issuer
-// chooses that value, not ToolHive. Without qualification, an external
-// issuer could pick a "sub" equal to a native user's UUID and mint a
-// delegated token indistinguishable from that user's, entirely without
-// malicious intent on either issuer's part: two trusted issuers merely
-// choosing overlapping subject values collide with no attacker involved.
-//
-// "#" is an unambiguous separator: an issuer URL cannot itself contain a
-// fragment (the OIDC/OAuth "iss" value is a URL without a fragment
-// component, and this validator's own issuer comparison is an exact string
-// match against that value), so strings.Cut(sub, "#") on the qualified
-// subject always recovers (issuerURL, externalSub) uniquely. A native subject
-// (a UUID, or a synthesized "tk-" plus hex value) can never collide with a
-// qualified value, since neither contains a "#".
-//
-// Re-exchanging a previously-issued delegated token does not double-qualify:
-// such a token's "iss" is always this server's own issuer (fosite stamps
-// "iss" from the server's config at issuance — see session.New's doc
-// comment), so Validate routes it to the self-issued path, which never
-// calls this branch.
+// delegatedSubject returns the "sub" to embed in the delegated token: the
+// subject unchanged for self-issued tokens, or qualified with the external
+// issuer otherwise. See claimnames.QualifySubject.
 func delegatedSubject(validatedClaims *ValidatedClaims) string {
 	if validatedClaims.ExternalIssuer == "" {
 		return validatedClaims.Subject
 	}
-	return validatedClaims.ExternalIssuer + "#" + validatedClaims.Subject
+	return claimnames.QualifySubject(validatedClaims.ExternalIssuer, validatedClaims.Subject)
 }
 
 // buildActClaim assembles the RFC 8693 Section 4.1 "act" claim for the
@@ -566,9 +605,11 @@ func delegatedSubject(validatedClaims *ValidatedClaims) string {
 // comment), so for those the act claim stops at the outer, genuinely-acting
 // hop, and the external issuer is reported only via the returned string.
 //
-// The outermost act.sub is always actorID (the ToolHive client) — every
-// downstream consumer reads that as "who is acting", and it must not change
-// regardless of how the subject token was obtained.
+// The outermost act.sub is always actorID (see resolveActorIdentity: the
+// client ID, the asserted actor_token subject, or for a SPIFFE client the
+// workload's SPIFFE ID) — every downstream consumer reads that as "who is
+// acting", and it must not change regardless of how the subject token was
+// obtained.
 //
 // Extracted from HandleTokenEndpointRequest rather than inlined: the external
 // provenance nesting, the prior-chain depth gate, and the encoded-size gate
@@ -672,7 +713,7 @@ func externalOrigin(validatedClaims *ValidatedClaims) string {
 	if validatedClaims.ExternalIssuer != "" {
 		return validatedClaims.ExternalIssuer
 	}
-	prior, _ := validatedClaims.Extra["external_issuer"].(string)
+	prior, _ := validatedClaims.Extra[claimnames.ExternalIssuerKey].(string)
 	return prior
 }
 
@@ -837,7 +878,23 @@ func sourceClientAllowed(validatedClaims *ValidatedClaims, clientID string, poli
 // If none of the three consent sources apply, the subject token carries no
 // verifiable binding to any client at all — this fails closed (CWE-863)
 // rather than allowing an unbound token through.
-func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub string, configuredDelegate bool) error {
+//
+// spiffeID is the verified SPIFFE ID of an authenticated SPIFFE client, empty
+// for every other client. A wildcard association gives many workloads the same
+// client ID, so for a SPIFFE client the client_id binding in case 3 alone would
+// let workload B exchange workload A's token. For that case the token must also
+// belong to this workload: its sub or its outermost act.sub must be spiffeID.
+// Only the outermost act entry is read, because it names the party that made the
+// exchange; prior actors in the chain are never used for an access decision
+// (RFC 8693 §4.1). A token whose act.sub is the client ID is refused for a
+// SPIFFE caller, since it does not say which workload it belongs to. For a
+// SPIFFE caller, may_act.sub may name either the workload or the client ID:
+// consent to the client lets any of its workloads act, and the result is still
+// bound to the exchanging workload because act.sub is its SPIFFE ID. The
+// external actor case names its party explicitly and is unaffected.
+func checkDelegationConsent(
+	validatedClaims *ValidatedClaims, clientID, actorSub, spiffeID string, configuredDelegate bool,
+) error {
 	// selfIssuedDelegate is true only when a configured delegate client is
 	// presenting a self-issued token (ExternalIssuer == "" rules out the
 	// external-issuer path explicitly, rather than relying on ExternalActor
@@ -853,8 +910,10 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub
 		// the one binding that is meant to key off the asserted actor —
 		// may_act's whole purpose is authorizing a specific actor, which
 		// actor_token lets the authenticated client name distinctly from
-		// itself.
-		if validatedClaims.MayAct.Sub != actorSub {
+		// itself. A SPIFFE caller may also be named by its client ID: the
+		// consent then covers every workload of that client, and the issued
+		// token still names only the exchanging workload.
+		if validatedClaims.MayAct.Sub != actorSub && (spiffeID == "" || validatedClaims.MayAct.Sub != clientID) {
 			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 				"The subject token does not authorize this client to act on behalf of the subject."))
 		}
@@ -890,8 +949,38 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub
 	case validatedClaims.ClientID == "":
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The subject token carries no verifiable client binding: it has neither a 'may_act' claim nor a 'client_id' claim."))
+	// The same hint also covers a token that names no workload, for example one
+	// whose act.sub is the client ID or whose act is malformed. Every token
+	// ToolHive issues with this client ID names a workload, so such a token
+	// cannot be this caller's.
+	case isAnotherWorkloadsToken(validatedClaims, clientID, spiffeID):
+		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+			"The subject token was issued to a different workload of this client."))
 	}
 	return nil
+}
+
+// isAnotherWorkloadsToken reports whether a ToolHive-issued subject token that
+// is bound to clientID belongs to a different workload than the SPIFFE caller.
+// The token belongs to the caller only if its sub or its outermost act.sub is
+// spiffeID; anything else, including a token whose act.sub is the client ID or
+// whose act entry cannot be read, is refused. Only the outermost act entry is
+// read: prior actors are never used for an access decision (RFC 8693 §4.1). It
+// is false for a caller that is not a SPIFFE client (empty spiffeID), for an
+// external token, and for a token bound to another client.
+func isAnotherWorkloadsToken(validatedClaims *ValidatedClaims, clientID, spiffeID string) bool {
+	if spiffeID == "" || validatedClaims.ExternalIssuer != "" || validatedClaims.ClientID != clientID {
+		return false
+	}
+	if validatedClaims.Subject == spiffeID {
+		return false
+	}
+	if act, ok := validatedClaims.Extra["act"].(map[string]any); ok {
+		if sub, ok := act["sub"].(string); ok && sub == spiffeID {
+			return false
+		}
+	}
+	return true
 }
 
 // grantScopes validates that each requested scope is allowed for both the
@@ -923,9 +1012,12 @@ func (h *Handler) grantScopes(
 	return nil
 }
 
-// grantAndBoundAudiences resolves the delegated token's audience from the
-// request (explicit "audience", RFC 8707 "resource", or the configured
-// default) and then bounds the result by the subject token.
+// grantAndBoundAudiences resolves the delegated token's audience and then
+// bounds the result by the subject token. Clients that carry a resource list
+// (server.ResourceScopedClient, today the SPIFFE clients) are targeted by one
+// RFC 8707 resource from that list, with no "audience" parameter and no default
+// audience. All other clients use the explicit
+// "audience", RFC 8707 "resource", or the configured default.
 //
 // The delegated token must not target a resource the subject token was not
 // itself valid for: every granted audience must be covered by the subject
@@ -937,6 +1029,14 @@ func (h *Handler) grantScopes(
 func (h *Handler) grantAndBoundAudiences(
 	ctx context.Context, requester fosite.AccessRequester, client fosite.Client, validatedClaims *ValidatedClaims,
 ) error {
+	if scoped, ok := client.(server.ResourceScopedClient); ok {
+		if err := server.GrantSingleResource(requester, scoped.Resources(), h.allowedAudiences); err != nil {
+			slog.Debug("SPIFFE token exchange rejected",
+				"client_id", client.GetID(), "reason", fosite.ErrorToRFC6749Error(err).HintField)
+			return errorsx.WithStack(err)
+		}
+		return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience)
+	}
 	if err := h.grantAudiences(ctx, requester, client); err != nil {
 		return err
 	}

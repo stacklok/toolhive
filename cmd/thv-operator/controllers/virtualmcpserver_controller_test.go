@@ -15,6 +15,7 @@
 package controllers
 
 import (
+	"cmp"
 	"context"
 	stderrors "errors"
 	"maps"
@@ -4817,12 +4818,16 @@ func TestVirtualMCPServerValidateAuthServerConfig_TLSListener(t *testing.T) {
 		ClientID:         "spiffe-client",
 		Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
 		Audiences:        []string{"https://mcp.example.com"},
+		Resources:        []string{"https://mcp.example.com"},
 		Scopes:           []string{"openid"},
+		GrantTypes:       []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 	}}}
 
 	tests := []struct {
 		name        string
 		listener    *mcpv1beta1.TLSListenerConfig
+		issuer      string
+		source      *mcpv1beta1.SPIFFEBundleSourceConfig
 		wantMessage string
 	}{
 		{
@@ -4830,22 +4835,42 @@ func TestVirtualMCPServerValidateAuthServerConfig_TLSListener(t *testing.T) {
 			wantMessage: "spec.authServerConfig: tlsListener is required when SPIFFE X.509 client authentication is configured",
 		},
 		{name: "x509 association with listener", listener: listener},
+		{
+			name:        "x509 association with an http issuer",
+			listener:    listener,
+			issuer:      "http://authserver.example.com",
+			wantMessage: "spec.authServerConfig: SPIFFE X.509 authentication requires an https issuer",
+		},
+		{
+			name:     "workload_api bundle source is not supported by this build",
+			listener: listener,
+			source: &mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+			},
+			wantMessage: `spec.authServerConfig: spiffeTrustDomains[0].bundleSource: type "workload_api" is not supported by this build; only "file" is supported`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			bundleSource := mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+				File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+			}
+			if tt.source != nil {
+				bundleSource = *tt.source
+			}
+			issuer := cmp.Or(tt.issuer, "https://authserver.example.com")
 			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
 				v1beta1test.WithVMCPGroupRef("test-group"),
 				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
-					Issuer: "https://authserver.example.com",
+					Issuer: issuer,
 					SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
 						Name: "example", TrustDomain: "example.org",
-						Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
-						BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
-							Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
-							WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
-						},
+						Methods:      []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						BundleSource: bundleSource,
 					}},
 					InboundGrants: x509Grants,
 					TLSListener:   tt.listener,
@@ -4914,6 +4939,33 @@ func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *te
 			},
 		},
 		{
+			name: "SPIFFE client associations",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TLSListener: &mcpv1beta1.TLSListenerConfig{
+					CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+					BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+						Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+						File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+					},
+				}},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+						TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+						ClientID:  "spiffe-client",
+						Methods:   []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					}},
+				},
+			},
+		},
+		{
 			name: "canonical inbound grants",
 			config: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
@@ -4979,6 +5031,69 @@ func TestVirtualMCPServerValidateAuthServerConfig_CanonicalTrustedIssuer(t *test
 	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+}
+
+func TestVirtualMCPServerValidateAuthServerConfig_SPIFFEAssociationRequiresResources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		resources  []string
+		grantTypes []string
+		wantErr    string
+	}{
+		{
+			name:       "missing resources",
+			grantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			wantErr:    "inboundGrants.spiffeClientAuth[0].resources is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer: "https://auth.example.com",
+					TLSListener: &mcpv1beta1.TLSListenerConfig{
+						CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+						PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+					},
+					SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
+						Name: "example", TrustDomain: "example.org",
+						Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+							Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+							File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+						},
+					}},
+					InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+						SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+							TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+							ClientID:   "spiffe-client",
+							Methods:    []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+							Resources:  tt.resources,
+							Scopes:     []string{"openid"},
+							GrantTypes: tt.grantTypes,
+						}},
+					},
+				}),
+			)
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+			err := (&VirtualMCPServerReconciler{}).validateAuthServerConfig(vmcp, statusManager)
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			require.ErrorContains(t, err, tt.wantErr)
+			condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, condition.Reason)
+			assert.Contains(t, condition.Message, tt.wantErr)
+		})
+	}
 }
 
 func TestVirtualMCPServerValidateAuthServerConfig_TrustedIssuerEndpointRecovery(t *testing.T) {

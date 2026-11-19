@@ -23,6 +23,7 @@ import (
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -387,10 +388,7 @@ func buildSPIFFEBundleSourceRunConfig(
 }
 
 // buildSPIFFEClientAuthRunConfigs converts CRD SPIFFEClientConfig entries to
-// authserver.SPIFFEClientAuthRunConfig. GrantTypes is not a CRD field: the
-// runtime only accepts exactly the RFC 8693 token-exchange grant for a
-// SPIFFE client (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so
-// it is always supplied here rather than configured.
+// authserver.SPIFFEClientAuthRunConfig.
 func buildSPIFFEClientAuthRunConfigs(
 	clients []mcpv1beta1.SPIFFEClientConfig,
 ) []authserver.SPIFFEClientAuthRunConfig {
@@ -400,18 +398,33 @@ func buildSPIFFEClientAuthRunConfigs(
 		for j, method := range spiffeClient.Methods {
 			methods[j] = authserver.SPIFFEAuthenticationMethod(method)
 		}
+		// Passed through so the runtime can warn that it is ignored.
+		deprecatedAudiences := append([]string(nil), spiffeClient.Audiences...) //nolint:staticcheck // See above.
 		configs[i] = authserver.SPIFFEClientAuthRunConfig{
 			TrustDomainRef:   spiffeClient.TrustDomainRef,
 			PrincipalPattern: spiffeClient.PrincipalPattern,
 			ClientID:         spiffeClient.ClientID,
 			Methods:          methods,
 			Resources:        append([]string(nil), spiffeClient.Resources...),
-			Audiences:        append([]string(nil), spiffeClient.Audiences...),
+			Audiences:        deprecatedAudiences,
 			Scopes:           append([]string(nil), spiffeClient.Scopes...),
-			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			GrantTypes:       spiffeGrantTypesOrDefault(spiffeClient.GrantTypes),
 		}
 	}
 	return configs
+}
+
+// spiffeGrantTypesOrDefault copies grantTypes, or returns the token-exchange
+// grant when it is empty. The CRD default normally fills it in, but an object
+// served by an older CRD schema (the operator chart upgraded without the CRD
+// chart) or built without the API server has none. Token exchange is what the
+// operator configured before the field existed, so this mirrors the CRD
+// default instead of failing the reconcile.
+func spiffeGrantTypesOrDefault(grantTypes []string) []string {
+	if len(grantTypes) == 0 {
+		return []string{oauthproto.GrantTypeTokenExchange}
+	}
+	return append([]string(nil), grantTypes...)
 }
 
 // EmbeddedAuthServerConfigName returns the config name that should be used for

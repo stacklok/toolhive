@@ -8,6 +8,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -42,6 +43,8 @@ import (
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
+	"github.com/stacklok/toolhive/pkg/updates"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 var (
@@ -152,6 +155,29 @@ func Run() {
 	}
 	// Set up telemetry service - only runs when elected as leader
 	telemetryService := telemetry.NewService(mgr.GetClient(), podNamespace)
+
+	// Resolve the installation's instance ID before any controller reconciles,
+	// so every workload gets the same anonymous ID from its first pod template.
+	// If the API server stays unreachable, exit and let the pod restart: a
+	// replica that ran without the ID would roll every workload whenever it
+	// became the leader. An error a restart cannot fix (such as missing RBAC)
+	// hits every replica alike, so the operator runs without the ID.
+	// An operator opted out of update checks or usage metrics opts its
+	// workloads out of the same.
+	ctrlutil.SetUsageMetricsOptOut(updates.ShouldSkipUpdateChecks())
+	ctrlutil.SetUsageMetricsDisabled(os.Getenv(usagemetrics.EnvVarUsageMetricsEnabled) == "false")
+	instanceID, err := telemetryService.EnsureInstanceID(
+		context.Background(), mgr.GetAPIReader(), telemetry.InstanceIDBackoff,
+	)
+	switch {
+	case errors.Is(err, telemetry.ErrInstanceIDUnavailable):
+		setupLog.Error(err, "unable to resolve telemetry instance ID")
+		os.Exit(1)
+	case err != nil:
+		setupLog.Error(err, "unable to resolve telemetry instance ID; workloads that carry it will be rolled out without it")
+	default:
+		ctrlutil.SetUsageMetricsAnonymousID(instanceID)
+	}
 	if err := mgr.Add(&telemetry.LeaderTelemetryRunnable{
 		TelemetryService: telemetryService,
 	}); err != nil {

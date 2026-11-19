@@ -22,15 +22,13 @@ func TestServerHandlerBodyLimit(t *testing.T) {
 	t.Parallel()
 
 	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { assert.NoError(t, stor.Close()) })
 	srv, err := New(t.Context(), Config{
 		Issuer:           "https://example.com",
 		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
 		AllowedAudiences: []string{"https://mcp.example.com"},
 		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
 	}, stor)
-	if err != nil {
-		require.NoError(t, stor.Close())
-	}
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, srv.Close()) })
 

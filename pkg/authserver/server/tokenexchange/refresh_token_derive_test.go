@@ -213,7 +213,8 @@ func TestDeriveCheckOrder(t *testing.T) {
 // revoked parent of its own. The clock is fixed: now is 100ms past a whole
 // second and the source expires 400ms after now, so Live passes on expiry and
 // the whole-second check is the one that refuses it. Wall-clock timing would
-// run that check only part of the time.
+// run that check only part of the time. A source that lists only id-jag gets
+// the same answer, so the whole-second check runs before the type check.
 func TestDeriveSourceWithNoWholeSecondLeftIsGrantInvalid(t *testing.T) {
 	t.Parallel()
 
@@ -221,10 +222,13 @@ func TestDeriveSourceWithNoWholeSecondLeftIsGrantInvalid(t *testing.T) {
 	tests := []struct {
 		name          string
 		expires       time.Time
+		types         []string
 		revoked       bool
 		parentRevoked bool
 	}{
 		{name: "live by under one second", expires: now.Add(400 * time.Millisecond)},
+		{name: "id-jag only with under one second left is not not_issuable",
+			expires: now.Add(400 * time.Millisecond), types: []string{oauthproto.TokenTypeIDJAG}},
 		{name: "expired earlier", expires: now.Add(-time.Hour)},
 		{name: "revoked with under one second left", expires: now.Add(400 * time.Millisecond), revoked: true},
 		{name: "own parent revoked with under one second left", expires: now.Add(400 * time.Millisecond),
@@ -233,8 +237,12 @@ func TestDeriveSourceWithNoWholeSecondLeftIsGrantInvalid(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			types := tt.types
+			if types == nil {
+				types = []string{oauthproto.TokenTypeRefreshToken}
+			}
 			source := storage.ExchangeGrant{Signature: "ok", ClientID: testRefreshClient, Subject: "user-1",
-				IssuableTokenTypes: []string{oauthproto.TokenTypeRefreshToken}, ExpiresAt: tt.expires}
+				IssuableTokenTypes: types, ExpiresAt: tt.expires}
 			if tt.revoked {
 				source.RevokedAt = now
 			}

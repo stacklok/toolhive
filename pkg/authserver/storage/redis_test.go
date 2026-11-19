@@ -1370,25 +1370,15 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		assert.Equal(t, err, recorded())
 	})
 
-	tests := []struct {
-		name      string
-		expOffset time.Duration
-	}{
-		{"failure to record the jti is recorded for the client authentication strategy", time.Minute},
-		{"failure to remove the reservation is recorded for the client authentication strategy", -time.Hour},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
-				ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
-				mr.Close()
-				err := s.SetClientAssertionJWT(ctx, "any-jti", time.Now().Add(tt.expOffset))
-				require.Error(t, err)
-				assert.Equal(t, err, recorded())
-			})
+	t.Run("failure to record the jti is recorded for the client authentication strategy", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			mr.Close()
+			err := s.SetClientAssertionJWT(ctx, "any-jti", time.Now().Add(time.Minute))
+			require.Error(t, err)
+			assert.Equal(t, err, recorded())
 		})
-	}
+	})
 
 	t.Run("replay is not recorded as a backend failure", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
@@ -1396,6 +1386,36 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
 			require.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "test-jti"), fosite.ErrJTIKnown)
 			assert.NoError(t, recorded())
+		})
+	})
+
+	t.Run("deadline in the past is invalid_client and leaves the reservation", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "past-jti"))
+			key := redisKey(s.keyPrefix, KeyTypeJWT, "past-jti")
+			ttlBefore := mr.TTL(key)
+			require.Positive(t, ttlBefore)
+
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			err := s.SetClientAssertionJWT(ctx, "past-jti", time.Now().Add(-time.Hour))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+			assert.NoError(t, recorded())
+
+			assert.Equal(t, ttlBefore, mr.TTL(key), "the reservation must stay as it was")
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "past-jti"), fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("the key gets the deadline it is given as its TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "ttl-jti"))
+			deadline := time.Now().Add(2 * time.Minute)
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "ttl-jti", deadline))
+			ttl := mr.TTL(redisKey(s.keyPrefix, KeyTypeJWT, "ttl-jti"))
+			assert.InDelta(t, time.Until(deadline), ttl, float64(2*time.Second), "the backend must not add retention of its own")
 		})
 	})
 
@@ -1409,11 +1429,32 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		})
 	})
 
-	t.Run("expired JTI is not stored", func(t *testing.T) {
+	t.Run("deadline just in the past is refused and the jti stays reserved", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "past-grace-jti"))
+
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			err := s.SetClientAssertionJWT(ctx, "past-grace-jti", time.Now().Add(-time.Second))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.NoError(t, recorded())
+			assert.True(t, mr.Exists(redisKey(s.keyPrefix, KeyTypeJWT, "past-grace-jti")))
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "past-grace-jti"), fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("deadline cap allows the retention extra", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour)))
-			err := s.ClientAssertionJWTValid(ctx, "expired-jti")
-			require.NoError(t, err) // Should be valid because expired JTI is not stored
+			maxDeadline := server.ClientAssertionMaxMarkerAhead
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "cap-ok-jti", time.Now().Add(maxDeadline-5*time.Second)))
+
+			err := s.SetClientAssertionJWT(ctx, "cap-over-jti", time.Now().Add(maxDeadline+5*time.Second))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.HintField, "must be at most")
 		})
 	})
 }

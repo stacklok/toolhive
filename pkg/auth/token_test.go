@@ -27,6 +27,7 @@ import (
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	upstreamtokenmocks "github.com/stacklok/toolhive/pkg/auth/upstreamtoken/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	keysmocks "github.com/stacklok/toolhive/pkg/authserver/server/keys/mocks"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -468,6 +469,100 @@ func writeTestServerCert(t *testing.T, server *httptest.Server) string {
 	}
 
 	return tmpFile.Name()
+}
+
+// TestTokenValidator_IDJAGTypeWithoutAudience pins that a validator with no
+// audience configured, which skips the audience check, still refuses a token
+// typed as an ID-JAG on both key lookup paths (RFC 8725 Section 3.12).
+func TestTokenValidator_IDJAGTypeWithoutAudience(t *testing.T) {
+	t.Parallel()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
+	require.NoError(t, err)
+	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
+	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))
+	require.NoError(t, key.Set(jwk.KeyUsageKey, "sig"))
+	keySet := jwk.NewSet()
+	require.NoError(t, keySet.AddKey(key))
+	jwksServer, caCertPath := createTestJWKSServer(t, keySet)
+	t.Cleanup(jwksServer.Close)
+
+	newValidator := func(t *testing.T, withKeyProvider bool) *TokenValidator {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+		opts := []TokenValidatorOption{WithEnvReader(mockEnv)}
+		if withKeyProvider {
+			provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+			provider.EXPECT().PublicKeys(gomock.Any()).Return([]*keys.PublicKeyData{
+				{KeyID: testKeyID, Algorithm: "RS256", PublicKey: &privateKey.PublicKey},
+			}, nil).AnyTimes()
+			opts = append(opts, WithKeyProvider(provider))
+		}
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		}, opts...)
+		require.NoError(t, err)
+		return validator
+	}
+
+	lookups := []struct {
+		name            string
+		withKeyProvider bool
+	}{
+		{name: "JWKS lookup"},
+		{name: "local key provider", withKeyProvider: true},
+	}
+	types := []struct {
+		name    string
+		typ     string
+		omitTyp bool
+		wantErr bool
+	}{
+		{name: "ID-JAG typ", typ: "Application/OAuth-ID-JAG+JWT", wantErr: true},
+		{name: "absent typ", omitTyp: true},
+	}
+	for _, lookup := range lookups {
+		for _, tc := range types {
+			t.Run(lookup.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				validator := newValidator(t, lookup.withKeyProvider)
+
+				token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+					"iss": "test-issuer",
+					"aud": "https://some-other-resource.example.com",
+					"exp": time.Now().Add(time.Hour).Unix(),
+				})
+				token.Header["kid"] = testKeyID
+				if tc.omitTyp {
+					delete(token.Header, "typ")
+				} else {
+					token.Header["typ"] = tc.typ
+				}
+				tokenString, err := token.SignedString(privateKey)
+				require.NoError(t, err)
+
+				claims, err := validator.ValidateToken(context.Background(), tokenString)
+				if tc.wantErr {
+					require.Error(t, err)
+					require.Contains(t, err.Error(), "ID-JAG")
+					require.NotContains(t, err.Error(), tokenString)
+					require.Nil(t, claims)
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, "test-issuer", claims["iss"])
+			})
+		}
+	}
 }
 
 // createTestJWKSServer creates a test JWKS server with TLS and returns the server and CA cert path
@@ -2316,8 +2411,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 		require.NoError(t, err)
 		require.Nil(t, failed)
@@ -2347,8 +2442,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "",
 		})
 		require.NoError(t, err)
 		require.Nil(t, creds)
@@ -2362,8 +2457,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: 12345,
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: 12345,
 		})
 		require.NoError(t, err)
 		require.Nil(t, creds)
@@ -2379,8 +2474,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 		require.Error(t, err)
 		require.Nil(t, creds)
@@ -2396,8 +2491,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]upstreamtoken.UpstreamCredential{}, creds)
@@ -2413,8 +2508,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]upstreamtoken.UpstreamCredential{}, creds)
@@ -2479,8 +2574,8 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 
 	claimsWithTsid := jwt.MapClaims{
 		"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
-		"exp":                                time.Now().Add(time.Hour).Unix(),
-		upstreamtoken.TokenSessionIDClaimKey: "session-xyz",
+		"exp":                        time.Now().Add(time.Hour).Unix(),
+		claimnames.TokenSessionIDKey: "session-xyz",
 	}
 
 	t.Run("enriches identity with upstream tokens", func(t *testing.T) {
@@ -2821,7 +2916,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				name:           "matching embedded issuer with no upstream session marker",
 				embeddedIssuer: "test-issuer",
 				claims: jwt.MapClaims{
-					upstreamtoken.NoUpstreamSessionClaimKey: true,
+					claimnames.NoUpstreamSessionKey: true,
 				},
 				wantSessionlessGrant: true,
 			},
@@ -2841,7 +2936,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				name:           "foreign embedded issuer with no upstream session marker",
 				embeddedIssuer: "foreign-issuer",
 				claims: jwt.MapClaims{
-					upstreamtoken.NoUpstreamSessionClaimKey: true,
+					claimnames.NoUpstreamSessionKey: true,
 				},
 			},
 			{
@@ -2849,7 +2944,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				embeddedIssuer:     "test-issuer",
 				loadUpstreamTokens: true,
 				claims: jwt.MapClaims{
-					upstreamtoken.NoUpstreamSessionClaimKey: true,
+					claimnames.NoUpstreamSessionKey: true,
 				},
 			},
 		}
@@ -2868,7 +2963,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				if tt.loadUpstreamTokens {
 					ctrl := gomock.NewController(t)
 					reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
-					claims[upstreamtoken.TokenSessionIDClaimKey] = "session-xyz"
+					claims[claimnames.TokenSessionIDKey] = "session-xyz"
 					reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
 						Return(map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-token"}}, nil, nil)
 					opts = append(opts, WithUpstreamTokenReader(reader))
@@ -2917,9 +3012,9 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		// Everything the gate looks for, self-asserted by the token.
 		claims := jwt.MapClaims{
 			"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
-			"exp":                                   time.Now().Add(time.Hour).Unix(),
-			upstreamtoken.NoUpstreamSessionClaimKey: true,
-			"act":                                   map[string]any{"sub": "delegated-agent"},
+			"exp":                           time.Now().Add(time.Hour).Unix(),
+			claimnames.NoUpstreamSessionKey: true,
+			"act":                           map[string]any{"sub": "delegated-agent"},
 		}
 
 		var captured *Identity

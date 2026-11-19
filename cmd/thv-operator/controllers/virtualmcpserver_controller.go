@@ -707,6 +707,10 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return failAuthServerConfig(vmcp, statusManager, fmt.Sprintf("spec.authServerConfig: %v", err))
 	}
 
+	if err := cfg.ValidateSPIFFEBundleSourceTypes(); err != nil {
+		return failAuthServerConfig(vmcp, statusManager, fmt.Sprintf("spec.authServerConfig: %v", err))
+	}
+
 	// Admission-time check: http:// issuers for non-localhost hosts require
 	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
 	// will crash at startup with a validateIssuerURL failure.

@@ -13,7 +13,9 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -634,6 +636,35 @@ func TestDeployWorkload_IsolatedSetupFailure_CleansUpNetworkAndDNS(t *testing.T)
 			} else {
 				assert.Empty(t, tt.fops.cleanupCalls)
 			}
+		})
+	}
+}
+
+func TestDeployWorkload_RestartFailureBeforeMcp_KeepsExistingResources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		listErr error
+		items   []container.Summary
+	}{
+		{name: "stopped MCP container exists", items: []container.Summary{{ID: "mcp-id", Names: []string{"/app"}}}},
+		{name: "existence lookup fails", listErr: errors.New("daemon unavailable")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fops := &fakeDeployOps{errDNS: errors.New("boom")}
+			client := newClientWithOpsAndProxy(fops, &fakeNetworkProxy{})
+			client.api = &fakeDockerAPI{listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
+				return tt.items, tt.listErr
+			}}
+			_, err := client.DeployWorkload(
+				t.Context(), "image", "app", nil, nil, map[string]string{},
+				&permissions.Profile{}, "stdio", runtime.NewDeployWorkloadOptions(), true,
+			)
+			require.Error(t, err)
+			assert.Empty(t, fops.cleanupCalls, "network and sidecars belong to the existing workload")
 		})
 	}
 }

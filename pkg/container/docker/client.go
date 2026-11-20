@@ -262,6 +262,14 @@ func (c *Client) DeployWorkload(
 	if effectiveIsolation {
 		networkIsolation = true
 
+		// A restart reaches this point with the stopped MCP container still in
+		// place, so the network and sidecars below belong to an existing
+		// workload and must survive a failed attempt. If the lookup fails,
+		// assume the container exists: leaving resources behind beats removing
+		// ones a workload depends on.
+		existingMcpID, lookupErr := c.findExistingContainer(ctx, name)
+		mcpExisted := lookupErr != nil || existingMcpID != ""
+
 		internalNetworkLabels := map[string]string{}
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.ops.createNetwork(ctx, networkName, internalNetworkLabels, true)
@@ -270,9 +278,10 @@ func (c *Client) DeployWorkload(
 		}
 		// The internal network and the dns/egress/ingress containers are not
 		// tied to the MCP container yet, so `thv rm` cannot find them if setup
-		// fails before the MCP container is created. Remove them in that case.
+		// fails before the MCP container is created. Remove them in that case,
+		// but only for a new workload (see mcpExisted above).
 		defer func() {
-			if retErr != nil && !mcpCreated {
+			if retErr != nil && !mcpCreated && !mcpExisted {
 				c.ops.cleanupFailedIsolation(context.WithoutCancel(ctx), name, networkName)
 			}
 		}()

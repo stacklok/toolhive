@@ -23,7 +23,6 @@ import (
 	equality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -1279,6 +1278,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	finalPodTemplateSpec := podTemplateBuilder.
 		WithServiceAccount(serviceAccount).
 		WithSecrets(m.Spec.Secrets).
+		// spec.resources describes the MCP server container, so it reaches the
+		// backend StatefulSet's mcp container through the pod template patch
+		// (see #7101). An explicit podTemplateSpec wins (see WithResources).
+		WithResources(ctrlutil.BuildResourceRequirements(m.Spec.Resources)).
 		Build()
 	// Add pod template patch if we have one
 	if finalPodTemplateSpec != nil {
@@ -1498,27 +1501,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		env = append(env, authServerEnvVars...)
 	}
 
-	// Prepare container resources
-	resources := corev1.ResourceRequirements{}
-	if m.Spec.Resources.Limits.CPU != "" || m.Spec.Resources.Limits.Memory != "" {
-		resources.Limits = corev1.ResourceList{}
-		if m.Spec.Resources.Limits.CPU != "" {
-			resources.Limits[corev1.ResourceCPU] = resource.MustParse(m.Spec.Resources.Limits.CPU)
-		}
-		if m.Spec.Resources.Limits.Memory != "" {
-			resources.Limits[corev1.ResourceMemory] = resource.MustParse(m.Spec.Resources.Limits.Memory)
-		}
-	}
-	if m.Spec.Resources.Requests.CPU != "" || m.Spec.Resources.Requests.Memory != "" {
-		resources.Requests = corev1.ResourceList{}
-		if m.Spec.Resources.Requests.CPU != "" {
-			resources.Requests[corev1.ResourceCPU] = resource.MustParse(m.Spec.Resources.Requests.CPU)
-		}
-		if m.Spec.Resources.Requests.Memory != "" {
-			resources.Requests[corev1.ResourceMemory] = resource.MustParse(m.Spec.Resources.Requests.Memory)
-		}
-	}
-
 	// Prepare deployment metadata with overrides
 	deploymentLabels := ls
 	deploymentAnnotations := make(map[string]string)
@@ -1617,7 +1599,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						Args:         args,
 						Env:          env,
 						VolumeMounts: volumeMounts,
-						Resources:    resources,
 						Ports:        ctrlutil.ProxyContainerPorts(m.GetProxyPort(), tlsListener),
 						StartupProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
@@ -2168,6 +2149,9 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		expectedPodTemplateSpec := podTemplateBuilder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
+			// Must mirror deploymentForMCPServer: spec.resources is part of the
+			// pod template patch, so a change to it shows up as patch drift.
+			WithResources(ctrlutil.BuildResourceRequirements(mcpServer.Spec.Resources)).
 			Build()
 
 		// Find the current pod template patch in the container args
@@ -2210,11 +2194,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		// Check if the proxy pod scheduling overrides have changed.
 		if proxySchedulingNeedsUpdate(deployment, mcpServer.Spec.ResourceOverrides) {
-			return true
-		}
-
-		// Check if the resource requirements have changed
-		if !equality.Semantic.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
 			return true
 		}
 	}
@@ -2362,30 +2341,6 @@ func serviceNeedsUpdate(
 	}
 
 	return false
-}
-
-// resourceRequirementsForMCPServer returns the resource requirements for the MCPServer
-func resourceRequirementsForMCPServer(m *mcpv1beta1.MCPServer) corev1.ResourceRequirements {
-	resources := corev1.ResourceRequirements{}
-	if m.Spec.Resources.Limits.CPU != "" || m.Spec.Resources.Limits.Memory != "" {
-		resources.Limits = corev1.ResourceList{}
-		if m.Spec.Resources.Limits.CPU != "" {
-			resources.Limits[corev1.ResourceCPU] = resource.MustParse(m.Spec.Resources.Limits.CPU)
-		}
-		if m.Spec.Resources.Limits.Memory != "" {
-			resources.Limits[corev1.ResourceMemory] = resource.MustParse(m.Spec.Resources.Limits.Memory)
-		}
-	}
-	if m.Spec.Resources.Requests.CPU != "" || m.Spec.Resources.Requests.Memory != "" {
-		resources.Requests = corev1.ResourceList{}
-		if m.Spec.Resources.Requests.CPU != "" {
-			resources.Requests[corev1.ResourceCPU] = resource.MustParse(m.Spec.Resources.Requests.CPU)
-		}
-		if m.Spec.Resources.Requests.Memory != "" {
-			resources.Requests[corev1.ResourceMemory] = resource.MustParse(m.Spec.Resources.Requests.Memory)
-		}
-	}
-	return resources
 }
 
 // mcpServerServiceAccountName returns the service account name for the mcp server

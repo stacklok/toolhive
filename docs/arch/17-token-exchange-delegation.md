@@ -1341,8 +1341,9 @@ spec:
   - `JWTBearerGrantPolicy.AcceptedAudiences` is the set of "this AS" identity
     strings the assertion's `aud` must intersect (`audienceIntersects`),
     checked by exact-match membership rather than equality — RFC 7523 §3
-    permits a multi-valued `aud`, so an assertion may additionally name other
-    audiences without losing its match. When unset, the plain JWT-bearer
+    permits a multi-valued `aud`, so a plain JWT-bearer assertion may
+    additionally name other audiences without losing its match. The ID-JAG
+    grant does not: it refuses an `aud` array with more than one value. When unset, the plain JWT-bearer
     grant defaults to `[tokenEndpoint]`, preserving the original
     exact-endpoint-match behavior, and the ID-JAG grant defaults to
     `[tokenEndpoint, issuer]`, so the issuer identifier is accepted. This exists
@@ -1438,6 +1439,7 @@ its own default text before the reason.
 | Not a compact signed JWT, bad `typ` or algorithm (an assertion with such a `typ` is routed to the plain handler, never the ID-JAG one) | 400 `invalid_grant`, `invalid_assertion: <hint>` | n/a |
 | Signature or claim validation fails, issuer not enabled, assertion whose issued lifetime (`exp` − `iat`) exceeds `max_assertion_age`, replayed or expired | 400 `invalid_grant`, `invalid_assertion: <hint>` | same code and reason; the hint names an ID-JAG for the first two |
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
@@ -1567,7 +1569,6 @@ finding at WARN, and later ones at DEBUG. The line carries only `issuer`,
 `client_id`, `finding` and, for one finding, `hint`. It never carries the
 subject, `jti` or claim values. The findings are:
 
-- `multiple_audiences`: `aud` has more than one value.
 - `audience_not_issuer`: `aud` does not contain this server's issuer
   identifier. The handler accepts any value in the assertion issuer's
   `jwt_bearer_grant.accepted_audiences`. When that list is empty, it accepts
@@ -1582,8 +1583,6 @@ subject, `jti` or claim values. The findings are:
   [JWT-bearer configuration](#jwt-bearer-configuration)); the startup warning
   reports that case instead.
 
-The two audience findings can appear together.
-
 This is logging only. It changes nothing about what is accepted.
 
 The handler also accepts two things the draft does not allow, and nothing logs
@@ -1597,8 +1596,7 @@ them:
   No code at this server reads `cnf`, so such an ID-JAG is accepted without
   proof of possession.
 
-A strict mode would have to refuse these two as well as the two logged
-findings.
+A strict mode would have to refuse these two as well as the logged finding.
 
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
 also lets AS-2's plain handler (`typ` `JWT`, empty or absent) accept AS-1's

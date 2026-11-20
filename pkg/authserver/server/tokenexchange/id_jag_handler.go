@@ -108,7 +108,6 @@ type IDJAGHandler struct {
 type draftDeparture string
 
 const (
-	departureMultipleAudiences draftDeparture = "multiple_audiences"
 	departureAudienceNotIssuer draftDeparture = "audience_not_issuer"
 )
 
@@ -185,9 +184,9 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
-	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
+	claims, err := h.validateAssertion(ctx, assertion)
 	if err != nil {
-		return assertionValidationRefusal(err, "The ID-JAG assertion is invalid or could not be verified.")
+		return err
 	}
 	// Same fail-closed nil-map/nil-consumer posture as the plain handler;
 	// see the comments in JWTBearerHandler.HandleTokenEndpointRequest.
@@ -349,9 +348,6 @@ func (h *IDJAGHandler) logDraftDepartures(
 	ctx context.Context, claims *ValidatedClaims, policy *JWTBearerGrantPolicy, clientID string,
 ) {
 	var found []draftDeparture
-	if len(claims.Audience) > 1 {
-		found = append(found, departureMultipleAudiences)
-	}
 	// An issuer that is also a resource audience can never be an accepted aud:
 	// it is left out of the defaults, and accepted_audiences must not overlap
 	// allowed_audiences. No IdP could fix the finding, and the startup warning
@@ -406,6 +402,19 @@ func (h *IDJAGHandler) defaultAudiences(ctx context.Context) []string {
 		audiences = append(audiences, issuer)
 	}
 	return audiences
+}
+
+// validateAssertion verifies the assertion and refuses an aud array with more
+// than one element, for every issuer. It runs before the assertion is consumed.
+func (h *IDJAGHandler) validateAssertion(ctx context.Context, assertion string) (*ValidatedClaims, error) {
+	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
+	if err != nil {
+		return nil, assertionValidationRefusal(err, "The ID-JAG assertion is invalid or could not be verified.")
+	}
+	if len(claims.Audience) > 1 {
+		return nil, invalidAssertion("The ID-JAG assertion aud must name exactly one audience.")
+	}
+	return claims, nil
 }
 
 // checkClientGrant refuses an explicit-grant client whose registered grant types

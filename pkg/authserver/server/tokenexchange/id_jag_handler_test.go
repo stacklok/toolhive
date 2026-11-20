@@ -218,6 +218,15 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 			requestClient: "some-other-client",
 			wantDesc:      "invalid_assertion: The ID-JAG assertion was not issued to the requesting client.",
 		},
+		{
+			name: "aud array with two elements is rejected",
+			mutateClaims: func(c *ValidatedClaims) {
+				c.Audience = []string{idJAGTestASIssuer, testTokenEndpoint}
+			},
+			requestClient: idJAGTestClientID,
+			wantErrIs:     fosite.ErrInvalidGrant,
+			wantDesc:      "invalid_assertion: The ID-JAG assertion aud must name exactly one audience.",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -585,12 +594,6 @@ func TestIDJAGHandler_LogsDraftDepartures(t *testing.T) {
 			audience: []string{idJAGTestASIssuer},
 		},
 		{
-			name:     "two audiences",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer, testTokenEndpoint},
-			want:     []draftDeparture{departureMultipleAudiences},
-		},
-		{
 			name:     "audience is the token endpoint only, accepted_audiences empty",
 			asIssuer: idJAGTestASIssuer,
 			audience: []string{testTokenEndpoint},
@@ -616,13 +619,6 @@ func TestIDJAGHandler_LogsDraftDepartures(t *testing.T) {
 		{
 			name:     "unknown AS issuer skips the audience check",
 			audience: []string{testTokenEndpoint},
-		},
-		{
-			name:     "both audience findings at once",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{testTokenEndpoint, idJAGTestOtherAud},
-			want:     []draftDeparture{departureMultipleAudiences, departureAudienceNotIssuer},
-			wantHint: hintNoAcceptedAud,
 		},
 	}
 	for _, tt := range tests {
@@ -711,9 +707,9 @@ func TestIDJAGHandler_RefusedRedemptionLogsNoDeparture(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Each ID-JAG would depart from the draft in every audience way.
+			// Each ID-JAG would log an audience departure if it were accepted.
 			claims := validIDJAGClaims()
-			claims.Audience = []string{testTokenEndpoint, idJAGTestOtherAud}
+			claims.Audience = []string{testTokenEndpoint}
 			h, consumer, out := newIDJAGDepartureHandler(t, claims, idJAGTestASIssuer, nil)
 			req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
 			tt.prepare(claims, consumer, req)
@@ -752,7 +748,7 @@ func TestIDJAGHandler_ReplayAfterAcceptanceLogsNothingNew(t *testing.T) {
 	assert.Len(t, nonEmptyLines(out), before)
 }
 
-func TestIDJAGHandler_WarnOnceKeyIsIssuerAndFinding(t *testing.T) {
+func TestIDJAGHandler_WarnOnceKeyIsIssuer(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -764,30 +760,23 @@ func TestIDJAGHandler_WarnOnceKeyIsIssuerAndFinding(t *testing.T) {
 	h, _, out := newIDJAGDepartureHandler(t, claims, idJAGTestASIssuer, nil, issuerA, issuerB)
 	tj := newTestJWKS(t)
 
-	redeem := func(issuer, jti string, audience []string) {
+	redeem := func(issuer, jti string) {
 		claims.Issuer = issuer
 		claims.JWTID = jti
-		claims.Audience = audience
+		claims.Audience = []string{testTokenEndpoint}
 		require.NoError(t, h.HandleTokenEndpointRequest(t.Context(), newIDJAGRequest(t, tj, idJAGTestClientID)))
 	}
-	notIssuer := []string{testTokenEndpoint}                       // finding X: audience_not_issuer
-	twoAudiences := []string{idJAGTestASIssuer, testTokenEndpoint} // finding Y: multiple_audiences
 
-	redeem(issuerA, "jti-1", notIssuer)
+	redeem(issuerA, "jti-1")
 	require.Len(t, logLinesAt(out, "WARN"), 1)
 	assert.Contains(t, logLinesAt(out, "WARN")[0], "issuer="+issuerA)
 
-	redeem(issuerB, "jti-2", notIssuer)
+	redeem(issuerB, "jti-2")
 	require.Len(t, logLinesAt(out, "WARN"), 2)
 	assert.Contains(t, logLinesAt(out, "WARN")[1], "issuer="+issuerB)
 
-	redeem(issuerA, "jti-3", twoAudiences)
-	require.Len(t, logLinesAt(out, "WARN"), 3)
-	assert.Contains(t, logLinesAt(out, "WARN")[2], "finding="+string(departureMultipleAudiences))
-	assert.Empty(t, logLinesAt(out, "DEBUG"))
-
-	redeem(issuerA, "jti-4", notIssuer)
-	assert.Len(t, logLinesAt(out, "WARN"), 3)
+	redeem(issuerA, "jti-3")
+	assert.Len(t, logLinesAt(out, "WARN"), 2)
 	require.Len(t, logLinesAt(out, "DEBUG"), 1)
 	assert.Contains(t, logLinesAt(out, "DEBUG")[0], "finding="+string(departureAudienceNotIssuer))
 }
@@ -1054,7 +1043,7 @@ func TestIDJAGHandler_IssuerAudienceSkippedWhenIssuerIsResource(t *testing.T) {
 	}
 }
 
-func TestIDJAGHandler_RealValidatorRedeemsIssuerAudience(t *testing.T) {
+func TestIDJAGHandler_RealValidatorAudience(t *testing.T) {
 	t.Parallel()
 
 	externalJWKS := newTestJWKS(t)
@@ -1074,26 +1063,49 @@ func TestIDJAGHandler_RealValidatorRedeemsIssuerAudience(t *testing.T) {
 	validator := newMultiValidator(t, newTestJWKS(t), trusted)
 	resolved, err := ResolveJWTBearerGrantPolicies(trusted)
 	require.NoError(t, err)
-	consumer := &recordingAssertionConsumer{}
-	h, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint, consumer,
-		&fosite.Config{
-			AccessTokenIssuer:        idJAGTestASIssuer,
-			AccessTokenLifespan:      time.Hour,
-			AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+	tests := []struct {
+		name        string
+		audience    jwt.Audience
+		wantRefusal string
+	}{
+		{name: "issuer as the single aud is redeemed", audience: jwt.Audience{idJAGTestASIssuer}},
+		{
+			name:        "aud array with two values is refused and not consumed",
+			audience:    jwt.Audience{idJAGTestASIssuer, testTokenEndpoint},
+			wantRefusal: "invalid_assertion: The ID-JAG assertion aud must name exactly one audience.",
 		},
-		&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, []string{idJAGTestResource}, nil)
-	require.NoError(t, err)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			consumer := &recordingAssertionConsumer{}
+			h, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint, consumer,
+				&fosite.Config{
+					AccessTokenIssuer:        idJAGTestASIssuer,
+					AccessTokenLifespan:      time.Hour,
+					AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+				},
+				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, []string{idJAGTestResource}, nil)
+			require.NoError(t, err)
 
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: externalJWKS.jwk},
-		(&jose.SignerOptions{}).WithHeader(jose.HeaderType, oauthproto.JWTTypeIDJAG))
-	require.NoError(t, err)
-	claims := jwtBearerExternalClaims()
-	claims.Audience = jwt.Audience{idJAGTestASIssuer}
-	raw, err := jwt.Signed(signer).Claims(claims).Claims(map[string]any{"client_id": idJAGTestClientID}).Serialize()
-	require.NoError(t, err)
+			signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: externalJWKS.jwk},
+				(&jose.SignerOptions{}).WithHeader(jose.HeaderType, oauthproto.JWTTypeIDJAG))
+			require.NoError(t, err)
+			claims := jwtBearerExternalClaims()
+			claims.Audience = tt.audience
+			raw, err := jwt.Signed(signer).Claims(claims).Claims(map[string]any{"client_id": idJAGTestClientID}).Serialize()
+			require.NoError(t, err)
 
-	req := newIDJAGRequest(t, externalJWKS, idJAGTestClientID)
-	req.Form.Set("assertion", raw)
-	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
-	assert.Equal(t, "jwt-bearer-jti", consumer.key)
+			req := newIDJAGRequest(t, externalJWKS, idJAGTestClientID)
+			req.Form.Set("assertion", raw)
+			err = h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantRefusal != "" {
+				requireRefusal(t, err, "invalid_grant", tt.wantRefusal)
+				assert.Empty(t, consumer.key, "a refused assertion must not be consumed")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "jwt-bearer-jti", consumer.key)
+		})
+	}
 }

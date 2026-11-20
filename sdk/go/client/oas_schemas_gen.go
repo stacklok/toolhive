@@ -21847,7 +21847,9 @@ type TokenExchangeJWTBearerGrantPolicy struct {
 	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
 	// the token endpoint and this server's issuer identifier, unless the issuer
 	// is also an allowed resource audience. A configured list replaces both
-	// defaults.
+	// defaults. The plain JWT-bearer grant accepts a multi-valued "aud" when
+	// one value matches; the ID-JAG grant refuses any "aud" array with more
+	// than one value.
 	AcceptedAudiences []string                               `json:"accepted_audiences"`
 	MaxAssertionAge   OptString                              `json:"max_assertion_age"`
 	SubjectBindings   []TokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`

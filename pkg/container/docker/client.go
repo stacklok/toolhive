@@ -122,6 +122,9 @@ type deployOps interface {
 	) error
 	getContainerNetworkIP(ctx context.Context, containerName, networkName string) (string, error)
 	discoverBridgeGateways(ctx context.Context) ([]netip.Addr, error)
+	// cleanupFailedIsolation best-effort removes the auxiliary containers and
+	// the internal network created for a workload whose setup failed.
+	cleanupFailedIsolation(ctx context.Context, name, networkName string)
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -189,7 +192,7 @@ func (c *Client) DeployWorkload(
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
 	isolateNetwork bool,
-) (int, error) {
+) (_ int, retErr error) {
 	// Get permission config from profile
 	var ignoreConfig *ignore.Config
 	if options != nil {
@@ -253,6 +256,10 @@ func (c *Client) DeployWorkload(
 	}
 
 	networkIsolation := false
+	// mcpCreated is set once the MCP container exists. From then on `thv rm`
+	// can find the auxiliary containers and network through it, and removing
+	// them here would leave the MCP container without its network.
+	mcpCreated := false
 	// pspec and egress are populated in the isolation block and reused by
 	// SetupIngress after the MCP container is created.
 	var (
@@ -262,12 +269,33 @@ func (c *Client) DeployWorkload(
 	if effectiveIsolation {
 		networkIsolation = true
 
+		// A restart reaches this point with the stopped MCP container still in
+		// place, so the network and sidecars below belong to an existing
+		// workload and must survive a failed attempt. If the lookup fails,
+		// assume the container exists: leaving resources behind beats removing
+		// ones a workload depends on.
+		existingMcpID, lookupErr := c.findExistingContainer(ctx, name)
+		mcpExisted := lookupErr != nil || existingMcpID != ""
+
 		internalNetworkLabels := map[string]string{}
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.ops.createNetwork(ctx, networkName, internalNetworkLabels, true)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create internal network: %w", err)
 		}
+		// The internal network and the dns/egress/ingress containers are not
+		// tied to the MCP container yet, so `thv rm` cannot find them if setup
+		// fails before the MCP container is created. Remove them in that case,
+		// but only for a new workload (see mcpExisted above).
+		defer func() {
+			if retErr != nil && !mcpCreated && !mcpExisted {
+				// Detach from the caller's cancellation so a cancelled request
+				// still cleans up, but bound the cleanup so it cannot hang.
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+				defer cancel()
+				c.ops.cleanupFailedIsolation(cleanupCtx, name, networkName)
+			}
+		}()
 
 		// Start or reuse DNS normally before reading Podman's generated hosts.
 		dnsContainerName := fmt.Sprintf("%s-dns", name)
@@ -346,6 +374,7 @@ func (c *Client) DeployWorkload(
 	if err != nil {
 		return 0, fmt.Errorf("failed to create mcp container: %w", err)
 	}
+	mcpCreated = true
 
 	// Don't try and set up an ingress proxy if the transport type is stdio.
 	if transportType == "stdio" {
@@ -1386,6 +1415,35 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
 	return nil
+}
+
+// cleanupFailedIsolation best-effort removes the egress, ingress and dns
+// containers and the internal network of a workload whose setup failed. Every
+// sidecar is attempted and the network is always deleted, even when an earlier
+// step fails. Failures are logged: the original setup error is what the caller
+// needs.
+func (c *Client) cleanupFailedIsolation(ctx context.Context, name, networkName string) {
+	var errs []error
+	for _, suffix := range []string{"egress", "ingress", "dns"} {
+		sidecarName := fmt.Sprintf("%s-%s", name, suffix)
+		id, err := c.findExistingContainer(ctx, sidecarName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("find %s container: %w", suffix, err))
+			continue
+		}
+		if id == "" {
+			continue
+		}
+		if err := c.removeContainer(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("remove %s container: %w", suffix, err))
+		}
+	}
+	if err := c.deleteNetwork(ctx, networkName); err != nil {
+		errs = append(errs, fmt.Errorf("remove internal network %s: %w", networkName, err))
+	}
+	if err := errors.Join(errs...); err != nil {
+		slog.Warn("failed to fully clean up after failed setup", "name", name, "error", err)
+	}
 }
 
 // removeContainer removes a container by ID, without removing any associated networks or proxy containers.

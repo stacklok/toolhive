@@ -2321,7 +2321,7 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
 		return err
 	}
-	if err := c.validateAuthorizationDetailsRequiresTokenExchange(); err != nil {
+	if err := c.validateAuthorizationDetailsRegistryReachable(); err != nil {
 		return err
 	}
 	if err := c.validateSPIFFEAssociationsRequireTokenExchange(); err != nil {
@@ -2476,13 +2476,26 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 	return nil
 }
 
-// validateAuthorizationDetailsRequiresTokenExchange rejects a registry when
-// neither token exchange nor the JWT-bearer grant is enabled:
-// authorization_details is only handled on those grants, so the registry could
-// never be reached.
-func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
-	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange && !JWTBearerGrantEnabled(c.TrustedIssuers) {
-		return fmt.Errorf("authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
+// ErrAuthorizationDetailsRegistryUnreachable is returned when an authorization
+// details registry is configured but no grant that handles it is enabled.
+var ErrAuthorizationDetailsRegistryUnreachable = errors.New(
+	"authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
+
+// AuthorizationDetailsRegistryReachable reports whether an authorization
+// details registry can be reached: authorization_details is only handled on
+// token exchange and on the JWT-bearer grant. The JWT-bearer grant counts only
+// when some trusted issuer has a JWT-bearer policy, because without one every
+// JWT-bearer request is refused.
+func AuthorizationDetailsRegistryReachable(tokenExchangeEnabled bool, trustedIssuers []tokenexchange.TrustedIssuer) bool {
+	return tokenExchangeEnabled || JWTBearerGrantEnabled(trustedIssuers)
+}
+
+// validateAuthorizationDetailsRegistryReachable rejects a registry that no
+// enabled grant could ever reach.
+func (c *Config) validateAuthorizationDetailsRegistryReachable() error {
+	if c.AuthorizationDetailsRegistry != nil &&
+		!AuthorizationDetailsRegistryReachable(!c.DisableTokenExchange, c.TrustedIssuers) {
+		return ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
 }

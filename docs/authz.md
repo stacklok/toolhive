@@ -740,7 +740,9 @@ has been validated for the configured embedded authorization-server issuer.
 A session-less token carries at most `sub`, `act`, `client_id` and `scope`, plus
 `name` and `email` when the grant supplies them (RFC 8693 delegation copies them
 from the subject token; RFC 7523 JWT-bearer has no end user and carries neither).
-Nothing else crosses. In particular **no upstream attribute is carried** — no
+A JWT-bearer or ID-JAG token may also carry an `authorization_details` claim,
+when the redemption asked for one and an embedder registered the type. Upstream
+identity attributes still never cross. In particular **no upstream attribute is carried** — no
 `groups`, no `roles`, no `department`, nothing the pinned IdP asserted about the
 subject.
 

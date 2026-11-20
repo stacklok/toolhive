@@ -59,8 +59,13 @@ type Request struct {
 	Entries []json.RawMessage
 	// GrantType is the grant type of the token request.
 	GrantType string
-	// ClientID is the authenticated client. It is empty on the plain JWT-bearer
-	// grant, which authenticates no client.
+	// ClientID is the requesting client, empty when the grant has none.
+	// Token exchange: always an authenticated client, because public clients are
+	// refused. ID-JAG redemption: authenticated for a confidential client; a
+	// public client is only identified by its client_id, because ID-JAG
+	// redemption does not yet require client authentication. Plain JWT-bearer:
+	// empty. A client that did authenticate there is replaced by a synthetic one
+	// and is not passed to the hook.
 	ClientID string
 	// Actor is the resolved actor. Without an actor_token it equals ClientID, or
 	// the verified SPIFFE ID for a SPIFFE client. Token exchange only: empty on
@@ -184,6 +189,11 @@ type Pending struct {
 	types     map[string]Type
 	order     []string
 	entries   map[string][]json.RawMessage
+}
+
+// Empty reports whether the parsed value held no entries, that is, it was "[]".
+func (p *Pending) Empty() bool {
+	return len(p.order) == 0
 }
 
 // Grant calls each type's hook once, in the order the types first appear in

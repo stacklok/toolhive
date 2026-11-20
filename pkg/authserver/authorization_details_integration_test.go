@@ -235,7 +235,7 @@ func TestIntegration_AuthorizationDetailsOverHTTP(t *testing.T) {
 	}
 }
 
-func TestIntegration_AuthorizationDetailsRegistryNotUsedOnOtherGrants(t *testing.T) {
+func TestIntegration_TokenExchangeDetailTypesRefusedOnRedemption(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -275,7 +275,7 @@ func TestIntegration_AuthorizationDetailsRegistryNotUsedOnOtherGrants(t *testing
 			ts, signAssertion := setupJWTBearerGrantTestServer(t,
 				withAuthorizationDetailsRegistry(newAuthorizationDetailsRegistry(t, &calls)))
 			form := tt.form(ts, signAssertion)
-			form.Set("authorization_details", `[{"type":"unknown"}]`)
+			form.Set("authorization_details", `[{"type":"custom"}]`)
 
 			response := makeTokenRequest(t, ts.Server.URL, form)
 			t.Cleanup(func() { _ = response.Body.Close() })
@@ -284,7 +284,118 @@ func TestIntegration_AuthorizationDetailsRegistryNotUsedOnOtherGrants(t *testing
 			require.Equal(t, http.StatusBadRequest, response.StatusCode, body)
 			assert.Equal(t, "invalid_authorization_details", body["error"])
 			assert.Equal(t, "malformed_entry", body["error_description"])
-			assert.Zero(t, calls.Load(), "the registry must remain specific to RFC 8693 token exchange")
+			assert.Zero(t, calls.Load(), "a type registered for token exchange only must not reach its hook on redemption")
+		})
+	}
+}
+
+// TestIntegration_AuthorizationDetailsJWTBearerRedemptionOverHTTP pins that the
+// registry reaches the JWT-bearer and ID-JAG redemption handlers. The hook
+// returns an entry that differs from the request, so a redemption without the
+// registry, or one that echoes the request, fails.
+func TestIntegration_AuthorizationDetailsJWTBearerRedemptionOverHTTP(t *testing.T) {
+	t.Parallel()
+
+	const (
+		detailType = "https://example.com/redeem_detail"
+		requested  = `[{"type":"` + detailType + `","limit":9007199254740993}]`
+		// grantedEntry is what the hook returns, so the response member and the claim must equal it.
+		grantedEntry = `{"type":"` + detailType + `","limit":9007199254740993,"added_by_hook":"yes"}`
+		granted      = `[` + grantedEntry + `]`
+	)
+	const (
+		confidentialClientID     = "details-confidential-client"
+		confidentialClientSecret = "details-confidential-secret"
+	)
+	confidentialClient, err := registration.New(registration.Config{
+		ID:                      confidentialClientID,
+		Secret:                  confidentialClientSecret,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		GrantTypes:              []string{oauthproto.GrantTypeJWTBearer},
+		Scopes:                  registration.DefaultScopes,
+		Audience:                []string{testAudience},
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		// wantClientID is the client the hook must see: empty on the plain grant.
+		wantClientID string
+		form         func(ts *testServerWithUpstream, signAssertion func(string, time.Time, time.Time, string) string) url.Values
+	}{
+		{
+			name: "jwt-bearer",
+			form: func(_ *testServerWithUpstream, signAssertion func(string, time.Time, time.Time, string) string) url.Values {
+				now := time.Now()
+				return url.Values{
+					"grant_type": {oauthproto.GrantTypeJWTBearer},
+					"assertion":  {signAssertion("external-subject", now, now.Add(2*time.Minute), "details-jwt-bearer-success")},
+					"resource":   {testAudience},
+				}
+			},
+		},
+		{
+			name:         "ID-JAG",
+			wantClientID: confidentialClientID,
+			form: func(ts *testServerWithUpstream, _ func(string, time.Time, time.Time, string) string) url.Values {
+				now := time.Now()
+				return url.Values{
+					"grant_type": {oauthproto.GrantTypeJWTBearer},
+					"assertion":  {ts.signIDJAGAssertionFor(confidentialClientID, "external-subject", now, now.Add(2*time.Minute), "details-id-jag-success")},
+					"resource":   {testAudience},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seenClientID atomic.Value
+			registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+				detailType: {
+					GrantTypes: []string{oauthproto.GrantTypeJWTBearer},
+					Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+						seenClientID.Store(req.ClientID)
+						return authorizationdetails.Result{Entries: []json.RawMessage{
+							json.RawMessage(grantedEntry),
+						}}, nil
+					},
+				},
+			})
+			require.NoError(t, err)
+			ts, signAssertion := setupJWTBearerGrantTestServer(t,
+				withAuthorizationDetailsRegistry(registry), withExtraClient(confidentialClient))
+			form := tt.form(ts, signAssertion)
+			form.Set("authorization_details", requested)
+
+			response := func() *http.Response {
+				if tt.wantClientID == "" {
+					return makeTokenRequest(t, ts.Server.URL, form)
+				}
+				return makeTokenRequestWithBasicAuth(t, ts.Server.URL, form, confidentialClientID, confidentialClientSecret)
+			}()
+			t.Cleanup(func() { _ = response.Body.Close() })
+			rawBody, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, response.StatusCode, string(rawBody))
+			assert.Equal(t, tt.wantClientID, seenClientID.Load(), "the hook must see the authenticated client")
+
+			var body map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(rawBody, &body))
+			assert.JSONEq(t, granted, string(body["authorization_details"]))
+			assert.Contains(t, string(body["authorization_details"]), "9007199254740993")
+
+			var accessToken string
+			require.NoError(t, json.Unmarshal(body["access_token"], &accessToken))
+			parsed, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+			require.NoError(t, err)
+			var claims map[string]json.RawMessage
+			require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+			require.Contains(t, claims, "authorization_details")
+			assert.JSONEq(t, granted, string(claims["authorization_details"]))
+			assert.Contains(t, string(claims["authorization_details"]), "9007199254740993")
 		})
 	}
 }

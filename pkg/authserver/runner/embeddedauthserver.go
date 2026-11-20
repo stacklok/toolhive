@@ -393,8 +393,9 @@ func newEmbeddedAuthServerWithStorage(
 	if err != nil {
 		return nil, err
 	}
-	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange && !normalized.Capabilities.JWTBearer {
-		return nil, fmt.Errorf("authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
+	if options.authorizationDetailsRegistry != nil &&
+		!authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
+		return nil, authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	// Refuse a required_subject_claims that cannot be satisfied before upstream
 	// resolution, which may register this server at an upstream via DCR.
@@ -732,8 +733,8 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 	if err != nil {
 		return fmt.Errorf("normalize inbound grants: %w", err)
 	}
-	if !normalized.Capabilities.TokenExchange && !normalized.Capabilities.JWTBearer {
-		return fmt.Errorf("authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
+	if !authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
+		return authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
 }

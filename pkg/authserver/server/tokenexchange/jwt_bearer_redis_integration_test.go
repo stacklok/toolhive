@@ -62,7 +62,7 @@ func TestJWTBearerHandler_RedisBacked(t *testing.T) {
 		&fosite.Config{AccessTokenLifespan: time.Hour},
 		&mockAccessTokenStrategy{},
 		stor,
-		resolvedIssuers,
+		resolvedIssuers, nil,
 	)
 	require.NoError(t, err)
 

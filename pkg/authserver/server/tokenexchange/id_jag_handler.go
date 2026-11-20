@@ -16,6 +16,7 @@ import (
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/x/errorsx"
 
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -119,10 +120,10 @@ func newIDJAGIssuanceHandler(
 	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
 	trustedIssuers []TrustedIssuer, explicitGrantClientIDs, allowedAudiences []string, logger *slog.Logger,
-	options ...FactoryOption,
+	detailsRegistry *authorizationdetails.Registry,
 ) (*IDJAGHandler, error) {
 	core, err := newJWTBearerIssuanceHandler(
-		validator, tokenEndpoint, consumer, config, strategy, tokenStorage, trustedIssuers, options...)
+		validator, tokenEndpoint, consumer, config, strategy, tokenStorage, trustedIssuers, detailsRegistry)
 	if err != nil {
 		return nil, err
 	}
@@ -224,8 +225,12 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		}
 		return err
 	}
+	// The hook is decide-only (authorizationdetails.Type.Grant contract) and runs
+	// before the assertion is consumed, so a refused entry does not use up the
+	// assertion.
+	clientID := requester.GetClient().GetID()
 	details, err := h.core.redemptionDetailsClaim(
-		ctx, requester.GetRequestForm(), claims, requester.GetClient().GetID(), resource)
+		ctx, requester.GetRequestForm(), claims, clientID, clientID, resource)
 	if err != nil {
 		return err
 	}
@@ -465,6 +470,7 @@ func IDJAGIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
 	options ...FactoryOption,
 ) (server.Factory, error) {
+	detailsRegistry := resolveFactoryOptions(options).authorizationDetailsRegistry
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(
 			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
@@ -472,7 +478,7 @@ func IDJAGIssuanceFactory(
 			resolvedIssuers []TrustedIssuer, allowedAudiences []string,
 		) (any, error) {
 			return newIDJAGIssuanceHandler(validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
-				resolvedIssuers, explicitGrantClientIDs, allowedAudiences, nil, options...)
+				resolvedIssuers, explicitGrantClientIDs, allowedAudiences, nil, detailsRegistry)
 		})
 }
 

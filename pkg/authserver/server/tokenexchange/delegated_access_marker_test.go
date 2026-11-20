@@ -95,50 +95,70 @@ func TestDelegatedAccessMarkerRefusedInTokenExchange(t *testing.T) {
 	}
 }
 
-func TestAuthorizationDetailsTokenRefusedAtGrantOpening(t *testing.T) {
+func TestTerminalTokenRefusedAtGrantOpening(t *testing.T) {
 	t.Parallel()
 
-	tj := newTestJWKS(t)
-	self, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
-	require.NoError(t, err)
-	extra := detailsExtra()
-	extra["client_id"] = testRefreshSourceClient
-	claims := validClaims()
-	claims.Audience = []string{testIssuer}
-	store := &fakeGrantStore{}
-	h := newRefreshHandlerForTest(t, &stubSubjectValidator{}, store)
-	h.selfValidator = self
-	req := refreshRequestForTest(brokerClientForTest())
-	req.Form.Set("subject_token", tj.signToken(t, claims, extra))
+	tests := []struct {
+		name       string
+		extra      map[string]any
+		wantReason string
+	}{
+		{name: "authorization_details claim", extra: detailsExtra(), wantReason: "subject_token_authorization_details"},
+		{name: "delegated-access marker", extra: markedExtra(), wantReason: "subject_token_delegated_access"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	err = h.HandleTokenEndpointRequest(t.Context(), req)
+			tj := newTestJWKS(t)
+			self, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+			require.NoError(t, err)
+			tt.extra["client_id"] = testRefreshSourceClient
+			claims := validClaims()
+			claims.Audience = []string{testIssuer}
+			store := &fakeGrantStore{}
+			h := newRefreshHandlerForTest(t, &stubSubjectValidator{}, store)
+			h.selfValidator = self
+			req := refreshRequestForTest(brokerClientForTest())
+			req.Form.Set("subject_token", tj.signToken(t, claims, tt.extra))
 
-	requireOAuthError(t, err, "invalid_request", "subject_token_authorization_details")
-	assert.Empty(t, store.created)
+			err = h.HandleTokenEndpointRequest(t.Context(), req)
+
+			requireOAuthError(t, err, "invalid_request", tt.wantReason)
+			assert.Empty(t, store.created)
+		})
+	}
 }
 
-func TestHasDelegatedAccessMarker(t *testing.T) {
+func TestTerminalRestriction(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name   string
 		claims *ValidatedClaims
-		want   bool
+		want   restriction
 	}{
 		{name: "nil claims"},
 		{name: "neither map has the marker",
 			claims: &ValidatedClaims{
 				Claims: map[string]any{"tsid": "x"}, Extra: map[string]any{"client_id": "c"}}},
 		{name: "marker in the verified claims only",
-			claims: &ValidatedClaims{Claims: map[string]any{claimnames.DelegatedAccessKey: true}}, want: true},
+			claims: &ValidatedClaims{Claims: map[string]any{claimnames.DelegatedAccessKey: true}}, want: restrictionDelegatedAccess},
 		{name: "marker in the extra claims only, with an empty value",
-			claims: &ValidatedClaims{Extra: map[string]any{claimnames.DelegatedAccessKey: ""}}, want: true},
+			claims: &ValidatedClaims{Extra: map[string]any{claimnames.DelegatedAccessKey: ""}}, want: restrictionDelegatedAccess},
+		{name: "authorization_details only",
+			claims: &ValidatedClaims{Extra: map[string]any{authorizationDetailsParam: []any{}}},
+			want:   restrictionAuthorizationDetails},
+		{name: "both claims, the marker takes precedence",
+			claims: &ValidatedClaims{Claims: map[string]any{
+				claimnames.DelegatedAccessKey: true, authorizationDetailsParam: []any{}}},
+			want: restrictionDelegatedAccess},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, hasDelegatedAccessMarker(tt.claims))
+			assert.Equal(t, tt.want, terminalRestriction(tt.claims))
 		})
 	}
 }

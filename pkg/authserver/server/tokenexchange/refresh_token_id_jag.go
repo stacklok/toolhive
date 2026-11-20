@@ -185,10 +185,11 @@ func (h *RefreshTokenHandler) refuseDelegatedAccessActor(ctx context.Context, d 
 			"client_id", d.mint.RequestingClientID)
 		return nil
 	}
-	switch {
-	case hasDelegatedAccessMarker(claims):
+	switch terminalRestriction(claims) {
+	case restrictionNone:
+	case restrictionDelegatedAccess:
 		return refuseWithReason(ctx, d.log, reasonActorDelegatedAccess)
-	case hasAuthorizationDetailsClaim(claims):
+	case restrictionAuthorizationDetails:
 		return refuseWithReason(ctx, d.log, reasonActorAuthorizationDetails)
 	}
 	return nil

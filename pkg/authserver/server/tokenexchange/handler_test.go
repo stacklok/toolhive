@@ -1252,17 +1252,19 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 	}
 }
 
-// newDetailsRegistry registers the "read" and "write" types on token exchange,
-// both backed by hook.
+// newDetailsRegistry registers the "read" and "write" types, both backed by
+// hook, on token exchange unless grantTypes says otherwise.
 func newDetailsRegistry(
-	t *testing.T, hook func(authorizationdetails.Request) (authorizationdetails.Result, error),
+	t *testing.T, hook func(authorizationdetails.Request) (authorizationdetails.Result, error), grantTypes ...string,
 ) *authorizationdetails.Registry {
 	t.Helper()
 
 	grant := func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
 		return hook(req)
 	}
-	grantTypes := []string{oauthproto.GrantTypeTokenExchange}
+	if len(grantTypes) == 0 {
+		grantTypes = []string{oauthproto.GrantTypeTokenExchange}
+	}
 	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 		"read":  {GrantTypes: grantTypes, Grant: grant},
 		"write": {GrantTypes: grantTypes, Grant: grant},
@@ -1289,6 +1291,7 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 		publicClient      bool
 		unregisteredGrant bool
 		otherGrant        bool
+		grantTypes        []string
 		clientID          string
 		requestedScope    string
 		requestedAudience string
@@ -1317,6 +1320,13 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 			name:            "malformed JSON is rejected before the subject token is checked",
 			details:         []string{"[{"},
 			invalidSubject:  true,
+			wantOAuthError:  "invalid_authorization_details",
+			wantDescription: genericError,
+		},
+		{
+			name:            "type registered for the JWT-bearer grant only",
+			details:         []string{`[` + oneEntry + `]`},
+			grantTypes:      []string{oauthproto.GrantTypeJWTBearer},
 			wantOAuthError:  "invalid_authorization_details",
 			wantDescription: genericError,
 		},
@@ -1430,7 +1440,7 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 				default:
 					return authorizationdetails.Result{Entries: req.Entries}, nil
 				}
-			})
+			}, tt.grantTypes...)
 
 			h := newTestHandler(t, tj, 15*time.Minute)
 			if !tt.noRegistry {

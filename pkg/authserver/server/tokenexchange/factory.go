@@ -42,8 +42,9 @@ func NewSharedTrustedIssuerValidator(
 	return NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), trustedIssuers, config.AllowedAudiences)
 }
 
-// FactoryOption configures Factory and FactoryWithSharedTrustedIssuerValidator.
-// RefreshTokenFactory takes RefreshTokenOption instead.
+// FactoryOption configures Factory, FactoryWithSharedTrustedIssuerValidator,
+// JWTBearerIssuanceFactory and IDJAGIssuanceFactory. RefreshTokenFactory takes
+// RefreshTokenOption instead.
 type FactoryOption func(*factoryOptions)
 
 type factoryOptions struct {

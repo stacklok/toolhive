@@ -100,7 +100,7 @@ func (s *grantsBySignature) GetExchangeGrant(_ context.Context, signature string
 // handler's own key.
 type ActorTokenOptions struct {
 	Marked     bool     // adds the delegated-access marker
-	Details    bool     // adds an authorization_details claim
+	Details    bool     // adds an authorization_details claim; only its presence counts
 	Expired    bool     // gives the token an expiry in the past
 	Audience   []string // replaces the audience when non-empty
 	ForeignKey bool     // signs with a key the handler does not trust

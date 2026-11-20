@@ -614,14 +614,17 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	ts.signSubjectToken = func(subject string, issuedAt, expiry time.Time, id string) string {
 		return sign(subject, testAudience, issuedAt, expiry, id)
 	}
-	ts.signIDJAGAssertion = func(subject string, issuedAt, expiry time.Time, id string) string {
+	ts.signIDJAGAssertionFor = func(clientID, subject string, issuedAt, expiry time.Time, id string) string {
 		t.Helper()
 		assertion, err := jwt.Signed(idjagSigner).Claims(jwt.Claims{
 			Issuer: externalIssuer, Subject: subject, Audience: jwt.Audience{testIssuer + "/oauth/token"},
 			IssuedAt: jwt.NewNumericDate(issuedAt), Expiry: jwt.NewNumericDate(expiry), ID: id,
-		}).Claims(map[string]any{"client_id": testClientID}).Serialize()
+		}).Claims(map[string]any{"client_id": clientID}).Serialize()
 		require.NoError(t, err)
 		return assertion
+	}
+	ts.signIDJAGAssertion = func(subject string, issuedAt, expiry time.Time, id string) string {
+		return ts.signIDJAGAssertionFor(testClientID, subject, issuedAt, expiry, id)
 	}
 	return ts, signAssertion
 }
@@ -2486,6 +2489,8 @@ type testServerWithUpstream struct {
 	upstreamProvider   upstream.OAuth2Provider
 	signSubjectToken   func(string, time.Time, time.Time, string) string
 	signIDJAGAssertion func(string, time.Time, time.Time, string) string
+	// signIDJAGAssertionFor signs an ID-JAG whose client_id claim is the first argument.
+	signIDJAGAssertionFor func(string, string, time.Time, time.Time, string) string
 }
 
 // startMockOIDC starts a mockoidc server with default test user.

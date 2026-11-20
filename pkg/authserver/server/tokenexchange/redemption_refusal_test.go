@@ -125,7 +125,7 @@ func TestIDJAGRedemptionRefusals(t *testing.T) {
 			handler, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint,
 				&recordingAssertionConsumer{},
 				&fosite.Config{AccessTokenLifespan: time.Hour, AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy},
-				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, refusalPolicies(t), nil, nil, nil)
+				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, refusalPolicies(t), nil, nil, nil, nil)
 			require.NoError(t, err)
 			req := newIDJAGRequest(t, newTestJWKS(t), refusalClientID)
 			req.Form.Set("resource", refusalResource)
@@ -164,7 +164,7 @@ func TestJWTBearerRedemptionRefusals(t *testing.T) {
 			validator := &testJWTBearerAssertionValidator{claims: tt.claims(), err: tt.validatorEr}
 			handler, err := newJWTBearerIssuanceHandler(validator, testTokenEndpoint,
 				testAssertionJWTConsumer{}, &fosite.Config{AccessTokenLifespan: time.Hour},
-				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, refusalPolicies(t))
+				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, refusalPolicies(t), nil)
 			require.NoError(t, err)
 			req := fosite.NewAccessRequest(&session.Session{})
 			req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}

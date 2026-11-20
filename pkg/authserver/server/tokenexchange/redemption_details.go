@@ -30,17 +30,18 @@ func detailsRefusal(reason string) error {
 // but this server cannot carry a signed restriction into the token, so it
 // refuses instead of dropping or replacing it with the request parameter.
 func refuseSignedDetails(claims *ValidatedClaims) error {
-	_, inExtra := claims.Extra[authorizationDetailsParam]
-	_, inClaims := claims.Claims[authorizationDetailsParam]
-	if inExtra || inClaims {
+	// Not terminalRestriction: it puts the delegated-access marker first, and
+	// redemption does not refuse the marker, so only the details claim matters.
+	if claims != nil && hasClaim(claims, authorizationDetailsParam) {
 		return invalidAssertion("The assertion must not carry an 'authorization_details' claim.")
 	}
 	return nil
 }
 
 // redemptionDetailsRequest builds the hook request from the validated
-// assertion and the granted resource. clientID is the authenticated client,
-// empty for the plain grant, which authenticates none.
+// assertion and the granted resource. clientID is the requesting client, empty
+// for the plain grant: a client that authenticated there is replaced by a
+// synthetic one and is not passed to the hook.
 func redemptionDetailsRequest(claims *ValidatedClaims, clientID, resource string) authorizationdetails.Request {
 	return authorizationdetails.Request{
 		ClientID:        clientID,
@@ -66,39 +67,48 @@ func redemptionDetailsRequest(claims *ValidatedClaims, clientID, resource string
 // any entry is refused as an unknown type (RFC 9396). Otherwise it returns the
 // granted JSON as the hook produced it, for the access token claim and the
 // response member.
+//
+// clientID is the identity the hook sees, empty on the plain grant. logClientID
+// is the client_id of the WARN lines; the plain grant passes the client ID
+// minted for the assertion so the lines still name someone.
+//
+// "[]" is refused here although token exchange echoes it. On redemption a token
+// without details is unrestricted, so accepting "[]" as "no details" would fail
+// open. On token exchange details are never put into the token.
 func (h *JWTBearerHandler) redemptionDetailsClaim(
-	ctx context.Context, form url.Values, claims *ValidatedClaims, clientID, resource string,
+	ctx context.Context, form url.Values, claims *ValidatedClaims, clientID, logClientID, resource string,
 ) (json.RawMessage, error) {
 	values := form[authorizationDetailsParam]
 	if len(values) == 0 || (len(values) == 1 && values[0] == "") {
 		return nil, nil
 	}
 	if len(values) > 1 {
-		warnAuthorizationDetailsRejected(clientID, rejectRepeated)
+		warnAuthorizationDetailsRejected(logClientID, rejectRepeated)
 		return nil, errorsx.WithStack(exactReason(string(authorizationdetails.CodeInvalidRequest), reasonRepeatedParameter))
 	}
 	if h.detailsRegistry == nil {
-		warnAuthorizationDetailsRejected(clientID, rejectMalformed)
+		warnAuthorizationDetailsRejected(logClientID, rejectMalformed)
 		return nil, detailsRefusal(reasonMalformedEntry)
 	}
 	pending, err := h.detailsRegistry.Parse(values[0], oauthproto.GrantTypeJWTBearer)
 	if err != nil {
-		warnAuthorizationDetailsRejected(clientID, rejectMalformed)
+		warnAuthorizationDetailsRejected(logClientID, rejectMalformed)
+		return nil, detailsRefusal(reasonMalformedEntry)
+	}
+	if pending.Empty() {
+		warnAuthorizationDetailsRejected(logClientID, rejectMalformed)
 		return nil, detailsRefusal(reasonMalformedEntry)
 	}
 	granted, err := pending.Grant(ctx, redemptionDetailsRequest(claims, clientID, resource))
 	if err != nil {
-		return nil, errorsx.WithStack(authorizationDetailsGrantError(clientID, err))
-	}
-	var entries []json.RawMessage
-	if err := json.Unmarshal(granted, &entries); err != nil || len(entries) == 0 {
-		// "[]" never reaches a hook, so an empty grant is refused here.
-		return nil, detailsRefusal(reasonMalformedEntry)
+		return nil, errorsx.WithStack(authorizationDetailsGrantError(logClientID, err))
 	}
 	return granted, nil
 }
 
 // setRedemptionDetailsClaim copies the granted entries into the access token.
+// In memory the claim is a json.RawMessage; after a Redis round trip the stored
+// session holds it as []any. A reader of the stored session must accept both.
 func setRedemptionDetailsClaim(issued *session.Session, entries json.RawMessage) {
 	if entries != nil {
 		issued.JWTClaims.Extra[authorizationDetailsParam] = entries

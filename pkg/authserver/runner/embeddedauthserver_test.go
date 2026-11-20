@@ -1396,7 +1396,7 @@ func minimalRunnerConsentConfig(issuer string) *authserver.RunConfig {
 	}
 }
 
-func TestEmbeddedAuthServer_AuthorizationDetailsRegistryRequiresTokenExchange(t *testing.T) {
+func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.T) {
 	t.Parallel()
 
 	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
@@ -1409,16 +1409,24 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryRequiresTokenExchange(t 
 	})
 	require.NoError(t, err)
 
-	tests := []struct {
+	constructors := []struct {
 		name      string
-		construct func(context.Context, *authserver.RunConfig, ...EmbeddedAuthServerOption) (*EmbeddedAuthServer, error)
+		construct func(*testing.T, context.Context, *authserver.RunConfig, ...EmbeddedAuthServerOption) (*EmbeddedAuthServer, error)
 	}{
-		{name: "NewEmbeddedAuthServer", construct: NewEmbeddedAuthServer},
+		{
+			name: "NewEmbeddedAuthServer",
+			construct: func(
+				_ *testing.T, ctx context.Context, cfg *authserver.RunConfig, opts ...EmbeddedAuthServerOption,
+			) (*EmbeddedAuthServer, error) {
+				return NewEmbeddedAuthServer(ctx, cfg, opts...)
+			},
+		},
 		{
 			name: "NewEmbeddedAuthServerWithStorage",
 			construct: func(
-				ctx context.Context, cfg *authserver.RunConfig, opts ...EmbeddedAuthServerOption,
+				t *testing.T, ctx context.Context, cfg *authserver.RunConfig, opts ...EmbeddedAuthServerOption,
 			) (*EmbeddedAuthServer, error) {
+				t.Helper()
 				stor := storage.NewMemoryStorage()
 				t.Cleanup(func() { require.NoError(t, stor.Close()) })
 				return NewEmbeddedAuthServerWithStorage(ctx, cfg, stor, opts...)
@@ -1426,40 +1434,100 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryRequiresTokenExchange(t 
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	jwtBearerPolicy := func() []authserver.JWTBearerIssuerPolicyRunConfig {
+		return []authserver.JWTBearerIssuerPolicyRunConfig{{
+			IssuerRef:       "idp",
+			MaxAssertionAge: "5m",
+			SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+				Subject:          "workload",
+				AllowedResources: []string{"https://mcp.example.com"},
+			}},
+		}}
+	}
 
-			var discoveryRequests atomic.Int32
-			upstreamServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				discoveryRequests.Add(1)
-			}))
-			t.Cleanup(upstreamServer.Close)
+	idpIssuers := []tokenexchange.TrustedIssuer{{Name: "idp", IssuerURL: "https://idp.example.com"}}
+	cases := []struct {
+		name   string
+		grants *authserver.InboundGrantsRunConfig
+		// refused rows use an OIDC upstream whose discovery endpoint counts requests.
+		refused        bool
+		trustedIssuers []tokenexchange.TrustedIssuer
+	}{
+		{
+			name:    "token exchange and JWT-bearer both off",
+			grants:  &authserver.InboundGrantsRunConfig{},
+			refused: true,
+		},
+		{
+			name:    "JWT-bearer block with no issuer policies",
+			grants:  &authserver.InboundGrantsRunConfig{JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{}},
+			refused: true,
+		},
+		{
+			name: "JWT-bearer with an issuer policy",
+			grants: &authserver.InboundGrantsRunConfig{
+				JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{IssuerPolicies: jwtBearerPolicy()},
+			},
+			trustedIssuers: idpIssuers,
+		},
+	}
 
-			cfg := &authserver.RunConfig{
-				SchemaVersion: authserver.CurrentSchemaVersion,
-				Issuer:        "http://localhost:8080",
-				Upstreams: []authserver.UpstreamRunConfig{{
+	for _, ctor := range constructors {
+		for _, tc := range cases {
+			t.Run(ctor.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				var discoveryRequests atomic.Int32
+				upstreamServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					discoveryRequests.Add(1)
+				}))
+				t.Cleanup(upstreamServer.Close)
+
+				upstream := authserver.UpstreamRunConfig{
 					Name: "test-upstream",
-					Type: authserver.UpstreamProviderTypeOIDC,
-					OIDCConfig: &authserver.OIDCUpstreamRunConfig{
-						IssuerURL:         upstreamServer.URL,
-						ClientID:          "test-client-id",
-						RedirectURI:       "http://localhost:8080/oauth/callback",
-						InsecureAllowHTTP: true,
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "http://localhost:8080/oauth/callback",
 					},
-				}},
-				AllowedAudiences: []string{"https://mcp.example.com"},
-				// An explicit, empty inbound grants block leaves token exchange off.
-				InboundGrants: &authserver.InboundGrantsRunConfig{},
-			}
+				}
+				if tc.refused {
+					upstream = authserver.UpstreamRunConfig{
+						Name: "test-upstream",
+						Type: authserver.UpstreamProviderTypeOIDC,
+						OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+							IssuerURL:         upstreamServer.URL,
+							ClientID:          "test-client-id",
+							RedirectURI:       "http://localhost:8080/oauth/callback",
+							InsecureAllowHTTP: true,
+						},
+					}
+				}
+				cfg := &authserver.RunConfig{
+					SchemaVersion:    authserver.CurrentSchemaVersion,
+					Issuer:           "http://localhost:8080",
+					Upstreams:        []authserver.UpstreamRunConfig{upstream},
+					AllowedAudiences: []string{"https://mcp.example.com"},
+					InboundGrants:    tc.grants,
+					TrustedIssuers:   tc.trustedIssuers,
+				}
 
-			server, err := tt.construct(context.Background(), cfg, WithAuthorizationDetailsRegistry(registry))
-			require.Error(t, err)
-			assert.Nil(t, server)
-			assert.ErrorContains(t, err, "authorization details registry requires token exchange or the JWT-bearer grant")
-			assert.Zero(t, discoveryRequests.Load(), "the check must run before upstream discovery")
-		})
+				server, err := ctor.construct(t, context.Background(), cfg, WithAuthorizationDetailsRegistry(registry))
+				if !tc.refused {
+					require.NoError(t, err)
+					require.NotNil(t, server)
+					t.Cleanup(func() { _ = server.Close() })
+					return
+				}
+				require.ErrorIs(t, err, authserver.ErrAuthorizationDetailsRegistryUnreachable)
+				assert.Nil(t, server)
+				assert.ErrorContains(t, err,
+					"authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
+				assert.Zero(t, discoveryRequests.Load(), "the check must run before upstream discovery")
+			})
+		}
 	}
 }
 

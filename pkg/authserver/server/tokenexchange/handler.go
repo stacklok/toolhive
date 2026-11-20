@@ -243,10 +243,9 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// of it is read.
 	// A token that carries authorization_details is terminal too: the new
 	// token would not carry them.
-	reason, hint := terminalTokenRefusal(validatedClaims, hintSubjectDelegatedAccess, hintSubjectAuthorizationDetails)
-	if hint != "" {
-		slog.Warn("Subject token refused", "reason", reason, "actor", actorID)
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(hint))
+	if err := refuseTerminalToken(validatedClaims, "Subject", actorID,
+		hintSubjectDelegatedAccess, hintSubjectAuthorizationDetails); err != nil {
+		return err
 	}
 
 	// Resolve actor identity: explicit actor_token or authenticated client.
@@ -320,46 +319,26 @@ const (
 
 	hintSubjectAuthorizationDetails = "The subject token carries authorization_details and cannot be exchanged."
 	hintActorAuthorizationDetails   = "The actor token carries authorization_details and cannot be exchanged."
+
+	// reasonAuthorizationDetailsToken is the logged reason where a token that
+	// carries authorization_details is refused as a subject or actor token.
+	reasonAuthorizationDetailsToken = "authorization_details_token"
 )
 
-// terminalTokenRefusal returns the logged reason and the client hint for a
-// token that must not be exchanged, or empty strings when it may be.
-func terminalTokenRefusal(claims *ValidatedClaims, markerHint, detailsHint string) (reason, hint string) {
-	switch {
-	case hasDelegatedAccessMarker(claims):
-		return reasonDelegatedAccessToken, markerHint
-	case hasAuthorizationDetailsClaim(claims):
-		return reasonAuthorizationDetailsToken, detailsHint
+// refuseTerminalToken refuses a subject or actor token that is terminal. The
+// log line reads "<label> token refused" and names the acting identity.
+func refuseTerminalToken(claims *ValidatedClaims, label, actorID, delegatedHint, detailsHint string) error {
+	switch terminalRestriction(claims) {
+	case restrictionNone:
+		return nil
+	case restrictionDelegatedAccess:
+		slog.Warn(label+" token refused", "reason", reasonDelegatedAccessToken, "actor", actorID)
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(delegatedHint))
+	case restrictionAuthorizationDetails:
+		slog.Warn(label+" token refused", "reason", reasonAuthorizationDetailsToken, "actor", actorID)
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(detailsHint))
 	}
-	return "", ""
-}
-
-// hasAuthorizationDetailsClaim reports whether a validated token carries an
-// authorization_details claim. Only presence counts, for every issuer: no
-// exchange may turn such a token into one without the claim.
-func hasAuthorizationDetailsClaim(claims *ValidatedClaims) bool {
-	if claims == nil {
-		return false
-	}
-	_, inClaims := claims.Claims[authorizationDetailsParam]
-	_, inExtra := claims.Extra[authorizationDetailsParam]
-	return inClaims || inExtra
-}
-
-// hasDelegatedAccessMarker reports whether a validated token carries the
-// delegated-access marker. Only presence counts; the value is never read. The
-// check does not depend on the issuer. On the RFC 8693 subject_token path, which
-// accepts trusted external issuers, an external token carrying the claim is
-// refused too; the other call sites validate against this server's own keys only.
-func hasDelegatedAccessMarker(claims *ValidatedClaims) bool {
-	if claims == nil {
-		return false
-	}
-	// Claims is the full decoded set and Extra a subset of it. Both are checked
-	// so hand-built ValidatedClaims and a later change to assignClaim stay safe.
-	_, inClaims := claims.Claims[claimnames.DelegatedAccessKey]
-	_, inExtra := claims.Extra[claimnames.DelegatedAccessKey]
-	return inClaims || inExtra
+	return nil
 }
 
 // unsupportedTokenType is the invalid_request error for a token-type parameter
@@ -526,9 +505,9 @@ func (h *Handler) resolveActorIdentity(
 		}
 		// A delegated-access token is terminal, as an actor token too. This
 		// runs before any other claim of the token is used.
-		if reason, hint := terminalTokenRefusal(actorClaims, hintActorDelegatedAccess, hintActorAuthorizationDetails); hint != "" {
-			slog.Warn("Actor token refused", "reason", reason, "actor", client.GetID())
-			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(hint))
+		if err := refuseTerminalToken(actorClaims, "Actor", client.GetID(),
+			hintActorDelegatedAccess, hintActorAuthorizationDetails); err != nil {
+			return "", err
 		}
 		// Client-ID binding: actor_token's client_id claim MUST match the
 		// authenticated client ID. This prevents replay attacks where a leaked

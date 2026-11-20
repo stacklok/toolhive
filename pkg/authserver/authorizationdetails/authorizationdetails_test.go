@@ -155,6 +155,32 @@ func TestRegistry_Parse(t *testing.T) {
 	}
 }
 
+func TestPending_Empty(t *testing.T) {
+	t.Parallel()
+
+	registry, err := New(map[string]Type{"a": {GrantTypes: []string{grantTypeExchange}, Grant: okGrant}})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "empty array", raw: `[]`, want: true},
+		{name: "empty array with whitespace", raw: " [ ]\n", want: true},
+		{name: "one entry", raw: `[{"type":"a"}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pending, err := registry.Parse(tt.raw, grantTypeExchange)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, pending.Empty())
+		})
+	}
+}
+
 func TestPending_Grant(t *testing.T) {
 	t.Parallel()
 

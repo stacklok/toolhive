@@ -108,7 +108,7 @@ func newIDJAGTestHandlerWithIssuer(
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		idJAGResolvedIssuers(t),
-		nil, nil, nil, options...,
+		nil, nil, nil, resolveFactoryOptions(options).authorizationDetailsRegistry,
 	)
 	require.NoError(t, err)
 	return handler
@@ -542,7 +542,7 @@ func newIDJAGDepartureHandler(
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		resolved,
-		nil, []string{idJAGTestResource, idJAGTestSecondResource, idJAGTestUnboundResource}, nil,
+		nil, []string{idJAGTestResource, idJAGTestSecondResource, idJAGTestUnboundResource}, nil, nil,
 	)
 	require.NoError(t, err)
 	var buf strings.Builder
@@ -1035,7 +1035,7 @@ func TestIDJAGHandler_IssuerAudienceSkippedWhenIssuerIsResource(t *testing.T) {
 					AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
 				},
 				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, tt.allowed,
-				slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+				slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil)
 			require.NoError(t, err)
 
 			warns := logLinesAt(&buf, "WARN")
@@ -1083,7 +1083,7 @@ func TestIDJAGHandler_RealValidatorRedeemsIssuerAudience(t *testing.T) {
 			AccessTokenLifespan:      time.Hour,
 			AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
 		},
-		&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, []string{idJAGTestResource}, nil)
+		&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, []string{idJAGTestResource}, nil, nil)
 	require.NoError(t, err)
 
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: externalJWKS.jwk},

@@ -117,7 +117,7 @@ func TestIDJAGMintRedeemedByMultiIssuerValidator(t *testing.T) {
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		resolved,
-		nil, []string{mintTestResource}, nil,
+		nil, []string{mintTestResource}, nil, nil,
 	)
 	require.NoError(t, err)
 

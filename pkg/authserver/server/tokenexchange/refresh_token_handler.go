@@ -86,9 +86,6 @@ const (
 	// reasonSubjectAuthorizationDetails is sent for a subject token that
 	// carries authorization_details; the grant would not carry them.
 	reasonSubjectAuthorizationDetails = "subject_token_authorization_details"
-	// reasonAuthorizationDetailsToken is the logged reason where such a token
-	// is refused as a subject or actor token of the other handlers.
-	reasonAuthorizationDetailsToken = "authorization_details_token"
 	// reasonActorAuthorizationDetails is sent when such a token is presented
 	// as the actor token for an ID-JAG.
 	reasonActorAuthorizationDetails = "actor_token_authorization_details"
@@ -470,11 +467,12 @@ func (h *RefreshTokenHandler) decideTopLevel(
 	}
 	// A delegated-access token is refused before any other claim is read, the
 	// log fields included.
-	if hasDelegatedAccessMarker(claims) {
+	switch terminalRestriction(claims) {
+	case restrictionNone:
+	case restrictionDelegatedAccess:
 		return nil, refuse(ctx, log, reasonSubjectDelegatedAccess,
 			errorsx.WithStack(loginSubjectError(reasonSubjectDelegatedAccess)))
-	}
-	if hasAuthorizationDetailsClaim(claims) {
+	case restrictionAuthorizationDetails:
 		return nil, refuse(ctx, log, reasonSubjectAuthorizationDetails,
 			errorsx.WithStack(loginSubjectError(reasonSubjectAuthorizationDetails)))
 	}

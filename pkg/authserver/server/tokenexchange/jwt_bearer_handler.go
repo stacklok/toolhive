@@ -84,7 +84,7 @@ func newJWTBearerHandler(validator JWTBearerAssertionValidator, tokenEndpoint st
 func newJWTBearerIssuanceHandler(
 	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-	trustedIssuers []TrustedIssuer, options ...FactoryOption,
+	trustedIssuers []TrustedIssuer, detailsRegistry *authorizationdetails.Registry,
 ) (*JWTBearerHandler, error) {
 	handler, err := newJWTBearerHandler(validator, tokenEndpoint)
 	if err != nil {
@@ -113,7 +113,7 @@ func newJWTBearerIssuanceHandler(
 	handler.consumer = consumer
 	handler.config = config
 	handler.policies = policies
-	handler.detailsRegistry = resolveFactoryOptions(options).authorizationDetailsRegistry
+	handler.detailsRegistry = detailsRegistry
 	return handler, nil
 }
 
@@ -199,7 +199,10 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 		return plainBindingRefusal(err)
 	}
 	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
-	details, err := h.redemptionDetailsClaim(ctx, requester.GetRequestForm(), claims, "", resource)
+	// The hook is decide-only (authorizationdetails.Type.Grant contract) and runs
+	// before the assertion is consumed, so a refused entry does not use up the
+	// assertion. The hook sees no client; the log names the minted client ID.
+	details, err := h.redemptionDetailsClaim(ctx, requester.GetRequestForm(), claims, "", clientID, resource)
 	if err != nil {
 		return err
 	}
@@ -232,8 +235,10 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT-bearer grant requires a *fosite.AccessRequest."))
 	}
 	// Always replace any resolved caller client. Fosite accepts a supplied
-	// public client_id without a secret; retaining it could renew a DCR client
-	// registration TTL after this clientless grant succeeds.
+	// public client_id without a secret, and a client that did authenticate is
+	// not used by this grant either. Retaining either could renew a DCR client
+	// registration TTL after this grant succeeds; the replacement is not passed
+	// to the authorization_details hook.
 	accessRequest.Client = storage.NewSyntheticClient(clientID)
 	requester.GrantAudience(resource)
 	requester.SetSession(issuedSession)
@@ -545,6 +550,7 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 func JWTBearerIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, options ...FactoryOption,
 ) (server.Factory, error) {
+	detailsRegistry := resolveFactoryOptions(options).authorizationDetailsRegistry
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(
 			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
@@ -552,7 +558,7 @@ func JWTBearerIssuanceFactory(
 			resolvedIssuers []TrustedIssuer, _ []string,
 		) (any, error) {
 			return newJWTBearerIssuanceHandler(
-				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers, options...)
+				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers, detailsRegistry)
 		})
 }
 

@@ -742,7 +742,7 @@ func TestJWTBearerHandler_ConsumeAssertionJWTErrors(t *testing.T) {
 				&fosite.Config{AccessTokenLifespan: time.Hour},
 				&mockAccessTokenStrategy{},
 				&mockAccessTokenStorage{},
-				resolvedIssuers,
+				resolvedIssuers, nil,
 			)
 			require.NoError(t, err)
 
@@ -778,7 +778,7 @@ func TestNewJWTBearerIssuanceHandler_RejectsMissingDependencies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h, err := newJWTBearerIssuanceHandler(validator, testTokenEndpoint, tt.consumer, nil, nil, nil, nil)
+			h, err := newJWTBearerIssuanceHandler(validator, testTokenEndpoint, tt.consumer, nil, nil, nil, nil, nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.Nil(t, h)
@@ -826,7 +826,7 @@ func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
 		&fosite.Config{AccessTokenLifespan: time.Hour},
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
-		resolvedIssuers,
+		resolvedIssuers, nil,
 	)
 	require.NoError(t, err)
 
@@ -882,7 +882,7 @@ func TestJWTBearerHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
 		&fosite.Config{AccessTokenLifespan: time.Hour},
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
-		resolvedIssuers,
+		resolvedIssuers, nil,
 	)
 	require.NoError(t, err)
 
@@ -933,7 +933,7 @@ func TestJWTBearerHandler_ResourceClaimIsNotADefault(t *testing.T) {
 		&fosite.Config{AccessTokenLifespan: time.Hour},
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
-		resolvedIssuers,
+		resolvedIssuers, nil,
 	)
 	require.NoError(t, err)
 
@@ -972,7 +972,7 @@ func TestJWTBearerHandler_PopulateFailsClosedOnElapsedExpiry(t *testing.T) {
 		&fosite.Config{AccessTokenLifespan: time.Hour},
 		&mockAccessTokenStrategy{},
 		tokenStorage,
-		resolvedIssuers,
+		resolvedIssuers, nil,
 	)
 	require.NoError(t, err)
 

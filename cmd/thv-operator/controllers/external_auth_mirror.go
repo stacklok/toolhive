@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 )
 
 // Status Condition Parity machinery for #5347. The probe reads a referenced
@@ -71,9 +72,36 @@ func mirroredReasonFromError(err error) string {
 	return ""
 }
 
+// externalAuthReasonFromError returns a stable condition reason for typed
+// external-auth failures. Source-level invalidity keeps its mirrored reason;
+// consumer/type incompatibility uses the shared UnsupportedAuthType taxonomy.
+func externalAuthReasonFromError(err error) string {
+	if reason := mirroredReasonFromError(err); reason != "" {
+		return reason
+	}
+
+	var unsupported *externalauthsupport.UnsupportedTypeError
+	if stderrors.As(err, &unsupported) {
+		return mcpv1beta1.ConditionReasonUnsupportedAuthType
+	}
+	return ""
+}
+
+// isTerminalExternalAuthError reports whether err is a consumer/type
+// incompatibility: the referenced MCPExternalAuthConfig has a type the consumer
+// does not implement. That can only heal after the consumer spec or the
+// referenced config changes. Both are watched by the consumer controllers, so
+// rate-limited retries of the same generation add noise but cannot make
+// progress. A source that reports Valid=False is not covered here and keeps
+// returning its error to the caller.
+func isTerminalExternalAuthError(err error) bool {
+	var unsupported *externalauthsupport.UnsupportedTypeError
+	return stderrors.As(err, &unsupported)
+}
+
 // ownedByLocalValidation reports whether conditions' entry for conditionType
 // (if any) was set by this operator's own validation rather than mirrored from
-// the referenced MCPExternalAuthConfig. Two distinct owners qualify, each with
+// the referenced MCPExternalAuthConfig. Three distinct owners qualify, each with
 // a fixed Reason that an exact match identifies reliably regardless of the
 // mirror's own (source-derived, unbounded) Reason values:
 //
@@ -82,8 +110,10 @@ func mirroredReasonFromError(err error) string {
 //     without an OIDC config).
 //   - the CA bundle check, ConditionReasonInvalidCABundle, set when a referenced
 //     bundle ConfigMap is missing its key or holds non-PEM content.
+//   - the consumer/type check, ConditionReasonUnsupportedAuthType, set when the
+//     referenced config's type is not implemented by this consumer kind.
 //
-// Both re-derive the same condition a few lines after the mirror runs, so
+// Each re-derives the same condition a few lines after the mirror runs, so
 // clearing it here would force a fresh LastTransitionTime on every reconcile.
 func ownedByLocalValidation(conditions []metav1.Condition, conditionType string) bool {
 	existing := meta.FindStatusCondition(conditions, conditionType)
@@ -91,7 +121,8 @@ func ownedByLocalValidation(conditions []metav1.Condition, conditionType string)
 		return false
 	}
 	return existing.Reason == mcpv1beta1.ConditionReasonInvalidConfig ||
-		existing.Reason == mcpv1beta1.ConditionReasonInvalidCABundle
+		existing.Reason == mcpv1beta1.ConditionReasonInvalidCABundle ||
+		existing.Reason == mcpv1beta1.ConditionReasonUnsupportedAuthType
 }
 
 // mirrorInvalidOnMCPServer mirrors the source's Valid=False condition onto the

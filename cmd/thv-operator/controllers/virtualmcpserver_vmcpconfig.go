@@ -63,6 +63,13 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 			statusManager.SetObservedGeneration(vmcp.Generation)
 			return &SpecValidationError{Message: message}
 		}
+		// The converter resolves every auth entry declared in spec.outgoingAuth and
+		// fails as a whole when one cannot be resolved. That refusal is what keeps a
+		// config from being published with the entry missing, where a backend
+		// relying on it would fall back to another credential or to no auth.
+		// Record which entries failed before returning, so the refusal is explained
+		// on the resource and not only in the operator log.
+		r.evaluateOutgoingAuth(ctx, vmcp, typedWorkloads, statusManager)
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
@@ -431,6 +438,40 @@ func determineValidInlineBackends(authConfig *vmcpconfig.OutgoingAuthConfig, inl
 	return valid
 }
 
+// evaluateOutgoingAuth builds the outgoing auth config for vmcp and records a
+// status condition for every auth entry: the default, the backends declared in
+// spec.outgoingAuth, and the backends discovered from workloads. A condition is
+// True when its entry resolved and False, with the failure, when it did not.
+// It publishes nothing; the caller decides what to do with the returned config
+// and errors.
+func (r *VirtualMCPServerReconciler) evaluateOutgoingAuth(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	typedWorkloads []workloads.TypedWorkload,
+	statusManager virtualmcpserverstatus.StatusManager,
+) (*vmcpconfig.OutgoingAuthConfig, []AuthConfigError) {
+	// Build auth config and collect all errors (default, backend-specific, discovered)
+	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+
+	// Extract inline backend names and determine valid auth configs
+	inlineBackendNames := extractInlineBackendNames(vmcp)
+	hasValidDefaultAuth := authConfig != nil && authConfig.Default != nil
+	validInlineBackends := determineValidInlineBackends(authConfig, inlineBackendNames)
+
+	// Set conditions for all auth config types (default, backend-specific, discovered)
+	// True for success, False for errors
+	setAuthConfigConditions(
+		statusManager,
+		backendsWithAuthConfig,
+		inlineBackendNames,
+		hasValidDefaultAuth,
+		validInlineBackends,
+		allAuthErrors,
+	)
+
+	return authConfig, allAuthErrors
+}
+
 // processOutgoingAuth processes outgoing auth configuration for both inline and discovered modes.
 // It builds auth configs, sets status conditions for all auth config types, and configures static backends for inline mode.
 func (r *VirtualMCPServerReconciler) processOutgoingAuth(
@@ -455,9 +496,9 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 		return nil
 	}
 
-	// Build auth config and collect all errors (default, backend-specific, discovered)
+	// Build the auth config and set a condition for every auth entry.
 	// All errors are non-fatal - the system continues in degraded mode with partial auth config
-	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+	authConfig, allAuthErrors := r.evaluateOutgoingAuth(ctx, vmcp, typedWorkloads, statusManager)
 
 	// Backends whose auth strategy failed to build must be excluded from the served
 	// set entirely — see backendsWithFailedAuth for why omission from
@@ -467,22 +508,6 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 		resolvedBackends = authConfig.Backends
 	}
 	excludedBackends := backendsWithFailedAuth(allAuthErrors, resolvedBackends)
-
-	// Extract inline backend names and determine valid auth configs
-	inlineBackendNames := extractInlineBackendNames(vmcp)
-	hasValidDefaultAuth := authConfig != nil && authConfig.Default != nil
-	validInlineBackends := determineValidInlineBackends(authConfig, inlineBackendNames)
-
-	// Set conditions for all auth config types (default, backend-specific, discovered)
-	// True for success, False for errors
-	setAuthConfigConditions(
-		statusManager,
-		backendsWithAuthConfig,
-		inlineBackendNames,
-		hasValidDefaultAuth,
-		validInlineBackends,
-		allAuthErrors,
-	)
 
 	// Static mode (inline): Embed full backend details in ConfigMap
 	if isInlineMode {

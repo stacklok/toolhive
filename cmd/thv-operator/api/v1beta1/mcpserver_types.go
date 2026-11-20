@@ -793,6 +793,15 @@ type AuthzConfigRef struct {
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
 	GroupEntityType string `json:"groupEntityType,omitempty"`
+
+	// MultiValuedClaims lists JWT claim names (bare, e.g. "scp" or "scope")
+	// whose value is exposed to Cedar in two normalized forms: "claim_<name>"
+	// as a space-delimited string and "claimset_<name>" as a Cedar Set of the
+	// claim's elements. When Type is "configMap", a multi_valued_claims entry
+	// in the referenced ConfigMap is overridden by this field if both are set.
+	// +optional
+	// +listType=atomic
+	MultiValuedClaims []string `json:"multiValuedClaims,omitempty"`
 }
 
 // DeprecatedInlinePrimaryUpstreamProvider returns the legacy inline

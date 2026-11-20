@@ -85,6 +85,16 @@ carries an `Mcp-Session-Id` the caller does not own, or that does not exist, get
 See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.
 
+`multi_valued_claims` is honored for VirtualMCPServer the same way it is for
+`thv run`, `MCPServer`, and `MCPRemoteProxy`: a listed claim is exposed to
+Cedar as `claim_<name>` (space-delimited string) and `claimset_<name>` (a
+Cedar Set of the claim's elements). Before this fix the setting was silently
+ignored for VirtualMCPServer, so deployments that already list
+`multi_valued_claims` will see `claim_<name>` change from a Cedar Set to a
+joined string once it is honored — audit any `like`/substring policies on a
+listed claim before upgrading, and prefer `claimset_<name>` with `.contains`
+for exact-element membership.
+
 ## Configure authorization
 
 To set up authorization for an MCP server managed by ToolHive, follow these

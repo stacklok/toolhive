@@ -289,12 +289,13 @@ func (c *Converter) resolveAuthzConfigRef(
 	}
 
 	authz := &vmcpconfig.AuthzConfig{
-		Type:            "cedar",
-		Policies:        opts.Policies,
-		EntitiesJSON:    opts.EntitiesJSON,
-		GroupClaimName:  opts.GroupClaimName,
-		RoleClaimName:   opts.RoleClaimName,
-		GroupEntityType: opts.GroupEntityType,
+		Type:              "cedar",
+		Policies:          opts.Policies,
+		EntitiesJSON:      opts.EntitiesJSON,
+		GroupClaimName:    opts.GroupClaimName,
+		RoleClaimName:     opts.RoleClaimName,
+		GroupEntityType:   opts.GroupEntityType,
+		MultiValuedClaims: opts.MultiValuedClaims,
 	}
 
 	// PrimaryUpstreamProvider is an auth-server (control-plane) property resolved
@@ -312,7 +313,7 @@ func (c *Converter) resolveAuthzConfigRef(
 // convertAuthzConfig resolves the AuthzConfig from either the inline spec or a
 // referenced ConfigMap and applies spec-level overrides for the source-agnostic
 // Cedar JWT-claim mapping fields (GroupClaimName, RoleClaimName,
-// GroupEntityType). PrimaryUpstreamProvider lives on
+// GroupEntityType, MultiValuedClaims). PrimaryUpstreamProvider lives on
 // spec.authServerConfig.primaryUpstreamProvider and is resolved separately by
 // resolvePrimaryUpstreamProvider. The ConfigMap path uses the shared loader so
 // the same fetch/parse/validate path is exercised here as in the
@@ -355,6 +356,7 @@ func (c *Converter) convertAuthzConfig(
 		authz.GroupClaimName = opts.GroupClaimName
 		authz.RoleClaimName = opts.RoleClaimName
 		authz.GroupEntityType = opts.GroupEntityType
+		authz.MultiValuedClaims = opts.MultiValuedClaims
 
 	default:
 		// Defense in depth. The CRD enum (configMap;inline) blocks unknown
@@ -378,6 +380,9 @@ func (c *Converter) convertAuthzConfig(
 	}
 	if authzRef.GroupEntityType != "" {
 		authz.GroupEntityType = authzRef.GroupEntityType
+	}
+	if len(authzRef.MultiValuedClaims) > 0 {
+		authz.MultiValuedClaims = authzRef.MultiValuedClaims
 	}
 
 	if err := c.resolvePrimaryUpstreamProvider(vmcp, authz); err != nil {

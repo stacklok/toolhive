@@ -140,10 +140,11 @@ func TestConvertAuthzConfig_ConfigMapPath(t *testing.T) {
 						"policies": []string{
 							`permit(principal in ClaimGroup::"engineering", action == Action::"call_tool", resource);`,
 						},
-						"entities_json":     `[{"uid":{"type":"ClaimGroup","id":"engineering"}}]`,
-						"group_claim_name":  "groups",
-						"role_claim_name":   "roles",
-						"group_entity_type": "ClaimGroup",
+						"entities_json":       `[{"uid":{"type":"ClaimGroup","id":"engineering"}}]`,
+						"group_claim_name":    "groups",
+						"role_claim_name":     "roles",
+						"group_entity_type":   "ClaimGroup",
+						"multi_valued_claims": []string{"scope"},
 					}
 				})
 			},
@@ -156,6 +157,7 @@ func TestConvertAuthzConfig_ConfigMapPath(t *testing.T) {
 				assert.Equal(t, "groups", authz.GroupClaimName)
 				assert.Equal(t, "roles", authz.RoleClaimName)
 				assert.Equal(t, "ClaimGroup", authz.GroupEntityType)
+				assert.Equal(t, []string{"scope"}, authz.MultiValuedClaims)
 			},
 		},
 		{
@@ -163,17 +165,19 @@ func TestConvertAuthzConfig_ConfigMapPath(t *testing.T) {
 			payload: func() string {
 				return newCedarV1Payload(func(m map[string]any) {
 					m["cedar"] = map[string]any{
-						"policies":          []string{`permit(principal, action, resource);`},
-						"entities_json":     `[]`,
-						"group_claim_name":  "cm-groups",
-						"role_claim_name":   "cm-roles",
-						"group_entity_type": "CMGroup",
+						"policies":            []string{`permit(principal, action, resource);`},
+						"entities_json":       `[]`,
+						"group_claim_name":    "cm-groups",
+						"role_claim_name":     "cm-roles",
+						"group_entity_type":   "CMGroup",
+						"multi_valued_claims": []string{"cm-scope"},
 					}
 				})
 			},
 			mutateAuthzRef: func(r *mcpv1beta1.AuthzConfigRef) {
 				r.GroupClaimName = "spec-groups"
 				r.GroupEntityType = "SpecGroup"
+				r.MultiValuedClaims = []string{"spec-scope"}
 				// RoleClaimName intentionally left unset on spec to assert ConfigMap fallback survives.
 			},
 			validate: func(t *testing.T, authz *vmcpconfig.AuthzConfig) {
@@ -181,6 +185,7 @@ func TestConvertAuthzConfig_ConfigMapPath(t *testing.T) {
 				assert.Equal(t, "spec-groups", authz.GroupClaimName)
 				assert.Equal(t, "cm-roles", authz.RoleClaimName)
 				assert.Equal(t, "SpecGroup", authz.GroupEntityType)
+				assert.Equal(t, []string{"spec-scope"}, authz.MultiValuedClaims)
 			},
 		},
 		{
@@ -309,9 +314,10 @@ func TestConvertAuthzConfig_InlinePath_NewFieldsSourcedFromAuthzConfigRef(t *tes
 					Policies:     []string{`permit(principal, action, resource);`},
 					EntitiesJSON: `[{"uid":{"type":"ClaimGroup","id":"engineering"}}]`,
 				},
-				GroupClaimName:  "groups",
-				RoleClaimName:   "roles",
-				GroupEntityType: "ClaimGroup",
+				GroupClaimName:    "groups",
+				RoleClaimName:     "roles",
+				GroupEntityType:   "ClaimGroup",
+				MultiValuedClaims: []string{"scope"},
 			},
 		}),
 	)
@@ -330,6 +336,7 @@ func TestConvertAuthzConfig_InlinePath_NewFieldsSourcedFromAuthzConfigRef(t *tes
 	assert.Equal(t, "groups", authz.GroupClaimName)
 	assert.Equal(t, "roles", authz.RoleClaimName)
 	assert.Equal(t, "ClaimGroup", authz.GroupEntityType)
+	assert.Equal(t, []string{"scope"}, authz.MultiValuedClaims)
 }
 
 // TestConvertAuthzConfig_UnknownTypeIsRejected covers the default arm of the

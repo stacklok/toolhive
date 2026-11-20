@@ -282,7 +282,11 @@ func (c *Client) DeployWorkload(
 		// but only for a new workload (see mcpExisted above).
 		defer func() {
 			if retErr != nil && !mcpCreated && !mcpExisted {
-				c.ops.cleanupFailedIsolation(context.WithoutCancel(ctx), name, networkName)
+				// Detach from the caller's cancellation so a cancelled request
+				// still cleans up, but bound the cleanup so it cannot hang.
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+				defer cancel()
+				c.ops.cleanupFailedIsolation(cleanupCtx, name, networkName)
 			}
 		}()
 
@@ -1400,17 +1404,32 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 	return nil
 }
 
-// cleanupFailedIsolation best-effort removes the dns, egress and ingress
-// containers and the internal network of a workload whose setup failed.
-// Failures are logged: the original setup error is what the caller needs.
+// cleanupFailedIsolation best-effort removes the egress, ingress and dns
+// containers and the internal network of a workload whose setup failed. Every
+// sidecar is attempted and the network is always deleted, even when an earlier
+// step fails. Failures are logged: the original setup error is what the caller
+// needs.
 func (c *Client) cleanupFailedIsolation(ctx context.Context, name, networkName string) {
-	labels := map[string]string{}
-	lb.AddNetworkIsolationLabel(labels, true)
-	if err := c.removeProxyContainers(ctx, name, labels); err != nil {
-		slog.Warn("failed to remove proxy containers after failed setup", "name", name, "error", err)
+	var errs []error
+	for _, suffix := range []string{"egress", "ingress", "dns"} {
+		sidecarName := fmt.Sprintf("%s-%s", name, suffix)
+		id, err := c.findExistingContainer(ctx, sidecarName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("find %s container: %w", suffix, err))
+			continue
+		}
+		if id == "" {
+			continue
+		}
+		if err := c.removeContainer(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("remove %s container: %w", suffix, err))
+		}
 	}
 	if err := c.deleteNetwork(ctx, networkName); err != nil {
-		slog.Warn("failed to remove internal network after failed setup", "name", networkName, "error", err)
+		errs = append(errs, fmt.Errorf("remove internal network %s: %w", networkName, err))
+	}
+	if err := errors.Join(errs...); err != nil {
+		slog.Warn("failed to fully clean up after failed setup", "name", name, "error", err)
 	}
 }
 

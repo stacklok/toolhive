@@ -405,6 +405,7 @@ func TestGetOverlayMountsConfinedToMount(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), nil, 0o600))
 	require.NoError(t, os.Symlink("sub", filepath.Join(ws, "alias")))
 	require.NoError(t, os.Symlink(outside, filepath.Join(ws, "link")))
+	require.NoError(t, os.Symlink("missing", filepath.Join(ws, "dangling")))
 
 	testCases := []struct {
 		name     string
@@ -414,6 +415,9 @@ func TestGetOverlayMountsConfinedToMount(t *testing.T) {
 		{name: "path inside the mount", pattern: "sub/secret", expected: []string{"/app/sub/secret"}},
 		{name: "symlink inside the mount maps to its target", pattern: "alias/secret", expected: []string{"/app/sub/secret"}},
 		{name: "parent directory", pattern: "..", expected: nil},
+		{name: "mount root", pattern: ".", expected: nil},
+		{name: "mount root through a subdirectory", pattern: "sub/..", expected: nil},
+		{name: "dangling symlink inside the mount", pattern: "dangling", expected: nil},
 		{name: "sibling directory", pattern: "../outside", expected: nil},
 		{name: "file beyond the mount", pattern: "../outside/secret", expected: nil},
 		{name: "directory pattern beyond the mount", pattern: "../outside/", expected: nil},
@@ -439,34 +443,51 @@ func TestGetOverlayMountsConfinedToMount(t *testing.T) {
 	}
 }
 
-func TestConfinedRelPath(t *testing.T) {
+func TestResolveWithin(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	require.NoError(t, os.Symlink(filepath.Join(root, "missing"), filepath.Join(root, "dangling")))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "file"), nil, 0o600))
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	inside := filepath.Join(root, "ws")
+	require.NoError(t, os.Mkdir(inside, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(inside, "file"), nil, 0o600))
+	require.NoError(t, os.Symlink("missing", filepath.Join(inside, "dangling")))
+	require.NoError(t, os.Symlink(root, filepath.Join(inside, "up")))
 
 	testCases := []struct {
 		name      string
-		bindMount string
 		matchPath string
+		wantReal  string
 		wantRel   string
-		wantOK    bool
+		wantErr   error
 	}{
-		{name: "match inside the mount", bindMount: root, matchPath: filepath.Join(root, "file"), wantRel: "file", wantOK: true},
-		{name: "mount root itself", bindMount: root, matchPath: root, wantRel: ".", wantOK: true},
-		{name: "mount does not exist", bindMount: filepath.Join(root, "nope"), matchPath: filepath.Join(root, "file")},
-		{name: "dangling symlink match", bindMount: root, matchPath: filepath.Join(root, "dangling")},
+		{name: "match inside the mount", matchPath: filepath.Join(inside, "file"),
+			wantReal: filepath.Join(inside, "file"), wantRel: "file"},
+		{name: "mount root itself", matchPath: inside, wantReal: inside, wantRel: "."},
+		{name: "symlink out of the mount", matchPath: filepath.Join(inside, "up"), wantErr: errOutsideMount},
+		{name: "dangling symlink", matchPath: filepath.Join(inside, "dangling"), wantErr: os.ErrNotExist},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rel, ok := confinedRelPath(tc.bindMount, tc.matchPath)
-			require.Equal(t, tc.wantOK, ok)
+			realMatch, rel, err := resolveWithin(inside, tc.matchPath)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantReal, realMatch)
 			require.Equal(t, tc.wantRel, rel)
 		})
 	}
+}
+
+func TestGetOverlayMountsMissingMount(t *testing.T) {
+	t.Parallel()
+	processor := NewProcessor(&Config{})
+	processor.LocalPatterns = []string{"file"}
+	require.Empty(t, processor.GetOverlayMounts(filepath.Join(t.TempDir(), "missing"), "/app"))
 }
 
 func TestRelWithin(t *testing.T) {

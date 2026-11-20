@@ -590,6 +590,20 @@ func (s *AuthenticationCIMDRunConfig) SetEnabled(val OptBool) {
 // Mutually exclusive with ClientID.
 // Ref: #/components/schemas/AuthenticationDCRUpstreamConfig
 type AuthenticationDCRUpstreamConfig struct {
+	// ClientName is the optional RFC 7591 "client_name" registration metadata
+	// sent when ToolHive registers with the upstream. When empty, ToolHive
+	// registers as "ToolHive MCP Client". It is display-only metadata: the
+	// upstream shows it on its authorization screen, and it is never used as
+	// a key. It is capped at 256 characters, matching the client_name bound
+	// the authserver enforces on inbound registrations. Names with leading
+	// or trailing whitespace, or containing control or format characters,
+	// are rejected.
+	// Changing it does not rename an already-registered client: the cached
+	// registration is keyed without the client name, so the new value applies
+	// only the next time ToolHive registers a fresh client — for example
+	// after rotating via RotationKey, or when the upstream rejects the cached
+	// registration.
+	ClientName OptString `json:"client_name"`
 	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
 	// fetch at runtime. The resolver issues a single GET against this URL
 	// (no well-known-path fallback) and reads registration_endpoint,
@@ -673,6 +687,11 @@ type AuthenticationDCRUpstreamConfig struct {
 	SoftwareStatement OptString `json:"software_statement"`
 }
 
+// GetClientName returns the value of ClientName.
+func (s *AuthenticationDCRUpstreamConfig) GetClientName() OptString {
+	return s.ClientName
+}
+
 // GetDiscoveryURL returns the value of DiscoveryURL.
 func (s *AuthenticationDCRUpstreamConfig) GetDiscoveryURL() OptString {
 	return s.DiscoveryURL
@@ -716,6 +735,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetSoftwareID() OptString {
 // GetSoftwareStatement returns the value of SoftwareStatement.
 func (s *AuthenticationDCRUpstreamConfig) GetSoftwareStatement() OptString {
 	return s.SoftwareStatement
+}
+
+// SetClientName sets the value of ClientName.
+func (s *AuthenticationDCRUpstreamConfig) SetClientName(val OptString) {
+	s.ClientName = val
 }
 
 // SetDiscoveryURL sets the value of DiscoveryURL.

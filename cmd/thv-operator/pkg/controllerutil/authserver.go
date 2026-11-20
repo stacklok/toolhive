@@ -1718,6 +1718,7 @@ func buildDCRUpstreamRunConfig(
 	initialAccessTokenEnvVar string,
 ) *authserver.DCRUpstreamConfig {
 	rc := &authserver.DCRUpstreamConfig{
+		ClientName:           dcr.ClientName,
 		DiscoveryURL:         dcr.DiscoveryURL,
 		RegistrationEndpoint: dcr.RegistrationEndpoint,
 		RotationKey:          dcr.RotationKey,

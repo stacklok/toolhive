@@ -1760,6 +1760,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 							TokenEndpoint:         "https://idp.example.com/token",
 							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
 							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
+								ClientName:        "Acme MCP Client",
 								DiscoveryURL:      "https://idp.example.com/.well-known/openid-configuration",
 								SoftwareID:        "toolhive",
 								SoftwareStatement: "jwt-statement",
@@ -1782,6 +1783,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Empty(t, upstream.OAuth2Config.ClientID,
 					"ClientID should be empty when DCRConfig is used")
 				require.NotNil(t, upstream.OAuth2Config.DCRConfig)
+				assert.Equal(t, "Acme MCP Client", upstream.OAuth2Config.DCRConfig.ClientName)
 				assert.Equal(t,
 					"https://idp.example.com/.well-known/openid-configuration",
 					upstream.OAuth2Config.DCRConfig.DiscoveryURL)

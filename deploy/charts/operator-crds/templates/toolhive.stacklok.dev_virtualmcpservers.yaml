@@ -1711,6 +1711,20 @@ spec:
                                 runtime rather than being pre-provisioned, and ClientID must be left empty.
                                 Mutually exclusive with ClientID.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -2168,6 +2182,20 @@ spec:
                                 and ClientSecretRef must be omitted. If neither discoveryUrl nor
                                 registrationEndpoint is set, discovery is derived from issuerUrl.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -7279,6 +7307,20 @@ spec:
                                 runtime rather than being pre-provisioned, and ClientID must be left empty.
                                 Mutually exclusive with ClientID.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -7736,6 +7778,20 @@ spec:
                                 and ClientSecretRef must be omitted. If neither discoveryUrl nor
                                 registrationEndpoint is set, discovery is derived from issuerUrl.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver

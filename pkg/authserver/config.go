@@ -1548,6 +1548,22 @@ type OAuth2UpstreamRunConfig struct {
 // surface), this field becomes a confused-deputy SSRF vector. Hardening is
 // tracked in https://github.com/stacklok/toolhive/issues/5135.
 type DCRUpstreamConfig struct {
+	// ClientName is the optional RFC 7591 "client_name" registration metadata
+	// sent when ToolHive registers with the upstream. When empty, ToolHive
+	// registers as "ToolHive MCP Client". It is display-only metadata: the
+	// upstream shows it on its authorization screen, and it is never used as
+	// a key. It is capped at 256 characters, matching the client_name bound
+	// the authserver enforces on inbound registrations. Names with leading
+	// or trailing whitespace, or containing control or format characters,
+	// are rejected.
+	//
+	// Changing it does not rename an already-registered client: the cached
+	// registration is keyed without the client name, so the new value applies
+	// only the next time ToolHive registers a fresh client — for example
+	// after rotating via RotationKey, or when the upstream rejects the cached
+	// registration.
+	ClientName string `json:"client_name,omitempty" yaml:"client_name,omitempty"`
+
 	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
 	// fetch at runtime. The resolver issues a single GET against this URL
 	// (no well-known-path fallback) and reads registration_endpoint,
@@ -2730,10 +2746,8 @@ func (c *DCRUpstreamConfig) Validate() error {
 			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
 	}
 
-	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
-	// YAML and CLI run-config paths, which have no admission-time schema.
-	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
-		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	if err := c.validateRegistrationMetadata(); err != nil {
+		return err
 	}
 
 	// Mirrors the CRD's Enum marker on registrationProbe; the resolver owns
@@ -2746,6 +2760,27 @@ func (c *DCRUpstreamConfig) Validate() error {
 		return fmt.Errorf("dcr_config: %w", err)
 	}
 
+	return nil
+}
+
+// validateRegistrationMetadata checks the DCR registration metadata fields:
+// the rotation key shape and the client name length and character class.
+// Split out of Validate to keep that method's cyclomatic complexity down
+// instead of suppressing the linter.
+func (c *DCRUpstreamConfig) validateRegistrationMetadata() error {
+	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
+	// YAML and CLI run-config paths, which have no admission-time schema.
+	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
+		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
+	// Length and character class are enforced by registration.ValidateClientName,
+	// which mirrors the CRD's MaxLength marker on clientName and the inbound
+	// registration bound (registration.MaxClientNameLength). The length is
+	// counted in characters, matching the CRD's maxLength semantics.
+	if err := registration.ValidateClientName(c.ClientName); err != nil {
+		return fmt.Errorf("dcr_config: client_name: %w", err)
+	}
 	return nil
 }
 

@@ -1341,8 +1341,9 @@ spec:
   - `JWTBearerGrantPolicy.AcceptedAudiences` is the set of "this AS" identity
     strings the assertion's `aud` must intersect (`audienceIntersects`),
     checked by exact-match membership rather than equality — RFC 7523 §3
-    permits a multi-valued `aud`, so an assertion may additionally name other
-    audiences without losing its match. When unset, the plain JWT-bearer
+    permits a multi-valued `aud`, so a plain JWT-bearer assertion may
+    additionally name other audiences without losing its match. The ID-JAG
+    grant does not: it refuses an `aud` array with more than one value. When unset, the plain JWT-bearer
     grant defaults to `[tokenEndpoint]`, preserving the original
     exact-endpoint-match behavior, and the ID-JAG grant defaults to
     `[tokenEndpoint, issuer]`, so the issuer identifier is accepted. This exists
@@ -1595,8 +1596,7 @@ them:
   No code at this server reads `cnf`, so such an ID-JAG is accepted without
   proof of possession.
 
-A strict mode would have to refuse these two as well as the two logged
-findings.
+A strict mode would have to refuse these two as well as the logged finding.
 
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
 also lets AS-2's plain handler (`typ` `JWT`, empty or absent) accept AS-1's

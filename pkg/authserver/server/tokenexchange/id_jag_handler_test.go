@@ -1043,7 +1043,7 @@ func TestIDJAGHandler_IssuerAudienceSkippedWhenIssuerIsResource(t *testing.T) {
 	}
 }
 
-func TestIDJAGHandler_RealValidatorRedeemsIssuerAudience(t *testing.T) {
+func TestIDJAGHandler_RealValidatorAudience(t *testing.T) {
 	t.Parallel()
 
 	externalJWKS := newTestJWKS(t)
@@ -1063,26 +1063,49 @@ func TestIDJAGHandler_RealValidatorRedeemsIssuerAudience(t *testing.T) {
 	validator := newMultiValidator(t, newTestJWKS(t), trusted)
 	resolved, err := ResolveJWTBearerGrantPolicies(trusted)
 	require.NoError(t, err)
-	consumer := &recordingAssertionConsumer{}
-	h, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint, consumer,
-		&fosite.Config{
-			AccessTokenIssuer:        idJAGTestASIssuer,
-			AccessTokenLifespan:      time.Hour,
-			AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+	tests := []struct {
+		name        string
+		audience    jwt.Audience
+		wantRefusal string
+	}{
+		{name: "issuer as the single aud is redeemed", audience: jwt.Audience{idJAGTestASIssuer}},
+		{
+			name:        "aud array with two values is refused and not consumed",
+			audience:    jwt.Audience{idJAGTestASIssuer, testTokenEndpoint},
+			wantRefusal: "invalid_assertion: The ID-JAG assertion aud must name exactly one audience.",
 		},
-		&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, []string{idJAGTestResource}, nil)
-	require.NoError(t, err)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			consumer := &recordingAssertionConsumer{}
+			h, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint, consumer,
+				&fosite.Config{
+					AccessTokenIssuer:        idJAGTestASIssuer,
+					AccessTokenLifespan:      time.Hour,
+					AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+				},
+				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, []string{idJAGTestResource}, nil)
+			require.NoError(t, err)
 
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: externalJWKS.jwk},
-		(&jose.SignerOptions{}).WithHeader(jose.HeaderType, oauthproto.JWTTypeIDJAG))
-	require.NoError(t, err)
-	claims := jwtBearerExternalClaims()
-	claims.Audience = jwt.Audience{idJAGTestASIssuer}
-	raw, err := jwt.Signed(signer).Claims(claims).Claims(map[string]any{"client_id": idJAGTestClientID}).Serialize()
-	require.NoError(t, err)
+			signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: externalJWKS.jwk},
+				(&jose.SignerOptions{}).WithHeader(jose.HeaderType, oauthproto.JWTTypeIDJAG))
+			require.NoError(t, err)
+			claims := jwtBearerExternalClaims()
+			claims.Audience = tt.audience
+			raw, err := jwt.Signed(signer).Claims(claims).Claims(map[string]any{"client_id": idJAGTestClientID}).Serialize()
+			require.NoError(t, err)
 
-	req := newIDJAGRequest(t, externalJWKS, idJAGTestClientID)
-	req.Form.Set("assertion", raw)
-	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
-	assert.Equal(t, "jwt-bearer-jti", consumer.key)
+			req := newIDJAGRequest(t, externalJWKS, idJAGTestClientID)
+			req.Form.Set("assertion", raw)
+			err = h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantRefusal != "" {
+				requireRefusal(t, err, "invalid_grant", tt.wantRefusal)
+				assert.Empty(t, consumer.key, "a refused assertion must not be consumed")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "jwt-bearer-jti", consumer.key)
+		})
+	}
 }

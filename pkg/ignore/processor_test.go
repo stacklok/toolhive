@@ -244,6 +244,68 @@ func TestPatternMatchesInDirectory(t *testing.T) {
 	}
 }
 
+func TestWildcardDirectoryPattern(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	for _, name := range []string{"secrets-prod", "secrets-dev"} {
+		if err := os.Mkdir(filepath.Join(tmpDir, name), 0755); err != nil {
+			t.Fatalf("Failed to create %s directory: %v", name, err)
+		}
+	}
+	// A file sharing the pattern must not match a directory-only pattern.
+	if err := os.WriteFile(filepath.Join(tmpDir, "secrets-backup"), []byte("x"), 0644); err != nil {
+		t.Fatalf("Failed to create secrets-backup file: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpDir, "other"), 0755); err != nil {
+		t.Fatalf("Failed to create other directory: %v", err)
+	}
+
+	processor := NewProcessor(&Config{
+		LoadGlobal:    true,
+		PrintOverlays: false,
+	})
+	// Overlay artifacts are shared per process; keep this test's artifacts
+	// isolated so parallel tests cannot clean them up mid-run.
+	processor.artifactDir = t.TempDir()
+
+	matches := processor.getMatchingPaths(tmpDir, "secrets-*/")
+	expected := map[string]bool{
+		filepath.Join(tmpDir, "secrets-prod"): true,
+		filepath.Join(tmpDir, "secrets-dev"):  true,
+	}
+	if len(matches) != len(expected) {
+		t.Fatalf("Expected %d matches for wildcard directory pattern, got %d: %v", len(expected), len(matches), matches)
+	}
+	for _, match := range matches {
+		if !expected[match] {
+			t.Errorf("Unexpected match %q for wildcard directory pattern", match)
+		}
+	}
+
+	// Wildcard directory patterns produce overlays for every matched directory.
+	processor.LocalPatterns = []string{"secrets-*/"}
+	overlayPaths := processor.GetOverlayPaths(tmpDir, "/workspace")
+	if len(overlayPaths) != 2 {
+		t.Fatalf("Expected 2 overlay paths, got %d: %v", len(overlayPaths), overlayPaths)
+	}
+	for _, containerPath := range []string{"/workspace/secrets-prod", "/workspace/secrets-dev"} {
+		found := false
+		for _, overlayPath := range overlayPaths {
+			if overlayPath == containerPath {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Expected overlay path %q not found in results", containerPath)
+		}
+	}
+
+	if err := processor.Cleanup(); err != nil {
+		t.Errorf("Failed to cleanup processor: %v", err)
+	}
+}
+
 func TestGetOverlayPaths(t *testing.T) {
 	t.Parallel()
 	// Create test directory structure

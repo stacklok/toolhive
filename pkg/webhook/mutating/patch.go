@@ -18,6 +18,14 @@ const patchTypeJSONPatch = "json_patch"
 // Patches are scoped to the mcp_request container only.
 const mcpRequestPathPrefix = "/mcp_request/"
 
+// mutatingWebhookForbiddenPaths are MCP request fields that must not be rewritten
+// by mutating webhooks: tool filtering and rate limiting run before mutation, so
+// changing the method or tool name would bypass those controls.
+var mutatingWebhookForbiddenPaths = []string{
+	"/mcp_request/method",
+	"/mcp_request/params/name",
+}
+
 // validOps is the set of valid RFC 6902 operations.
 var validOps = map[string]bool{
 	"add":     true,
@@ -59,18 +67,35 @@ func ValidatePatch(patch []JSONPatchOp) error {
 }
 
 // IsPatchScopedToMCPRequest returns true if all patch operations target paths
-// within the mcp_request container. This prevents webhooks from accidentally
-// or maliciously modifying principal, context, or other immutable envelope fields.
+// within the mcp_request container and do not rewrite the JSON-RPC method or
+// tool name. This prevents webhooks from accidentally or maliciously modifying
+// principal, context, or other immutable envelope fields, and closes the gap
+// where tool filtering and rate limiting run before mutation.
 // The root "/mcp_request" path is intentionally rejected so webhooks must make
 // granular changes beneath the MCP request instead of replacing it wholesale.
+func isForbiddenMutatingWebhookPath(path string) bool {
+	for _, forbidden := range mutatingWebhookForbiddenPaths {
+		if path == forbidden || strings.HasPrefix(path, forbidden+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func IsPatchScopedToMCPRequest(patch []JSONPatchOp) bool {
 	for _, op := range patch {
 		if !strings.HasPrefix(op.Path, mcpRequestPathPrefix) {
 			return false
 		}
+		if isForbiddenMutatingWebhookPath(op.Path) {
+			return false
+		}
 		// For copy/move, also check the From path.
 		if (op.Op == "copy" || op.Op == "move") && op.From != "" {
 			if !strings.HasPrefix(op.From, mcpRequestPathPrefix) {
+				return false
+			}
+			if isForbiddenMutatingWebhookPath(op.From) {
 				return false
 			}
 		}

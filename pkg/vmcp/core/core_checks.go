@@ -23,6 +23,8 @@ import (
 // (30s TTL) turns the second view into a cache hit (vmcp anti-patterns #8/#9: the
 // core does not cache, Serve does). identity is never logged.
 func (c *coreVMCP) CheckToolCall(ctx context.Context, identity *auth.Identity, name string, args map[string]any) error {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	// Clone args before handing them to the admission seam, matching CallTool's
 	// copy-before-mutating-caller-input discipline (the caller's map — here the
 	// parsed request's Arguments, shared via context — must not be mutated).
@@ -41,6 +43,8 @@ func (c *coreVMCP) CheckToolCall(ctx context.Context, identity *auth.Identity, n
 // resource. It needs no aggregated view (the URI alone identifies the decision),
 // so it works even when the aggregator is failing. identity is never logged.
 func (c *coreVMCP) CheckResourceRead(ctx context.Context, identity *auth.Identity, uri string) error {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	return c.authorizeResourceRead(ctx, identity, uri)
 }
 
@@ -48,6 +52,8 @@ func (c *coreVMCP) CheckResourceRead(ctx context.Context, identity *auth.Identit
 // prompt. It needs no aggregated view (the name alone identifies the decision),
 // so it works even when the aggregator is failing. identity is never logged.
 func (c *coreVMCP) CheckPromptGet(ctx context.Context, identity *auth.Identity, name string) error {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	return c.authorizePromptGet(ctx, identity, name)
 }
 

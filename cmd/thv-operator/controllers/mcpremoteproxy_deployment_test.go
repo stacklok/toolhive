@@ -17,6 +17,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
@@ -963,18 +966,15 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testin
 }
 
 // TestMCPRemoteProxyDeployment_OBOSecretEnvVars verifies that an obo-typed
-// MCPExternalAuthConfig referenced from an MCPRemoteProxy injects the registered
-// OBOHandler.SecretEnvVars output into the proxy container, and that the
+// MCPExternalAuthConfig referenced from an MCPRemoteProxy mounts the OBO client
+// secret into the proxy container under obo.ClientSecretEnvVar, and that the
 // deployment builder and drift check agree on it so a correctly-configured
-// resource does not hot-loop. A stub OBO handler stands in for the out-of-tree
-// enterprise handler.
-//
-//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+// resource does not hot-loop.
 func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
-	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+	t.Parallel()
 
 	oboEnvVar := corev1.EnvVar{
-		Name: "TOOLHIVE_OBO_CLIENT_SECRET",
+		Name: obo.ClientSecretEnvVar,
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
@@ -982,11 +982,6 @@ func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
 			},
 		},
 	}
-	stub := defaultOBOHandlerStub()
-	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-		return []corev1.EnvVar{oboEnvVar}, nil
-	}
-	ctrlutil.RegisterOBOHandler(stub)
 
 	scheme := testutil.NewScheme(t)
 
@@ -997,7 +992,12 @@ func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
-			OBO:  &mcpv1beta1.OBOConfig{},
+			OBO: &mcpv1beta1.OBOConfig{
+				TenantID:        "contoso.onmicrosoft.com",
+				ClientID:        "client-id",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "obo-secret", Key: "client-secret"},
+				Audience:        "api://backend/.default",
+			},
 		},
 	}
 
@@ -1021,10 +1021,52 @@ func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
 
 	container := deployment.Spec.Template.Spec.Containers[0]
 	assert.Contains(t, container.Env, oboEnvVar,
-		"OBO handler SecretEnvVars output must be injected into the proxy container")
+		"the OBO client secret must be mounted into the proxy container")
 
 	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
 		"freshly built deployment with an OBO env var must not be seen as drifted")
+}
+
+// TestMCPRemoteProxyDeployment_OBOSecretEnvVars_Error covers the MCPRemoteProxy
+// path when the OBO secret env var cannot be produced (an obo config with no
+// clientSecretRef): the builder logs the ValidationError and leaves the env var
+// out. Unlike MCPServer, the builder and drift check share buildEnvVarsForProxy,
+// so they agree and the Deployment is not reported as drifted. The
+// MCPExternalAuthConfig reconciler surfaces the underlying InvalidConfig.
+func TestMCPRemoteProxyDeployment_OBOSecretEnvVars_Error(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef(authConfig.Name),
+	)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(authConfig).Build()
+	reconciler := &MCPRemoteProxyReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	ctx, lines := newLogCapturingContext(t)
+	deployment := reconciler.deploymentForMCPRemoteProxy(ctx, proxy, "test-checksum")
+	require.NotNil(t, deployment)
+	for _, ev := range deployment.Spec.Template.Spec.Containers[0].Env {
+		assert.NotEqual(t, obo.ClientSecretEnvVar, ev.Name)
+	}
+	assert.True(t, slices.ContainsFunc(*lines, func(line string) bool {
+		return strings.Contains(line, "Failed to generate OBO secret environment variables") &&
+			strings.Contains(line, "obo: clientSecretRef must set both name and key")
+	}), "the builder must log the OBO validation failure; got %v", *lines)
+
+	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+		"builder and drift check share buildEnvVarsForProxy, so the OBO-env-less Deployment is not drifted")
 }
 
 func TestMCPRemoteProxyDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {

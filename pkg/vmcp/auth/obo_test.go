@@ -13,31 +13,26 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/env"
-	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
-// withDefaultOBOFactory captures and restores the package-level OBO strategy
-// factory so tests that call RegisterOBOStrategy do not leak state.
-func withDefaultOBOFactory(t *testing.T) {
+// withNoOBOOverride clears and restores the package-level OBO strategy
+// override so tests that call RegisterOBOStrategy do not leak state.
+func withNoOBOOverride(t *testing.T) {
 	t.Helper()
-	oboMu.RLock()
-	original := currentOBOStrategyFactory
-	oboMu.RUnlock()
+	oboMu.Lock()
+	original := oboStrategyOverride
+	oboStrategyOverride = nil
+	oboMu.Unlock()
 	t.Cleanup(func() {
 		oboMu.Lock()
-		currentOBOStrategyFactory = original
+		oboStrategyOverride = original
 		oboMu.Unlock()
 	})
 }
 
-// fakeEnvReader is a sentinel env.Reader used to verify that NewOBOStrategy forwards the reader to the factory.
-type fakeEnvReader struct{}
-
-func (*fakeEnvReader) Getenv(_ string) string            { return "" }
-func (*fakeEnvReader) LookupEnv(_ string) (string, bool) { return "", false }
-
-// namedStrategy returns a distinct error message to identify which strategy instance was returned.
+// namedStrategy returns its tag from Validate to identify which instance was returned.
 type namedStrategy struct{ tag string }
 
 func (*namedStrategy) Name() string { return authtypes.StrategyTypeOBO }
@@ -48,101 +43,73 @@ func (s *namedStrategy) Validate(_ *authtypes.BackendAuthStrategy) error {
 	return errors.New(s.tag)
 }
 
-func TestOBOStrategyStub_Name(t *testing.T) {
+//nolint:paralleltest // Mutates package-level oboStrategyOverride; must not race other tests.
+func TestNewOBOStrategy_DefaultIsBuiltIn(t *testing.T) {
+	withNoOBOOverride(t)
+
+	got := NewOBOStrategy(&env.OSReader{})
+	assert.IsType(t, &strategies.OBOStrategy{}, got)
+	assert.Equal(t, authtypes.StrategyTypeOBO, got.Name())
+}
+
+//nolint:paralleltest // Mutates package-level oboStrategyOverride; must not race other tests.
+func TestRegisterOBOStrategy_OverridesBuiltIn(t *testing.T) {
+	withNoOBOOverride(t)
+
+	RegisterOBOStrategy(func(_ env.Reader) Strategy { return &namedStrategy{tag: "first"} })
+	RegisterOBOStrategy(func(_ env.Reader) Strategy { return &namedStrategy{tag: "second"} })
+
+	err := NewOBOStrategy(nil).Validate(&authtypes.BackendAuthStrategy{})
+	require.Error(t, err)
+	assert.Equal(t, "second", err.Error(), "the last registered factory must win")
+}
+
+// staticEnv is a map-backed env.Reader, so tests can identify the reader a
+// strategy was given by what it resolves.
+type staticEnv map[string]string
+
+func (e staticEnv) Getenv(key string) string { return e[key] }
+
+func (e staticEnv) LookupEnv(key string) (string, bool) {
+	v, ok := e[key]
+	return v, ok
+}
+
+//nolint:paralleltest // Mutates package-level oboStrategyOverride; must not race other tests.
+func TestNewOBOStrategy_PassesEnvReader(t *testing.T) {
+	withNoOBOOverride(t)
+
+	reader := staticEnv{"OBO_TEST_CLIENT_SECRET": "from-the-injected-reader"}
+
+	t.Run("built-in strategy resolves secrets through the reader", func(t *testing.T) {
+		strategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeOBO,
+			OBO: &authtypes.OBOConfig{
+				TokenURL:        "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token",
+				ClientID:        "client-id",
+				ClientSecretEnv: "OBO_TEST_CLIENT_SECRET",
+				Scopes:          []string{"api://backend/.default"},
+			},
+		}
+		assert.NoError(t, NewOBOStrategy(reader).Validate(strategy),
+			"the secret is only resolvable through the reader passed to NewOBOStrategy")
+		assert.Error(t, NewOBOStrategy(staticEnv{}).Validate(strategy))
+	})
+
+	t.Run("registered factory receives the reader", func(t *testing.T) {
+		var got env.Reader
+		RegisterOBOStrategy(func(r env.Reader) Strategy {
+			got = r
+			return &namedStrategy{tag: "override"}
+		})
+
+		NewOBOStrategy(reader)
+		assert.Equal(t, reader, got, "the factory must receive the env.Reader passed to NewOBOStrategy")
+	})
+}
+
+func TestRegisterOBOStrategy_PanicsOnNil(t *testing.T) {
 	t.Parallel()
 
-	s := &oboStrategyStub{}
-	assert.Equal(t, authtypes.StrategyTypeOBO, s.Name())
-}
-
-func TestOBOStrategyStub_Authenticate_ReturnsEnterpriseRequired(t *testing.T) {
-	t.Parallel()
-
-	s := &oboStrategyStub{}
-	ctx := context.Background()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com", nil)
-	require.NoError(t, err)
-
-	err = s.Authenticate(req.Context(), req, &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
-}
-
-func TestOBOStrategyStub_Validate_ReturnsEnterpriseRequired(t *testing.T) {
-	t.Parallel()
-
-	s := &oboStrategyStub{}
-	err := s.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
-}
-
-//nolint:paralleltest // Reads package-level currentOBOStrategyFactory; must not race other tests.
-func TestNewOBOStrategy_DefaultReturnsStub(t *testing.T) {
-	withDefaultOBOFactory(t)
-
-	strategy := NewOBOStrategy(nil)
-	require.NotNil(t, strategy)
-	assert.Equal(t, authtypes.StrategyTypeOBO, strategy.Name())
-
-	err := strategy.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
-	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
-}
-
-//nolint:paralleltest // Mutates package-level currentOBOStrategyFactory; must not race other tests.
-func TestRegisterOBOStrategy_ReplacesFactory(t *testing.T) {
-	withDefaultOBOFactory(t)
-
-	const tag = "registered-strategy"
-	RegisterOBOStrategy(func(_ env.Reader) Strategy {
-		return &namedStrategy{tag: tag}
-	})
-
-	got := NewOBOStrategy(nil)
-	err := got.Validate(&authtypes.BackendAuthStrategy{})
-	require.Error(t, err)
-	assert.Equal(t, tag, err.Error(), "factory replacement should produce the registered strategy")
-	assert.NotErrorIs(t, err, obo.ErrEnterpriseRequired, "registered strategy should not return the stub error")
-}
-
-//nolint:paralleltest // Mutates package-level currentOBOStrategyFactory; must not race other tests.
-func TestRegisterOBOStrategy_LastWriteWins(t *testing.T) {
-	withDefaultOBOFactory(t)
-
-	RegisterOBOStrategy(func(_ env.Reader) Strategy {
-		return &namedStrategy{tag: "first"}
-	})
-	RegisterOBOStrategy(func(_ env.Reader) Strategy {
-		return &namedStrategy{tag: "second"}
-	})
-
-	got := NewOBOStrategy(nil)
-	err := got.Validate(&authtypes.BackendAuthStrategy{})
-	require.Error(t, err)
-	assert.Equal(t, "second", err.Error(), "last RegisterOBOStrategy call should win")
-}
-
-//nolint:paralleltest // Mutates package-level currentOBOStrategyFactory; must not race other tests.
-func TestRegisterOBOStrategy_NilPanics(t *testing.T) {
-	withDefaultOBOFactory(t)
-
-	assert.Panics(t, func() {
-		RegisterOBOStrategy(nil)
-	})
-}
-
-//nolint:paralleltest // Mutates package-level currentOBOStrategyFactory; must not race other tests.
-func TestRegisterOBOStrategy_EnvReaderPassedThrough(t *testing.T) {
-	withDefaultOBOFactory(t)
-
-	// Verify the envReader passed to NewOBOStrategy reaches the factory.
-	var captured env.Reader
-	fakeReader := &fakeEnvReader{}
-	RegisterOBOStrategy(func(r env.Reader) Strategy {
-		captured = r
-		return &oboStrategyStub{}
-	})
-
-	NewOBOStrategy(fakeReader)
-	assert.Equal(t, fakeReader, captured, "env.Reader must be forwarded to the factory")
+	assert.Panics(t, func() { RegisterOBOStrategy(nil) })
 }

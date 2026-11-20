@@ -6,6 +6,7 @@ package runner
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -618,39 +619,87 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 	}
 }
 
-// TestGetSupportedMiddlewareFactories_OBODispatchesToCurrentFactory locks the
-// contract that obo.CreateMiddleware is a stable redirector: the literal map
-// in GetSupportedMiddlewareFactories captures CreateMiddleware once, but each
-// invocation reads obo's currentFactory under the package-level RWMutex, so
-// registrations that happen AFTER the map is built still take effect. The
-// register-then-call ordering exercises the production hot path; the
-// call-after-register ordering exercises hot-reload / re-registration.
+// TestOBOFactoryHonorsRegisterFactory verifies the runner's factory map
+// dispatches obo.MiddlewareType through obo.CreateMiddleware rather than
+// binding obo.DefaultFactory directly, so a replacement installed with the
+// deprecated obo.RegisterFactory is still honored.
 //
-//nolint:paralleltest // Mutates package-level obo currentFactory; must not race other tests.
-func TestGetSupportedMiddlewareFactories_OBODispatchesToCurrentFactory(t *testing.T) {
-	// Build the factory map first so we capture the redirector before any
-	// out-of-test registration happens.
-	factories := GetSupportedMiddlewareFactories()
-	factory, ok := factories[obo.MiddlewareType]
-	require.True(t, ok, "obo factory should be present in the map")
+//nolint:paralleltest // Replaces the package-level OBO factory; must not overlap other tests.
+func TestOBOFactoryHonorsRegisterFactory(t *testing.T) {
+	sentinel := errors.New("replacement obo factory")
+	//nolint:staticcheck // SA1019: exercising the deprecated override path is the point of this test.
+	obo.RegisterFactory(func(*types.MiddlewareConfig, types.MiddlewareRunner) error { return sentinel })
+	t.Cleanup(func() {
+		obo.RegisterFactory(obo.DefaultFactory) //nolint:staticcheck // SA1019: restores the default.
+	})
 
-	sentinel := []byte("custom-obo-factory")
-	var observed []byte
-	replacement := func(cfg *types.MiddlewareConfig, _ types.MiddlewareRunner) error {
-		// Capture the marker the caller passes to prove which factory ran.
-		observed = cfg.Parameters
-		return nil
+	factory, ok := GetSupportedMiddlewareFactories()[obo.MiddlewareType]
+	require.True(t, ok)
+	err := factory(&types.MiddlewareConfig{Type: obo.MiddlewareType}, nil)
+	require.ErrorIs(t, err, sentinel, "the runner must dispatch through obo.CreateMiddleware")
+}
+
+// TestOBORegistration exercises the proxyrunner path for an operator-injected
+// obo middleware: the RunConfig round-trips through JSON, the runner's factory
+// map builds the built-in OBO middleware, and a request through it has its
+// subject token exchanged at a (mock) Entra token endpoint and forwarded as the
+// backend bearer token.
+//
+//nolint:paralleltest // Uses t.Setenv for the client secret the factory reads.
+func TestOBORegistration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// assert, not require: this runs on the server's goroutine.
+		if !assert.NoError(t, r.ParseForm()) {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, "urn:ietf:params:oauth:grant-type:jwt-bearer", r.Form.Get("grant_type"))
+		assert.Equal(t, "on_behalf_of", r.Form.Get("requested_token_use"))
+		assert.Equal(t, "user-token", r.Form.Get("assertion"))
+		assert.Equal(t, "the-secret", r.Form.Get("client_secret"))
+		assert.Equal(t, "api://backend/.default", r.Form.Get("scope"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"backend-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("TEST_RUNNER_OBO_SECRET", "the-secret")
+
+	injected, err := types.NewMiddlewareConfig(obo.MiddlewareType, obo.MiddlewareParameters{
+		TokenURL:           server.URL + "/tenant/oauth2/v2.0/token",
+		ClientID:           "client-id",
+		Scopes:             []string{"api://backend/.default"},
+		ClientSecretEnvVar: "TEST_RUNNER_OBO_SECRET",
+	})
+	require.NoError(t, err)
+
+	config := &RunConfig{AdditionalMiddlewareConfigs: []types.MiddlewareConfig{*injected}}
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+	serialized, err := json.Marshal(config)
+	require.NoError(t, err)
+	var restored RunConfig
+	require.NoError(t, json.Unmarshal(serialized, &restored))
+
+	runner := NewRunner(&restored, nil)
+	for _, cfg := range restored.MiddlewareConfigs {
+		if cfg.Type != obo.MiddlewareType {
+			continue
+		}
+		factory, ok := runner.supportedMiddleware[cfg.Type]
+		require.True(t, ok)
+		require.NoError(t, factory(&cfg, runner))
 	}
+	require.Len(t, runner.namedMiddlewares, 1)
+	assert.Equal(t, obo.MiddlewareType, runner.namedMiddlewares[0].Name)
 
-	// Register AFTER the map was built. Because CreateMiddleware is a stable
-	// redirector, dispatching through the map must still hit the replacement.
-	obo.RegisterFactory(replacement)
-	t.Cleanup(func() { obo.RegisterFactory(obo.DefaultFactory) })
-
-	cfg := &types.MiddlewareConfig{Type: obo.MiddlewareType, Parameters: sentinel}
-	require.NoError(t, factory(cfg, nil))
-	assert.Equal(t, sentinel, observed,
-		"obo.CreateMiddleware must redirect through the current factory, including after the runner map is built")
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer user-token")
+	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{Token: "user-token"}))
+	rec := httptest.NewRecorder()
+	runner.namedMiddlewares[0].Function(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer backend-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
 func TestWithHeaderForwardSecretsBuilderOption(t *testing.T) {

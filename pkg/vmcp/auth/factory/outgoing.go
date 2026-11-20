@@ -25,9 +25,7 @@ import (
 //   - "token_exchange": RFC-8693 OAuth 2.0 token exchange
 //   - "upstream_inject": Per-upstream token injection from stored credentials
 //   - "aws_sts": AWS STS AssumeRoleWithWebIdentity + SigV4 request signing
-//   - "obo": On-behalf-of (OBO) Entra token exchange; default stub returns
-//     obo.ErrEnterpriseRequired — an out-of-tree build registers a real
-//     strategy via auth.RegisterOBOStrategy before this function is called.
+//   - "obo": Microsoft Entra on-behalf-of (OBO) token exchange
 //   - "xaa": Cross-Application Access (two-step ID-JAG exchange per
 //     draft-ietf-oauth-identity-assertion-authz-grant)
 //

@@ -86,7 +86,7 @@ type AuthConfigError struct {
 	Error error
 	// Reason, when non-empty, overrides the default "ConversionFailed" condition reason.
 	// Used to mirror upstream MCPExternalAuthConfig.Status.Conditions[Valid].Reason
-	// (e.g. "EnterpriseRequired") onto the per-backend auth config condition so the
+	// (e.g. "InvalidConfig") onto the per-backend auth config condition so the
 	// failure surfaces with the same taxonomy on the consumer CR.
 	Reason string
 }
@@ -2676,6 +2676,19 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 
 	// Set unique env var names per ExternalAuthConfig to avoid conflicts
 	// when multiple configs of the same type reference different secrets
+	setUniqueSecretEnvNames(strategy, externalAuthConfig)
+
+	return strategy, nil
+}
+
+// setUniqueSecretEnvNames points each secret-bearing strategy at the env var
+// name the deployment mounts its secret under (see
+// getExternalAuthConfigSecretEnvVars). The names incorporate the
+// ExternalAuthConfig name so several configs of one type never collide.
+func setUniqueSecretEnvNames(
+	strategy *authtypes.BackendAuthStrategy,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) {
 	if strategy.TokenExchange != nil &&
 		externalAuthConfig.Spec.TokenExchange != nil &&
 		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
@@ -2686,6 +2699,11 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
 		strategy.HeaderInjection.HeaderValueEnv = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
+	if strategy.OBO != nil &&
+		externalAuthConfig.Spec.OBO != nil &&
+		externalAuthConfig.Spec.OBO.ClientSecretRef != nil {
+		strategy.OBO.ClientSecretEnv = ctrlutil.GenerateUniqueOBOSecretEnvVarName(externalAuthConfig.Name)
+	}
 	if strategy.XAA != nil && externalAuthConfig.Spec.XAA != nil {
 		if externalAuthConfig.Spec.XAA.IDPClientSecretRef != nil {
 			strategy.XAA.IDPClientSecretEnv = ctrlutil.GenerateUniqueXAAIDPSecretEnvVarName(externalAuthConfig.Name)
@@ -2694,8 +2712,6 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 			strategy.XAA.TargetClientSecretEnv = ctrlutil.GenerateUniqueXAATargetSecretEnvVarName(externalAuthConfig.Name)
 		}
 	}
-
-	return strategy, nil
 }
 
 // convertBackendAuthConfigToVMCP converts a BackendAuthConfig from CRD to vmcp config.
@@ -2841,9 +2857,9 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			continue
 		}
 
-		// Mirror the source's Valid=False condition (e.g. EnterpriseRequired for
-		// obo-typed configs in upstream-only builds) onto the per-backend
-		// condition so the failure surfaces with the same reason taxonomy.
+		// Mirror the source's Valid=False condition (e.g. InvalidConfig for a
+		// malformed obo config) onto the per-backend condition so the failure
+		// surfaces with the same reason taxonomy.
 		if mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrored != nil {
 			authErrors = append(authErrors, AuthConfigError{
 				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
@@ -3812,7 +3828,7 @@ func setAuthConfigConditions(
 	if defaultAuthError != nil {
 		// Default auth has error - set False condition. When the source's
 		// MCPExternalAuthConfig surfaced a Valid=False condition we propagate
-		// the source's reason (e.g. EnterpriseRequired); otherwise we report
+		// the source's reason (e.g. InvalidConfig); otherwise we report
 		// ConversionFailed.
 		statusManager.SetAuthConfigCondition(
 			"DefaultAuthConfig",

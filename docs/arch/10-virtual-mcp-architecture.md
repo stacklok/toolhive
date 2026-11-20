@@ -1082,8 +1082,23 @@ Validates clients connecting to vMCP using OIDC token validation or anonymous ac
 
 Authenticates vMCP to backend MCP servers using:
 - **Token exchange** - RFC 8693 exchange of client token for backend-specific token
+- **Entra on-behalf-of (OBO)** - Microsoft Entra exchange of the signed-in user's token for a backend-scoped token issued for that user (`pkg/vmcp/auth/strategies/obo.go`)
 - **Header injection** - Static API key or header injection
 - **Unauthenticated** - For internal/trusted backends
+
+The OBO strategy uses the same Entra exchanger and token cache as the proxy
+middleware (`pkg/auth/obo/entra`, `pkg/auth/obo/cache`), keeping one cached
+exchanger per (token URL, client ID, cache skew, client-secret fingerprint).
+Health-check probes carry no user and skip the exchange. A conditional-access
+or claims challenge fails the backend request and writes an
+`obo_token_exchange` audit event. The error returned to the MCP client names
+only the failure class (denied, invalid grant, client authentication, or
+transient); Entra's error code and description go to the vMCP log instead. OBO works for inline `outgoingAuth`
+backends, where the operator mounts each config's client secret under
+`TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>_<HASH8>` (a short hash of the
+config name keeps names such as `my-cfg` and `my.cfg` distinct), and for discovered backends
+(MCPServer, MCPRemoteProxy, and MCPServerEntry in the group), where the
+converter reads the client secret from the referenced Secret.
 
 Exchanged tokens are cached to avoid repeated exchange calls.
 

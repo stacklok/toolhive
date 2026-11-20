@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 // MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
@@ -182,8 +183,12 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			}
 			return ctrl.Result{}, nil
 		}
+		// A spec defect the user must fix (e.g. obo without incoming OIDC) has
+		// already been recorded on status; do not requeue.
+		var validationErr *obo.ValidationError
 		if stderrors.Is(err, errInvalidMCPRemoteProxyPodTemplateSpec) ||
-			stderrors.Is(err, errTerminalCABundleHandled) {
+			stderrors.Is(err, errTerminalCABundleHandled) ||
+			stderrors.As(err, &validationErr) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -273,11 +278,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 
 	// Handle MCPExternalAuthConfig
 	if err := r.handleExternalAuthConfig(ctx, proxy); err != nil {
-		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
-		if statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPExternalAuthConfig", err); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
-		}
-		return err
+		return r.markExternalAuthConfigFailed(ctx, proxy, err)
 	}
 
 	// Handle authServerRef config hash tracking
@@ -338,6 +339,30 @@ func (r *MCPRemoteProxyReconciler) markConfigHandlerFailed(
 	})
 
 	return r.Status().Update(ctx, proxy)
+}
+
+// markExternalAuthConfigFailed records a handleExternalAuthConfig failure on
+// status and returns the error validateAndHandleConfigs should propagate:
+// normally err itself, but the status write error when err is a terminal
+// *obo.ValidationError whose rejection could not be persisted. Reconcile does
+// not requeue a ValidationError, so returning it then would drop the rejection.
+func (r *MCPRemoteProxyReconciler) markExternalAuthConfigFailed(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	err error,
+) error {
+	ctxLogger := log.FromContext(ctx)
+	ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
+	statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPExternalAuthConfig", err)
+	if statusErr == nil {
+		return err
+	}
+	ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
+	var validationErr *obo.ValidationError
+	if stderrors.As(err, &validationErr) {
+		return statusErr
+	}
+	return err
 }
 
 func (r *MCPRemoteProxyReconciler) validateSpecAndPodTemplate(
@@ -1014,10 +1039,22 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	}
 
 	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
-	// the MCPRemoteProxy so the failure is visible on the consumer CR (e.g.
-	// obo-typed configs surface Valid=False/EnterpriseRequired here without the
-	// user having to inspect the referenced MCPExternalAuthConfig).
+	// the MCPRemoteProxy so the failure is visible on the consumer CR without
+	// the user having to inspect the referenced MCPExternalAuthConfig.
 	if mirrored, err := mirrorInvalidOnRemoteProxy(proxy, externalAuthConfig); mirrored {
+		return err
+	}
+
+	// OBO exchanges the authenticated user's token, so it needs incoming OIDC
+	// authentication. Terminal: Reconcile records it without requeueing.
+	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, proxy.Spec.OIDCConfigRef != nil); err != nil {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            err.Error(),
+			ObservedGeneration: proxy.Generation,
+		})
 		return err
 	}
 
@@ -1075,7 +1112,10 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 }
 
 // setMCPRemoteProxyExternalAuthConfigValidCondition preserves a terminal RunConfig validation failure
-// until its referenced configuration or this resource generation changes.
+// until its referenced configuration or this resource generation changes. An
+// InvalidConfig mirrored from the referenced MCPExternalAuthConfig is not held
+// (see isLocalValidationFailure): the source can heal back to an unchanged
+// ConfigHash, and holding it would make the failure permanent.
 func setMCPRemoteProxyExternalAuthConfigValidCondition(
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	configName, configHash string,
@@ -1083,8 +1123,7 @@ func setMCPRemoteProxyExternalAuthConfigValidCondition(
 	previousCondition := meta.FindStatusCondition(
 		proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 	)
-	if previousCondition != nil &&
-		previousCondition.Status == metav1.ConditionFalse &&
+	if isLocalValidationFailure(previousCondition) &&
 		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
 		previousCondition.ObservedGeneration == proxy.Generation &&
 		proxy.Status.ExternalAuthConfigHash == configHash {

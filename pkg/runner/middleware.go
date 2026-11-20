@@ -261,7 +261,7 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 
 	// Additional middleware configs injected by external-auth handlers via
-	// WithAdditionalMiddlewareConfigs (e.g. the enterprise OBO handler). Upstream
+	// WithAdditionalMiddlewareConfigs (e.g. the operator's OBO config). The runner
 	// carries these pre-built configs verbatim and does not interpret their
 	// parameters. They are spliced into the backend-egress group here: after auth
 	// (so the authenticated identity is available) and after the awssts /

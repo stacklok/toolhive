@@ -2410,3 +2410,38 @@ func TestConvertSessionStorage_GlobalTLS(t *testing.T) {
 		})
 	}
 }
+
+// TestConvertExternalAuthConfigToStrategy_OBOUsesPerConfigSecretEnv verifies
+// the inline outgoing-auth path points each OBO backend at its own client
+// secret env var, so two OBO backends in one vMCP pod never collide.
+func TestConvertExternalAuthConfigToStrategy_OBOUsesPerConfigSecretEnv(t *testing.T) {
+	t.Parallel()
+
+	newOBO := func(name string) *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeOBO,
+				OBO: &mcpv1beta1.OBOConfig{
+					TenantID:        "contoso.onmicrosoft.com",
+					ClientID:        "client-id",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: name + "-secret", Key: "client-secret"},
+					Audience:        "api://backend/.default",
+				},
+			},
+		}
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	first, err := converter.convertExternalAuthConfigToStrategy(t.Context(), newOBO("obo-a"))
+	require.NoError(t, err)
+	second, err := converter.convertExternalAuthConfigToStrategy(t.Context(), newOBO("obo-b"))
+	require.NoError(t, err)
+
+	require.NotNil(t, first.OBO)
+	require.NotNil(t, second.OBO)
+	assert.Equal(t, controllerutil.GenerateUniqueOBOSecretEnvVarName("obo-a"), first.OBO.ClientSecretEnv)
+	assert.Equal(t, controllerutil.GenerateUniqueOBOSecretEnvVarName("obo-b"), second.OBO.ClientSecretEnv)
+	assert.NotEqual(t, first.OBO.ClientSecretEnv, second.OBO.ClientSecretEnv)
+	assert.Empty(t, first.OBO.ClientSecret)
+}

@@ -2786,11 +2786,8 @@ spec:
                 type: object
               obo:
                 description: |-
-                  OBO configures On-Behalf-Of (OBO) authentication.
-                  Only used when Type is "obo". Setting this field on an upstream-only build
-                  causes the MCPExternalAuthConfig to transition to
-                  status.conditions[Valid] = False with Reason: EnterpriseRequired, because
-                  no OBO handler is registered. See OBOConfig for the field-to-runtime
+                  OBO configures Microsoft Entra On-Behalf-Of (OBO) authentication.
+                  Only used when Type is "obo". See OBOConfig for the field-to-runtime
                   contract mapping.
                 properties:
                   audience:
@@ -2825,12 +2822,10 @@ spec:
                       CacheSkew overrides the OBO token cache's default expiry skew (the margin
                       by which a cached token is treated as expired before its real expiry),
                       e.g. "30s". The operator converts it to the runtime contract's
-                      integer-seconds cacheSkewSeconds. Should not be negative, but the schema
-                      does not enforce that — metav1.Duration carries no numeric minimum — and
-                      upstream builds do not reject it. A negative value is rejected only by an
-                      enterprise build's OBO handler once that handler validates the converted
-                      parameters; it is not enforced at admission or in upstream-only builds.
-                      When omitted, the cache default applies.
+                      integer-seconds cacheSkewSeconds (truncated toward zero). Must not be
+                      negative; metav1.Duration carries no numeric minimum, so the operator
+                      rejects a negative value at reconcile (Valid=False, Reason: InvalidConfig)
+                      rather than at admission. When omitted, the cache default applies.
                     type: string
                   clientId:
                     description: |-
@@ -2905,7 +2900,7 @@ spec:
                       interpolates it into the token endpoint
                       (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
                       the GUID/domain shape (no path metacharacters); the pattern and 253-char
-                      cap mirror the enterprise exchanger's validateTenant, so any tenantId
+                      cap mirror the Entra exchanger's tenant validation, so any tenantId
                       admitted here is one the runtime can consume.
                     maxLength: 253
                     pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$
@@ -2981,12 +2976,7 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: |-
-                  Type is the type of external authentication to configure.
-                  When set to "obo", the cluster must run a build that has registered an
-                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
-                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
-                  for obo-typed configs.
+                description: Type is the type of external authentication to configure.
                 enum:
                 - tokenExchange
                 - headerInjection
@@ -5990,11 +5980,8 @@ spec:
                 type: object
               obo:
                 description: |-
-                  OBO configures On-Behalf-Of (OBO) authentication.
-                  Only used when Type is "obo". Setting this field on an upstream-only build
-                  causes the MCPExternalAuthConfig to transition to
-                  status.conditions[Valid] = False with Reason: EnterpriseRequired, because
-                  no OBO handler is registered. See OBOConfig for the field-to-runtime
+                  OBO configures Microsoft Entra On-Behalf-Of (OBO) authentication.
+                  Only used when Type is "obo". See OBOConfig for the field-to-runtime
                   contract mapping.
                 properties:
                   audience:
@@ -6029,12 +6016,10 @@ spec:
                       CacheSkew overrides the OBO token cache's default expiry skew (the margin
                       by which a cached token is treated as expired before its real expiry),
                       e.g. "30s". The operator converts it to the runtime contract's
-                      integer-seconds cacheSkewSeconds. Should not be negative, but the schema
-                      does not enforce that — metav1.Duration carries no numeric minimum — and
-                      upstream builds do not reject it. A negative value is rejected only by an
-                      enterprise build's OBO handler once that handler validates the converted
-                      parameters; it is not enforced at admission or in upstream-only builds.
-                      When omitted, the cache default applies.
+                      integer-seconds cacheSkewSeconds (truncated toward zero). Must not be
+                      negative; metav1.Duration carries no numeric minimum, so the operator
+                      rejects a negative value at reconcile (Valid=False, Reason: InvalidConfig)
+                      rather than at admission. When omitted, the cache default applies.
                     type: string
                   clientId:
                     description: |-
@@ -6109,7 +6094,7 @@ spec:
                       interpolates it into the token endpoint
                       (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
                       the GUID/domain shape (no path metacharacters); the pattern and 253-char
-                      cap mirror the enterprise exchanger's validateTenant, so any tenantId
+                      cap mirror the Entra exchanger's tenant validation, so any tenantId
                       admitted here is one the runtime can consume.
                     maxLength: 253
                     pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$
@@ -6185,12 +6170,7 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: |-
-                  Type is the type of external authentication to configure.
-                  When set to "obo", the cluster must run a build that has registered an
-                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
-                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
-                  for obo-typed configs.
+                description: Type is the type of external authentication to configure.
                 enum:
                 - tokenExchange
                 - headerInjection

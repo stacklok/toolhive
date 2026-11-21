@@ -293,12 +293,13 @@ func TestSSEStreamFailsClosedOnUnterminatedOversizedEvent(t *testing.T) {
 
 	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
 	// An event that never ends is buffered until the size limit. Its held bytes are not
-	// written; the client gets one error for the event, and nothing else.
+	// written. This event has no readable id, so no error is written either: an
+	// id-less error would end the client's session.
 	huge := "data: " + strings.Repeat("a", maxSSEEventBytes+1024)
 	rr := runSSEStream(t, authorizer, "text/event-stream", huge)
 
 	assert.NotContains(t, rr.Body.String(), "aaaa", "held bytes must not be written through")
-	assert.Contains(t, rr.Body.String(), `"error"`)
+	assert.NotContains(t, rr.Body.String(), `"error"`, "an error with no id must not be written")
 	assert.Less(t, rr.Body.Len(), 1024)
 }
 func TestSSEStreamFlushBeforeWriteSetsNoStore(t *testing.T) {
@@ -663,6 +664,21 @@ func TestSSEStreamFailsClosedOnLoneCRLineBreak(t *testing.T) {
 
 	assert.NotContains(t, rr.Body.String(), "secret", "a lone CR must not hide a list from the filter")
 	assert.Contains(t, rr.Body.String(), `"error"`)
+}
+
+// TestSSEStreamDropsLoneCREventWithNoID checks that a lone CR event with no readable
+// id is dropped rather than answered with an id-less error, which would end the session.
+func TestSSEStreamDropsLoneCREventWithNoID(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	body := "data: {\"result\":{\"tools\":[{\"name\":\"secret\"}]}}\r: x\n\n"
+	rr := runSSEStream(t, authorizer, "text/event-stream", body)
+
+	assert.NotContains(t, rr.Body.String(), "secret")
+	assert.NotContains(t, rr.Body.String(), `"error"`, "an error with no id must not be written")
 }
 
 func TestSSEStreamFiltersResultSplitAcrossDataLines(t *testing.T) {

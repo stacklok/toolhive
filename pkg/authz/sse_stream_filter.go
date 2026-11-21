@@ -90,6 +90,9 @@ type sseStreamFilterWriter struct {
 	// sniff marks a successful body with another media type. The whole body is
 	// buffered and read as JSON-RPC or SSE once complete (see writeSniffed).
 	sniff bool
+	// scanLine is the start of the line being read and scanFrom is where the next
+	// search for a line end begins. Both index the buffer (see nextEventEnd).
+	scanLine, scanFrom int
 	// encoded marks a filtered stream whose body is content-coded, which cannot be parsed.
 	encoded bool
 	// committed records that the status line has been written.
@@ -184,6 +187,9 @@ func (w *sseStreamFilterWriter) Write(data []byte) (int, error) {
 		}
 		w.started = true
 		w.buffer = bytes.TrimPrefix(w.buffer, mcpparser.UTF8BOM)
+		// A Flush may have scanned the partial BOM as line text. Restart the scan
+		// at the trimmed buffer's start, so it cannot index past the new end.
+		w.scanLine, w.scanFrom = 0, 0
 	}
 	if w.sniff {
 		if len(w.buffer) > maxSniffedBodyBytes {
@@ -364,12 +370,13 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 // keeps the rest.
 func (w *sseStreamFilterWriter) drainCompleteEvents() error {
 	for {
-		end := firstEventEnd(w.buffer)
+		end := w.nextEventEnd()
 		if end == 0 {
 			break
 		}
 		chunk := w.buffer[:end]
 		w.buffer = w.buffer[end:]
+		w.scanLine, w.scanFrom = 0, 0
 		if err := w.writeLines(w.processLines(parseSSELines(chunk))); err != nil {
 			return err
 		}
@@ -396,14 +403,23 @@ func (w *sseStreamFilterWriter) failWithEnvelope(cause error) error {
 	w.failed = true
 	w.failErr = cause
 	slog.Warn("ending a filtered event stream with an error", "error", cause)
-	if hasDataLine(held) {
-		payload := bytes.Join(eventDataValues(parseSSELines(held)), []byte("\n"))
-		body := encodeErrorBody(topLevelID(payload))
+	framed := hasDataLine(held)
+	payload := held
+	if framed {
+		payload = bytes.Join(eventDataValues(parseSSELines(held)), []byte("\n"))
+	}
+	id := topLevelID(payload)
+	if id == (jsonrpc2.ID{}) {
+		// An error with no id ends the client's session, so none is written.
+		return cause
+	}
+	body := encodeErrorBody(id)
+	if framed {
 		_ = w.writeLines(errorEventLines(body))
 		_, _ = w.ResponseWriter.Write([]byte("\n"))
 		return cause
 	}
-	_, _ = w.ResponseWriter.Write(encodeErrorBody(topLevelID(held)))
+	_, _ = w.ResponseWriter.Write(body)
 	return cause
 }
 
@@ -434,8 +450,16 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 	}
 	dataValues, payload, loneCR := assembleSSEEvent(event)
 	if loneCR {
+		// The event's data cannot be assembled, so it is replaced whole with an error
+		// that carries the frame's id. With no readable id it is dropped: an id-less error
+		// would end the client's session.
+		id := frameID(event)
+		if id == (jsonrpc2.ID{}) {
+			slog.Warn("dropped an SSE event with no readable id", "error", errSSEBareCR)
+			return nil
+		}
 		slog.Warn("rejected an SSE event with a bare CR line break", "error", errSSEBareCR)
-		return errorEventLines(encodeErrorBody(frameID(event)))
+		return errorEventLines(encodeErrorBody(id))
 	}
 	if len(payload) == 0 {
 		return event
@@ -609,19 +633,24 @@ func listMethodForResult(result json.RawMessage) (string, error) {
 	return method, nil
 }
 
-// firstEventEnd returns the length of the prefix of buf that ends with the blank
-// line closing its first complete event, or 0 if no event is complete yet.
-func firstEventEnd(buf []byte) int {
-	pos := 0
+// nextEventEnd returns the length of the prefix of the buffer that ends with the
+// blank line closing its first complete event, or 0 if no event is complete yet.
+// It resumes where the previous call stopped, so each byte is searched once even
+// when an event grows across many writes. drainCompleteEvents resets the scan
+// after it consumes an event.
+func (w *sseStreamFilterWriter) nextEventEnd() int {
 	for {
-		idx := bytes.IndexByte(buf[pos:], '\n')
+		idx := bytes.IndexByte(w.buffer[w.scanFrom:], '\n')
 		if idx == -1 {
+			w.scanFrom = len(w.buffer)
 			return 0
 		}
-		line := buf[pos : pos+idx]
-		pos += idx + 1
+		nl := w.scanFrom + idx
+		line := w.buffer[w.scanLine:nl]
+		w.scanFrom = nl + 1
+		w.scanLine = nl + 1
 		if len(bytes.TrimRight(line, "\r")) == 0 {
-			return pos
+			return nl + 1
 		}
 	}
 }

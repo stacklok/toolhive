@@ -293,7 +293,7 @@ func TestSSEStreamFlushBeforeWriteSetsNoStore(t *testing.T) {
 	assert.Equal(t, "private, no-store", rr.Header().Get("Cache-Control"))
 }
 
-func TestSSEStreamFailsClosedOnMalformedThenResult(t *testing.T) {
+func TestSSEStreamDropsMalformedThenResult(t *testing.T) {
 	t.Parallel()
 
 	authorizer := &mockAuthorizer{results: map[string]mockResult{
@@ -306,7 +306,7 @@ func TestSSEStreamFailsClosedOnMalformedThenResult(t *testing.T) {
 	rr := runSSEStream(t, authorizer, "text/event-stream", body)
 
 	assert.NotContains(t, rr.Body.String(), "secret", "a result split across data lines must not reach the client")
-	assert.Contains(t, rr.Body.String(), `"error"`)
+	assert.NotContains(t, rr.Body.String(), `"error"`, "an event with no readable id is dropped, not answered with an id-less error")
 }
 
 func TestSSEStreamFiltersCRLFFraming(t *testing.T) {
@@ -822,6 +822,19 @@ func TestSSEStreamFailsClosedOnDeepResultBehindLoneCR(t *testing.T) {
 	assert.NotContains(t, rr.Body.String(), "secret", "a deep result behind a lone CR must not pass through")
 }
 
+func TestSSEStreamPassesPlainToolsCallAnswerUnchanged(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
+	// A tools/call answer whose text merely mentions tools is not a find_tool answer.
+	// It must pass through, not fail closed with an error.
+	event := `{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"Found 3 tools"}],"structuredContent":{"count":3}}}`
+	rr := runSSEStream(t, authorizer, "text/event-stream", sseStreamEvent(event))
+
+	assert.Contains(t, rr.Body.String(), `"count":3`, "a plain tools/call answer must pass through unchanged")
+	assert.NotContains(t, rr.Body.String(), `"error"`, "a plain tools/call answer must not fail closed")
+}
+
 func TestSSEStreamFailsClosedOnMalformedFindToolAnswer(t *testing.T) {
 	t.Parallel()
 
@@ -835,6 +848,20 @@ func TestSSEStreamFailsClosedOnMalformedFindToolAnswer(t *testing.T) {
 	assert.NotContains(t, rr.Body.String(), "secret")
 	assert.Contains(t, rr.Body.String(), `"id":62`)
 	assert.Contains(t, rr.Body.String(), `"error"`)
+}
+
+func TestSSEStreamFailsClosedOnToolsStringHoldingJSONList(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	// The tools value is a string that holds a named tool list as JSON, so it must fail closed.
+	result := `{"content":[],"structuredContent":{"tools":"[{\"name\":\"secret\"}]"}}`
+	rr := runSSEStream(t, authorizer, "text/event-stream", sseStreamEvent(`{"jsonrpc":"2.0","id":63,"result":`+result+`}`))
+
+	assert.NotContains(t, rr.Body.String(), "secret")
+	assert.Contains(t, rr.Body.String(), `"id":63`)
 }
 
 func TestSSEStreamAnswersOversizedHeldBodyWithID(t *testing.T) {

@@ -46,7 +46,7 @@ var errSSEBareCR = errors.New("event carries a bare CR line break that the filte
 
 // errSSEUnrecognizedMediaType is logged when a successful response with a
 // Content-Type other than text/event-stream carries neither a JSON-RPC response
-// nor an SSE result. Such a body is dropped where its result cannot be read safely.
+// nor an SSE result. Such a body is rejected with an error carrying its id where that id is readable, and dropped otherwise.
 var errSSEUnrecognizedMediaType = errors.New(
 	"successful response has a Content-Type other than text/event-stream and no readable JSON-RPC result")
 
@@ -67,7 +67,7 @@ var listMembers = map[string]string{
 // Each event is classified by the shape of its result, not by request method:
 // a result carrying tools, prompts, resources, resourceTemplates or skills is
 // filtered with the matching filter. A frame that is not a clean Response but
-// still carries a result fails closed. Everything else passes through unchanged.
+// still carries a result fails closed. Everything else, including a body with no result, passes through unchanged.
 type sseStreamFilterWriter struct {
 	http.ResponseWriter
 	authorizer       authorizers.Authorizer
@@ -259,6 +259,12 @@ func (w *sseStreamFilterWriter) decide(status int) {
 		return
 	}
 	w.decided = true
+	// A non-2xx answer is an error. It passes through unchanged whatever its media type,
+	// so an error sent as text/event-stream is not filtered as a stream.
+	if status < 200 || status >= 300 {
+		w.passThrough = true
+		return
+	}
 	mediaType, _, _ := mime.ParseMediaType(w.ResponseWriter.Header().Get("Content-Type"))
 	if mediaType == "text/event-stream" {
 		w.markFiltered()
@@ -300,7 +306,7 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 	if hasAmbiguousResultKey(body) {
 		slog.Warn("rejected a 2xx body whose result key is duplicated or differs in case", "error", errSSEUnrecognizedMediaType)
 		// Answer with an error that carries the request id, so the client does not wait for a timeout.
-		_, _ = w.ResponseWriter.Write(encodeErrorBody(topLevelID(body)))
+		w.writeRejection(body)
 		return
 	}
 	message, _ := jsonrpc2.DecodeMessage(body)
@@ -313,12 +319,12 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 			slog.Warn("rejected a 2xx JSON body carrying a result that is not a single JSON-RPC response",
 				"error", errSSEUnrecognizedMediaType)
 			// Answer with an error that carries the request id, so the client does not wait for a timeout.
-			_, _ = w.ResponseWriter.Write(encodeErrorBody(topLevelID(body)))
+			w.writeRejection(body)
 			return
 		case sniffRejectNamed:
 			slog.Warn("dropped a 2xx body naming a result that could not be read",
 				"error", errSSEUnrecognizedMediaType)
-			_, _ = w.ResponseWriter.Write(encodeErrorBody(topLevelID(body)))
+			w.writeRejection(body)
 			return
 		case sniffPassThrough:
 			if _, err := w.ResponseWriter.Write(body); err != nil {
@@ -475,15 +481,22 @@ func (w *sseStreamFilterWriter) newFilter(method string) *ResponseFilteringWrite
 
 // failClosed replaces an event with a JSON-RPC error envelope. The reason is logged
 // once here at Warn, and the envelope is encoded without a second log line. id is the request id when
-// the frame was a clean Response, and empty otherwise.
+// the frame was a clean Response, and empty otherwise. An event whose reason has no id is dropped.
 func failClosed(event []sseLine, id jsonrpc2.ID, reason string) []sseLine {
+	if id == (jsonrpc2.ID{}) {
+		// No request id can be read: a notification or an off-spec frame. An error with
+		// no id is one the go-sdk client rejects, and it ends the session. The event is
+		// dropped instead, since no call is waiting on it.
+		slog.Warn("dropped an SSE event with no readable id", "error", errors.New(reason))
+		return nil
+	}
 	slog.Warn("failing closed on an SSE event", "error", errors.New(reason))
 	return rebuildEventWithPayload(event, encodeErrorBody(id), true)
 }
 
 // resultMethod returns the response filter for a result: a list method, the find_tool
 // filter for a find_tool answer, or "" when neither applies. A result that names tools
-// but is not a valid find_tool answer is an error, so it fails closed.
+// but is not a valid find_tool answer is an error, so it fails closed. A result with no content or structuredContent member is not a find_tool answer and passes through.
 func resultMethod(result json.RawMessage) (string, error) {
 	method, err := listMethodForResult(result)
 	if err != nil || method != "" {
@@ -521,7 +534,8 @@ func mentionsToolsValue(v any, depth int) bool {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			if strings.EqualFold(k, "tools") || mentionsToolsValue(val, depth) {
+			// A tools value fails closed unless it is a list naming no tool, such as [] or ["hammer"]. A string or object holding tools (including a string of JSON) counts.			// see listNamesNoTool for the list shapes that pass.
+			if (strings.EqualFold(k, "tools") && !listNamesNoTool(val)) || mentionsToolsValue(val, depth) {
 				return true
 			}
 		}
@@ -532,9 +546,8 @@ func mentionsToolsValue(v any, depth int) bool {
 			}
 		}
 	case string:
-		if strings.Contains(strings.ToLower(t), "tools") {
-			return true
-		}
+		// Plain text that merely mentions tools (such as "Found 3 tools") names no member,
+		// so only a JSON-encoded tools key in the text counts, checked below.
 		trimmed := strings.TrimSpace(t)
 		if depth < maxToolsSniffDepth && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
 			var inner any
@@ -670,3 +683,35 @@ func frameID(event []sseLine) jsonrpc2.ID {
 	return jsonrpc2.ID{}
 }
 
+// writeRejection answers a rejected 2xx body with an error that carries its id. When no
+// id can be read, nothing is written: an error with no id ends the go-sdk client's session.
+func (w *sseStreamFilterWriter) writeRejection(body []byte) {
+	id := topLevelID(body)
+	if id == (jsonrpc2.ID{}) {
+		slog.Warn("dropped a rejected 2xx body with no readable id", "error", errSSEUnrecognizedMediaType)
+		return
+	}
+	_, _ = w.ResponseWriter.Write(encodeErrorBody(id))
+}
+
+// listNamesNoTool reports whether v is a list in which no entry is an object with a name
+// key, compared case-insensitively as the client decoder does. Only such a list cannot
+// leak a tool, so any other tools value, including a string, must fail closed.
+func listNamesNoTool(v any) bool {
+	list, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range list {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for k := range obj {
+			if strings.EqualFold(k, "name") {
+				return false
+			}
+		}
+	}
+	return true
+}

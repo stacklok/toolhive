@@ -1450,6 +1450,7 @@ its own default text before the reason.
 | Client credentials sent, but fosite cannot authenticate them (wrong secret, unknown client, a confidential client that sends only `client_id`, or a `client_secret` without a `client_id`) | fosite's error, before the handler runs: usually 401 `invalid_client`, or 400 `invalid_request` for missing or malformed credentials; fosite's text, no reason | same |
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| ID-JAG that carries a `cnf` claim, with any value including `null`, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` The check runs before the assertion is consumed |
 | Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
@@ -1604,11 +1605,13 @@ subject, `jti` or claim values. The findings are:
 
 This is logging only. It changes nothing about what is accepted.
 
-The handler also accepts one thing the draft does not allow, and nothing logs
-it: draft §9.11 says an ID-JAG with a `cnf` claim needs proof of possession,
-and a server that cannot check it MUST refuse the ID-JAG with `invalid_grant`.
-No code at this server reads `cnf`, so such an ID-JAG is accepted without proof
-of possession.
+**ID-JAGs that carry `cnf` are refused.** Draft §9.11 says an ID-JAG with a
+`cnf` claim needs proof of possession, and a server that cannot check it MUST
+refuse the ID-JAG with `invalid_grant`. This server cannot check it yet, so the
+handler refuses every ID-JAG that has a `cnf` claim, for every issuer. Only the
+presence of the claim counts: `"cnf": null` and `"cnf": {}` are refused too, and
+the value is never read. The refusal stays until proof of possession (DPoP or
+mTLS) is verified.
 
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
 also lets AS-2's plain handler (`typ` `JWT`, empty or absent) accept AS-1's

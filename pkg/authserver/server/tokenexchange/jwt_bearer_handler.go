@@ -157,6 +157,23 @@ func mayCarryClientCredentials(ctx context.Context, form url.Values) bool {
 	return basic
 }
 
+// claimConfirmation is the RFC 7800 confirmation claim.
+const claimConfirmation = "cnf"
+
+// hasConfirmationClaim reports whether a validated assertion carries a cnf
+// claim. Only presence counts, so "cnf": null and "cnf": {} are both found; the
+// value is never read.
+func hasConfirmationClaim(claims *ValidatedClaims) bool {
+	if claims == nil {
+		return false
+	}
+	// Claims is the full decoded set and Extra a subset of it. Both are checked
+	// so hand-built ValidatedClaims and a later change to assignClaim stay safe.
+	_, inClaims := claims.Claims[claimConfirmation]
+	_, inExtra := claims.Extra[claimConfirmation]
+	return inClaims || inExtra
+}
+
 // HandleTokenEndpointRequest validates policy and prepares a bounded access-token session.
 func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, requester fosite.AccessRequester) error {
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {

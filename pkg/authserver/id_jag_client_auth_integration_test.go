@@ -104,3 +104,28 @@ func TestIntegration_IDJAGRedemptionRequiresClientAuthentication(t *testing.T) {
 		assert.NotEmpty(t, body["access_token"])
 	})
 }
+
+func TestIntegration_IDJAGRedemptionRefusesConfirmationClaim(t *testing.T) {
+	t.Parallel()
+
+	ts, _ := setupJWTBearerGrantTestServer(t, withoutUpstreams())
+	now := time.Now()
+	confidential := url.Values{"client_id": {idJAGClientID}, "client_secret": {idJAGClientSecret}}
+
+	for name, cnf := range map[string]any{
+		"cnf null":   nil,
+		"cnf object": map[string]any{"jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assertion := ts.signIDJAGAssertionWith(idJAGClientID, map[string]any{"cnf": cnf},
+				"external-subject", now, now.Add(2*time.Minute), "cnf-"+strings.ReplaceAll(name, " ", "-"))
+
+			status, body := redeemIDJAG(t, ts.Server.URL, idJAGRedemptionForm(assertion, confidential))
+
+			assert.Equal(t, http.StatusBadRequest, status, body)
+			assert.Equal(t, "invalid_grant", body["error"])
+			assert.Equal(t, "invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.", body["error_description"])
+		})
+	}
+}

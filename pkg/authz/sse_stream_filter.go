@@ -25,7 +25,8 @@ import (
 
 // maxSSEEventBytes bounds how much unterminated data the filter buffers while it
 // waits for the blank line that ends an event. An event still open past this
-// size fails the stream closed. A complete event of any size is filtered.
+// size fails the stream closed. An event is filtered once its terminating blank
+// line has arrived, so an event complete within one write is filtered at any size.
 // The filter splits events on LF only, so a stream whose lines end in a bare CR
 // never completes an event. It is held until this cap or the end of the stream,
 // then fails closed. A client that splits on bare CR still sees a complete event,
@@ -282,13 +283,9 @@ func (w *sseStreamFilterWriter) decide(status int) {
 		w.markFiltered()
 		return
 	}
-	if status >= 200 && status < 300 {
-		// Sniff it: a client may read it as events, so it is filtered like one or dropped.
-		w.sniff = true
-		w.markFiltered()
-		return
-	}
-	w.passThrough = true
+	// Sniff it: a client may read it as events, so it is filtered like one or dropped.
+	w.sniff = true
+	w.markFiltered()
 }
 
 // markFiltered prepares the headers of a filtered mode. Filtering changes the body
@@ -323,7 +320,7 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 	response, isResponse := message.(*jsonrpc2.Response)
 	if !isResponse {
 		// The shared classifier decides for a body that is not a clean Response.
-		action, _ := classifyUnlabeledBody(body)
+		action := classifyUnlabeledBody(body)
 		switch action {
 		case sniffRejectJSON:
 			w.writeRejection(body, "rejected a 2xx JSON body carrying a result that is not a single JSON-RPC response")
@@ -348,6 +345,7 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 	if err != nil {
 		slog.Warn("rejected a 2xx JSON-RPC response whose result names lists in conflict", "error", err)
 		// Answer with an error that carries the request id, so the client does not wait for a timeout.
+		// A failed write means the client has gone, so the error is not retried.
 		_, _ = w.ResponseWriter.Write(encodeErrorBody(response.ID))
 		return
 	}
@@ -419,6 +417,8 @@ func (w *sseStreamFilterWriter) failWithEnvelope(cause error) error {
 		_, _ = w.ResponseWriter.Write([]byte("\n"))
 		return cause
 	}
+	// Write errors are ignored: a failed write means the client has gone, and the
+	// stream has already failed with cause.
 	_, _ = w.ResponseWriter.Write(body)
 	return cause
 }
@@ -741,6 +741,7 @@ func (w *sseStreamFilterWriter) writeRejection(body []byte, reason string) {
 		return
 	}
 	slog.Warn(reason, "error", errSSEUnrecognizedMediaType)
+	// A failed write means the client has gone; the rejection is already logged.
 	_, _ = w.ResponseWriter.Write(encodeErrorBody(id))
 }
 

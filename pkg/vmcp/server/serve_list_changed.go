@@ -264,12 +264,33 @@ func (s *Server) runListChangedResync(
 // notifications/tools/list_changed to the downstream client, since serve.go
 // enables WithToolCapabilities(true).
 //
+// A PARTIAL sweep short-circuits that replacement (#6829): a still-healthy
+// backend that fails its live capability query mid-sweep is silently omitted
+// from the re-derived set (best-effort aggregation logs and continues), and
+// replacing the store with that set would drop the failed backend's tools until
+// the next health transition. Partiality is read from core.Discover — the same
+// aggregation the re-derivation below reads, since Discover and ListTools share
+// the capability cache key — and a partial sweep keeps the existing store
+// instead; the next health change (or backend-notification resync) retries with
+// a fresh sweep.
+//
 // ctx must already carry the resyncing principal's identity and forwarded
 // headers (runListChangedResync builds it) so serveSessionTools ->
-// core.ListTools enumerates backends with the correct credentials and cache key.
+// core.ListTools (and core.Discover) enumerate backends with the correct
+// credentials and cache key.
 func (s *Server) resyncSessionTools(
 	ctx context.Context, session server.ClientSession, sessionID string, identity *auth.Identity,
 ) error {
+	discovery, err := s.core.Discover(ctx, identity)
+	if err != nil {
+		return fmt.Errorf("resync session tools: core Discover for session %s: %w", sessionID, err)
+	}
+	if discovery.Partial {
+		slog.Warn("skipping session tool replacement after partial backend sweep",
+			"session_id", sessionID)
+		return nil
+	}
+
 	tools, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil {
 		return fmt.Errorf("resync session tools: core ListTools for session %s: %w", sessionID, err)

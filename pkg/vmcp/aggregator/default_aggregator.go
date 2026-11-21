@@ -530,8 +530,12 @@ func (a *defaultAggregator) AggregateCapabilities(
 		return nil, fmt.Errorf("failed to merge capabilities: %w", err)
 	}
 
-	// Update metadata with backend count
+	// Update metadata with backend count and sweep completeness. The sweep is
+	// partial when at least one backend failed its capability query and was
+	// omitted from `capabilities` (QueryAllCapabilities logs and continues on a
+	// per-backend failure, returning nil error as long as one backend answered).
 	aggregated.Metadata.BackendCount = len(backends)
+	aggregated.Metadata.Partial = len(capabilities) < len(backends)
 
 	span.SetAttributes(
 		attribute.Int("aggregated.backends", aggregated.Metadata.BackendCount),

@@ -138,6 +138,10 @@ type fakeCore struct {
 	resourceTemplates []vmcp.ResourceTemplate
 	prompts           []vmcp.Prompt
 
+	// discoverPartial, when true, makes Discover report a partial backend sweep
+	// so resyncSessionTools' keep-on-partial path (#6829) can be exercised.
+	discoverPartial bool
+
 	listToolsCalls             atomic.Int32
 	listResourcesCalls         atomic.Int32
 	listResourceTemplatesCalls atomic.Int32
@@ -366,8 +370,8 @@ func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.B
 	return nil, vmcp.ErrNotFound
 }
 
-func (*fakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
-	return core.DiscoverCapabilities{}, nil
+func (f *fakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
+	return core.DiscoverCapabilities{Partial: f.discoverPartial}, nil
 }
 
 func (*fakeCore) Close() error { return nil }

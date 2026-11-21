@@ -41,6 +41,15 @@ type DiscoverCapabilities struct {
 	HasResources         bool
 	HasResourceTemplates bool
 	HasPrompts           bool
+
+	// Partial reports whether the underlying capability sweep was incomplete: at
+	// least one eligible backend failed its live capability query, so its
+	// capabilities are absent from the aggregated view these presence flags
+	// summarize. Unlike the Has* flags — which reflect admission filtering —
+	// Partial is a property of the AGGREGATION itself. A partial view is safe for
+	// discovery, but must not replace an established view (see
+	// server.resyncSessionTools).
+	Partial bool
 }
 
 // VMCP is the core Virtual MCP domain object.

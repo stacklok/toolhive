@@ -213,6 +213,15 @@ type AggregationMetadata struct {
 
 	// ConflictStrategy is the strategy used for conflict resolution.
 	ConflictStrategy vmcp.ConflictResolutionStrategy
+
+	// Partial reports whether the capability sweep was incomplete: at least one
+	// backend in the aggregated set failed its live capability query, so its
+	// capabilities are absent from the result. A partial result is the best
+	// currently-known view and is safe to serve for a fresh read, but it must
+	// not REPLACE an established view — e.g. a session resync that replaces its
+	// tool store on a partial sweep would drop the failed backend's tools until
+	// the next health transition (see server.resyncSessionTools).
+	Partial bool
 }
 
 // ConflictResolver handles tool name conflicts across backends.

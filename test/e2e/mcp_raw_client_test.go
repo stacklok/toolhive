@@ -362,8 +362,7 @@ func TestRawClientSend(t *testing.T) {
 
 // newSSEServer serves body verbatim as a text/event-stream POST response —
 // the shape mcpcompat's cross-replica rehydration path produces regardless of
-// the request's Accept header (go-sdk v1.7.0-pre.3 does not export the
-// transport-level JSONResponse knob its top-level handler options set).
+// the request's Accept header).
 func newSSEServer(t *testing.T, body string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

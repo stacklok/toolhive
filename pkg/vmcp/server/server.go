@@ -189,10 +189,22 @@ type Config struct {
 	// If nil, no telemetry is recorded.
 	TelemetryProvider *telemetry.Provider
 
+	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware.
+	// It is applied inside the MCP parsing middleware, which it depends on. If
+	// nil, no usage is reported. ToolHive's own entry points set it
+	// (pkg/vmcp/cli); embedders should leave it nil (see docs/arch/vmcp-library.md).
+	UsageMetricsMiddleware func(http.Handler) http.Handler
+
 	// AuditConfig is the optional audit configuration.
 	// If nil, no audit logging is performed.
 	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
 	AuditConfig *audit.Config
+
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to every
+	// audit event, both the per-request MCP events and the composite-tool
+	// workflow events. It is set from Go only and has no effect when
+	// AuditConfig is nil. See audit.SubjectEnricher.
+	AuditSubjectEnricher audit.SubjectEnricher
 
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
@@ -762,6 +774,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("telemetry middleware enabled for MCP endpoints")
 	}
 
+	// Count tool calls for anonymous usage metrics. It reads the parsed request,
+	// so it sits inside the parsing middleware applied below.
+	if s.config.UsageMetricsMiddleware != nil {
+		mcpHandler = s.config.UsageMetricsMiddleware(mcpHandler)
+	}
+
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
 	// This runs before telemetry so that recordMetrics can label metrics with the
 	// actual mcp_method (e.g. "tools/call", "initialize") instead of "unknown".
@@ -787,6 +805,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		auditor, err := audit.NewAuditorWithTransport(
 			s.config.AuditConfig,
 			"streamable-http", // vMCP uses streamable HTTP transport
+			audit.WithSubjectEnricher(s.config.AuditSubjectEnricher),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create auditor: %w", err)

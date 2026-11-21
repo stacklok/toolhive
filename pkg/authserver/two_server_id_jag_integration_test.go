@@ -1,0 +1,245 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package authserver_test
+
+import (
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive/pkg/authserver"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange/mocks"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
+)
+
+// as2Env is an embedded auth server that redeems ID-JAGs minted by AS-1.
+type as2Env struct {
+	srv      *httptest.Server
+	issuer   string
+	embedded *authserverrunner.EmbeddedAuthServer
+	// client is the ID-JAG's client_id at AS-2, authenticating with private_key_jwt.
+	client clientAuth
+}
+
+// twoServerIDJAG is AS-1 plus an AS-2 that allows assertions to live two
+// minutes.
+type twoServerIDJAG struct {
+	as1 *xrtEnv
+	as2 *as2Env
+}
+
+// redeem presents assertion at AS-2's token endpoint under the JWT-bearer
+// grant, asking for xrtIDJAGResource.
+func (e *as2Env) redeem(t *testing.T, auth clientAuth, assertion string) tokenResult {
+	t.Helper()
+	return postToken(t, e.srv.URL, auth, url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {assertion},
+		"resource":   {xrtIDJAGResource},
+	})
+}
+
+// startAS2 starts an AS-2 on listener that trusts the AS-1 at as1Issuer. AS-1's
+// JWKS is fetched at the first redemption, so AS-1 may start later. subject is
+// AS-1's sub for the grant's user, bound exactly. The server's own issuer is an
+// accepted audience and is not an allowed audience; the resource is. opts are
+// passed to the embedded server.
+func startAS2(t *testing.T, listener net.Listener, as1Issuer, subject string, opts ...authserverrunner.EmbeddedAuthServerOption) *as2Env {
+	t.Helper()
+	return startAS2For(t, listener, as1Issuer, subject, []string{xrtIDJAGResource}, opts...)
+}
+
+// startAS2For is startAS2 with resources as AS-2's allowed audiences, the
+// client's audiences and the subject binding's allowed resources.
+func startAS2For(
+	t *testing.T, listener net.Listener, as1Issuer, subject string, resources []string,
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) *as2Env {
+	t.Helper()
+	key := newAssertionKey(t, "as2-client-key")
+	jwksFile := filepath.Join(t.TempDir(), "as2-client.jwks")
+	writeJWKS(t, jwksFile, key)
+
+	// A delegate client must list token exchange; it is the jwt-bearer grant under test.
+	grants := []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}
+	client := authserver.DelegateClientRunConfig{
+		ClientID:                    xrtTargetClientID,
+		TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		JWKSFile:                    jwksFile,
+		TokenEndpointAuthSigningAlg: "ES256",
+		GrantTypes:                  grants,
+		Scopes:                      []string{"openid", "profile"},
+		Audiences:                   resources,
+		TokenExchange:               anySelfIssuedSubjectTokens(),
+	}
+
+	srv, issuer, embedded, _ := startEmbeddedAuthServerOn(t, listener, func(cfg *authserver.RunConfig, issuer string) {
+		configuredClients(client)(cfg)
+		cfg.AllowedAudiences = resources
+		cfg.TrustedIssuers = []tokenexchange.TrustedIssuer{{
+			Name: "as1", IssuerURL: as1Issuer, JWKSURL: as1Issuer + "/.well-known/jwks.json",
+			InsecureAllowHTTP: true, AllowPrivateIPs: true,
+		}}
+		cfg.InboundGrants.JWTBearer = &authserver.JWTBearerInboundGrantRunConfig{
+			IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+				IssuerRef: "as1", MaxAssertionAge: "2m",
+				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+					Subject: subject, AllowedResources: resources,
+				}},
+				AcceptedAudiences: []string{issuer},
+			}},
+		}
+	}, nil, opts...)
+	return &as2Env{
+		srv: srv, issuer: issuer, embedded: embedded,
+		client: clientAuth{clientID: xrtTargetClientID, key: &key},
+	}
+}
+
+// listenLoopback returns a listener on a free loopback port. The listener is
+// closed when the test ends.
+func listenLoopback(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	// Closes a listener whose server never started. After a server has
+	// stopped, the second close fails harmlessly and the error is ignored.
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
+}
+
+// startTwoServerIDJAG is the one two-server harness in this package: AS-1
+// mints ID-JAGs and AS-2 trusts AS-1 and redeems them, in one process, over
+// HTTP, on memory storage. It binds both listeners first, so AS-2 can be given
+// AS-1's issuer and AS-1 can be given AS-2's, then starts AS-2 and AS-1. AS-1's
+// broker has one ID-JAG target: as2, with one resource.
+func startTwoServerIDJAG(t *testing.T) *twoServerIDJAG {
+	t.Helper()
+	return startTwoServerIDJAGWith(t, nil)
+}
+
+// startTwoServerIDJAGWith is startTwoServerIDJAG with mutate applied to AS-1's
+// config and opts passed to AS-1's embedded server.
+func startTwoServerIDJAGWith(
+	t *testing.T, mutate func(cfg *authserver.RunConfig), opts ...authserverrunner.EmbeddedAuthServerOption,
+) *twoServerIDJAG {
+	t.Helper()
+	return startTwoServerIDJAGFor(t, []string{xrtIDJAGResource}, mutate, opts...)
+}
+
+// startTwoServerIDJAGFor is startTwoServerIDJAGWith with as2Resources as the
+// resources AS-2 governs and binds. AS-1's target still names only
+// xrtIDJAGResource, so its ID-JAGs carry only that resource.
+func startTwoServerIDJAGFor(
+	t *testing.T, as2Resources []string, mutate func(cfg *authserver.RunConfig),
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) *twoServerIDJAG {
+	t.Helper()
+	l1, l2 := listenLoopback(t), listenLoopback(t)
+	as1Issuer := "http://" + l1.Addr().String()
+
+	as2 := startAS2For(t, l2, as1Issuer, "user-1", as2Resources)
+
+	as1 := startXRTServerOn(t, "memory", l1, func(cfg *authserver.RunConfig, _ string) {
+		for _, delegate := range cfg.InboundGrants.TokenExchange.DelegateClients {
+			if delegate.ClientID != cfgBrokerID {
+				continue
+			}
+			delegate.TokenExchange.IDJAG.Targets = []authserver.DelegateClientIDJAGTarget{xrtIDJAGTarget(as2.issuer)}
+		}
+		if mutate != nil {
+			mutate(cfg)
+		}
+	}, opts...)
+	return &twoServerIDJAG{as1: as1, as2: as2}
+}
+
+// mintIDJAG mints an ID-JAG for AS-2 from a fresh grant for user-1.
+func (h *twoServerIDJAG) mintIDJAG(t *testing.T) string {
+	t.Helper()
+	return h.mintIDJAGWith(t, nil)
+}
+
+// mintIDJAGWith is mintIDJAG with the request form changed by mutate.
+func (h *twoServerIDJAG) mintIDJAGWith(t *testing.T, mutate func(url.Values)) string {
+	t.Helper()
+	grant := h.as1.idJAGGrant(t, h.as1.broker)
+	res := h.as1.requestIDJAGWith(t, h.as1.broker, grant, h.as2.issuer, mutate)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	return res.str(t, "access_token")
+}
+
+// TestIDJAGRedemptionAcrossTwoServers proves AS-1 mints an ID-JAG that AS-2
+// redeems for an access token.
+func TestIDJAGRedemptionAcrossTwoServers(t *testing.T) {
+	t.Parallel()
+	h := startTwoServerIDJAG(t)
+
+	res := h.as2.redeem(t, h.as2.client, h.mintIDJAG(t))
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
+	assert.Equal(t, h.as1.issuer+"#user-1", access["sub"], "sub is <AS-1 iss>#<sub>")
+	assert.Equal(t, h.as2.issuer, access["iss"])
+	assert.Equal(t, []any{xrtIDJAGResource}, access["aud"])
+	assert.Equal(t, xrtTargetClientID, access["client_id"])
+	assert.NotContains(t, access, "act")
+}
+
+// TestIDJAGRedemptionCarriesActorAcrossTwoServers proves the act claim AS-1
+// puts in an ID-JAG for a client with an actor profile survives redemption at
+// AS-2 into AS-2's signed access token.
+func TestIDJAGRedemptionCarriesActorAcrossTwoServers(t *testing.T) {
+	t.Parallel()
+	const agentID = "spiffe://example.org/ns/agents/sa/broker"
+	validator := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+	validator.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(tokenexchange.ActorResult{
+		AgentID: agentID, ExpiresAt: time.Now().Add(time.Hour),
+	}, nil).Times(1)
+	h := startTwoServerIDJAGWith(t, setBrokerActorProfile, withActorTestValidator(validator))
+
+	res := h.as2.redeem(t, h.as2.client, h.mintIDJAGWith(t, actorPairWith("actor-token")))
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
+	assert.Equal(t, h.as1.issuer+"#user-1", access["sub"], "sub is <AS-1 iss>#<sub>")
+	assert.Equal(t, map[string]any{"iss": actorTestActIssuer, "sub": agentID}, access["act"])
+}
+
+// TestIDJAGRedemptionRefusesResourceTheClaimDoesNotCover proves AS-2 refuses an
+// ID-JAG for a resource its resource claim does not name, and issues no token.
+// AS-2 governs both resources, the client may have both and the subject is
+// bound to both, so only the claim can refuse. The refusal leaves the
+// assertion unconsumed: the same ID-JAG then redeems for the resource it names.
+func TestIDJAGRedemptionRefusesResourceTheClaimDoesNotCover(t *testing.T) {
+	t.Parallel()
+	const otherResource = "https://gw.example.net/other-mcp"
+	h := startTwoServerIDJAGFor(t, []string{xrtIDJAGResource, otherResource}, nil)
+	assertion := h.mintIDJAG(t)
+	_, claims := decodeIDJAG(t, assertion)
+	require.Equal(t, xrtIDJAGResource, claims["resource"], "the ID-JAG names only the first resource")
+
+	res := postToken(t, h.as2.srv.URL, h.as2.client, url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {assertion},
+		"resource":   {otherResource},
+	})
+	assert.Equal(t, http.StatusBadRequest, res.status, res.body)
+	assert.Equal(t, "invalid_target", res.body["error"])
+	assert.NotContains(t, res.body["error_description"], "other-mcp", "the description must not echo the resource")
+	assert.NotContains(t, res.body, "access_token")
+
+	res = h.as2.redeem(t, h.as2.client, assertion)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
+	assert.Equal(t, []any{xrtIDJAGResource}, access["aud"])
+}

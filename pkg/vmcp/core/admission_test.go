@@ -432,12 +432,12 @@ func TestCedarAdmission_AllowResourceReadAndPromptGet(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockAuthorizer{results: map[string]mockResult{
-		"res-a": {authorized: true},
-		"p-a":   {authorized: false},
+		"harness://static/res-a": {authorized: true},
+		"p-a":                    {authorized: false},
 	}}
 	adm := newCedarAdmission(mock)
 
-	ok, err := adm.AllowResourceRead(context.Background(), cedarIdentity(), &vmcp.Resource{URI: "res-a"})
+	ok, err := adm.AllowResourceRead(context.Background(), cedarIdentity(), &vmcp.Resource{URI: "harness://static/res-a"})
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, authorizers.MCPFeatureResource, mock.calls[0].feature)
@@ -459,7 +459,7 @@ func TestCedarAdmission_WithCedarAuthorizer(t *testing.T) {
 
 	adm := cedarAdmissionWith(t,
 		`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		`permit(principal, action == Action::"read_resource", resource == Resource::"res-a");`,
+		`permit(principal, action == Action::"read_resource", resource == Resource::"harness://static/res-a");`,
 		`permit(principal, action == Action::"get_prompt", resource == Prompt::"p-a");`,
 	)
 	id := cedarIdentity()
@@ -481,10 +481,10 @@ func TestCedarAdmission_WithCedarAuthorizer(t *testing.T) {
 
 	t.Run("resource and prompt parity", func(t *testing.T) {
 		t.Parallel()
-		ok, err := adm.AllowResourceRead(ctx, id, &vmcp.Resource{URI: "res-a"})
+		ok, err := adm.AllowResourceRead(ctx, id, &vmcp.Resource{URI: "harness://static/res-a"})
 		require.NoError(t, err)
 		assert.True(t, ok)
-		ok, err = adm.AllowResourceRead(ctx, id, &vmcp.Resource{URI: "res-b"})
+		ok, err = adm.AllowResourceRead(ctx, id, &vmcp.Resource{URI: "harness://static/res-b"})
 		require.NoError(t, err)
 		assert.False(t, ok)
 

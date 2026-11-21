@@ -18,7 +18,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
-	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	exchange "github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -358,7 +359,7 @@ func addTokenExchangeConfig(
 	}
 
 	// Normalize SubjectTokenType to full URN (accepts both short forms and full URNs)
-	normalizedTokenType, err := tokenexchange.NormalizeTokenType(tokenExchangeSpec.SubjectTokenType)
+	normalizedTokenType, err := exchange.NormalizeTokenType(tokenExchangeSpec.SubjectTokenType)
 	if err != nil {
 		return fmt.Errorf("invalid subject token type: %w", err)
 	}

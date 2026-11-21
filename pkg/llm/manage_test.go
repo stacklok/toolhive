@@ -460,3 +460,65 @@ func TestConfig_ShortPromptCacheYAMLRoundTrip(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &got))
 	assert.True(t, got.ShortPromptCache)
 }
+
+// TestConfig_SetFields_PinsLegacyBedrockRecords checks that changing the
+// persisted Bedrock-compat setting first pins each Bedrock client record that
+// predates ToolConfig.BedrockCompat to the old setting, so the record keeps
+// saying what its setup wrote. The caller's records are not modified.
+func TestConfig_SetFields_PinsLegacyBedrockRecords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		compat   bool
+		set      *bool
+		wantRecs map[string]*bool
+	}{
+		{
+			name: "turning compat on pins legacy records to off",
+			set:  new(true),
+			wantRecs: map[string]*bool{
+				claudeCodeClient: new(false), codexClient: new(true), "cursor": nil,
+			},
+		},
+		{
+			name:   "turning compat off pins legacy records to on",
+			compat: true,
+			set:    new(false),
+			wantRecs: map[string]*bool{
+				claudeCodeClient: new(true), codexClient: new(true), "cursor": nil,
+			},
+		},
+		{
+			name:     "setting the same value leaves legacy records alone",
+			compat:   true,
+			set:      new(true),
+			wantRecs: map[string]*bool{claudeCodeClient: nil, codexClient: new(true), "cursor": nil},
+		},
+		{
+			name:     "leaving compat unset leaves legacy records alone",
+			wantRecs: map[string]*bool{claudeCodeClient: nil, codexClient: new(true), "cursor": nil},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			records := []ToolConfig{
+				{Tool: claudeCodeClient},
+				{Tool: codexClient, BedrockCompat: new(true)},
+				{Tool: "cursor"},
+			}
+			cfg := Config{Bedrock: BedrockConfig{Compat: tt.compat}, ConfiguredTools: records}
+
+			require.NoError(t, cfg.SetFields(SetOptions{BedrockCompat: tt.set}))
+
+			got := make(map[string]*bool, len(cfg.ConfiguredTools))
+			for _, tc := range cfg.ConfiguredTools {
+				got[tc.Tool] = tc.BedrockCompat
+			}
+			assert.Equal(t, tt.wantRecs, got)
+			assert.Nil(t, records[0].BedrockCompat, "the caller's records must not be modified")
+		})
+	}
+}

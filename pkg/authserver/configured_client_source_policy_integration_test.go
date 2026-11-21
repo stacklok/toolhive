@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/test/integration/authserver/helpers"
 )
@@ -61,7 +60,7 @@ func TestTokenExchangeSourcePolicyWithRealClientLogins(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	bootstrap, _, _, stopBootstrap := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 		configuredClients()(cfg)
-	}, newRedisStorage(redisServer))
+	}, newRedisStorage(t, redisServer))
 	tuiID := registerPublicClientViaDCR(t, bootstrap.URL, "tui")
 	otherID := registerPublicClientViaDCR(t, bootstrap.URL, "other")
 	stopBootstrap()
@@ -76,7 +75,7 @@ func TestTokenExchangeSourcePolicyWithRealClientLogins(t *testing.T) {
 	srv, _, _, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 		clients(cfg)
 		cfg.AllowedAudiences = []string{cfgAudienceA, cfgAudienceB}
-	}, newRedisStorage(redisServer))
+	}, newRedisStorage(t, redisServer))
 
 	auth := clientAuth{clientID: cfgBrokerID, secret: cfgClientSecret}
 	exchange := func(subjectToken, resource string) tokenResult {
@@ -136,7 +135,7 @@ func TestTokenExchangeSelfIssuedSubjectTokensModes(t *testing.T) {
 			clients := configuredClients(broker)
 			srv, _, _, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 				clients(cfg)
-			}, storage.NewMemoryStorage())
+			}, newStorageForBackend(t, "memory"))
 
 			otherID := registerPublicClientViaDCR(t, srv.URL, "other")
 			otherToken := publicClientAccessToken(t, srv.URL, otherID)

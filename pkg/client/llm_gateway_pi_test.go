@@ -90,7 +90,7 @@ func TestPiGatewaySetupAndTeardown(t *testing.T) {
 	require.True(t, *root.Providers[piAnthropicProviderName].Models[2].Reasoning)
 	require.Nil(t, root.Providers[piAnthropicProviderName].Models[2].Compat)
 
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path, true))
 	content, err = os.ReadFile(path)
 	require.NoError(t, err)
 	root.Providers = nil
@@ -135,7 +135,7 @@ func TestPiGatewayPreservesJSONCAndBOM(t *testing.T) {
 		require.Contains(t, providers, "personal")
 	}
 	assertPreserved()
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path, true))
 	assertPreserved()
 }
 
@@ -153,7 +153,7 @@ func TestPiGatewayAgentDirOverride(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(agentDir, "models.json"), path)
 	require.NoFileExists(t, filepath.Join(home, ".pi", "agent", "models.json"))
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path, true))
 	_, providers, err := readPiConfig(path)
 	require.NoError(t, err)
 	require.NotContains(t, providers, piProviderName)
@@ -219,7 +219,7 @@ func TestPiGatewayAnthropicOnly(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(providers[piAnthropicProviderName], &anthropic))
 	require.Equal(t, cfg.GatewayURL, anthropic.BaseURL)
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Pi), path, true))
 	_, providers, err = readPiConfig(path)
 	require.NoError(t, err)
 	require.NotContains(t, providers, piAnthropicProviderName)
@@ -236,7 +236,7 @@ func TestPiGatewayRejectsUnmanagedAnthropicProvider(t *testing.T) {
 	cfg := llmgateway.ApplyConfig{GatewayURL: "https://gateway.example", DiscoveredModels: []string{"gpt-5"}}
 	_, err := cm.ConfigureLLMGateway(ClientApp(Pi), cfg)
 	require.ErrorContains(t, err, "not managed")
-	require.ErrorContains(t, cm.RevertLLMGateway(ClientApp(Pi), path), "no longer managed")
+	require.ErrorContains(t, cm.RevertLLMGateway(ClientApp(Pi), path, true), "no longer managed")
 	content, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, original, content)
@@ -265,7 +265,7 @@ func TestPiGatewayRejectsUnownedProviderAndMissingModels(t *testing.T) {
 	cfg.DiscoveredModels = []string{"claude-sonnet-5"}
 	_, err = cm.ConfigureLLMGateway(ClientApp(Pi), cfg)
 	require.ErrorContains(t, err, "not managed")
-	require.ErrorContains(t, cm.RevertLLMGateway(ClientApp(Pi), path), "no longer managed")
+	require.ErrorContains(t, cm.RevertLLMGateway(ClientApp(Pi), path, true), "no longer managed")
 	content, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, original, content)

@@ -8,8 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/stacklok/toolhive-core/audit"
-	upstreamtoken "github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 )
 
 // PrincipalInfo contains the non-sensitive identity fields safe for external consumption.
@@ -233,15 +234,14 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		token = redacted
 	}
 
-	claims := i.Claims
-	if _, hasTsid := claims[upstreamtoken.TokenSessionIDClaimKey]; hasTsid {
-		claims = make(map[string]any, len(i.Claims))
-		for k, v := range i.Claims {
-			if k != upstreamtoken.TokenSessionIDClaimKey {
-				claims[k] = v
-			}
+	// Strip internal claims (tsid, delegated-access marker) from the copy.
+	// filterInternalClaims never mutates i.Claims.
+	claims := func() map[string]any {
+		if i.Claims == nil {
+			return nil
 		}
-	}
+		return filterInternalClaims(jwt.MapClaims(i.Claims))
+	}()
 
 	// Redact upstream tokens: preserve keys, replace non-empty values
 	var redactedUpstreamTokens map[string]string

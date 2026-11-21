@@ -19,8 +19,8 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 const (
@@ -651,14 +651,14 @@ func isTransientNetworkError(err error) bool {
 // rendered a verdict on the cached credentials (invalid_grant, invalid_client,
 // etc.). Used at state-transition boundaries to decide whether to emit a
 // DCR/CIMD remediation hint alongside the unauthentication. The rules live in
-// pkg/auth/oautherr; see IsPermanentCredentialError for why a non-spec-compliant
+// pkg/oauthproto/oautherr; see IsPermanentCredentialError for why a non-spec-compliant
 // 4xx is deliberately not "permanent".
 func isPermanentTokenEndpointError(err error) bool {
 	return oautherr.IsPermanentCredentialError(err)
 }
 
 // isTransientRetrieveError reports whether an *oauth2.RetrieveError should
-// be treated as transient. The rules live in pkg/auth/oautherr so this
+// be treated as transient. The rules live in pkg/oauthproto/oautherr so this
 // package and the LLM-gateway token source cannot drift on them.
 func isTransientRetrieveError(retrieveErr *oauth2.RetrieveError) bool {
 	return oautherr.IsTransientRetrieveError(retrieveErr)
@@ -666,7 +666,7 @@ func isTransientRetrieveError(retrieveErr *oauth2.RetrieveError) bool {
 
 // isOAuthParseError detects errors from the oauth2 library that indicate the
 // token endpoint returned an unparsable response body on a 2xx status. The
-// detection lives in pkg/auth/oautherr.
+// detection lives in pkg/oauthproto/oautherr.
 func isOAuthParseError(err error) bool {
 	return oautherr.IsParseError(err)
 }

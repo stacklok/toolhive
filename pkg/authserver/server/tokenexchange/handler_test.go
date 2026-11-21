@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -23,8 +24,8 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -139,6 +140,49 @@ func signActorTokenForClient(t *testing.T, tj *testJWKS, subject, clientID strin
 	return tj.signToken(t, claims, map[string]any{
 		"client_id": clientID,
 	})
+}
+
+func TestTokenExchangeHandler_IDJAGActorToken(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "ID-JAG actor rejected", typ: oauthproto.JWTTypeIDJAG, wantErr: true},
+		{name: "ordinary actor accepted", typ: "JWT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t, tj, 15*time.Minute)
+			claims := validClaims()
+			claims.Subject = testAgentClientID
+			actorToken := tj.signTokenWithType(t, tt.typ, claims, map[string]any{
+				"client_id": testAgentClientID,
+			})
+			form := defaultFormValues(t, tj)
+			form.Set("actor_token", actorToken)
+			form.Set("actor_token_type", oauthproto.TokenTypeJWT)
+			req := newAccessRequest(t, defaultClient(), form)
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantErr {
+				require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+				var rfcErr *fosite.RFC6749Error
+				require.ErrorAs(t, err, &rfcErr)
+				assert.Contains(t, rfcErr.Reason(), "actor token is invalid")
+				return
+			}
+			require.NoError(t, err)
+			sess := req.GetSession().(*session.Session)
+			assert.Equal(t, "user-123", sess.JWTClaims.Subject)
+			assert.Equal(t, map[string]any{"iss": testIssuer, "sub": testAgentClientID}, sess.JWTClaims.Extra["act"])
+		})
+	}
 }
 
 func TestTokenExchangeHandler_CanHandleTokenEndpointRequest(t *testing.T) {
@@ -810,8 +854,10 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				f.Set("audience", "https://not-allowed.example.com")
 				return f
 			},
-			lifespan: 15 * time.Minute,
-			wantErr:  true,
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: server.ErrInvalidTarget,
+			hintContains: "not permitted to request audience",
 		},
 		{
 			// The subject token is valid only for testIssuer, but the client is
@@ -1482,6 +1528,7 @@ func TestTokenExchangeHandler_AuthorizationDetailsRequest(t *testing.T) {
 		name               string
 		external           bool
 		actorSubject       string
+		spiffeID           string
 		requestedTokenType string
 		subjectScope       string
 		requestedScope     string
@@ -1536,6 +1583,15 @@ func TestTokenExchangeHandler_AuthorizationDetailsRequest(t *testing.T) {
 			},
 			wantClaims: map[string]any{"azp": "trusted-app"},
 		},
+		{
+			name:      "SPIFFE client without an actor token acts as its SPIFFE ID",
+			spiffeID:  "spiffe://example.org/ns/default/agent-a",
+			wantActor: "spiffe://example.org/ns/default/agent-a",
+			wantSubject: authorizationdetails.Subject{
+				Issuer: testIssuer, Subject: "spiffe://example.org/ns/default/agent-a", ClientID: testAgentClientID,
+				JWTID: "jti-abc-123", Audience: []string{testIssuer},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1565,6 +1621,12 @@ func TestTokenExchangeHandler_AuthorizationDetailsRequest(t *testing.T) {
 				form.Set("subject_token", externalJWKS.signToken(t, claims, map[string]any{"azp": "trusted-app"}))
 			} else {
 				h = newTestHandler(t, selfJWKS, 15*time.Minute)
+				if tt.spiffeID != "" {
+					claims := validClaims()
+					claims.Subject = tt.spiffeID
+					form.Set("subject_token", selfJWKS.signToken(t, claims, validExtraClaims()))
+					form.Set("resource", testIssuer)
+				}
 				if tt.subjectScope != "" {
 					extra := validExtraClaims()
 					extra["scope"] = tt.subjectScope
@@ -1581,7 +1643,13 @@ func TestTokenExchangeHandler_AuthorizationDetailsRequest(t *testing.T) {
 			if tt.requestedTokenType != "" {
 				form.Set("requested_token_type", tt.requestedTokenType)
 			}
-			req := newAccessRequest(t, defaultClient(), form)
+			var client fosite.Client = defaultClient()
+			if tt.spiffeID != "" {
+				client = spiffetest.AuthenticatedClient(t,
+					spiffetest.WithID(testAgentClientID), spiffetest.WithSPIFFEID(tt.spiffeID),
+					spiffetest.WithResources(testIssuer))
+			}
+			req := newAccessRequest(t, client, form)
 			if tt.requestedScope != "" {
 				req.SetRequestedScopes(fosite.Arguments{tt.requestedScope})
 			}
@@ -1824,6 +1892,98 @@ func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
 	}
 }
 
+// TestTokenExchangeHandler_AudienceRefusalErrorCode pins the error code returned when
+// a requested audience is refused. RFC 8693 §2.2.2 says invalid_target SHOULD be used
+// when the server is unwilling to issue a token for the requested resource or audience,
+// so the "audience" and "resource" parameters must report the same code. A request that
+// names no target and fails on the server-chosen default audience, or whose audience is
+// not a parseable URI, is a malformed request and stays invalid_request.
+func TestTokenExchangeHandler_AudienceRefusalErrorCode(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+
+	tests := []struct {
+		name             string
+		allowedAudiences []string
+		clientAudience   []string
+		requestedAud     []string
+		resource         string
+		wantCode         string
+		wantHint         string
+	}{
+		{
+			name:             "audience outside the client's audiences is invalid_target",
+			allowedAudiences: []string{testIssuer},
+			clientAudience:   []string{"https://allowed.example.com"},
+			requestedAud:     []string{"https://not-allowed.example.com"},
+			wantCode:         "invalid_target",
+			wantHint:         `The client is not permitted to request audience "https://not-allowed.example.com"`,
+		},
+		{
+			name:             "second of two audiences outside the client's audiences names that audience",
+			allowedAudiences: []string{testIssuer},
+			clientAudience:   []string{testIssuer},
+			requestedAud:     []string{testIssuer, "https://not-allowed.example.com"},
+			wantCode:         "invalid_target",
+			wantHint:         `"https://not-allowed.example.com"`,
+		},
+		{
+			name:             "resource outside the client's audiences is invalid_target",
+			allowedAudiences: []string{testIssuer, "https://other.example.com"},
+			clientAudience:   []string{testIssuer},
+			resource:         "https://other.example.com",
+			wantCode:         "invalid_target",
+			wantHint:         "The client is not permitted to request resource",
+		},
+		{
+			name:             "unparsable audience stays invalid_request",
+			allowedAudiences: []string{testIssuer},
+			clientAudience:   []string{testIssuer},
+			requestedAud:     []string{"https://exa mple.com/%zz"},
+			wantCode:         "invalid_request",
+		},
+		{
+			// No target was requested; the server picked the default audience and the
+			// client is not registered for it. The client's fix is to send an explicit
+			// parameter, so this stays a missing-parameter invalid_request.
+			name:             "default audience refused for the client stays invalid_request",
+			allowedAudiences: []string{testIssuer},
+			clientAudience:   []string{"https://other.example.com"},
+			wantCode:         "invalid_request",
+			wantHint:         "an explicit 'resource' or 'audience' parameter is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t, tj, 15*time.Minute)
+			h.allowedAudiences = tt.allowedAudiences
+
+			client := defaultClient()
+			client.Audience = tt.clientAudience
+			form := defaultFormValues(t, tj)
+			if tt.resource != "" {
+				form.Set("resource", tt.resource)
+			}
+			req := newAccessRequest(t, client, form)
+			if len(tt.requestedAud) > 0 {
+				req.SetRequestedAudience(fosite.Arguments(tt.requestedAud))
+			}
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			require.Error(t, err)
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, tt.wantCode, rfcErr.ErrorField)
+			assert.Equal(t, http.StatusBadRequest, rfcErr.CodeField)
+			assert.Contains(t, rfcErr.Reason(), tt.wantHint)
+		})
+	}
+}
+
 func TestCheckDelegationConsent(t *testing.T) {
 	t.Parallel()
 
@@ -1838,7 +1998,8 @@ func TestCheckDelegationConsent(t *testing.T) {
 		// that test the clientID/actorSub split itself.
 		clientID           string
 		actorSub           string
-		configuredDelegate bool // defaults to false, reproducing pre-delegate-exception behavior
+		spiffeID           string // verified SPIFFE ID of the caller; empty for a non-SPIFFE client
+		configuredDelegate bool   // defaults to false, reproducing pre-delegate-exception behavior
 		wantErr            bool
 		errContains        string
 	}{
@@ -2073,6 +2234,101 @@ func TestCheckDelegationConsent(t *testing.T) {
 			wantErr:     true,
 			errContains: "different client",
 		},
+		{
+			name:     "SPIFFE client exchanging a token whose sub is its SPIFFE ID accepted",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "spiffe://example.org/ns/default/agent-a"},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name:     "SPIFFE client exchanging a sibling workload's token rejected",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "spiffe://example.org/ns/default/agent-a"},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-b",
+			spiffeID: "spiffe://example.org/ns/default/agent-b",
+			wantErr:  true, errContains: "different workload",
+		},
+		{
+			name:     "SPIFFE client with token sub=user act.sub=client ID rejected",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", Extra: map[string]any{"act": map[string]any{"sub": "wildcard-client"}}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+			wantErr:  true, errContains: "different workload",
+		},
+		{
+			name:     "SPIFFE client with outermost act.sub equal to its SPIFFE ID accepted",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", Extra: map[string]any{"act": map[string]any{"sub": "spiffe://example.org/ns/default/agent-a"}}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name:     "outermost act.sub equal to caller accepted even when nested act names a sibling",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", Extra: map[string]any{"act": map[string]any{"sub": "spiffe://example.org/ns/default/agent-a", "act": map[string]any{"sub": "spiffe://example.org/ns/default/agent-b"}}}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name:     "outermost act.sub naming a sibling rejected",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", Extra: map[string]any{"act": map[string]any{"sub": "spiffe://example.org/ns/default/agent-b"}}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+			wantErr:  true, errContains: "different workload",
+		},
+		{
+			name:     "caller named only in a nested act is rejected",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", Extra: map[string]any{"act": map[string]any{"sub": "wildcard-client", "act": map[string]any{"sub": "spiffe://example.org/ns/default/agent-a"}}}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+			wantErr:  true, errContains: "different workload",
+		},
+		{
+			name:     "malformed act rejected",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", Extra: map[string]any{"act": "not-an-object"}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+			wantErr:  true, errContains: "different workload",
+		},
+		{
+			name:     "may_act naming the client ID accepted for a SPIFFE caller",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", MayAct: &MayActClaim{Sub: "wildcard-client"}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name:     "may_act naming the caller SPIFFE ID accepted",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", MayAct: &MayActClaim{Sub: "spiffe://example.org/ns/default/agent-a"}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name:     "may_act naming a sibling SPIFFE ID rejected",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", MayAct: &MayActClaim{Sub: "spiffe://example.org/ns/default/agent-b"}},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID:    "spiffe://example.org/ns/default/agent-a",
+			wantErr:     true,
+			errContains: "does not authorize this client",
+		},
+		{
+			name:     "may_act naming the client ID rejected for a non-SPIFFE caller with a different actorSub",
+			claims:   &ValidatedClaims{ClientID: "wildcard-client", Subject: "user-1", MayAct: &MayActClaim{Sub: "wildcard-client"}},
+			clientID: "wildcard-client", actorSub: "other-actor",
+			wantErr:     true,
+			errContains: "does not authorize this client",
+		},
+		{
+			name: "SPIFFE client with an external issuer token is unaffected",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "ext-user", ExternalIssuer: "https://idp.example.com",
+			},
+			clientID: "wildcard-client", actorSub: "spiffe://example.org/ns/default/agent-a",
+			spiffeID: "spiffe://example.org/ns/default/agent-a",
+		},
+		{
+			name: "non-SPIFFE client with another subject is unaffected",
+			claims: &ValidatedClaims{
+				ClientID: "wildcard-client", Subject: "spiffe://example.org/ns/default/agent-a",
+			},
+			clientID: "wildcard-client", actorSub: "wildcard-client",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2085,7 +2341,7 @@ func TestCheckDelegationConsent(t *testing.T) {
 			if actorSub == "" {
 				actorSub = actorID
 			}
-			err := checkDelegationConsent(tt.claims, clientID, actorSub, tt.configuredDelegate)
+			err := checkDelegationConsent(tt.claims, clientID, actorSub, tt.spiffeID, tt.configuredDelegate)
 			if tt.wantErr {
 				require.Error(t, err)
 				var rfcErr *fosite.RFC6749Error
@@ -2380,7 +2636,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 
 	// reExchange re-submits a first exchange's resulting session as a new
 	// subject_token: the delegated token's own "iss" is always this server's
-	// own issuer (see delegatedSubject's doc comment), so a second exchange
+	// own issuer (see claimnames.QualifySubject's doc comment), so a second exchange
 	// validates it via the self-issued path, not the external-issuer path.
 	// It carries forward exactly the claims a real re-exchange would see on
 	// the wire — client_id, the nested act chain, and external_issuer.
@@ -3001,6 +3257,9 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant),
 			"expected ErrInvalidGrant, got: %v", err)
+		var rfcErr *fosite.RFC6749Error
+		require.ErrorAs(t, err, &rfcErr)
+		assert.Equal(t, "The delegated token's bound lifetime has already elapsed.", rfcErr.HintField)
 		assert.Empty(t, responder.GetAccessToken())
 		assert.Nil(t, responder.GetExtra("authorization_details"))
 		assert.Empty(t, storage.createdSig)
@@ -3033,46 +3292,480 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 	})
 }
 
-// TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences
-// is a regression test for a bug where the RFC 8707 "resource" parameter was
-// checked against a SPIFFE client's audience allowlist instead of its
-// independently configured resource allowlist: a resource the client was
-// registered for was rejected, and a resource the client was NOT registered
-// for -- but which happened to be one of its audiences -- was granted.
-func TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences(t *testing.T) {
+// TestGrantAndBoundAudiences_SPIFFEClient checks that the handler hands SPIFFE
+// clients to server.GrantSingleResource (one refusal row, the full rule is
+// covered by server.TestGrantSingleResource) and then bounds the result by the
+// subject token's audience.
+func TestGrantAndBoundAudiences_SPIFFEClient(t *testing.T) {
+	t.Parallel()
+
+	const (
+		permitted    = testIssuer
+		notPermitted = "https://other.example.com"
+	)
+	tests := []struct {
+		name        string
+		form        url.Values
+		subjectAud  []string
+		wantGranted []string
+		wantErr     error
+	}{
+		{
+			name: "one resource in the association is granted", form: url.Values{"resource": {permitted}},
+			subjectAud: []string{permitted}, wantGranted: []string{permitted},
+		},
+		{
+			name: "audience parameter is rejected", form: url.Values{"audience": {permitted}},
+			subjectAud: []string{permitted}, wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "resource outside the subject token audience is rejected", form: url.Values{"resource": {permitted}},
+			subjectAud: []string{notPermitted}, wantErr: server.ErrInvalidTarget,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			h.allowedAudiences = []string{permitted, notPermitted}
+			client := spiffetest.AuthenticatedClient(t, spiffetest.WithResources(permitted))
+			req := newAccessRequest(t, client, tt.form)
+
+			err := h.grantAndBoundAudiences(
+				context.Background(), req, client, &ValidatedClaims{Audience: tt.subjectAud})
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, tt.wantErr), "got %v", err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantGranted, []string(req.GetGrantedAudience()))
+		})
+	}
+}
+
+// TestHandleTokenEndpointRequest_SPIFFESubjectTokenOwnership proves the SPIFFE
+// ID of the caller reaches the consent check: two workloads share one client ID
+// through a wildcard association, and only the one a client_credentials token
+// was issued to may exchange it.
+func TestHandleTokenEndpointRequest_SPIFFESubjectTokenOwnership(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workloadA = "spiffe://example.org/ns/default/agent-a"
+		workloadB = "spiffe://example.org/ns/default/agent-b"
+	)
+	tests := []struct {
+		name    string
+		caller  string
+		act     map[string]any
+		sub     string
+		wantErr bool
+	}{
+		{name: "the workload the token was issued to", caller: workloadA, sub: workloadA},
+		{name: "a sibling workload with the same client ID", caller: workloadB, sub: workloadA, wantErr: true},
+		{
+			name:   "a sibling re-exchanging a token naming the workload in sub and the client in act",
+			caller: workloadB, sub: workloadA, act: map[string]any{"sub": testAgentClientID}, wantErr: true,
+		},
+		{
+			name:   "the workload exchanging a user token whose act.sub is the client ID",
+			caller: workloadA, sub: "user-123", act: map[string]any{"sub": testAgentClientID}, wantErr: true,
+		},
+		{
+			name:   "a sibling exchanging a user token whose act.sub is the client ID",
+			caller: workloadB, sub: "user-123", act: map[string]any{"sub": testAgentClientID}, wantErr: true,
+		},
+		{
+			name:   "the workload exchanging a user token whose act.sub is its SPIFFE ID",
+			caller: workloadA, sub: "user-123", act: map[string]any{"sub": workloadA},
+		},
+		{
+			name:   "a sibling exchanging a user token whose act.sub names the workload",
+			caller: workloadB, sub: "user-123", act: map[string]any{"sub": workloadA}, wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			claims := validClaims()
+			claims.Subject = tt.sub
+			extra := validExtraClaims()
+			if tt.act != nil {
+				extra["act"] = tt.act
+			}
+			form := url.Values{
+				"grant_type":         {oauthproto.GrantTypeTokenExchange},
+				"subject_token":      {tj.signToken(t, claims, extra)},
+				"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				"resource":           {testIssuer},
+			}
+			client := spiffetest.AuthenticatedClient(t,
+				spiffetest.WithID(testAgentClientID), spiffetest.WithSPIFFEID(tt.caller),
+				spiffetest.WithResources(testIssuer))
+			req := newAccessRequest(t, client, form)
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+
+			if tt.wantErr {
+				require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+				assert.Contains(t, fosite.ErrorToRFC6749Error(err).HintField, "different workload")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// signingAccessTokenStrategy is an AccessTokenStrategy that issues a real JWT
+// built from the requester's session, signed with the test key, so an issued
+// token can be presented as the next exchange's subject token.
+type signingAccessTokenStrategy struct {
+	t  *testing.T
+	tj *testJWKS
+}
+
+func (*signingAccessTokenStrategy) AccessTokenSignature(_ context.Context, token string) string {
+	return "sig-" + token
+}
+
+func (s *signingAccessTokenStrategy) GenerateAccessToken(_ context.Context, req fosite.Requester) (string, string, error) {
+	sess, ok := req.GetSession().(*session.Session)
+	require.True(s.t, ok, "session must be a *session.Session")
+	claims := validClaims()
+	claims.Subject = sess.JWTClaims.Subject
+	token := s.tj.signToken(s.t, claims, sess.JWTClaims.Extra)
+	return token, "sig-" + token, nil
+}
+
+func (*signingAccessTokenStrategy) ValidateAccessToken(_ context.Context, _ fosite.Requester, _ string) error {
+	return nil
+}
+
+// TestHandleTokenEndpointRequest_SPIFFEBindingSurvivesReExchange does a real
+// round trip: a workload exchanges a token without an actor token, the issued
+// access token is fed back as the next subject token, and a sibling workload
+// sharing the client ID is refused while the workload itself is accepted.
+func TestHandleTokenEndpointRequest_SPIFFEBindingSurvivesReExchange(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workloadA = "spiffe://example.org/ns/default/agent-a"
+		workloadB = "spiffe://example.org/ns/default/agent-b"
+	)
+	tj := newTestJWKS(t)
+	h := newTestHandlerWithHelper(t, tj, time.Hour, &mockAccessTokenStrategy{}, &mockAccessTokenStorage{})
+	h.AccessTokenStrategy = &signingAccessTokenStrategy{t: t, tj: tj}
+
+	exchange := func(caller, subjectToken string) (string, *session.Session, error) {
+		form := url.Values{
+			"grant_type":         {oauthproto.GrantTypeTokenExchange},
+			"subject_token":      {subjectToken},
+			"subject_token_type": {oauthproto.TokenTypeAccessToken},
+			"resource":           {testIssuer},
+		}
+		client := spiffetest.AuthenticatedClient(t,
+			spiffetest.WithID(testAgentClientID), spiffetest.WithSPIFFEID(caller),
+			spiffetest.WithResources(testIssuer))
+		req := newAccessRequest(t, client, form)
+		if err := h.HandleTokenEndpointRequest(context.Background(), req); err != nil {
+			return "", nil, err
+		}
+		responder := fosite.NewAccessResponse()
+		if err := h.PopulateTokenEndpointResponse(context.Background(), req, responder); err != nil {
+			return "", nil, err
+		}
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok, "session must be a *session.Session")
+		return responder.GetAccessToken(), sess, nil
+	}
+	requireDifferentWorkload := func(t *testing.T, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+		assert.Contains(t, fosite.ErrorToRFC6749Error(err).HintField, "different workload")
+	}
+
+	// The user's token delegated to workload A through an actor token.
+	delegated := tj.signToken(t, validClaims(), func() map[string]any {
+		extra := validExtraClaims()
+		extra["act"] = map[string]any{"sub": workloadA}
+		return extra
+	}())
+
+	_, _, err := exchange(workloadB, delegated)
+	requireDifferentWorkload(t, err)
+
+	// A exchanges it without an actor token: act.sub is A's SPIFFE ID, and the
+	// client_id claim stays the shared client ID.
+	issued, sess, err := exchange(workloadA, delegated)
+	require.NoError(t, err)
+	require.NotEmpty(t, issued)
+	act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+	require.True(t, ok, "act claim must be a map")
+	assert.Equal(t, workloadA, act["sub"])
+	assert.Equal(t, testAgentClientID, sess.JWTClaims.Extra["client_id"])
+
+	_, _, err = exchange(workloadB, issued)
+	requireDifferentWorkload(t, err)
+
+	again, sess, err := exchange(workloadA, issued)
+	require.NoError(t, err)
+	act, ok = sess.JWTClaims.Extra["act"].(map[string]any)
+	require.True(t, ok, "act claim must be a map")
+	assert.Equal(t, workloadA, act["sub"])
+
+	// The chain keeps working for A and stays closed to B at every hop.
+	_, _, err = exchange(workloadB, again)
+	requireDifferentWorkload(t, err)
+}
+
+// TestHandleTokenEndpointRequest_NonSPIFFEActorWithoutActorToken proves a client
+// that is not a SPIFFE client is still its own actor when it sends no
+// actor_token.
+func TestHandleTokenEndpointRequest_NonSPIFFEActorWithoutActorToken(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
 	h := newTestHandler(t, tj, time.Hour)
-	// Both values must be server-wide allowed so the test isolates the
-	// per-client check (grantResourceAudience) from the server-wide one.
-	h.allowedAudiences = []string{testIssuer, "https://other.example.com"}
+	req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
 
-	const registeredResource = testIssuer
-	const registeredAudience = "https://other.example.com"
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		[]string{registeredAudience},
-		[]string{registeredResource},
+	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
+
+	sess, ok := req.GetSession().(*session.Session)
+	require.True(t, ok, "session must be a *session.Session")
+	act, ok := sess.JWTClaims.Extra["act"].(map[string]any)
+	require.True(t, ok, "act claim must be a map")
+	assert.Equal(t, testAgentClientID, act["sub"])
+}
+
+// TestHandleTokenEndpointRequest_SPIFFEActorToken proves an authenticated SPIFFE
+// caller can only present an actor_token whose subject is its own SPIFFE ID, so
+// a sibling workload cannot borrow another workload's identity as act.sub or to
+// satisfy a may_act claim.
+func TestHandleTokenEndpointRequest_SPIFFEActorToken(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workloadA = "spiffe://example.org/ns/default/agent-a"
+		workloadB = "spiffe://example.org/ns/default/agent-b"
 	)
-	require.NoError(t, err)
+	tests := []struct {
+		name         string
+		caller       string
+		actorSubject string
+		mayAct       string
+		wantErr      error
+		wantHint     string
+		wantActSub   string
+	}{
+		{
+			name: "caller presents its own client_credentials token", caller: workloadA,
+			actorSubject: workloadA, wantActSub: workloadA,
+		},
+		{
+			name: "caller presents a sibling's client_credentials token", caller: workloadB,
+			actorSubject: workloadA, wantErr: fosite.ErrInvalidRequest,
+			wantHint: "does not match the authenticated workload",
+		},
+		{
+			name: "sibling cannot satisfy a may_act naming the other workload", caller: workloadB,
+			actorSubject: workloadA, mayAct: workloadA, wantErr: fosite.ErrInvalidRequest,
+			wantHint: "does not match the authenticated workload",
+		},
+		{
+			name: "caller's own actor token satisfies a may_act naming it", caller: workloadA,
+			actorSubject: workloadA, mayAct: workloadA, wantActSub: workloadA,
+		},
+		{
+			name: "caller cannot assert a distinct actor", caller: workloadA,
+			actorSubject: "other-agent", wantErr: fosite.ErrInvalidRequest,
+			wantHint: "does not match the authenticated workload",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("resource in the client's resources is granted", func(t *testing.T) {
-		t.Parallel()
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			extra := validExtraClaims()
+			subjectClaims := validClaims()
+			if tt.mayAct != "" {
+				extra["may_act"] = map[string]any{"sub": tt.mayAct}
+			} else {
+				// Without may_act the subject token must belong to the caller.
+				subjectClaims.Subject = tt.caller
+			}
+			form := url.Values{
+				"grant_type":         {oauthproto.GrantTypeTokenExchange},
+				"subject_token":      {tj.signToken(t, subjectClaims, extra)},
+				"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				"actor_token":        {signActorToken(t, tj, tt.actorSubject)},
+				"actor_token_type":   {oauthproto.TokenTypeJWT},
+				"resource":           {testIssuer},
+			}
+			client := spiffetest.AuthenticatedClient(t,
+				spiffetest.WithID(testAgentClientID), spiffetest.WithSPIFFEID(tt.caller),
+				spiffetest.WithResources(testIssuer))
+			req := newAccessRequest(t, client, form)
 
-		req := newAccessRequest(t, client, url.Values{"resource": {registeredResource}})
-		require.NoError(t, h.grantResourceAudience(context.Background(), req, client))
-		assert.Contains(t, req.GetGrantedAudience(), registeredResource)
-	})
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
 
-	t.Run("resource that is only an audience, not a resource, is rejected", func(t *testing.T) {
-		t.Parallel()
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Contains(t, fosite.ErrorToRFC6749Error(err).HintField, tt.wantHint)
+				return
+			}
+			require.NoError(t, err)
+			sess, ok := req.GetSession().(*session.Session)
+			require.True(t, ok)
+			act, ok := sess.JWTClaims.Extra["act"].(map[string]interface{})
+			require.True(t, ok, "act claim must be a map")
+			assert.Equal(t, tt.wantActSub, act["sub"])
+		})
+	}
+}
 
-		req := newAccessRequest(t, client, url.Values{"resource": {registeredAudience}})
-		err := h.grantResourceAudience(context.Background(), req, client)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, server.ErrInvalidTarget))
-		assert.Empty(t, req.GetGrantedAudience())
-	})
+// TestGrantAndBoundAudiences_DelegateClientKeepsGenericPath proves a
+// non-SPIFFE client may still send audience= and still gets the default
+// audience when it sends no target.
+func TestGrantAndBoundAudiences_DelegateClientKeepsGenericPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		requested fosite.Arguments
+	}{
+		{name: "audience parameter is granted", requested: fosite.Arguments{testIssuer}},
+		{name: "no target gets the default audience"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			h.allowedAudiences = []string{testIssuer}
+			client := &fosite.DefaultClient{ID: "delegate", Audience: []string{testIssuer}}
+			req := newAccessRequest(t, client, url.Values{})
+			req.SetRequestedAudience(tt.requested)
+
+			require.NoError(t, h.grantAndBoundAudiences(
+				context.Background(), req, client, &ValidatedClaims{Audience: []string{testIssuer}}))
+			assert.Equal(t, []string{testIssuer}, []string(req.GetGrantedAudience()))
+		})
+	}
+}
+
+// resourceListClient is a plain client that is not a SPIFFE client but carries a
+// resource list.
+type resourceListClient struct {
+	*fosite.DefaultClient
+	resources []string
+}
+
+func (c resourceListClient) Resources() []string { return c.resources }
+
+// TestGrantAndBoundAudiences_ResourceListClientGetsSingleResourceRule proves the
+// single-resource rule is chosen by the Resources capability, not by the SPIFFE
+// wrapper type: a sub-path of a listed resource, which the generic path would
+// grant, is refused.
+func TestGrantAndBoundAudiences_ResourceListClientGetsSingleResourceRule(t *testing.T) {
+	t.Parallel()
+
+	const subPath = testIssuer + "/v1"
+	tj := newTestJWKS(t)
+	h := newTestHandler(t, tj, time.Hour)
+	h.allowedAudiences = []string{testIssuer, subPath}
+	client := resourceListClient{
+		DefaultClient: &fosite.DefaultClient{ID: "scoped"},
+		resources:     []string{testIssuer},
+	}
+	req := newAccessRequest(t, client, url.Values{"resource": {subPath}})
+
+	err := h.grantAndBoundAudiences(
+		context.Background(), req, client, &ValidatedClaims{Audience: []string{subPath}})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, server.ErrInvalidTarget), "got %v", err)
+}
+
+// TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource proves the
+// generic path grants a sub-path of a registered audience as a resource, which
+// the SPIFFE path rejects (see server.TestGrantSingleResource in
+// pkg/authserver/server/audience_test.go).
+func TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource(t *testing.T) {
+	t.Parallel()
+
+	const subPath = testIssuer + "/v1"
+	tj := newTestJWKS(t)
+	h := newTestHandler(t, tj, time.Hour)
+	h.allowedAudiences = []string{testIssuer, subPath}
+	client := &fosite.DefaultClient{ID: "delegate", Audience: []string{testIssuer}}
+	req := newAccessRequest(t, client, url.Values{"resource": {subPath}})
+
+	require.NoError(t, h.grantAndBoundAudiences(
+		context.Background(), req, client, &ValidatedClaims{Audience: []string{subPath}}))
+	assert.Equal(t, []string{subPath}, []string(req.GetGrantedAudience()))
+}
+
+func TestIssueBoundedAccessTokenBuildsElapsedErrorOnlyWhenElapsed(t *testing.T) {
+	t.Parallel()
+
+	errElapsed := errors.New("bound lifetime elapsed")
+
+	tests := []struct {
+		name           string
+		sessionExpiry  time.Time
+		wantCalls      int
+		wantErrElapsed bool
+	}{
+		{name: "no session expiry does not call elapsed", wantCalls: 0},
+		{name: "future session expiry does not call elapsed", sessionExpiry: time.Now().Add(time.Hour), wantCalls: 0},
+		{
+			name:           "past session expiry calls elapsed and returns its error",
+			sessionExpiry:  time.Now().Add(-time.Second),
+			wantCalls:      1,
+			wantErrElapsed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			helper := &oauth2.HandleHelper{
+				AccessTokenStrategy: &mockAccessTokenStrategy{},
+				AccessTokenStorage:  &mockAccessTokenStorage{},
+			}
+
+			// session.New initialises the embedded JWT session; a bare
+			// &session.Session{} has a nil one and panics on SetExpiresAt.
+			sess := session.New("", "", "", session.UserClaims{})
+			if !tt.sessionExpiry.IsZero() {
+				sess.SetExpiresAt(fosite.AccessToken, tt.sessionExpiry)
+			}
+			req := fosite.NewAccessRequest(sess)
+
+			calls := 0
+			elapsed := func() error {
+				calls++
+				return errElapsed
+			}
+
+			err := issueBoundedAccessToken(
+				context.Background(), helper, 15*time.Minute, req, fosite.NewAccessResponse(), elapsed)
+
+			assert.Equal(t, tt.wantCalls, calls)
+			if tt.wantErrElapsed {
+				require.ErrorIs(t, err, errElapsed)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

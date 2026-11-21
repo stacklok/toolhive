@@ -75,9 +75,9 @@ func findPlatformContainerSocket(rt runtime.Type) ([]string, runtime.Type, error
 		//nolint:gosec // G706: socket path from trusted environment variable
 		slog.Debug("using Colima socket from env", "path", customSocketPath)
 		if _, err := os.Stat(customSocketPath); err != nil { //nolint:gosec // G703: socket path from trusted environment variable
-			return nil, runtime.TypeDocker, fmt.Errorf("invalid Colima socket path: %w", err)
+			return nil, runtime.TypeColima, fmt.Errorf("invalid Colima socket path: %w", err)
 		}
-		return []string{customSocketPath}, runtime.TypeDocker, nil
+		return []string{customSocketPath}, runtime.TypeColima, nil
 	}
 
 	if rt == runtime.TypePodman {

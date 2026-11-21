@@ -91,6 +91,7 @@ func newDCRRequest(rc *authserver.UpstreamRunConfig, localIssuer string) (*dcr.R
 	return &dcr.Request{
 		Issuer: localIssuer, RedirectURI: redirectURI, Scopes: scopes,
 		DiscoveryURL: discoveryURL, RegistrationEndpoint: dcrConfig.RegistrationEndpoint,
+		ClientName:              dcrConfig.ClientName,
 		RotationKey:             dcrConfig.RotationKey,
 		RegistrationProbe:       dcr.RegistrationProbe(dcrConfig.RegistrationProbe),
 		TokenEndpointAuthMethod: authMethod,

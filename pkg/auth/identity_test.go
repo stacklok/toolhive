@@ -5,6 +5,7 @@ package auth
 
 import (
 	"encoding/json"
+	"maps"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -484,7 +485,7 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "strips_tsid_claim_from_serialized_claims",
+			name: "strips_internal_claims_from_serialized_claims",
 			identity: &Identity{
 				PrincipalInfo: PrincipalInfo{
 					Subject: "user123",
@@ -492,6 +493,7 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 						"tsid":   "session-xyz",
 						"sub":    "user123",
 						"org_id": "org456",
+						"https://toolhive.dev/claims/delegated_access": "true",
 					},
 				},
 			},
@@ -506,8 +508,12 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 				require.True(t, ok, "claims should be a map")
 				_, hasTsid := claims["tsid"]
 				assert.False(t, hasTsid, "tsid must be stripped from serialized claims")
+				_, hasDelegated := claims["https://toolhive.dev/claims/delegated_access"]
+				assert.False(t, hasDelegated, "delegated-access marker must be stripped from serialized claims")
 				assert.NotContains(t, string(data), "session-xyz",
 					"tsid value must not appear anywhere in marshaled output")
+				assert.NotContains(t, string(data), "https://toolhive.dev/claims/delegated_access",
+					"delegated-access marker must not appear anywhere in marshaled output")
 				// Guard: co-resident claims must be preserved
 				assert.Equal(t, "user123", claims["sub"], "sub claim must be preserved")
 				assert.Equal(t, "org456", claims["org_id"], "org_id claim must be preserved")
@@ -599,7 +605,15 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			var before map[string]any
+			if tt.identity != nil {
+				before = maps.Clone(tt.identity.Claims)
+			}
 			data, err := tt.identity.MarshalJSON()
+			if tt.identity != nil {
+				// Stripping internal claims for output must not touch the caller's map.
+				require.Equal(t, before, tt.identity.Claims, "MarshalJSON must leave the caller's claims intact")
+			}
 
 			if tt.wantErr {
 				require.Error(t, err)

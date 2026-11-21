@@ -170,6 +170,12 @@ func NewClient(ctx context.Context) (*Client, error) {
 	return c, nil
 }
 
+// RuntimeType returns the container runtime this client is connected to
+// (docker, podman or colima).
+func (c *Client) RuntimeType() runtime.Type {
+	return c.runtimeType
+}
+
 // DeployWorkload creates and starts a workload.
 // It configures the workload based on the provided permission profile and transport type.
 // If options is nil, default options will be used.
@@ -196,6 +202,7 @@ func (c *Client) DeployWorkload(
 	if err != nil {
 		return 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
+	permissionConfig.ReadOnlyRootfs = options != nil && options.ReadOnlyRootfs
 
 	// Determine if we should attach stdio
 	attachStdio := options == nil || options.AttachStdio
@@ -306,15 +313,13 @@ func (c *Client) DeployWorkload(
 		if err != nil {
 			return 0, fmt.Errorf("failed to discover Docker bridge gateways: %w", err)
 		}
-		if c.runtimeType == runtime.TypePodman {
-			aliases, err := c.discoverHostAliases(ctx, dnsContainerID)
-			if err != nil {
-				return 0, fmt.Errorf("failed to discover Podman host addresses: %w", err)
-			}
-			gatewayIPs = append(slices.Clone(gatewayIPs), aliases...)
-			slices.SortFunc(gatewayIPs, netip.Addr.Compare)
-			gatewayIPs = slices.Compact(gatewayIPs)
+		aliases, err := c.discoverHostAliases(ctx, dnsContainerID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to discover runtime host addresses: %w", err)
 		}
+		gatewayIPs = append(slices.Clone(gatewayIPs), aliases...)
+		slices.SortFunc(gatewayIPs, netip.Addr.Compare)
+		gatewayIPs = slices.Compact(gatewayIPs)
 
 		pspec = proxySpec{
 			WorkloadName:       name,
@@ -1043,7 +1048,8 @@ func compareLabels(existingLabels, desiredLabels map[string]string) bool {
 	return true
 }
 
-// compareHostConfig compares host configuration (network mode, capabilities, security options)
+// compareHostConfig compares host configuration (network mode, capabilities, security options,
+// privileged mode, read-only rootfs, restart policy)
 func compareHostConfig(existing *container.InspectResponse, desired *container.HostConfig) bool {
 	// Compare network mode
 	if string(existing.HostConfig.NetworkMode) != string(desired.NetworkMode) {
@@ -1068,8 +1074,21 @@ func compareHostConfig(existing *container.InspectResponse, desired *container.H
 		return false
 	}
 
+	// Compare read-only root filesystem
+	if existing.HostConfig.ReadonlyRootfs != desired.ReadonlyRootfs {
+		return false
+	}
+
 	// Compare restart policy
 	if existing.HostConfig.RestartPolicy.Name != desired.RestartPolicy.Name {
+		return false
+	}
+
+	// Compare requested host mappings, so DNS sidecars created before the
+	// host-gateway mapping was added are recreated rather than reused without
+	// it. Containers that request none are not compared: runtimes may report
+	// mappings they add themselves.
+	if len(desired.ExtraHosts) > 0 && !compareStringSlices(existing.HostConfig.ExtraHosts, desired.ExtraHosts) {
 		return false
 	}
 
@@ -1506,6 +1525,35 @@ func convertEnvVars(envVars map[string]string) []string {
 	return env
 }
 
+// readOnlyScratchPaths are the paths given a writable tmpfs when the root
+// filesystem is read-only.
+var readOnlyScratchPaths = []string{"/tmp", "/var/tmp", "/run"}
+
+// readOnlyScratchTmpfsOptions caps each scratch tmpfs, because MCP containers
+// run without memory limits and an uncapped tmpfs could consume host memory.
+const readOnlyScratchTmpfsOptions = "rw,nosuid,nodev,noexec,size=64m"
+
+// readOnlyRootfsTmpfs returns the tmpfs mounts for a read-only root filesystem.
+//
+// Setting them explicitly keeps Docker and Podman consistent: Podman's compat
+// API adds its own executable, uncapped tmpfs on /tmp, /var/tmp and /run
+// whenever ReadonlyRootfs is set, but only for paths nothing else mounts,
+// while Docker adds none. Paths already targeted by a mount are skipped,
+// since Docker refuses to start a container with a duplicate mount point.
+func readOnlyRootfsTmpfs(mounts []runtime.Mount) map[string]string {
+	taken := make(map[string]bool, len(mounts))
+	for _, m := range mounts {
+		taken[m.Target] = true
+	}
+	tmpfs := make(map[string]string, len(readOnlyScratchPaths))
+	for _, p := range readOnlyScratchPaths {
+		if !taken[p] {
+			tmpfs[p] = readOnlyScratchTmpfsOptions
+		}
+	}
+	return tmpfs
+}
+
 // convertMounts converts internal mount format to Docker mount format
 func convertMounts(mounts []runtime.Mount) []mount.Mount {
 	result := make([]mount.Mount, 0, len(mounts))
@@ -1702,6 +1750,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 	dnsHostConfig := &container.HostConfig{
 		Mounts:      nil,
 		NetworkMode: container.NetworkMode("bridge"),
+		ExtraHosts:  dnsExtraHosts(c.runtimeType),
 		CapAdd:      nil,
 		CapDrop:     nil,
 		SecurityOpt: []string{"label:disable"},
@@ -1765,12 +1814,13 @@ func (c *Client) createMcpContainer(
 
 	// Create host configuration
 	hostConfig := &container.HostConfig{
-		Mounts:      convertMounts(permissionConfig.Mounts),
-		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
-		CapAdd:      permissionConfig.CapAdd,
-		CapDrop:     permissionConfig.CapDrop,
-		SecurityOpt: permissionConfig.SecurityOpt,
-		Privileged:  permissionConfig.Privileged,
+		Mounts:         convertMounts(permissionConfig.Mounts),
+		NetworkMode:    container.NetworkMode(permissionConfig.NetworkMode),
+		CapAdd:         permissionConfig.CapAdd,
+		CapDrop:        permissionConfig.CapDrop,
+		SecurityOpt:    permissionConfig.SecurityOpt,
+		Privileged:     permissionConfig.Privileged,
+		ReadonlyRootfs: permissionConfig.ReadOnlyRootfs,
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -1781,6 +1831,9 @@ func (c *Client) createMcpContainer(
 			return NewContainerError(err, "", fmt.Sprintf("invalid additional DNS address %q: %v", additionalDNS, err))
 		}
 		hostConfig.DNS = []netip.Addr{dnsAddr}
+	}
+	if permissionConfig.ReadOnlyRootfs {
+		hostConfig.Tmpfs = readOnlyRootfsTmpfs(permissionConfig.Mounts)
 	}
 
 	// Configure ports if options are provided

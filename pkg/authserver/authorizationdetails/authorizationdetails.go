@@ -61,7 +61,8 @@ type Request struct {
 	GrantType string
 	// ClientID is the authenticated client.
 	ClientID string
-	// Actor is the resolved actor; it equals ClientID without an actor_token.
+	// Actor is the resolved actor. Without an actor_token it equals ClientID, or
+	// the verified SPIFFE ID for a SPIFFE client.
 	Actor string
 	// ActorTokenPresent reports whether the request carried an actor_token.
 	ActorTokenPresent bool

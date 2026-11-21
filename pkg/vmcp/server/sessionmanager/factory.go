@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/internal/wireerr"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -340,7 +341,7 @@ func monitorOptimizer(
 
 	callToolErrors, err := meter.Int64Counter(
 		"toolhive_vmcp_optimizer_call_tool_errors",
-		metric.WithDescription("Total number of CallTool Go errors"),
+		metric.WithDescription("Total number of CallTool Go errors, excluding -32042 URL elicitation answers"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create call_tool errors counter: %w", err)
@@ -407,6 +408,10 @@ type telemetryOptimizer struct {
 
 var _ optimizer.Optimizer = (*telemetryOptimizer)(nil)
 
+// callToolOutcomeURLElicitationRequired is the optimizer.CallTool span's
+// "outcome" attribute when the inner tool answered with -32042.
+const callToolOutcomeURLElicitationRequired = "url_elicitation_required"
+
 func (t *telemetryOptimizer) FindTool(ctx context.Context, input optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
 	ctx, span := t.tracer.Start(ctx, "optimizer.FindTool",
 		trace.WithAttributes(attribute.String("tool_description", input.ToolDescription)),
@@ -452,6 +457,12 @@ func (t *telemetryOptimizer) CallTool(ctx context.Context, input optimizer.CallT
 	t.callToolDuration.Record(ctx, duration.Seconds(), metricAttrs)
 
 	if err != nil {
+		// A -32042 answers the call by asking the user to visit a URL; it is
+		// not a failure, so it neither counts as an error nor fails the span.
+		if wireerr.FindURLElicitationRequired(err) != nil {
+			span.SetAttributes(attribute.String("outcome", callToolOutcomeURLElicitationRequired))
+			return nil, err
+		}
 		t.callToolErrors.Add(ctx, 1, metricAttrs)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

@@ -27,12 +27,20 @@ import (
 // Invalid JSON returns jsonrpc2.ErrParse; valid batches return *BatchUnsupportedError;
 // invalid envelopes, ambiguous members and unsupported IDs return a CodedError
 // with CodeInvalidRequest. A leading UTF-8 BOM and JSON whitespace are accepted.
-func DecodeMessage(body []byte) (msg jsonrpc2.Message, err error) {
-	defer func() {
-		if err != nil {
-			slog.Warn("rejected invalid MCP JSON-RPC message", "reason", messageRejectionReason(err))
-		}
-	}()
+// A rejected message is logged as a warning; decodeMessage reads one without.
+func DecodeMessage(body []byte) (jsonrpc2.Message, error) {
+	msg, err := decodeMessage(body)
+	if err != nil {
+		slog.Warn("rejected invalid MCP JSON-RPC message", "reason", messageRejectionReason(err))
+	}
+	return msg, err
+}
+
+// decodeMessage is DecodeMessage without the warning, for a caller that reads
+// a message rather than rejects it: the tool filter reads the id of the
+// request the backend answers, and of an event it withholds for what its
+// result holds (see requestID and withheldEventID).
+func decodeMessage(body []byte) (jsonrpc2.Message, error) {
 	body = bytes.Trim(bytes.TrimPrefix(body, UTF8BOM), " \t\r\n")
 	if !json.Valid(body) {
 		return nil, jsonrpc2.ErrParse

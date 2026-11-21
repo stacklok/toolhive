@@ -246,7 +246,7 @@ func hostileRejectionCases() []hostileCase {
 			id:   1005,
 			mutate: func(req *e2e.RawRequest) {
 				// Otherwise well-formed Modern request, but with a session id
-				// never registered with this proxy. The 2026-07-28 draft spec
+				// never registered with this proxy. The final 2026-07-28 spec
 				// says Modern SHOULD ignore session id -- and the *streamable*
 				// proxy does (resolveSessionForRequest mints a fresh routing
 				// token unconditionally, see the crown jewel). The transparent

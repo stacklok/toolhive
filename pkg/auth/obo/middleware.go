@@ -75,7 +75,7 @@ func DefaultFactory(config *types.MiddlewareConfig, runner types.MiddlewareRunne
 // produces a 503 stub.
 //
 // Declared as a function (matching sibling middleware packages such as
-// awssts, upstreamswap, and oauthproto/tokenexchange) so RegisterFactory is
+// awssts, upstreamswap, and tokenexchange) so RegisterFactory is
 // the only mutation path — there is no second escape hatch via direct
 // assignment to CreateMiddleware.
 func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {

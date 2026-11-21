@@ -6,7 +6,9 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -81,7 +84,7 @@ func TestCheckLoginToken(t *testing.T) {
 		{name: "validated external issuer", mutate: func(c *ValidatedClaims) { c.ExternalIssuer = "https://idp" },
 			want: "subject_token_external"},
 		{name: "hash in sub", mutate: func(c *ValidatedClaims) { c.Subject = "https://idp#user" }, want: "subject_token_external"},
-		{name: "no upstream session", mutate: func(c *ValidatedClaims) { c.Extra[session.NoUpstreamSessionClaimKey] = true },
+		{name: "no upstream session", mutate: func(c *ValidatedClaims) { c.Extra[claimnames.NoUpstreamSessionKey] = true },
 			want: "subject_token_no_upstream_session"},
 		{name: "no client_id", mutate: func(c *ValidatedClaims) { c.ClientID = "" }, want: "subject_token_missing_client_id"},
 		{name: "no jti", mutate: func(c *ValidatedClaims) { c.JWTID = "" }, want: "subject_token_missing_jti"},
@@ -317,6 +320,12 @@ type stubSubjectValidator struct {
 	err    error
 }
 
+// signedByThisServer reports that the stub signs nothing, so opaque actor
+// tokens flow on to the client's actor validator.
+func (*stubSubjectValidator) signedByThisServer(string) (*ValidatedClaims, error) {
+	return nil, errors.New("stub validator signs nothing")
+}
+
 func (v *stubSubjectValidator) Validate(context.Context, string) (*ValidatedClaims, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -334,7 +343,13 @@ func newRefreshHandlerForTest(t *testing.T, v *stubSubjectValidator, store *fake
 	t.Helper()
 	registry, err := newExchangeGrantRegistry()
 	require.NoError(t, err)
+	defaults := resolveRefreshTokenOptions(nil)
+	limiter, err := newActorLimiter(defaults.actorCapacity)
+	require.NoError(t, err)
 	return &RefreshTokenHandler{
+		actorLimiter:  limiter,
+		actorTimeout:  defaults.actorTimeout,
+		clock:         defaults.clock,
 		strategy:      fakeRefreshStrategy{},
 		store:         store,
 		selfValidator: v,
@@ -542,13 +557,121 @@ func TestRefreshTokenFactoryRequiresStoreForEnabledClients(t *testing.T) {
 	policies := map[string]ConfiguredClientPolicy{testRefreshClient: {
 		ExchangeRefreshTokens: map[string]time.Duration{oauthproto.TokenTypeIDJAG: time.Hour},
 	}}
-	_, err := RefreshTokenFactory(policies)
+	_, err := RefreshTokenFactory(policies, newTestSigner(t))
 	require.ErrorContains(t, err, "no exchange grant store")
 
-	_, err = RefreshTokenFactory(policies, WithExchangeGrantStorage(&fakeGrantStore{}))
+	_, err = RefreshTokenFactory(policies, newTestSigner(t), WithExchangeGrantStorage(&fakeGrantStore{}))
 	require.NoError(t, err)
-	_, err = RefreshTokenFactory(map[string]ConfiguredClientPolicy{testRefreshClient: {}})
+	_, err = RefreshTokenFactory(map[string]ConfiguredClientPolicy{testRefreshClient: {}}, newTestSigner(t))
 	require.NoError(t, err, "no client enables the feature")
+}
+
+// newTestSigner returns a Signer over a fresh key.
+func newTestSigner(t *testing.T) *server.Signer {
+	t.Helper()
+	jwk := newTestJWKS(t).jwk
+	return server.NewSigner(&jwk)
+}
+
+func validIDJAGTarget() IDJAGTarget {
+	return IDJAGTarget{
+		Issuer:    "https://target.example.com",
+		ClientID:  "client-at-target",
+		Resources: []string{"https://api.target.example.com"},
+		Lifetime:  time.Minute,
+	}
+}
+
+func TestRefreshTokenFactoryReportsLexicallyFirstInvalidClient(t *testing.T) {
+	t.Parallel()
+
+	invalid := map[string]IDJAGTarget{"https://target.example.com": {}}
+	policies := map[string]ConfiguredClientPolicy{
+		"client-b": {IDJAGTargets: invalid},
+		"client-a": {IDJAGTargets: invalid},
+	}
+	for range 20 {
+		_, err := RefreshTokenFactory(policies, newTestSigner(t))
+		require.ErrorContains(t, err, `client "client-a"`)
+	}
+}
+
+func TestRefreshTokenFactoryValidatesTargets(t *testing.T) {
+	t.Parallel()
+
+	const key = "https://target.example.com"
+	tests := []struct {
+		name    string
+		key     string
+		mutate  func(*IDJAGTarget)
+		wantErr string
+	}{
+		{name: "valid target", key: key},
+		{name: "empty issuer", key: key,
+			mutate: func(t *IDJAGTarget) { t.Issuer = "" }, wantErr: "empty issuer"},
+		{name: "key is not the target issuer", key: "https://other.example.com",
+			wantErr: "but its issuer is"},
+		{name: "empty client_id", key: key,
+			mutate: func(t *IDJAGTarget) { t.ClientID = "" }, wantErr: "empty client_id"},
+		{name: "no resources", key: key,
+			mutate: func(t *IDJAGTarget) { t.Resources = nil }, wantErr: "no resources"},
+		{name: "empty resource entry", key: key,
+			mutate:  func(t *IDJAGTarget) { t.Resources = []string{"https://api.target.example.com", ""} },
+			wantErr: "empty resource"},
+		{name: "zero lifetime", key: key,
+			mutate: func(t *IDJAGTarget) { t.Lifetime = 0 }, wantErr: "lifetime must be positive"},
+		{name: "negative lifetime", key: key,
+			mutate: func(t *IDJAGTarget) { t.Lifetime = -time.Second }, wantErr: "lifetime must be positive"},
+		{name: "known subject claim tokens", key: key,
+			mutate: func(t *IDJAGTarget) {
+				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimUpstreamSubject, IDJAGSubjectClaimSubID}
+			}},
+		{name: "unknown subject claim token", key: key,
+			mutate:  func(t *IDJAGTarget) { t.RequiredSubjectClaims = []string{"email"} },
+			wantErr: `unknown required subject claim "email"`},
+		{name: "unknown token after a known one", key: key,
+			mutate: func(t *IDJAGTarget) {
+				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimSubID, "upstream-subject"}
+			},
+			wantErr: `unknown required subject claim "upstream-subject"`},
+		{name: "empty subject claim token", key: key,
+			mutate:  func(t *IDJAGTarget) { t.RequiredSubjectClaims = []string{""} },
+			wantErr: "unknown required subject claim"},
+		{name: "duplicate subject claim token", key: key,
+			mutate: func(t *IDJAGTarget) {
+				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimSubID, IDJAGSubjectClaimSubID}
+			},
+			wantErr: `lists required subject claim "sub_id" twice`},
+		{name: "sub-second lifetime", key: key,
+			mutate: func(t *IDJAGTarget) { t.Lifetime = 500 * time.Millisecond }, wantErr: "lifetime must be a whole number of seconds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			target := validIDJAGTarget()
+			if tt.mutate != nil {
+				tt.mutate(&target)
+			}
+			policies := map[string]ConfiguredClientPolicy{
+				testRefreshClient: {IDJAGTargets: map[string]IDJAGTarget{tt.key: target}},
+			}
+
+			_, err := RefreshTokenFactory(policies, newTestSigner(t))
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.ErrorContains(t, err, testRefreshClient)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestRefreshTokenFactoryRequiresSigner(t *testing.T) {
+	t.Parallel()
+
+	_, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, nil)
+	require.ErrorContains(t, err, "RefreshTokenFactory requires a signer")
 }
 
 // failingRefreshStrategy fails to generate a token. Its message must not reach the client.
@@ -580,7 +703,8 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			factory, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{})
+			signer := newTestSigner(t)
+			factory, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, signer)
 			require.NoError(t, err)
 			cfg := &server.AuthorizationServerConfig{
 				Config:      &fosite.Config{AccessTokenIssuer: "https://issuer.example.com"},
@@ -596,7 +720,144 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.IsType(t, &RefreshTokenHandler{}, got)
+			handler, ok := got.(*RefreshTokenHandler)
+			require.True(t, ok, "got %T", got)
+			assert.Same(t, signer, handler.signer)
+			assert.Equal(t, "https://issuer.example.com", handler.issuer)
 		})
 	}
+}
+
+// buildRefreshTokenHandler builds a handler through RefreshTokenFactory and its
+// closure, with a test signer, hmacStrategy and the given store.
+func buildRefreshTokenHandler(
+	t *testing.T, policies map[string]ConfiguredClientPolicy, store storage.ExchangeGrantStorage,
+	options ...RefreshTokenOption,
+) *RefreshTokenHandler {
+	t.Helper()
+	factory, err := RefreshTokenFactory(policies, newTestSigner(t), append(
+		[]RefreshTokenOption{WithExchangeGrantStorage(store)}, options...)...)
+	require.NoError(t, err)
+	return invokeRefreshTokenFactory(t, factory)
+}
+
+// invokeRefreshTokenFactory builds a handler from factory with the test
+// config and hmacStrategy.
+func invokeRefreshTokenFactory(t *testing.T, factory server.Factory) *RefreshTokenHandler {
+	t.Helper()
+	got, err := factory(&server.AuthorizationServerConfig{
+		Config:      &fosite.Config{AccessTokenIssuer: testIssuer},
+		SigningJWKS: newTestJWKS(t).jwks,
+	}, nil, hmacStrategy{})
+	require.NoError(t, err)
+	handler, ok := got.(*RefreshTokenHandler)
+	require.True(t, ok, "got %T", got)
+	return handler
+}
+
+func TestRefreshTokenFactoryActorLimiter(t *testing.T) {
+	t.Parallel()
+
+	invalid := []struct {
+		name    string
+		option  RefreshTokenOption
+		wantErr string
+	}{
+		{name: "a capacity below 1", option: withActorValidatorCapacity(0),
+			wantErr: "tokenexchange: actor validator capacity must be at least 1, got 0"},
+		{name: "a zero timeout", option: withActorValidationTimeout(0),
+			wantErr: "tokenexchange: the actor validation timeout must be positive, got 0s"},
+		{name: "a negative timeout", option: withActorValidationTimeout(-time.Second),
+			wantErr: "tokenexchange: the actor validation timeout must be positive, got -1s"},
+		{name: "a nil clock", option: withClock(nil),
+			wantErr: "tokenexchange: the clock must not be nil"},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name+" fails the factory", func(t *testing.T) {
+			t.Parallel()
+			_, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, newTestSigner(t), tc.option)
+			require.EqualError(t, err, tc.wantErr)
+		})
+	}
+
+	t.Run("the limiter has the default or the given capacity", func(t *testing.T) {
+		t.Parallel()
+		def := buildRefreshTokenHandler(t, map[string]ConfiguredClientPolicy{}, nil)
+		assert.Equal(t, defaultActorValidatorCapacity, cap(def.actorLimiter.slots))
+		three := buildRefreshTokenHandler(t, map[string]ConfiguredClientPolicy{}, nil, withActorValidatorCapacity(3))
+		assert.Equal(t, 3, cap(three.actorLimiter.slots))
+	})
+
+	t.Run("handlers from one factory share one limiter", func(t *testing.T) {
+		t.Parallel()
+		factory, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, newTestSigner(t))
+		require.NoError(t, err)
+		first := invokeRefreshTokenFactory(t, factory)
+		second := invokeRefreshTokenFactory(t, factory)
+		assert.Same(t, first.actorLimiter, second.actorLimiter)
+	})
+}
+
+func newBufferLogger() (*slog.Logger, *strings.Builder) {
+	var buf strings.Builder
+	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+}
+
+// requireServerFailure checks err is the generic server_error with hint, whose
+// debug field (logged by the token endpoint, never sent) holds the cause.
+func requireServerFailure(t *testing.T, err error, hint string, debugContains ...string) {
+	t.Helper()
+	requireOAuthError(t, err, "server_error", fosite.ErrServerError.WithHint(hint).GetDescription())
+	rfcErr := fosite.ErrorToRFC6749Error(err)
+	for _, want := range debugContains {
+		assert.NotContains(t, rfcErr.GetDescription(), want, "the cause must not reach the client description")
+		assert.Contains(t, rfcErr.DebugField, want)
+	}
+}
+
+func TestServerFailure(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("redis exploded")
+	err := serverFailure(hintIssueFailed, cause)
+
+	requireServerFailure(t, err, hintIssueFailed, "redis exploded")
+	assert.ErrorIs(t, err, cause)
+}
+
+func TestRefreshTokenHandlerServerFailureCause(t *testing.T) {
+	t.Parallel()
+
+	t.Run("store error on create", func(t *testing.T) {
+		t.Parallel()
+		store := &fakeGrantStore{err: errors.New("redis exploded")}
+		h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: validLoginClaims()}, store)
+		log, buf := newBufferLogger()
+		decision, err := h.decideTopLevel(t.Context(), refreshRequestForTest(brokerClientForTest()),
+			h.clientPolicies[testRefreshClient], log, time.Now())
+		require.NoError(t, err)
+		buf.Reset()
+
+		err = h.issue(t.Context(), refreshRequestForTest(brokerClientForTest()), decision, fosite.NewAccessResponse())
+		requireServerFailure(t, err, hintIssueFailed, "redis exploded")
+		warns := logLinesAt(buf, "WARN")
+		require.Len(t, warns, 1)
+		assert.Contains(t, warns[0], "reason="+refuseStore)
+		assert.NotContains(t, warns[0], "redis exploded", "the cause belongs on the token endpoint's ERROR line")
+	})
+
+	t.Run("claim that cannot be encoded", func(t *testing.T) {
+		t.Parallel()
+		claims := validLoginClaims()
+		claims.Extra = map[string]any{claimnames.SubjectIdentifierKey: make(chan int)}
+		h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: claims}, &fakeGrantStore{})
+		log, buf := newBufferLogger()
+
+		_, err := h.decideTopLevel(t.Context(), refreshRequestForTest(brokerClientForTest()),
+			h.clientPolicies[testRefreshClient], log, time.Now())
+		requireServerFailure(t, err, hintIssueFailed, claimnames.SubjectIdentifierKey, "unsupported type")
+		warns := logLinesAt(buf, "WARN")
+		require.Len(t, warns, 1)
+		assert.Contains(t, warns[0], "reason="+refuseInternal)
+	})
 }

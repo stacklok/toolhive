@@ -5,9 +5,11 @@ package skills
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -27,9 +29,30 @@ const MaxDescriptionLength = 1024
 // Exceeding this generates a warning, not an error.
 const RecommendedMaxSkillMDLines = 500
 
+// ValidateOption configures ValidateSkillDir.
+type ValidateOption func(*validateConfig)
+
+type validateConfig struct {
+	pluginRoot string
+}
+
+// WithPluginRoot validates the skill as one bundled in the plugin at
+// pluginDir, which must be an absolute path containing the skill directory.
+// It makes three changes, all reflecting how plugins are installed (the whole
+// plugin tree is extracted, with executable bits kept):
+//   - references are contained by the plugin directory instead of the skill
+//     directory, so "../shared/x.md" inside the plugin is not reported;
+//   - the script-direct-exec check is disabled;
+//   - Finding.File is relative to pluginDir instead of the skill directory.
+func WithPluginRoot(pluginDir string) ValidateOption {
+	return func(c *validateConfig) { c.pluginRoot = pluginDir }
+}
+
 // ValidateSkillDir validates a skill directory at the given path.
-// I/O errors are returned as error; validation issues are returned in ValidationResult.
-func ValidateSkillDir(path string) (*ValidationResult, error) {
+// I/O errors are returned as error; validation issues are returned in
+// ValidationResult, both as legacy strings and as Findings whose File is
+// relative to path (or to the plugin directory, see WithPluginRoot).
+func ValidateSkillDir(path string, opts ...ValidateOption) (*ValidationResult, error) {
 	// Defense-in-depth: sanitize and validate the path before any filesystem access.
 	// The caller (skillsvc.Validate) also validates via validateLocalPath, but we
 	// re-check here because ValidateSkillDir is exported and may be called directly.
@@ -38,97 +61,158 @@ func ValidateSkillDir(path string) (*ValidationResult, error) {
 		return nil, fmt.Errorf("path must be absolute, got %q", path)
 	}
 
-	var errs []string
-	var warnings []string
+	var cfg validateConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	root, skillRel := path, "."
+	if cfg.pluginRoot != "" {
+		root = filepath.Clean(cfg.pluginRoot)
+		// ValidatePluginDir only passes manifest paths that parsePluginManifest
+		// has already checked for "..", so this cannot fire through it; it
+		// guards direct callers.
+		rel, ok := relWithin(root, path)
+		if !filepath.IsAbs(root) || !ok {
+			return nil, fmt.Errorf("plugin root %q must be an absolute path containing %q", cfg.pluginRoot, path)
+		}
+		skillRel = filepath.ToSlash(rel)
+	}
+
+	res, err := validateSkillDir(path, root, cfg.pluginRoot == "")
+	if err != nil {
+		return nil, err
+	}
+	for i := range res.Findings {
+		res.Findings[i].File = pathpkg.Join(skillRel, res.Findings[i].File)
+	}
+	return res, nil
+}
+
+// validateSkillDir runs every check on the skill at path, with references
+// contained by root. Finding.File is relative to path.
+func validateSkillDir(path, root string, checkExec bool) (*ValidationResult, error) {
+	res := &ValidationResult{}
 
 	// Check SKILL.md exists
-	skillMDPath := filepath.Join(path, "SKILL.md")
-	content, err := os.ReadFile(skillMDPath) //#nosec G304 -- path is cleaned and validated as absolute above
+	skillMDPath := filepath.Join(path, SkillMDFile)
+	content, err := os.ReadFile(skillMDPath) //#nosec G304 -- path is cleaned and validated as absolute by the caller
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &ValidationResult{
-				Valid:  false,
-				Errors: []string{"SKILL.md not found in skill directory"},
-			}, nil
+			res.AddFinding(skillMDError(RuleSkillMDMissing, "SKILL.md not found in skill directory"))
+			return res, nil
 		}
 		return nil, fmt.Errorf("reading SKILL.md: %w", err)
 	}
 
 	// Check for symlinks and path traversal in a single walk
-	if err := CheckFilesystem(path); err != nil {
-		errs = append(errs, err.Error())
-	}
+	res.AddFilesystemError(CheckFilesystem(path))
 
 	// Parse frontmatter
 	result, err := ParseSkillMD(content)
 	if err != nil {
-		errs = append(errs, fmt.Sprintf("invalid SKILL.md: %v", err))
-		return &ValidationResult{
-			Valid:  false,
-			Errors: errs,
-		}, nil
+		res.AddFinding(skillMDError(RuleFrontmatterInvalid, fmt.Sprintf("invalid SKILL.md: %v", err)))
+		return res, nil
 	}
 
-	// Validate parsed fields
-	errs = append(errs, validateFields(result, filepath.Base(path))...)
+	for _, f := range validateFields(result, filepath.Base(path)) {
+		res.AddFinding(f)
+	}
+	for _, f := range collectWarnings(result, content) {
+		res.AddFinding(f)
+	}
+	for _, f := range newRefChecker(path, root, checkExec).checkReferences(result.Body, result.bodyLine) {
+		res.AddFinding(f)
+	}
 
-	// Collect warnings
-	warnings = append(warnings, collectWarnings(result, content)...)
+	res.Valid = len(res.Errors) == 0
+	return res, nil
+}
 
-	return &ValidationResult{
-		Valid:    len(errs) == 0,
-		Errors:   errs,
-		Warnings: warnings,
-	}, nil
+// FilesystemError is returned by CheckFilesystem for a symlink or path
+// traversal. Rule is RuleSymlinkNotAllowed or RulePathTraversal, and Path is
+// the slash-separated offending path relative to the walked directory.
+type FilesystemError struct {
+	Rule string
+	Path string
+	msg  string
+}
+
+// Error implements error.
+func (e *FilesystemError) Error() string { return e.msg }
+
+// AddFilesystemError records err from CheckFilesystem as an error finding. A
+// *FilesystemError keeps its rule and path; any other non-nil error is
+// reported as a path traversal on the walked directory itself.
+func (r *ValidationResult) AddFilesystemError(err error) {
+	if err == nil {
+		return
+	}
+	f := Finding{Severity: SeverityError, Rule: RulePathTraversal, File: ".", Message: err.Error()}
+	var fsErr *FilesystemError
+	if errors.As(err, &fsErr) {
+		f.Rule = fsErr.Rule
+		f.File = fsErr.Path
+	}
+	r.AddFinding(f)
+}
+
+// skillMDError returns an error finding located in SKILL.md.
+func skillMDError(rule, msg string) Finding {
+	return Finding{Severity: SeverityError, Rule: rule, File: SkillMDFile, Message: msg}
 }
 
 // validateFields checks parsed frontmatter fields against spec constraints.
-func validateFields(result *ParseResult, dirName string) []string {
-	var errs []string
+func validateFields(result *ParseResult, dirName string) []Finding {
+	var findings []Finding
+	add := func(rule, msg string) { findings = append(findings, skillMDError(rule, msg)) }
 
 	if result.Name == "" {
-		errs = append(errs, "name is required")
+		add(RuleNameRequired, "name is required")
 	} else {
 		if err := ValidateSkillName(result.Name); err != nil {
-			errs = append(errs, err.Error())
+			add(RuleNameInvalid, err.Error())
 		}
 		if result.Name != dirName {
-			errs = append(errs,
+			add(RuleNameDirMismatch,
 				fmt.Sprintf("skill name %q must match directory name %q", result.Name, dirName))
 		}
 	}
 	if result.Description == "" {
-		errs = append(errs, "description is required")
+		add(RuleDescriptionRequired, "description is required")
 	}
 	if len(result.Description) > MaxDescriptionLength {
-		errs = append(errs,
+		add(RuleDescriptionTooLong,
 			fmt.Sprintf("description exceeds maximum length of %d characters", MaxDescriptionLength))
 	}
 	if len(result.Compatibility) > MaxCompatibilityLength {
-		errs = append(errs,
+		add(RuleCompatibilityTooLong,
 			fmt.Sprintf("compatibility field exceeds maximum length of %d characters", MaxCompatibilityLength))
 	}
 
-	return errs
+	return findings
 }
 
 // collectWarnings generates non-blocking warnings for spec compliance.
-func collectWarnings(result *ParseResult, content []byte) []string {
-	var warnings []string
+func collectWarnings(result *ParseResult, content []byte) []Finding {
+	var findings []Finding
+	add := func(rule, msg string) {
+		findings = append(findings,
+			Finding{Severity: SeverityWarning, Rule: rule, File: SkillMDFile, Message: msg})
+	}
 
 	if len(result.AllowedTools) > 0 && bytes.Contains(content, []byte(",")) &&
 		bytes.Contains(content, []byte("allowed-tools:")) {
-		warnings = append(warnings,
+		add(RuleAllowedToolsComma,
 			"allowed-tools uses comma-delimited format, which is a ToolHive extension; "+
 				"the Agent Skills spec defines space-delimited as the canonical format")
 	}
 	lineCount := bytes.Count(content, []byte("\n")) + 1
 	if lineCount > RecommendedMaxSkillMDLines {
-		warnings = append(warnings,
+		add(RuleSkillMDTooLong,
 			fmt.Sprintf("SKILL.md has %d lines (recommended max: %d)", lineCount, RecommendedMaxSkillMDLines))
 	}
 
-	return warnings
+	return findings
 }
 
 // ValidateSkillName checks that a skill name conforms to the Agent Skills specification.
@@ -149,7 +233,8 @@ func ValidateSkillName(name string) error {
 	return nil
 }
 
-// CheckFilesystem walks the directory once, checking for symlinks and path traversal.
+// CheckFilesystem walks the directory once, checking for symlinks and path
+// traversal. A violation is returned as a *FilesystemError.
 func CheckFilesystem(path string) error {
 	return filepath.WalkDir(path, func(p string, _ fs.DirEntry, err error) error {
 		if err != nil {
@@ -162,9 +247,11 @@ func CheckFilesystem(path string) error {
 		}
 
 		// Check for path traversal
-		for _, component := range strings.Split(filepath.ToSlash(rel), "/") {
+		slashRel := filepath.ToSlash(rel)
+		for _, component := range strings.Split(slashRel, "/") {
 			if component == ".." {
-				return fmt.Errorf("path traversal detected in %q: '..' components are not allowed", rel)
+				return &FilesystemError{Rule: RulePathTraversal, Path: slashRel,
+					msg: fmt.Sprintf("path traversal detected in %q: '..' components are not allowed", rel)}
 			}
 		}
 
@@ -174,7 +261,8 @@ func CheckFilesystem(path string) error {
 			return nil
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink found at %q: symlinks are not allowed in skill directories", rel)
+			return &FilesystemError{Rule: RuleSymlinkNotAllowed, Path: slashRel,
+				msg: fmt.Sprintf("symlink found at %q: symlinks are not allowed in skill directories", rel)}
 		}
 
 		return nil

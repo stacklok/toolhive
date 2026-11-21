@@ -21,6 +21,8 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/token/jwt"
+
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 )
 
 // Factory is a function that creates a new session given subject, IDP session ID, and client ID.
@@ -50,31 +52,6 @@ type UpstreamSession interface {
 	GetIDPSessionID() string
 }
 
-// TokenSessionIDClaimKey is the JWT claim key for the token session ID.
-// This links JWT access tokens to stored upstream IDP tokens.
-// We use "tsid" instead of "sid" to avoid confusion with OIDC session management
-// which defines "sid" for different purposes (RFC 7519, OIDC Session Management).
-const TokenSessionIDClaimKey = "tsid"
-
-// NoUpstreamSessionClaimKey marks a token this authorization server minted
-// without any link to an upstream IdP login, so no upstream credential exists
-// for it. Today only the RFC 7523 JWT-bearer grant sets it: its subject is a
-// synthetic machine identity (issuer#subject) asserted by a separate trust
-// root, with no end user and no upstream session.
-//
-// It exists so a resource server can distinguish "this token was deliberately
-// minted without an upstream session" from "this identity was never enriched
-// with upstream credentials" — states that are otherwise indistinguishable, as
-// both leave Identity.UpstreamTokens nil. pkg/authz/authorizers/cedar reads it
-// to decide whether request-token claims may drive policy. The RFC 8693
-// delegation grant needs no marker: its "act" claim already says so.
-//
-// The name is collision-resistant per RFC 7519 Section 4.3, so a JWT from
-// another issuer the deployment trusts cannot assert it by accident. It is a
-// private claim; RFC 9068 Section 2.2.3 permits additional claims on an
-// access token.
-const NoUpstreamSessionClaimKey = "https://toolhive.dev/no_upstream_session"
-
 // ClientIDClaimKey is the JWT claim key for the OAuth client ID.
 // This identifies which client was issued the token.
 const ClientIDClaimKey = "client_id"
@@ -87,13 +64,10 @@ const NameClaimKey = "name"
 // Per OIDC Core Section 5.1.
 const EmailClaimKey = "email"
 
-const subjectIdentifierClaimKey = "sub_id"
-
-// UpstreamSubjectClaimKey is the collision-resistant claim name (RFC 7519 §4.2) of
-// the claim that carries the upstream subject a consumer can key on across upstream
-// client registrations. It is emitted together with the RFC 9493 sub_id claim and
-// under the same disclosure policy.
-const UpstreamSubjectClaimKey = "https://toolhive.dev/upstream_subject"
+// UpstreamSubjectClaimKey is the claim name of the upstream subject claim.
+//
+// Deprecated: use claimnames.UpstreamSubjectKey.
+const UpstreamSubjectClaimKey = claimnames.UpstreamSubjectKey
 
 // UpstreamSubject is the verified identity of the upstream OIDC login that
 // established the local user. Issuer and Subject are the exact iss and sub of the
@@ -175,7 +149,7 @@ func New(subject, idpSessionID, clientID string, claims UserClaims) *Session {
 
 	// Add tsid claim if idpSessionID is provided
 	if idpSessionID != "" {
-		claimsExtra[TokenSessionIDClaimKey] = idpSessionID
+		claimsExtra[claimnames.TokenSessionIDKey] = idpSessionID
 	}
 
 	// Add client_id claim for binding verification per RFC 9068
@@ -236,8 +210,8 @@ func (s *Session) ClearSubjectIdentifier() {
 	if s == nil || s.JWTSession == nil || s.JWTClaims == nil {
 		return
 	}
-	delete(s.JWTClaims.Extra, subjectIdentifierClaimKey)
-	delete(s.JWTClaims.Extra, UpstreamSubjectClaimKey)
+	delete(s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	delete(s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 }
 
 // SetSubjectIdentifier sets the RFC 9493 sub_id claim and the upstream subject
@@ -251,12 +225,12 @@ func (s *Session) SetSubjectIdentifier(upstream UpstreamSubject) {
 	if s.JWTClaims.Extra == nil {
 		s.JWTClaims.Extra = make(map[string]any)
 	}
-	s.JWTClaims.Extra[subjectIdentifierClaimKey] = map[string]string{
+	s.JWTClaims.Extra[claimnames.SubjectIdentifierKey] = map[string]string{
 		"format": "iss_sub",
 		"iss":    upstream.Issuer,
 		"sub":    upstream.Subject,
 	}
-	s.JWTClaims.Extra[UpstreamSubjectClaimKey] = map[string]string{
+	s.JWTClaims.Extra[claimnames.UpstreamSubjectKey] = map[string]string{
 		"iss":   upstream.Issuer,
 		"claim": upstream.StableClaim,
 		"value": upstream.StableValue,

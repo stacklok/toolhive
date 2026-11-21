@@ -102,7 +102,7 @@ func TestConfiguredDelegateClientTokenExchange(t *testing.T) {
 				values.Set("audience", ungrantedAudience)
 			},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "invalid_request",
+			wantError:  "invalid_target",
 		},
 		{
 			name:         "id_token_subject_token_type_rejected",
@@ -389,6 +389,7 @@ func startConfiguredDelegateAuthServerWithOptions(
 	var stor storage.Storage
 	if withStorage {
 		stor = storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
 	}
 	server, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 		cfg.ScopesSupported = []string{"openid", "profile", ungrantedScope}

@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -33,7 +34,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -344,6 +344,14 @@ func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 func WithNetworkIsolationExplicit(explicit bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.isolateNetworkExplicit = explicit
+		return nil
+	}
+}
+
+// WithReadOnlyRootfs sets whether to mount the container's root filesystem as read-only
+func WithReadOnlyRootfs(readOnly bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.ReadOnlyRootfs = readOnly
 		return nil
 	}
 }

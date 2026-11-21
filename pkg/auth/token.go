@@ -28,9 +28,11 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
 
 // TokenIntrospector defines the interface for token introspection providers
@@ -890,18 +892,26 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	return nil
 }
 
-// getKeyFromLocalProvider attempts to find a verification key from the local
-// key provider (embedded auth server). Returns (key, nil) on success,
-// (nil, nil) to signal fallback to HTTP, or (nil, error) for hard failures.
-// validateTokenHeader checks the signing method is supported (RSA or ECDSA) and
-// extracts the key ID from the token header. Returns an error for unsupported
-// methods or a missing kid claim.
+// validateTokenHeader checks the signing method is supported (RSA or ECDSA),
+// refuses an ID-JAG typ, and extracts the key ID from the token header. Returns
+// an error for unsupported methods, an ID-JAG typ or a missing kid claim.
 func validateTokenHeader(token *jwt.Token) (string, error) {
 	switch token.Method.(type) {
 	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
 		// Supported signing methods
 	default:
 		return "", fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+	}
+
+	// RFC 8725 Section 3.12: validation rules for different token types must
+	// be mutually exclusive. An ID-JAG is not an access token. An issuer that
+	// signs ID-JAGs with the same key as its access tokens (an external IdP
+	// today, the embedded auth server once it issues ID-JAGs) would otherwise
+	// get one accepted here when no audience is configured. This runs in the
+	// key function, before the signature is verified; that is safe because the
+	// check can only refuse a token.
+	if typ, _ := token.Header["typ"].(string); idjag.IsIDJAG(typ) {
+		return "", errors.New("an ID-JAG is not accepted as an access token")
 	}
 
 	kid, ok := token.Header["kid"].(string)
@@ -911,6 +921,9 @@ func validateTokenHeader(token *jwt.Token) (string, error) {
 	return kid, nil
 }
 
+// getKeyFromLocalProvider attempts to find a verification key from the local
+// key provider (embedded auth server). Returns (key, nil) on success,
+// (nil, nil) to signal fallback to HTTP, or (nil, error) for hard failures.
 func (v *TokenValidator) getKeyFromLocalProvider(ctx context.Context, token *jwt.Token) (interface{}, error) {
 	if v.keyProvider == nil {
 		return nil, nil
@@ -1268,7 +1281,7 @@ func (v *TokenValidator) writeUpstreamReauthRequired(w http.ResponseWriter) {
 func (v *TokenValidator) loadUpstreamTokens(
 	ctx context.Context, claims jwt.MapClaims,
 ) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
-	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+	tsid, ok := claims[claimnames.TokenSessionIDKey].(string)
 	if !ok || tsid == "" {
 		return nil, nil, nil
 	}
@@ -1312,7 +1325,7 @@ func (v *TokenValidator) isSessionlessGrant(identity *Identity, claims jwt.MapCl
 	if chain := identity.DelegationChain; chain != nil && !chain.Malformed && len(chain.Chain) > 0 {
 		return true
 	}
-	marker, ok := claims[upstreamtoken.NoUpstreamSessionClaimKey].(bool)
+	marker, ok := claims[claimnames.NoUpstreamSessionKey].(bool)
 	return ok && marker
 }
 
@@ -1408,7 +1421,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				// stays at Debug, as in loadUpstreamTokens) and the providers
 				// whose rows were still stored without an access token.
 				if len(accessTokens) == 0 {
-					tsid, _ := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+					tsid, _ := claims[claimnames.TokenSessionIDKey].(string)
 					slog.DebugContext(loadCtx, "token session holds no upstream access token; returning 401",
 						"tsid", tsid, "stored_providers", slices.Sorted(maps.Keys(creds)))
 					v.writeUpstreamReauthRequired(w)

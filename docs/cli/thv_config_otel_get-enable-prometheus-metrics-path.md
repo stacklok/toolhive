@@ -24,13 +24,13 @@ thv config otel get-enable-prometheus-metrics-path [flags]
 ### Options
 
 ```
-  -h, --help   help for get-enable-prometheus-metrics-path
+  -h, --help[=true|false]   help for get-enable-prometheus-metrics-path
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

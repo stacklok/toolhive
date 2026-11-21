@@ -49,42 +49,66 @@ func hostsArchive(t *testing.T, name, content string, kind byte) []byte {
 
 func TestParseHostAliasArchive(t *testing.T) {
 	t.Parallel()
+	const podman, docker = podmanGatewayHostname, dockerGatewayHostname
 	valid := "127.0.0.1 localhost\n192.0.2.9 host.containers.internal host.docker.internal\n"
+	desktop := "127.0.0.1 localhost\n192.168.65.254 host.docker.internal\nfdc4:f303:9324::254 host.docker.internal\n"
 	for _, tt := range []struct {
-		name string
-		data []byte
-		want []netip.Addr
+		name     string
+		data     []byte
+		required string
+		want     []netip.Addr
 	}{
-		{"runtime aliases", hostsArchive(t, "hosts", valid, tar.TypeReg), []netip.Addr{netip.MustParseAddr("192.0.2.9")}},
+		{"runtime aliases", hostsArchive(t, "hosts", valid, tar.TypeReg), podman, []netip.Addr{netip.MustParseAddr("192.0.2.9")}},
 		{"multiple mappings and normalization", hostsArchive(t, "hosts", valid+
 			"::ffff:192.0.2.9 HOST.DOCKER.INTERNAL. # duplicate\n"+
-			"2001:db8::9 host.containers.internal\n198.51.100.7 gateway.docker.internal host.docker.internal\n", tar.TypeReg),
+			"2001:db8::9 host.containers.internal\n198.51.100.7 gateway.docker.internal host.docker.internal\n", tar.TypeReg), podman,
 			[]netip.Addr{netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("2001:db8::9")}},
-		{"missing Podman alias", hostsArchive(t, "hosts", "192.0.2.9 host.docker.internal\n", tar.TypeReg), nil},
-		{"Podman alias only", hostsArchive(t, "hosts", "192.0.2.9 host.containers.internal\n", tar.TypeReg),
+		{"missing Podman alias", hostsArchive(t, "hosts", "192.0.2.9 host.docker.internal\n", tar.TypeReg), podman, nil},
+		{"Podman alias only", hostsArchive(t, "hosts", "192.0.2.9 host.containers.internal\n", tar.TypeReg), podman,
 			[]netip.Addr{netip.MustParseAddr("192.0.2.9")}},
-		{"no host aliases", hostsArchive(t, "hosts", "127.0.0.1 localhost\n", tar.TypeReg), nil},
-		{"invalid IP", hostsArchive(t, "hosts", valid+"invalid host.containers.internal\n", tar.TypeReg), nil},
-		{"zoned IP", hostsArchive(t, "hosts", valid+"fe80::1%eth0 host.containers.internal\n", tar.TypeReg), nil},
-		{"missing hostname", hostsArchive(t, "hosts", valid+"192.0.2.3\n", tar.TypeReg), nil},
-		{"wrong member", hostsArchive(t, "etc/hosts", valid, tar.TypeReg), nil},
-		{"symlink", hostsArchive(t, "hosts", "", tar.TypeSymlink), nil},
-		{"oversized member", hostsArchive(t, "hosts", strings.Repeat("#", (1<<20)+1), tar.TypeReg), nil},
-		{"oversized archive", make([]byte, (2<<20)+1), nil},
-		{"malformed tar", []byte("not a tar archive"), nil},
+		{"Docker host-gateway mapping", hostsArchive(t, "hosts", desktop, tar.TypeReg), docker,
+			[]netip.Addr{netip.MustParseAddr("192.168.65.254"), netip.MustParseAddr("fdc4:f303:9324::254")}},
+		{"missing Docker alias", hostsArchive(t, "hosts", "192.0.2.9 host.containers.internal\n", tar.TypeReg), docker, nil},
+		{"no host aliases", hostsArchive(t, "hosts", "127.0.0.1 localhost\n", tar.TypeReg), podman, nil},
+		{"invalid IP", hostsArchive(t, "hosts", valid+"invalid host.containers.internal\n", tar.TypeReg), podman, nil},
+		{"zoned IP", hostsArchive(t, "hosts", valid+"fe80::1%eth0 host.containers.internal\n", tar.TypeReg), podman, nil},
+		{"missing hostname", hostsArchive(t, "hosts", valid+"192.0.2.3\n", tar.TypeReg), podman, nil},
+		{"wrong member", hostsArchive(t, "etc/hosts", valid, tar.TypeReg), podman, nil},
+		{"symlink", hostsArchive(t, "hosts", "", tar.TypeSymlink), podman, nil},
+		{"oversized member", hostsArchive(t, "hosts", strings.Repeat("#", (1<<20)+1), tar.TypeReg), podman, nil},
+		{"oversized archive", make([]byte, (2<<20)+1), podman, nil},
+		{"malformed tar", []byte("not a tar archive"), podman, nil},
 		{"multiple archive members", append(hostsArchive(t, "hosts", valid, tar.TypeReg)[:1024],
-			hostsArchive(t, "extra", valid, tar.TypeReg)...), nil},
-		{"truncated member", hostsArchive(t, "hosts", valid, tar.TypeReg)[:520], nil},
+			hostsArchive(t, "extra", valid, tar.TypeReg)...), podman, nil},
+		{"truncated member", hostsArchive(t, "hosts", valid, tar.TypeReg)[:520], podman, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := parseHostAliasArchive(bytes.NewReader(tt.data))
+			got, err := parseHostAliasArchive(bytes.NewReader(tt.data), tt.required)
 			if tt.want == nil {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestDNSSidecarHostMappings(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		runtime  runtime.Type
+		hosts    []string
+		required string
+	}{
+		{runtime.TypeDocker, []string{"host.docker.internal:host-gateway"}, "host.docker.internal"},
+		{runtime.TypePodman, nil, "host.containers.internal"},
+	} {
+		t.Run(string(tt.runtime), func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.hosts, dnsExtraHosts(tt.runtime))
+			require.Equal(t, tt.required, requiredHostAlias(tt.runtime))
 		})
 	}
 }
@@ -277,7 +301,7 @@ func TestPodmanHostDiscoveryNative(t *testing.T) {
 
 func TestHostArchiveReadError(t *testing.T) {
 	t.Parallel()
-	_, err := parseHostAliasArchive(io.MultiReader(bytes.NewReader(nil), failingHostsReader{}))
+	_, err := parseHostAliasArchive(io.MultiReader(bytes.NewReader(nil), failingHostsReader{}), podmanGatewayHostname)
 	require.ErrorContains(t, err, "read hosts archive")
 }
 

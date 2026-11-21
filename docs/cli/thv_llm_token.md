@@ -29,14 +29,14 @@ thv llm token [flags]
 ### Options
 
 ```
-  -h, --help           help for token
-      --skip-browser   Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.
+  -h, --help[=true|false]           help for token
+      --skip-browser[=true|false]   Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

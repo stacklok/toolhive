@@ -16,6 +16,13 @@ import (
 // client authentication (RFC 7523 section 2.2).
 const privateKeyJWTAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 
+// isPrivateKeyJWTRequest reports whether form asks for private_key_jwt client
+// authentication with a client_assertion. A request that sets only the type
+// is left to fosite, which refuses it as invalid_request.
+func isPrivateKeyJWTRequest(form url.Values) bool {
+	return form.Get("client_assertion_type") == privateKeyJWTAssertionType && form.Get("client_assertion") != ""
+}
+
 // clientAssertionClaimErrors are the messages of the claim validation errors
 // that fosite returns unwrapped, as plain errors, when it parses a client
 // assertion (see fosite/token/jwt MapClaims.Valid). fosite returns the bare
@@ -33,10 +40,12 @@ type clientAssertionStoreFailureKey struct{}
 type clientAssertionStoreFailure struct{ err error }
 
 // RecordClientAssertionStoreFailure lets a storage backend report that it could
-// not check a client assertion's jti for a reason other than a replay. fosite
-// discards the error ClientAssertionJWTValid returns, so the client
-// authentication strategy reads it from the context instead. Storage
-// decorators must pass ctx through to the backend unchanged.
+// not check or record a client assertion's jti for a reason other than a replay.
+// fosite discards the error ClientAssertionJWTValid returns, so the client
+// authentication strategy reads the recorded error from the context instead. For
+// both calls, the recorded error tells the strategy that the failure is a storage
+// failure rather than a verdict on the assertion, so it is returned as
+// server_error. Storage decorators must pass ctx through to the backend unchanged.
 func RecordClientAssertionStoreFailure(ctx context.Context, err error) {
 	if f, ok := ctx.Value(clientAssertionStoreFailureKey{}).(*clientAssertionStoreFailure); ok {
 		f.err = err
@@ -64,11 +73,11 @@ func NewClientAssertionStoreFailureContext(ctx context.Context) (context.Context
 // 400), as RFC 6749 section 5.2 says for a missing parameter. Errors that are
 // not a verdict on the assertion are not rewritten into invalid_client: a
 // misconfiguration is returned unchanged, and a storage failure while checking
-// the jti is reported by the storage backend through
+// or recording the jti is reported by the storage backend through
 // RecordClientAssertionStoreFailure and returned as server_error (HTTP 500).
 func newClientAssertionErrorStrategy(next fosite.ClientAuthenticationStrategy) fosite.ClientAuthenticationStrategy {
 	return func(ctx context.Context, r *http.Request, form url.Values) (fosite.Client, error) {
-		if form.Get("client_assertion_type") != privateKeyJWTAssertionType || form.Get("client_assertion") == "" {
+		if !isPrivateKeyJWTRequest(form) {
 			return next(ctx, r, form)
 		}
 		ctx, storeFailure := NewClientAssertionStoreFailureContext(ctx)
@@ -83,20 +92,33 @@ func newClientAssertionErrorStrategy(next fosite.ClientAuthenticationStrategy) f
 	}
 }
 
+// isClientAssertionTimeError reports whether err is one of the bare time
+// validation errors in clientAssertionClaimErrors.
+func isClientAssertionTimeError(err error) bool {
+	var rfcErr *fosite.RFC6749Error
+	if errors.As(err, &rfcErr) {
+		return false
+	}
+	_, ok := clientAssertionClaimErrors[err.Error()]
+	return ok
+}
+
 func mapClientAssertionError(err error) error {
 	var rfcErr *fosite.RFC6749Error
 	if errors.As(err, &rfcErr) {
 		switch rfcErr.ErrorField {
 		// invalid_request: fosite's findPublicKey reports an unknown kid or no
 		// matching key this way. It also covers "server configuration does not
-		// support OpenID Connect specific authentication methods", which our
-		// client types never hit. jti_known: a replayed jti.
+		// support OpenID Connect specific authentication methods", which fosite
+		// returns when the client is not an OpenIDConnectClient, as for a SPIFFE
+		// static client; that case is remapped here to invalid_client too.
+		// jti_known: a replayed jti.
 		case fosite.ErrInvalidRequest.ErrorField, fosite.ErrJTIKnown.ErrorField:
 			return fosite.ErrInvalidClient.WithHint(rfcErr.HintField).WithWrap(err)
 		}
 		return err
 	}
-	if _, ok := clientAssertionClaimErrors[err.Error()]; ok {
+	if isClientAssertionTimeError(err) {
 		return fosite.ErrInvalidClient.
 			WithHint("The 'client_assertion' claims could not be validated, check the iat, nbf and exp values.").
 			WithWrap(err)

@@ -156,6 +156,7 @@ func TestNewConsentExemptLookupUsesDecoratedStorage(t *testing.T) {
 	t.Parallel()
 
 	baseStore := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = baseStore.Close() })
 	decorated := &consentLookupStorage{Storage: baseStore, client: eligibleConsentClient()}
 	ctrl := gomock.NewController(t)
 	mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)

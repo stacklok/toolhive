@@ -129,8 +129,13 @@ type JWTBearerGrantPolicy struct {
 	// authorization server for this grant; it is NOT a resource/API
 	// identifier — a bare resource audience is deliberately not accepted
 	// here, that would let any RFC 8707 resource-scoped token satisfy the
-	// grant instead of only tokens minted for this AS. Defaults to
-	// [tokenEndpoint] when empty, preserving prior exact-match behavior.
+	// grant instead of only tokens minted for this AS. When empty, the plain
+	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
+	// the token endpoint and this server's issuer identifier, unless the issuer
+	// is also an allowed resource audience. A configured list replaces both
+	// defaults. The plain JWT-bearer grant accepts a multi-valued "aud" when
+	// one value matches; the ID-JAG grant refuses any "aud" array with more
+	// than one value.
 	AcceptedAudiences []string `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
 
 	maxAssertionAge time.Duration
@@ -322,6 +327,10 @@ type externalIssuerConfig struct {
 	// never be gated.
 	fetchFailedAt time.Time
 	fetchErr      error
+	// keysUnusableLoggedAt is guarded by mu and is read only once fetched is
+	// true. It limits the post-fetch "keys unusable" Error line (see
+	// logKeySetUnusable) to one per jwksFetchFailureBackoff.
+	keysUnusableLoggedAt time.Time
 }
 
 // newActorMatcherEngine creates a CEL engine for admin-authored actor matcher
@@ -667,15 +676,16 @@ func (v *MultiIssuerTokenValidator) Validate(ctx context.Context, rawToken strin
 // assertion's authorization policy is separate from delegation policy.
 //
 // The assertion audience must intersect the issuer's configured
-// JWTBearerGrant.AcceptedAudiences, or just tokenEndpoint when that is unset.
+// JWTBearerGrant.AcceptedAudiences, or the caller's defaultAudiences when that
+// is unset.
 // The caller is responsible for the phase-specific subject binding, maximum
 // age, replay, and issuance policy after this cryptographic verification
 // succeeds.
 func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
-	ctx context.Context, rawToken, tokenEndpoint string,
+	ctx context.Context, rawToken string, defaultAudiences []string,
 ) (*ValidatedClaims, error) {
-	if tokenEndpoint == "" {
-		return nil, errors.New("token endpoint must not be empty")
+	if len(defaultAudiences) == 0 || slices.Contains(defaultAudiences, "") {
+		return nil, errDefaultAudiencesEmpty
 	}
 
 	issuer, err := peekIssuer(rawToken)
@@ -690,7 +700,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 		return nil, fmt.Errorf("assertion issuer is not enabled for the JWT-bearer grant: %q", issuer)
 	}
 
-	standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	_, standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -699,7 +709,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 		return nil, err
 	}
 
-	acceptedAudiences := []string{tokenEndpoint}
+	acceptedAudiences := defaultAudiences
 	if issuerConfig.JWTBearerGrant != nil && len(issuerConfig.JWTBearerGrant.AcceptedAudiences) > 0 {
 		acceptedAudiences = issuerConfig.JWTBearerGrant.AcceptedAudiences
 	}
@@ -709,21 +719,40 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 	return buildValidatedClaims(standardClaims, extraClaims), nil
 }
 
+// errDefaultAudiencesEmpty is the precondition failure of
+// ValidateJWTBearerAssertion when the caller passes no usable default
+// audiences. It is a server misconfiguration, not a defect of the assertion.
+var errDefaultAudiencesEmpty = errors.New("default audiences must not be empty")
+
+// errIssuerKeysUnavailable marks a verification failure that happened before a
+// usable key set existed for the issuer (fetch, cache lookup, conversion, empty
+// or oversized set), as opposed to a token that fails against keys in hand.
+var errIssuerKeysUnavailable = errors.New("issuer signing keys unavailable")
+
 // verifyExternalSignature parses and verifies a JWT using the configured
 // issuer's cached JWKS. Both RFC 8693 subject tokens and RFC 7523 assertions
 // use this path so unknown-kid refreshes and key-use/algorithm restrictions
-// cannot diverge between grant types.
+// cannot diverge between grant types. It also returns the parsed token so
+// callers can inspect the protected header without parsing it again.
 func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 	ctx context.Context, rawToken string, issuerConfig *externalIssuerConfig,
-) (jwt.Claims, map[string]any, error) {
+) (*jwt.JSONWebToken, jwt.Claims, map[string]any, error) {
 	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
 	if err != nil {
-		return jwt.Claims{}, nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
+		return nil, jwt.Claims{}, nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
 	}
 
 	jwks, err := v.lookupJWKS(ctx, issuerConfig)
 	if err != nil {
-		return jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
+		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			// The request ended; this says nothing about the issuer's keys.
+			// Checking ctx.Err() keeps the registration's own timeout, which
+			// is also a DeadlineExceeded, counted as an unreachable issuer.
+			return nil, jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w",
+				issuerConfig.IssuerURL, err)
+		}
+		return nil, jwt.Claims{}, nil, fmt.Errorf("%w: failed to fetch JWKS for issuer %s: %w",
+			errIssuerKeysUnavailable, issuerConfig.IssuerURL, err)
 	}
 
 	standardClaims, extraClaims, kidMatched, err := verifySignature(parsedToken, jwks)
@@ -735,15 +764,19 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 		// spoofed-kid attempt (kidMatched true) never reaches this branch,
 		// since a refresh can't change what signature the token was made
 		// with.
+		//
+		// Accepted trade-off: a rotated kid that arrives while the JWKS
+		// endpoint is down fails here as an ordinary verification error, not
+		// errIssuerKeysUnavailable, until the keys are reachable again.
 		v.refreshOnUnknownKid(ctx, issuerConfig)
 		if refreshedJWKS, lookupErr := v.lookupJWKS(ctx, issuerConfig); lookupErr == nil {
 			standardClaims, extraClaims, _, err = verifySignature(parsedToken, refreshedJWKS)
 		}
 	}
 	if err != nil {
-		return jwt.Claims{}, nil, err
+		return nil, jwt.Claims{}, nil, err
 	}
-	return standardClaims, extraClaims, nil
+	return parsedToken, standardClaims, extraClaims, nil
 }
 
 // validateExternalToken verifies a JWT from a trusted external issuer by
@@ -753,8 +786,18 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	rawToken string,
 	issuerConfig *externalIssuerConfig,
 ) (*ValidatedClaims, error) {
-	standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	parsedToken, standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
+		return nil, err
+	}
+
+	// The signature has verified, so the protected header is trustworthy.
+	// RFC 8725 Section 3.12: an ID-JAG must not be accepted as an RFC 8693
+	// subject token. A trusted issuer that signs ID-JAGs with its access token
+	// key would otherwise let one through here, past the client binding that
+	// ID-JAG redemption applies. The deny is here and not in
+	// verifyExternalSignature, which redemption shares.
+	if err := rejectIDJAGType(parsedToken); err != nil {
 		return nil, err
 	}
 
@@ -888,6 +931,13 @@ func (v *MultiIssuerTokenValidator) ensureRegistered(ctx context.Context, issuer
 	}
 
 	if err := v.registerOrRefresh(ctx, issuerConfig); err != nil {
+		// This is the pre-fetch outage line; logKeySetUnusable logs the
+		// post-fetch one. Replayed errors inside the backoff window return
+		// above without reaching it, so an issuer logs at most one line per
+		// jwksFetchFailureBackoff from each. The per-request refusal is logged
+		// at Debug by the token endpoint.
+		slog.Error("issuer signing keys unavailable; assertions from this issuer are refused until the next fetch attempt",
+			"issuer", issuerConfig.IssuerURL, "error", err, "retry_after", jwksFetchFailureBackoff)
 		issuerConfig.fetchErr = err
 		issuerConfig.fetchFailedAt = time.Now()
 		return err
@@ -999,6 +1049,27 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 		return nil, err
 	}
 
+	jwks, err := v.usableJWKS(ctx, issuerConfig)
+	if err != nil {
+		// A request that ended (client disconnect, deadline) is not an issuer
+		// fault, so only log while the request context is still live. mu is
+		// not held here: ensureRegistered has already released it.
+		if ctx.Err() == nil {
+			logKeySetUnusable(issuerConfig, err)
+		}
+		return nil, err
+	}
+	return jwks, nil
+}
+
+// usableJWKS reads issuerConfig's cached key set and converts it to a
+// jose.JSONWebKeySet, refusing a set that is empty after dropping unsupported
+// keys or that exceeds maxJWKSKeys. It runs only after ensureRegistered has
+// succeeded.
+func (*MultiIssuerTokenValidator) usableJWKS(
+	ctx context.Context,
+	issuerConfig *externalIssuerConfig,
+) (*jose.JSONWebKeySet, error) {
 	set, err := issuerConfig.jwksCache.Lookup(ctx, issuerConfig.jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
@@ -1017,6 +1088,22 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 	}
 
 	return jwks, nil
+}
+
+// logKeySetUnusable logs, at Error, that issuerConfig's fetched key set could
+// not be used, at most once per jwksFetchFailureBackoff per issuer. It takes
+// issuerConfig.mu, so the caller must not hold it.
+func logKeySetUnusable(issuerConfig *externalIssuerConfig, err error) {
+	issuerConfig.mu.Lock()
+	if time.Since(issuerConfig.keysUnusableLoggedAt) < jwksFetchFailureBackoff {
+		issuerConfig.mu.Unlock()
+		return
+	}
+	issuerConfig.keysUnusableLoggedAt = time.Now()
+	issuerConfig.mu.Unlock()
+
+	slog.Error("issuer signing keys unusable; assertions from this issuer are refused until its key set changes",
+		"issuer", issuerConfig.IssuerURL, "error", err)
 }
 
 // bridgeJWKSet converts a jwx jwk.Set into the go-jose jose.JSONWebKeySet

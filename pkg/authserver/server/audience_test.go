@@ -4,12 +4,14 @@
 package server
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
@@ -112,6 +114,112 @@ type resourceClient struct {
 }
 
 func (c resourceClient) Resources() []string { return c.resources }
+
+var _ ResourceScopedClient = (*registration.AuthenticatedSPIFFEClient)(nil)
+
+func TestValidateClientAudience_AuthenticatedSPIFFEClient(t *testing.T) {
+	t.Parallel()
+
+	const (
+		resource = "https://resource.example.com"
+		other    = "https://other.example.com"
+	)
+	client := spiffetest.AuthenticatedClient(t,
+		spiffetest.WithID("client"),
+		spiffetest.WithResources(resource),
+	)
+
+	assert.Equal(t, []string{resource}, ClientResources(client))
+	assert.NoError(t, ValidateClientAudience(resource, client, fosite.DefaultAudienceMatchingStrategy))
+	assert.ErrorIs(t, ValidateClientAudience(other, client, fosite.DefaultAudienceMatchingStrategy), ErrInvalidTarget)
+}
+
+func TestGrantSingleResource(t *testing.T) {
+	t.Parallel()
+
+	const (
+		permitted    = "https://resource.example.com"
+		notPermitted = "https://other.example.com"
+		notAllowed   = "https://not-allowed.example.com"
+	)
+	tests := []struct {
+		name        string
+		form        url.Values
+		permitted   []string
+		allowed     []string
+		wantGranted []string
+		wantHint    string
+	}{
+		{
+			name: "one permitted resource is granted", form: url.Values{"resource": {permitted}},
+			permitted: []string{permitted}, allowed: []string{permitted}, wantGranted: []string{permitted},
+		},
+		{
+			name: "audience parameter is refused", form: url.Values{"audience": {permitted}},
+			permitted: []string{permitted}, allowed: []string{permitted},
+			wantHint: "audience parameter is not accepted",
+		},
+		{
+			name: "empty audience parameter is refused", form: url.Values{"resource": {permitted}, "audience": {""}},
+			permitted: []string{permitted}, allowed: []string{permitted},
+			wantHint: "audience parameter is not accepted",
+		},
+		{
+			name: "no resource is refused", form: url.Values{},
+			permitted: []string{permitted}, allowed: []string{permitted},
+			wantHint: "Exactly one resource parameter is required",
+		},
+		{
+			name: "empty resource is refused", form: url.Values{"resource": {""}},
+			permitted: []string{permitted}, allowed: []string{permitted},
+			wantHint: "Exactly one resource parameter is required",
+		},
+		{
+			name: "two resources are refused", form: url.Values{"resource": {permitted, notPermitted}},
+			permitted: []string{permitted, notPermitted}, allowed: []string{permitted, notPermitted},
+			wantHint: "Exactly one resource parameter is allowed",
+		},
+		{
+			name: "malformed resource is refused", form: url.Values{"resource": {"relative"}},
+			permitted: []string{"relative"}, allowed: []string{"relative"},
+			wantHint: "absolute http or https URI",
+		},
+		{
+			name: "resource outside the permitted list is refused", form: url.Values{"resource": {notPermitted}},
+			permitted: []string{permitted}, allowed: []string{permitted, notPermitted},
+			wantHint: "must exactly match a permitted resource",
+		},
+		{
+			name: "sub-path of a permitted resource is refused", form: url.Values{"resource": {permitted + "/v1"}},
+			permitted: []string{permitted}, allowed: []string{permitted, permitted + "/v1"},
+			wantHint: "must exactly match a permitted resource",
+		},
+		{
+			name: "permitted resource outside the server allowlist is refused", form: url.Values{"resource": {notAllowed}},
+			permitted: []string{notAllowed}, allowed: []string{permitted},
+			wantHint: "not an allowed audience",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := fosite.NewAccessRequest(nil)
+			req.Form = tt.form
+
+			err := GrantSingleResource(req, tt.permitted, tt.allowed)
+
+			if tt.wantHint == "" {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantGranted, []string(req.GetGrantedAudience()))
+				return
+			}
+			require.ErrorIs(t, err, ErrInvalidTarget)
+			assert.Contains(t, fosite.ErrorToRFC6749Error(err).HintField, tt.wantHint)
+			assert.Empty(t, req.GetGrantedAudience())
+		})
+	}
+}
 
 func TestValidateClientAudience(t *testing.T) {
 	t.Parallel()

@@ -11,10 +11,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -161,7 +164,6 @@ func TestNewSPIFFELiveBundleSourceLoadsFileBundle(t *testing.T) {
 	}, multi)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, multi.Close()) })
-	assert.Empty(t, multi.closers, "a file source registers no external client to close")
 
 	x509Bundle, err := live.x509.GetX509BundleForTrustDomain(trustDomain)
 	require.NoError(t, err)
@@ -280,10 +282,104 @@ func TestBundleHolderRejectsSequenceReplays(t *testing.T) {
 			holder := &bundleHolder{}
 			holder.current.Store(original)
 
-			require.ErrorContains(t, holder.store(tt.candidate(t)), tt.wantErr)
+			err := holder.store(tt.candidate(t))
+			require.ErrorIs(t, err, errSPIFFEBundleSequence)
+			require.ErrorContains(t, err, tt.wantErr)
 			assert.Same(t, original, holder.current.Load())
 		})
 	}
+}
+
+// captureBundleLogs swaps the process-global slog default for a text recorder
+// until the test ends and returns a reader of the recorded lines. Tests using
+// it must not run in parallel.
+func captureBundleLogs(t *testing.T) func() []string {
+	t.Helper()
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if len(groups) == 0 && a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	})
+	prev := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return func() []string {
+		out := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(out) == 1 && out[0] == "" {
+			return nil
+		}
+		return out
+	}
+}
+
+//nolint:paralleltest // captures the process-global slog default
+func TestBundleReloadReporterWarnsOncePerFailureKind(t *testing.T) {
+	trustDomain := spiffeid.RequireTrustDomainFromString("example.org")
+	holder := &bundleHolder{}
+	require.NoError(t, holder.store(readTestBundle(t, trustDomain, testBundleDocument(t, 0))))
+	lines := captureBundleLogs(t)
+	reporter := &bundleReloadReporter{trustDomain: trustDomain, path: "/bundle.json"}
+	rejected := fmt.Errorf("%w: lower", errSPIFFEBundleSequence)
+	other := errors.New("read failed")
+
+	steps := []struct {
+		name      string
+		err       error
+		wantLines int
+		wantLevel string
+	}{
+		{name: "healthy poll is silent", err: nil, wantLines: 0},
+		{name: "first rejected sequence warns", err: rejected, wantLines: 1, wantLevel: "level=WARN"},
+		{name: "repeated rejected sequence is silent", err: rejected, wantLines: 1},
+		{name: "a different failure kind warns again", err: other, wantLines: 2, wantLevel: "level=WARN"},
+		{name: "repeated other failure is silent", err: other, wantLines: 2},
+		{name: "recovery logs at debug", err: nil, wantLines: 3, wantLevel: "level=DEBUG"},
+		{name: "a new rejected sequence after recovery warns again", err: rejected, wantLines: 4, wantLevel: "level=WARN"},
+	}
+	for _, step := range steps {
+		reporter.observe(step.err, holder)
+		got := lines()
+		require.Len(t, got, step.wantLines, step.name)
+		if step.wantLevel != "" {
+			assert.Contains(t, got[len(got)-1], step.wantLevel, step.name)
+			assert.Contains(t, got[len(got)-1], "trust_domain=example.org", step.name)
+		}
+	}
+	assert.Contains(t, lines()[0], "sequence number rejected")
+}
+
+//nolint:paralleltest // captures the process-global slog default
+func TestBundleReloadReporterWarnsOnceWhenBundleGoesStale(t *testing.T) {
+	trustDomain := spiffeid.RequireTrustDomainFromString("example.org")
+	holder := &bundleHolder{}
+	bundle := readTestBundle(t, trustDomain, testBundleDocument(t, 0))
+	holder.current.Store(&bundleSnapshot{bundle: bundle, fetchedAt: time.Now()})
+	lines := captureBundleLogs(t)
+	reporter := &bundleReloadReporter{trustDomain: trustDomain, path: "/bundle.json"}
+
+	reporter.observe(nil, holder)
+	require.Empty(t, lines(), "a fresh bundle is silent")
+
+	holder.current.Store(&bundleSnapshot{bundle: bundle, fetchedAt: time.Now().Add(-spiffeBundleMaxStaleAge - time.Minute)})
+	reporter.observe(nil, holder)
+	reporter.observe(nil, holder)
+	got := lines()
+	require.Len(t, got, 1, "going stale warns once however many polls follow")
+	assert.Contains(t, got[0], "level=WARN")
+	assert.Contains(t, got[0], "fails closed")
+	assert.Contains(t, got[0], "trust_domain=example.org")
+
+	require.NoError(t, holder.store(readTestBundle(t, trustDomain, testBundleDocument(t, 0))))
+	reporter.observe(nil, holder)
+	reporter.observe(nil, holder)
+	got = lines()
+	require.Len(t, got, 2, "recovery logs once")
+	assert.Contains(t, got[1], "level=DEBUG")
 }
 
 func TestBundleHolderRefreshesEqualSequenceAndContent(t *testing.T) {

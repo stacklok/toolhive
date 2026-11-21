@@ -20,6 +20,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/migration"
+	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 func main() {
@@ -40,6 +42,9 @@ func main() {
 
 	// Setup signal handling for graceful cleanup
 	ctx := setupSignalHandler()
+
+	// Let usage metrics recognize servers from the built-in registry
+	usagemetrics.SetCatalogLookup(registry.IsEmbeddedCatalogServer)
 
 	// Clean up stale lock files on startup
 	cleanupStaleLockFiles()

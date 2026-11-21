@@ -48,6 +48,7 @@ func Setup(
 	k8sPodTemplatePatch string,
 	isolateNetwork bool,
 	allowDockerGateway bool,
+	readOnlyRootfs bool,
 	ignoreConfig *ignore.Config,
 	host string,
 	targetPort int,
@@ -100,6 +101,7 @@ func Setup(
 	}
 	containerOptions.ScalingConfig = scalingConfig
 	containerOptions.AllowDockerGateway = allowDockerGateway
+	containerOptions.ReadOnlyRootfs = readOnlyRootfs
 	containerOptions.RunConfigMCPServerGeneration = runConfigMCPServerGeneration
 
 	if transportType == types.TransportTypeStdio {

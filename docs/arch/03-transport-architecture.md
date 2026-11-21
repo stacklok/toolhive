@@ -157,7 +157,12 @@ ToolHive uses two different proxy implementations:
 **How it works:**
 - Uses Go's `httputil.ReverseProxy`
 - Validates every POST routed to the backend-forwarding MCP handler with shared MCP message admission, regardless of path or Content-Type
-- Forwards admitted body bytes and headers without reserializing the envelope
+- Forwards admitted body bytes and headers without reserializing the envelope.
+  The one exception is `Accept-Encoding`, which the authorization middleware
+  (on requests whose response it filters) and the tool filter (on every request)
+  withhold, so that Go's
+  transport negotiates and decodes the encoding itself (see
+  [Middleware Architecture](../middleware.md))
 - Applies the MCP middleware chain only to traffic routed to the backend-forwarding handler
 - Detects session IDs from headers/body for tracking
 - Rejects malformed, trailing, batched, ambiguous, or mixed JSON-RPC envelopes before forwarding
@@ -257,6 +262,15 @@ re-initialize. See *Session
 Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
 
 ### Middleware Integration
+
+Token exchange's host adapter and host tests live in `pkg/auth/tokenexchange`;
+`factory.go` handles runner setup and lifecycle, while `middleware.go` holds
+runtime behavior and configuration. Reusable RFC 8693 exchange and normalization
+remain in `pkg/oauthproto/tokenexchange`.
+The host depends on the reusable package, never the reverse. Runner startup uses
+`GetSupportedMiddlewareFactories` to select the host factory by `tokenexchange`;
+there is no token-exchange `init()` registration. See the
+[Go API migration](../middleware.md#8-token-exchange-middleware) for moved symbols.
 
 All proxy types integrate with the middleware chain:
 
@@ -846,7 +860,7 @@ JSON-RPC id) rather than per session ID since Modern has no sessions, an initial
 `serverStreamRegistry` remains the sensible seam for the piece still missing:
 actual **delivery** of notifications on a Modern listen stream (#5743). That work
 needs per-notification-type AND per-URI opt-in filtering rather than blanket
-fan-out, and per `schema/draft/schema.ts` must tag *every* notification with the
+fan-out, and per `schema/2026-07-28/schema.ts` must tag *every* notification with the
 subscription id, not just the acknowledgement. `dispatcher_streams.go` is
 therefore still intentionally kept transport-agnostic (no HTTP types), so that
 when delivery lands it does not also require rewriting the fan-out primitives.

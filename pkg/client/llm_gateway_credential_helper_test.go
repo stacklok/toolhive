@@ -179,7 +179,7 @@ func TestRevertCredentialHelper_RemovesEntryConfigAndShim(t *testing.T) {
 	require.NoError(t, err)
 	shimPath := cm.credentialHelperShimPath()
 
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), configPath))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), configPath, true))
 
 	// Config document and shim are gone; entry removed; appliedId cleared because
 	// it pointed at our config.
@@ -233,7 +233,7 @@ func TestRevertCredentialHelper_EmptyConfigPathLeavesShim(t *testing.T) {
 	// With no recorded config path we cannot confirm _meta.json no longer
 	// references the shim, so revert must be a no-op and leave it in place rather
 	// than risk breaking a still-applied config.
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), ""))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), "", true))
 	assert.FileExists(t, shimPath, "shim must not be deleted when configPath is empty")
 }
 
@@ -252,7 +252,7 @@ func TestRevertCredentialHelper_LeavesForeignAppliedIDIntact(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(metaPath, writeBytes, 0o600))
 
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), configPath))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), configPath, true))
 
 	meta = readMeta(t, metaPath)
 	// Our entry is removed but the user's active selection is left alone.
@@ -287,7 +287,7 @@ func TestRevertCredentialHelper_RejectsUnsafeConfigPath(t *testing.T) {
 		require.NoError(t, os.WriteFile(tc.stored, []byte("sentinel"), 0o600))
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), tc.stored))
+			require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), tc.stored, true))
 			assert.FileExists(t, tc.stored, "teardown must not unlink a tampered configPath")
 		})
 	}

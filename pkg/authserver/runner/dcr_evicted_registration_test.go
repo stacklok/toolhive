@@ -72,6 +72,7 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 		t.Helper()
 		store := storage.NewRedisStorageWithClient(
 			redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:")
+		t.Cleanup(func() { require.NoError(t, store.Close()) })
 		if registerSessionClient {
 			client, err := registration.New(registration.Config{
 				ID:                      sessionClientID,
@@ -88,6 +89,7 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 		}
 		as, err := NewEmbeddedAuthServerWithStorage(ctx, downstreamConfig(), store)
 		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, as.Close()) })
 		downstream.set(as.Handler())
 		return as
 	}
@@ -118,8 +120,7 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 
 	// The downstream restarts against the same persistent Redis. Its next
 	// authorization must reach the upstream with a client the upstream knows.
-	second := bootDownstream(false)
-	t.Cleanup(func() { _ = second.Close() })
+	bootDownstream(false)
 	resp, presented := authorize()
 	requireUpstreamAccepted(resp, "after the upstream evicted client "+registered+
 		", the restarted downstream presented client "+presented)
@@ -138,8 +139,10 @@ func TestDCRResolver_PublicClientRecoversFromEvictedRegistration(t *testing.T) {
 	upstream, upstreamRedis, upstreamStore := newDCRUpstream(t)
 
 	downstreamRedis := miniredis.RunT(t)
-	cache := dcr.NewStorageBackedStore(storage.NewRedisStorageWithClient(
-		redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:"))
+	store := storage.NewRedisStorageWithClient(
+		redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:")
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	cache := dcr.NewStorageBackedStore(store)
 	req := &dcr.Request{
 		Issuer:       "https://downstream.example.com",
 		Scopes:       []string{"openid", "offline_access"},
@@ -256,6 +259,7 @@ func newDCRUpstream(t *testing.T) (*indirectServer, *miniredis.Miniredis, *stora
 	upstreamRedis := miniredis.RunT(t)
 	upstreamStore := storage.NewRedisStorageWithClient(
 		redis.NewClient(&redis.Options{Addr: upstreamRedis.Addr()}), "upstream:")
+	t.Cleanup(func() { require.NoError(t, upstreamStore.Close()) })
 	upstream := newIndirectServer(t)
 	upstreamAS, err := NewEmbeddedAuthServerWithStorage(context.Background(), &authserver.RunConfig{
 		SchemaVersion:    authserver.CurrentSchemaVersion,

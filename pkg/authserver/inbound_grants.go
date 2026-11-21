@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	tx "github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // TokenExchangeInboundGrantRunConfig configures RFC 8693 inbound clients and issuer policies.
@@ -120,14 +121,12 @@ func NormalizeInboundGrants(cfg *RunConfig) (*NormalizedInboundGrants, error) {
 	} else {
 		result.Capabilities.TokenExchange = legacyTokenExchange
 	}
-	// SPIFFE client-auth associations always require the token-exchange grant
-	// (SPIFFEGrantTypeTokenExchange is the only grant type they may declare —
-	// see validateSPIFFEGrants), independent of the legacy/canonical
-	// token-exchange projection above. A SPIFFE-only configuration must not
-	// leave Capabilities.TokenExchange false: that would disable the RFC 8693
-	// grant handler server-wide and reject every SPIFFE client's own token
-	// requests before authentication is even checked.
-	if len(cfg.InboundGrants.SPIFFEClientAuth) > 0 {
+	// An association that lists the token-exchange grant needs the RFC 8693
+	// handler registered even when no canonical or legacy token-exchange
+	// configuration exists. Associations limited to client_credentials do not.
+	if slices.ContainsFunc(cfg.InboundGrants.SPIFFEClientAuth, func(entry SPIFFEClientAuthRunConfig) bool {
+		return slices.Contains(entry.GrantTypes, oauthproto.GrantTypeTokenExchange)
+	}) {
 		result.Capabilities.TokenExchange = true
 	}
 

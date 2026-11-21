@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // recordedLevels is a slog handler that keeps each record's level by message.
@@ -45,7 +45,7 @@ func TestLookupCachedResolution_StaleWarningOnlyAtStart(t *testing.T) {
 		Issuer:      "https://as.example.com",
 		UpstreamID:  "https://idp.example.com/register",
 		RedirectURI: "https://as.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash(nil),
+		ScopesHash:  dcrkey.ScopesHash(nil),
 	}
 	_, err := store.PutIfAbsent(ctx, key, &Resolution{
 		ClientID:              "old-client",

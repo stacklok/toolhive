@@ -6,7 +6,9 @@ package authz
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +27,16 @@ type mockAuthorizer struct {
 	results map[string]mockResult
 	// calls records each invocation in order.
 	calls []mockCall
+	// allowed, when set, decides by operation and takes precedence over results.
+	allowed map[authorizers.MCPOperation]bool
+	// callByResource and readByResource, when set, decide tool:call and tool:read
+	// per tool name.
+	callByResource map[string]bool
+	readByResource map[string]bool
+	// blockRead makes tool:read wait for its context to end, like a hung PDP.
+	blockRead bool
+	// reads counts the tool:read checks received.
+	reads atomic.Int32
 }
 
 type mockResult struct {
@@ -39,7 +51,7 @@ type mockCall struct {
 }
 
 func (m *mockAuthorizer) AuthorizeWithJWTClaims(
-	_ context.Context,
+	ctx context.Context,
 	feature authorizers.MCPFeature,
 	operation authorizers.MCPOperation,
 	resourceID string,
@@ -50,6 +62,22 @@ func (m *mockAuthorizer) AuthorizeWithJWTClaims(
 		operation:  operation,
 		resourceID: resourceID,
 	})
+	if operation == authorizers.MCPOperationRead {
+		m.reads.Add(1)
+		if m.blockRead {
+			<-ctx.Done()
+			return false, ctx.Err()
+		}
+		if m.readByResource != nil {
+			return m.readByResource[resourceID], nil
+		}
+	}
+	if operation == authorizers.MCPOperationCall && m.callByResource != nil {
+		return m.callByResource[resourceID], nil
+	}
+	if m.allowed != nil {
+		return m.allowed[operation], nil
+	}
 	r, ok := m.results[resourceID]
 	if !ok {
 		return false, nil
@@ -76,6 +104,14 @@ func TestAuthorizedToolIndexes(t *testing.T) {
 		tools      []mcp.Tool
 		wantNames  []string
 	}{
+		{
+			name: "tool:read alone keeps every tool",
+			authorizer: &mockAuthorizer{
+				allowed: map[authorizers.MCPOperation]bool{authorizers.MCPOperationRead: true},
+			},
+			tools:     []mcp.Tool{makeTool("alpha", nil), makeTool("beta", nil)},
+			wantNames: []string{"alpha", "beta"},
+		},
 		{
 			name:       "nil authorizer keeps every tool",
 			authorizer: nil,
@@ -135,7 +171,7 @@ func TestAuthorizedToolIndexes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			indexes := authorizedToolIndexes(context.Background(), tc.authorizer, tc.tools)
+			indexes := authorizedToolIndexes(context.Background(), authorizers.WithToolCallImpliesRead(tc.authorizer), tc.tools)
 
 			gotNames := make([]string, len(indexes))
 			for i, index := range indexes {
@@ -158,7 +194,7 @@ func TestAuthorizedToolIndexes_CallsAuthorizerCorrectly(t *testing.T) {
 
 	require.Len(t, mock.calls, 1)
 	assert.Equal(t, authorizers.MCPFeatureTool, mock.calls[0].feature)
-	assert.Equal(t, authorizers.MCPOperationCall, mock.calls[0].operation)
+	assert.Equal(t, authorizers.MCPOperationRead, mock.calls[0].operation)
 	assert.Equal(t, "tool1", mock.calls[0].resourceID)
 }
 
@@ -176,13 +212,14 @@ func cedarCtx(t *testing.T) context.Context {
 func TestAuthorizedToolIndexes_WithCedarAuthorizer(t *testing.T) {
 	t.Parallel()
 
-	cedarAuth, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+	rawCedar, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
 	require.NoError(t, err)
+	cedarAuth := authorizers.WithToolCallImpliesRead(rawCedar)
 
 	t.Run("keeps only permitted tool", func(t *testing.T) {
 		t.Parallel()
@@ -208,21 +245,22 @@ func TestAuthorizedToolIndexes_WithCedarAuthorizer(t *testing.T) {
 	})
 }
 
-func TestAuthorizeToolCall_WithCedarAuthorizer(t *testing.T) {
+func TestAuthorizeToolRead_WithCedarAuthorizer(t *testing.T) {
 	t.Parallel()
 
-	cedarAuth, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+	rawCedar, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
 	require.NoError(t, err)
+	cedarAuth := authorizers.WithToolCallImpliesRead(rawCedar)
 
 	t.Run("permits authorized tool", func(t *testing.T) {
 		t.Parallel()
 
-		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "weather", nil)
+		ok, err := authorizeToolRead(cedarCtx(t), cedarAuth, "weather", nil)
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})
@@ -230,30 +268,31 @@ func TestAuthorizeToolCall_WithCedarAuthorizer(t *testing.T) {
 	t.Run("denies unauthorized tool", func(t *testing.T) {
 		t.Parallel()
 
-		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "calculator", nil)
+		ok, err := authorizeToolRead(cedarCtx(t), cedarAuth, "calculator", nil)
 		require.NoError(t, err)
 		assert.False(t, ok)
 	})
 }
 
-func TestAuthorizeToolCall_WithArguments(t *testing.T) {
+func TestAuthorizeToolRead_WithArguments(t *testing.T) {
 	t.Parallel()
 
 	// Policy that permits call_tool only when the arg_mode argument equals "safe".
 	// Cedar sees arguments with an "arg_" prefix (preprocessed by the authorizer).
-	cedarAuth, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+	rawCedar, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"deploy") when { context.arg_mode == "safe" };`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
 	require.NoError(t, err)
+	cedarAuth := authorizers.WithToolCallImpliesRead(rawCedar)
 
 	t.Run("permits when arguments satisfy policy", func(t *testing.T) {
 		t.Parallel()
 
 		args := map[string]interface{}{"mode": "safe"}
-		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "deploy", args)
+		ok, err := authorizeToolRead(cedarCtx(t), cedarAuth, "deploy", args)
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})
@@ -262,7 +301,7 @@ func TestAuthorizeToolCall_WithArguments(t *testing.T) {
 		t.Parallel()
 
 		args := map[string]interface{}{"mode": "dangerous"}
-		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "deploy", args)
+		ok, err := authorizeToolRead(cedarCtx(t), cedarAuth, "deploy", args)
 		require.NoError(t, err)
 		assert.False(t, ok)
 	})
@@ -273,7 +312,7 @@ func TestAuthorizeToolCall_WithArguments(t *testing.T) {
 		// When the policy references an argument that isn't present,
 		// Cedar returns an evaluation error. The caller should treat
 		// this as denied access.
-		ok, err := authorizeToolCall(cedarCtx(t), cedarAuth, "deploy", nil)
+		ok, err := authorizeToolRead(cedarCtx(t), cedarAuth, "deploy", nil)
 		assert.False(t, ok)
 		// Cedar may return an error when evaluating a when-clause against
 		// missing context attributes — either outcome (error or clean deny)
@@ -282,7 +321,7 @@ func TestAuthorizeToolCall_WithArguments(t *testing.T) {
 	})
 }
 
-func TestAuthorizeToolCall(t *testing.T) {
+func TestAuthorizeToolRead(t *testing.T) {
 	t.Parallel()
 
 	errAuth := errors.New("auth error")
@@ -334,7 +373,7 @@ func TestAuthorizeToolCall(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			ok, err := authorizeToolCall(context.Background(), tc.authorizer, tc.toolName, nil)
+			ok, err := authorizeToolRead(context.Background(), tc.authorizer, tc.toolName, nil)
 
 			assert.Equal(t, tc.wantOK, ok)
 			if tc.wantErr != nil {
@@ -344,4 +383,24 @@ func TestAuthorizeToolCall(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuthorizedToolIndexes_SharedDeadlineStopsTheLoop(t *testing.T) {
+	t.Parallel()
+
+	tools := []mcp.Tool{makeTool("alpha", nil), makeTool("beta", nil), makeTool("gamma", nil)}
+	inner := &mockAuthorizer{
+		allowed:   map[authorizers.MCPOperation]bool{authorizers.MCPOperationCall: true},
+		blockRead: true,
+	}
+	// The outer timeout only keeps this test from hanging if the shared deadline is removed.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	got := authorizedToolIndexesWithin(ctx, authorizers.WithToolCallImpliesRead(inner), tools, 50*time.Millisecond)
+
+	assert.Empty(t, got, "no tool may be listed through the tool:call fallback after a timeout")
+	assert.Equal(t, int32(1), inner.reads.Load(), "the loop must stop at the first expired check")
+	assert.Less(t, time.Since(start), 2*time.Second, "the shared deadline must end the filter early")
 }

@@ -152,7 +152,7 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		// result, process it exactly as if it had been labeled correctly
 		// (which filters clean frames and fails closed on dirty ones). Only a
 		// body carrying no result under either shape passes through.
-		action, _ := classifyUnlabeledBody(rawResponse)
+		action := classifyUnlabeledBody(rawResponse)
 		switch action {
 		case sniffFilterJSON, sniffRejectJSON:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as JSON",
@@ -881,28 +881,27 @@ const (
 )
 
 // classifyUnlabeledBody picks the action for such a body. It checks the shape first,
-// in the order the POST path always used. A clean Response is returned decoded, so
-// a caller does not decode it twice.
-func classifyUnlabeledBody(body []byte) (sniffAction, *jsonrpc2.Response) {
+// in the order the POST path always used.
+func classifyUnlabeledBody(body []byte) sniffAction {
 	switch sniffBodyShape(body) {
 	case bodyShapeJSON:
 		message, _ := jsonrpc2.DecodeMessage(body)
-		if response, ok := message.(*jsonrpc2.Response); ok {
-			return sniffFilterJSON, response
+		if _, ok := message.(*jsonrpc2.Response); ok {
+			return sniffFilterJSON
 		}
-		return sniffRejectJSON, nil
+		return sniffRejectJSON
 	case bodyShapeSSE:
-		return sniffFilterSSE, nil
+		return sniffFilterSSE
 	case bodyShapeNone:
 	}
 	_, derr := jsonrpc2.DecodeMessage(body)
 	switch decideNoShapeBody(body, derr != nil) {
 	case noShapeFilterSSE:
-		return sniffFilterSSE, nil
+		return sniffFilterSSE
 	case noShapeReject:
-		return sniffRejectNamed, nil
+		return sniffRejectNamed
 	case noShapePassThrough:
-		return sniffPassThrough, nil
+		return sniffPassThrough
 	}
 	return sniffPassThrough, nil
 }

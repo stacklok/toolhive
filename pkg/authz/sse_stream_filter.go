@@ -26,8 +26,10 @@ import (
 // maxSSEEventBytes bounds how much unterminated data the filter buffers while it
 // waits for the blank line that ends an event. An event still open past this
 // size fails the stream closed. A complete event of any size is filtered.
-// A stream whose lines end in a bare CR never completes an event, so it is held until this\r
-// cap or the end of the stream, then fails closed.
+// The filter splits events on LF only, so a stream whose lines end in a bare CR
+// never completes an event. It is held until this cap or the end of the stream,
+// then fails closed. A client that splits on bare CR still sees a complete event,
+// so this is a stall, not a bypass.
 const maxSSEEventBytes = 16 << 20
 
 // errSSEEncodedBody closes a filtered stream whose body is content-coded.
@@ -48,7 +50,8 @@ var errSSEBareCR = errors.New("event carries a bare CR line break that the filte
 
 // errSSEUnrecognizedMediaType is logged when a successful response with a
 // Content-Type other than text/event-stream carries neither a JSON-RPC response
-// nor an SSE result. Such a body is rejected with an error carrying its id where that id is readable, and dropped otherwise.
+// nor an SSE result. Such a body is rejected with an error carrying its id where
+// that id is readable, and dropped otherwise.
 var errSSEUnrecognizedMediaType = errors.New(
 	"successful response has a Content-Type other than text/event-stream and no readable JSON-RPC result")
 
@@ -69,7 +72,8 @@ var listMembers = map[string]string{
 // Each event is classified by the shape of its result, not by request method:
 // a result carrying tools, prompts, resources, resourceTemplates or skills is
 // filtered with the matching filter. A frame that is not a clean Response but
-// still carries a result fails closed. Everything else, including a body with no result, passes through unchanged.
+// still carries a result fails closed. Everything else, including a body with
+// no result, passes through unchanged.
 type sseStreamFilterWriter struct {
 	http.ResponseWriter
 	authorizer       authorizers.Authorizer
@@ -474,8 +478,9 @@ func (w *sseStreamFilterWriter) newFilter(method string) *ResponseFilteringWrite
 }
 
 // failClosed replaces an event with a JSON-RPC error envelope. The reason is logged
-// once here at Warn, and the envelope is encoded without a second log line. id is the request id when
-// the frame was a clean Response, and empty otherwise. An event whose reason has no id is dropped.
+// once here at Warn, and the envelope is encoded without a second log line. id is
+// the request id when the frame was a clean Response, and empty otherwise. An
+// event whose reason has no id is dropped.
 func failClosed(event []sseLine, id jsonrpc2.ID, reason string) []sseLine {
 	if id == (jsonrpc2.ID{}) {
 		// No request id can be read: a notification or an off-spec frame. An error with
@@ -489,8 +494,10 @@ func failClosed(event []sseLine, id jsonrpc2.ID, reason string) []sseLine {
 }
 
 // resultMethod returns the response filter for a result: a list method, the find_tool
-// filter for a find_tool answer, or "" when neither applies. A result that names tools
-// but is not a valid find_tool answer is an error, so it fails closed. A result with no content or structuredContent member is not a find_tool answer and passes through.
+// filter for a find_tool answer, or "" when neither applies. A result that names
+// tools but is not a valid find_tool answer is an error, so it fails closed. A
+// result with no content or structuredContent member is not a find_tool answer
+// and passes through.
 func resultMethod(result json.RawMessage) (string, error) {
 	method, err := listMethodForResult(result)
 	if err != nil || method != "" {
@@ -528,7 +535,9 @@ func mentionsToolsValue(v any, depth int) bool {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			// A tools value fails closed unless it is a list naming no tool, such as [] or ["hammer"]. A string or object holding tools (including a string of JSON) counts.
+			// A tools value fails closed unless it is a list naming no tool, such as []
+			// or ["hammer"]. A string or object holding tools (including a string of
+			// JSON) counts.
 			// listNamesNoTool defines which list shapes pass.
 			if (strings.EqualFold(k, "tools") && !listNamesNoTool(val)) || mentionsToolsValue(val, depth) {
 				return true
@@ -706,9 +715,10 @@ func (w *sseStreamFilterWriter) writeRejection(body []byte, reason string) {
 	_, _ = w.ResponseWriter.Write(encodeErrorBody(id))
 }
 
-// listNamesNoTool reports whether v is a list in which no entry is an object with a name
-// key, compared case-insensitively as the client decoder does. Only such a list cannot
-// leak a tool, so any other tools value, including a string, must fail closed.
+// listNamesNoTool reports whether v is a list in which no entry is an object with a
+// name key, compared case-insensitively (encoding/json matches keys this way, so a
+// client reading "Name" sees a tool). Only such a list cannot leak a tool, so any
+// other tools value, including a string, must fail closed.
 func listNamesNoTool(v any) bool {
 	list, ok := v.([]any)
 	if !ok {

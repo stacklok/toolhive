@@ -903,7 +903,7 @@ func classifyUnlabeledBody(body []byte) sniffAction {
 	case noShapePassThrough:
 		return sniffPassThrough
 	}
-	return sniffPassThrough, nil
+	return sniffPassThrough
 }
 
 // filterListResponse filters the list response based on authorization policies

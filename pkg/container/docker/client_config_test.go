@@ -157,6 +157,26 @@ func TestCompareHostConfig_EqualAndMismatch(t *testing.T) {
 	}
 }
 
+func TestCompareHostConfig_ExtraHosts(t *testing.T) {
+	t.Parallel()
+	mapping := []string{"host.docker.internal:host-gateway"}
+	for _, tt := range []struct {
+		name              string
+		existing, desired []string
+		want              bool
+	}{
+		{name: "requested mapping present", existing: mapping, desired: mapping, want: true},
+		{name: "requested mapping missing", existing: nil, desired: mapping, want: false},
+		{name: "runtime-added mapping ignored when none requested", existing: []string{"host.containers.internal:10.0.0.1"}, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			existing := &container.InspectResponse{HostConfig: &container.HostConfig{ExtraHosts: tt.existing}}
+			assert.Equal(t, tt.want, compareHostConfig(existing, &container.HostConfig{ExtraHosts: tt.desired}))
+		})
+	}
+}
+
 func TestComparePortConfig_EqualAndMismatch(t *testing.T) {
 	t.Parallel()
 

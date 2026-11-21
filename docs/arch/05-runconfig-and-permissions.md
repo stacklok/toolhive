@@ -543,23 +543,31 @@ When `isolate_network: true` in RunConfig:
 For isolated bridge workloads, both Squid and Envoy block host access by default,
 including when outbound permissions allow all traffic. The shared protected set
 contains all daemon bridge gateway IPs and the names `host.docker.internal`,
-`gateway.docker.internal`, and `host.containers.internal`. On Podman it also
-contains every address mapped to those names in the running DNS sidecar's
-`/etc/hosts`; these addresses need not be bridge gateways and are not a fixed
-link-local IP or subnet. Squid checks destination IPs before outbound allows;
-Envoy applies both authority matching and resolved-address filtering.
+`gateway.docker.internal`, and `host.containers.internal`. It also contains
+every address mapped to those names in the running DNS sidecar's `/etc/hosts`;
+these addresses need not be bridge gateways and are not a fixed link-local IP or
+subnet. On Docker Desktop, for example, `host.docker.internal` is the VM host
+address (such as `192.168.65.254`), which reaches host loopback services but is
+not the gateway of any bridge network. Squid checks destination IPs before
+outbound allows; Envoy applies both authority matching and resolved-address
+filtering.
 
-Podman discovery reads the running DNS sidecar's `/etc/hosts` through the runtime
+Host discovery reads the running DNS sidecar's `/etc/hosts` through the runtime
 archive API before proxy or MCP setup. ToolHive uses `dockurr/dnsmasq:latest` in
-bridge mode with the same endpoint map as its proxies, without mounts or extra
-hosts entries. Workload mounts do not propagate to sidecars. Runtime-generated
-hosts are a prerequisite: ToolHive does not configure image-owned hosts or
-disable runtime hosts management. Rootless sidecars use the same runtime host
-endpoint; all bridge gateways cover rootful Podman's gateway selection.
-Proxy image selection and image entrypoints are unchanged.
+bridge mode with the same endpoint map as its proxies, without mounts. Podman
+writes `host.containers.internal` itself. On Docker, which resolves
+`host.docker.internal` through its DNS rather than the hosts file, the sidecar
+is created with the extra hosts entry `host.docker.internal:host-gateway`, so the
+daemon writes its own host address into the file. A sidecar that lacks this
+entry is recreated rather than reused. Workload mounts do not propagate to
+sidecars. Runtime-generated hosts are a prerequisite: ToolHive does not configure
+image-owned hosts or disable runtime hosts management. Rootless sidecars use the
+same runtime host endpoint; all bridge gateways cover rootful Podman's gateway
+selection. Proxy image selection and image entrypoints are unchanged.
 
-`host.containers.internal` must be present with a valid address;
-`host.docker.internal` and `gateway.docker.internal` are protected when present. Missing/malformed/oversized hosts data or runtime read failures
+The runtime's own alias must be present with a valid address:
+`host.containers.internal` on Podman, `host.docker.internal` on Docker. The other
+names are protected when present. Missing/malformed/oversized hosts data or runtime read failures
 fail deployment with an error, **even with `--allow-docker-gateway`**. The archive
 read is bounded in size and time, with no host DNS, process-host filesystem, or
 hardcoded-address fallback. No extra discovery container is created.

@@ -1983,4 +1983,3 @@ func idValue(rest []byte) (jsonrpc2.ID, bool) {
 	}
 	return jsonrpc2.Int64ID(n), true
 }
-

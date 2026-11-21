@@ -6824,7 +6824,7 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 
 			now := time.Now()
 			subjectToken := ts.signSubjectToken("external-subject", now, now.Add(10*time.Minute), "subject-1")
-			assertion := makeAssertion(registered.ClientID, testIssuer+"/oauth/token", now.Add(2*time.Minute), "client-assertion-1")
+			assertion := makeAssertion(registered.ClientID, testIssuer, now.Add(2*time.Minute), "client-assertion-1")
 			response, body := request(assertion, subjectToken)
 			t.Cleanup(func() { response.Body.Close() })
 			require.Equal(t, http.StatusOK, response.StatusCode, body)
@@ -6850,8 +6850,8 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 				assertion string
 			}{
 				{name: "wrong_audience", assertion: makeAssertion(registered.ClientID, "https://wrong.example/token", now.Add(2*time.Minute), "client-assertion-wrong-aud")},
-				{name: "wrong_subject", assertion: makeAssertion("different-client", testIssuer+"/oauth/token", now.Add(2*time.Minute), "client-assertion-wrong-sub")},
-				{name: "expired", assertion: makeAssertion(registered.ClientID, testIssuer+"/oauth/token", now.Add(-time.Minute), "client-assertion-expired")},
+				{name: "wrong_subject", assertion: makeAssertion("different-client", testIssuer, now.Add(2*time.Minute), "client-assertion-wrong-sub")},
+				{name: "expired", assertion: makeAssertion(registered.ClientID, testIssuer, now.Add(-2*time.Minute), "client-assertion-expired")},
 			} {
 				t.Run(negative.name, func(t *testing.T) {
 					response, body := request(negative.assertion, subjectToken)
@@ -6866,8 +6866,9 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 
 // TestIntegration_PrivateKeyJWTClientAssertionAudience drives a DCR
 // private_key_jwt client through the token endpoint with different assertion
-// audiences and JOSE types. The issuer and the token endpoint URL are accepted;
-// any other audience is refused with invalid_client.
+// audiences and JOSE types. Only the issuer, and nothing else, is accepted;
+// the token endpoint URL, an array with another value and any other audience
+// are refused with invalid_client.
 func TestIntegration_PrivateKeyJWTClientAssertionAudience(t *testing.T) {
 	t.Parallel()
 
@@ -6918,7 +6919,8 @@ func TestIntegration_PrivateKeyJWTClientAssertionAudience(t *testing.T) {
 		wantOK   bool
 	}{
 		{name: "issuer", audience: jwt.Audience{testIssuer}, typ: "JWT", wantOK: true},
-		{name: "token URL", audience: jwt.Audience{testIssuer + "/oauth/token"}, typ: "JWT", wantOK: true},
+		{name: "token URL", audience: jwt.Audience{testIssuer + "/oauth/token"}, typ: "JWT"},
+		{name: "issuer and another value in an array", audience: jwt.Audience{testIssuer, "https://other.example.com"}, typ: "JWT"},
 		{name: "unrelated audience", audience: jwt.Audience{"https://other.example.com"}, typ: "JWT"},
 		{name: "rfc7523bis typ header with issuer", audience: jwt.Audience{testIssuer}, typ: "client-authentication+jwt", wantOK: true},
 	}

@@ -972,7 +972,7 @@ is needed or offered.
 
 A client proves possession of its private key by sending a signed
 `client_assertion` at `/oauth/token`; ToolHive stores only the registered public
-JWKS. The assertion's `aud` may be the issuer or the token endpoint URL; see
+JWKS. The assertion's `aud` must hold the issuer and nothing else; see
 [Client-assertion audience](17-token-exchange-delegation.md#client-assertion-audience).
 The server accepts a clock difference of 60 seconds in the assertion's `exp`,
 `iat` and `nbf`, so an assertion from a client whose clock runs a little fast or

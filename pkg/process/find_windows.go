@@ -6,6 +6,7 @@
 package process
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 	"unsafe"
@@ -13,8 +14,9 @@ import (
 
 // Windows API constants
 const (
-	processQueryInformation = 0x0400
-	stillActive             = 259
+	processQueryInformation               = 0x0400
+	stillActive                           = 259
+	errorInvalidParameter   syscall.Errno = 87
 )
 
 // Windows API functions
@@ -42,8 +44,12 @@ func FindProcess(pid int) (bool, error) {
 	)
 
 	if handle == 0 {
-		// Process doesn't exist or cannot be opened
-		return false, nil
+		// With these valid access/inheritance arguments, ERROR_INVALID_PARAMETER
+		// means the PID does not exist. Access denial leaves its state unknown.
+		if errors.Is(err, errorInvalidParameter) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to open process: %w", err)
 	}
 
 	// Don't forget to close the handle when we're done

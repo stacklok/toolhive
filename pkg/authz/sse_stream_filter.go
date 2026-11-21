@@ -534,7 +534,8 @@ func mentionsToolsValue(v any, depth int) bool {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			// A tools value fails closed unless it is a list naming no tool, such as [] or ["hammer"]. A string or object holding tools (including a string of JSON) counts.			// see listNamesNoTool for the list shapes that pass.
+			// A tools value fails closed unless it is a list naming no tool, such as [] or ["hammer"]. A string or object holding tools (including a string of JSON) counts.
+			// listNamesNoTool defines which list shapes pass.
 			if (strings.EqualFold(k, "tools") && !listNamesNoTool(val)) || mentionsToolsValue(val, depth) {
 				return true
 			}

@@ -52,6 +52,16 @@ func runSSEStreamWithStatus(
 	return rr
 }
 
+// TestSSEStreamWriterUnwrapsToUnderlyingWriter pins Unwrap, which lets
+// http.ResponseController reach the connection's deadlines through this writer.
+func TestSSEStreamWriterUnwrapsToUnderlyingWriter(t *testing.T) {
+	t.Parallel()
+
+	underlying := httptest.NewRecorder()
+	w := newSSEStreamFilterWriter(underlying, nil, sseRequest(), nil, nil)
+	assert.Same(t, underlying, w.Unwrap())
+}
+
 func sseStreamEvent(data string) string {
 	return "event: message\ndata: " + data + "\n\n"
 }

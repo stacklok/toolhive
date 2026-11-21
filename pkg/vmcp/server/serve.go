@@ -20,6 +20,7 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
@@ -41,6 +42,11 @@ import (
 //
 //nolint:revive // exported-stutter is intentional; see the doc comment above.
 type ServerConfig struct {
+	// ScopeAuthorization supplies discovery requirements. Direct Serve embedders must
+	// also pass this policy to core.New; New wires both sides automatically.
+	ScopeAuthorization *vmcp.ScopeAuthorizationConfig
+	ScopeChallenge     *ScopeChallengeConfig
+
 	// Name and Version are exposed in the MCP protocol via the mcp-go server.
 	Name    string
 	Version string
@@ -210,6 +216,9 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		return nil, fmt.Errorf("%w: BackendRegistry is required", vmcp.ErrInvalidConfig)
 	}
 
+	if err := validateScopeServing(cfg); err != nil {
+		return nil, err
+	}
 	serveCfg := buildServeConfig(cfg)
 
 	// Build the SDK hooks up front so they can be passed to NewMCPServer, but
@@ -318,7 +327,11 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		}
 	}()
 
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionManagerConfig, cfg.BackendRegistry)
+	sessionCfg := *cfg.SessionManagerConfig
+	if serveCfg.ScopeChallenge != nil && serveCfg.ScopeChallenge.ResponseMode == "auto" && sessionCfg.Base != nil {
+		sessionCfg.Base = vmcpsession.NewDecoratingFactory(sessionCfg.Base, captureScopeClient)
+	}
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, &sessionCfg, cfg.BackendRegistry)
 	if err != nil {
 		return nil, err
 	}
@@ -433,6 +446,8 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 //     wiring), not via Config→New, so these Config fields are unused on the Serve path.
 func buildServeConfig(cfg *ServerConfig) *Config {
 	return &Config{
+		ScopeAuthorization:      cfg.ScopeAuthorization.DeepCopy(),
+		ScopeChallenge:          cfg.ScopeChallenge.clone(),
 		Name:                    cfg.Name,
 		Version:                 cfg.Version,
 		GroupRef:                cfg.GroupRef,

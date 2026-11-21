@@ -173,6 +173,9 @@ func (s *Server) dispatchModernToolsList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
+	for i := range result.Tools {
+		s.annotateScopeTool(&result.Tools[i])
+	}
 	writeModernResult(w, parsed.ID, result)
 }
 
@@ -284,10 +287,15 @@ func (s *Server) dispatchModernToolCall(
 		writeModernError(w, parsed.ID, jsonRPCCodeInvalidParams, "arguments must be an object")
 		return
 	}
-	if s.authzGateEnabled && gateDenied(ctx, parsed.Method,
-		s.core.CheckToolCall(ctx, identity, parsed.ResourceID, parsed.Arguments)) {
-		writeModernDenied(w, parsed.ID, vmcp.DenyMessageToolCall)
-		return
+	if s.authzGateEnabled || s.config.ScopeAuthorization != nil {
+		checkErr := s.core.CheckToolCall(ctx, identity, parsed.ResourceID, parsed.Arguments)
+		if s.writeScopeChallenge(ctx, w, parsed.ID, checkErr, true, scopeClientInfo(parsed.ClientInfo)) {
+			return
+		}
+		if gateDenied(ctx, parsed.Method, checkErr) {
+			writeModernDenied(w, parsed.ID, vmcp.DenyMessageToolCall)
+			return
+		}
 	}
 	// The refusal recorder classifies a backend tool that demanded mid-call
 	// elicitation/sampling with no downstream session to forward it to — see
@@ -322,6 +330,9 @@ func (s *Server) dispatchModernToolCall(
 		// ErrNotFound is exported and Admission is a public interface.
 		if errors.Is(err, vmcp.ErrNotFound) && !errors.Is(err, vmcp.ErrAuthorizationFailed) {
 			writeModernError(w, parsed.ID, jsonRPCCodeInvalidParams, "unknown tool")
+			return
+		}
+		if s.writeScopeChallenge(ctx, w, parsed.ID, err, true, scopeClientInfo(parsed.ClientInfo)) {
 			return
 		}
 		writeModernToolCallFailure(w, parsed, refusal, s.config.Name, s.config.Version, err)

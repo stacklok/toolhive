@@ -119,6 +119,11 @@ type Watcher interface {
 
 // Config holds the Virtual MCP Server configuration.
 type Config struct {
+	// ScopeAuthorization is passed to the core and used for discovery metadata.
+	ScopeAuthorization *vmcp.ScopeAuthorizationConfig
+	// ScopeChallenge configures refusal encoding; New wires policy and transport together.
+	ScopeChallenge *ScopeChallengeConfig
+
 	// Name is the server name exposed in MCP protocol
 	Name string
 
@@ -534,6 +539,9 @@ func New(
 	// never serves one caller's capability view to another.
 	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
+	if cfg.ScopeAuthorization != nil && (cfg.CodeModeConfig != nil || cfg.OptimizerConfig != nil) {
+		return nil, fmt.Errorf("%w: scope challenges do not support optimizer or code mode", vmcp.ErrInvalidConfig)
+	}
 	coreVMCP, err := core.New(deriveCoreConfig(
 		cfg, cachedAgg, rt, backendClient, backendRegistry, workflowDefs,
 		cfg.Authz, elicitation,
@@ -751,7 +759,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// before any 403.
 	// See session_ownership.go.
 
-	var mcpHandler = s.sessionOwnershipMiddleware(streamableServer)
+	var mcpHandler = s.sessionOwnershipMiddleware(s.scopeChallengeMiddleware(streamableServer))
 
 	// Classify Modern (2026-07-28) vs Legacy at the decode seam, reject
 	// malformed Modern requests before dispatch, and route well-formed Modern

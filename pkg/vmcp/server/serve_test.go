@@ -411,6 +411,8 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		HeartbeatInterval:       time.Second,
 		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
 		AuthInfoHandler:         http.NewServeMux(),
+		ScopeAuthorization:      &vmcp.ScopeAuthorizationConfig{Tools: map[string]vmcp.OAuthScopeSet{"test": {"read"}}},
+		ScopeChallenge:          &ScopeChallengeConfig{ResourceURL: "https://gateway.example/mcp"},
 		PassthroughHeaders:      []string{"x-test"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		StatusReportingInterval: time.Second,

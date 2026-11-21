@@ -73,6 +73,8 @@ type Decision struct {
 	Source string
 }
 
+//go:generate mockgen -destination=mocks/mock_policy.go -package=mocks -source=actor.go Policy
+
 // Policy decides whether an actor may act for a user. A Decision that does not
 // allow is a denial. A non-nil error means the policy could not decide (for
 // example a directory-backed policy that is unavailable, or a request for

@@ -29,6 +29,8 @@ type Ref struct {
 	Value string
 }
 
+//go:generate mockgen -destination=mocks/mock_resolver.go -package=mocks -source=subject.go Resolver
+
 // Resolver maps a Ref to the canonical local user ID.
 //
 // A nil error always comes with a non-empty user ID. Resolvers never create

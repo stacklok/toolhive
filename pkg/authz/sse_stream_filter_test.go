@@ -616,9 +616,9 @@ func TestSSEStreamSniffedRejectionsAnswerWithRequestID(t *testing.T) {
 func TestListMembersMapToListFilters(t *testing.T) {
 	t.Parallel()
 
-	// Pins listMembers to responseFilterForMethod in both directions. Every list member
-	// maps to a method with a real filter, and every list filter kind has a member.
-	// The expected table is the one place a new list kind must be added.
+	// Pins listMembers to the list methods of responseFilterForMethod in both
+	// directions. Every list member maps to a list method, and every list method
+	// has a member. The expected table is the one place a new list kind must be added.
 	want := map[string]string{
 		"tools":             string(mcp.MethodToolsList),
 		"prompts":           string(mcp.MethodPromptsList),
@@ -627,9 +627,24 @@ func TestListMembersMapToListFilters(t *testing.T) {
 		"skills":            "skills/list",
 	}
 	assert.Equal(t, want, listMembers, "listMembers must match the expected list kinds")
+
+	listMethods := []string{
+		string(mcp.MethodToolsList),
+		string(mcp.MethodPromptsList),
+		string(mcp.MethodResourcesList),
+		string(mcp.MethodResourcesTemplatesList),
+		"skills/list",
+	}
+	covered := make(map[string]bool, len(listMethods))
 	for member, method := range listMembers {
 		assert.NotEqual(t, responseFilterNone, responseFilterForMethod(method),
 			"list member %q maps to %q, which has no filter", member, method)
+		covered[method] = true
+	}
+	for _, method := range listMethods {
+		assert.True(t, covered[method], "list method %q has no list member in listMembers", method)
+		assert.NotEqual(t, responseFilterNone, responseFilterForMethod(method),
+			"list method %q has no response filter", method)
 	}
 }
 

@@ -2359,7 +2359,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			name: "ref without optimizer auto-populates optimizer with defaults",
 			vmcp: v1beta1test.NewVirtualMCPServer("my-vmcp", testNamespace,
 				v1beta1test.WithVMCPGroupRef(testGroup),
-				// No Optimizer — validation auto-populates it when ref is set
+				// No Optimizer: the controller defaults it before validation when the ref is set.
 				v1beta1test.WithVMCPEmbeddingServerRef("shared-embedding"),
 			),
 			esName:      "shared-embedding",
@@ -2416,12 +2416,11 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testGroup)
 			require.NoError(t, err)
 
-			// Run validation (mirrors controller flow: validateSpec → ensureVmcpConfigConfigMap).
-			// Validate() may auto-populate optimizer defaults when embeddingServerRef is set.
-			err = tt.vmcp.Validate()
+			// Exercise controller-side defaulting and validation before generating the ConfigMap.
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err = reconciler.validateSpec(ctx, tt.vmcp, statusManager)
 			require.NoError(t, err)
 
-			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
 			err = reconciler.ensureVmcpConfigConfigMap(ctx, tt.vmcp, workloadNames, nil, statusManager)
 			require.NoError(t, err)
 

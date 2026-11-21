@@ -306,9 +306,7 @@ func (w *sseStreamFilterWriter) markFiltered() {
 // dropped, so nothing unfiltered reaches the client.
 func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 	if hasAmbiguousResultKey(body) {
-		slog.Warn("rejected a 2xx body whose result key is duplicated or differs in case", "error", errSSEUnrecognizedMediaType)
-		// Answer with an error that carries the request id, so the client does not wait for a timeout.
-		w.writeRejection(body)
+		w.writeRejection(body, "rejected a 2xx body whose result key is duplicated or differs in case")
 		return
 	}
 	message, _ := jsonrpc2.DecodeMessage(body)
@@ -318,15 +316,10 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 		action, _ := classifyUnlabeledBody(body)
 		switch action {
 		case sniffRejectJSON:
-			slog.Warn("rejected a 2xx JSON body carrying a result that is not a single JSON-RPC response",
-				"error", errSSEUnrecognizedMediaType)
-			// Answer with an error that carries the request id, so the client does not wait for a timeout.
-			w.writeRejection(body)
+			w.writeRejection(body, "rejected a 2xx JSON body carrying a result that is not a single JSON-RPC response")
 			return
 		case sniffRejectNamed:
-			slog.Warn("dropped a 2xx body naming a result that could not be read",
-				"error", errSSEUnrecognizedMediaType)
-			w.writeRejection(body)
+			w.writeRejection(body, "dropped a 2xx body naming a result that could not be read")
 			return
 		case sniffPassThrough:
 			if _, err := w.ResponseWriter.Write(body); err != nil {
@@ -699,12 +692,14 @@ func bodyID(body []byte) jsonrpc2.ID {
 
 // writeRejection answers a rejected 2xx body with an error that carries its id. When no
 // id can be read, nothing is written: an error with no id ends the go-sdk client's session.
-func (w *sseStreamFilterWriter) writeRejection(body []byte) {
+func (w *sseStreamFilterWriter) writeRejection(body []byte, reason string) {
 	id := bodyID(body)
 	if id == (jsonrpc2.ID{}) {
-		slog.Warn("dropped a rejected 2xx body with no readable id", "error", errSSEUnrecognizedMediaType)
+		// One log line per rejection: the reason, and that no id could be read.
+		slog.Warn(reason, "error", errSSEUnrecognizedMediaType, "dropped", "no readable id")
 		return
 	}
+	slog.Warn(reason, "error", errSSEUnrecognizedMediaType)
 	_, _ = w.ResponseWriter.Write(encodeErrorBody(id))
 }
 

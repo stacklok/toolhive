@@ -160,6 +160,8 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processJSONResponse(rawResponse)
 		case sniffFilterSSE:
+			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as SSE",
+				"method", rfw.method, "contentType", contentType)
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processSSEResponse(rawResponse)
 		case sniffRejectNamed:

@@ -517,7 +517,6 @@ A filtered list depends on the caller's permissions, so `tools/list`, `prompts/l
 
 The SSE transport (`--transport sse`) and the GET stream of streamable HTTP filter list answers the same way, because the middleware wraps every `GET`. Each event is filtered as it arrives, with the filter chosen from the result's shape. A result that is not a clean JSON-RPC response, carries more than one list, or is ambiguous fails closed with a JSON-RPC error that carries the request id. A `find_tool` answer is filtered; other results pass through unchanged. A 2xx response that is not `text/event-stream` is held until the handler returns, then read as one JSON-RPC message or as SSE events. A non-2xx response passes through unchanged. A body larger than 16 MiB ends the stream with one error. A filtered stream with a `Content-Encoding` other than `identity` gets `502 Bad Gateway`. A frame with no readable id is dropped, because an error without an id ends the client's session.
 
-
 ##### Methods covered by a prompt or resource policy
 
 Some MCP methods do not name a capability directly but still act on one. They are

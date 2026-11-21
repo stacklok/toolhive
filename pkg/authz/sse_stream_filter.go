@@ -436,6 +436,9 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 	if len(payload) == 0 {
 		return event
 	}
+	// A duplicated or case-variant result key is rejected before decoding: the
+	// client's decoder may pick a different key than this filter would, so the
+	// body cannot be trusted to show the same list the client sees.
 	if hasAmbiguousResultKey(payload) {
 		return failClosed(event, frameID(event), "result key is duplicated or differs in case")
 	}

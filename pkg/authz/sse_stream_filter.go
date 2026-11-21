@@ -433,15 +433,11 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 	if len(event) == 0 {
 		return nil
 	}
-	if eventHasLoneCR(event) {
+	dataValues, payload, loneCR := assembleSSEEvent(event)
+	if loneCR {
 		slog.Warn("rejected an SSE event with a bare CR line break", "error", errSSEBareCR)
 		return errorEventLines(encodeErrorBody(frameID(event)))
 	}
-	dataValues := eventDataValues(event)
-	if len(dataValues) == 0 {
-		return event
-	}
-	payload := bytes.Join(dataValues, []byte("\n"))
 	if len(payload) == 0 {
 		return event
 	}

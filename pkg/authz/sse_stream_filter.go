@@ -26,6 +26,8 @@ import (
 // maxSSEEventBytes bounds how much unterminated data the filter buffers while it
 // waits for the blank line that ends an event. An event still open past this
 // size fails the stream closed. A complete event of any size is filtered.
+// A stream whose lines end in a bare CR never completes an event, so it is held until this\r
+// cap or the end of the stream, then fails closed.
 const maxSSEEventBytes = 16 << 20
 
 // errSSEEncodedBody closes a filtered stream whose body is content-coded.
@@ -680,10 +682,25 @@ func frameID(event []sseLine) jsonrpc2.ID {
 	return jsonrpc2.ID{}
 }
 
+// bodyID reads the id a client reads from a JSON-RPC body: the decoded message's id,
+// the way encoding/json matches keys, so a duplicate or case-variant "id" resolves to the
+// same value the client sees. It falls back to topLevelID when the body cannot be decoded.
+func bodyID(body []byte) jsonrpc2.ID {
+	if message, err := jsonrpc2.DecodeMessage(body); err == nil {
+		switch m := message.(type) {
+		case *jsonrpc2.Response:
+			return m.ID
+		case *jsonrpc2.Request:
+			return m.ID
+		}
+	}
+	return topLevelID(body)
+}
+
 // writeRejection answers a rejected 2xx body with an error that carries its id. When no
 // id can be read, nothing is written: an error with no id ends the go-sdk client's session.
 func (w *sseStreamFilterWriter) writeRejection(body []byte) {
-	id := topLevelID(body)
+	id := bodyID(body)
 	if id == (jsonrpc2.ID{}) {
 		slog.Warn("dropped a rejected 2xx body with no readable id", "error", errSSEUnrecognizedMediaType)
 		return

@@ -62,6 +62,22 @@ func TestSSEStreamWriterUnwrapsToUnderlyingWriter(t *testing.T) {
 	assert.Same(t, underlying, w.Unwrap())
 }
 
+// TestSSEStreamFilterRejectionIDMatchesClientDecode pins the id on a rejected 2xx body
+// with a duplicate "id" key. encoding/json keeps the last duplicate, so the client
+// reads id 2 and the rejection must answer id 2, not the first id.
+func TestSSEStreamFilterRejectionIDMatchesClientDecode(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	body := `{"jsonrpc":"2.0","id":1,"ID":2,"result":{"tools":[{"name":"secret"}]},"Result":{"tools":[{"name":"secret"}]}}`
+	rr := runSSEStream(t, authorizer, "application/json", body)
+
+	assert.NotContains(t, rr.Body.String(), "secret")
+	assert.Contains(t, rr.Body.String(), `"id":2`)
+	assert.NotContains(t, rr.Body.String(), `"id":1`)
+}
 func sseStreamEvent(data string) string {
 	return "event: message\ndata: " + data + "\n\n"
 }

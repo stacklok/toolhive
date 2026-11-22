@@ -604,6 +604,13 @@ func TestParseExchangeGrantDetails(t *testing.T) {
 			wantDesc:   "The authorization_details parameter must not be repeated.",
 		},
 		{
+			name:       "empty value with a second value",
+			form:       url.Values{authorizationDetailsParam: {"", "x"}},
+			wantFosite: true,
+			wantCode:   "invalid_request",
+			wantDesc:   "The authorization_details parameter must not be repeated.",
+		},
+		{
 			name:       "malformed JSON",
 			form:       url.Values{authorizationDetailsParam: {"[{"}},
 			wantFosite: true,

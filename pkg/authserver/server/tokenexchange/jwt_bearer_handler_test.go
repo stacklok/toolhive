@@ -735,16 +735,9 @@ func TestJWTBearerHandler_ConsumeAssertionJWTErrors(t *testing.T) {
 				IssuedAt: now,
 				Expiry:   now.Add(30 * time.Minute),
 			}}
-			handler, err := newJWTBearerIssuanceHandler(
-				validator,
-				testTokenEndpoint,
-				testAssertionJWTConsumer{err: tt.consumerErr},
-				&fosite.Config{AccessTokenLifespan: time.Hour},
-				&mockAccessTokenStrategy{},
-				&mockAccessTokenStorage{},
-				resolvedIssuers,
-			)
-			require.NoError(t, err)
+			deps := testIssuanceDeps(validator, resolvedIssuers)
+			deps.consumer = testAssertionJWTConsumer{err: tt.consumerErr}
+			handler := newTestJWTBearerHandler(t, deps)
 
 			req := fosite.NewAccessRequest(&session.Session{})
 			req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
@@ -753,7 +746,7 @@ func TestJWTBearerHandler_ConsumeAssertionJWTErrors(t *testing.T) {
 				"resource":  {resource},
 			}
 
-			err = handler.HandleTokenEndpointRequest(context.Background(), req)
+			err := handler.HandleTokenEndpointRequest(context.Background(), req)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, tt.wantErrIs)
 			if tt.wantDesc != "" {
@@ -778,7 +771,7 @@ func TestNewJWTBearerIssuanceHandler_RejectsMissingDependencies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h, err := newJWTBearerIssuanceHandler(validator, testTokenEndpoint, tt.consumer, nil, nil, nil, nil)
+			h, err := newJWTBearerIssuanceHandler(issuanceDeps{validator: validator, tokenEndpoint: testTokenEndpoint, consumer: tt.consumer})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.Nil(t, h)
@@ -819,16 +812,9 @@ func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
 		IssuedAt: now,
 		Expiry:   now.Add(30 * time.Minute),
 	}}
-	handler, err := newJWTBearerIssuanceHandler(
-		validator,
-		testTokenEndpoint,
-		testAssertionJWTConsumer{},
-		&fosite.Config{AccessTokenLifespan: time.Hour},
-		&mockAccessTokenStrategy{},
-		&mockAccessTokenStorage{},
-		resolvedIssuers,
-	)
-	require.NoError(t, err)
+	deps := testIssuanceDeps(validator, resolvedIssuers)
+	deps.consumer = testAssertionJWTConsumer{}
+	handler := newTestJWTBearerHandler(t, deps)
 
 	req := fosite.NewAccessRequest(&session.Session{})
 	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
@@ -875,16 +861,9 @@ func TestJWTBearerHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
 		IssuedAt: now.Add(-2 * time.Hour),
 		Expiry:   now.Add(time.Minute),
 	}}
-	handler, err := newJWTBearerIssuanceHandler(
-		validator,
-		testTokenEndpoint,
-		testAssertionJWTConsumer{},
-		&fosite.Config{AccessTokenLifespan: time.Hour},
-		&mockAccessTokenStrategy{},
-		&mockAccessTokenStorage{},
-		resolvedIssuers,
-	)
-	require.NoError(t, err)
+	deps := testIssuanceDeps(validator, resolvedIssuers)
+	deps.consumer = testAssertionJWTConsumer{}
+	handler := newTestJWTBearerHandler(t, deps)
 
 	req := fosite.NewAccessRequest(&session.Session{})
 	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
@@ -926,16 +905,9 @@ func TestJWTBearerHandler_ResourceClaimIsNotADefault(t *testing.T) {
 		Expiry:   now.Add(time.Minute),
 		Extra:    map[string]any{"resource": resource},
 	}}
-	handler, err := newJWTBearerIssuanceHandler(
-		validator,
-		testTokenEndpoint,
-		testAssertionJWTConsumer{},
-		&fosite.Config{AccessTokenLifespan: time.Hour},
-		&mockAccessTokenStrategy{},
-		&mockAccessTokenStorage{},
-		resolvedIssuers,
-	)
-	require.NoError(t, err)
+	deps := testIssuanceDeps(validator, resolvedIssuers)
+	deps.consumer = testAssertionJWTConsumer{}
+	handler := newTestJWTBearerHandler(t, deps)
 
 	req := fosite.NewAccessRequest(&session.Session{})
 	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
@@ -965,16 +937,10 @@ func TestJWTBearerHandler_PopulateFailsClosedOnElapsedExpiry(t *testing.T) {
 	require.NoError(t, err)
 
 	tokenStorage := &mockAccessTokenStorage{}
-	handler, err := newJWTBearerIssuanceHandler(
-		&testJWTBearerAssertionValidator{},
-		testTokenEndpoint,
-		testAssertionJWTConsumer{},
-		&fosite.Config{AccessTokenLifespan: time.Hour},
-		&mockAccessTokenStrategy{},
-		tokenStorage,
-		resolvedIssuers,
-	)
-	require.NoError(t, err)
+	deps := testIssuanceDeps(&testJWTBearerAssertionValidator{}, resolvedIssuers)
+	deps.consumer = testAssertionJWTConsumer{}
+	deps.tokenStorage = tokenStorage
+	handler := newTestJWTBearerHandler(t, deps)
 
 	sess := session.New("ext-user", "", "client", session.UserClaims{})
 	sess.SetExpiresAt(fosite.AccessToken, time.Now().Add(-time.Second))

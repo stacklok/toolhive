@@ -57,12 +57,12 @@ type JWTBearerHandler struct {
 // request-form/assertion-type validation. It is not, by itself, safe to wire
 // into a real token endpoint — it has no policy, replay-tracking, or
 // issuance dependencies. Kept unexported because of that: the only
-// production path is newJWTBearerIssuanceHandler, which always supplies
-// them. In-package tests use it directly only to exercise this seam in
-// isolation (see jwt_bearer_handler_test.go); HandleTokenEndpointRequest
-// fails closed rather than succeeding when consumer/policies are unset (see
-// below), so an accidental use of this constructor alone can never look like
-// a working grant.
+// production path is newIssuanceCore, which always supplies them. In-package
+// tests use it directly only to exercise this seam in isolation (see
+// jwt_bearer_handler_test.go); HandleTokenEndpointRequest fails closed
+// rather than succeeding when consumer/policies are unset (see below), so an
+// accidental use of this constructor alone can never look like a working
+// grant.
 func newJWTBearerHandler(validator JWTBearerAssertionValidator, tokenEndpoint string) (*JWTBearerHandler, error) {
 	if validator == nil {
 		return nil, errors.New("JWT-bearer assertion validator must not be nil")
@@ -77,35 +77,37 @@ func newJWTBearerHandler(validator JWTBearerAssertionValidator, tokenEndpoint st
 	return &JWTBearerHandler{validator: validator, tokenEndpoint: tokenEndpoint}, nil
 }
 
-func newJWTBearerIssuanceHandler(
-	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
-	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-	trustedIssuers []TrustedIssuer,
-) (*JWTBearerHandler, error) {
-	handler, err := newJWTBearerHandler(validator, tokenEndpoint)
+// newJWTBearerIssuanceHandler constructs the production handler for plain
+// jwt-bearer assertions: newIssuanceCore for JWTBearerAssertionTypeJWTBearer.
+func newJWTBearerIssuanceHandler(deps issuanceDeps) (*JWTBearerHandler, error) {
+	return newIssuanceCore(deps, JWTBearerAssertionTypeJWTBearer)
+}
+
+// newIssuanceCore builds the issuance core both handlers share, holding only
+// the issuers that accept form.
+func newIssuanceCore(deps issuanceDeps, form JWTBearerAssertionType) (*JWTBearerHandler, error) {
+	handler, err := newJWTBearerHandler(deps.validator, deps.tokenEndpoint)
 	if err != nil {
 		return nil, err
 	}
-	if consumer == nil {
-		return nil, errors.New("JWT-bearer storage must implement storage.AssertionJWTConsumer")
-	}
-	if config == nil || strategy == nil || tokenStorage == nil {
-		return nil, errors.New("JWT-bearer issuance dependencies must not be nil")
-	}
-	policies := make(map[string]*JWTBearerGrantPolicy)
-	for _, issuer := range trustedIssuers {
-		if issuer.JWTBearerGrant != nil {
-			policies[issuer.IssuerURL] = issuer.JWTBearerGrant
-		}
+	if err := deps.validate(); err != nil {
+		return nil, err
 	}
 	handler.HandleHelper = &oauth2.HandleHelper{
-		AccessTokenStrategy: strategy,
-		AccessTokenStorage:  tokenStorage,
-		Config:              config,
+		AccessTokenStrategy: deps.strategy,
+		AccessTokenStorage:  deps.tokenStorage,
+		Config:              deps.config,
 	}
-	handler.consumer = consumer
-	handler.config = config
-	handler.policies = policies
+	handler.consumer = deps.consumer
+	handler.config = deps.config
+	// AcceptedAssertionTypes may exclude form. Filtering here, rather
+	// than in HandleTokenEndpointRequest, is the entire enforcement mechanism:
+	// an issuer left out of the policy map is indistinguishable from an issuer
+	// never configured at all, so the existing "issuer not enabled for this
+	// grant" rejection already covers issuers that exclude form. An empty
+	// result is valid: every assertion of that form is then rejected as not
+	// enabled.
+	handler.policies = deps.policiesFor(form)
 	return handler, nil
 }
 
@@ -192,10 +194,10 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 		return err
 	}
 	// h.policies is nil when this handler was built by newJWTBearerHandler
-	// directly rather than newJWTBearerIssuanceHandler (the seam tests use it
-	// this way) — a nil map lookup below always misses, so this request is
-	// rejected rather than treated as authorized. Only newJWTBearerIssuanceHandler
-	// is wired into a real token endpoint; see its doc comment.
+	// directly rather than newIssuanceCore (the seam tests use it this way) —
+	// a nil map lookup below always misses, so this request is rejected rather
+	// than treated as authorized. Only newIssuanceCore is wired into a real
+	// token endpoint.
 	policy, ok := h.policies[claims.Issuer]
 	if !ok {
 		return invalidAssertion("The JWT bearer assertion issuer is not enabled for this grant.")
@@ -554,18 +556,7 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 // NewSharedTrustedIssuerValidator and hold it for Close.
 func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator) (server.Factory, error) {
 	return jwtBearerGrantFactory(trustedIssuers, shared,
-		func(
-			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
-			config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-			resolvedIssuers []TrustedIssuer, _ []string,
-		) (any, error) {
-			// AcceptedAssertionTypes may name only id_jag; filter here,
-			// symmetrically with newIDJAGIssuanceHandler. An empty result is
-			// valid: every plain assertion is then rejected as not enabled.
-			return newJWTBearerIssuanceHandler(
-				validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
-				IssuersAcceptingAssertionType(resolvedIssuers, JWTBearerAssertionTypeJWTBearer))
-		})
+		func(deps issuanceDeps) (any, error) { return newJWTBearerIssuanceHandler(deps) })
 }
 
 // jwtBearerGrantFactory is the shared core of JWTBearerIssuanceFactory and
@@ -579,11 +570,7 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 func jwtBearerGrantFactory(
 	trustedIssuers []TrustedIssuer,
 	shared *MultiIssuerTokenValidator,
-	build func(
-		validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
-		config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-		resolvedIssuers []TrustedIssuer, allowedAudiences []string,
-	) (any, error),
+	build func(deps issuanceDeps) (any, error),
 ) (server.Factory, error) {
 	resolvedIssuers, err := ResolveJWTBearerGrantPolicies(trustedIssuers)
 	if err != nil {
@@ -639,8 +626,16 @@ func jwtBearerGrantFactory(
 		// the validator is always the caller-owned, closeable one — this closure
 		// never builds a MultiIssuerTokenValidator whose JWKS workers leak.
 		var validator JWTBearerAssertionValidator = shared
-		return build(validator, config.TokenURL, consumer, config.Config, atStrategy, atStorage, resolvedIssuers,
-			config.AllowedAudiences)
+		return build(issuanceDeps{
+			validator:        validator,
+			tokenEndpoint:    config.TokenURL,
+			consumer:         consumer,
+			config:           config.Config,
+			strategy:         atStrategy,
+			tokenStorage:     atStorage,
+			trustedIssuers:   resolvedIssuers,
+			allowedAudiences: config.AllowedAudiences,
+		})
 	}, nil
 }
 

@@ -13,13 +13,11 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
-	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/x/errorsx"
 
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
@@ -130,21 +128,12 @@ func IssuersAcceptingAssertionType(trustedIssuers []TrustedIssuer, assertionType
 }
 
 // newIDJAGIssuanceHandler constructs the production bound handler over the
-// same issuance core as newJWTBearerIssuanceHandler; see that constructor
-// for the dependency requirements.
+// same issuance core as newJWTBearerIssuanceHandler (newIssuanceCore); see
+// issuanceDeps.validate for the dependency requirements.
 func newIDJAGIssuanceHandler(
-	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
-	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-	trustedIssuers []TrustedIssuer, explicitGrantClientIDs, allowedAudiences []string, logger *slog.Logger,
+	deps issuanceDeps, explicitGrantClientIDs []string, logger *slog.Logger,
 ) (*IDJAGHandler, error) {
-	// Filtering here, rather than in HandleTokenEndpointRequest, is the entire
-	// enforcement mechanism: an issuer left out of core.policies is
-	// indistinguishable from an issuer never configured at all, so the
-	// existing "issuer not enabled for this grant" rejection already covers
-	// issuers that exclude id_jag.
-	core, err := newJWTBearerIssuanceHandler(
-		validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
-		IssuersAcceptingAssertionType(trustedIssuers, JWTBearerAssertionTypeIDJAG))
+	core, err := newIssuanceCore(deps, JWTBearerAssertionTypeIDJAG)
 	if err != nil {
 		return nil, err
 	}
@@ -155,13 +144,15 @@ func newIDJAGIssuanceHandler(
 	h := &IDJAGHandler{
 		core:                 core,
 		explicitGrantClients: explicitGrantClients,
-		issuer:               config,
-		governedResources:    slices.Clone(allowedAudiences),
+		issuer:               deps.config,
+		governedResources:    slices.Clone(deps.allowedAudiences),
 		logger:               logger,
 	}
-	asIssuer := config.GetAccessTokenIssuer(context.Background())
-	h.issuerIsResource = asIssuer != "" && slices.Contains(allowedAudiences, asIssuer)
-	if h.issuerIsResource && slices.ContainsFunc(trustedIssuers, func(ti TrustedIssuer) bool {
+	asIssuer := deps.config.GetAccessTokenIssuer(context.Background())
+	h.issuerIsResource = asIssuer != "" && slices.Contains(deps.allowedAudiences, asIssuer)
+	// Reads the unfiltered issuer list on purpose: the warning covers every
+	// trusted issuer, not only those that accept id_jag.
+	if h.issuerIsResource && slices.ContainsFunc(deps.trustedIssuers, func(ti TrustedIssuer) bool {
 		return ti.JWTBearerGrant != nil && len(ti.JWTBearerGrant.AcceptedAudiences) == 0
 	}) {
 		if logger == nil {
@@ -522,13 +513,8 @@ func IDJAGIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
 ) (server.Factory, error) {
 	return jwtBearerGrantFactory(trustedIssuers, shared,
-		func(
-			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
-			config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-			resolvedIssuers []TrustedIssuer, allowedAudiences []string,
-		) (any, error) {
-			return newIDJAGIssuanceHandler(validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
-				resolvedIssuers, explicitGrantClientIDs, allowedAudiences, nil)
+		func(deps issuanceDeps) (any, error) {
+			return newIDJAGIssuanceHandler(deps, explicitGrantClientIDs, nil)
 		})
 }
 

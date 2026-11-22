@@ -6,11 +6,8 @@ package tokenexchange
 import (
 	"context"
 	"testing"
-	"time"
 
-	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestHasConfirmationClaim(t *testing.T) {
@@ -58,16 +55,15 @@ func TestJWTBearerHandler_RefusesConfirmationClaim(t *testing.T) {
 			claims := refusalClaims()
 			tt.mutate(claims)
 			consumer := &recordingAssertionConsumer{}
-			handler, err := newJWTBearerIssuanceHandler(&testJWTBearerAssertionValidator{claims: claims}, testTokenEndpoint,
-				consumer, &fosite.Config{AccessTokenLifespan: time.Hour},
-				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, refusalPolicies(t))
-			require.NoError(t, err)
+			deps := testIssuanceDeps(&testJWTBearerAssertionValidator{claims: claims}, refusalPolicies(t))
+			deps.consumer = consumer
+			handler := newTestJWTBearerHandler(t, deps)
 			req := newJWTBearerRequest(map[string][]string{
 				"assertion": {signAssertionWithType(t, newTestJWKS(t), nil)},
 				"resource":  {refusalResource},
 			})
 
-			err = handler.HandleTokenEndpointRequest(context.Background(), req)
+			err := handler.HandleTokenEndpointRequest(context.Background(), req)
 
 			requireRefusal(t, err, "invalid_grant", "invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.")
 			assert.Empty(t, consumer.key, "a refused assertion must not be consumed")

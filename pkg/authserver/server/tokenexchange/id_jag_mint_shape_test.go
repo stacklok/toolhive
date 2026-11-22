@@ -109,17 +109,11 @@ func TestIDJAGMintRedeemedByMultiIssuerValidator(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	consumer := &recordingAssertionConsumer{}
-	redeemer, err := newIDJAGIssuanceHandler(
-		newMultiValidator(t, newTestJWKS(t), resolved),
-		mintTestTargetIssuer+server.TokenEndpointPath,
-		consumer,
-		&fosite.Config{AccessTokenLifespan: time.Hour, AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy},
-		&mockAccessTokenStrategy{},
-		&mockAccessTokenStorage{},
-		resolved,
-		nil, []string{mintTestResource}, nil,
-	)
-	require.NoError(t, err)
+	deps := testIssuanceDeps(newMultiValidator(t, newTestJWKS(t), resolved), resolved)
+	deps.tokenEndpoint = mintTestTargetIssuer + server.TokenEndpointPath
+	deps.consumer = consumer
+	deps.allowedAudiences = []string{mintTestResource}
+	redeemer := newTestIDJAGHandler(t, deps)
 
 	req := fosite.NewAccessRequest(&session.Session{})
 	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}

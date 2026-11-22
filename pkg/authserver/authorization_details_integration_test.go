@@ -258,10 +258,11 @@ func TestIntegration_AuthorizationDetailsIgnoredOnOtherGrants(t *testing.T) {
 			form: func(ts *testServerWithUpstream, _ func(string, time.Time, time.Time, string) string) url.Values {
 				now := time.Now()
 				return url.Values{
-					"grant_type": {oauthproto.GrantTypeJWTBearer},
-					"assertion":  {ts.signIDJAGAssertion("external-subject", now, now.Add(2*time.Minute), "authorization-details-id-jag")},
-					"client_id":  {testClientID},
-					"resource":   {testAudience},
+					"grant_type":    {oauthproto.GrantTypeJWTBearer},
+					"assertion":     {ts.signIDJAGAssertion("external-subject", now, now.Add(2*time.Minute), "authorization-details-id-jag")},
+					"client_id":     {idJAGClientID},
+					"client_secret": {idJAGClientSecret},
+					"resource":      {testAudience},
 				}
 			},
 		},

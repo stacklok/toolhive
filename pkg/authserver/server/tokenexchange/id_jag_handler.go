@@ -42,17 +42,16 @@ const idJAGReplayPurpose = "id-jag"
 // "Bound" is the trust-model difference from the plain handler. An ID-JAG
 // names the OAuth client that may redeem it — the IdP mints the draft
 // §4.4.1 client_id claim from its administrator-configured resource
-// connection — so this handler never skips client authentication
-// (CanSkipClientAuth) and requires the authenticated client to be that
-// client. Confidential clients authenticate fully; a public client is
-// identified by client_id, which is accepted here because the assertion
-// itself is the primary credential: single-use (required jti), short-lived
-// (maxAssertionAge), and audience-pinned to this server (acceptedAudiences).
-// Draft §4.4 does not allow this: it requires client authentication or a
-// sender-constrained ID-JAG. This is a known departure that is not logged;
-// see the departures paragraph in docs/arch/17-token-exchange-delegation.md.
-// The plain handler's synthetic client is not needed —
-// the redeeming client is a real registered one.
+// connection — so this handler requires the authenticated client to be that
+// client. Only a confidential client that authenticated can redeem. Public
+// clients, and requests with no client credentials, are refused with
+// invalid_client before the assertion is validated: draft §4.4 requires client
+// authentication or a sender-constrained ID-JAG, and this server cannot yet
+// verify a sender-constrained one (proof of possession, DPoP or mTLS). A
+// client_id alone is not authentication, and the assertion's single-use,
+// short-lived, audience-pinned form only decides who redeems a leaked copy
+// first. The plain handler's synthetic client is not needed — the redeeming
+// client is a real registered one.
 //
 // The redeeming client's registered grant_types metadata is deliberately not
 // consulted, except for the operator-configured clients that set grant_types:
@@ -184,15 +183,16 @@ func (*IDJAGHandler) CanHandleTokenEndpointRequest(_ context.Context, requester 
 		assertionType(requester.GetRequestForm().Get("assertion")) == oauthproto.JWTTypeIDJAG
 }
 
-// CanSkipClientAuth never permits skipping client authentication: an ID-JAG
-// is issued TO a specific client (its client_id claim), so fosite must have
-// authenticated — or, for a public client, at least identified via client_id
-// — the caller before HandleTokenEndpointRequest can check the binding.
-// fosite.NewAccessRequest returns the client-authentication error whenever
-// this is false and authentication failed, so the handler below only ever
-// runs with a resolved client.
-func (*IDJAGHandler) CanSkipClientAuth(context.Context, fosite.AccessRequester) bool {
-	return false
+// CanSkipClientAuth permits skipping client authentication only for a request
+// that carries no client credentials at all. fosite then gives the handler its
+// placeholder client with an empty ID, and HandleTokenEndpointRequest refuses
+// it with invalid_client, instead of fosite's invalid_request. A request that
+// carries any credentials, or a client_id alone, is authenticated or
+// identified by fosite first, and a failure is returned to the client. Public
+// clients are refused by HandleTokenEndpointRequest (draft §4.4), so a
+// client_id alone never redeems an ID-JAG.
+func (*IDJAGHandler) CanSkipClientAuth(ctx context.Context, requester fosite.AccessRequester) bool {
+	return !mayCarryClientCredentials(ctx, requester.GetRequestForm())
 }
 
 // HandleTokenEndpointRequest validates the ID-JAG assertion, its client
@@ -201,6 +201,12 @@ func (*IDJAGHandler) CanSkipClientAuth(context.Context, fosite.AccessRequester) 
 func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester fosite.AccessRequester) error {
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
+	}
+	// First, so a caller that did not authenticate learns nothing about the
+	// assertion: no validation and no consumption. Only the unverified JOSE
+	// typ header was read, for routing.
+	if err := checkClientAuthenticated(requester.GetClient()); err != nil {
+		return err
 	}
 	if err := h.checkClientGrant(requester); err != nil {
 		return err
@@ -258,14 +264,21 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		return err
 	}
 	h.logDraftDepartures(ctx, claims, policy, requester.GetClient().GetID())
+	requester.GrantAudience(resource)
+	requester.SetSession(newIDJAGSession(claims, requester.GetClient().GetID(), lifetime))
+	return nil
+}
+
+// newIDJAGSession builds the bounded access-token session for a redeemed
+// ID-JAG.
+func newIDJAGSession(claims *ValidatedClaims, clientID string, lifetime time.Duration) *session.Session {
 	// Subject is namespaced by issuer exactly like the plain handler's, so a
 	// resource server sees one consistent subject form for every
 	// assertion-derived token regardless of which handler minted it. The
-	// client, unlike there, is the real authenticated one — fosite resolved
-	// it (CanSkipClientAuth is always false), so requester already carries
-	// it and no synthetic replacement happens.
+	// client, unlike there, is the real authenticated one, so no synthetic
+	// replacement happens.
 	issuedSession := session.New(claimnames.QualifySubject(claims.Issuer, claims.Subject), "",
-		requester.GetClient().GetID(), session.UserClaims{})
+		clientID, session.UserClaims{})
 	// An ID-JAG links to no upstream IdP login at THIS server, same as a
 	// plain assertion; see claimnames.NoUpstreamSessionKey.
 	issuedSession.JWTClaims.Extra[claimnames.NoUpstreamSessionKey] = true
@@ -279,9 +292,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		issuedSession.JWTClaims.Extra["act"] = act
 	}
 	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
-	requester.GrantAudience(resource)
-	requester.SetSession(issuedSession)
-	return nil
+	return issuedSession
 }
 
 // PopulateTokenEndpointResponse issues only an access token, sharing the
@@ -430,7 +441,8 @@ func (h *IDJAGHandler) defaultAudiences(ctx context.Context) []string {
 }
 
 // validateAssertion verifies the assertion and refuses an aud array with more
-// than one element, for every issuer. It runs before the assertion is consumed.
+// than one element and a cnf claim, for every issuer. It runs before the
+// assertion is consumed.
 func (h *IDJAGHandler) validateAssertion(ctx context.Context, assertion string) (*ValidatedClaims, error) {
 	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
 	if err != nil {
@@ -438,6 +450,14 @@ func (h *IDJAGHandler) validateAssertion(ctx context.Context, assertion string) 
 	}
 	if len(claims.Audience) > 1 {
 		return nil, invalidAssertion("The ID-JAG assertion aud must name exactly one audience.")
+	}
+	// Draft section 9.11 says a server that cannot verify the confirmation
+	// method of an ID-JAG with a cnf claim MUST refuse it. This server cannot
+	// verify proof of possession yet, so accepting the ID-JAG would silently
+	// drop the key binding the IdP asked for. The refusal stays until proof of
+	// possession (DPoP or mTLS) is verified.
+	if hasConfirmationClaim(claims) {
+		return nil, invalidAssertion("The ID-JAG assertion must not carry a 'cnf' claim.")
 	}
 	return claims, nil
 }
@@ -455,20 +475,32 @@ func (h *IDJAGHandler) checkClientGrant(requester fosite.AccessRequester) error 
 	return nil
 }
 
+// checkClientAuthenticated refuses a nil client, the ID-less placeholder fosite
+// uses when a request carried no credentials, and a public client, which fosite
+// only identifies by client_id. Draft §4.4 requires client authentication or a
+// sender-constrained ID-JAG, and sender-constrained ID-JAGs are refused until
+// proof of possession (DPoP or mTLS) can be verified.
+func checkClientAuthenticated(client fosite.Client) error {
+	if client == nil || client.GetID() == "" || client.IsPublic() {
+		return clientAuthRequired()
+	}
+	return nil
+}
+
 // checkClientBinding enforces the draft's §4.4.1 client_id continuity: the
 // assertion's client_id claim (minted by the IdP from its resource
 // connection) must name the client fosite resolved for this request. Both
 // sides are required to be non-empty first so the check can never
-// degenerate into an empty-equals-empty pass — fosite initializes an
-// unauthenticated request's client to an ID-less placeholder, and this
-// handler must not depend on that staying unreachable.
+// degenerate into an empty-equals-empty pass. HandleTokenEndpointRequest
+// already refuses an unauthenticated client; repeating checkClientAuthenticated
+// here keeps the binding safe on its own and returns the same refusal.
 func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims *ValidatedClaims) error {
 	if claims.ClientID == "" {
 		return invalidAssertion("The ID-JAG assertion must carry a 'client_id' claim.")
 	}
 	client := requester.GetClient()
-	if client == nil || client.GetID() == "" {
-		return errorsx.WithStack(fosite.ErrInvalidClient.WithHint("The ID-JAG grant requires an authenticated or identified client."))
+	if err := checkClientAuthenticated(client); err != nil {
+		return err
 	}
 	if claims.ClientID != client.GetID() {
 		return invalidAssertion("The ID-JAG assertion was not issued to the requesting client.")

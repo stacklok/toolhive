@@ -774,8 +774,13 @@ in addition to other grants can log users in.
   operator adds an audience, an existing DCR client that asks for it gets
   `invalid_target` at `/authorize`, before the upstream login. The client has to
   register again to use the new audience.
-- **ID-JAG redemption.** The `resource` of an ID-JAG gets the same client
-  check, except for DCR and CIMD clients, which are not narrowed. They hold a
+- **ID-JAG redemption.** Only a client that authenticates gets this far: a
+  public client, which includes every CIMD client and a DCR client registered
+  with `token_endpoint_auth_method: none`, is refused with `invalid_client`
+  before the audience check (see
+  [Bound ID-JAG assertions](#bound-id-jag-assertions)). The `resource` of an ID-JAG
+  gets the same client check, except for DCR clients, which are not narrowed.
+  They hold a
   copy of the server's allowed audiences taken at registration, not a
   per-client policy, so checking them adds nothing while the copy is current
   and would wrongly refuse an audience added since. The resource must still be
@@ -901,7 +906,9 @@ the client type:
   [SPIFFE Association Declarations](18-spiffe-association-declarations.md)
   for the full rule).
 - **DCR and CIMD clients.** A copy of the server's list taken at registration.
-  ID-JAG redemption does not narrow them, so only the server list applies.
+  ID-JAG redemption does not narrow a confidential DCR client, so only the
+  server list applies. Public clients, including every CIMD client, cannot
+  redeem an ID-JAG at all.
 - **Device flow.** The client receives all of its `audiences`.
 
 On token exchange, every audience the client receives must also appear, exactly,
@@ -1328,8 +1335,8 @@ spec:
 ```
 
 - **Clientless.** `JWTBearerHandler.CanSkipClientAuth` permits a
-  credential-free plain assertion. Form-supplied client credentials prevent
-  this clientless path. Every storage backend's request-marshaling path still
+  credential-free plain assertion. Client credentials in the form or in HTTP
+  Basic prevent this clientless path. Every storage backend's request-marshaling path still
   needs a non-nil `fosite.Client`, so the handler attaches a synthetic one —
   see "Synthetic subject and client identity" below.
 - **Assertion bounds.** Beyond the standard RFC 7523 §3 claims (`iss`, `sub`,
@@ -1360,6 +1367,13 @@ spec:
   must be one of that binding's `allowed_resources`. There is no wildcard
   subject or resource — every accepted assertion subject and resource pair is
   named explicitly.
+- **No `cnf`.** An assertion that carries a `cnf` claim (RFC 7800) is refused
+  with `invalid_grant`, whatever the value: the claim means the issuer expects
+  proof of possession of a key, and redeeming the assertion as a bearer token
+  would silently drop that. Only the presence of the claim counts, so
+  `"cnf": null` and `"cnf": {}` are refused too. The check runs before the
+  assertion is consumed. It stays until proof of possession (DPoP or mTLS) is
+  verified. The grant still does not require client authentication.
 - **Synthetic subject and client identity.** The issued token's `sub` is
   `<assertion issuer>#<assertion subject>` (`session.New`'s first argument,
   matching the delegated-token subject qualification pattern in [Accepted
@@ -1429,7 +1443,8 @@ spec:
 Both assertion forms refuse with an `error_description` that starts with a
 reason code, so a client can act on the refusal without parsing prose. This
 holds for every refusal that carries a reason; the plain grant's two
-`subject_bindings` refusals do not (see the table). The description matches
+`subject_bindings` refusals and fosite's own client-authentication errors do
+not (see the table). The description matches
 `^[a-z_]+(: .*)?$`: the reason, optionally followed by `: ` and a fixed hint. The hint is printable ASCII without `"` or `\` and never
 contains a claim value (`sub`, `jti`, `client_id`, issuer). The handlers build
 the error as a literal (`redemptionRefusal`) because fosite's `WithHint` puts
@@ -1439,8 +1454,11 @@ its own default text before the reason.
 | --- | --- | --- |
 | Not a compact signed JWT, bad `typ` or algorithm (an assertion with such a `typ` is routed to the plain handler, never the ID-JAG one) | 400 `invalid_grant`, `invalid_assertion: <hint>` | n/a |
 | Signature or claim validation fails, issuer not enabled, assertion whose issued lifetime (`exp` − `iat`) exceeds `max_assertion_age`, replayed or expired | 400 `invalid_grant`, `invalid_assertion: <hint>` | same code and reason; the hint names an ID-JAG for the first two |
+| Redeeming client is public, or the request names no client at all (no `client_id`, `client_secret`, `client_assertion` or `client_assertion_type` form field, and no HTTP Basic credentials) | n/a (the plain grant does not require client authentication) | 401 `invalid_client`, `client_authentication_required: The ID-JAG grant requires client authentication.` The status is 401 whatever the request sent, the same as fosite's own `invalid_client`. The check runs before the assertion is validated or consumed (only its unverified `typ` header is read, to route the request), so the response says nothing about the assertion and the ID-JAG is not consumed |
+| Client credentials sent, but fosite cannot authenticate them (wrong secret, unknown client, a confidential client that sends only `client_id`, or a `client_secret` without a `client_id`) | fosite's error, before the handler runs: usually 401 `invalid_client`, or 400 `invalid_request` for missing or malformed credentials; fosite's text, no reason | same |
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| Assertion that carries a `cnf` claim, with any value including `null`, for any issuer | 400 `invalid_grant`, `invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.` | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` Both checks run before the assertion is consumed |
 | Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
@@ -1546,15 +1564,24 @@ Two things to know about the ID-JAG form:
 
 Where the two differ is the trust model — the ID-JAG handler is **bound**:
 
-- **Client authentication is never skipped.** An ID-JAG carries a `client_id`
+- **The client must authenticate.** An ID-JAG carries a `client_id`
   claim naming the OAuth client that may redeem it (draft §4.4.1; the IdP
-  mints it from its administrator-configured resource connection). The
-  handler's `CanSkipClientAuth` is unconditionally false, so fosite resolves
-  the caller before the handler runs — full authentication for a confidential
-  client, `client_id` identification for a public one — and the handler
-  rejects the grant unless the resolved client is the one the assertion names.
-  A public client suffices here because the assertion itself is the primary
-  credential: single-use, short-lived, and audience-pinned to this AS. The
+  mints it from its administrator-configured resource connection). fosite
+  authenticates a confidential client before the handler runs. A public client
+  it only identifies by `client_id`, and a request with no credentials gets a
+  placeholder client with an empty ID. Before it validates the assertion, the
+  handler refuses both with `invalid_client`, because draft §4.4 requires
+  client authentication or a sender-constrained ID-JAG, and this server
+  cannot yet verify a sender-constrained one (proof of possession, DPoP or
+  mTLS). A `client_id` is not a credential, and an assertion that is
+  single-use, short-lived and audience-pinned to this AS only decides who
+  redeems a leaked copy first. For a request with no client credentials at
+  all, `CanSkipClientAuth` returns true so that the handler returns this
+  refusal instead of fosite's `invalid_request`. A request with any
+  credentials is authenticated by fosite first, and a failure is fosite's own
+  error with no reason code (see the table). After the check, the handler
+  rejects the grant unless the authenticated client is the one the assertion
+  names. A CIMD or public DCR client therefore cannot redeem an ID-JAG. The
   client's registered `grant_types` metadata is deliberately not consulted —
   with open DCR, self-asserted metadata authorizes nothing. The exception is an
   operator-configured client that sets `grant_types` explicitly: those grants
@@ -1626,18 +1653,13 @@ subject, `jti` or claim values. The findings are:
 
 This is logging only. It changes nothing about what is accepted.
 
-The handler also accepts two things the draft does not allow, and nothing logs
-them:
-
-- Draft §4.4 says the server MUST reject a request that has neither client
-  authentication nor a sender-constrained ID-JAG (§9.11) with `invalid_client`.
-  The handler accepts a public client that is identified only by `client_id`.
-- Draft §9.11 says an ID-JAG with a `cnf` claim needs proof of possession, and
-  a server that cannot check it MUST refuse the ID-JAG with `invalid_grant`.
-  No code at this server reads `cnf`, so such an ID-JAG is accepted without
-  proof of possession.
-
-A strict mode would have to refuse these two as well as the logged finding.
+**ID-JAGs that carry `cnf` are refused.** Draft §9.11 says an ID-JAG with a
+`cnf` claim needs proof of possession, and a server that cannot check it MUST
+refuse the ID-JAG with `invalid_grant`. This server cannot check it yet, so the
+handler refuses every ID-JAG that has a `cnf` claim, for every issuer. Only the
+presence of the claim counts: `"cnf": null` and `"cnf": {}` are refused too, and
+the value is never read. The refusal stays until proof of possession (DPoP or
+mTLS) is verified.
 
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
 also lets AS-2's plain handler (`typ` `JWT`, empty or absent) accept AS-1's
@@ -2328,7 +2350,7 @@ inbound_grants:
           id_jag:
             targets:
               - issuer: https://as2.example.com            # AS-2: the request's `audience`, the ID-JAG's `aud`
-                client_id: broker-at-as2                   # the broker's client_id registered at AS-2
+                client_id: broker-at-as2                   # the broker's confidential client at AS-2; its credentials are set where the broker redeems, not here
                 resources: [https://gw.example.com/mcp]    # behind AS-2: the request's `resource`
                 lifetime: 60s                              # how long each ID-JAG lives
 ```

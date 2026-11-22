@@ -131,21 +131,44 @@ func (*JWTBearerHandler) CanHandleTokenEndpointRequest(_ context.Context, reques
 // closed rather than open.
 func (*JWTBearerHandler) CanSkipClientAuth(ctx context.Context, requester fosite.AccessRequester) bool {
 	form := requester.GetRequestForm()
-	if assertionType(form.Get("assertion")) == oauthproto.JWTTypeIDJAG ||
-		form.Get("client_id") != "" ||
-		form.Get("client_secret") != "" ||
-		form.Get("client_assertion") != "" ||
-		form.Get("client_assertion_type") != "" {
-		return false
+	return assertionType(form.Get("assertion")) != oauthproto.JWTTypeIDJAG && !mayCarryClientCredentials(ctx, form)
+}
+
+// mayCarryClientCredentials reports whether a token request might carry client
+// credentials: a client_id, client_secret, client_assertion or
+// client_assertion_type form field, or HTTP Basic credentials. A missing or
+// malformed raw request counts as "might carry", so callers fail closed.
+func mayCarryClientCredentials(ctx context.Context, form url.Values) bool {
+	// Every value of a field is checked, not just the first, so the decision
+	// matches what a client-authentication strategy that reads any value accepts.
+	for _, field := range []string{"client_id", "client_secret", "client_assertion", "client_assertion_type"} {
+		if slices.ContainsFunc(form[field], func(v string) bool { return v != "" }) {
+			return true
+		}
 	}
 	req, ok := ctx.Value(fosite.RequestContextKey).(*http.Request)
 	if !ok || req == nil {
+		return true
+	}
+	_, _, basic := req.BasicAuth()
+	return basic
+}
+
+// claimConfirmation is the RFC 7800 confirmation claim.
+const claimConfirmation = "cnf"
+
+// hasConfirmationClaim reports whether a validated assertion carries a cnf
+// claim. Only presence counts, so "cnf": null and "cnf": {} are both found; the
+// value is never read.
+func hasConfirmationClaim(claims *ValidatedClaims) bool {
+	if claims == nil {
 		return false
 	}
-	if _, _, ok := req.BasicAuth(); ok {
-		return false
-	}
-	return true
+	// Claims is the full decoded set and Extra a subset of it. Both are checked
+	// so hand-built ValidatedClaims and a later change to assignClaim stay safe.
+	_, inClaims := claims.Claims[claimConfirmation]
+	_, inExtra := claims.Extra[claimConfirmation]
+	return inClaims || inExtra
 }
 
 // HandleTokenEndpointRequest validates policy and prepares a bounded access-token session.
@@ -164,9 +187,9 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err := validateAssertionType(assertion); err != nil {
 		return err
 	}
-	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.tokenEndpoint})
+	claims, err := h.validateAssertion(ctx, assertion)
 	if err != nil {
-		return assertionValidationRefusal(err, "The JWT bearer assertion is invalid or could not be verified.")
+		return err
 	}
 	// h.policies is nil when this handler was built by newJWTBearerHandler
 	// directly rather than newJWTBearerIssuanceHandler (the seam tests use it
@@ -229,6 +252,23 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	requester.GrantAudience(resource)
 	requester.SetSession(issuedSession)
 	return nil
+}
+
+// validateAssertion verifies the assertion and refuses a cnf claim. It runs
+// before the assertion is consumed.
+func (h *JWTBearerHandler) validateAssertion(ctx context.Context, assertion string) (*ValidatedClaims, error) {
+	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.tokenEndpoint})
+	if err != nil {
+		return nil, assertionValidationRefusal(err, "The JWT bearer assertion is invalid or could not be verified.")
+	}
+	// RFC 7800 cnf means the issuer expects proof of possession of a key.
+	// Redeeming the assertion as a bearer token would silently drop that
+	// binding, so refuse it until proof of possession (DPoP or mTLS) is
+	// verified.
+	if hasConfirmationClaim(claims) {
+		return nil, invalidAssertion("The JWT bearer assertion must not carry a 'cnf' claim.")
+	}
+	return claims, nil
 }
 
 // checkAssertionMaxAge rejects assertions whose lifetime exceeds the policy maximum.

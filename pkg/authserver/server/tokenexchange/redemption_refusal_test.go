@@ -185,7 +185,7 @@ func TestJWTBearerRedemptionRefusals(t *testing.T) {
 func TestRedemptionRefusal_Grammar(t *testing.T) {
 	t.Parallel()
 
-	for _, reason := range []string{reasonInvalidAssertion, reasonSubjectUnknown, reasonResourceDenied, reasonIssuerUnavailable} {
+	for _, reason := range []string{reasonInvalidAssertion, reasonSubjectUnknown, reasonResourceDenied, reasonIssuerUnavailable, reasonClientAuthRequired} {
 		for _, hint := range []string{"", "A hint."} {
 			description := redemptionRefusal("access_denied", reason, hint).GetDescription()
 			assert.Regexp(t, `^[a-z_]+(: .*)?$`, description)

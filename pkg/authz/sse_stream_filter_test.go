@@ -1002,3 +1002,15 @@ func TestSSEStreamPassesInitializeCapabilitiesThrough(t *testing.T) {
 
 	assert.Equal(t, body, rr.Body.String())
 }
+
+// TestStreamFilterLogsErrorsAtWarn pins the log level split: filters built for the
+// GET event stream log a filtering error at WARN, while the POST writer keeps ERROR.
+func TestStreamFilterLogsErrorsAtWarn(t *testing.T) {
+	t.Parallel()
+
+	w := newSSEStreamFilterWriter(httptest.NewRecorder(), nil, sseRequest(), nil, nil)
+	require.True(t, w.newFilter("tools/list").streamWarn, "GET stream filter must log at WARN")
+
+	post := NewResponseFilteringWriter(nil, nil, sseRequest(), "tools/list", nil, nil)
+	assert.False(t, post.streamWarn, "POST filter must keep ERROR")
+}

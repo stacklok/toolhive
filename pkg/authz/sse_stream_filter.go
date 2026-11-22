@@ -492,13 +492,15 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 		// Not a list result (e.g. a tools/call answer): pass through.
 		return event
 	}
-	return w.newFilter(method).resolveAssembled(event, dataValues, payload)
+	return w.newFilter(method).resolveDecodedResponse(event, response)
 }
 
 // newFilter returns a filter for one event, sharing this stream's authorizer and
 // annotation cache. method is "" for an error-only writer.
 func (w *sseStreamFilterWriter) newFilter(method string) *ResponseFilteringWriter {
-	return NewResponseFilteringWriter(nil, w.authorizer, w.request, method, w.annotationCache, w.passThroughTools)
+	f := NewResponseFilteringWriter(nil, w.authorizer, w.request, method, w.annotationCache, w.passThroughTools)
+	f.streamWarn = true
+	return f
 }
 
 // failClosed replaces an event with a JSON-RPC error envelope. The reason is logged

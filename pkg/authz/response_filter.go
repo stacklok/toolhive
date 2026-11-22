@@ -43,6 +43,10 @@ type ResponseFilteringWriter struct {
 	// the rewrite and its log line happen once whether Flush or FlushAndFilter
 	// reaches it first.
 	rejected bool
+	// streamWarn makes errorResponseBody log at WARN instead of ERROR. Only the
+	// GET event-stream writer sets it: a stream error is caused by upstream
+	// content, not by a server fault, and the POST path keeps its ERROR level.
+	streamWarn bool
 }
 
 // NewResponseFilteringWriter creates a new response filtering writer.
@@ -425,7 +429,8 @@ func assembleSSEEvent(event []sseLine) (dataValues [][]byte, assembled []byte, l
 
 // resolveAssembled filters an event whose lone-CR check and data join were already
 // done by the caller. dataValues and assembled are that join: assembled is non-empty.
-// The GET stream's filterEvent calls it directly, so those checks run once per event.
+// The GET stream's filterEvent calls it for frames that are not a clean Response, so
+// those checks run once per event.
 func (rfw *ResponseFilteringWriter) resolveAssembled(event []sseLine, dataValues [][]byte, assembled []byte) []sseLine {
 	replacement, failedClosed := rfw.filterSSEEventData(assembled)
 	if replacement == nil {
@@ -435,6 +440,19 @@ func (rfw *ResponseFilteringWriter) resolveAssembled(event []sseLine, dataValues
 		return event
 	}
 	return rebuildEventWithPayload(event, replacement, failedClosed)
+}
+
+// resolveDecodedResponse is resolveAssembled for an event whose payload the caller
+// already decoded as a clean Response with a list result. It filters that response
+// directly, so the payload is not decoded a second time.
+func (rfw *ResponseFilteringWriter) resolveDecodedResponse(event []sseLine, response *jsonrpc2.Response) []sseLine {
+	filteredData, ferr := rfw.filterAndEncode(response)
+	if ferr != nil {
+		slog.Warn("emitting a JSON-RPC error in place of an SSE frame that failed to filter",
+			"method", rfw.method)
+		return rebuildEventWithPayload(event, rfw.errorResponseBody(response.ID, ferr), true)
+	}
+	return rebuildEventWithPayload(event, filteredData, false)
 }
 
 // errorEventLines replaces a whole event with one `data:` line carrying body. It is
@@ -1482,7 +1500,11 @@ func (rfw *ResponseFilteringWriter) filterSkillsResponse(response *jsonrpc2.Resp
 // their body here, so neither can leak it. id is echoed so the client can
 // correlate the error with its request.
 func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error) []byte {
-	slog.Error("error filtering response", "method", rfw.method, "error", err)
+	if rfw.streamWarn {
+		slog.Warn("error filtering response", "method", rfw.method, "error", err)
+	} else {
+		slog.Error("error filtering response", "method", rfw.method, "error", err)
+	}
 	return encodeErrorBody(id)
 }
 

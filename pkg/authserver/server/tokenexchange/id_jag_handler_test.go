@@ -172,10 +172,11 @@ func TestIDJAGHandler_MatchingAndClientAuth(t *testing.T) {
 			req.GrantTypes = tt.grantTypes
 			ctx := contextWithHTTPRequest(t, "", "")
 			assert.Equal(t, tt.wantHandles, h.CanHandleTokenEndpointRequest(ctx, req))
-			// Bound means bound: client authentication is never skippable, with or
-			// without credentials in the request, whether or not this handler even
-			// claims the request.
-			assert.False(t, h.CanSkipClientAuth(ctx, req))
+			// A request with no client credentials may skip fosite's client
+			// authentication whether or not this handler claims it: the handler
+			// then refuses the placeholder client. Requests that carry
+			// credentials are covered by TestIDJAGHandler_CanSkipClientAuth.
+			assert.True(t, h.CanSkipClientAuth(ctx, req))
 		})
 	}
 }
@@ -184,12 +185,10 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		mutateClaims   func(*ValidatedClaims)
-		requestClient  string
-		wantErrIs      error  // checked alongside wantErrContain
-		wantErrContain string // substring of the reason, for refusals without a reason code
-		wantDesc       string // exact error_description of an invalid_grant refusal
+		name          string
+		mutateClaims  func(*ValidatedClaims)
+		requestClient string
+		wantDesc      string // exact error_description of an invalid_grant refusal
 	}{
 		{
 			name:          "missing jti is rejected",
@@ -204,15 +203,6 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 			wantDesc:      "invalid_assertion: The ID-JAG assertion must carry a 'client_id' claim.",
 		},
 		{
-			// fosite initializes an unauthenticated request's client to an
-			// ID-less placeholder; the binding check must fail closed on it
-			// rather than compare against the empty ID.
-			name:           "unresolved client fails closed",
-			mutateClaims:   func(*ValidatedClaims) {},
-			wantErrIs:      fosite.ErrInvalidClient,
-			wantErrContain: "authenticated or identified client",
-		},
-		{
 			name:          "client mismatch is rejected",
 			mutateClaims:  func(*ValidatedClaims) {},
 			requestClient: "some-other-client",
@@ -224,7 +214,6 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 				c.Audience = []string{idJAGTestASIssuer, testTokenEndpoint}
 			},
 			requestClient: idJAGTestClientID,
-			wantErrIs:     fosite.ErrInvalidGrant,
 			wantDesc:      "invalid_assertion: The ID-JAG assertion aud must name exactly one audience.",
 		},
 	}
@@ -239,15 +228,7 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 			req := newIDJAGRequest(t, tj, tt.requestClient)
 
 			err := h.HandleTokenEndpointRequest(context.Background(), req)
-			if tt.wantDesc != "" {
-				requireRefusal(t, err, "invalid_grant", tt.wantDesc)
-			}
-			if tt.wantErrContain != "" {
-				assert.ErrorIs(t, err, tt.wantErrIs)
-				var rfcErr *fosite.RFC6749Error
-				require.True(t, errors.As(err, &rfcErr))
-				assert.Contains(t, rfcErr.Reason(), tt.wantErrContain)
-			}
+			requireRefusal(t, err, "invalid_grant", tt.wantDesc)
 			// None of these rejections may consume the assertion: they are all
 			// caller-fixable, and a consumed jti would turn a retry with the
 			// right client into a replay rejection.

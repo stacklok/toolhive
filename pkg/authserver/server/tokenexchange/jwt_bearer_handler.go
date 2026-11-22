@@ -134,21 +134,27 @@ func (*JWTBearerHandler) CanHandleTokenEndpointRequest(_ context.Context, reques
 // closed rather than open.
 func (*JWTBearerHandler) CanSkipClientAuth(ctx context.Context, requester fosite.AccessRequester) bool {
 	form := requester.GetRequestForm()
-	if assertionType(form.Get("assertion")) == oauthproto.JWTTypeIDJAG ||
-		form.Get("client_id") != "" ||
-		form.Get("client_secret") != "" ||
-		form.Get("client_assertion") != "" ||
-		form.Get("client_assertion_type") != "" {
-		return false
+	return assertionType(form.Get("assertion")) != oauthproto.JWTTypeIDJAG && !mayCarryClientCredentials(ctx, form)
+}
+
+// mayCarryClientCredentials reports whether a token request might carry client
+// credentials: a client_id, client_secret, client_assertion or
+// client_assertion_type form field, or HTTP Basic credentials. A missing or
+// malformed raw request counts as "might carry", so callers fail closed.
+func mayCarryClientCredentials(ctx context.Context, form url.Values) bool {
+	// Every value of a field is checked, not just the first, so the decision
+	// matches what a client-authentication strategy that reads any value accepts.
+	for _, field := range []string{"client_id", "client_secret", "client_assertion", "client_assertion_type"} {
+		if slices.ContainsFunc(form[field], func(v string) bool { return v != "" }) {
+			return true
+		}
 	}
 	req, ok := ctx.Value(fosite.RequestContextKey).(*http.Request)
 	if !ok || req == nil {
-		return false
+		return true
 	}
-	if _, _, ok := req.BasicAuth(); ok {
-		return false
-	}
-	return true
+	_, _, basic := req.BasicAuth()
+	return basic
 }
 
 // HandleTokenEndpointRequest validates policy and prepares a bounded access-token session.

@@ -6,6 +6,7 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/ory/fosite"
 	"github.com/ory/x/errorsx"
@@ -27,6 +28,10 @@ const (
 	// could not be obtained. The refusal is temporarily_unavailable (HTTP 503)
 	// and the same request may succeed once the issuer is reachable.
 	reasonIssuerUnavailable = "issuer_unavailable"
+	// reasonClientAuthRequired marks an ID-JAG redemption by a client that is
+	// public or sent no client credentials. It is only ever used with
+	// invalid_client and says nothing about the assertion, which was not validated or consumed.
+	reasonClientAuthRequired = "client_authentication_required"
 )
 
 const hintAssertionValidationFailed = "The assertion could not be validated."
@@ -50,6 +55,19 @@ func redemptionRefusal(code, reason, hint string) *fosite.RFC6749Error {
 // rule: invalid_grant with the invalid_assertion reason.
 func invalidAssertion(hint string) error {
 	return errorsx.WithStack(redemptionRefusal(fosite.ErrInvalidGrant.ErrorField, reasonInvalidAssertion, hint))
+}
+
+// clientAuthRequired is the refusal for an ID-JAG redemption by a client that
+// did not authenticate: invalid_client with the client_authentication_required
+// reason and HTTP 401, the status fosite uses for its own invalid_client. RFC
+// 6749 section 5.2 allows 401 for invalid_client in every case and requires it
+// when the client used the Authorization header, so one status fits all. The
+// hint says nothing about the assertion.
+func clientAuthRequired() error {
+	refusal := redemptionRefusal(fosite.ErrInvalidClient.ErrorField, reasonClientAuthRequired,
+		"The ID-JAG grant requires client authentication.")
+	refusal.CodeField = http.StatusUnauthorized
+	return errorsx.WithStack(refusal)
 }
 
 // issuerUnavailable is the refusal for an assertion whose issuer's signing

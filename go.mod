@@ -1,6 +1,6 @@
 module github.com/stacklok/toolhive
 
-go 1.27.0
+go 1.27
 
 require (
 	cel.dev/cel-go v0.33.4
@@ -61,9 +61,9 @@ require (
 	github.com/prometheus/common v0.74.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/shirou/gopsutil/v4 v4.26.10
-	github.com/sigstore/protobuf-specs v0.5.3-0.20261112181914-a84bc5ff572a
+	github.com/sigstore/protobuf-specs v0.5.2
 	github.com/sigstore/sigstore v1.11.4
-	github.com/sigstore/sigstore-go v1.4.1
+	github.com/sigstore/sigstore-go v1.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
 	github.com/spf13/viper v1.21.0
@@ -282,7 +282,7 @@ require (
 	github.com/sethvargo/go-retry v0.5.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/sigstore/rekor v1.6.3 // indirect
-	github.com/sigstore/rekor-tiles/v2 v2.4.2 // indirect
+	github.com/sigstore/rekor-tiles/v2 v2.3.0 // indirect
 	github.com/sigstore/timestamp-authority/v2 v2.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/skeema/knownhosts v1.3.2 // indirect

@@ -779,7 +779,7 @@ func TestServer_TokenEndpoint_CIMDFetchesAreRateLimited(t *testing.T) {
 	unsignedAssertion := func(sub string) string {
 		enc := base64.RawURLEncoding
 		header := enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
-		claims, err := json.Marshal(map[string]any{"iss": sub, "sub": sub, "jti": "j", "exp": time.Now().Add(time.Hour).Unix()})
+		claims, err := json.Marshal(map[string]any{"iss": sub, "sub": sub, "aud": "https://example.com", "jti": "j", "exp": time.Now().Add(time.Hour).Unix()})
 		require.NoError(t, err)
 		return header + "." + enc.EncodeToString(claims) + "." + enc.EncodeToString([]byte("sig"))
 	}

@@ -357,7 +357,7 @@ client_assertion=<signed-assertion>
 ```
 
 The assertion identifies the registered `client_id` in `iss` and `sub`, targets
-the token endpoint in `aud`, and includes a unique `jti` and an `exp`. The
+the issuer in `aud`, and includes a unique `jti` and an `exp`. The
 server verifies it against the stored inline JWKS and rejects replay while the
 assertion is valid. No `client_secret` is included in registration or token
 exchange.
@@ -438,25 +438,37 @@ public (`none`) client.
 
 ### Client-assertion audience
 
-A `private_key_jwt` client assertion is accepted when its `aud` claim is either
-of these, as a string or as an array containing either:
+A `private_key_jwt` client assertion is accepted only when its `aud` claim holds
+the issuer and nothing else. This follows RFC 10070 section 4, which requires
+the issuer identifier as the sole value of `aud` and forbids the token endpoint
+URL. The issuer may be sent as a JSON string or as a one-element array; RFC 7519
+section 4.1.3 allows both forms.
 
-- the issuer
-- the token endpoint URL (`{issuer}/oauth/token`)
+The server refuses these with `401 invalid_client` and issues no token:
+
+- the token endpoint URL (`{issuer}/oauth/token`), as a string or inside an array
+- an array with more than one value, even when one of them is the issuer
+- a missing `aud`, an empty array, or any other value
+- an assertion that go-jose v4 cannot read under strict base64url decoding, such
+  as one with base64 padding on a segment or a space or tab inside it, which
+  some JOSE parsers tolerate. The check must see `aud` as sent, so the server
+  does not leave such an assertion to a more lenient parser.
+
+The server logs each of these refusals at WARN with the cause and `client_id`,
+because a client that worked with an earlier release can start failing here.
+
+A client that sends the token endpoint URL as `aud` must be updated to send the
+issuer instead. The check has no setting; it always applies, including to an
+assertion that is accepted only through the 60-second clock skew allowance.
 
 Assertions with the `client-authentication+jwt` JOSE `typ` header
-(draft-ietf-oauth-rfc7523bis-11 section 4.1) are accepted.
+(RFC 10070 section 4) are accepted.
 
 Accepting the issuer is safe because the assertion is still bound by
 `iss == sub == client_id` and a signature from the client's registered keys.
 The issuer is this server's unique identifier (RFC 8414 section 2), and `aud` is
 compared as an exact string. An assertion addressed to this issuer is therefore
 not accepted by another issuer, even one on the same host.
-
-Two things do not meet draft-11 section 4(b), which requires the issuer as the
-sole value of `aud`: accepting the token endpoint URL, and accepting an `aud`
-array with more than one value that contains the issuer. Both are deprecated. A
-later release will require the issuer as the sole value.
 
 This applies to every `private_key_jwt` client. Inbound `private_key_jwt`
 clients come from Dynamic Client Registration and from configured delegate

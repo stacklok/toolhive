@@ -750,11 +750,14 @@ func NewAuthorizationServer(
 		recoverTimeErrors = true
 	}
 	// The JWS guard is outermost so it runs before any strategy parses
-	// a client assertion (see fositejose.IsUnsafeJWS).
+	// a client assertion (see fositejose.IsUnsafeJWS). The audience strategy
+	// applies to the caller-supplied strategy too, like the JWS guard, and must
+	// stay above the clock skew strategy, whose recovery does not check aud.
 	fositeConfig.ClientAuthenticationStrategy = newUnsafeJWSGuardClientAuthenticationStrategy(
 		newSPIFFEClientAuthenticationStrategy(
-			newClientAssertionErrorStrategy(newClientAssertionClockSkewStrategy(
-				defaultStrategy, assertionStore, clientAssertionAudiences(&fositeConfig), time.Now, recoverTimeErrors,
+			newClientAssertionErrorStrategy(newClientAssertionAudienceStrategy(
+				newClientAssertionClockSkewStrategy(defaultStrategy, assertionStore, time.Now, recoverTimeErrors),
+				fositeConfig.AccessTokenIssuer,
 			)), config.GetAccessTokenIssuer(),
 			config.SPIFFEJWTBundleSource, config.SPIFFEX509BundleSource, providerConfig.SPIFFEClientResolver,
 			providerConfig.SPIFFEX509ClientMatcher,

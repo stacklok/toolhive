@@ -612,8 +612,10 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	)
 	require.NoError(t, err)
 
-	sign := func(subject, audience string, issuedAt, expiry time.Time, id string) string {
+	signWith := func(extra map[string]any, subject, audience string, issuedAt, expiry time.Time, id string) string {
 		t.Helper()
+		claims := map[string]any{"azp": subject}
+		maps.Copy(claims, extra)
 		builder := jwt.Signed(signer).Claims(jwt.Claims{
 			Issuer:   externalIssuer,
 			Subject:  subject,
@@ -621,10 +623,18 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 			IssuedAt: jwt.NewNumericDate(issuedAt),
 			Expiry:   jwt.NewNumericDate(expiry),
 			ID:       id,
-		}).Claims(map[string]any{"azp": subject})
+		}).Claims(claims)
 		assertion, err := builder.Serialize()
 		require.NoError(t, err)
 		return assertion
+	}
+	sign := func(subject, audience string, issuedAt, expiry time.Time, id string) string {
+		t.Helper()
+		return signWith(nil, subject, audience, issuedAt, expiry, id)
+	}
+	ts.signAssertionWith = func(extra map[string]any, subject string, issuedAt, expiry time.Time, id string) string {
+		t.Helper()
+		return signWith(extra, subject, testIssuer+"/oauth/token", issuedAt, expiry, id)
 	}
 	signAssertion := func(subject string, issuedAt, expiry time.Time, id string) string {
 		return sign(subject, testIssuer+"/oauth/token", issuedAt, expiry, id)
@@ -2510,6 +2520,9 @@ type testServerWithUpstream struct {
 	upstreamProvider   upstream.OAuth2Provider
 	signSubjectToken   func(string, time.Time, time.Time, string) string
 	signIDJAGAssertion func(string, time.Time, time.Time, string) string
+	// signAssertionWith signs a plain RFC 7523 assertion with extra claims
+	// merged over the defaults.
+	signAssertionWith func(extra map[string]any, subject string, issuedAt, expiry time.Time, id string) string
 	// signIDJAGAssertionWith signs an ID-JAG naming clientID, with extra claims
 	// merged over the defaults.
 	signIDJAGAssertionWith func(clientID string, extra map[string]any, subject string, issuedAt, expiry time.Time, id string) string

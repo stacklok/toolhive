@@ -1366,6 +1366,13 @@ spec:
   must be one of that binding's `allowed_resources`. There is no wildcard
   subject or resource — every accepted assertion subject and resource pair is
   named explicitly.
+- **No `cnf`.** An assertion that carries a `cnf` claim (RFC 7800) is refused
+  with `invalid_grant`, whatever the value: the claim means the issuer expects
+  proof of possession of a key, and redeeming the assertion as a bearer token
+  would silently drop that. Only the presence of the claim counts, so
+  `"cnf": null` and `"cnf": {}` are refused too. The check runs before the
+  assertion is consumed. It stays until proof of possession (DPoP or mTLS) is
+  verified. The grant still does not require client authentication.
 - **Synthetic subject and client identity.** The issued token's `sub` is
   `<assertion issuer>#<assertion subject>` (`session.New`'s first argument,
   matching the delegated-token subject qualification pattern in [Accepted
@@ -1450,7 +1457,7 @@ its own default text before the reason.
 | Client credentials sent, but fosite cannot authenticate them (wrong secret, unknown client, a confidential client that sends only `client_id`, or a `client_secret` without a `client_id`) | fosite's error, before the handler runs: usually 401 `invalid_client`, or 400 `invalid_request` for missing or malformed credentials; fosite's text, no reason | same |
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
-| ID-JAG that carries a `cnf` claim, with any value including `null`, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` The check runs before the assertion is consumed |
+| Assertion that carries a `cnf` claim, with any value including `null`, for any issuer | 400 `invalid_grant`, `invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.` | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` Both checks run before the assertion is consumed |
 | Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |

@@ -190,9 +190,9 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err := validateAssertionType(assertion); err != nil {
 		return err
 	}
-	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.tokenEndpoint})
+	claims, err := h.validateAssertion(ctx, assertion)
 	if err != nil {
-		return assertionValidationRefusal(err, "The JWT bearer assertion is invalid or could not be verified.")
+		return err
 	}
 	// h.policies is nil when this handler was built by newJWTBearerHandler
 	// directly rather than newJWTBearerIssuanceHandler (the seam tests use it
@@ -255,6 +255,23 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	requester.GrantAudience(resource)
 	requester.SetSession(issuedSession)
 	return nil
+}
+
+// validateAssertion verifies the assertion and refuses a cnf claim. It runs
+// before the assertion is consumed.
+func (h *JWTBearerHandler) validateAssertion(ctx context.Context, assertion string) (*ValidatedClaims, error) {
+	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.tokenEndpoint})
+	if err != nil {
+		return nil, assertionValidationRefusal(err, "The JWT bearer assertion is invalid or could not be verified.")
+	}
+	// RFC 7800 cnf means the issuer expects proof of possession of a key.
+	// Redeeming the assertion as a bearer token would silently drop that
+	// binding, so refuse it until proof of possession (DPoP or mTLS) is
+	// verified.
+	if hasConfirmationClaim(claims) {
+		return nil, invalidAssertion("The JWT bearer assertion must not carry a 'cnf' claim.")
+	}
+	return claims, nil
 }
 
 // checkAssertionMaxAge rejects assertions whose lifetime exceeds the policy maximum.

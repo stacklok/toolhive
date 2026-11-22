@@ -3769,3 +3769,36 @@ func TestIssueBoundedAccessTokenBuildsElapsedErrorOnlyWhenElapsed(t *testing.T) 
 		})
 	}
 }
+
+// The WARN line for a refused authorization_details shape; a nil registry
+// ignores the parameter and logs nothing.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestTokenExchangeHandler_AuthorizationDetailsShapeLogs(t *testing.T) {
+	logs := captureLogs(t)
+	tj := newTestJWKS(t)
+	run := func(withRegistry bool, details []string) error {
+		h := newTestHandler(t, tj, 15*time.Minute)
+		if withRegistry {
+			h.authorizationDetailsRegistry = newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			})
+		}
+		form := defaultFormValues(t, tj)
+		form["authorization_details"] = details
+		return h.HandleTokenEndpointRequest(context.Background(), newAccessRequest(t, defaultClient(), form))
+	}
+
+	for reason, details := range map[string][]string{"repeated": {"", ""}, "malformed": {"[{"}} {
+		before := logs.String()
+		require.Error(t, run(true, details))
+		added := strings.TrimPrefix(logs.String(), before)
+		assert.Contains(t, added, `msg="authorization_details rejected"`)
+		assert.Contains(t, added, "reason="+reason)
+		assert.Contains(t, added, "client_id="+testAgentClientID)
+	}
+
+	before := logs.String()
+	require.NoError(t, run(false, []string{"[{"}))
+	assert.NotContains(t, strings.TrimPrefix(logs.String(), before), "authorization_details rejected")
+}

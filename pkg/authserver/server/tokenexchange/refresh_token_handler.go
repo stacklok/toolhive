@@ -681,11 +681,7 @@ func decideEntry(
 		ClientID:           clientID,
 		Actor:              clientID,
 		RequestedTokenType: oauthproto.TokenTypeRefreshToken,
-		Subject: authorizationdetails.Subject{
-			Issuer: claims.Issuer, Subject: claims.Subject, ClientID: claims.ClientID, JWTID: claims.JWTID,
-			Audience: slices.Clone(claims.Audience), IssuedAt: claims.IssuedAt, Expiry: claims.Expiry,
-			Claims: deepCopyClaims(claims.Claims),
-		},
+		Subject:            detailsSubject(claims),
 	})
 	if err != nil {
 		return nil, "", time.Time{}, err

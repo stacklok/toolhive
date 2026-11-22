@@ -152,6 +152,7 @@ func TestIntegration_AuthorizationDetailsOverHTTP(t *testing.T) {
 		{name: "absent parameter is not echoed", wantStatus: http.StatusOK, wantNoEcho: true},
 		{name: "empty parameter is not echoed", details: []string{""}, wantStatus: http.StatusOK, wantNoEcho: true},
 		{name: "repeated form values are rejected before the hook", details: []string{`[{"type":"custom"}]`, `[{"type":"custom"}]`}, wantStatus: http.StatusBadRequest, wantError: "invalid_request", wantDescription: "The authorization_details parameter must not be repeated."},
+		{name: "two empty form values are rejected as repeated", details: []string{"", ""}, wantStatus: http.StatusBadRequest, wantError: "invalid_request", wantDescription: "The authorization_details parameter must not be repeated."},
 		{name: "typed hook error keeps its code and reason", details: []string{`[{"type":"custom","reject":true}]`}, wantStatus: http.StatusBadRequest, wantError: "invalid_request", wantDescription: "rejected_by_policy", wantCalls: 1},
 		{name: "untyped hook error is a server_error without its text", details: []string{`[{"type":"custom","deny":true}]`}, wantStatus: http.StatusInternalServerError, wantError: "server_error", wantDescription: "The authorization_details could not be processed.", wantCalls: 1},
 		{

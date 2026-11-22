@@ -104,8 +104,8 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.vmcpImage | string | `"ghcr.io/stacklok/toolhive/vmcp:v0.67.1"` | Container image for Virtual MCP Server (vMCP) deployments created by the operator. |
 | operator.volumeMounts | list | `[]` | Additional volume mounts for the operator container. |
 | operator.volumes | list | `[]` | Additional volumes for the operator pod. |
-| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:v1.5.3"}` | Settings for the registry API workloads created by the operator. |
-| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:v1.5.3"` | Container image for registry API workloads created by the operator. |
+| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:v1.5.4"}` | Settings for the registry API workloads created by the operator. |
+| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:v1.5.4"` | Container image for registry API workloads created by the operator. |
 
 ## Contributing
 

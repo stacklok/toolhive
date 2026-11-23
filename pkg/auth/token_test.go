@@ -6,6 +6,9 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -3719,5 +3722,142 @@ func TestIntrospectionEnforcesRequiredSubjectPrefix(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.sub, claims["sub"])
 		})
+	}
+}
+
+// TestTokenValidator_SigningAlgorithms checks every accepted signing algorithm
+// (RS256, ES256, EdDSA) on both key lookup paths, and that a key of the wrong
+// type for the header's alg, or alg none, is refused.
+func TestTokenValidator_SigningAlgorithms(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	edPub, edKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	const (
+		rsaKID = "rsa-key"
+		ecKID  = "ec-key"
+		edKID  = "ed-key"
+	)
+	publicKeys := []*keys.PublicKeyData{
+		{KeyID: rsaKID, Algorithm: "RS256", PublicKey: &rsaKey.PublicKey},
+		{KeyID: ecKID, Algorithm: "ES256", PublicKey: &ecKey.PublicKey},
+		{KeyID: edKID, Algorithm: "EdDSA", PublicKey: edPub},
+	}
+
+	keySet := jwk.NewSet()
+	for _, pk := range publicKeys {
+		key, err := jwk.Import[jwk.Key](pk.PublicKey)
+		require.NoError(t, err)
+		require.NoError(t, key.Set(jwk.KeyIDKey, pk.KeyID))
+		require.NoError(t, key.Set(jwk.KeyUsageKey, "sig"))
+		require.NoError(t, keySet.AddKey(key))
+	}
+	// The Ed25519 key must be served as an OKP key, as the embedded auth server does.
+	edJWK, found := keySet.LookupKeyID(edKID)
+	require.True(t, found)
+	require.Equal(t, "OKP", edJWK.KeyType().String())
+	jwksServer, caCertPath := createTestJWKSServer(t, keySet)
+	t.Cleanup(jwksServer.Close)
+
+	newValidator := func(t *testing.T, withKeyProvider bool) *TokenValidator {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+		opts := []TokenValidatorOption{WithEnvReader(mockEnv)}
+		if withKeyProvider {
+			provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+			provider.EXPECT().PublicKeys(gomock.Any()).Return(publicKeys, nil).AnyTimes()
+			opts = append(opts, WithKeyProvider(provider))
+		}
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		}, opts...)
+		require.NoError(t, err)
+		return validator
+	}
+
+	cases := []struct {
+		name       string
+		method     jwt.SigningMethod
+		kid        string
+		signingKey any
+		wantErr    string
+	}{
+		{name: "RS256 with RSA key", method: jwt.SigningMethodRS256, kid: rsaKID, signingKey: rsaKey},
+		{name: "ES256 with ECDSA key", method: jwt.SigningMethodES256, kid: ecKID, signingKey: ecKey},
+		{name: "EdDSA with Ed25519 key", method: jwt.SigningMethodEdDSA, kid: edKID, signingKey: edKey},
+		{
+			name: "EdDSA header resolving to an RSA key", method: jwt.SigningMethodEdDSA,
+			kid: rsaKID, signingKey: edKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "RS256 header resolving to an Ed25519 key", method: jwt.SigningMethodRS256,
+			kid: edKID, signingKey: rsaKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "ES256 header resolving to an Ed25519 key", method: jwt.SigningMethodES256,
+			kid: edKID, signingKey: ecKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "alg none", method: jwt.SigningMethodNone, kid: edKID,
+			signingKey: jwt.UnsafeAllowNoneSignatureType, wantErr: "unexpected signing method: none",
+		},
+	}
+
+	lookups := []struct {
+		name            string
+		withKeyProvider bool
+	}{
+		{name: "JWKS lookup"},
+		{name: "local key provider", withKeyProvider: true},
+	}
+	for _, lookup := range lookups {
+		for _, tc := range cases {
+			t.Run(lookup.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				validator := newValidator(t, lookup.withKeyProvider)
+
+				token := jwt.NewWithClaims(tc.method, jwt.MapClaims{
+					"iss": "test-issuer",
+					"sub": "test-user",
+					"exp": time.Now().Add(time.Hour).Unix(),
+				})
+				token.Header["kid"] = tc.kid
+				tokenString, err := token.SignedString(tc.signingKey)
+				require.NoError(t, err)
+
+				claims, err := validator.ValidateToken(context.Background(), tokenString)
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+					require.Nil(t, claims)
+				} else {
+					require.NoError(t, err)
+					require.Equal(t, "test-user", claims["sub"])
+				}
+
+				handler := validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				req.Header.Set("Authorization", "Bearer "+tokenString)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				wantStatus := http.StatusOK
+				if tc.wantErr != "" {
+					wantStatus = http.StatusUnauthorized
+				}
+				require.Equal(t, wantStatus, rec.Code)
+			})
+		}
 	}
 }

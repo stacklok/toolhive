@@ -15,6 +15,8 @@
 package handlers
 
 import (
+	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -51,6 +53,9 @@ type testSetupOptions struct {
 	SPIFFEX509ClientAuthentication      bool
 	SPIFFEJWTClientAuthentication       bool
 	SPIFFEClientCredentialsGrant        bool
+	// SigningKey and SigningKeyAlgorithm override the default RS256 key.
+	SigningKey          crypto.Signer
+	SigningKeyAlgorithm string
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -68,12 +73,15 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		ctrl.Finish()
 	})
 
-	// Generate RSA key for testing
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	signingKey, signingAlg := opts.SigningKey, opts.SigningKeyAlgorithm
+	if signingKey == nil {
+		rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		signingKey, signingAlg = rsaKey, "RS256"
+	}
 
 	secret := make([]byte, 32)
-	_, err = rand.Read(secret)
+	_, err := rand.Read(secret)
 	require.NoError(t, err)
 
 	cfg := &server.AuthorizationServerParams{
@@ -95,8 +103,8 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		AuthCodeLifespan:                       time.Minute * 10,
 		HMACSecrets:                            servercrypto.NewHMACSecrets(secret),
 		SigningKeyID:                           "test-key-1",
-		SigningKeyAlgorithm:                    "RS256",
-		SigningKey:                             rsaKey,
+		SigningKeyAlgorithm:                    signingAlg,
+		SigningKey:                             signingKey,
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -283,6 +291,32 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 // advertise the client authentication methods enabled by configuration, including
 // the independent private_key_jwt capability. "none" must stay at index 0
 // (readability convention; RFC 8414 defines no ordering).
+func TestDiscoveryHandlers_Ed25519SigningKey(t *testing.T) {
+	t.Parallel()
+	_, edKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	handler := testSetupWithOptions(t, testSetupOptions{SigningKey: edKey, SigningKeyAlgorithm: "EdDSA"})
+
+	rec := httptest.NewRecorder()
+	handler.OIDCDiscoveryHandler(rec, httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var discovery sharedobauth.OIDCDiscoveryDocument
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&discovery))
+	assert.Equal(t, []string{"EdDSA"}, discovery.IDTokenSigningAlgValuesSupported)
+
+	rec = httptest.NewRecorder()
+	handler.JWKSHandler(rec, httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var jwks struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&jwks))
+	require.Len(t, jwks.Keys, 1)
+	assert.Equal(t, "OKP", jwks.Keys[0]["kty"])
+	assert.Equal(t, "Ed25519", jwks.Keys[0]["crv"])
+	assert.Equal(t, "EdDSA", jwks.Keys[0]["alg"])
+}
+
 func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 	t.Parallel()
 

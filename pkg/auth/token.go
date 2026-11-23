@@ -920,12 +920,18 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	return nil
 }
 
-// validateTokenHeader checks the signing method is supported (RSA or ECDSA),
-// refuses an ID-JAG typ, and extracts the key ID from the token header. Returns
-// an error for unsupported methods, an ID-JAG typ or a missing kid claim.
+// validateTokenHeader checks the signing method is supported (RSA, ECDSA or
+// EdDSA), refuses an ID-JAG typ, and extracts the key ID from the token header.
+// Returns an error for unsupported methods, an ID-JAG typ or a missing kid claim.
+//
+// Only asymmetric methods are allowed, so a public key can never be used as an
+// HMAC secret. Each allowed method's Verify in golang-jwt also refuses a key of
+// the wrong Go type (*rsa.PublicKey for RS*, *ecdsa.PublicKey on the matching
+// curve for ES*, ed25519.PublicKey for EdDSA), so the key resolved for the kid
+// must match the alg in the header.
 func validateTokenHeader(token *jwt.Token) (string, error) {
 	switch token.Method.(type) {
-	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
+	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA, *jwt.SigningMethodEd25519:
 		// Supported signing methods
 	default:
 		return "", fmt.Errorf("unexpected signing method: %v", token.Header["alg"])

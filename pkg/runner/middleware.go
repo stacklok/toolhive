@@ -261,7 +261,7 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 
 	// Additional middleware configs injected by external-auth handlers via
-	// WithAdditionalMiddlewareConfigs (e.g. the enterprise OBO handler). Upstream
+	// WithAdditionalMiddlewareConfigs (e.g. the operator's OBO config). The runner
 	// carries these pre-built configs verbatim and does not interpret their
 	// parameters. They are spliced into the backend-egress group here: after auth
 	// (so the authenticated identity is available) and after the awssts /
@@ -278,7 +278,14 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// the proxyrunner re-populates via the len(MiddlewareConfigs)==0 guard. The cost
 	// is that a fully-populated ConfigMap carries the entry in both slices; the
 	// duplicate is inert because the proxyrunner reads MiddlewareConfigs.
-	middlewareConfigs = append(middlewareConfigs, config.AdditionalMiddlewareConfigs...)
+	//
+	// The one exception to "verbatim" is the OBO subject provider default; see
+	// defaultOBOSubjectProvider.
+	additional, err := defaultOBOSubjectProvider(config.AdditionalMiddlewareConfigs, config.EmbeddedAuthServerConfig)
+	if err != nil {
+		return err
+	}
+	middlewareConfigs = append(middlewareConfigs, additional...)
 
 	// Recovery middleware (always present, added last). The proxy transports
 	// apply this slice in reverse order (see applyMiddlewares), so the
@@ -295,6 +302,77 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
+}
+
+// oboSubjectProviderKey is the obo.MiddlewareParameters JSON key that selects
+// the upstream provider whose token is the OBO subject.
+const oboSubjectProviderKey = "subjectTokenProviderName"
+
+// defaultOBOSubjectProvider returns middlewares with every OBO config that
+// leaves subjectTokenProviderName empty defaulted to the embedded auth server's
+// first upstream. Behind an embedded auth server the inbound token is
+// ToolHive's own session JWT, which Entra rejects with invalid_grant, so
+// without the default every request would fail. The upstream is chosen the
+// same way addUpstreamSwapMiddleware chooses the one whose token it injects:
+// the first, with no error when there are several.
+//
+// This deliberately differs from vMCP, whose authtypes.DefaultSubjectProviderName
+// returns ErrAmbiguousSubjectProvider for more than one upstream. The operator,
+// the only producer of OBO entries in AdditionalMiddlewareConfigs, rejects an
+// MCPServer or MCPRemoteProxy with more than one embedded upstream before the
+// RunConfig is built, so the first upstream is the only one here; following
+// upstream swap keeps the OBO subject and the injected token on one provider.
+//
+// Without an embedded auth server, or one with no upstreams, middlewares is
+// returned as is. Otherwise the result is a copy and middlewares is never
+// modified, so the serialized AdditionalMiddlewareConfigs carrier keeps the
+// operator's original. Other parameters, including keys this version does not
+// know, are kept.
+func defaultOBOSubjectProvider(
+	middlewares []types.MiddlewareConfig,
+	embeddedCfg *authserver.RunConfig,
+) ([]types.MiddlewareConfig, error) {
+	if embeddedCfg == nil || len(embeddedCfg.Upstreams) == 0 {
+		return middlewares, nil
+	}
+	names := make([]string, len(embeddedCfg.Upstreams))
+	for i, u := range embeddedCfg.Upstreams {
+		names[i] = u.Name
+	}
+	providerName, err := json.Marshal(authserver.ResolveFirstUpstreamName(names))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode OBO subject provider name: %w", err)
+	}
+
+	out := slices.Clone(middlewares)
+	for i, mw := range out {
+		if mw.Type != obo.MiddlewareType {
+			continue
+		}
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(mw.Parameters, &params); err != nil {
+			return nil, fmt.Errorf("invalid OBO middleware parameters: %w", err)
+		}
+		var current string
+		if raw, ok := params[oboSubjectProviderKey]; ok {
+			if err := json.Unmarshal(raw, &current); err != nil {
+				return nil, fmt.Errorf("invalid OBO %s: %w", oboSubjectProviderKey, err)
+			}
+		}
+		if current != "" {
+			continue
+		}
+		if params == nil {
+			params = map[string]json.RawMessage{}
+		}
+		params[oboSubjectProviderKey] = providerName
+		updated, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode OBO middleware parameters: %w", err)
+		}
+		out[i].Parameters = updated
+	}
+	return out, nil
 }
 
 var errOIDCAuthenticationMiddlewareCount = errors.New("OIDC configuration requires exactly one authentication middleware")

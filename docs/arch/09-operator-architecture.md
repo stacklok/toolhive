@@ -231,10 +231,14 @@ For a complete example, see [`examples/operator/external-auth/mcpexternalauthcon
 Because appending a certificate to a referenced ConfigMap makes that CA a trust anchor — for an upstream provider's login, or for a trusted issuer's subject-token validation — restrict write access to a `caBundleRef` ConfigMap with the same RBAC care as the auth server's signing-key Secret.
 
 MCPExternalAuthConfig resources can be referenced via two paths:
-- `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection). This is the original reference path.
+- `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection, Entra on-behalf-of). This is the original reference path.
 - `authServerRef` — for the embedded auth server type (`embeddedAuthServer`) only. This dedicated reference path makes it possible to configure both incoming auth (embedded auth server) and outgoing auth (e.g., AWS STS) on the same workload resource.
 
 **Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
+
+**Entra on-behalf-of (`type: obo`)**: the MCPExternalAuthConfig reconciler validates what the schema cannot (a tenant, `clientId`, `clientSecretRef`, at least one of `audience`/`scopes`, a `cacheSkew` that is non-negative and at most MaxInt32 seconds, and a usable tenant/authority) and reports a violation as `Valid=False / Reason=InvalidConfig` without requeueing. For MCPServer and MCPRemoteProxy the operator (`cmd/thv-operator/pkg/controllerutil/obo.go`) appends an `obo` middleware config to the RunConfig and mounts the client secret into the proxyrunner pod as `TOOLHIVE_OBO_CLIENT_SECRET`; a workload that references an `obo` config without `oidcConfigRef` is rejected with `ExternalAuthConfigValidated=False / Reason=InvalidConfig`, because OBO needs an authenticated user token. VirtualMCPServer mounts each OBO backend's secret under a per-config name (`TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>_<HASH8>`, where `<HASH8>` is the first 8 hex characters of the SHA-256 of the config name, so `my-cfg` and `my.cfg` stay distinct) so several OBO backends in one pod do not collide. See [Virtual MCP outgoing authentication](10-virtual-mcp-architecture.md#outgoing-authentication) and the [OBO middleware](../middleware.md#9-on-behalf-of-obo-middleware).
+
+**Referenced config failures on consumers**: when a referenced MCPExternalAuthConfig is `Valid=False`, MCPServer and MCPRemoteProxy copy its reason onto their `ExternalAuthConfigValidated` condition with the message `Referenced MCPExternalAuthConfig '<name>' is invalid: <source message>`, or without the `: <source message>` suffix when the source message is empty. The prefix tells a copied `InvalidConfig` from one the consumer set itself, such as the obo incoming-auth rejection, so the copied one clears when the source heals even if its `ConfigHash` is unchanged.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 

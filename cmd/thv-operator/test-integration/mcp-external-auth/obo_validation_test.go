@@ -17,8 +17,8 @@ import (
 // the real apiserver (envtest). OBOConfig has no required field and no
 // cross-field rule: spec.obo shipped as an empty placeholder ({}) in an earlier
 // release, so the schema must keep admitting {} (and any subset of fields), and
-// presence/combination requirements are enforced by the registered OBO handler
-// at reconcile, not at admission. Admission only validates per-field shape
+// presence/combination requirements are enforced by the operator at reconcile
+// (see obo_reconcile_test.go), not at admission. Admission only validates per-field shape
 // (patterns, length/item bounds) for values that are present — that is what
 // these tests pin down.
 var _ = Describe("MCPExternalAuthConfig OBOConfig schema validation", Label("k8s", "validation"), func() {
@@ -106,7 +106,7 @@ var _ = Describe("MCPExternalAuthConfig OBOConfig schema validation", Label("k8s
 
 		It("should accept a config without clientId or clientSecretRef (operator enforces per auth mode)", func() {
 			// All presence/combination requirements (a tenant, a client-auth
-			// credential, an exchange target) are enforced by the operator handler
+			// credential, an exchange target) are enforced by the operator
 			// at reconcile, not at admission, so future client-auth methods
 			// (certificate, workload identity) need no breaking schema change.
 			cfg := makeOBOConfig("obo-no-client-auth", &mcpv1beta1.OBOConfig{

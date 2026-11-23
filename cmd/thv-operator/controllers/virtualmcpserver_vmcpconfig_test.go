@@ -926,20 +926,20 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				{
 					Context:     "default",
 					BackendName: "",
-					Error:       fmt.Errorf("on-behalf-of (OBO) external auth type requires an enterprise build"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 				{
 					Context:     "discovered:discovered-backend",
 					BackendName: "discovered-backend",
-					Error:       fmt.Errorf("obo enterprise required"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 				{
 					Context:     "backend:inline-backend",
 					BackendName: "inline-backend",
-					Error:       fmt.Errorf("obo enterprise required"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 			},
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
@@ -953,7 +953,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"DefaultAuthConfig",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).
@@ -961,7 +961,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"DiscoveredAuthConfig-discovered-backend",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).
@@ -969,7 +969,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"BackendAuthConfig-inline-backend",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).

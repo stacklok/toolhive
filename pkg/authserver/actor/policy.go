@@ -64,6 +64,12 @@ func NewDefaultPolicy(tokenIssuer string, actorIssuers []string) (*DefaultPolicy
 // Evaluate implements Policy. An Actor without an issuer or a subject counts as
 // no actor. A request whose TokenIssuer is not the policy's returns an error,
 // because the policy cannot decide for another issuer.
+//
+// Evaluate trusts Request.Actor to come from Effective with the same
+// TokenIssuer and ClientID. It does not re-validate a hand-built Actor against
+// the token's claims; it only treats an empty issuer or subject as no actor.
+// It checks only the actor's issuer, so it does not restrict actors per subject
+// or per client: any actor subject at an allowed issuer passes.
 func (p *DefaultPolicy) Evaluate(_ context.Context, req Request) (Decision, error) {
 	if req.TokenIssuer != p.tokenIssuer {
 		return Decision{}, fmt.Errorf("actor policy: request is for another token issuer; this policy is for %q",

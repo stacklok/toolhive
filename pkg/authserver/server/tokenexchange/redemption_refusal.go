@@ -24,6 +24,8 @@ const (
 	// reasonResourceDenied marks a valid ID-JAG whose subject may not obtain a
 	// token for the requested resource.
 	reasonResourceDenied = "resource_denied"
+	// reasonActorDenied marks a valid ID-JAG whose actor is not allowed here.
+	reasonActorDenied = "actor_denied"
 	// reasonIssuerUnavailable marks an assertion whose issuer's signing keys
 	// could not be obtained. The refusal is temporarily_unavailable (HTTP 503)
 	// and the same request may succeed once the issuer is reachable.

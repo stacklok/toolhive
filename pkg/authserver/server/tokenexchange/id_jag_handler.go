@@ -10,14 +10,12 @@ import (
 	"net/url"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/x/errorsx"
 
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
@@ -60,14 +58,16 @@ const idJAGReplayPurpose = "id-jag"
 // stored with token exchange alone but is not gated, for backward
 // compatibility; one that sets grant_types must list the jwt-bearer grant.
 type IDJAGHandler struct {
-	// core supplies the shared assertion/policy/issuance machinery
-	// (validator, per-issuer policies, replay consumer, HandleHelper). It is
-	// a named field, not an embedded type, so no fosite.TokenEndpointHandler
-	// method is ever promoted from it: a promoted method would gate on the
-	// core's own CanHandleTokenEndpointRequest (method values in Go bind at
-	// the embedded receiver, there is no virtual dispatch) and reject every
-	// ID-JAG request as unknown.
-	core *JWTBearerHandler
+	validator     JWTBearerAssertionValidator
+	tokenEndpoint string
+
+	// policies holds the issuers whose policy accepts ID-JAG assertions.
+	policies map[string]*JWTBearerGrantPolicy
+
+	// redeemer supplies the shared consume, lifetime, session and populate
+	// steps. It is a named field, not an embedded type, so no
+	// fosite.TokenEndpointHandler method is ever promoted from it.
+	redeemer *redeemer
 
 	// explicitGrantClients holds the IDs of clients that must list the
 	// jwt-bearer grant in their registered grant types.
@@ -77,6 +77,10 @@ type IDJAGHandler struct {
 	// value the server's own token validator uses (fosite.Config
 	// AccessTokenIssuer).
 	issuer fosite.AccessTokenIssuerProvider
+
+	// audienceStrategy matches a requested resource against a client's
+	// registered audiences.
+	audienceStrategy fosite.AudienceStrategyProvider
 
 	// issuerIsResource is set once at construction when the issuer identifier
 	// is also one of the server's resource audiences (allowed_audiences). The
@@ -127,14 +131,12 @@ func IssuersAcceptingAssertionType(trustedIssuers []TrustedIssuer, assertionType
 	return accepted
 }
 
-// newIDJAGIssuanceHandler constructs the production bound handler over the
-// same issuance core as newJWTBearerIssuanceHandler (newIssuanceCore); see
+// newIDJAGIssuanceHandler constructs the production bound handler. See
 // issuanceDeps.validate for the dependency requirements.
 func newIDJAGIssuanceHandler(
 	deps issuanceDeps, explicitGrantClientIDs []string, logger *slog.Logger,
 ) (*IDJAGHandler, error) {
-	core, err := newIssuanceCore(deps, JWTBearerAssertionTypeIDJAG)
-	if err != nil {
+	if err := deps.validate(); err != nil {
 		return nil, err
 	}
 	explicitGrantClients := make(map[string]struct{}, len(explicitGrantClientIDs))
@@ -142,9 +144,20 @@ func newIDJAGIssuanceHandler(
 		explicitGrantClients[id] = struct{}{}
 	}
 	h := &IDJAGHandler{
-		core:                 core,
+		validator:     deps.validator,
+		tokenEndpoint: deps.tokenEndpoint,
+		// AcceptedAssertionTypes may exclude the ID-JAG type. Filtering here,
+		// rather than in HandleTokenEndpointRequest, is the entire enforcement
+		// mechanism: an issuer left out of the policy map is indistinguishable
+		// from an issuer never configured at all, so the existing "issuer not
+		// enabled for this grant" rejection already covers issuers that exclude
+		// the ID-JAG type. An empty result is valid: every assertion of that
+		// form is then rejected as not enabled.
+		policies:             deps.policiesFor(JWTBearerAssertionTypeIDJAG),
+		redeemer:             newRedeemer(deps),
 		explicitGrantClients: explicitGrantClients,
 		issuer:               deps.config,
+		audienceStrategy:     deps.config,
 		governedResources:    slices.Clone(deps.allowedAudiences),
 		logger:               logger,
 	}
@@ -210,14 +223,9 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
-	// Same fail-closed nil-map/nil-consumer posture as the plain handler;
-	// see the comments in JWTBearerHandler.HandleTokenEndpointRequest.
-	policy, ok := h.core.policies[claims.Issuer]
+	policy, ok := h.policies[claims.Issuer]
 	if !ok {
 		return invalidAssertion("The ID-JAG assertion issuer is not enabled for this grant.")
-	}
-	if h.core.consumer == nil {
-		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT-bearer grant is not fully configured."))
 	}
 	// Unlike a plain RFC 7523 assertion (where many IdPs omit jti and the
 	// replay key falls back to an assertion hash), the ID-JAG draft requires
@@ -234,7 +242,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		return err
 	}
 	if err := server.ValidateIDJAGClientAudience(
-		resource, requester.GetClient(), h.core.config.GetAudienceStrategy(ctx)); err != nil {
+		resource, requester.GetClient(), h.audienceStrategy.GetAudienceStrategy(ctx)); err != nil {
 		if errors.Is(err, server.ErrInvalidTarget) {
 			// A valid ID-JAG whose resource this client may not target. The
 			// resource may come from the request or from the assertion's
@@ -244,57 +252,33 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		}
 		return err
 	}
-	// Consume before issuing — fails closed like the plain handler: if
-	// issuance fails past this point the assertion stays consumed rather
-	// than becoming replayable.
-	if err := h.core.consumeAssertion(ctx, idJAGReplayPurpose, claims.Issuer, claims.JWTID, claims.Expiry); err != nil {
+	clientID := requester.GetClient().GetID()
+	if err := h.redeemer.complete(ctx, requester, redemption{
+		claims:   claims,
+		resource: resource,
+		// Subject is namespaced by issuer exactly like the plain handler's. The
+		// client, unlike there, is the real authenticated one, so no synthetic
+		// replacement happens.
+		subject:       claimnames.QualifySubject(claims.Issuer, claims.Subject),
+		replayPurpose: idJAGReplayPurpose,
+		replayKey:     claims.JWTID,
+		carryAct:      true,
+	}); err != nil {
 		return err
 	}
-	lifetime, err := h.core.assertionBoundedLifetime(ctx, claims.Expiry)
-	if err != nil {
-		return err
-	}
-	h.logDraftDepartures(ctx, claims, policy, requester.GetClient().GetID())
-	requester.GrantAudience(resource)
-	requester.SetSession(newIDJAGSession(claims, requester.GetClient().GetID(), lifetime))
+	h.logDraftDepartures(ctx, claims, policy, clientID)
 	return nil
 }
 
-// newIDJAGSession builds the bounded access-token session for a redeemed
-// ID-JAG.
-func newIDJAGSession(claims *ValidatedClaims, clientID string, lifetime time.Duration) *session.Session {
-	// Subject is namespaced by issuer exactly like the plain handler's, so a
-	// resource server sees one consistent subject form for every
-	// assertion-derived token regardless of which handler minted it. The
-	// client, unlike there, is the real authenticated one, so no synthetic
-	// replacement happens.
-	issuedSession := session.New(claimnames.QualifySubject(claims.Issuer, claims.Subject), "",
-		clientID, session.UserClaims{})
-	// An ID-JAG links to no upstream IdP login at THIS server, same as a
-	// plain assertion; see claimnames.NoUpstreamSessionKey.
-	issuedSession.JWTClaims.Extra[claimnames.NoUpstreamSessionKey] = true
-	// Carry the assertion's actor chain (RFC 8693 §4.1 "act" — for an
-	// Okta-minted ID-JAG, the requesting agent's identity) into the issued
-	// token, so a resource server or auditor can still tell WHICH agent
-	// acted for the subject after redemption. Copied verbatim: act is
-	// defined as a nested-JSON claim and buildValidatedClaims left it
-	// untouched in Extra.
-	if act, ok := claims.Extra["act"]; ok {
-		issuedSession.JWTClaims.Extra["act"] = act
-	}
-	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
-	return issuedSession
-}
-
-// PopulateTokenEndpointResponse issues only an access token, sharing the
-// plain handler's session-bounded issuance.
+// PopulateTokenEndpointResponse issues only an access token, through the
+// redeemer it shares with the plain handler.
 func (h *IDJAGHandler) PopulateTokenEndpointResponse(
 	ctx context.Context, requester fosite.AccessRequester, responder fosite.AccessResponder,
 ) error {
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
-	return h.core.populateAccessTokenResponse(ctx, requester, responder)
+	return h.redeemer.populate(ctx, requester, responder)
 }
 
 // checkIDJAGPolicy runs the per-issuer policy checks in the same order as
@@ -424,7 +408,7 @@ func audienceHint(policy *JWTBearerGrantPolicy, asIssuer string) string {
 // endpoint, and the issuer and token endpoint both name this server. The
 // issuer is left out when it is also a resource audience (issuerIsResource).
 func (h *IDJAGHandler) defaultAudiences(ctx context.Context) []string {
-	audiences := []string{h.core.tokenEndpoint}
+	audiences := []string{h.tokenEndpoint}
 	if issuer := h.issuer.GetAccessTokenIssuer(ctx); issuer != "" && !h.issuerIsResource {
 		audiences = append(audiences, issuer)
 	}
@@ -435,7 +419,7 @@ func (h *IDJAGHandler) defaultAudiences(ctx context.Context) []string {
 // than one element and a cnf claim, for every issuer. It runs before the
 // assertion is consumed.
 func (h *IDJAGHandler) validateAssertion(ctx context.Context, assertion string) (*ValidatedClaims, error) {
-	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
+	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
 	if err != nil {
 		return nil, assertionValidationRefusal(err, "The ID-JAG assertion is invalid or could not be verified.")
 	}

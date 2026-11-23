@@ -13,8 +13,9 @@ import (
 )
 
 // TestRedemptionConstructors_SameErrors pins that both constructors refuse
-// the same bad dependencies with the same error. The plain constructor's
-// individual checks are covered in jwt_bearer_handler_test.go.
+// the same bad dependencies with the same error. The empty and invalid token
+// endpoint checks are covered through the plain constructor in
+// jwt_bearer_handler_test.go.
 func TestRedemptionConstructors_SameErrors(t *testing.T) {
 	t.Parallel()
 

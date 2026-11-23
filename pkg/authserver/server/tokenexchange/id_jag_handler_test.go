@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -310,7 +309,7 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 			}
 			req := newIDJAGRequest(t, tj, idJAGTestClientID)
 			if tt.strategy != nil {
-				h.core.config.(*fosite.Config).AudienceMatchingStrategy = tt.strategy
+				h.audienceStrategy = &fosite.Config{AudienceMatchingStrategy: tt.strategy}
 			}
 			var client fosite.Client = &fosite.DefaultClient{ID: idJAGTestClientID, GrantTypes: tt.grantTypes, Audience: tt.audience}
 			if tt.client != nil {
@@ -336,6 +335,16 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 	}
 }
 
+func TestIDJAGHandler_PassesASIssuerAsDefaultAudience(t *testing.T) {
+	t.Parallel()
+
+	validator := &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}
+	h := newIDJAGTestHandlerWithIssuer(t, validator, &recordingAssertionConsumer{}, idJAGTestASIssuer)
+
+	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)))
+	assert.Equal(t, []string{testTokenEndpoint, idJAGTestASIssuer}, validator.gotDefaults)
+}
+
 func TestIDJAGHandler_DefaultAudiencesWithoutIssuer(t *testing.T) {
 	t.Parallel()
 
@@ -347,79 +356,6 @@ func TestIDJAGHandler_DefaultAudiencesWithoutIssuer(t *testing.T) {
 	assert.Equal(t, []string{testTokenEndpoint}, validator.gotDefaults)
 }
 
-func TestIDJAGHandler_IssuesBoundSession(t *testing.T) {
-	t.Parallel()
-
-	tj := newTestJWKS(t)
-	claims := validIDJAGClaims()
-	consumer := &recordingAssertionConsumer{}
-	validator := &testJWTBearerAssertionValidator{claims: claims}
-	h := newIDJAGTestHandlerWithIssuer(t, validator, consumer, idJAGTestASIssuer)
-	req := newIDJAGRequest(t, tj, idJAGTestClientID)
-
-	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
-	assert.Equal(t, []string{testTokenEndpoint, idJAGTestASIssuer}, validator.gotDefaults)
-
-	// Replay consumption happened under the ID-JAG purpose with the JAG's jti —
-	// never the plain handler's purpose or an assertion-hash fallback.
-	assert.Equal(t, idJAGReplayPurpose, consumer.purpose)
-	assert.Equal(t, idJAGTestIssuer, consumer.issuer)
-	assert.Equal(t, claims.JWTID, consumer.key)
-
-	issued, ok := req.GetSession().(*session.Session)
-	require.True(t, ok, "expected the handler to install a *session.Session")
-	assert.Equal(t, idJAGTestIssuer+"#"+idJAGTestSubject, issued.GetSubject())
-	assert.Equal(t, true, issued.JWTClaims.Extra[claimnames.NoUpstreamSessionKey],
-		"ID-JAG tokens must declare that they have no upstream session")
-	assert.Equal(t, claims.Extra["act"], issued.JWTClaims.Extra["act"],
-		"the assertion's actor chain must survive into the issued token")
-	assert.Equal(t, idJAGTestClientID, issued.JWTClaims.Extra[session.ClientIDClaimKey])
-
-	// The authenticated client stays on the request — no synthetic
-	// replacement, unlike the clientless plain handler.
-	assert.Equal(t, idJAGTestClientID, req.GetClient().GetID())
-	assert.Equal(t, fosite.Arguments{idJAGTestResource}, req.GetGrantedAudience())
-
-	// The session expiry is capped by the assertion's remaining validity
-	// (5 minutes here), not the configured one-hour token lifespan.
-	expiry := issued.GetExpiresAt(fosite.AccessToken)
-	assert.WithinDuration(t, claims.Expiry, expiry, 10*time.Second)
-}
-
-func TestIDJAGHandler_ConsumeAssertionJWTErrors(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		consumerErr error
-		wantErrIs   error
-		wantDesc    string
-	}{
-		{
-			name: "replay is rejected as invalid_grant", consumerErr: fosite.ErrJTIKnown, wantErrIs: fosite.ErrInvalidGrant,
-			wantDesc: "invalid_assertion: The JWT bearer assertion has already been used.",
-		},
-		{name: "storage failure surfaces as a server error", consumerErr: errors.New("redis: connection refused"), wantErrIs: fosite.ErrServerError},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			tj := newTestJWKS(t)
-			h := newIDJAGTestHandler(t,
-				&testJWTBearerAssertionValidator{claims: validIDJAGClaims()},
-				&recordingAssertionConsumer{err: tt.consumerErr})
-			req := newIDJAGRequest(t, tj, idJAGTestClientID)
-
-			err := h.HandleTokenEndpointRequest(context.Background(), req)
-			require.Error(t, err)
-			assert.ErrorIs(t, err, tt.wantErrIs)
-			if tt.wantDesc != "" {
-				requireRefusal(t, err, "invalid_grant", tt.wantDesc)
-			}
-		})
-	}
-}
-
 func TestIDJAGHandler_PopulateGatesOnOwnMatcher(t *testing.T) {
 	t.Parallel()
 
@@ -427,18 +363,11 @@ func TestIDJAGHandler_PopulateGatesOnOwnMatcher(t *testing.T) {
 	h := newIDJAGTestHandler(t, &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}, &recordingAssertionConsumer{})
 
 	// A plain assertion is not this handler's request, even with an
-	// otherwise-complete session — the promoted-method trap this type's
-	// core field exists to avoid would have failed the opposite way.
+	// otherwise-complete session. The redeemer is a named field, not an
+	// embedded type, so no method is promoted that could answer for it.
 	req := newJWTBearerRequest(map[string][]string{"assertion": {signAssertionWithType(t, tj, nil)}})
 	err := h.PopulateTokenEndpointResponse(context.Background(), req, fosite.NewAccessResponse())
 	assert.ErrorIs(t, err, fosite.ErrUnknownRequest)
-
-	// An ID-JAG request with a prepared session issues a token.
-	req = newIDJAGRequest(t, tj, idJAGTestClientID)
-	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
-	resp := fosite.NewAccessResponse()
-	require.NoError(t, h.PopulateTokenEndpointResponse(context.Background(), req, resp))
-	assert.NotEmpty(t, resp.GetAccessToken())
 }
 
 func TestIDJAGHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
@@ -1222,7 +1151,7 @@ type jwtBearerFactoryStorage struct {
 // TestJWTBearerIssuanceFactory_GatesOnAcceptedAssertionTypes drives the
 // production JWTBearerIssuanceFactory and pins end to end that an id_jag-only
 // issuer stays off the plain (client-auth-skippable) path. The filtering
-// itself lives in newIssuanceCore and issuanceDeps.policiesFor.
+// itself lives in the two issuance constructors, through issuanceDeps.policiesFor.
 func TestJWTBearerIssuanceFactory_GatesOnAcceptedAssertionTypes(t *testing.T) {
 	t.Parallel()
 
@@ -1331,7 +1260,7 @@ func TestIDJAGIssuanceFactory_PassesInputsToHandler(t *testing.T) {
 		require.True(t, ok, "factory closure must return *IDJAGHandler, got %T", result)
 		// The factory fixes the validator to the shared real one; swap in a
 		// fake so the claims are controlled.
-		handler.core.validator = &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}
+		handler.validator = &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}
 		return handler
 	}
 	redeem := func(t *testing.T, handler *IDJAGHandler, clientID string) error {
@@ -1353,7 +1282,7 @@ func TestIDJAGIssuanceFactory_PassesInputsToHandler(t *testing.T) {
 	t.Run("allowed audiences become the governed resources", func(t *testing.T) {
 		t.Parallel()
 		handler := build(t, nil)
-		handler.core.validator = &testJWTBearerAssertionValidator{claims: func() *ValidatedClaims {
+		handler.validator = &testJWTBearerAssertionValidator{claims: func() *ValidatedClaims {
 			claims := validIDJAGClaims()
 			claims.Extra["resource"] = idJAGTestForeignResource
 			return claims

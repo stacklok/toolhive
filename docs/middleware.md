@@ -509,7 +509,11 @@ yet; a RunConfig carrying the middleware config works.
 
 **Subject token**: `Identity.Token` (the token the client presented) by
 default, or `Identity.UpstreamTokens[subjectTokenProviderName]` when an
-embedded auth server fronts the proxy. The authentication middleware must run
+embedded auth server fronts the proxy. With an embedded auth server and no
+`subjectTokenProviderName`, the runner defaults it to the upstream that the
+upstream swap middleware uses, because the inbound token is then ToolHive's own
+session token, which Entra rejects. vMCP applies the same default and rejects
+an omitted value when the embedded auth server has more than one upstream. The authentication middleware must run
 first, so an MCPServer or MCPRemoteProxy that references an `obo` config must
 also set `oidcConfigRef`; the operator rejects it with
 `ExternalAuthConfigValidated=False / Reason=InvalidConfig` otherwise.

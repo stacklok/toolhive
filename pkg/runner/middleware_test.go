@@ -464,6 +464,80 @@ func TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs(t *testing.T) {
 	})
 }
 
+// TestPopulateMiddlewareConfigs_OBOSubjectProviderDefault verifies that behind
+// an embedded auth server an OBO config with no subjectTokenProviderName gets
+// the first upstream, so the subject is the upstream IdP token rather than
+// ToolHive's session JWT, and that the carrier keeps the operator's original.
+func TestPopulateMiddlewareConfigs_OBOSubjectProviderDefault(t *testing.T) {
+	t.Parallel()
+
+	mkOBO := func(t *testing.T, params map[string]any) types.MiddlewareConfig {
+		t.Helper()
+		mc, err := types.NewMiddlewareConfig(obo.MiddlewareType, params)
+		require.NoError(t, err)
+		return *mc
+	}
+	subjectOf := func(t *testing.T, cfg *RunConfig) map[string]any {
+		t.Helper()
+		var got map[string]any
+		mw := cfg.MiddlewareConfigs[indexOfMiddleware(t, cfg.MiddlewareConfigs, obo.MiddlewareType)]
+		require.NoError(t, json.Unmarshal(mw.Parameters, &got))
+		return got
+	}
+
+	tests := []struct {
+		name     string
+		params   map[string]any
+		embedded *authserver.RunConfig
+		want     any // expected subjectTokenProviderName; nil means absent
+	}{
+		{
+			name:     "defaulted to the first upstream",
+			params:   map[string]any{"clientId": "c", "futureKey": "kept"},
+			embedded: createMinimalAuthServerConfig(),
+			want:     "test-upstream",
+		},
+		{
+			name:     "explicit provider kept",
+			params:   map[string]any{"clientId": "c", "subjectTokenProviderName": "explicit"},
+			embedded: createMinimalAuthServerConfig(),
+			want:     "explicit",
+		},
+		{
+			name:     "empty provider defaulted",
+			params:   map[string]any{"clientId": "c", "subjectTokenProviderName": ""},
+			embedded: createMinimalAuthServerConfig(),
+			want:     "test-upstream",
+		},
+		{
+			name:   "no embedded auth server leaves inbound mode",
+			params: map[string]any{"clientId": "c"},
+			want:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			injected := mkOBO(t, tt.params)
+			cfg := &RunConfig{
+				EmbeddedAuthServerConfig:    tt.embedded,
+				AdditionalMiddlewareConfigs: []types.MiddlewareConfig{injected},
+			}
+			require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+			got := subjectOf(t, cfg)
+			assert.Equal(t, tt.want, got["subjectTokenProviderName"])
+			assert.Equal(t, "c", got["clientId"], "other parameters are kept")
+			if v, ok := tt.params["futureKey"]; ok {
+				assert.Equal(t, v, got["futureKey"], "unknown keys are kept")
+			}
+			assert.Equal(t, injected.Parameters, cfg.AdditionalMiddlewareConfigs[0].Parameters,
+				"the carrier keeps the operator's original parameters")
+		})
+	}
+}
+
 // TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs_RoundTrip exercises
 // the full operator path (NewOperatorRunConfigBuilder + PopulateMiddlewareConfigs)
 // and confirms an injected obo-typed config survives JSON/YAML serialization so

@@ -217,7 +217,9 @@ type OBOConfig struct {
 	// SubjectTokenProviderName selects which upstream provider's token to use as the
 	// subject (assertion) token for the OBO exchange. When set, the token is looked
 	// up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-	// inbound end-user token (Identity.Token) is used directly.
+	// inbound end-user token (Identity.Token) is used directly. Behind an embedded
+	// auth server an omitted value defaults to its upstream provider, and is an
+	// error when it has more than one (see DefaultSubjectProviderName).
 	// Matches the operator CRD's SubjectTokenProviderName field; the OBO
 	// converter maps it to the runtime contract without renaming.
 	SubjectTokenProviderName string `json:"subjectTokenProviderName,omitempty" yaml:"subjectTokenProviderName,omitempty"`

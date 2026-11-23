@@ -2848,9 +2848,13 @@ spec:
                     description: |-
                       SubjectTokenProviderName selects the source of the OBO subject (assertion)
                       token from the request's authenticated Identity:
-                        - Omitted: use the inbound end-user token the client presented
-                          (Identity.Token) — the deployment with no embedded auth server, where
-                          the client holds an Entra token directly.
+                        - Omitted, with no embedded auth server: use the inbound end-user token
+                          the client presented (Identity.Token), where the client holds an Entra
+                          token directly.
+                        - Omitted, behind an embedded auth server: defaults to its upstream
+                          provider, since the inbound token is then the proxy's own session
+                          token. A VirtualMCPServer whose embedded auth server has more than one
+                          upstream must set it explicitly.
                         - Set: use the named upstream provider's token
                           (Identity.UpstreamTokens[<name>]) — the embedded-auth-server
                           deployment, where the inbound token is the proxy's own session token.
@@ -6018,9 +6022,13 @@ spec:
                     description: |-
                       SubjectTokenProviderName selects the source of the OBO subject (assertion)
                       token from the request's authenticated Identity:
-                        - Omitted: use the inbound end-user token the client presented
-                          (Identity.Token) — the deployment with no embedded auth server, where
-                          the client holds an Entra token directly.
+                        - Omitted, with no embedded auth server: use the inbound end-user token
+                          the client presented (Identity.Token), where the client holds an Entra
+                          token directly.
+                        - Omitted, behind an embedded auth server: defaults to its upstream
+                          provider, since the inbound token is then the proxy's own session
+                          token. A VirtualMCPServer whose embedded auth server has more than one
+                          upstream must set it explicitly.
                         - Set: use the named upstream provider's token
                           (Identity.UpstreamTokens[<name>]) — the embedded-auth-server
                           deployment, where the inbound token is the proxy's own session token.

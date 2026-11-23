@@ -3031,10 +3031,10 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 }
 
 // injectSubjectProviderIfNeeded auto-populates the upstream provider name on
-// token_exchange, aws_sts, and xaa strategies when the field is empty and an
-// embedded auth server is configured on the VirtualMCPServer. All three
-// strategies use SubjectProviderName for the same concept: which upstream
-// provider's token to pull from Identity.UpstreamTokens.
+// token_exchange, aws_sts, xaa, and obo strategies when the field is empty and
+// an embedded auth server is configured on the VirtualMCPServer. All four
+// strategies use the field (SubjectTokenProviderName for obo) for the same
+// concept: which upstream provider's token to pull from Identity.UpstreamTokens.
 //
 // The same first-upstream-name extraction appears in pkg/runner/middleware.go
 // and pkg/vmcp/config/defaults.go, which share the authserver.UpstreamRunConfig
@@ -3045,8 +3045,8 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 // Delegates the actual defaulting to authtypes.DefaultSubjectProviderName.
 // Returns strategy unchanged when it is nil or no embedded auth server is
 // configured. Can return authtypes.ErrAmbiguousSubjectProvider when strategy
-// is xaa, SubjectProviderName is empty, and more than one upstream provider
-// is configured.
+// is xaa or obo, its subject provider name is empty, and more than one
+// upstream provider is configured.
 func injectSubjectProviderIfNeeded(
 	strategy *authtypes.BackendAuthStrategy,
 	embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig,

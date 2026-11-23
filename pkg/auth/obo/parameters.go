@@ -63,7 +63,8 @@ type MiddlewareParameters struct {
 	//     (Identity.UpstreamTokens[SubjectTokenProviderName]). Set this when an
 	//     embedded auth server fronts the proxy, so the inbound token is the
 	//     proxy's own session token rather than an Entra token. Mirrors the
-	//     upstreamswap middleware.
+	//     upstreamswap middleware. The runner fills it in with the embedded auth
+	//     server's upstream when it is left empty.
 	//
 	// Either way the subject comes from the Identity, so the authentication
 	// middleware must run first.

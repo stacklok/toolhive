@@ -544,6 +544,20 @@ func resultMethod(result json.RawMessage) (string, error) {
 	if callResult.structuredContent == nil && len(callResult.outputs) == 0 {
 		return "", errors.New("result names tools but carries no find_tool output")
 	}
+	if len(callResult.outputs) != 1 {
+		return "", errors.New("result names tools but does not carry exactly one find_tool output")
+	}
+	// Empty every tools list and check what remains. A tool name in any other member
+	// (_meta, an extra content member, a member beside tools) would reach the client
+	// unfiltered, so it fails closed. Checking the emptied copy, not the raw answer,
+	// keeps an authorized tool whose inputSchema has a property named tools.
+	skeleton, err := callResult.withFilteredToolIndexes([]int{})
+	if err != nil {
+		return "", fmt.Errorf("result names tools but its find_tool output cannot be emptied: %w", err)
+	}
+	if mentionsToolsMember(skeleton) {
+		return "", errors.New("result names tools outside its find_tool tools list")
+	}
 	return optimizerdec.FindToolName, nil
 }
 

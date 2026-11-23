@@ -1019,6 +1019,73 @@ func TestSSEStreamPassesInitializeCapabilitiesThrough(t *testing.T) {
 	assert.Equal(t, body, rr.Body.String())
 }
 
+func TestSSEStreamFailsClosedOnSiblingToolNames(t *testing.T) {
+	t.Parallel()
+
+	// A find_tool-shaped answer whose tool names sit outside the filtered tools list.
+	// Each must fail closed so no unauthorized name reaches the client.
+	const output = `{"tools":[{"name":"weather","description":"Get weather"}],` +
+		`"token_metrics":{"baseline_tokens":20,"returned_tokens":10,"savings_percent":50}}`
+	const secretMember = `"tools":[{"name":"secret","description":"restricted"}]`
+	tests := []struct {
+		name   string
+		result string
+	}{
+		{
+			name: "tools in _meta beside content",
+			result: `{"content":[{"type":"text","text":` + mustJSONString(t, output) + `}],` +
+				`"structuredContent":` + output + `,"_meta":{` + secretMember + `}}`,
+		},
+		{
+			name: "tools on the text content item",
+			result: `{"content":[{"type":"text","text":` + mustJSONString(t, output) + `,` + secretMember + `}],` +
+				`"structuredContent":` + output + `}`,
+		},
+		{
+			name: "tools beside tools in the output",
+			result: `{"content":[{"type":"text","text":` + mustJSONString(t, output) + `}],"structuredContent":` +
+				`{"tools":[{"name":"weather","description":"Get weather"}],"extra":{` + secretMember + `},` +
+				`"token_metrics":{"baseline_tokens":20,"returned_tokens":10,"savings_percent":50}}}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				"weather": {authorized: true},
+				"secret":  {authorized: false},
+			}}
+			rr := runSSEStream(t, authorizer, "text/event-stream",
+				sseStreamEvent(`{"jsonrpc":"2.0","id":68,"result":`+tc.result+`}`))
+
+			assert.NotContains(t, rr.Body.String(), "secret", "an unauthorized name must not reach the client")
+			assert.Contains(t, rr.Body.String(), `"error"`)
+			assert.Contains(t, rr.Body.String(), `"id":68`)
+		})
+	}
+}
+
+func TestSSEStreamPassesAuthorizedToolWithToolsSchemaProperty(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"weather": {authorized: true},
+	}}
+	// An authorized tool whose inputSchema has a property named tools must not trip the
+	// sibling check: the check runs on the answer with every tools list emptied.
+	const output = `{"tools":[{"name":"weather","description":"Get weather","inputSchema":` +
+		`{"type":"object","properties":{"tools":{"type":"array"}}},"annotations":{"readOnlyHint":true}}],` +
+		`"token_metrics":{"baseline_tokens":20,"returned_tokens":10,"savings_percent":50}}`
+	result := `{"content":[{"type":"text","text":` + mustJSONString(t, output) + `}],"structuredContent":` + output + `}`
+	rr := runSSEStream(t, authorizer, "text/event-stream",
+		sseStreamEvent(`{"jsonrpc":"2.0","id":69,"result":`+result+`}`))
+
+	assert.Contains(t, rr.Body.String(), "weather", "an authorized tool must be kept")
+	assert.NotContains(t, rr.Body.String(), `"error"`)
+	assert.Contains(t, rr.Body.String(), `"id":69`)
+}
+
 func TestSSEStreamFailsClosedOnToolNamesOffFindToolShape(t *testing.T) {
 	t.Parallel()
 

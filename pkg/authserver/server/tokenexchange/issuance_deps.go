@@ -25,10 +25,13 @@ type issuanceDeps struct {
 	allowedAudiences []string        // only the ID-JAG handler reads it
 }
 
-// validate checks the dependencies newJWTBearerHandler does not. That
-// constructor checks the validator and token endpoint; newIssuanceCore calls
-// it first, then this. A new field needs a check in one of the two.
+// validate checks every dependency, in this order: validator, token
+// endpoint, consumer, then the fosite dependencies. A new field needs its
+// check here.
 func (d issuanceDeps) validate() error {
+	if err := checkValidatorAndEndpoint(d.validator, d.tokenEndpoint); err != nil {
+		return err
+	}
 	if d.consumer == nil {
 		return errors.New("JWT-bearer storage must implement storage.AssertionJWTConsumer")
 	}

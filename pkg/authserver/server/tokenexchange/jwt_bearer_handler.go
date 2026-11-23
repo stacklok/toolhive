@@ -64,17 +64,26 @@ type JWTBearerHandler struct {
 // accidental use of this constructor alone can never look like a working
 // grant.
 func newJWTBearerHandler(validator JWTBearerAssertionValidator, tokenEndpoint string) (*JWTBearerHandler, error) {
+	if err := checkValidatorAndEndpoint(validator, tokenEndpoint); err != nil {
+		return nil, err
+	}
+	return &JWTBearerHandler{validator: validator, tokenEndpoint: tokenEndpoint}, nil
+}
+
+// checkValidatorAndEndpoint is the validation newJWTBearerHandler and
+// issuanceDeps.validate share, so the two cannot drift.
+func checkValidatorAndEndpoint(validator JWTBearerAssertionValidator, tokenEndpoint string) error {
 	if validator == nil {
-		return nil, errors.New("JWT-bearer assertion validator must not be nil")
+		return errors.New("JWT-bearer assertion validator must not be nil")
 	}
 	if tokenEndpoint == "" {
-		return nil, errors.New("JWT-bearer token endpoint must not be empty")
+		return errors.New("JWT-bearer token endpoint must not be empty")
 	}
 	endpoint, err := url.ParseRequestURI(tokenEndpoint)
 	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
-		return nil, fmt.Errorf("JWT-bearer token endpoint is invalid: %q", tokenEndpoint)
+		return fmt.Errorf("JWT-bearer token endpoint is invalid: %q", tokenEndpoint)
 	}
-	return &JWTBearerHandler{validator: validator, tokenEndpoint: tokenEndpoint}, nil
+	return nil
 }
 
 // newJWTBearerIssuanceHandler constructs the production handler for plain
@@ -86,13 +95,10 @@ func newJWTBearerIssuanceHandler(deps issuanceDeps) (*JWTBearerHandler, error) {
 // newIssuanceCore builds the issuance core both handlers share, holding only
 // the issuers that accept form.
 func newIssuanceCore(deps issuanceDeps, form JWTBearerAssertionType) (*JWTBearerHandler, error) {
-	handler, err := newJWTBearerHandler(deps.validator, deps.tokenEndpoint)
-	if err != nil {
-		return nil, err
-	}
 	if err := deps.validate(); err != nil {
 		return nil, err
 	}
+	handler := &JWTBearerHandler{validator: deps.validator, tokenEndpoint: deps.tokenEndpoint}
 	handler.HandleHelper = &oauth2.HandleHelper{
 		AccessTokenStrategy: deps.strategy,
 		AccessTokenStorage:  deps.tokenStorage,

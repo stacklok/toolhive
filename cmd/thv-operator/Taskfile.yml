@@ -272,6 +272,8 @@ tasks:
       - task: build-load-spiffe-e2e-client-image
       - echo "Running Ginkgo E2E tests..."
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      # The last --label-filter wins, so a GINKGO_ARGS filter replaces this
+      # exclusion: write it as e.g. --label-filter='mcpserver && !entra-live'.
       - |
         KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
           --procs=8 \

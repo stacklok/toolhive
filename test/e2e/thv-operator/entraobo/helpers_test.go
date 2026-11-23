@@ -168,10 +168,9 @@ func fingerprints(tokens []string) []string {
 }
 
 // tokenClaims are the claims the suite checks on Entra access tokens.
+// Verify already checks the issuer and audience.
 type tokenClaims struct {
 	OID string `json:"oid"`
-	TID string `json:"tid"`
-	Aud string `json:"aud"`
 	// AZP is the client the token was issued to. For an exchanged token it
 	// must be the middle-tier app.
 	AZP string `json:"azp"`
@@ -303,17 +302,25 @@ func oidcRef(name string) *mcpv1beta1.MCPOIDCConfigReference {
 // createOBOConfig creates an obo-typed MCPExternalAuthConfig for the
 // middle-tier app, reading its client secret from secretName.
 func createOBOConfig(name, secretName, scope string) {
+	createOBOConfigWith(name, secretName, func(o *mcpv1beta1.OBOConfig) { o.Scopes = []string{scope} })
+}
+
+// createOBOAudienceConfig creates an obo-typed MCPExternalAuthConfig that names
+// the backend by audience alone, with no scopes.
+func createOBOAudienceConfig(name, secretName, audience string) {
+	createOBOConfigWith(name, secretName, func(o *mcpv1beta1.OBOConfig) { o.Audience = audience })
+}
+
+func createOBOConfigWith(name, secretName string, target func(*mcpv1beta1.OBOConfig)) {
+	obo := &mcpv1beta1.OBOConfig{
+		TenantID:        cfg.tenantID,
+		ClientID:        cfg.proxyClientID,
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: secretName, Key: clientSecretKey},
+	}
+	target(obo)
 	gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
-		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-			Type: mcpv1beta1.ExternalAuthTypeOBO,
-			OBO: &mcpv1beta1.OBOConfig{
-				TenantID:        cfg.tenantID,
-				ClientID:        cfg.proxyClientID,
-				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: secretName, Key: clientSecretKey},
-				Scopes:          []string{scope},
-			},
-		},
+		Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeOBO, OBO: obo},
 	})).To(gomega.Succeed())
 }
 
@@ -491,7 +498,9 @@ func initializeStatus(endpoint, token string) (int, error) {
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{` +
 		`"protocolVersion":"2025-06-18","capabilities":{},` +
 		`"clientInfo":{"name":"entra-obo-e2e","version":"1.0.0"}}}`)
-	reqCtx, reqCancel := context.WithTimeout(ctx, time.Minute)
+	// Short per attempt: callers retry inside Eventually, which does not
+	// preempt a running poll.
+	reqCtx, reqCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer reqCancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {

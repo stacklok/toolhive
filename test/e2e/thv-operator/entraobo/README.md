@@ -29,9 +29,10 @@ returns and, where it names the cause, the proxyrunner log.
 | Spec | Proves |
 |---|---|
 | `Entra OBO: MCPServer` | The proxyrunner exchanges the user token. A token for another audience (the exchanged backend token) is refused with 401 at the incoming OIDC layer. |
+| `Entra OBO: audience instead of scopes` | An OBO config that names the backend by `audience` alone (its Application ID URI, derived from `TOOLHIVE_E2E_ENTRA_BACKEND_SCOPE`) exchanges the same way: ToolHive asks Entra for `<audience>/.default`. |
 | `Entra OBO: MCPRemoteProxy` | The same exchange through a remote proxy. |
 | `Entra OBO: VirtualMCPServer inline outgoingAuth` | Two backends with separate OBO configs and Secrets each receive their own exchanged token, and the vMCP pod carries two distinct `TOOLHIVE_OBO_CLIENT_SECRET_<NAME>` variables, each read from its own backend's Secret. |
-| `Entra OBO: VirtualMCPServer discovered outgoingAuth` | vMCP exchanges the token for a discovered MCPServerEntry backend. The MCPServer-backend case is pending: vMCP reaches a discovered MCPServer through its proxy, which would exchange the token a second time. |
+| `Entra OBO: VirtualMCPServer discovered outgoingAuth` | vMCP exchanges the token for a discovered MCPServerEntry backend. The MCPServer-backend case is pending because discovered mode cannot reach an OBO MCPServer today: vMCP sends the already-exchanged token (`aud` = the backend) to the MCPServer's proxy, whose required OIDC layer expects the middle-tier app as the audience and answers 401. |
 | `Entra OBO: exchange failures` | A wrong client secret gives 502 while the server still starts. Optionally, an unconsented scope gives 401, and a conditional-access challenge gives 403 plus an `obo_token_exchange` audit event. |
 
 Tokens never appear in test output. Logs and failure messages show a short

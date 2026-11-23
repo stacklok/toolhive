@@ -79,6 +79,13 @@ var _ = ginkgo.BeforeSuite(func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		kubeconfig = homeDir + "/.kube/config"
 	}
+	// The suite recreates a namespace and writes the real client secret into
+	// it, so refuse anything but a local Kind cluster, whatever KUBECONFIG
+	// a plain `ginkgo` or `go test` run picked up.
+	rawCfg, err := clientcmd.LoadFromFile(kubeconfig)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "loading kubeconfig %s", kubeconfig)
+	gomega.Expect(rawCfg.CurrentContext).To(gomega.HavePrefix("kind-"),
+		"refusing to run the Entra suite against non-Kind context %q from %s", rawCfg.CurrentContext, kubeconfig)
 	restCfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "loading kubeconfig %s", kubeconfig)
 

@@ -50,13 +50,10 @@ func proxyEndpoint(service string) string {
 
 // createOBOMCPServer creates a token-recording MCPServer that authenticates
 // the incoming Entra user token and exchanges it through oboConfig.
-func createOBOMCPServer(name, oboConfig string, audit bool) {
+func createOBOMCPServer(name, oboConfig string) {
 	server := newRecorderMCPServer(name)
 	server.Spec.OIDCConfigRef = oidcRef(oidcConfigName)
 	server.Spec.ExternalAuthConfigRef = &mcpv1beta1.ExternalAuthConfigRef{Name: oboConfig}
-	if audit {
-		server.Spec.Audit = &mcpv1beta1.AuditConfig{Enabled: true}
-	}
 	gomega.Expect(k8sClient.Create(ctx, server)).To(gomega.Succeed())
 	waitMCPServerReady(name)
 }
@@ -83,30 +80,38 @@ func createVMCP(name, group string, outgoing *mcpv1beta1.OutgoingAuthConfig) str
 	return fmt.Sprintf("http://127.0.0.1:%d/mcp", portForward(service.Name, service.Spec.Ports[0].Port))
 }
 
-// proxyRunnerLogs returns the log of the MCPServer's proxyrunner container,
-// or "" while it cannot be read. The proxyrunner logs Entra's OAuth error
-// code and never the tokens.
-func proxyRunnerLogs(serverName string) string {
+// proxyRunnerLogs returns the log of the MCPServer's running proxyrunner
+// container. The proxyrunner logs Entra's OAuth error code and never the
+// tokens, but with audit on it logs the user's identity claims, so callers
+// match on the log rather than handing it to a Gomega matcher that prints it.
+func proxyRunnerLogs(serverName string) (string, error) {
 	pods := &corev1.PodList{}
 	if err := k8sClient.List(ctx, pods, client.InNamespace(testNamespace), client.MatchingLabels(map[string]string{
 		"app.kubernetes.io/name":     "mcpserver",
 		"app.kubernetes.io/instance": serverName,
 	})); err != nil {
-		return ""
+		return "", fmt.Errorf("listing pods of MCPServer %s: %w", serverName, err)
 	}
 	for _, pod := range pods.Items {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
 		for _, c := range pod.Spec.Containers {
-			if c.Name != proxyRunnerContainer {
-				continue
+			if c.Name == proxyRunnerContainer {
+				return testutil.GetPodLogs(ctx, testNamespace, pod.Name, proxyRunnerContainer, false)
 			}
-			logs, err := testutil.GetPodLogs(ctx, testNamespace, pod.Name, proxyRunnerContainer, false)
-			if err != nil {
-				return ""
-			}
-			return logs
 		}
 	}
-	return ""
+	return "", fmt.Errorf("no running pod of MCPServer %s has a %q container", serverName, proxyRunnerContainer)
+}
+
+// expectProxyRunnerLogContains fails g unless the MCPServer's proxyrunner log
+// contains want. The log itself stays out of the failure message.
+func expectProxyRunnerLogContains(g gomega.Gomega, serverName, want string) {
+	logs, err := proxyRunnerLogs(serverName)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(strings.Contains(logs, want)).To(gomega.BeTrue(),
+		"the proxyrunner log of %s has no %q line", serverName, want)
 }
 
 // createGroup creates an MCPGroup and waits for it.
@@ -117,24 +122,51 @@ func createGroup(name string) {
 
 var _ = ginkgo.Describe("Entra OBO: MCPServer", ginkgo.Label(entraLiveLabel), ginkgo.Ordered, func() {
 	const serverName = "obo-server"
-	var endpoint string
+	var (
+		endpoint string
+		// seen is what the backend recorded after one call, captured here so
+		// each spec also runs on its own (e.g. with --focus).
+		seen []string
+	)
 
 	ginkgo.BeforeAll(func() {
-		createOBOMCPServer(serverName, backendOBOConfig, false)
+		createOBOMCPServer(serverName, backendOBOConfig)
 		endpoint = proxyEndpoint(controllerutil.CreateProxyServiceName(serverName))
+		callPing(endpoint, user.token, pingTool)
+		seen = recordedTokens("mcp-" + serverName)
 	})
 
 	ginkgo.It("exchanges the user token and the backend receives an Entra token for its audience", func() {
-		callPing(endpoint, user.token, pingTool)
-		expectExchangedToken(recordedTokens("mcp-" + serverName))
+		expectExchangedToken(seen)
 	})
 
 	ginkgo.It("rejects a token for another audience with 401 at the incoming OIDC layer", func() {
 		// The exchanged token is a valid Entra token for the backend, not for
 		// the middle-tier app, so the proxy's OIDC validation must refuse it.
-		seen := recordedTokens("mcp-" + serverName)
 		gomega.Expect(fingerprints(seen)).NotTo(gomega.BeEmpty())
 		gomega.Expect(initializeStatus(endpoint, seen[0])).To(gomega.Equal(http.StatusUnauthorized))
+	})
+})
+
+var _ = ginkgo.Describe("Entra OBO: audience instead of scopes", ginkgo.Label(entraLiveLabel), ginkgo.Ordered, func() {
+	const serverName = "obo-audience"
+	var endpoint string
+
+	ginkgo.BeforeAll(func() {
+		// The backend's Application ID URI, from the .default scope. ToolHive
+		// must turn a bare audience into <audience>/.default for Entra.
+		audience, ok := strings.CutSuffix(cfg.backendScope, "/.default")
+		if !ok {
+			ginkgo.Skip(envBackendScope + " is not a .default scope, so the backend audience cannot be derived")
+		}
+		createOBOAudienceConfig(serverName, proxySecretName, audience)
+		createOBOMCPServer(serverName, serverName)
+		endpoint = proxyEndpoint(controllerutil.CreateProxyServiceName(serverName))
+	})
+
+	ginkgo.It("exchanges the user token for the backend named by audience alone", func() {
+		callPing(endpoint, user.token, pingTool)
+		expectExchangedToken(recordedTokens("mcp-" + serverName))
 	})
 })
 
@@ -295,11 +327,13 @@ var _ = ginkgo.Describe("Entra OBO: VirtualMCPServer discovered outgoingAuth", g
 		expectExchangedToken(recordedTokens(recorderName))
 	})
 
-	// Pending: vMCP reaches a discovered MCPServer through its proxy. An OBO
-	// MCPServer must also authenticate incoming requests, so its proxy
-	// re-validates the token vMCP already exchanged and exchanges it again,
-	// which Entra refuses. Enable once discovered mode stops double-applying
-	// the backend's OBO config.
+	// Pending: discovered mode cannot reach an OBO MCPServer today. vMCP
+	// applies the backend's OBO config and sends the exchanged token (aud =
+	// the backend) to the MCPServer's proxy. The operator requires OIDC on
+	// every OBO MCPServer, and that OIDC layer expects the middle-tier app as
+	// the audience, so the proxy answers 401 before any second exchange.
+	// Enable once discovered mode stops applying the backend's OBO config
+	// twice.
 	ginkgo.PIt("exchanges the user token for an MCPServer backend")
 })
 
@@ -308,7 +342,7 @@ var _ = ginkgo.Describe("Entra OBO: exchange failures", ginkgo.Label(entraLiveLa
 		const name = "obo-wrong-secret"
 		createClientSecret(name, "not-the-client-secret")
 		createOBOConfig(name, name, cfg.backendScope)
-		createOBOMCPServer(name, name, false) // waits for Ready
+		createOBOMCPServer(name, name) // waits for Ready
 		endpoint := proxyEndpoint(controllerutil.CreateProxyServiceName(name))
 		// A 502 alone could also come from the proxy reaching a backend that
 		// is still starting, or from Entra being unreachable. Require the
@@ -316,7 +350,7 @@ var _ = ginkgo.Describe("Entra OBO: exchange failures", ginkgo.Label(entraLiveLa
 		// retry until it has, since Ready does not mean the backend serves.
 		gomega.Eventually(func(g gomega.Gomega) {
 			g.Expect(initializeStatus(endpoint, user.token)).To(gomega.Equal(http.StatusBadGateway))
-			g.Expect(proxyRunnerLogs(name)).To(gomega.ContainSubstring("invalid_client"))
+			expectProxyRunnerLogContains(g, name, "invalid_client")
 		}, 2*time.Minute, pollInterval).Should(gomega.Succeed())
 	})
 
@@ -326,7 +360,7 @@ var _ = ginkgo.Describe("Entra OBO: exchange failures", ginkgo.Label(entraLiveLa
 		}
 		const name = "obo-unconsented"
 		createOBOConfig(name, proxySecretName, cfg.unconsentedScope)
-		createOBOMCPServer(name, name, false)
+		createOBOMCPServer(name, name)
 		endpoint := proxyEndpoint(controllerutil.CreateProxyServiceName(name))
 		gomega.Expect(initializeStatus(endpoint, user.token)).To(gomega.Equal(http.StatusUnauthorized))
 	})
@@ -337,11 +371,14 @@ var _ = ginkgo.Describe("Entra OBO: exchange failures", ginkgo.Label(entraLiveLa
 		}
 		const name = "obo-conditional-access"
 		createOBOConfig(name, proxySecretName, cfg.conditionalAccessScope)
-		createOBOMCPServer(name, name, true)
+		// The OBO middleware emits its audit event whether or not the
+		// MCPServer enables audit, so the server needs no audit config.
+		createOBOMCPServer(name, name)
 		endpoint := proxyEndpoint(controllerutil.CreateProxyServiceName(name))
 		gomega.Expect(initializeStatus(endpoint, user.token)).To(gomega.Equal(http.StatusForbidden))
 
-		gomega.Eventually(func() string { return proxyRunnerLogs(name) },
-			time.Minute, pollInterval).Should(gomega.ContainSubstring("obo_token_exchange"))
+		gomega.Eventually(func(g gomega.Gomega) {
+			expectProxyRunnerLogContains(g, name, "obo_token_exchange")
+		}, time.Minute, pollInterval).Should(gomega.Succeed())
 	})
 })

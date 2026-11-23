@@ -547,10 +547,11 @@ func resultMethod(result json.RawMessage) (string, error) {
 	if len(callResult.outputs) != 1 {
 		return "", errors.New("result names tools but does not carry exactly one find_tool output")
 	}
-	// Empty every tools list and check what remains. A tool name in any other member
-	// (_meta, an extra content member, a member beside tools) would reach the client
-	// unfiltered, so it fails closed. Checking the emptied copy, not the raw answer,
-	// keeps an authorized tool whose inputSchema has a property named tools.
+	// Empty every tools list and check what remains for another tools member naming a
+	// tool (under _meta, a content member, or beside tools). Such a member would reach
+	// the client unfiltered, so it fails closed. Checking the emptied copy, not the raw
+	// answer, keeps an authorized tool whose inputSchema has a property named tools.
+	// This covers a tools key only; a tool name under another key is not checked.
 	skeleton, err := callResult.withFilteredToolIndexes([]int{})
 	if err != nil {
 		return "", fmt.Errorf("result names tools but its find_tool output cannot be emptied: %w", err)

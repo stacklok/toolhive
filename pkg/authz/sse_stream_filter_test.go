@@ -1027,6 +1027,8 @@ func TestSSEStreamFailsClosedOnSiblingToolNames(t *testing.T) {
 	const output = `{"tools":[{"name":"weather","description":"Get weather"}],` +
 		`"token_metrics":{"baseline_tokens":20,"returned_tokens":10,"savings_percent":50}}`
 	const secretMember = `"tools":[{"name":"secret","description":"restricted"}]`
+	const withExtra = `{"tools":[{"name":"weather","description":"Get weather"}],"extra":{` + secretMember + `},` +
+		`"token_metrics":{"baseline_tokens":20,"returned_tokens":10,"savings_percent":50}}`
 	tests := []struct {
 		name   string
 		result string
@@ -1043,9 +1045,10 @@ func TestSSEStreamFailsClosedOnSiblingToolNames(t *testing.T) {
 		},
 		{
 			name: "tools beside tools in the output",
-			result: `{"content":[{"type":"text","text":` + mustJSONString(t, output) + `}],"structuredContent":` +
-				`{"tools":[{"name":"weather","description":"Get weather"}],"extra":{` + secretMember + `},` +
-				`"token_metrics":{"baseline_tokens":20,"returned_tokens":10,"savings_percent":50}}}`,
+			// The extra member is in both outputs, so the text-versus-structured
+			// consistency check cannot be what fails this case closed.
+			result: `{"content":[{"type":"text","text":` + mustJSONString(t, withExtra) + `}],"structuredContent":` +
+				withExtra + `}`,
 		},
 	}
 	for _, tc := range tests {

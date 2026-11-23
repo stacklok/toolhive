@@ -97,14 +97,15 @@ func grantExchangeGrantShape(_ context.Context, req authorizationdetails.Request
 func parseExchangeGrantDetails(
 	registry *authorizationdetails.Registry, form url.Values,
 ) (*authorizationdetails.Pending, error) {
-	values := form[authorizationDetailsParam]
-	if len(values) == 0 || (len(values) == 1 && values[0] == "") {
-		return nil, missingExchangeGrantDetailsError()
-	}
-	if len(values) > 1 {
+	raw, present, err := readDetailsParam(form)
+	// readDetailsParam's only error is errRepeatedDetailsParam.
+	if err != nil {
 		return nil, repeatedAuthorizationDetailsError()
 	}
-	pending, err := registry.Parse(values[0], oauthproto.GrantTypeTokenExchange)
+	if !present {
+		return nil, missingExchangeGrantDetailsError()
+	}
+	pending, err := registry.Parse(raw, oauthproto.GrantTypeTokenExchange)
 	if err != nil {
 		return nil, invalidAuthorizationDetailsError()
 	}

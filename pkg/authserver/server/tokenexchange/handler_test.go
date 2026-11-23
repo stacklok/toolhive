@@ -1297,6 +1297,7 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 		hookErr           error
 		wantError         *fosite.RFC6749Error
 		wantOAuthError    string
+		wantStatus        int
 		wantDescription   string
 		wantCalls         [][]string
 		wantEntries       string
@@ -1311,6 +1312,20 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 			name:            "repeated values",
 			details:         []string{"[]", "[]"},
 			wantOAuthError:  "invalid_request",
+			wantDescription: "The authorization_details parameter must not be repeated.",
+		},
+		{
+			name:            "two empty values",
+			details:         []string{"", ""},
+			wantOAuthError:  "invalid_request",
+			wantStatus:      http.StatusBadRequest,
+			wantDescription: "The authorization_details parameter must not be repeated.",
+		},
+		{
+			name:            "empty value with a second value",
+			details:         []string{"", "x"},
+			wantOAuthError:  "invalid_request",
+			wantStatus:      http.StatusBadRequest,
 			wantDescription: "The authorization_details parameter must not be repeated.",
 		},
 		{
@@ -1476,6 +1491,9 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 				require.ErrorAs(t, err, &rfcErr)
 				assert.Equal(t, tt.wantOAuthError, rfcErr.ErrorField)
 				assert.Equal(t, tt.wantDescription, rfcErr.DescriptionField)
+				if tt.wantStatus != 0 {
+					assert.Equal(t, tt.wantStatus, rfcErr.CodeField)
+				}
 			case tt.wantError != nil:
 				require.Error(t, err)
 				assert.ErrorIs(t, err, tt.wantError)
@@ -3768,4 +3786,37 @@ func TestIssueBoundedAccessTokenBuildsElapsedErrorOnlyWhenElapsed(t *testing.T) 
 			}
 		})
 	}
+}
+
+// The WARN line for a refused authorization_details shape; a nil registry
+// ignores the parameter and logs nothing.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestTokenExchangeHandler_AuthorizationDetailsShapeLogs(t *testing.T) {
+	logs := captureLogs(t)
+	tj := newTestJWKS(t)
+	run := func(withRegistry bool, details []string) error {
+		h := newTestHandler(t, tj, 15*time.Minute)
+		if withRegistry {
+			h.authorizationDetailsRegistry = newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			})
+		}
+		form := defaultFormValues(t, tj)
+		form["authorization_details"] = details
+		return h.HandleTokenEndpointRequest(context.Background(), newAccessRequest(t, defaultClient(), form))
+	}
+
+	for reason, details := range map[string][]string{"repeated": {"", ""}, "malformed": {"[{"}} {
+		before := logs.String()
+		require.Error(t, run(true, details))
+		added := strings.TrimPrefix(logs.String(), before)
+		assert.Equal(t, 1, strings.Count(added, `msg="authorization_details rejected"`))
+		assert.Contains(t, added, "reason="+reason)
+		assert.Contains(t, added, "client_id="+testAgentClientID)
+	}
+
+	before := logs.String()
+	require.NoError(t, run(false, []string{"[{"}))
+	assert.NotContains(t, strings.TrimPrefix(logs.String(), before), "authorization_details rejected")
 }

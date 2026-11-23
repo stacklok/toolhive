@@ -131,19 +131,35 @@ func DefaultFactory(config *types.MiddlewareConfig, runner types.MiddlewareRunne
 		return fmt.Errorf("obo middleware: client secret env var %q is empty or unset", params.ClientSecretEnvVar)
 	}
 
-	exchanger, err := entra.NewFromTokenURL(params.TokenURL, params.ClientID, secret, nil)
+	exchanger, err := NewCachedExchanger(params.TokenURL, params.ClientID, secret, params.CacheSkewSeconds)
 	if err != nil {
-		return fmt.Errorf("obo middleware: build entra exchanger: %w", err)
+		return fmt.Errorf("obo middleware: %w", err)
+	}
+
+	mw := newMiddleware(exchanger, params.SubjectTokenProviderName, params.ExchangeTarget(), nil)
+	runner.AddMiddleware(config.Type, mw)
+	return nil
+}
+
+// NewCachedExchanger builds the Entra on-behalf-of Exchanger for tokenURL and
+// the confidential client, fronted by the per-user token cache. The proxy
+// middleware and the vMCP strategy both build theirs here, so the same
+// configuration behaves the same on both paths.
+//
+// cacheSkewSeconds overrides the cache's default expiry skew only when strictly
+// positive; zero (unset, or a sub-second value truncated down) keeps the
+// default. Building does no I/O.
+func NewCachedExchanger(tokenURL, clientID, clientSecret string, cacheSkewSeconds int) (exchange.Exchanger, error) {
+	exchanger, err := entra.NewFromTokenURL(tokenURL, clientID, clientSecret, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build entra exchanger: %w", err)
 	}
 
 	var opts []cache.Option
-	if params.CacheSkewSeconds > 0 {
-		opts = append(opts, cache.WithSkew(time.Duration(params.CacheSkewSeconds)*time.Second))
+	if cacheSkewSeconds > 0 {
+		opts = append(opts, cache.WithSkew(time.Duration(cacheSkewSeconds)*time.Second))
 	}
-
-	mw := newMiddleware(cache.New(exchanger, opts...), params.SubjectTokenProviderName, params.ExchangeTarget(), nil)
-	runner.AddMiddleware(config.Type, mw)
-	return nil
+	return cache.New(exchanger, opts...), nil
 }
 
 // middleware exchanges the authenticated user's token for a backend-scoped

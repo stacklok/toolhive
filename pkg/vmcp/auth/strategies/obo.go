@@ -13,13 +13,11 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
-	"github.com/stacklok/toolhive/pkg/auth/obo/cache"
 	"github.com/stacklok/toolhive/pkg/auth/obo/entra"
 	"github.com/stacklok/toolhive/pkg/auth/obo/exchange"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -61,54 +59,21 @@ type OBOStrategy struct {
 	// production uses defaultBuildOBOExchanger.
 	buildExchanger func(cfg *authtypes.OBOConfig, clientSecret string) (exchange.Exchanger, error)
 
+	// mu guards exchangers. Building an Exchanger does no I/O, so it is built
+	// under the lock, which also keeps concurrent first requests to one build.
+	mu sync.Mutex
+
 	// exchangers caches the per-backend Exchanger keyed by oboExchangerCacheKey.
 	// Each is shared across all users of that backend (the cache partitions per
-	// user internally). It is an interface so tests can wrap the store to
-	// control the interleaving of concurrent callers.
-	exchangers oboExchangerStore
+	// user internally).
+	exchangers map[string]oboExchangerEntry
 }
 
-// oboExchangerStore holds the per-backend Exchangers. lookup is the fast
-// read-only path; lookupOrStore re-checks under exclusive access and builds
-// only when the key is still absent, so concurrent callers that all missed in
-// lookup share a single build.
-type oboExchangerStore interface {
-	lookup(key string) (exchange.Exchanger, bool)
-	lookupOrStore(key string, build func() (exchange.Exchanger, error)) (exchange.Exchanger, error)
-}
-
-// rwExchangerStore is the production oboExchangerStore: a map behind a
-// read-write mutex with a double-checked build.
-type rwExchangerStore struct {
-	mu sync.RWMutex
-	m  map[string]exchange.Exchanger
-}
-
-func newRWExchangerStore() *rwExchangerStore {
-	return &rwExchangerStore{m: make(map[string]exchange.Exchanger)}
-}
-
-func (r *rwExchangerStore) lookup(key string) (exchange.Exchanger, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	ex, ok := r.m[key]
-	return ex, ok
-}
-
-func (r *rwExchangerStore) lookupOrStore(
-	key string, build func() (exchange.Exchanger, error),
-) (exchange.Exchanger, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ex, ok := r.m[key]; ok {
-		return ex, nil
-	}
-	ex, err := build()
-	if err != nil {
-		return nil, err
-	}
-	r.m[key] = ex
-	return ex, nil
+// oboExchangerEntry is a cached Exchanger together with the client it belongs
+// to (oboClientKey), so a rotated client secret can replace it.
+type oboExchangerEntry struct {
+	client    string
+	exchanger exchange.Exchanger
 }
 
 // NewOBOStrategy returns a Strategy using the default Entra+cache Exchanger builder
@@ -136,7 +101,7 @@ func newOBOStrategy(
 		envReader:      envReader,
 		auditLogger:    auditLogger,
 		buildExchanger: build,
-		exchangers:     newRWExchangerStore(),
+		exchangers:     make(map[string]oboExchangerEntry),
 	}
 }
 
@@ -235,17 +200,34 @@ func (s *OBOStrategy) resolveClientSecret(cfg *authtypes.OBOConfig) (string, err
 }
 
 // getOrCreateExchanger returns the cached Exchanger for cfg, building it on first
-// use under a double-checked lock so the per-user token cache is shared across
-// requests to the same backend.
+// use under s.mu so the per-user token cache is shared across requests to the
+// same backend.
 func (s *OBOStrategy) getOrCreateExchanger(cfg *authtypes.OBOConfig, clientSecret string) (exchange.Exchanger, error) {
 	key := oboExchangerCacheKey(cfg, clientSecret)
 
-	if ex, ok := s.exchangers.lookup(key); ok {
-		return ex, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, ok := s.exchangers[key]; ok {
+		return entry.exchanger, nil
 	}
-	return s.exchangers.lookupOrStore(key, func() (exchange.Exchanger, error) {
-		return s.buildExchanger(cfg, clientSecret)
-	})
+	ex, err := s.buildExchanger(cfg, clientSecret)
+	if err != nil {
+		return nil, err
+	}
+
+	// A new secret for a client this strategy already serves is a rotation
+	// (discovered mode re-reads the Secret): drop the Exchanger built with the
+	// old secret, so it and its users' cached tokens do not stay in memory.
+	// Two backends that share a client but use different secrets would replace
+	// each other's Exchanger on every switch; that costs only fresh exchanges.
+	client := oboClientKey(cfg)
+	for k, entry := range s.exchangers {
+		if entry.client == client {
+			delete(s.exchangers, k)
+		}
+	}
+	s.exchangers[key] = oboExchangerEntry{client: client, exchanger: ex}
+	return ex, nil
 }
 
 // mapExchangeError translates an exchange failure into the error the Strategy
@@ -336,27 +318,16 @@ func (s *OBOStrategy) auditInteractionRequired(
 	event.LogTo(ctx, s.auditLogger, audit.LevelAudit)
 }
 
-// defaultBuildOBOExchanger constructs the production Exchanger: a cached Entra
-// on-behalf-of Exchanger built from the config's token URL, client ID, and
-// resolved client secret.
-//
-// A skew override is applied only when strictly positive. A resolved 0 (whether
-// configured as "0s" or truncated down from a sub-second value) leaves the cache's
-// default skew in place — matching the proxy-runtime middleware, whose gate is
-// also `> 0` and whose contract field is a non-pointer int that cannot distinguish
-// an explicit 0 from "unset". Keeping the same gate here preserves cross-surface
-// parity: the same CRD value yields the same effective skew on both paths.
+// defaultBuildOBOExchanger constructs the production Exchanger through
+// obo.NewCachedExchanger, the builder the proxy middleware also uses, so the
+// same CRD value yields the same Exchanger and effective skew on both paths. A
+// nil CacheSkewSeconds is passed as 0, which keeps the cache default.
 func defaultBuildOBOExchanger(cfg *authtypes.OBOConfig, clientSecret string) (exchange.Exchanger, error) {
-	exchanger, err := entra.NewFromTokenURL(cfg.TokenURL, cfg.ClientID, clientSecret, nil)
-	if err != nil {
-		return nil, err
+	skew := 0
+	if cfg.CacheSkewSeconds != nil {
+		skew = int(*cfg.CacheSkewSeconds)
 	}
-
-	var opts []cache.Option
-	if cfg.CacheSkewSeconds != nil && *cfg.CacheSkewSeconds > 0 {
-		opts = append(opts, cache.WithSkew(time.Duration(*cfg.CacheSkewSeconds)*time.Second))
-	}
-	return cache.New(exchanger, opts...), nil
+	return obo.NewCachedExchanger(cfg.TokenURL, cfg.ClientID, clientSecret, skew)
 }
 
 // parseOBOConfig validates the OBO configuration shape carried on the strategy. It
@@ -421,14 +392,21 @@ func oboSubjectToken(identity *auth.Identity, providerName string) (string, erro
 // of the client secret. The secret is included as a SHA-256 hex digest — never
 // raw — so two configs sharing a (URL, clientID) but differing in secret cannot
 // silently share the first-cached Exchanger (a cross-config credential-confusion
-// risk), and a rotated secret warms a fresh entry rather than reusing the stale
-// one. Hashing (rather than embedding the secret) mirrors how obo/cache keys the
+// risk), and a rotated secret warms a fresh entry, which replaces the stale one
+// (see getOrCreateExchanger). Hashing (rather than embedding the secret) mirrors how obo/cache keys the
 // sensitive user token.
 func oboExchangerCacheKey(cfg *authtypes.OBOConfig, clientSecret string) string {
+	secretFP := sha256.Sum256([]byte(clientSecret))
+	return oboClientKey(cfg) + "\x00" + hex.EncodeToString(secretFP[:])
+}
+
+// oboClientKey identifies the confidential client an Exchanger serves, without
+// its secret: the token URL, client ID and cache skew. Exchangers that share it
+// differ only in the secret, so a new one replaces the old.
+func oboClientKey(cfg *authtypes.OBOConfig) string {
 	skew := int32(0)
 	if cfg.CacheSkewSeconds != nil {
 		skew = *cfg.CacheSkewSeconds
 	}
-	secretFP := sha256.Sum256([]byte(clientSecret))
-	return fmt.Sprintf("%s\x00%s\x00%d\x00%s", cfg.TokenURL, cfg.ClientID, skew, hex.EncodeToString(secretFP[:]))
+	return fmt.Sprintf("%s\x00%s\x00%d", cfg.TokenURL, cfg.ClientID, skew)
 }

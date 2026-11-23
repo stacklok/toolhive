@@ -638,37 +638,8 @@ func TestOBOExchangerCacheKey(t *testing.T) {
 	}
 }
 
-// barrierExchangerStore wraps an oboExchangerStore and holds every caller
-// after a lookup miss until wantMisses callers have missed (or the timeout
-// passes), so they all reach lookupOrStore together.
-type barrierExchangerStore struct {
-	oboExchangerStore
-	wantMisses int32
-	missed     atomic.Int32
-	allMissed  chan struct{}
-}
-
-func (b *barrierExchangerStore) lookup(key string) (exchange.Exchanger, bool) {
-	ex, ok := b.oboExchangerStore.lookup(key)
-	if ok {
-		return ex, ok
-	}
-	if b.missed.Add(1) == b.wantMisses {
-		close(b.allMissed)
-	}
-	select {
-	case <-b.allMissed:
-	case <-time.After(5 * time.Second):
-		// Fall through: the build count assertion reports the failure.
-	}
-	return nil, false
-}
-
-// TestOBOGetOrCreateExchanger_BuildsOnceUnderContention exercises the
-// double-checked build deterministically: a wrapping store holds every caller
-// after its lookup miss until all of them have missed, so they all then
-// contend in lookupOrStore. Every caller after the first must find the
-// Exchanger on the second check rather than building another one.
+// TestOBOGetOrCreateExchanger_BuildsOnceUnderContention proves concurrent first
+// requests for one backend share a single build.
 func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 	t.Parallel()
 
@@ -681,16 +652,11 @@ func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 		return &oboStubExchanger{}, nil
 	})
 
-	store := &barrierExchangerStore{
-		oboExchangerStore: s.exchangers,
-		wantMisses:        callers,
-		allMissed:         make(chan struct{}),
-	}
-	s.exchangers = store
-
+	start := make(chan struct{})
 	results := make(chan error, callers)
 	for range callers {
 		go func() {
+			<-start
 			ex, err := s.getOrCreateExchanger(cfg, "resolved-secret")
 			if err == nil && ex == nil {
 				err = errors.New("nil exchanger")
@@ -698,6 +664,7 @@ func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 			results <- err
 		}()
 	}
+	close(start)
 	for range callers {
 		select {
 		case err := <-results:
@@ -707,10 +674,40 @@ func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, int32(callers), store.missed.Load(),
-		"every caller must miss in lookup before any reaches lookupOrStore")
-	assert.Equal(t, int32(1), builds.Load(),
-		"callers that all missed in lookup must share one build via the lookupOrStore re-check")
+	assert.Equal(t, int32(1), builds.Load(), "concurrent callers for one backend must share one build")
+}
+
+// TestOBOGetOrCreateExchanger_RotatedSecretReplacesOld proves a new secret for
+// a client replaces the Exchanger built with the old one, so a rotation does
+// not leave the old secret and its users' cached tokens in memory, while a
+// different client keeps its own Exchanger.
+func TestOBOGetOrCreateExchanger_RotatedSecretReplacesOld(t *testing.T) {
+	t.Parallel()
+
+	builds := 0
+	s := newOBOStrategy(oboMapEnv{}, nil, func(_ *authtypes.OBOConfig, _ string) (exchange.Exchanger, error) {
+		builds++
+		return &oboStubExchanger{}, nil
+	})
+	cfg := validOBOStrategy().OBO
+	other := validOBOStrategy().OBO
+	other.ClientID = "other-client"
+
+	_, err := s.getOrCreateExchanger(cfg, "secret-v1")
+	require.NoError(t, err)
+	_, err = s.getOrCreateExchanger(other, "other-secret")
+	require.NoError(t, err)
+	_, err = s.getOrCreateExchanger(cfg, "secret-v2")
+	require.NoError(t, err)
+
+	assert.Len(t, s.exchangers, 2, "the rotated client keeps one Exchanger, the other client keeps its own")
+	assert.NotContains(t, s.exchangers, oboExchangerCacheKey(cfg, "secret-v1"),
+		"the Exchanger built with the old secret must be dropped")
+	assert.Contains(t, s.exchangers, oboExchangerCacheKey(other, "other-secret"))
+
+	_, err = s.getOrCreateExchanger(cfg, "secret-v2")
+	require.NoError(t, err)
+	assert.Equal(t, 3, builds, "the current secret's Exchanger is reused")
 }
 
 func TestOBOValidate_Valid(t *testing.T) {

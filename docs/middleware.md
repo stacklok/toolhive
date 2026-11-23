@@ -167,6 +167,7 @@ sequenceDiagram
 
 **Responsibilities**:
 - Validate JWT token signature and expiration
+- Accept tokens signed with RS256, RS384, RS512, ES256, ES384, ES512 or EdDSA, and return 401 Unauthorized for any other `alg` (including `none`, HMAC and RSA-PSS). The key found for the token's `kid`, whether in-process from the embedded auth server or from a JWKS, must match the algorithm: an RSA key for RS*, an ECDSA key for ES*, an Ed25519 (OKP) key for EdDSA. So EdDSA tokens from the embedded auth server with an Ed25519 signing key, and from external identity providers that publish OKP keys, are accepted
 - Return 401 Unauthorized for a token whose JOSE `typ` header is `oauth-id-jag+jwt` (compared case-insensitively, with or without the `application/` prefix), even when its signature and claims are valid. This applies to tokens from every configured issuer, including external identity providers, and to vMCP incoming authentication. An ID-JAG is not an access token. An issuer that signs ID-JAGs with the same key as its access tokens (an external identity provider, or the embedded auth server) would otherwise have them accepted in place of access tokens (RFC 8725 Section 3.12). Configuring an expected audience is the main defence against one token type being used in place of another; this check is a backup for deployments without one.
 - Extract JWT claims (sub, name, roles, etc.)
 - Add claims to request context for downstream middleware

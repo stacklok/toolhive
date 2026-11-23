@@ -282,6 +282,11 @@ func (m *middleware) writeExchangeError(w http.ResponseWriter, r *http.Request, 
 		// not consented for this backend). In upstream-provider mode the
 		// recovery is re-authenticating with the embedded auth server so a
 		// fresh provider token is issued, the same challenge as a missing one.
+		// That cures expiry, the common cause, but not missing consent: a
+		// fresh token carries the same consent, so the client re-authenticates
+		// and fails again. Entra reports both as invalid_grant, and telling
+		// them apart would mean parsing its error description, so both get
+		// the re-authentication challenge (documented in docs/middleware.md).
 		slog.DebugContext(r.Context(), "obo: subject token rejected by identity provider")
 		if m.providerName != "" {
 			writeUpstreamAuthRequired(w)

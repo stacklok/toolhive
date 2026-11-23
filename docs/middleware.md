@@ -512,8 +512,13 @@ default, or `Identity.UpstreamTokens[subjectTokenProviderName]` when an
 embedded auth server fronts the proxy. With an embedded auth server and no
 `subjectTokenProviderName`, the runner defaults it to the upstream that the
 upstream swap middleware uses, because the inbound token is then ToolHive's own
-session token, which Entra rejects. vMCP applies the same default and rejects
-an omitted value when the embedded auth server has more than one upstream. The authentication middleware must run
+session token, which Entra rejects. With several upstreams the runner takes
+the first, as the upstream swap middleware does; the operator admits only one
+upstream for an MCPServer or MCPRemoteProxy, so this does not arise through
+it. vMCP applies the same default but rejects an omitted value when the
+embedded auth server has more than one upstream
+(`ErrAmbiguousSubjectProvider`), since its backends would otherwise silently
+get a token from an upstream nobody chose. The authentication middleware must run
 first, so an MCPServer or MCPRemoteProxy that references an `obo` config must
 also set `oidcConfigRef`; the operator rejects it with
 `ExternalAuthConfigValidated=False / Reason=InvalidConfig` otherwise.
@@ -529,7 +534,8 @@ body that does not disclose the provider error:
 |---|---|
 | No authenticated identity or no subject token | 401 with `WWW-Authenticate: Bearer error="invalid_token"` |
 | Named upstream provider token missing | 401 with `WWW-Authenticate: Bearer error="invalid_token"` and a re-authentication `error_description` |
-| Entra `invalid_grant` (subject token rejected) | 401 with the same challenge as the row above for the active subject source |
+| Entra `invalid_grant` (subject token rejected), subject is the inbound token | 401 with `WWW-Authenticate: Bearer error="invalid_token"` |
+| Entra `invalid_grant` (subject token rejected), subject is a named upstream provider's token | 401 with `WWW-Authenticate: Bearer error="invalid_token"` and the re-authentication `error_description` |
 | Conditional access, MFA, or claims challenge (`interaction_required`, a `claims` value, AADSTS50076/50079) | 403, plus an `obo_token_exchange` audit event with outcome `denied` |
 | Entra HTTP 5xx, 429 or 408, whatever the body says (transient) | 502 |
 | Entra `temporarily_unavailable` on another status, unless the reply is also a claims challenge (transient) | 502 |
@@ -539,6 +545,13 @@ body that does not disclose the provider error:
 
 Throttling is reported as a plain 502: Entra's `Retry-After` header is not
 forwarded to the client.
+
+Entra returns `invalid_grant` both for an expired or malformed subject token
+and for one the user has not consented to use with this backend. The proxy
+cannot tell these apart without parsing Entra's description, so in
+upstream-provider mode both get the re-authentication challenge. That cures
+expiry, the common cause; for missing consent the client re-authenticates and
+fails the same way until the consent is granted.
 
 The 401 challenges carry no `resource_metadata` parameter, unlike the
 authentication middleware's, because that value is built by the token

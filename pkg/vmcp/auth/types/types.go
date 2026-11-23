@@ -227,6 +227,8 @@ type OBOConfig struct {
 	// CacheSkewSeconds is the number of seconds to subtract from a cached token's
 	// expiry when deciding whether to refresh it. When nil or zero the token
 	// cache's default skew (60 seconds) applies; negative values are rejected.
+	// The int32 type caps it at math.MaxInt32, the bound the operator enforces
+	// on the CRD's CacheSkew.
 	// The operator CRD stores this as CacheSkew *metav1.Duration and converts it
 	// to an integer-seconds value for the vMCP runtime contract.
 	CacheSkewSeconds *int32 `json:"cacheSkewSeconds,omitempty" yaml:"cacheSkewSeconds,omitempty"`

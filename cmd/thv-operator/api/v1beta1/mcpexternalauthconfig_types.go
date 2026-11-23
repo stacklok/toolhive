@@ -262,10 +262,11 @@ type OBOConfig struct {
 	// CacheSkew overrides the OBO token cache's default expiry skew (the margin
 	// by which a cached token is treated as expired before its real expiry),
 	// e.g. "30s". The operator converts it to the runtime contract's
-	// integer-seconds cacheSkewSeconds (truncated toward zero). Must not be
-	// negative; metav1.Duration carries no numeric minimum, so the operator
-	// rejects a negative value at reconcile (Valid=False, Reason: InvalidConfig)
-	// rather than at admission. When omitted, the cache default applies.
+	// integer-seconds cacheSkewSeconds (truncated toward zero). Must be between
+	// zero and 2147483647 seconds (math.MaxInt32); metav1.Duration carries no
+	// numeric bounds, so the operator rejects a negative or larger value at
+	// reconcile (Valid=False, Reason: InvalidConfig) rather than at admission.
+	// When omitted, the cache default applies.
 	// +optional
 	CacheSkew *metav1.Duration `json:"cacheSkew,omitempty"`
 }

@@ -1087,9 +1087,16 @@ Authenticates vMCP to backend MCP servers using:
 - **Unauthenticated** - For internal/trusted backends
 
 The OBO strategy uses the same Entra exchanger and token cache as the proxy
-middleware (`pkg/auth/obo/entra`, `pkg/auth/obo/cache`), keeping one cached
-exchanger per (token URL, client ID, cache skew, client-secret fingerprint).
-Health-check probes carry no user and skip the exchange. A conditional-access
+middleware (`pkg/auth/obo/entra`, `pkg/auth/obo/cache`), built by the shared
+`obo.NewCachedExchanger`. vMCP keeps one cached exchanger per (token URL,
+client ID, cache skew); when that client's secret is rotated, the exchanger
+built with the new secret replaces the old one, and the old one's cached
+tokens are dropped with it. An `audience` is a resource identifier and is
+sent to Entra as `<audience>/.default`; explicit scopes win over it. Behind
+an embedded auth server, an omitted `subjectTokenProviderName` defaults to
+the auth server's upstream (`authtypes.DefaultSubjectProviderName`), and is
+rejected with `ErrAmbiguousSubjectProvider` when there is more than one
+upstream. Health-check probes carry no user and skip the exchange. A conditional-access
 or claims challenge fails the backend request and writes an
 `obo_token_exchange` audit event. The error returned to the MCP client names
 at most the failure class (denied, invalid grant, or transient); a rejected

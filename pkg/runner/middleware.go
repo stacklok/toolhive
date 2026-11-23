@@ -313,8 +313,15 @@ const oboSubjectProviderKey = "subjectTokenProviderName"
 // first upstream. Behind an embedded auth server the inbound token is
 // ToolHive's own session JWT, which Entra rejects with invalid_grant, so
 // without the default every request would fail. The upstream is chosen the
-// same way addUpstreamSwapMiddleware chooses the one whose token it injects.
-// vMCP applies the same default through authtypes.DefaultSubjectProviderName.
+// same way addUpstreamSwapMiddleware chooses the one whose token it injects:
+// the first, with no error when there are several.
+//
+// This deliberately differs from vMCP, whose authtypes.DefaultSubjectProviderName
+// returns ErrAmbiguousSubjectProvider for more than one upstream. The operator,
+// the only producer of OBO entries in AdditionalMiddlewareConfigs, rejects an
+// MCPServer or MCPRemoteProxy with more than one embedded upstream before the
+// RunConfig is built, so the first upstream is the only one here; following
+// upstream swap keeps the OBO subject and the injected token on one provider.
 //
 // Without an embedded auth server, or one with no upstreams, middlewares is
 // returned as is. Otherwise the result is a copy and middlewares is never

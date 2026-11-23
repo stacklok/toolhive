@@ -202,10 +202,19 @@ spec:
                     type: string
                   useClusterAuth:
                     description: |-
-                      UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.
-                      When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
-                      and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.
-                      Defaults to true if not specified.
+                      UseClusterAuth controls use of the Kubernetes cluster's CA bundle and the
+                      workload's own service account token for OIDC discovery, JWKS and
+                      introspection requests. The CA bundle is
+                      /var/run/secrets/kubernetes.io/serviceaccount/ca.crt and the token is
+                      /var/run/secrets/kubernetes.io/serviceaccount/token.
+
+                      When unset (the default), the CA bundle is used, and the token is sent only
+                      if the issuer and any jwksUrl or introspectionUrl are https URLs on the
+                      in-cluster API server (kubernetes.default.svc or
+                      kubernetes.default.svc.cluster.local). It is not sent to any other host.
+                      When true, the token is always sent; set this for an issuer that requires
+                      it but is not reachable under those names, such as a custom cluster domain.
+                      When false, neither the CA bundle nor the token is used.
                     type: boolean
                 type: object
               type:
@@ -487,10 +496,19 @@ spec:
                     type: string
                   useClusterAuth:
                     description: |-
-                      UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.
-                      When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
-                      and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.
-                      Defaults to true if not specified.
+                      UseClusterAuth controls use of the Kubernetes cluster's CA bundle and the
+                      workload's own service account token for OIDC discovery, JWKS and
+                      introspection requests. The CA bundle is
+                      /var/run/secrets/kubernetes.io/serviceaccount/ca.crt and the token is
+                      /var/run/secrets/kubernetes.io/serviceaccount/token.
+
+                      When unset (the default), the CA bundle is used, and the token is sent only
+                      if the issuer and any jwksUrl or introspectionUrl are https URLs on the
+                      in-cluster API server (kubernetes.default.svc or
+                      kubernetes.default.svc.cluster.local). It is not sent to any other host.
+                      When true, the token is always sent; set this for an issuer that requires
+                      it but is not reachable under those names, such as a custom cluster domain.
+                      When false, neither the CA bundle nor the token is used.
                     type: boolean
                 type: object
               type:

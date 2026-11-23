@@ -156,6 +156,89 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 		},
 	}
 
+	// Default useClusterAuth: the service account token is attached only when
+	// every OIDC endpoint is the in-cluster API server. The CA bundle and
+	// private-IP allowance are unaffected.
+	ksa := func(cfg mcpv1beta1.KubernetesServiceAccountOIDCConfig) *mcpv1beta1.MCPOIDCConfig {
+		return &mcpv1beta1.MCPOIDCConfig{Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type:                     mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+			KubernetesServiceAccount: &cfg,
+		}}
+	}
+	clusterAuth := func(issuer, jwksURL, introspectionURL string, withToken bool) *OIDCConfig {
+		c := &OIDCConfig{
+			Issuer: issuer, JWKSURL: jwksURL, IntrospectionURL: introspectionURL, Audience: "aud",
+			ResourceURL:        "http://srv.default.svc.cluster.local:8080",
+			ThvCABundlePath:    defaultK8sCABundlePath,
+			JWKSAllowPrivateIP: true,
+		}
+		if withToken {
+			c.JWKSAuthTokenPath = defaultK8sTokenPath
+		}
+		return c
+	}
+	const (
+		inCluster      = "https://kubernetes.default.svc.cluster.local"
+		inClusterJWKS  = "https://kubernetes.default.svc.cluster.local:443/openid/v1/jwks"
+		externalIssuer = "https://oidc.eks.us-east-1.amazonaws.com/id/ABC"
+	)
+	ref := &mcpv1beta1.MCPOIDCConfigReference{Name: "k", Audience: "aud"}
+	tests = append(tests, []struct {
+		name     string
+		ref      *mcpv1beta1.MCPOIDCConfigReference
+		oidcCfg  *mcpv1beta1.MCPOIDCConfig
+		expected *OIDCConfig
+	}{
+		{
+			name:     "default sends token to in-cluster issuer and JWKS",
+			ref:      ref,
+			oidcCfg:  ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{Issuer: inCluster, JWKSURL: inClusterJWKS}),
+			expected: clusterAuth(inCluster, inClusterJWKS, "", true),
+		},
+		{
+			name:     "default withholds token from an external issuer",
+			ref:      ref,
+			oidcCfg:  ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{Issuer: externalIssuer}),
+			expected: clusterAuth(externalIssuer, "", "", false),
+		},
+		{
+			name: "default withholds token when JWKS URL is external",
+			ref:  ref,
+			oidcCfg: ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{
+				Issuer: inCluster, JWKSURL: "https://attacker.example/jwks",
+			}),
+			expected: clusterAuth(inCluster, "https://attacker.example/jwks", "", false),
+		},
+		{
+			name: "default withholds token when introspection URL is external",
+			ref:  ref,
+			oidcCfg: ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{
+				Issuer: inCluster, IntrospectionURL: "https://attacker.example/introspect",
+			}),
+			expected: clusterAuth(inCluster, "", "https://attacker.example/introspect", false),
+		},
+		{
+			name:     "default withholds token from a lookalike in-cluster host",
+			ref:      ref,
+			oidcCfg:  ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{Issuer: "https://kubernetes.default.svc.example.com"}),
+			expected: clusterAuth("https://kubernetes.default.svc.example.com", "", "", false),
+		},
+		{
+			name:     "default withholds token from a plain-http in-cluster issuer",
+			ref:      ref,
+			oidcCfg:  ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{Issuer: "http://kubernetes.default.svc"}),
+			expected: clusterAuth("http://kubernetes.default.svc", "", "", false),
+		},
+		{
+			name: "explicit useClusterAuth true sends token to an external issuer",
+			ref:  ref,
+			oidcCfg: ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{
+				Issuer: externalIssuer, UseClusterAuth: boolPtr(true),
+			}),
+			expected: clusterAuth(externalIssuer, "", "", true),
+		},
+	}...)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

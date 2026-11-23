@@ -14,6 +14,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/x/errorsx"
 
+	"github.com/stacklok/toolhive/pkg/authserver/actor"
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -63,6 +64,10 @@ type IDJAGHandler struct {
 
 	// policies holds the issuers whose policy accepts ID-JAG assertions.
 	policies map[string]*JWTBearerGrantPolicy
+
+	// actorPolicies is keyed by issuer URL. A namespaced issuer has no entry
+	// and its actor is not checked.
+	actorPolicies map[string]actor.Policy
 
 	// redeemer supplies the shared consume, lifetime, session and populate
 	// steps. It is a named field, not an embedded type, so no
@@ -161,6 +166,11 @@ func newIDJAGIssuanceHandler(
 		governedResources:    slices.Clone(deps.allowedAudiences),
 		logger:               logger,
 	}
+	actorPolicies, err := newActorPolicies(h.policies)
+	if err != nil {
+		return nil, err
+	}
+	h.actorPolicies = actorPolicies
 	asIssuer := deps.config.GetAccessTokenIssuer(context.Background())
 	h.issuerIsResource = asIssuer != "" && slices.Contains(deps.allowedAudiences, asIssuer)
 	// Reads the unfiltered issuer list on purpose: the warning covers every
@@ -243,6 +253,9 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		return err
 	}
 	if err := h.checkClientAudience(ctx, requester, resource); err != nil {
+		return err
+	}
+	if err := h.checkActor(ctx, claims, policy, requester.GetClient().GetID(), resource); err != nil {
 		return err
 	}
 	// Closed until subject resolution is enabled; see delegatedAccessEnabled.

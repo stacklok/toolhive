@@ -1461,7 +1461,7 @@ ID-JAG's subject to a local user:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `SubjectMode` | empty, which means `namespaced` | `namespaced` issues `<iss>#<sub>`, as before. `resolve` maps the subject to a local user and implies the delegated-access marker. While the gate below is closed, every redemption from a `resolve` issuer is refused |
-| `ActorIssuers` | empty | The `act.iss` values to accept besides the ID-JAG's own `iss`. Allowed only with `resolve`. This build validates where it can be set but does not yet check `act.iss` against it at redemption |
+| `ActorIssuers` | empty | The `act.iss` values to accept besides the ID-JAG's own `iss`. Allowed only with `resolve`. Checked at redemption, before the actor policy runs |
 
 Both fields are set only from Go, by embedders: on
 `TrustedIssuer.JWTBearerGrant`, or on the `JWTBearerIssuerPolicyRunConfig` of
@@ -1508,13 +1508,14 @@ Redemptions from a `resolve` issuer are closed by an unexported constant in the
 `tokenexchange` package, `delegatedAccessEnabled`, which is `false`. It is not a
 setting, an acknowledgement or a build tag. A redemption from a `resolve`
 issuer that passes every other check, up to and including the client-audience
-check, is refused with `400 access_denied` and `subject_unknown` before the
-`jti` is used up, so the ID-JAG stays unused and a client sees what it sees for
-an unknown user. A redemption that fails an earlier check gets that check's
-refusal. When a `resolve` issuer is configured, the server logs one WARN at
-startup, "Resolution of the subject at ID-JAG redemption is not enabled in this
-build; redemptions from resolve issuers are refused", with the affected issuer
-URLs in `issuers`.
+check and the actor check (see "The actor, for `resolve` issuers only" under
+"Bound ID-JAG assertions"), is refused with `400 access_denied` and
+`subject_unknown` before the `jti` is used up, so the ID-JAG stays unused and a
+client sees what it sees for an unknown user. A redemption that fails an
+earlier check gets that check's refusal. When a `resolve` issuer is configured,
+the server logs one WARN at startup, "Resolution of the subject at ID-JAG
+redemption is not enabled in this build; redemptions from resolve issuers are
+refused", with the affected issuer URLs in `issuers`.
 
 The gate exists because the authorization server cannot see how the gateway
 behind it is wired, so no configuration check can prove that the gateway
@@ -1548,15 +1549,21 @@ its own default text before the reason.
 | A `resource` claim with a value that is not in `allowed_audiences` or is not a valid resource URI, whatever the request holds | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim names a resource this server does not govern.` |
 | Every `resource` claim value is in `allowed_audiences`, but the claim does not list the requested `resource` | n/a (the plain grant has no `resource` claim) | 400 `invalid_target`, no reason (the description does not name the resource) |
 | Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
+| `resolve` issuer: `act` missing or malformed, `act.iss` neither the ID-JAG's `iss` nor in `actor_issuers`, or the actor policy denies the actor | n/a | 400 `access_denied`, `actor_denied`. The ID-JAG is not consumed |
+| `resolve` issuer: the actor policy could not decide | n/a | 500 `server_error`, generic text ("The actor could not be checked."). The ID-JAG is not consumed |
 | Redemption from a `resolve` issuer while resolution is not enabled (see "The gate") | n/a | 400 `access_denied`, `subject_unknown`. The ID-JAG is not consumed |
 | Issuer's signing keys could not be obtained (key fetch or cache lookup fails, or the key set is empty or too large) | 503 `temporarily_unavailable`, `issuer_unavailable` | same |
 | The request ended (client disconnect or deadline) while the keys were being fetched, or the server has no default audiences configured | 500 `server_error`, generic text | same |
 
 `invalid_grant` means the assertion failed a validation rule, and a re-issued
 one may succeed. `access_denied` means the ID-JAG is valid but this server's
-allowlist does not permit it, and a re-issued one will not help. A client that
-retries a reasonless `invalid_grant` once with a new ID-JAG therefore stops
-retrying `invalid_assertion` refusals and the two `access_denied` refusals.
+allowlist does not permit it, and a re-issued one with the same claims will not
+help. The exception is `actor_denied` for a missing or malformed `act`: an
+ID-JAG re-issued with a correct `act` can pass the actor check (while the gate
+is closed it is still refused with `subject_unknown`). A client that retries a
+reasonless `invalid_grant` once with a new ID-JAG therefore stops retrying
+`invalid_assertion` refusals and the `access_denied` refusals that a new ID-JAG
+with the same claims would not change.
 `issuer_unavailable` is the retryable one: the assertion was never judged, because
 this server could not reach the issuer's signing keys, so the same ID-JAG may
 succeed once the issuer is reachable again. It is a 503 with no `Retry-After`
@@ -1683,6 +1690,27 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   the issued token, so a resource server or auditor can still tell which agent
   acted for the subject. Other ID-JAG-specific claims (`aud_tenant`,
   `sub_profile`) are validated as opaque extras and not propagated.
+- **The actor, for `resolve` issuers only.** The server checks the actor before
+  the gate, after the client-audience check and before the `jti` is used up,
+  so a refusal leaves the ID-JAG unused. The effective actor is the outermost
+  `act`; an `act` without `iss` takes the ID-JAG's `iss`, and an `act` inside
+  `act` is not checked. A missing or malformed `act` (not an object, no `sub`,
+  or an `iss` that is not a non-empty string) is refused with `400 access_denied`,
+  `actor_denied`. So is an `act.iss` that is neither the ID-JAG's own `iss` nor
+  in `actor_issuers`; this is checked before the actor policy runs. The actor
+  policy is built once per issuer at startup from the ID-JAG's `iss` and
+  `actor_issuers`. A denial is `actor_denied`. A policy that cannot decide
+  gives `500 server_error` instead of a denial. The log line for a refusal
+  names the issuer, the client and a reason, never the subject, the `jti` or
+  an `act` value. A denial is logged at Debug; a policy that cannot decide is
+  logged at Warn. A `namespaced` issuer is not checked: its `act` is still
+  copied without being read.
+
+  The default policy checks only the actor's issuer. It does not restrict
+  actors per subject or per client: any `act.sub` at an allowed issuer passes,
+  and an `act` without `iss` is checked as the ID-JAG's issuer. Which clients
+  may redeem is bounded separately, by the client checks. A finer check needs a
+  different `Policy`.
 - Everything else is shared with the plain handler: JWKS verification through
   the shared `MultiIssuerTokenValidator`, `NoUpstreamSessionClaimKey` stamping
   (an ID-JAG conveys no upstream vendor session at this server),

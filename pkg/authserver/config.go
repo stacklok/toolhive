@@ -628,10 +628,7 @@ func (c *RunConfig) Validate() error {
 	if err := validateTrustedIssuers(normalized.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
-	// Also checked by Config.Validate(), for the same reason as the delegate
-	// clients above: refuse before upstream registration runs.
-	if err := validateResolveIssuerUpstream(normalized.TrustedIssuers,
-		len(c.Upstreams) > 0 && c.Upstreams[0].Type == UpstreamProviderTypeOIDC); err != nil {
+	if err := c.validateResolveIssuers(normalized.TrustedIssuers); err != nil {
 		return err
 	}
 	if err := c.validateSPIFFEClientIDsNotDelegates(normalized.DelegateClients); err != nil {
@@ -2443,6 +2440,15 @@ func (c *Config) validateDelegationConfig() error {
 		return err
 	}
 	return validateResolveIssuerUpstream(c.TrustedIssuers,
+		len(c.Upstreams) > 0 && c.Upstreams[0].Type == UpstreamProviderTypeOIDC)
+}
+
+// validateResolveIssuers runs the resolve-issuer upstream check for the
+// run-config. Config.Validate also runs it, but this one fires first: it must
+// refuse before upstream registration, for the same reason as the delegate
+// clients in Validate.
+func (c *RunConfig) validateResolveIssuers(issuers []tokenexchange.TrustedIssuer) error {
+	return validateResolveIssuerUpstream(issuers,
 		len(c.Upstreams) > 0 && c.Upstreams[0].Type == UpstreamProviderTypeOIDC)
 }
 

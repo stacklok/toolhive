@@ -292,6 +292,10 @@ func (h *IDJAGHandler) checkIDJAGPolicy(
 	if err != nil {
 		return "", err
 	}
+	// A resolve issuer skips the whole binding check, the per-resource rule
+	// included, and redemption still builds <iss>#<sub>. Only the closed gate
+	// (delegatedAccessEnabled) stops issuance. The change that opens it must
+	// add resolution and a per-resource check here in the same change.
 	if policy.SubjectMode == SubjectModeResolve {
 		return resource, nil
 	}

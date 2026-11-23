@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -229,6 +230,10 @@ func newOIDCAuthMiddleware(
 		slog.Warn("no Resource defined in OIDC configuration")
 	}
 
+	if err := checkJWKSAuthTokenFile(oidcCfg.JWKSAuthTokenPath); err != nil {
+		return nil, nil, err
+	}
+
 	oidcConfig, err := oidcTokenValidatorConfig(oidcCfg, &env.OSReader{})
 	if err != nil {
 		return nil, nil, err
@@ -290,6 +295,25 @@ func oidcTokenValidatorConfig(oidcCfg *config.OIDCConfig, envReader env.Reader) 
 		AuthTokenFile:         oidcCfg.JWKSAuthTokenPath,
 		ClientSecret:          clientSecret,
 	}, nil
+}
+
+// checkJWKSAuthTokenFile fails when jwksAuthTokenPath is set but does not name
+// a readable regular file. The token validator would fail on the same file a
+// few layers down; this error names the setting and how to fix it.
+func checkJWKSAuthTokenFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	const fix = "mount the token file into the vMCP pod (for a kubernetesServiceAccount MCPOIDCConfig, " +
+		"the service-account token), or unset jwksAuthTokenPath (useClusterAuth: false)"
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("incomingAuth.oidc.jwksAuthTokenPath %q is not accessible: %w; %s", path, err, fix)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("incomingAuth.oidc.jwksAuthTokenPath %q is not a regular file; %s", path, fix)
+	}
+	return nil
 }
 
 // newLocalAuthMiddleware creates local OS user authentication middleware.

@@ -252,6 +252,8 @@ MCPOIDCConfig eliminates OIDC configuration duplication — define an identity p
 - `kubernetesServiceAccount` — Uses Kubernetes service account tokens with auto-discovered JWKS. Optional `serviceAccount` and `namespace` restrict which callers are accepted by checking the token's `sub` claim: `serviceAccount` requires exactly `system:serviceaccount:<namespace>:<serviceAccount>` (namespace defaults to the referencing workload's), `namespace` alone accepts any service account in that namespace, and leaving both empty applies no subject restriction. The operator resolves these into `RequiredSubject` / `RequiredSubjectPrefix` on the token validator, which rejects mismatches with `invalid_token` (`invalid subject`) and logs the rejected subject at WARN.
 - `inline` — Explicit issuer, JWKS URL, client credentials (secrets via `clientSecretRef`)
 
+**Issuer authentication token**: `kubernetesServiceAccount` with `useClusterAuth` (the default) sends the pod's service-account token on OIDC discovery and JWKS requests, so it works against an API server without anonymous discovery access; `inline.jwksAuthTokenPath` does the same with any token file. MCPServer, MCPRemoteProxy, and VirtualMCPServer all honor it. For a VirtualMCPServer, the operator rejects a relative path or one containing `..` with `AuthConfigured=False` (`AuthInvalid`) and does not write the ConfigMap. vMCP refuses to start if the configured file is missing, with an error naming `jwksAuthTokenPath`.
+
 **Per-server overrides** live in the workload's `oidcConfigRef` field (not the shared spec):
 - `audience` (required) — Must be unique per server to prevent token replay
 - `scopes` (optional) — Defaults to `["openid"]`

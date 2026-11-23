@@ -37,6 +37,56 @@ func TestOIDCTokenValidatorConfig_JWKSAuthTokenPath(t *testing.T) {
 	assert.Empty(t, got.AuthTokenFile)
 }
 
+func TestCheckJWKSAuthTokenFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("token"), 0o600))
+
+	tests := []struct {
+		name   string
+		path   string
+		errMsg string
+	}{
+		{name: "unset", path: ""},
+		{name: "regular file", path: tokenPath},
+		{name: "missing file", path: filepath.Join(dir, "missing"), errMsg: "is not accessible"},
+		{name: "directory", path: dir, errMsg: "is not a regular file"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkJWKSAuthTokenFile(tt.path)
+			if tt.errMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "incomingAuth.oidc.jwksAuthTokenPath")
+			assert.Contains(t, err.Error(), tt.path)
+			assert.Contains(t, err.Error(), tt.errMsg)
+			assert.Contains(t, err.Error(), "unset jwksAuthTokenPath")
+		})
+	}
+}
+
+func TestNewOIDCAuthMiddleware_MissingJWKSAuthTokenFile(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.OIDCConfig{
+		Issuer:            "https://issuer.example.com",
+		Audience:          "test-audience",
+		JWKSAuthTokenPath: filepath.Join(t.TempDir(), "missing"),
+	}
+
+	_, _, err := newOIDCAuthMiddleware(t.Context(), cfg, nil, nil, "")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "incomingAuth.oidc.jwksAuthTokenPath")
+}
+
 // TestNewOIDCAuthMiddleware_JWKSAuthTokenPathReachesIssuer covers an issuer
 // that, like the Kubernetes API server, rejects unauthenticated OIDC discovery
 // and JWKS requests. The middleware must send the token read from
@@ -106,15 +156,12 @@ func TestNewOIDCAuthMiddleware_JWKSAuthTokenPathReachesIssuer(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+	signed := signJWT(t, privateKey, jwt.MapClaims{
 		"iss": issuerURL,
 		"aud": "test-audience",
 		"sub": "system:serviceaccount:default:client",
 		"exp": time.Now().Add(time.Hour).Unix(),
 	})
-	tok.Header["kid"] = testKeyID
-	signed, err := tok.SignedString(privateKey)
-	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+signed)

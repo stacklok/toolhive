@@ -66,6 +66,24 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
+	// Reject invalid OIDC file paths (for example a relative jwksAuthTokenPath
+	// from an inline MCPOIDCConfig) before they reach the ConfigMap. vMCP also
+	// checks them at startup, but a failure there shows up only as a crash loop.
+	if config.IncomingAuth != nil {
+		if err := vmcpconfig.ValidateOIDCFilePaths(config.IncomingAuth.OIDC); err != nil {
+			message := fmt.Sprintf("invalid incoming OIDC configuration: %v", err)
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthConfiguredCondition(
+				mcpv1beta1.ConditionReasonAuthInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return &SpecValidationError{Message: message}
+		}
+	}
+
 	// Process outgoing auth configuration for both inline and discovered modes
 	if err := r.processOutgoingAuth(ctx, vmcp, config, typedWorkloads, statusManager); err != nil {
 		return err

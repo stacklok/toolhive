@@ -178,10 +178,7 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 		// - Token validation without introspection
 		// - Kubernetes service account token validation
 
-		if err := validateOIDCFilePath("caBundlePath", auth.OIDC.CABundlePath); err != nil {
-			return err
-		}
-		if err := validateOIDCFilePath("jwksAuthTokenPath", auth.OIDC.JWKSAuthTokenPath); err != nil {
+		if err := ValidateOIDCFilePaths(auth.OIDC); err != nil {
 			return err
 		}
 	}
@@ -824,6 +821,22 @@ func upstreamExists(rc *authserver.RunConfig, providerName string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateOIDCFilePaths checks the file path fields of an incoming OIDC
+// configuration (caBundlePath and jwksAuthTokenPath). Each path, when set,
+// must be absolute and must not contain a null byte or "..". A nil config is
+// valid. The operator calls this before writing the vMCP ConfigMap so a bad
+// path is reported on the VirtualMCPServer status rather than as a vMCP
+// startup failure; Validate also calls it when vMCP loads its configuration.
+func ValidateOIDCFilePaths(oidc *OIDCConfig) error {
+	if oidc == nil {
+		return nil
+	}
+	if err := validateOIDCFilePath("caBundlePath", oidc.CABundlePath); err != nil {
+		return err
+	}
+	return validateOIDCFilePath("jwksAuthTokenPath", oidc.JWKSAuthTokenPath)
 }
 
 // validateOIDCFilePath rejects null bytes, path traversal, and relative paths

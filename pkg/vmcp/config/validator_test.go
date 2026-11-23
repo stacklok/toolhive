@@ -313,6 +313,49 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 	}
 }
 
+func TestValidateOIDCFilePaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		oidc   *OIDCConfig
+		errMsg string
+	}{
+		{name: "nil config", oidc: nil},
+		{name: "no paths set", oidc: &OIDCConfig{}},
+		{
+			name: "absolute paths",
+			oidc: &OIDCConfig{
+				CABundlePath:      "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+		},
+		{
+			name:   "relative caBundlePath",
+			oidc:   &OIDCConfig{CABundlePath: "ca.crt"},
+			errMsg: "incomingAuth.oidc.caBundlePath must be an absolute path",
+		},
+		{
+			name:   "relative jwksAuthTokenPath",
+			oidc:   &OIDCConfig{JWKSAuthTokenPath: "token"},
+			errMsg: "incomingAuth.oidc.jwksAuthTokenPath must be an absolute path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateOIDCFilePaths(tt.oidc)
+			if tt.errMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errMsg)
+		})
+	}
+}
+
 func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

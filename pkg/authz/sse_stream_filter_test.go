@@ -629,23 +629,18 @@ func TestListMembersMapToListFilters(t *testing.T) {
 	}
 	assert.Equal(t, want, listMembers, "listMembers must match the expected list kinds")
 
-	listMethods := []string{
-		string(mcp.MethodToolsList),
-		string(mcp.MethodPromptsList),
-		string(mcp.MethodResourcesList),
-		string(mcp.MethodResourcesTemplatesList),
-		"skills/list",
-	}
-	covered := make(map[string]bool, len(listMethods))
+	covered := make(map[responseFilterKind]bool)
 	for member, method := range listMembers {
-		assert.NotEqual(t, responseFilterNone, responseFilterForMethod(method),
+		kind := responseFilterForMethod(method)
+		assert.NotEqual(t, responseFilterNone, kind,
 			"list member %q maps to %q, which has no filter", member, method)
-		covered[method] = true
+		covered[kind] = true
 	}
-	for _, method := range listMethods {
-		assert.True(t, covered[method], "list method %q has no list member in listMembers", method)
-		assert.NotEqual(t, responseFilterNone, responseFilterForMethod(method),
-			"list method %q has no response filter", method)
+	// Every list filter kind must be reached by a list member. The loop runs over
+	// the enum in order, so a kind added after responseFilterSkills must be added
+	// to this range too.
+	for kind := responseFilterTools; kind <= responseFilterSkills; kind++ {
+		assert.True(t, covered[kind], "list filter kind %d has no list member in listMembers", kind)
 	}
 }
 
@@ -862,6 +857,27 @@ func TestSSEStreamFiltersFindToolAnswerWithEscapedToolsKey(t *testing.T) {
 
 	assert.NotContains(t, rr.Body.String(), "secret", "an escaped tools key must not bypass the find_tool filter")
 	assert.Contains(t, rr.Body.String(), `"id":62`)
+}
+
+func TestSSEStreamFailsClosedOnToolsCallWithToolsList(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"weather": {authorized: true},
+		"secret":  {authorized: false},
+	}}
+	// A regular tool, not find_tool, whose answer carries a named tools list. The GET
+	// stream cannot see the request, so the list shape selects the find_tool filter.
+	// The answer is not a valid find_tool answer, so it fails closed with an error
+	// that carries the request id, and no tool name reaches the client.
+	const output = `{"tools":[{"name":"weather","description":"Get weather"},{"name":"secret","description":"restricted"}]}`
+	result := `{"content":[{"type":"text","text":"listed"}],"structuredContent":` + output + `}`
+	rr := runSSEStream(t, authorizer, "text/event-stream", sseStreamEvent(`{"jsonrpc":"2.0","id":63,"result":`+result+`}`))
+
+	assert.NotContains(t, rr.Body.String(), "secret", "a tools list from a non-find_tool answer must not leak a name")
+	assert.NotContains(t, rr.Body.String(), "weather", "a tools list from a non-find_tool answer must fail closed, not pass through")
+	assert.Contains(t, rr.Body.String(), `"id":63`)
+	assert.Contains(t, rr.Body.String(), `"error"`)
 }
 
 func TestSSEStreamFailsClosedOnDeepResultBehindLoneCR(t *testing.T) {

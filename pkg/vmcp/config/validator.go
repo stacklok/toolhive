@@ -178,14 +178,11 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 		// - Token validation without introspection
 		// - Kubernetes service account token validation
 
-		// Validate CA bundle path: reject null bytes, path traversal, and relative paths.
-		if auth.OIDC.CABundlePath != "" {
-			if strings.ContainsRune(auth.OIDC.CABundlePath, 0) || strings.Contains(auth.OIDC.CABundlePath, "..") {
-				return fmt.Errorf("incomingAuth.oidc.caBundlePath contains invalid path characters")
-			}
-			if !filepath.IsAbs(auth.OIDC.CABundlePath) {
-				return fmt.Errorf("incomingAuth.oidc.caBundlePath must be an absolute path")
-			}
+		if err := validateOIDCFilePath("caBundlePath", auth.OIDC.CABundlePath); err != nil {
+			return err
+		}
+		if err := validateOIDCFilePath("jwksAuthTokenPath", auth.OIDC.JWKSAuthTokenPath); err != nil {
+			return err
 		}
 	}
 
@@ -827,4 +824,19 @@ func upstreamExists(rc *authserver.RunConfig, providerName string) bool {
 		}
 	}
 	return false
+}
+
+// validateOIDCFilePath rejects null bytes, path traversal, and relative paths
+// in an optional incomingAuth.oidc file path field. An empty path is valid.
+func validateOIDCFilePath(field, path string) error {
+	if path == "" {
+		return nil
+	}
+	if strings.ContainsRune(path, 0) || strings.Contains(path, "..") {
+		return fmt.Errorf("incomingAuth.oidc.%s contains invalid path characters", field)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("incomingAuth.oidc.%s must be an absolute path", field)
+	}
+	return nil
 }

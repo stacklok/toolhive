@@ -240,6 +240,57 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			wantErr: true,
 			errMsg:  "caBundlePath contains invalid path characters",
 		},
+		{
+			name: "valid OIDC auth with absolute jwksAuthTokenPath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "OIDC rejects relative jwksAuthTokenPath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "token",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath must be an absolute path",
+		},
+		{
+			name: "OIDC rejects jwksAuthTokenPath with path traversal",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/../../etc/passwd",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath contains invalid path characters",
+		},
+		{
+			name: "OIDC rejects jwksAuthTokenPath with null byte",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/tok\x00en",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath contains invalid path characters",
+		},
 	}
 
 	for _, tt := range tests {

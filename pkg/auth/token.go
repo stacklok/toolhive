@@ -926,9 +926,10 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 //
 // Only asymmetric methods are allowed, so a public key can never be used as an
 // HMAC secret. Each allowed method's Verify in golang-jwt also refuses a key of
-// the wrong Go type (*rsa.PublicKey for RS*, *ecdsa.PublicKey on the matching
-// curve for ES*, ed25519.PublicKey for EdDSA), so the key resolved for the kid
-// must match the alg in the header.
+// the wrong Go type (*rsa.PublicKey for RS*, *ecdsa.PublicKey for ES*,
+// ed25519.PublicKey for EdDSA), so the key resolved for the kid must match the
+// alg in the header. golang-jwt does not check the ECDSA curve; a key on a
+// different curve than the alg names fails signature verification instead.
 func validateTokenHeader(token *jwt.Token) (string, error) {
 	switch token.Method.(type) {
 	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA, *jwt.SigningMethodEd25519:

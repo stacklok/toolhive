@@ -287,10 +287,9 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	assert.Equal(t, []string{sharedobauth.TokenEndpointAuthMethodNone}, discovery.TokenEndpointAuthMethodsSupported)
 }
 
-// TestDiscoveryHandlers_ConfidentialAuthMethods verifies both discovery endpoints
-// advertise the client authentication methods enabled by configuration, including
-// the independent private_key_jwt capability. "none" must stay at index 0
-// (readability convention; RFC 8414 defines no ordering).
+// TestDiscoveryHandlers_Ed25519SigningKey verifies that an Ed25519 signing key
+// is advertised as EdDSA in id_token_signing_alg_values_supported and served by
+// the JWKS endpoint as an OKP key, so validators can resolve it.
 func TestDiscoveryHandlers_Ed25519SigningKey(t *testing.T) {
 	t.Parallel()
 	_, edKey, err := ed25519.GenerateKey(rand.Reader)
@@ -317,6 +316,10 @@ func TestDiscoveryHandlers_Ed25519SigningKey(t *testing.T) {
 	assert.Equal(t, "EdDSA", jwks.Keys[0]["alg"])
 }
 
+// TestDiscoveryHandlers_ConfidentialAuthMethods verifies both discovery endpoints
+// advertise the client authentication methods enabled by configuration, including
+// the independent private_key_jwt capability. "none" must stay at index 0
+// (readability convention; RFC 8414 defines no ordering).
 func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 	t.Parallel()
 

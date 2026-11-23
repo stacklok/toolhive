@@ -272,11 +272,49 @@ tasks:
       - task: build-load-spiffe-e2e-client-image
       - echo "Running Ginkgo E2E tests..."
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      # The last --label-filter wins, so a GINKGO_ARGS filter replaces this
+      # exclusion: write it as e.g. --label-filter='mcpserver && !entra-live'.
       - |
         KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
           --procs=8 \
+          --label-filter='!entra-live' \
           {{.GINKGO_ARGS}} \
           {{.ROOT_DIR}}/test/e2e/thv-operator/...
+
+  thv-operator-e2e-test-entra:
+    desc: |
+      Run the opt-in Entra OBO suite against a REAL Microsoft Entra tenant.
+      Needs the cluster from kind-setup-e2e, operator-install-crds, and
+      operator-deploy-local, plus the TOOLHIVE_E2E_ENTRA_* variables, read
+      from the environment or from .env.entra-obo at the repo root.
+      See test/e2e/thv-operator/entraobo/README.md.
+    platforms: [linux, darwin]
+    dotenv: ['{{.ROOT_DIR}}/.env.entra-obo']
+    cmds:
+      # Without these variables the suite skips and Ginkgo exits 0, which this
+      # opt-in entry point must not report as a pass. This names exactly the
+      # missing variables and never prints a value.
+      - cmd: |
+          missing=""
+          for v in TOOLHIVE_E2E_ENTRA_TENANT_ID TOOLHIVE_E2E_ENTRA_PROXY_CLIENT_ID \
+            TOOLHIVE_E2E_ENTRA_PROXY_CLIENT_SECRET TOOLHIVE_E2E_ENTRA_BACKEND_SCOPE \
+            TOOLHIVE_E2E_ENTRA_BACKEND_AUDIENCE; do
+            [ -n "$(printenv "$v")" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "Set$missing in the environment or in .env.entra-obo at the repo root" \
+              "(see test/e2e/thv-operator/entraobo/README.md)" >&2
+            exit 1
+          fi
+        silent: true
+      - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      - |
+        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v \
+          --procs=1 \
+          --label-filter=entra-live \
+          --fail-on-empty \
+          {{.GINKGO_ARGS}} \
+          {{.ROOT_DIR}}/test/e2e/thv-operator/entraobo
 
   operator-run:
     desc: Run the operator controller locally

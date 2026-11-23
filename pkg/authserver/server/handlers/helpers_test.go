@@ -521,12 +521,11 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 		}).AnyTimes()
 
 	getAllUpstreamCalls := 0
-	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(ctx context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
-			// GetAllUpstreamTokens takes only (ctx, sessionID) — no tokens argument to
-			// carry the user — so a user-keyed storage decorator can resolve the user
-			// only from ctx. Capture the ctx here so a test can assert the callback
-			// placed the canonical user into it before this read runs.
+	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, sessionID, _ string) (map[string]*storage.UpstreamTokens, error) {
+			// The read now carries the expected owner explicitly. The ctx is
+			// still captured here so a test can assert the callback placed the
+			// canonical user into it before this read runs.
 			storState.getAllUpstreamCtx = append(storState.getAllUpstreamCtx, ctx)
 			getAllUpstreamCalls++
 			if setupCfg.getAllUpstreamTokensErr != nil && getAllUpstreamCalls > setupCfg.getAllUpstreamErrAfter {

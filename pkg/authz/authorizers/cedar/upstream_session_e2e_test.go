@@ -131,7 +131,10 @@ func TestUpstreamSessionWithoutRowsEndToEnd(t *testing.T) {
 		require.NoError(t, stor.StoreUpstreamTokens(t.Context(), sessionID, providerName, &storage.UpstreamTokens{
 			ProviderID:  providerName,
 			AccessToken: "ya29.opaque-access-token",
-			ExpiresAt:   time.Now().Add(time.Hour),
+			// The row's owner is the token's subject. The read compares the
+			// two, so a row stored without one is reachable by nobody.
+			UserID:    "alice",
+			ExpiresAt: time.Now().Add(time.Hour),
 		}))
 	}
 

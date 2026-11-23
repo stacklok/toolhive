@@ -512,6 +512,11 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 // empty string if all legs in the chain are satisfied, or an error if the storage
 // lookup fails.
 //
+// expectedUserID is the user being authenticated in this flow, compared by
+// storage against every row the session holds. A session carrying a row for
+// another user fails the walk rather than reporting a leg as satisfied on the
+// strength of someone else's credential.
+//
 // A leg is satisfied when it has a stored token that is live (or asserts no
 // expiry). A present-but-expired token is NOT treated as satisfied by presence
 // alone: the leg is refreshed transparently (mirroring upstreamtoken
@@ -519,8 +524,10 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 // succeeds. If refresh is impossible or fails, the leg is reported as missing so
 // the user is re-prompted up front, rather than the stale token surfacing as a
 // runtime auth error later at MCP-request token-swap time.
-func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, chain []string) (string, error) {
-	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
+func (h *Handler) nextMissingUpstream(
+	ctx context.Context, sessionID, expectedUserID string, chain []string,
+) (string, error) {
+	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID, expectedUserID)
 	if err != nil {
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}

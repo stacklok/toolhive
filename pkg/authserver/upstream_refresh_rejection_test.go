@@ -138,14 +138,14 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 			}
 			svc := upstreamtoken.NewInProcessService(stor, refresher)
 
-			_, err = svc.GetValidTokens(ctx, "session", "idp")
+			_, err = svc.GetValidTokens(ctx, "session", "idp", "user")
 			require.ErrorIs(t, err, upstreamtoken.ErrRefreshFailed)
 			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrGrantRejected), "GetValidTokens: %v", err)
 			assert.Equal(t, tt.wantInvalidGrant, oautherr.IsRejectedRefreshGrant(err), "GetValidTokens: %v", err)
 			assert.Equal(t, tt.wantPermanent, oautherr.IsPermanentCredentialError(err), "GetValidTokens: %v", err)
 			assertRetrieveErrorInChain(t, err, tt.wantStatus)
 
-			creds, failed, err := svc.GetAllUpstreamCredentials(ctx, "session")
+			creds, failed, err := svc.GetAllUpstreamCredentials(ctx, "session", "user")
 			require.NoError(t, err)
 			assert.Empty(t, creds)
 			require.Contains(t, failed, "idp")

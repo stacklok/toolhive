@@ -64,8 +64,16 @@ var (
 	// ErrAlreadyExists is returned when attempting to create an item that already exists.
 	ErrAlreadyExists = errors.New("storage: item already exists")
 
-	// ErrInvalidBinding is returned when token binding validation fails
-	// (e.g., subject or client ID mismatch).
+	// ErrInvalidBinding is returned by the session-keyed upstream token reads
+	// when the row they found belongs to someone other than the caller's
+	// expected owner, or records no owner at all. Upstream rows are addressed
+	// by token session ID, which a client can read out of its own token, so
+	// presenting that ID is not evidence of owning the credentials stored
+	// under it. The comparison is what makes it evidence.
+	//
+	// It is a hard failure. A caller must not fall back to another read, treat
+	// it as "not found and therefore needs authorization", or prompt the user
+	// to connect: the row exists and belongs to another user.
 	ErrInvalidBinding = errors.New("storage: token binding validation failed")
 
 	// ErrClientCapacity is returned by RegisterClient when the number of live
@@ -110,6 +118,24 @@ var (
 	// particular lifecycle state (e.g. a pending device request) but it is not.
 	ErrInvalidState = errors.New("storage: item is not in the required state")
 )
+
+// upstreamRowBelongsTo reports whether a stored upstream row may be handed to
+// a caller acting for expectedUserID, returning ErrInvalidBinding when it may
+// not. Both backends share it so the two cannot drift: the whole point of the
+// comparison is that it holds wherever the rows are kept.
+//
+// A nil row is a null marker, which records no owner and carries no
+// credentials, so there is nothing to compare. Callers return it unchanged.
+//
+// expectedUserID is required to be non-empty by the reads that call this, so
+// a row with no stored UserID fails the comparison like any other mismatch —
+// an unowned row is not a row everyone owns.
+func upstreamRowBelongsTo(row *UpstreamTokens, expectedUserID string) error {
+	if row == nil || row.UserID == expectedUserID {
+		return nil
+	}
+	return ErrInvalidBinding
+}
 
 // notFoundRFC6749Error preserves the storage and Fosite not-found identities.
 func notFoundRFC6749Error(hint string) *fosite.RFC6749Error {
@@ -1336,18 +1362,40 @@ type UpstreamTokenStorage interface {
 		ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
 	) error
 
-	// GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
+	// GetUpstreamTokens retrieves the upstream IDP tokens for a session and
+	// provider, for the owner the caller expects them to belong to.
+	//
+	// expectedUserID is the subject of the validated token the request arrived
+	// with, as issued. It is compared against the row's UserID, and a row that
+	// belongs to anyone else is ErrInvalidBinding with a nil row — see that
+	// error for why the comparison is not optional. An empty expectedUserID is
+	// ErrInvalidRequest, never a licence to skip the comparison.
+	//
 	// Returns ErrNotFound if the session/provider combination does not exist.
 	// Returns ErrExpired if the tokens have expired. When ErrExpired is returned,
 	// the token data (including refresh token) is also returned to allow callers
-	// to attempt a token refresh.
-	// Returns ErrInvalidBinding if binding validation fails.
-	GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*UpstreamTokens, error)
+	// to attempt a token refresh. The owner comparison runs first, so a caller
+	// never reaches a refresh for a row it does not own.
+	//
+	// A null-marker row — one written to record that a provider was offered
+	// and declined — still returns (nil, nil). It records no owner, so there
+	// is nothing to compare and nothing to leak.
+	GetUpstreamTokens(
+		ctx context.Context, sessionID, providerName, expectedUserID string,
+	) (*UpstreamTokens, error)
 
 	// GetAllUpstreamTokens retrieves all upstream IDP tokens for a session across all providers.
 	// Returns a map of providerName -> tokens. Returns an empty map (not error) for unknown sessions.
 	// Includes expired tokens (no expiry filtering at bulk-read level).
-	GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*UpstreamTokens, error)
+	//
+	// expectedUserID is compared against every row the session holds, with the
+	// same meaning as in GetUpstreamTokens. One row belonging to another user
+	// fails the whole read with ErrInvalidBinding and a nil map, rather than
+	// returning the rows that did match: this read feeds the live request
+	// path, and a partial answer there is a partial leak.
+	GetAllUpstreamTokens(
+		ctx context.Context, sessionID, expectedUserID string,
+	) (map[string]*UpstreamTokens, error)
 
 	// DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).
 	// Returns ErrNotFound if the session does not exist.

@@ -42,9 +42,9 @@ func (m *MockTokenReader) EXPECT() *MockTokenReaderMockRecorder {
 }
 
 // GetAllUpstreamCredentials mocks base method.
-func (m *MockTokenReader) GetAllUpstreamCredentials(ctx context.Context, sessionID string) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
+func (m *MockTokenReader) GetAllUpstreamCredentials(ctx context.Context, sessionID, expectedUserID string) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetAllUpstreamCredentials", ctx, sessionID)
+	ret := m.ctrl.Call(m, "GetAllUpstreamCredentials", ctx, sessionID, expectedUserID)
 	ret0, _ := ret[0].(map[string]upstreamtoken.UpstreamCredential)
 	ret1, _ := ret[1].(map[string]error)
 	ret2, _ := ret[2].(error)
@@ -52,7 +52,7 @@ func (m *MockTokenReader) GetAllUpstreamCredentials(ctx context.Context, session
 }
 
 // GetAllUpstreamCredentials indicates an expected call of GetAllUpstreamCredentials.
-func (mr *MockTokenReaderMockRecorder) GetAllUpstreamCredentials(ctx, sessionID any) *gomock.Call {
+func (mr *MockTokenReaderMockRecorder) GetAllUpstreamCredentials(ctx, sessionID, expectedUserID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamCredentials", reflect.TypeOf((*MockTokenReader)(nil).GetAllUpstreamCredentials), ctx, sessionID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamCredentials", reflect.TypeOf((*MockTokenReader)(nil).GetAllUpstreamCredentials), ctx, sessionID, expectedUserID)
 }

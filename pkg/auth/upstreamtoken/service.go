@@ -113,8 +113,10 @@ func NewInProcessService(
 // GetValidTokens returns a valid upstream credential for a session and provider.
 // It transparently refreshes expired access tokens using the refresh token,
 // and refreshes expired ID tokens where possible (see InProcessService).
-func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error) {
-	tokens, err := s.storage.GetUpstreamTokens(ctx, sessionID, providerName)
+func (s *InProcessService) GetValidTokens(
+	ctx context.Context, sessionID, providerName, expectedUserID string,
+) (*UpstreamCredential, error) {
+	tokens, err := s.storage.GetUpstreamTokens(ctx, sessionID, providerName, expectedUserID)
 	if err != nil {
 		// ErrExpired returns tokens (including refresh token) alongside the error.
 		// Attempt a refresh before giving up.
@@ -165,9 +167,9 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 //
 // Returns an empty map and nil failed map (not error) for unknown sessions.
 func (s *InProcessService) GetAllUpstreamCredentials(
-	ctx context.Context, sessionID string,
+	ctx context.Context, sessionID, expectedUserID string,
 ) (map[string]UpstreamCredential, map[string]error, error) {
-	allTokens, err := s.storage.GetAllUpstreamTokens(ctx, sessionID)
+	allTokens, err := s.storage.GetAllUpstreamTokens(ctx, sessionID, expectedUserID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("bulk read upstream tokens: %w", err)
 	}
@@ -342,7 +344,12 @@ func (s *InProcessService) refreshForIDToken(
 	if ctx.Err() != nil {
 		return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
 	}
-	if _, readErr := s.storage.GetUpstreamTokens(ctx, sessionID, providerName); errors.Is(readErr, storage.ErrNotFound) {
+	// The owner is the row's own, which the caller already read and handed in:
+	// this only asks whether that row still exists. A row that now belongs to
+	// someone else counts as gone, exactly like ErrNotFound — what the caller
+	// was holding is no longer there to fall back to.
+	_, readErr := s.storage.GetUpstreamTokens(ctx, sessionID, providerName, tokens.UserID)
+	if errors.Is(readErr, storage.ErrNotFound) || errors.Is(readErr, storage.ErrInvalidBinding) {
 		return nil, err
 	}
 	slog.DebugContext(ctx, "returning stored upstream tokens after failed refresh for expired ID token",

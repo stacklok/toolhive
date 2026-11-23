@@ -735,18 +735,18 @@ func (mr *MockUpstreamTokenStorageMockRecorder) DeleteUpstreamTokensForProvider(
 }
 
 // GetAllUpstreamTokens mocks base method.
-func (m *MockUpstreamTokenStorage) GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
+func (m *MockUpstreamTokenStorage) GetAllUpstreamTokens(ctx context.Context, sessionID, expectedUserID string) (map[string]*storage.UpstreamTokens, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetAllUpstreamTokens", ctx, sessionID)
+	ret := m.ctrl.Call(m, "GetAllUpstreamTokens", ctx, sessionID, expectedUserID)
 	ret0, _ := ret[0].(map[string]*storage.UpstreamTokens)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetAllUpstreamTokens indicates an expected call of GetAllUpstreamTokens.
-func (mr *MockUpstreamTokenStorageMockRecorder) GetAllUpstreamTokens(ctx, sessionID any) *gomock.Call {
+func (mr *MockUpstreamTokenStorageMockRecorder) GetAllUpstreamTokens(ctx, sessionID, expectedUserID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).GetAllUpstreamTokens), ctx, sessionID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).GetAllUpstreamTokens), ctx, sessionID, expectedUserID)
 }
 
 // GetLatestUpstreamTokensForUser mocks base method.
@@ -765,18 +765,18 @@ func (mr *MockUpstreamTokenStorageMockRecorder) GetLatestUpstreamTokensForUser(c
 }
 
 // GetUpstreamTokens mocks base method.
-func (m *MockUpstreamTokenStorage) GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*storage.UpstreamTokens, error) {
+func (m *MockUpstreamTokenStorage) GetUpstreamTokens(ctx context.Context, sessionID, providerName, expectedUserID string) (*storage.UpstreamTokens, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUpstreamTokens", ctx, sessionID, providerName)
+	ret := m.ctrl.Call(m, "GetUpstreamTokens", ctx, sessionID, providerName, expectedUserID)
 	ret0, _ := ret[0].(*storage.UpstreamTokens)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetUpstreamTokens indicates an expected call of GetUpstreamTokens.
-func (mr *MockUpstreamTokenStorageMockRecorder) GetUpstreamTokens(ctx, sessionID, providerName any) *gomock.Call {
+func (mr *MockUpstreamTokenStorageMockRecorder) GetUpstreamTokens(ctx, sessionID, providerName, expectedUserID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).GetUpstreamTokens), ctx, sessionID, providerName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).GetUpstreamTokens), ctx, sessionID, providerName, expectedUserID)
 }
 
 // ResolveUpstreamTokenRowID mocks base method.
@@ -1264,18 +1264,18 @@ func (mr *MockStorageMockRecorder) GetAccessTokenSession(ctx, signature, session
 }
 
 // GetAllUpstreamTokens mocks base method.
-func (m *MockStorage) GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
+func (m *MockStorage) GetAllUpstreamTokens(ctx context.Context, sessionID, expectedUserID string) (map[string]*storage.UpstreamTokens, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetAllUpstreamTokens", ctx, sessionID)
+	ret := m.ctrl.Call(m, "GetAllUpstreamTokens", ctx, sessionID, expectedUserID)
 	ret0, _ := ret[0].(map[string]*storage.UpstreamTokens)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetAllUpstreamTokens indicates an expected call of GetAllUpstreamTokens.
-func (mr *MockStorageMockRecorder) GetAllUpstreamTokens(ctx, sessionID any) *gomock.Call {
+func (mr *MockStorageMockRecorder) GetAllUpstreamTokens(ctx, sessionID, expectedUserID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamTokens", reflect.TypeOf((*MockStorage)(nil).GetAllUpstreamTokens), ctx, sessionID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamTokens", reflect.TypeOf((*MockStorage)(nil).GetAllUpstreamTokens), ctx, sessionID, expectedUserID)
 }
 
 // GetAuthorizeCodeSession mocks base method.
@@ -1369,18 +1369,18 @@ func (mr *MockStorageMockRecorder) GetRefreshTokenSession(ctx, signature, sessio
 }
 
 // GetUpstreamTokens mocks base method.
-func (m *MockStorage) GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*storage.UpstreamTokens, error) {
+func (m *MockStorage) GetUpstreamTokens(ctx context.Context, sessionID, providerName, expectedUserID string) (*storage.UpstreamTokens, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUpstreamTokens", ctx, sessionID, providerName)
+	ret := m.ctrl.Call(m, "GetUpstreamTokens", ctx, sessionID, providerName, expectedUserID)
 	ret0, _ := ret[0].(*storage.UpstreamTokens)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetUpstreamTokens indicates an expected call of GetUpstreamTokens.
-func (mr *MockStorageMockRecorder) GetUpstreamTokens(ctx, sessionID, providerName any) *gomock.Call {
+func (mr *MockStorageMockRecorder) GetUpstreamTokens(ctx, sessionID, providerName, expectedUserID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokens", reflect.TypeOf((*MockStorage)(nil).GetUpstreamTokens), ctx, sessionID, providerName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokens", reflect.TypeOf((*MockStorage)(nil).GetUpstreamTokens), ctx, sessionID, providerName, expectedUserID)
 }
 
 // GetUser mocks base method.

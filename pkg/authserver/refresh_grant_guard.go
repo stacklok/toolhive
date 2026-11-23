@@ -141,8 +141,11 @@ func (g *upstreamRefreshGuard) HandleTokenEndpointRequest(ctx context.Context, r
 		return nil
 	}
 	tsid := sess.GetIDPSessionID()
+	// The session ID addresses the rows; the session's own subject is what
+	// says they belong to the client presenting this refresh grant.
+	subject := requester.GetSession().GetSubject()
 
-	refused := g.deadUpstream(ctx, tsid)
+	refused := g.deadUpstream(ctx, tsid, subject)
 	if refused == nil {
 		return nil
 	}
@@ -193,11 +196,11 @@ type refusal struct {
 // a refusal costs no further upstream refreshes. The bearer validator answers
 // a session without any upstream access token with 401, so a session with no
 // usable row is dead too.
-func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid string) *refusal {
+func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid, subject string) *refusal {
 	ctx, cancel := context.WithTimeout(ctx, g.checkTimeout)
 	defer cancel()
 
-	rows, err := g.tokens.GetAllUpstreamTokens(ctx, tsid)
+	rows, err := g.tokens.GetAllUpstreamTokens(ctx, tsid, subject)
 	if err != nil {
 		slog.DebugContext(ctx, "refresh grant guard could not read upstream tokens; granting", "error", err)
 		return nil
@@ -209,7 +212,7 @@ func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid string) *r
 	}
 	anyUsable := false
 	for _, name := range slices.Sorted(maps.Keys(rows)) {
-		usable, refused := g.checkRow(ctx, tsid, name, rows[name])
+		usable, refused := g.checkRow(ctx, tsid, subject, name, rows[name])
 		if refused != nil {
 			return refused
 		}
@@ -227,7 +230,7 @@ func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid string) *r
 // failure), which the guard does not refuse; a row that is neither is not
 // dead on its own.
 func (g *upstreamRefreshGuard) checkRow(
-	ctx context.Context, tsid, name string, row *storage.UpstreamTokens,
+	ctx context.Context, tsid, subject, name string, row *storage.UpstreamTokens,
 ) (usable bool, refused *refusal) {
 	if row == nil {
 		return false, nil
@@ -264,7 +267,7 @@ func (g *upstreamRefreshGuard) checkRow(
 			"provider_id", name, "error", err)
 		return true, nil
 	}
-	if !g.rejectionConfirmed(ctx, tsid, name, row.RefreshToken) {
+	if !g.rejectionConfirmed(ctx, tsid, subject, name, row.RefreshToken) {
 		return true, nil
 	}
 	g.dropSession(ctx, tsid)
@@ -311,7 +314,9 @@ func (g *upstreamRefreshGuard) refresh(
 // the read fails with anything but ErrNotFound; that reports false too, so a
 // client disconnect or a storage fault never refuses a session that may be
 // live.
-func (g *upstreamRefreshGuard) rejectionConfirmed(ctx context.Context, tsid, provider, rejectedRT string) bool {
+func (g *upstreamRefreshGuard) rejectionConfirmed(
+	ctx context.Context, tsid, subject, provider, rejectedRT string,
+) bool {
 	if g.recheckDelay > 0 {
 		timer := time.NewTimer(g.recheckDelay)
 		defer timer.Stop()
@@ -322,7 +327,7 @@ func (g *upstreamRefreshGuard) rejectionConfirmed(ctx context.Context, tsid, pro
 		case <-timer.C:
 		}
 	}
-	stored, err := g.tokens.GetUpstreamTokens(ctx, tsid, provider)
+	stored, err := g.tokens.GetUpstreamTokens(ctx, tsid, provider, subject)
 	switch {
 	case errors.Is(err, storage.ErrNotFound):
 		return true

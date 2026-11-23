@@ -24,6 +24,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// testChainOwner is the user the chain walk below is authenticating. It is
+// passed to storage, which compares it against every row the session holds.
+const testChainOwner = "chain-owner"
+
 // twoUpstreamChain is the effective chain for multiUpstreamTestSetup's two
 // configured providers, in configured order.
 var twoUpstreamChain = []string{"provider-1", "provider-2"}
@@ -241,7 +245,7 @@ func TestNextMissingUpstream_RespectsChainSubset(t *testing.T) {
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
 
-	got, err := handler.nextMissingUpstream(context.Background(), "test-session", []string{"provider-1"})
+	got, err := handler.nextMissingUpstream(context.Background(), "test-session", testChainOwner, []string{"provider-1"})
 	require.NoError(t, err)
 	assert.Empty(t, got, "provider-2 is not in the chain, so it must not be prompted")
 }
@@ -296,7 +300,7 @@ func TestNextMissingUpstream(t *testing.T) {
 			handler, storState, _, _ := multiUpstreamTestSetup(t)
 			tt.setupTokens(storState)
 
-			got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
+			got, err := handler.nextMissingUpstream(context.Background(), "test-session", testChainOwner, twoUpstreamChain)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -389,7 +393,7 @@ func TestNextMissingUpstream_RefreshExpired(t *testing.T) {
 			handler, storState, _, _ := multiUpstreamTestSetup(t, opts...)
 			tt.setupTokens(storState)
 
-			got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
+			got, err := handler.nextMissingUpstream(context.Background(), "test-session", testChainOwner, twoUpstreamChain)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -429,7 +433,7 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 	stor := mocks.NewMockStorage(ctrl)
 
 	storageErr := errors.New("connection refused")
-	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any()).Return(nil, storageErr).Times(1)
+	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, storageErr).Times(1)
 
 	jwtStrategy := compose.NewOAuth2JWTStrategy(
 		func(_ context.Context) (any, error) {
@@ -459,7 +463,7 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
+	got, err := handler.nextMissingUpstream(context.Background(), "test-session", testChainOwner, twoUpstreamChain)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "failed to check upstream token state")
 	assert.ErrorIs(t, err, storageErr)

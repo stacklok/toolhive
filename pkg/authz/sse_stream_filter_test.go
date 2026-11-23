@@ -637,9 +637,9 @@ func TestListMembersMapToListFilters(t *testing.T) {
 		covered[kind] = true
 	}
 	// Every list filter kind must be reached by a list member. The loop runs over
-	// the enum in order, so a kind added after responseFilterSkills must be added
-	// to this range too.
-	for kind := responseFilterTools; kind <= responseFilterSkills; kind++ {
+	// the enum in order up to responseFilterFindTool, which is not a list kind, so a
+	// list kind added anywhere before it is checked.
+	for kind := responseFilterTools; kind < responseFilterFindTool; kind++ {
 		assert.True(t, covered[kind], "list filter kind %d has no list member in listMembers", kind)
 	}
 }

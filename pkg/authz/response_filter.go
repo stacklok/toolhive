@@ -443,14 +443,15 @@ func (rfw *ResponseFilteringWriter) resolveAssembled(event []sseLine, dataValues
 }
 
 // resolveDecodedResponse is resolveAssembled for an event whose payload the caller
-// already decoded as a clean Response with a list result. It filters that response
-// directly, so the payload is not decoded a second time.
+// already decoded as a clean Response with a list or find_tool result. It filters
+// that response directly, so the payload is not decoded a second time. The failure
+// is logged once here, and the client gets the generic error body.
 func (rfw *ResponseFilteringWriter) resolveDecodedResponse(event []sseLine, response *jsonrpc2.Response) []sseLine {
 	filteredData, ferr := rfw.filterAndEncode(response)
 	if ferr != nil {
 		slog.Warn("emitting a JSON-RPC error in place of an SSE frame that failed to filter",
-			"method", rfw.method)
-		return rebuildEventWithPayload(event, rfw.errorResponseBody(response.ID, ferr), true)
+			"method", rfw.method, "error", ferr)
+		return rebuildEventWithPayload(event, encodeErrorBody(response.ID), true)
 	}
 	return rebuildEventWithPayload(event, filteredData, false)
 }

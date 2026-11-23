@@ -489,7 +489,7 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 		return failClosed(event, response.ID, err.Error())
 	}
 	if method == "" {
-		// Not a list result (e.g. a tools/call answer): pass through.
+		// Not a list result (e.g. a tools/call answer naming no tools): pass through.
 		return event
 	}
 	return w.newFilter(method).resolveDecodedResponse(event, response)
@@ -529,15 +529,20 @@ func resultMethod(result json.RawMessage) (string, error) {
 	if err != nil || method != "" {
 		return method, err
 	}
-	if !mentionsToolsMember(result) || !hasFindToolEnvelope(result) {
+	// A result without a content or structuredContent envelope is not a tool answer
+	// (an initialize answer names tools only in its capabilities) and passes through.
+	if !hasFindToolEnvelope(result) || !mentionsToolsMember(result) {
 		return "", nil
 	}
+	// A tool answer that names tools must be a readable find_tool answer or fail
+	// closed. Naming tools anywhere else (a non-text content item, a JSON array, a
+	// nested JSON string) would otherwise pass through unfiltered.
 	callResult, err := decodeFindToolCallResult(result)
 	if err != nil {
 		return "", fmt.Errorf("result names tools but is not a valid find_tool answer: %w", err)
 	}
 	if callResult.structuredContent == nil && len(callResult.outputs) == 0 {
-		return "", nil
+		return "", errors.New("result names tools but carries no find_tool output")
 	}
 	return optimizerdec.FindToolName, nil
 }

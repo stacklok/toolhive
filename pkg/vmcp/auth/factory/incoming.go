@@ -287,6 +287,7 @@ func oidcTokenValidatorConfig(oidcCfg *config.OIDCConfig, envReader env.Reader) 
 		InsecureAllowHTTP:     oidcCfg.InsecureAllowHTTP,
 		Scopes:                oidcCfg.Scopes,
 		CACertPath:            oidcCfg.CABundlePath,
+		AuthTokenFile:         oidcCfg.JWKSAuthTokenPath,
 		ClientSecret:          clientSecret,
 	}, nil
 }

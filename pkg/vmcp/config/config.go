@@ -305,6 +305,15 @@ type OIDCConfig struct {
 	// service-account CA when using Kubernetes service-account auth.
 	// +optional
 	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
+
+	// JWKSAuthTokenPath is the absolute file path to a bearer token that the
+	// OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+	// Needed when the issuer requires authentication for those endpoints, such
+	// as the Kubernetes API server. Typically populated by the Kubernetes
+	// operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+	// pod's service-account token when using Kubernetes service-account auth.
+	// +optional
+	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty" yaml:"jwksAuthTokenPath,omitempty"`
 }
 
 // AuthzConfig configures authorization.

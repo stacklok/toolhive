@@ -76,7 +76,8 @@ type ActorProfile struct {
 
 // ActorTokenValidator checks the actor token that a client presents during ID-JAG
 // issuance and reports which agent it belongs to. How a validator is registered and
-// selected is not part of this interface.
+// selected is not part of this interface. Authorizing the act claim of a token
+// presented to ToolHive is pkg/authserver/actor.
 //
 // ValidateActor is called once per issuance, after the grant checks and before the
 // ID-JAG is signed. ToolHive builds the act claim from the answer: sub is AgentID, and
@@ -126,10 +127,12 @@ type ActorProfile struct {
 //     It holds the configured target, not text from the request.
 //   - Find the user by ActorRequest.Grant.Upstream when the validator binds
 //     users by a per-issuer claim. Check that StableClaim is the claim the validator
-//     expects for that Issuer, then look the user up by StableValue. A mismatch, or an
-//     issuer the validator does not know, is a configuration fault. Return a plain
-//     error for it, not a denial, because a denial is final for the client and would
-//     hide the fault from operators.
+//     expects for that Issuer, then look the user up by StableValue. Issuer,
+//     StableClaim and StableValue are the same key as subject.Ref in
+//     pkg/authserver/subject. A mismatch, or an issuer the validator does not
+//     know, is a configuration fault. Return a plain error for it, not a denial,
+//     because a denial is final for the client and would hide the fault from
+//     operators.
 //   - The whole validation, including the validator's own calls to remote services,
 //     has a budget of currently 5 seconds; ToolHive may raise it but will not lower
 //     it. The budget also covers any time the call waits for a free slot when many

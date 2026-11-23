@@ -617,6 +617,25 @@ func WithOIDCConfig(
 	}
 }
 
+// WithOIDCRequiredSubject restricts the token "sub" claim accepted by the OIDC
+// validator: subject requires an exact match, prefix requires a prefix match.
+// Empty values apply no restriction. It must be applied after WithOIDCConfig;
+// setting a restriction when no OIDC configuration exists is an error, so a
+// subject restriction is never silently dropped.
+func WithOIDCRequiredSubject(subject, prefix string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if subject == "" && prefix == "" {
+			return nil
+		}
+		if b.config.OIDCConfig == nil {
+			return errors.New("OIDC subject restriction requires an OIDC configuration")
+		}
+		b.config.OIDCConfig.RequiredSubject = subject
+		b.config.OIDCConfig.RequiredSubjectPrefix = prefix
+		return nil
+	}
+}
+
 // WithTokenExchangeConfig sets the token exchange configuration
 func WithTokenExchangeConfig(config *tokenexchange.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

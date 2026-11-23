@@ -631,6 +631,18 @@ func (s *AuthTokenValidatorConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.RequiredSubject.Set {
+			e.FieldStart("requiredSubject")
+			s.RequiredSubject.Encode(e)
+		}
+	}
+	{
+		if s.RequiredSubjectPrefix.Set {
+			e.FieldStart("requiredSubjectPrefix")
+			s.RequiredSubjectPrefix.Encode(e)
+		}
+	}
+	{
 		if s.ResourceURL.Set {
 			e.FieldStart("resourceURL")
 			s.ResourceURL.Encode(e)
@@ -648,7 +660,7 @@ func (s *AuthTokenValidatorConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthTokenValidatorConfig = [12]string{
+var jsonFieldsNameOfAuthTokenValidatorConfig = [14]string{
 	0:  "allowPrivateIP",
 	1:  "audience",
 	2:  "authTokenFile",
@@ -659,8 +671,10 @@ var jsonFieldsNameOfAuthTokenValidatorConfig = [12]string{
 	7:  "introspectionURL",
 	8:  "issuer",
 	9:  "jwksurl",
-	10: "resourceURL",
-	11: "scopes",
+	10: "requiredSubject",
+	11: "requiredSubjectPrefix",
+	12: "resourceURL",
+	13: "scopes",
 }
 
 // Decode decodes AuthTokenValidatorConfig from json.
@@ -770,6 +784,26 @@ func (s *AuthTokenValidatorConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"jwksurl\"")
+			}
+		case "requiredSubject":
+			if err := func() error {
+				s.RequiredSubject.Reset()
+				if err := s.RequiredSubject.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"requiredSubject\"")
+			}
+		case "requiredSubjectPrefix":
+			if err := func() error {
+				s.RequiredSubjectPrefix.Reset()
+				if err := s.RequiredSubjectPrefix.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"requiredSubjectPrefix\"")
 			}
 		case "resourceURL":
 			if err := func() error {

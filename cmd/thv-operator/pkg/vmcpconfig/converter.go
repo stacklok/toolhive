@@ -499,6 +499,8 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 		Issuer:                          resolved.Issuer,
 		ClientID:                        resolved.ClientID,
 		Audience:                        resolved.Audience,
+		RequiredSubject:                 resolved.RequiredSubject,
+		RequiredSubjectPrefix:           resolved.RequiredSubjectPrefix,
 		Resource:                        resolved.ResourceURL,
 		JWKSURL:                         resolved.JWKSURL,
 		IntrospectionURL:                resolved.IntrospectionURL,

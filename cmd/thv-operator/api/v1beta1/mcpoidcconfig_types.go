@@ -61,13 +61,26 @@ type MCPOIDCConfigSpec struct {
 // KubernetesServiceAccountOIDCConfig configures OIDC for Kubernetes service account token validation.
 // This contains shared fields without audience, which is specified per-server via MCPOIDCConfigReference.
 type KubernetesServiceAccountOIDCConfig struct {
-	// ServiceAccount is the name of the service account to validate tokens for.
-	// If empty, uses the pod's service account.
+	// ServiceAccount restricts accepted tokens to a single service account.
+	// When set, the token's "sub" claim must equal
+	// system:serviceaccount:<namespace>:<serviceAccount>, where <namespace> is
+	// Namespace if set, otherwise the namespace of the workload referencing this config.
+	// When empty, tokens are not restricted to a specific service account.
+	// Must be a valid service account name (DNS-1123 subdomain).
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 
-	// Namespace is the namespace of the service account.
-	// If empty, uses the MCPServer's namespace.
+	// Namespace is the namespace of the service account(s) whose tokens are accepted.
+	// When set without ServiceAccount, any service account in this namespace is accepted
+	// (the "sub" claim must start with system:serviceaccount:<namespace>:).
+	// When set with ServiceAccount, it selects that service account's namespace.
+	// When both ServiceAccount and Namespace are empty, no subject restriction is applied
+	// and any token from the issuer with a matching audience is accepted.
+	// Must be a valid namespace name (DNS-1123 label).
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 

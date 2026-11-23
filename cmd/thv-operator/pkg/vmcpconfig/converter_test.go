@@ -116,12 +116,16 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				ResourceURL:        "https://resource.example.com",
 				JWKSAllowPrivateIP: true, ProtectedResourceAllowPrivateIP: true,
 				JWKSURL: "https://issuer.example.com/jwks", IntrospectionURL: "https://issuer.example.com/introspect",
+				RequiredSubject:       "system:serviceaccount:clients:agent",
+				RequiredSubjectPrefix: "system:serviceaccount:clients:",
 			},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				require.NotNil(t, config.IncomingAuth.OIDC)
 				assert.Equal(t, "https://issuer.example.com", config.IncomingAuth.OIDC.Issuer)
+				assert.Equal(t, "system:serviceaccount:clients:agent", config.IncomingAuth.OIDC.RequiredSubject)
+				assert.Equal(t, "system:serviceaccount:clients:", config.IncomingAuth.OIDC.RequiredSubjectPrefix)
 				assert.Equal(t, "my-audience", config.IncomingAuth.OIDC.Audience)
 				assert.Equal(t, "https://resource.example.com", config.IncomingAuth.OIDC.Resource)
 				assert.Equal(t, "https://issuer.example.com/jwks", config.IncomingAuth.OIDC.JWKSURL)

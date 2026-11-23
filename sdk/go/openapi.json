@@ -161,6 +161,14 @@
             "description": "JWKSURL is the URL to fetch the JWKS from",
             "type": "string"
           },
+          "requiredSubject": {
+            "description": "RequiredSubject, when non-empty, requires the token's \"sub\" claim to equal\nthis value exactly. Tokens with a missing or empty \"sub\" are rejected.\nIf RequiredSubjectPrefix is also set, both checks must pass.",
+            "type": "string"
+          },
+          "requiredSubjectPrefix": {
+            "description": "RequiredSubjectPrefix, when non-empty, requires the token's \"sub\" claim to\nstart with this value. Tokens with a missing or empty \"sub\" are rejected.\nIf RequiredSubject is also set, both checks must pass.",
+            "type": "string"
+          },
           "resourceURL": {
             "description": "ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)",
             "type": "string"

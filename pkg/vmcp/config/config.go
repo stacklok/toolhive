@@ -251,6 +251,18 @@ type OIDCConfig struct {
 	// Audience is the required token audience.
 	Audience string `json:"audience" yaml:"audience"`
 
+	// RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+	// Tokens with a missing or empty "sub" claim are rejected.
+	// If RequiredSubjectPrefix is also set, both checks must pass.
+	// +optional
+	RequiredSubject string `json:"requiredSubject,omitempty" yaml:"requiredSubject,omitempty"`
+
+	// RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+	// Tokens with a missing or empty "sub" claim are rejected.
+	// If RequiredSubject is also set, both checks must pass.
+	// +optional
+	RequiredSubjectPrefix string `json:"requiredSubjectPrefix,omitempty" yaml:"requiredSubjectPrefix,omitempty"`
+
 	// Resource is the OAuth 2.0 resource indicator (RFC 8707).
 	// Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).
 	// If not specified, defaults to Audience.

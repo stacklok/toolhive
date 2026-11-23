@@ -22,6 +22,7 @@ import (
 
 	"github.com/cenkalti/backoff/v7"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v4/jwk"
@@ -351,6 +352,7 @@ var (
 	ErrTokenExpired            = errors.New("token expired")
 	ErrInvalidIssuer           = errors.New("invalid issuer")
 	ErrInvalidAudience         = errors.New("invalid audience")
+	ErrInvalidSubject          = errors.New("invalid subject")
 	ErrMissingJWKSURL          = errors.New("missing JWKS URL")
 	ErrFailedToFetchJWKS       = errors.New("failed to fetch JWKS")
 	ErrFailedToDiscoverOIDC    = errors.New("failed to discover OIDC configuration")
@@ -362,6 +364,12 @@ type TokenValidator struct {
 	// OIDC configuration
 	issuer            string
 	audience          string
+	requiredSubject   string // Optional exact "sub" match
+	requiredSubPrefix string // Optional "sub" prefix match
+	// rejectedSubjects bounds the WARN volume of subject rejections: each
+	// rejected "sub" is logged at WARN at most once per
+	// rejectedSubjectLogInterval. Nil when no subject restriction is set.
+	rejectedSubjects  *expirable.LRU[string, struct{}]
 	jwksURL           string
 	clientID          string
 	clientSecret      string // Optional client secret for introspection
@@ -409,6 +417,16 @@ type TokenValidatorConfig struct {
 
 	// Audience is the expected audience for the token
 	Audience string
+
+	// RequiredSubject, when non-empty, requires the token's "sub" claim to equal
+	// this value exactly. Tokens with a missing or empty "sub" are rejected.
+	// If RequiredSubjectPrefix is also set, both checks must pass.
+	RequiredSubject string
+
+	// RequiredSubjectPrefix, when non-empty, requires the token's "sub" claim to
+	// start with this value. Tokens with a missing or empty "sub" are rejected.
+	// If RequiredSubject is also set, both checks must pass.
+	RequiredSubjectPrefix string
 
 	// JWKSURL is the URL to fetch the JWKS from
 	JWKSURL string
@@ -707,6 +725,8 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	validator := &TokenValidator{
 		issuer:                   config.Issuer,
 		audience:                 config.Audience,
+		requiredSubject:          config.RequiredSubject,
+		requiredSubPrefix:        config.RequiredSubjectPrefix,
 		jwksURL:                  jwksURL,
 		introspectURL:            config.IntrospectionURL,
 		clientID:                 config.ClientID,
@@ -720,6 +740,14 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 		upstreamTokenReader:      o.upstreamTokenReader,
 		keyProvider:              o.keyProvider,
 		embeddedAuthServerIssuer: o.embeddedAuthServerIssuer,
+	}
+
+	if config.RequiredSubject != "" || config.RequiredSubjectPrefix != "" {
+		validator.rejectedSubjects = expirable.NewLRU[string, struct{}](
+			rejectedSubjectLogCacheSize, nil, rejectedSubjectLogInterval)
+		slog.Debug("OIDC subject restriction enabled",
+			"required_subject", config.RequiredSubject,
+			"required_subject_prefix", config.RequiredSubjectPrefix)
 	}
 
 	return validator, nil
@@ -1038,6 +1066,9 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 			return ErrInvalidAudience
 		}
 	}
+	if err := v.validateSubject(claims); err != nil {
+		return err
+	}
 
 	// Validate the expiration time
 	expirationTime, err := claims.GetExpirationTime()
@@ -1046,6 +1077,52 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 	}
 
 	return nil
+}
+
+// validateSubject enforces the configured subject restrictions, if any.
+// When both an exact subject and a prefix are configured, both must hold.
+func (v *TokenValidator) validateSubject(claims jwt.MapClaims) error {
+	if v.requiredSubject == "" && v.requiredSubPrefix == "" {
+		return nil
+	}
+	sub, err := claims.GetSubject()
+	if err != nil || sub == "" ||
+		(v.requiredSubject != "" && sub != v.requiredSubject) ||
+		(v.requiredSubPrefix != "" && !strings.HasPrefix(sub, v.requiredSubPrefix)) {
+		v.logRejectedSubject(sub)
+		return ErrInvalidSubject
+	}
+	return nil
+}
+
+const (
+	// rejectedSubjectLogInterval is how long a rejected subject stays quiet at
+	// WARN after it was logged.
+	rejectedSubjectLogInterval = 5 * time.Minute
+	// rejectedSubjectLogCacheSize caps the number of distinct rejected subjects
+	// tracked for WARN deduplication.
+	rejectedSubjectLogCacheSize = 256
+)
+
+// logRejectedSubject is the operator-visible signal for a subject rejection:
+// callers that worked before the restriction was enforced surface here.
+// Any workload that can mint a token for the audience can trigger it at
+// request rate, so the WARN is bounded by a negative cache: each subject is
+// logged at WARN once per rejectedSubjectLogInterval and at DEBUG otherwise.
+// Adding WARN lines requires distinct subjects, which in Kubernetes means
+// creating service accounts.
+func (v *TokenValidator) logRejectedSubject(sub string) {
+	if v.rejectedSubjects != nil {
+		if v.rejectedSubjects.Contains(sub) {
+			slog.Debug("token subject rejected by OIDC subject restriction", "sub", sub)
+			return
+		}
+		v.rejectedSubjects.Add(sub, struct{}{})
+	}
+	slog.Warn("token subject rejected by OIDC subject restriction",
+		"sub", sub,
+		"required_subject", v.requiredSubject,
+		"required_subject_prefix", v.requiredSubPrefix)
 }
 
 func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {

@@ -598,6 +598,8 @@ _Appears in:_
 | `clientId` _string_ | ClientID is the OAuth client ID. |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
 | `audience` _string_ | Audience is the required token audience. |  |  |
+| `requiredSubject` _string_ | RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.<br />Tokens with a missing or empty "sub" claim are rejected.<br />If RequiredSubjectPrefix is also set, both checks must pass. |  | Optional: \{\} <br /> |
+| `requiredSubjectPrefix` _string_ | RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.<br />Tokens with a missing or empty "sub" claim are rejected.<br />If RequiredSubject is also set, both checks must pass. |  | Optional: \{\} <br /> |
 | `resource` _string_ | Resource is the OAuth 2.0 resource indicator (RFC 8707).<br />Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).<br />If not specified, defaults to Audience. |  |  |
 | `jwksUrl` _string_ | JWKSURL is the explicit JWKS endpoint URL.<br />When set, skips OIDC discovery and fetches the JWKS directly from this URL.<br />This is useful when the OIDC issuer does not serve a /.well-known/openid-configuration. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the token introspection endpoint URL (RFC 7662).<br />When set, enables token introspection for opaque (non-JWT) tokens. |  | Optional: \{\} <br /> |
@@ -2558,8 +2560,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `serviceAccount` _string_ | ServiceAccount is the name of the service account to validate tokens for.<br />If empty, uses the pod's service account. |  | Optional: \{\} <br /> |
-| `namespace` _string_ | Namespace is the namespace of the service account.<br />If empty, uses the MCPServer's namespace. |  | Optional: \{\} <br /> |
+| `serviceAccount` _string_ | ServiceAccount restricts accepted tokens to a single service account.<br />When set, the token's "sub" claim must equal<br />system:serviceaccount:<namespace>:<serviceAccount>, where <namespace> is<br />Namespace if set, otherwise the namespace of the workload referencing this config.<br />When empty, tokens are not restricted to a specific service account.<br />Must be a valid service account name (DNS-1123 subdomain). |  | MaxLength: 253 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` <br />Optional: \{\} <br /> |
+| `namespace` _string_ | Namespace is the namespace of the service account(s) whose tokens are accepted.<br />When set without ServiceAccount, any service account in this namespace is accepted<br />(the "sub" claim must start with system:serviceaccount:<namespace>:).<br />When set with ServiceAccount, it selects that service account's namespace.<br />When both ServiceAccount and Namespace are empty, no subject restriction is applied<br />and any token from the issuer with a matching audience is accepted.<br />Must be a valid namespace name (DNS-1123 label). |  | MaxLength: 63 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `issuer` _string_ | Issuer is the OIDC issuer URL. | https://kubernetes.default.svc | Optional: \{\} <br /> |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from.<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint.<br />If empty, OIDC discovery will be used to automatically determine the introspection URL. |  | Optional: \{\} <br /> |

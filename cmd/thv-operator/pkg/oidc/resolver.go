@@ -20,6 +20,10 @@ const (
 	defaultK8sCABundlePath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 	defaultK8sTokenPath    = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec
 	defaultK8sIssuer       = "https://kubernetes.default.svc"
+
+	// serviceAccountSubjectPrefix is the prefix of the "sub" claim in Kubernetes
+	// service account tokens: system:serviceaccount:<namespace>:<name>.
+	serviceAccountSubjectPrefix = "system:serviceaccount:"
 )
 
 // OIDCConfig represents the resolved OIDC configuration values
@@ -37,6 +41,10 @@ type OIDCConfig struct { //nolint:revive // Keeping OIDCConfig name for backward
 	ProtectedResourceAllowPrivateIP bool
 	InsecureAllowHTTP               bool
 	Scopes                          []string
+	// RequiredSubject, when non-empty, is the exact "sub" claim a token must carry.
+	RequiredSubject string
+	// RequiredSubjectPrefix, when non-empty, is a prefix the token's "sub" claim must start with.
+	RequiredSubjectPrefix string
 }
 
 //go:generate mockgen -destination=mocks/mock_resolver.go -package=mocks -source=resolver.go Resolver
@@ -89,7 +97,7 @@ func (r *resolver) ResolveFromConfigRef(
 
 	switch oidcCfg.Spec.Type {
 	case mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount:
-		return r.resolveFromK8sServiceAccountConfig(ctx, oidcCfg.Spec.KubernetesServiceAccount, ref, resourceURL)
+		return r.resolveFromK8sServiceAccountConfig(ctx, oidcCfg.Spec.KubernetesServiceAccount, ref, resourceURL, namespace)
 	case mcpv1beta1.MCPOIDCConfigTypeInline:
 		return r.resolveFromInlineSharedConfig(oidcCfg.Spec.Inline, ref, resourceURL)
 	default:
@@ -99,11 +107,14 @@ func (r *resolver) ResolveFromConfigRef(
 
 // resolveFromK8sServiceAccountConfig resolves OIDC config from a shared KubernetesServiceAccount config
 // with per-server audience override from the MCPOIDCConfigReference.
+// workloadNamespace is the namespace of the workload referencing the config; it is
+// used as the service account namespace when ServiceAccount is set without Namespace.
 func (*resolver) resolveFromK8sServiceAccountConfig(
 	ctx context.Context,
 	config *mcpv1beta1.KubernetesServiceAccountOIDCConfig,
 	ref *mcpv1beta1.MCPOIDCConfigReference,
 	resourceURL string,
+	workloadNamespace string,
 ) (*OIDCConfig, error) {
 	if config == nil {
 		ctxLogger := log.FromContext(ctx)
@@ -140,7 +151,31 @@ func (*resolver) resolveFromK8sServiceAccountConfig(
 		result.JWKSAllowPrivateIP = true
 	}
 
+	result.RequiredSubject, result.RequiredSubjectPrefix = serviceAccountSubjectRestriction(
+		config.ServiceAccount, config.Namespace, workloadNamespace)
+
 	return result, nil
+}
+
+// serviceAccountSubjectRestriction computes the "sub" claim restriction for a
+// kubernetesServiceAccount config. Only what is set is enforced:
+//   - serviceAccount set: exact subject system:serviceaccount:<ns>:<serviceAccount>,
+//     where <ns> is namespace if set, otherwise workloadNamespace.
+//   - only namespace set: prefix system:serviceaccount:<namespace>: (any SA in it).
+//   - neither set: no restriction.
+func serviceAccountSubjectRestriction(serviceAccount, namespace, workloadNamespace string) (exact, prefix string) {
+	switch {
+	case serviceAccount != "":
+		ns := namespace
+		if ns == "" {
+			ns = workloadNamespace
+		}
+		return serviceAccountSubjectPrefix + ns + ":" + serviceAccount, ""
+	case namespace != "":
+		return "", serviceAccountSubjectPrefix + namespace + ":"
+	default:
+		return "", ""
+	}
 }
 
 // resolveFromInlineSharedConfig resolves OIDC config from a shared inline config

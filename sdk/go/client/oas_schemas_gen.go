@@ -365,6 +365,14 @@ type AuthTokenValidatorConfig struct {
 	Issuer OptString `json:"issuer"`
 	// JWKSURL is the URL to fetch the JWKS from.
 	Jwksurl OptString `json:"jwksurl"`
+	// RequiredSubject, when non-empty, requires the token's "sub" claim to equal
+	// this value exactly. Tokens with a missing or empty "sub" are rejected.
+	// If RequiredSubjectPrefix is also set, both checks must pass.
+	RequiredSubject OptString `json:"requiredSubject"`
+	// RequiredSubjectPrefix, when non-empty, requires the token's "sub" claim to
+	// start with this value. Tokens with a missing or empty "sub" are rejected.
+	// If RequiredSubject is also set, both checks must pass.
+	RequiredSubjectPrefix OptString `json:"requiredSubjectPrefix"`
 	// ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728).
 	ResourceURL OptString `json:"resourceURL"`
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
@@ -420,6 +428,16 @@ func (s *AuthTokenValidatorConfig) GetIssuer() OptString {
 // GetJwksurl returns the value of Jwksurl.
 func (s *AuthTokenValidatorConfig) GetJwksurl() OptString {
 	return s.Jwksurl
+}
+
+// GetRequiredSubject returns the value of RequiredSubject.
+func (s *AuthTokenValidatorConfig) GetRequiredSubject() OptString {
+	return s.RequiredSubject
+}
+
+// GetRequiredSubjectPrefix returns the value of RequiredSubjectPrefix.
+func (s *AuthTokenValidatorConfig) GetRequiredSubjectPrefix() OptString {
+	return s.RequiredSubjectPrefix
 }
 
 // GetResourceURL returns the value of ResourceURL.
@@ -480,6 +498,16 @@ func (s *AuthTokenValidatorConfig) SetIssuer(val OptString) {
 // SetJwksurl sets the value of Jwksurl.
 func (s *AuthTokenValidatorConfig) SetJwksurl(val OptString) {
 	s.Jwksurl = val
+}
+
+// SetRequiredSubject sets the value of RequiredSubject.
+func (s *AuthTokenValidatorConfig) SetRequiredSubject(val OptString) {
+	s.RequiredSubject = val
+}
+
+// SetRequiredSubjectPrefix sets the value of RequiredSubjectPrefix.
+func (s *AuthTokenValidatorConfig) SetRequiredSubjectPrefix(val OptString) {
+	s.RequiredSubjectPrefix = val
 }
 
 // SetResourceURL sets the value of ResourceURL.

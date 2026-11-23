@@ -170,6 +170,64 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 	}
 }
 
+func TestResolveFromConfigRef_KubernetesServiceAccountSubject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		ksa            *mcpv1beta1.KubernetesServiceAccountOIDCConfig
+		wantSubject    string
+		wantSubjPrefix string
+	}{
+		{
+			name: "neither serviceAccount nor namespace leaves subject unrestricted",
+			ksa:  &mcpv1beta1.KubernetesServiceAccountOIDCConfig{},
+		},
+		{
+			name:        "serviceAccount only uses the workload namespace",
+			ksa:         &mcpv1beta1.KubernetesServiceAccountOIDCConfig{ServiceAccount: "agent"},
+			wantSubject: "system:serviceaccount:workload-ns:agent",
+		},
+		{
+			name: "serviceAccount and namespace require exact subject",
+			ksa: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
+				ServiceAccount: "agent", Namespace: "clients",
+			},
+			wantSubject: "system:serviceaccount:clients:agent",
+		},
+		{
+			name:           "namespace only requires subject prefix",
+			ksa:            &mcpv1beta1.KubernetesServiceAccountOIDCConfig{Namespace: "clients"},
+			wantSubjPrefix: "system:serviceaccount:clients:",
+		},
+		{
+			name: "nil config leaves subject unrestricted",
+			ksa:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := NewResolver(nil).ResolveFromConfigRef(
+				t.Context(),
+				&mcpv1beta1.MCPOIDCConfigReference{Name: "k", Audience: "aud"},
+				&mcpv1beta1.MCPOIDCConfig{
+					Spec: mcpv1beta1.MCPOIDCConfigSpec{
+						Type:                     mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+						KubernetesServiceAccount: tt.ksa,
+					},
+				},
+				"srv", "workload-ns", 8080,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.wantSubject, result.RequiredSubject)
+			assert.Equal(t, tt.wantSubjPrefix, result.RequiredSubjectPrefix)
+		})
+	}
+}
+
 func TestResolveFromConfigRef_InlineType(t *testing.T) {
 	t.Parallel()
 

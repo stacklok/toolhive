@@ -3607,6 +3607,18 @@ spec:
                               ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
                               Use with caution - only enable for trusted internal IDPs or testing
                             type: boolean
+                          requiredSubject:
+                            description: |-
+                              RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubjectPrefix is also set, both checks must pass.
+                            type: string
+                          requiredSubjectPrefix:
+                            description: |-
+                              RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubject is also set, both checks must pass.
+                            type: string
                           resource:
                             description: |-
                               Resource is the OAuth 2.0 resource indicator (RFC 8707).
@@ -9263,6 +9275,18 @@ spec:
                               ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
                               Use with caution - only enable for trusted internal IDPs or testing
                             type: boolean
+                          requiredSubject:
+                            description: |-
+                              RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubjectPrefix is also set, both checks must pass.
+                            type: string
+                          requiredSubjectPrefix:
+                            description: |-
+                              RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubject is also set, both checks must pass.
+                            type: string
                           resource:
                             description: |-
                               Resource is the OAuth 2.0 resource indicator (RFC 8707).

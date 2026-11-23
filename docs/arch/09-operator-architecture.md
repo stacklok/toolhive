@@ -249,7 +249,7 @@ Defines shared OIDC provider configuration that can be referenced by multiple wo
 MCPOIDCConfig eliminates OIDC configuration duplication — define an identity provider once and reference it from any number of workloads. A single issuer URL change updates all referencing workloads automatically.
 
 **Configuration source variants** (mutually exclusive, CEL enforced):
-- `kubernetesServiceAccount` — Uses Kubernetes service account tokens with auto-discovered JWKS
+- `kubernetesServiceAccount` — Uses Kubernetes service account tokens with auto-discovered JWKS. Optional `serviceAccount` and `namespace` restrict which callers are accepted by checking the token's `sub` claim: `serviceAccount` requires exactly `system:serviceaccount:<namespace>:<serviceAccount>` (namespace defaults to the referencing workload's), `namespace` alone accepts any service account in that namespace, and leaving both empty applies no subject restriction. The operator resolves these into `RequiredSubject` / `RequiredSubjectPrefix` on the token validator, which rejects mismatches with `invalid_token` (`invalid subject`) and logs the rejected subject at WARN.
 - `inline` — Explicit issuer, JWKS URL, client credentials (secrets via `clientSecretRef`)
 
 **Per-server overrides** live in the workload's `oidcConfigRef` field (not the shared spec):

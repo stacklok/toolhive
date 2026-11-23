@@ -275,17 +275,19 @@ func oidcTokenValidatorConfig(oidcCfg *config.OIDCConfig, envReader env.Reader) 
 	}
 
 	return &auth.TokenValidatorConfig{
-		Issuer:            oidcCfg.Issuer,
-		ClientID:          oidcCfg.ClientID,
-		Audience:          oidcCfg.Audience,
-		ResourceURL:       oidcCfg.Resource,
-		JWKSURL:           oidcCfg.JWKSURL,
-		IntrospectionURL:  oidcCfg.IntrospectionURL,
-		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
-		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
-		Scopes:            oidcCfg.Scopes,
-		CACertPath:        oidcCfg.CABundlePath,
-		ClientSecret:      clientSecret,
+		Issuer:                oidcCfg.Issuer,
+		ClientID:              oidcCfg.ClientID,
+		Audience:              oidcCfg.Audience,
+		RequiredSubject:       oidcCfg.RequiredSubject,
+		RequiredSubjectPrefix: oidcCfg.RequiredSubjectPrefix,
+		ResourceURL:           oidcCfg.Resource,
+		JWKSURL:               oidcCfg.JWKSURL,
+		IntrospectionURL:      oidcCfg.IntrospectionURL,
+		AllowPrivateIP:        oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
+		InsecureAllowHTTP:     oidcCfg.InsecureAllowHTTP,
+		Scopes:                oidcCfg.Scopes,
+		CACertPath:            oidcCfg.CABundlePath,
+		ClientSecret:          clientSecret,
 	}, nil
 }
 

@@ -638,10 +638,36 @@ func TestOBOExchangerCacheKey(t *testing.T) {
 	}
 }
 
+// barrierExchangerStore wraps an oboExchangerStore and holds every caller
+// after a lookup miss until wantMisses callers have missed (or the timeout
+// passes), so they all reach lookupOrStore together.
+type barrierExchangerStore struct {
+	oboExchangerStore
+	wantMisses int32
+	missed     atomic.Int32
+	allMissed  chan struct{}
+}
+
+func (b *barrierExchangerStore) lookup(key string) (exchange.Exchanger, bool) {
+	ex, ok := b.oboExchangerStore.lookup(key)
+	if ok {
+		return ex, ok
+	}
+	if b.missed.Add(1) == b.wantMisses {
+		close(b.allMissed)
+	}
+	select {
+	case <-b.allMissed:
+	case <-time.After(5 * time.Second):
+		// Fall through: the build count assertion reports the failure.
+	}
+	return nil, false
+}
+
 // TestOBOGetOrCreateExchanger_BuildsOnceUnderContention exercises the
-// double-checked lock deterministically: the afterReadMiss hook holds every
-// caller after its read-locked miss until all of them have missed, so they all
-// then queue on the write lock. Every caller after the first must find the
+// double-checked build deterministically: a wrapping store holds every caller
+// after its lookup miss until all of them have missed, so they all then
+// contend in lookupOrStore. Every caller after the first must find the
 // Exchanger on the second check rather than building another one.
 func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 	t.Parallel()
@@ -655,18 +681,12 @@ func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 		return &oboStubExchanger{}, nil
 	})
 
-	var missed atomic.Int32
-	allMissed := make(chan struct{})
-	s.afterReadMiss = func() {
-		if missed.Add(1) == callers {
-			close(allMissed)
-		}
-		select {
-		case <-allMissed:
-		case <-time.After(5 * time.Second):
-			// Fall through: the build count assertion reports the failure.
-		}
+	store := &barrierExchangerStore{
+		oboExchangerStore: s.exchangers,
+		wantMisses:        callers,
+		allMissed:         make(chan struct{}),
 	}
+	s.exchangers = store
 
 	results := make(chan error, callers)
 	for range callers {
@@ -687,7 +707,7 @@ func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, int32(callers), missed.Load(), "every caller must miss on the read-locked check")
+	require.Equal(t, int32(callers), store.missed.Load(), "every caller must miss on the read-locked check")
 	assert.Equal(t, int32(1), builds.Load(),
 		"callers queued on the write lock must reuse the Exchanger built by the first")
 }
@@ -709,6 +729,7 @@ func TestOBOValidate_Invalid(t *testing.T) {
 	}{
 		{name: "nil obo", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO = nil }, wantMsg: "OBO configuration is required"},
 		{name: "missing token url", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.TokenURL = "" }, wantMsg: "tokenUrl is required"},
+		{name: "whitespace token url", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.TokenURL = " \t " }, wantMsg: "tokenUrl is required"},
 		{name: "missing client id", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.ClientID = "" }, wantMsg: "clientId is required"},
 		{name: "whitespace client id", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.ClientID = "  " }, wantMsg: "clientId is required"},
 		{name: "no audience or scopes", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.Scopes = nil; s.OBO.Audience = "" }, wantMsg: "one of audience or scopes is required"},

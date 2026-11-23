@@ -61,18 +61,54 @@ type OBOStrategy struct {
 	// production uses defaultBuildOBOExchanger.
 	buildExchanger func(cfg *authtypes.OBOConfig, clientSecret string) (exchange.Exchanger, error)
 
-	// afterReadMiss, when set, runs in getOrCreateExchanger between the
-	// read-locked miss and taking the write lock. Tests use it to make every
-	// caller miss before any of them builds; production leaves it nil.
-	afterReadMiss func()
-
-	// mu guards exchangers.
-	mu sync.RWMutex
-
 	// exchangers caches the per-backend Exchanger keyed by oboExchangerCacheKey.
 	// Each is shared across all users of that backend (the cache partitions per
-	// user internally).
-	exchangers map[string]exchange.Exchanger
+	// user internally). It is an interface so tests can wrap the store to
+	// control the interleaving of concurrent callers.
+	exchangers oboExchangerStore
+}
+
+// oboExchangerStore holds the per-backend Exchangers. lookup is the fast
+// read-only path; lookupOrStore re-checks under exclusive access and builds
+// only when the key is still absent, so concurrent callers that all missed in
+// lookup share a single build.
+type oboExchangerStore interface {
+	lookup(key string) (exchange.Exchanger, bool)
+	lookupOrStore(key string, build func() (exchange.Exchanger, error)) (exchange.Exchanger, error)
+}
+
+// rwExchangerStore is the production oboExchangerStore: a map behind a
+// read-write mutex with a double-checked build.
+type rwExchangerStore struct {
+	mu sync.RWMutex
+	m  map[string]exchange.Exchanger
+}
+
+func newRWExchangerStore() *rwExchangerStore {
+	return &rwExchangerStore{m: make(map[string]exchange.Exchanger)}
+}
+
+func (r *rwExchangerStore) lookup(key string) (exchange.Exchanger, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ex, ok := r.m[key]
+	return ex, ok
+}
+
+func (r *rwExchangerStore) lookupOrStore(
+	key string, build func() (exchange.Exchanger, error),
+) (exchange.Exchanger, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ex, ok := r.m[key]; ok {
+		return ex, nil
+	}
+	ex, err := build()
+	if err != nil {
+		return nil, err
+	}
+	r.m[key] = ex
+	return ex, nil
 }
 
 // NewOBOStrategy returns a Strategy using the default Entra+cache Exchanger builder
@@ -100,7 +136,7 @@ func newOBOStrategy(
 		envReader:      envReader,
 		auditLogger:    auditLogger,
 		buildExchanger: build,
-		exchangers:     make(map[string]exchange.Exchanger),
+		exchangers:     newRWExchangerStore(),
 	}
 }
 
@@ -204,29 +240,12 @@ func (s *OBOStrategy) resolveClientSecret(cfg *authtypes.OBOConfig) (string, err
 func (s *OBOStrategy) getOrCreateExchanger(cfg *authtypes.OBOConfig, clientSecret string) (exchange.Exchanger, error) {
 	key := oboExchangerCacheKey(cfg, clientSecret)
 
-	s.mu.RLock()
-	if ex, ok := s.exchangers[key]; ok {
-		s.mu.RUnlock()
+	if ex, ok := s.exchangers.lookup(key); ok {
 		return ex, nil
 	}
-	s.mu.RUnlock()
-
-	if s.afterReadMiss != nil {
-		s.afterReadMiss()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ex, ok := s.exchangers[key]; ok {
-		return ex, nil
-	}
-
-	ex, err := s.buildExchanger(cfg, clientSecret)
-	if err != nil {
-		return nil, err
-	}
-	s.exchangers[key] = ex
-	return ex, nil
+	return s.exchangers.lookupOrStore(key, func() (exchange.Exchanger, error) {
+		return s.buildExchanger(cfg, clientSecret)
+	})
 }
 
 // mapExchangeError translates an exchange failure into the error the Strategy
@@ -348,7 +367,7 @@ func parseOBOConfig(strategy *authtypes.BackendAuthStrategy) (*authtypes.OBOConf
 	}
 	cfg := strategy.OBO
 
-	if cfg.TokenURL == "" {
+	if strings.TrimSpace(cfg.TokenURL) == "" {
 		return nil, fmt.Errorf("tokenUrl is required")
 	}
 	if strings.TrimSpace(cfg.ClientID) == "" {

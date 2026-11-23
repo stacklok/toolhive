@@ -628,6 +628,9 @@ func (c *RunConfig) Validate() error {
 	if err := validateTrustedIssuers(normalized.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
+	if err := c.validateResolveIssuers(normalized.TrustedIssuers); err != nil {
+		return err
+	}
 	if err := c.validateSPIFFEClientIDsNotDelegates(normalized.DelegateClients); err != nil {
 		return err
 	}
@@ -2433,7 +2436,38 @@ func (c *Config) validateDelegationConfig() error {
 	if err := c.validateActorProfilesRegistered(); err != nil {
 		return err
 	}
-	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
+	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
+		return err
+	}
+	return validateResolveIssuerUpstream(c.TrustedIssuers,
+		len(c.Upstreams) > 0 && c.Upstreams[0].Type == UpstreamProviderTypeOIDC)
+}
+
+// validateResolveIssuers runs the resolve-issuer upstream check for the
+// run-config. Config.Validate also runs it, but this one fires first: it must
+// refuse before upstream registration, for the same reason as the delegate
+// clients in Validate.
+func (c *RunConfig) validateResolveIssuers(issuers []tokenexchange.TrustedIssuer) error {
+	return validateResolveIssuerUpstream(issuers,
+		len(c.Upstreams) > 0 && c.Upstreams[0].Type == UpstreamProviderTypeOIDC)
+}
+
+// validateResolveIssuerUpstream refuses a resolve issuer unless the first
+// upstream is an OIDC identity provider (firstUpstreamOIDC). Only the first
+// upstream writes provider-identity rows, and only an OIDC upstream has the
+// issuer URL and subject claim the resolution matches against.
+func validateResolveIssuerUpstream(issuers []tokenexchange.TrustedIssuer, firstUpstreamOIDC bool) error {
+	if firstUpstreamOIDC {
+		return nil
+	}
+	for _, issuer := range issuers {
+		if issuer.JWTBearerGrant != nil && issuer.JWTBearerGrant.SubjectMode == tokenexchange.SubjectModeResolve {
+			return fmt.Errorf(
+				"trusted_issuers: issuer_url %q: jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream",
+				issuer.IssuerURL)
+		}
+	}
+	return nil
 }
 
 // hasStaticConfidentialClients reports whether any delegate client is

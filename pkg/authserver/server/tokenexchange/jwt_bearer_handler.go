@@ -266,7 +266,7 @@ func idJAGBindingRefusal(err error) error {
 	case errors.Is(err, errResourceUnbound):
 		return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonResourceDenied, ""))
 	case errors.Is(err, errSubjectUnbound):
-		return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonSubjectUnknown, ""))
+		return refuseSubjectUnknown()
 	}
 	return err
 }

@@ -2809,6 +2809,87 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_ResolveIssuerUpstream(t *testing.T) {
+	t.Parallel()
+
+	oauth2Upstream := UpstreamConfig{
+		Name: "oauth", Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &upstream.OAuth2Config{
+			CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+			AuthorizationEndpoint: "https://idp.example.com/authorize",
+			TokenEndpoint:         "https://idp.example.com/token",
+		},
+	}
+	oidcUpstream := UpstreamConfig{
+		Name: "oidc", Type: UpstreamProviderTypeOIDC,
+		OIDCConfig: &upstream.OIDCConfig{
+			CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+			Issuer:            "https://accounts.google.com",
+		},
+	}
+	issuer := func(mode tokenexchange.SubjectMode, bindings []tokenexchange.JWTBearerSubjectBinding) tokenexchange.TrustedIssuer {
+		return tokenexchange.TrustedIssuer{
+			IssuerURL: "https://idp.example.com",
+			JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+				MaxAssertionAge:        "1h",
+				SubjectBindings:        bindings,
+				AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+				SubjectMode:            mode,
+			},
+		}
+	}
+	bindings := []tokenexchange.JWTBearerSubjectBinding{{Subject: "user", AllowedResources: []string{"https://mcp.example.com"}}}
+	const needsOIDC = `trusted_issuers: issuer_url "https://idp.example.com": ` +
+		`jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream`
+
+	tests := []struct {
+		name      string
+		upstreams []UpstreamConfig
+		issuer    tokenexchange.TrustedIssuer
+		wantErr   string
+	}{
+		{name: "resolve with no upstreams", issuer: issuer(tokenexchange.SubjectModeResolve, nil), wantErr: needsOIDC},
+		{
+			name: "resolve with an oauth2 first upstream", upstreams: []UpstreamConfig{oauth2Upstream},
+			issuer: issuer(tokenexchange.SubjectModeResolve, nil), wantErr: needsOIDC,
+		},
+		{
+			name: "resolve with a later oidc upstream only", upstreams: []UpstreamConfig{oauth2Upstream, oidcUpstream},
+			issuer: issuer(tokenexchange.SubjectModeResolve, nil), wantErr: needsOIDC,
+		},
+		{
+			name: "resolve with an oidc first upstream", upstreams: []UpstreamConfig{oidcUpstream},
+			issuer: issuer(tokenexchange.SubjectModeResolve, nil),
+		},
+		{name: "namespaced issuer with no upstreams", issuer: issuer("", bindings)},
+		{
+			name: "resolve with bindings keeps the trusted_issuers prefix", upstreams: []UpstreamConfig{oidcUpstream},
+			issuer: issuer(tokenexchange.SubjectModeResolve, bindings),
+			wantErr: `trusted_issuers: issuer_url "https://idp.example.com": ` +
+				`jwt_bearer_grant.subject_bindings must be empty when subject_mode is resolve`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{
+				Issuer:           "https://example.com",
+				KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				HMACSecrets:      &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+				Upstreams:        tt.upstreams,
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				TrustedIssuers:   []tokenexchange.TrustedIssuer{tt.issuer},
+			}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tt.wantErr)
+		})
+	}
+}
+
 // TestRunConfigValidate_TrustedIssuers asserts that RunConfig.Validate
 // itself catches every TrustedIssuers failure mode reachable through
 // validateTrustedIssuers — the four structural checks, the issuer_url shape
@@ -2969,6 +3050,54 @@ func TestConfig_WarnTrustedIssuerAudiences(t *testing.T) {
 				require.Empty(t, buf.String())
 			}
 
+		})
+	}
+}
+
+// TestRunConfigValidate_ResolveIssuerUpstream asserts that RunConfig.Validate
+// refuses a resolve issuer without an OIDC first upstream, so the refusal comes
+// before buildUpstreamConfigs registers at the upstreams.
+func TestRunConfigValidate_ResolveIssuerUpstream(t *testing.T) {
+	t.Parallel()
+
+	resolveIssuer := tokenexchange.TrustedIssuer{
+		IssuerURL: "https://idp.example.com",
+		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+			MaxAssertionAge:        "1h",
+			AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+			SubjectMode:            tokenexchange.SubjectModeResolve,
+		},
+	}
+	tests := []struct {
+		name      string
+		upstreams []UpstreamRunConfig
+		wantErr   string
+	}{
+		{
+			name:      "oauth2 first upstream is refused",
+			upstreams: []UpstreamRunConfig{{Name: "oauth", Type: UpstreamProviderTypeOAuth2}},
+			wantErr: `trusted_issuers: issuer_url "https://idp.example.com": ` +
+				`jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream`,
+		},
+		{
+			name:      "oidc first upstream passes",
+			upstreams: []UpstreamRunConfig{{Name: "oidc", Type: UpstreamProviderTypeOIDC}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{
+				Issuer:         "https://example.com",
+				Upstreams:      tt.upstreams,
+				TrustedIssuers: []tokenexchange.TrustedIssuer{resolveIssuer},
+			}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tt.wantErr)
 		})
 	}
 }

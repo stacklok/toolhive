@@ -1450,6 +1450,77 @@ spec:
   `SubjectBindings`, independent of whatever `allowedActors`/`allowMayAct` that
   same issuer may also have configured for delegation.
 
+### Subject mode (Go only)
+
+Every ID-JAG redemption issues a token whose subject is
+`<assertion issuer>#<assertion subject>`. That subject is not a user in this
+server's own user table, so a gateway behind it cannot find that user's
+connections. Two per-issuer settings prepare the alternative, which maps the
+ID-JAG's subject to a local user:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `SubjectMode` | empty, which means `namespaced` | `namespaced` issues `<iss>#<sub>`, as before. `resolve` maps the subject to a local user and implies the delegated-access marker. While the gate below is closed, every redemption from a `resolve` issuer is refused |
+| `ActorIssuers` | empty | The `act.iss` values to accept besides the ID-JAG's own `iss`. Allowed only with `resolve`. This build validates where it can be set but does not yet check `act.iss` against it at redemption |
+
+Both fields are set only from Go, by embedders: on
+`TrustedIssuer.JWTBearerGrant`, or on the `JWTBearerIssuerPolicyRunConfig` of
+`inbound_grants.jwt_bearer.issuer_policies`, which copies them into the
+runtime policy. Their tags are `json:"-" yaml:"-"`, like `ActorProfile` and
+`RequiredSubjectClaims`, so a config file or the CRD cannot set them, and they
+do not appear in the swagger or the SDK.
+
+Startup refuses these configurations. The first four are per-issuer checks, run
+at config validation and again when the validator is built. The last needs the
+upstream list, so it runs in `RunConfig.Validate`, before any upstream
+registration, and again in `Config.Validate`.
+
+| Configuration | Error |
+| --- | --- |
+| `SubjectMode` other than empty, `namespaced` or `resolve` | `issuer_url "<url>": jwt_bearer_grant.subject_mode has unsupported value "<value>"` |
+| `ActorIssuers` without `resolve` | `issuer_url "<url>": jwt_bearer_grant.actor_issuers requires subject_mode resolve` |
+| `resolve` with any `subject_bindings` | `issuer_url "<url>": jwt_bearer_grant.subject_bindings must be empty when subject_mode is resolve` |
+| `resolve` on an issuer that accepts `jwt_bearer` assertions (an unset `accepted_assertion_types` accepts both forms) | `issuer_url "<url>": jwt_bearer_grant.subject_mode resolve requires accepted_assertion_types [id_jag]` |
+| `resolve` when the server has no upstream, or its first upstream is not `oidc` | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream` |
+
+`subject_bindings` stays required for a `namespaced` issuer, with the same
+error as before, and must be empty for a `resolve` issuer. A file-based
+configuration cannot set `resolve`, so for it nothing changes. Because a
+`resolve` issuer names `id_jag` explicitly, the existing `id_jag` rule applies
+to it too: a non-empty `accepted_audiences` must include this server's issuer,
+and an empty one accepts that issuer by default unless the issuer is also in
+`allowed_audiences`, which is refused.
+
+At redemption, a `resolve` issuer skips the subject-binding check, since it has
+no bindings. The other ID-JAG checks run unchanged.
+
+The first upstream must be OIDC because the first upstream is the only sign-in
+leg that writes the provider-identity rows a subject is resolved against, and
+only an OIDC upstream records the issuer URL and subject claim those rows are
+keyed by. An OAuth2 first upstream also writes rows, but they carry no issuer
+URL or subject claim. A later OIDC upstream does not count, and a token-only
+server (no upstreams) is refused. Which ID-JAG claim is matched against those
+rows is defined when resolution is added; no lookup happens in this build.
+
+### The gate
+
+Redemptions from a `resolve` issuer are closed by an unexported constant in the
+`tokenexchange` package, `delegatedAccessEnabled`, which is `false`. It is not a
+setting, an acknowledgement or a build tag. A redemption from a `resolve`
+issuer that passes every other check, up to and including the client-audience
+check, is refused with `400 access_denied` and `subject_unknown` before the
+`jti` is used up, so the ID-JAG stays unused and a client sees what it sees for
+an unknown user. A redemption that fails an earlier check gets that check's
+refusal. When a `resolve` issuer is configured, the server logs one WARN at
+startup, "Resolution of the subject at ID-JAG redemption is not enabled in this
+build; redemptions from resolve issuers are refused", with the affected issuer
+URLs in `issuers`.
+
+The gate exists because the authorization server cannot see how the gateway
+behind it is wired, so no configuration check can prove that the gateway
+enforces the delegated-access marker. Resolution at redemption is added and the
+gate removed in later changes.
+
 ### Redemption refusal reasons
 
 Both assertion forms refuse with an `error_description` that starts with a
@@ -1471,12 +1542,13 @@ its own default text before the reason.
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | Assertion that carries a `cnf` claim, with any value including `null`, for any issuer | 400 `invalid_grant`, `invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.` | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` Both checks run before the assertion is consumed |
-| Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
+| Subject not listed in `subject_bindings` (namespaced issuers) | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
 | A `resource` claim with a value that is not in `allowed_audiences` or is not a valid resource URI, whatever the request holds | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim names a resource this server does not govern.` |
 | Every `resource` claim value is in `allowed_audiences`, but the claim does not list the requested `resource` | n/a (the plain grant has no `resource` claim) | 400 `invalid_target`, no reason (the description does not name the resource) |
 | Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
+| Redemption from a `resolve` issuer while resolution is not enabled (see "The gate") | n/a | 400 `access_denied`, `subject_unknown`. The ID-JAG is not consumed |
 | Issuer's signing keys could not be obtained (key fetch or cache lookup fails, or the key set is empty or too large) | 503 `temporarily_unavailable`, `issuer_unavailable` | same |
 | The request ended (client disconnect or deadline) while the keys were being fetched, or the server has no default audiences configured | 500 `server_error`, generic text | same |
 
@@ -1531,8 +1603,8 @@ One grant type, two handlers, split by the assertion's JOSE `typ` header:
 `IDJAGHandler` claims exactly `typ: oauth-id-jag+jwt`. For any given request at
 most one is responsible. Both handlers are registered whenever the grant
 is enabled (see below). Both enforce the same
-per-issuer policy (`maxAssertionAge`, `acceptedAudiences`, `subjectBindings` —
-no separate configuration surface).
+per-issuer policy (`maxAssertionAge`, `acceptedAudiences`, and, for namespaced
+issuers, `subjectBindings` — no separate configuration surface).
 
 `acceptedAssertionTypes` (a list of `jwt_bearer` and/or `id_jag`) narrows which
 form(s) a `jwtBearerGrant` issuer accepts. When it is omitted, the issuer
@@ -1602,8 +1674,8 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   assertion single-use; there is no assertion-hash fallback like the plain
   handler's. Replay consumption uses its own purpose (`"id-jag"`,
   `idJAGReplayPurpose`), keeping the two handlers' replay namespaces separate.
-- **Real client, no synthetic identity.** The issued token's subject is still
-  `<assertion issuer>#<assertion subject>` — one consistent subject form for
+- **Real client, no synthetic identity.** For namespaced issuers, the issued
+  token's subject is still `<assertion issuer>#<assertion subject>` — one consistent subject form for
   every assertion-derived token — but its `client_id` is the real redeeming
   client's, and the request keeps that client for storage marshaling.
 - **The actor chain survives redemption.** The assertion's `act` claim (for an
@@ -1690,6 +1762,9 @@ resource checks still apply. Mitigations:
   value from AS-1's `allowed_audiences`, remove the DCR clients and refresh
   tokens granted it.
 - Keep AS-2's `max_assertion_age` short.
+
+A `resolve` issuer must accept only `id_jag` (see "Subject mode"), which closes
+the plain path for it.
 
 ## Operational notes
 
@@ -2794,9 +2869,10 @@ so that no marked token can ever be exchanged.
 - `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the required actor parameters for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
 - `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`, `idJAGGrantOwner`, `grantUpstreamIdentity`, `validateIDJAGActor`, `idJAGMintWithActor`: the grant checks, the actor validator call and the Debug line for an ID-JAG
 - `pkg/authserver/server/id_jag_seam.go` — `OwnsResourceParameter`, `ReasonDPoPNotSupported`; the token endpoint calls them from `pkg/authserver/server/handlers/token.go`
+- `pkg/authserver/server/tokenexchange/subject_mode.go` — `SubjectMode`, `delegatedAccessEnabled`, `checkSubjectModeGate`, the startup WARN for `resolve` issuers, the subject-mode validation
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
-- `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`, `Config.ActorTokenValidators`, `DelegateClientTokenExchange.ActorProfile`, `validateActorTokenValidatorMap`, `validateActIssuer`, `validateActorProfilesRegistered`, `validateActorProfile`, `validateActorTokenType`, `ValidateActorProfilesForRunConfig`, `validateIDJAG`, `validateIDJAGTarget`, `claimIDJAGTargets`, `validateIDJAGSubjectClaims`, the exported `ValidateIDJAGSubjectClaimAudiences` (called by the runner before upstream registration), the issuer comparison used by the reserved check
+- `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `validateResolveIssuerUpstream`, `warnTrustedIssuerAudiences`, `Config.ActorTokenValidators`, `DelegateClientTokenExchange.ActorProfile`, `validateActorTokenValidatorMap`, `validateActIssuer`, `validateActorProfilesRegistered`, `validateActorProfile`, `validateActorTokenType`, `ValidateActorProfilesForRunConfig`, `validateIDJAG`, `validateIDJAGTarget`, `claimIDJAGTargets`, `validateIDJAGSubjectClaims`, the exported `ValidateIDJAGSubjectClaimAudiences` (called by the runner before upstream registration), the issuer comparison used by the reserved check
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — `DelegateClientConfig`, `TrustedIssuerConfig`, `EmbeddedAuthServerConfig`
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — `buildDelegateClientRunConfigs`, `buildTrustedIssuerRunConfigs`, `BuildAuthServerRunConfig`
 - `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup, `WithActorTokenValidators`, and the early `id_jag` check

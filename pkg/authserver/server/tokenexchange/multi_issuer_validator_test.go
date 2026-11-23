@@ -1749,6 +1749,112 @@ func TestValidateJWTBearerGrantPolicy_IDJAGRequirements(t *testing.T) {
 	}
 }
 
+func TestValidateJWTBearerGrantPolicy_SubjectMode(t *testing.T) {
+	t.Parallel()
+
+	idJAGOnly := []JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG}
+	bindings := []JWTBearerSubjectBinding{{Subject: "user", AllowedResources: []string{"https://api.example.com/resource"}}}
+	prefix := `issuer_url "` + testExternalIssuer + `": jwt_bearer_grant.`
+	tests := []struct {
+		name    string
+		policy  JWTBearerGrantPolicy
+		allowed []string
+		wantErr string
+	}{
+		{name: "empty mode with bindings", policy: JWTBearerGrantPolicy{SubjectBindings: bindings}},
+		{name: "namespaced with bindings", policy: JWTBearerGrantPolicy{SubjectMode: SubjectModeNamespaced, SubjectBindings: bindings}},
+		{
+			name:    "namespaced without bindings",
+			policy:  JWTBearerGrantPolicy{SubjectMode: SubjectModeNamespaced},
+			wantErr: prefix + "subject_bindings is required",
+		},
+		{
+			name:    "unknown mode",
+			policy:  JWTBearerGrantPolicy{SubjectMode: "Resolve", SubjectBindings: bindings},
+			wantErr: prefix + `subject_mode has unsupported value "Resolve"`,
+		},
+		{
+			name:    "actor issuers with empty mode",
+			policy:  JWTBearerGrantPolicy{SubjectBindings: bindings, ActorIssuers: []string{"https://actor.example.com"}},
+			wantErr: prefix + "actor_issuers requires subject_mode resolve",
+		},
+		{
+			name: "actor issuers with namespaced",
+			policy: JWTBearerGrantPolicy{
+				SubjectMode: SubjectModeNamespaced, SubjectBindings: bindings, ActorIssuers: []string{"https://actor.example.com"},
+			},
+			wantErr: prefix + "actor_issuers requires subject_mode resolve",
+		},
+		{
+			name:   "resolve without bindings",
+			policy: JWTBearerGrantPolicy{SubjectMode: SubjectModeResolve, AcceptedAssertionTypes: idJAGOnly},
+		},
+		{
+			name: "resolve with actor issuers",
+			policy: JWTBearerGrantPolicy{
+				SubjectMode: SubjectModeResolve, AcceptedAssertionTypes: idJAGOnly, ActorIssuers: []string{"https://actor.example.com"},
+			},
+		},
+		{
+			name:    "resolve with bindings",
+			policy:  JWTBearerGrantPolicy{SubjectMode: SubjectModeResolve, AcceptedAssertionTypes: idJAGOnly, SubjectBindings: bindings},
+			wantErr: prefix + "subject_bindings must be empty when subject_mode is resolve",
+		},
+		{
+			name:    "resolve with unset assertion types",
+			policy:  JWTBearerGrantPolicy{SubjectMode: SubjectModeResolve},
+			wantErr: prefix + "subject_mode resolve requires accepted_assertion_types [id_jag]",
+		},
+		{
+			name: "resolve with both assertion types",
+			policy: JWTBearerGrantPolicy{
+				SubjectMode:            SubjectModeResolve,
+				AcceptedAssertionTypes: []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer, JWTBearerAssertionTypeIDJAG},
+			},
+			wantErr: prefix + "subject_mode resolve requires accepted_assertion_types [id_jag]",
+		},
+		{
+			name: "resolve still needs this authorization server as an accepted audience",
+			policy: JWTBearerGrantPolicy{
+				SubjectMode: SubjectModeResolve, AcceptedAssertionTypes: idJAGOnly,
+				AcceptedAudiences: []string{"https://other-auth.example.com"},
+			},
+			wantErr: prefix + `accepted_audiences must include the authorization server issuer "` + testIssuer + `" when id_jag is enabled`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.policy.MaxAssertionAge = "1h"
+			err := validateJWTBearerGrantPolicy(
+				TrustedIssuer{IssuerURL: testExternalIssuer, JWTBearerGrant: &tt.policy}, testIssuer, tt.allowed)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestResolveJWTBearerGrantPolicies_ClonesActorIssuers(t *testing.T) {
+	t.Parallel()
+
+	actors := []string{"https://actor.example.com"}
+	resolved, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL: testExternalIssuer,
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: "1h", SubjectMode: SubjectModeResolve, ActorIssuers: actors,
+		},
+	}})
+	require.NoError(t, err)
+
+	actors[0] = "https://changed.example.com"
+
+	assert.Equal(t, []string{"https://actor.example.com"}, resolved[0].JWTBearerGrant.ActorIssuers)
+	assert.Equal(t, SubjectModeResolve, resolved[0].JWTBearerGrant.SubjectMode)
+}
+
 func TestNewMultiIssuerTokenValidator_EmptyAllowedActorsAccepted(t *testing.T) {
 	t.Parallel()
 

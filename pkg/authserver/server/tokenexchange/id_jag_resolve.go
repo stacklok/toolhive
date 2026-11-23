@@ -8,7 +8,11 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/ory/fosite"
+	"github.com/ory/x/errorsx"
+
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/subject"
 )
 
@@ -18,16 +22,21 @@ const (
 	hintUpstreamSubjectFrgn = "The ID-JAG assertion upstream_subject does not name this server's " +
 		"sign-in identity provider and subject claim."
 
-	reasonResolverUnavailable = "subject_resolver_unavailable"
-	reasonUpstreamSubjectBad  = "upstream_subject_invalid"
-	reasonUpstreamSubjectFrgn = "upstream_subject_foreign"
+	hintClientNotPermitted   = "This client may not redeem an ID-JAG assertion from this issuer."
+	hintResourceClaimMissing = "The ID-JAG assertion must carry a 'resource' claim."
+
+	reasonClientNotPermitted   = "client_not_permitted"
+	reasonResourceClaimMissing = "resource_claim_missing"
+	reasonResolverUnavailable  = "subject_resolver_unavailable"
+	reasonUpstreamSubjectBad   = "upstream_subject_invalid"
+	reasonUpstreamSubjectFrgn  = "upstream_subject_foreign"
 )
 
 // idJAGRedemption builds the redemption for a validated ID-JAG. For a resolve
 // issuer it resolves the subject, then evaluates the actor policy with the
 // resolved user, so every refusal happens before anything is consumed.
 func (h *IDJAGHandler) idJAGRedemption(
-	ctx context.Context, claims *ValidatedClaims, policy *JWTBearerGrantPolicy, clientID, resource string,
+	ctx context.Context, claims *ValidatedClaims, policy *JWTBearerGrantPolicy, client fosite.Client, resource string,
 ) (redemption, error) {
 	d := redemption{
 		claims:   claims,
@@ -42,11 +51,18 @@ func (h *IDJAGHandler) idJAGRedemption(
 	if policy.SubjectMode != SubjectModeResolve {
 		return d, nil
 	}
-	user, err := h.resolveSubject(ctx, claims, clientID)
+	// Draft section 4.4.1 lets the resource authorization server require the
+	// claim and refuse with invalid_grant. A resolve redemption takes its
+	// resource only from the signed claim, never from the request parameter.
+	if _, ok := claims.Extra["resource"]; !ok {
+		h.logSubjectRefusal(ctx, claims.Issuer, client.GetID(), reasonResourceClaimMissing)
+		return redemption{}, invalidAssertion(hintResourceClaimMissing)
+	}
+	user, err := h.resolveSubject(ctx, claims, client)
 	if err != nil {
 		return redemption{}, err
 	}
-	if err := h.checkActorPolicy(ctx, claims, clientID, resource, user); err != nil {
+	if err := h.checkActorPolicy(ctx, claims, client.GetID(), resource, user); err != nil {
 		return redemption{}, err
 	}
 	d.subject = user
@@ -56,10 +72,18 @@ func (h *IDJAGHandler) idJAGRedemption(
 
 // resolveSubject maps the ID-JAG's upstream_subject to a local user ID. The
 // resolver decides which issuers and claims it accepts, and reports the others
-// with subject.ErrNotConfigured.
+// with subject.ErrNotConfigured. A DCR or CIMD client that is not
+// resource-scoped is refused first: nothing else bounds the resource of a
+// marked token on this server's side for such a client.
 func (h *IDJAGHandler) resolveSubject(
-	ctx context.Context, claims *ValidatedClaims, clientID string,
+	ctx context.Context, claims *ValidatedClaims, client fosite.Client,
 ) (string, error) {
+	clientID := client.GetID()
+	if server.IsUnscopedDCRClient(client) {
+		h.logSubjectRefusal(ctx, claims.Issuer, clientID, reasonClientNotPermitted)
+		return "", errorsx.WithStack(
+			redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonClientNotPermitted, hintClientNotPermitted))
+	}
 	if h.resolver == nil {
 		h.logSubjectRefusal(ctx, claims.Issuer, clientID, reasonResolverUnavailable)
 		return "", serverFailure(hintSubjectNotResolved, errors.New("no subject resolver configured"))
@@ -109,6 +133,6 @@ func (h *IDJAGHandler) logSubjectRefusal(ctx context.Context, issuer, clientID, 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.DebugContext(ctx, "ID-JAG redemption refused: subject not resolved",
+	logger.DebugContext(ctx, "ID-JAG redemption refused at subject resolution",
 		"issuer", issuer, "client_id", clientID, "reason", reason)
 }

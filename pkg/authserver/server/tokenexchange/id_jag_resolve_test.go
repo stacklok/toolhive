@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
@@ -50,6 +51,7 @@ func upstreamSubjectClaim(iss, claim, value any) map[string]any {
 
 func resolveClaims(upstream any) *ValidatedClaims {
 	claims := validIDJAGClaims()
+	claims.Extra["resource"] = idJAGTestResource
 	if upstream != nil {
 		claims.Extra[claimnames.UpstreamSubjectKey] = upstream
 	}
@@ -65,6 +67,8 @@ type resolveFixture struct {
 	policy   *JWTBearerGrantPolicy
 	consumer *recordingAssertionConsumer
 	log      *strings.Builder
+	// client redeems; the zero value is a plain client, as in the handler tests.
+	client fosite.Client
 	// req is the request the last redeem completed.
 	req *fosite.AccessRequest
 }
@@ -83,14 +87,17 @@ func newResolveFixture(t *testing.T, resolver subject.Resolver) *resolveFixture 
 	require.NoError(t, err)
 	h.resolver = resolver
 	buf.Reset()
-	return &resolveFixture{h: h, policy: h.policies[idJAGTestIssuer], consumer: consumer, log: &buf}
+	return &resolveFixture{
+		h: h, policy: h.policies[idJAGTestIssuer], consumer: consumer, log: &buf,
+		client: &fosite.DefaultClient{ID: idJAGTestClientID},
+	}
 }
 
 // redeem runs the step as the handler does: complete runs only when the
 // subject resolved.
 func (f *resolveFixture) redeem(t *testing.T, claims *ValidatedClaims) (redemption, error) {
 	t.Helper()
-	d, err := f.h.idJAGRedemption(context.Background(), claims, f.policy, idJAGTestClientID, idJAGTestResource)
+	d, err := f.h.idJAGRedemption(context.Background(), claims, f.policy, f.client, idJAGTestResource)
 	if err != nil {
 		return d, err
 	}
@@ -105,7 +112,7 @@ func requireSubjectLog(t *testing.T, buf *strings.Builder, wantReason string) {
 	t.Helper()
 	var lines []string
 	for _, line := range logLinesAt(buf, "DEBUG") {
-		if strings.Contains(line, "subject not resolved") {
+		if strings.Contains(line, "refused at subject resolution") {
 			lines = append(lines, line)
 		}
 	}
@@ -124,11 +131,13 @@ func TestIDJAGResolve_RefusedBeforeResolver(t *testing.T) {
 
 	const badDesc = "invalid_assertion: " + wantHintUpstreamSubjectBad
 	tests := []struct {
-		name       string
-		upstream   any
-		wantCode   string
-		wantDesc   string
-		wantReason string
+		name         string
+		upstream     any
+		client       fosite.Client // nil keeps the fixture's plain client
+		dropResource bool
+		wantCode     string
+		wantDesc     string
+		wantReason   string
 	}{
 		{name: "claim missing", wantCode: "invalid_grant", wantDesc: badDesc, wantReason: reasonUpstreamSubjectBad},
 		{name: "claim is a string", upstream: "idp#value", wantCode: "invalid_grant", wantDesc: badDesc,
@@ -139,6 +148,14 @@ func TestIDJAGResolve_RefusedBeforeResolver(t *testing.T) {
 			wantCode: "invalid_grant", wantDesc: badDesc, wantReason: reasonUpstreamSubjectBad},
 		{name: "value empty", upstream: upstreamSubjectClaim(resolveTestUpstreamIssuer, "oid", ""),
 			wantCode: "invalid_grant", wantDesc: badDesc, wantReason: reasonUpstreamSubjectBad},
+		{name: "client not permitted", upstream: validUpstreamSubject(),
+			client:   registration.MarkDCRIssued(&fosite.DefaultClient{ID: idJAGTestClientID}),
+			wantCode: "access_denied", wantDesc: "client_not_permitted: " + hintClientNotPermitted,
+			wantReason: reasonClientNotPermitted},
+		// A resolve redemption takes its resource from the signed claim only.
+		{name: "resource claim missing", upstream: validUpstreamSubject(), dropResource: true,
+			wantCode: "invalid_grant", wantDesc: "invalid_assertion: " + hintResourceClaimMissing,
+			wantReason: reasonResourceClaimMissing},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -146,7 +163,15 @@ func TestIDJAGResolve_RefusedBeforeResolver(t *testing.T) {
 			resolver := mocks.NewMockResolver(gomock.NewController(t))
 			resolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Times(0)
 			f := newResolveFixture(t, resolver)
-			_, err := f.redeem(t, resolveClaims(tt.upstream))
+			if tt.client != nil {
+				f.client = tt.client
+			}
+			claims := resolveClaims(tt.upstream)
+			if tt.dropResource {
+				delete(claims.Extra, "resource")
+			}
+
+			_, err := f.redeem(t, claims)
 
 			requireRefusal(t, err, tt.wantCode, tt.wantDesc)
 			assert.Empty(t, f.consumer.key, "the ID-JAG must stay unused")
@@ -289,7 +314,13 @@ func TestIDJAGHandler_GateRunsBeforeResolution(t *testing.T) {
 	resolver := mocks.NewMockResolver(gomock.NewController(t))
 	resolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Times(0)
 
-	req, consumer, _, err := actorRedeemRequest(t, resolvePolicyWithActors(), resolveClaims(validUpstreamSubject()),
+	claims := resolveClaims(validUpstreamSubject())
+	// The handler built here governs no resources, so with the claim present the
+	// request would be refused earlier as an ungoverned resource and never reach
+	// the gate.
+	delete(claims.Extra, "resource")
+
+	req, consumer, _, err := actorRedeemRequest(t, resolvePolicyWithActors(), claims,
 		func(h *IDJAGHandler) { h.resolver = resolver })
 
 	requireRefusal(t, err, "access_denied", descSubjectUnknown)
@@ -307,7 +338,7 @@ func TestIDJAGResolve_NamespacedSession(t *testing.T) {
 	h := newQuietIDJAGHandler(t, deps)
 
 	d, err := h.idJAGRedemption(context.Background(), validIDJAGClaims(), h.policies[idJAGTestIssuer],
-		idJAGTestClientID, idJAGTestResource)
+		&fosite.DefaultClient{ID: idJAGTestClientID}, idJAGTestResource)
 	require.NoError(t, err)
 	req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
 	require.NoError(t, h.redeemer.complete(context.Background(), req, d))

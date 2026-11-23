@@ -273,7 +273,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 		return err
 	}
 	clientID := requester.GetClient().GetID()
-	d, err := h.idJAGRedemption(ctx, claims, policy, clientID, resource)
+	d, err := h.idJAGRedemption(ctx, claims, policy, requester.GetClient(), resource)
 	if err != nil {
 		return err
 	}
@@ -311,9 +311,10 @@ func (h *IDJAGHandler) checkIDJAGPolicy(
 	}
 	// A resolve issuer has no subject bindings, so nothing here narrows the
 	// resource per subject. The resource is bounded by the resource claim
-	// (governed resources) and by checkClientAudience, which does not narrow a
-	// DCR or CIMD client that is not resource-scoped. The subject is resolved
-	// to a local user after the gate, in idJAGRedemption.
+	// (governed resources) and by checkClientAudience. checkClientAudience does
+	// not narrow a DCR or CIMD client that is not resource-scoped, so such a
+	// client is refused when the subject is resolved, after the gate, in
+	// idJAGRedemption.
 	if policy.SubjectMode == SubjectModeResolve {
 		return resource, nil
 	}

@@ -791,7 +791,9 @@ in addition to other grants can log users in.
   with `token_endpoint_auth_method: none`, is refused with `invalid_client`
   before the audience check (see
   [Bound ID-JAG assertions](#bound-id-jag-assertions)). The `resource` of an ID-JAG
-  gets the same client check, except for DCR clients, which are not narrowed.
+  gets the same client check, except for DCR clients, which are not narrowed
+  (a `resolve` issuer refuses such a client; see
+  [Resolution at redemption](#resolution-at-redemption)).
   They hold a
   copy of the server's allowed audiences taken at registration, not a
   per-client policy, so checking them adds nothing while the copy is current
@@ -919,8 +921,9 @@ the client type:
   for the full rule).
 - **DCR and CIMD clients.** A copy of the server's list taken at registration.
   ID-JAG redemption does not narrow a confidential DCR client, so only the
-  server list applies. Public clients, including every CIMD client, cannot
-  redeem an ID-JAG at all.
+  server list applies, except at a `resolve` issuer, which refuses such a
+  client (see "Resolution at redemption"). Public clients, including every CIMD
+  client, cannot redeem an ID-JAG at all.
 - **Device flow.** The client receives all of its `audiences`.
 
 On token exchange, every audience the client receives must also appear, exactly,
@@ -1541,10 +1544,12 @@ every `resolve` redemption is refused before it starts.
 The check order for a `resolve` issuer is: client authentication and grant,
 assertion validation, `jti`, client binding, policy (resource), client
 audience, actor issuer, gate, resolution, actor policy, consume, lifetime.
-The actor policy runs once the subject has resolved, with the resolved local
-user ID, and before the `jti` is used up (see "The actor, for `resolve` issuers
-only" under "Bound ID-JAG assertions"). Every refusal in resolution and in the
-actor policy happens before the `jti` is used up.
+Resolution starts with a client check: a client registered through DCR that is
+not resource-scoped is refused before the resolver is called. It then requires
+the `resource` claim. The actor policy runs once the subject has resolved, with
+the resolved local user ID, and before the `jti` is used up (see "The actor, for
+`resolve` issuers only" under "Bound ID-JAG assertions"). Every refusal in
+resolution and in the actor policy happens before the `jti` is used up.
 
 Resolution reads the ID-JAG's `https://toolhive.dev/upstream_subject` claim, an
 object with `iss`, `claim` and `value`, and maps it to a local user through the
@@ -1556,6 +1561,8 @@ provisioned.
 
 | Case | Client sees | Reason in the Debug log |
 | --- | --- | --- |
+| The redeeming client was registered through DCR and is not resource-scoped (CIMD clients are public and are refused earlier, at client authentication) | 400 `access_denied`, `client_not_permitted: This client may not redeem an ID-JAG assertion from this issuer.` | `client_not_permitted` |
+| The ID-JAG has no `resource` claim | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must carry a 'resource' claim.` | `resource_claim_missing` |
 | `upstream_subject` missing, not an object, or `iss`, `claim` or `value` missing or not a non-empty string | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion has a missing or malformed upstream_subject claim.` | `upstream_subject_invalid` |
 | The resolver does not resolve this `iss` and `claim` (today: `iss` is not the first upstream's issuer, or `claim` is not its subject claim) | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion upstream_subject does not name this server's sign-in identity provider and subject claim.` | `upstream_subject_foreign` |
 | No local user, more than one, or an empty user ID | 400 `access_denied`, `subject_unknown` | `subject_unknown` |
@@ -1566,14 +1573,25 @@ issuer, the client and the reason, and never the subject, the `jti` or any
 `upstream_subject` member.
 
 A `resolve` issuer has no subject bindings, so nothing narrows the resource per
-subject. The resource is bounded by the ID-JAG's `resource` claim, which must
-list resources this server governs, and by the client-audience check. A DCR or
-CIMD client that is not resource-scoped is not narrowed by that check.
+subject. In `resolve` mode the resource is bounded by the ID-JAG's `resource`
+claim, which is required: an ID-JAG without it is refused with
+`invalid_assertion` and is not consumed, and the request's `resource` parameter
+is not used as a fallback. Draft -06 section 4.4.1 allows the resource server to
+require the claim and refuse with `invalid_grant`. The claim must list
+resources this server governs. A `namespaced` issuer uses the claim when it is
+present and otherwise the request parameter, within the client's allowed
+audiences. The resource is also bounded by the client-audience check. That
+check does not narrow a client registered through DCR that is not
+resource-scoped, so such a client is refused (reason `client_not_permitted`).
+This includes clients from the secretless private-key-JWT DCR flow. Every other
+client, configured or static delegate clients and resource-scoped clients such
+as SPIFFE clients, is checked against its own audiences or resource allowlist,
+so each marked token has a resource bound on this server's side.
 
 For redemption to work, the authorization server that issued the ID-JAG (AS-1)
 must send:
 
-1. `upstream_subject` in AS-1's `required_subject_claims`.
+1. A `resource` claim, and `upstream_subject` in AS-1's `required_subject_claims`.
    `required_subject_claims` is AS-1 configuration: it must include
    `upstream_subject` so the ID-JAG carries
    `https://toolhive.dev/upstream_subject`.
@@ -1636,6 +1654,8 @@ its own default text before the reason.
 | `resolve` issuer: the actor policy denies the actor for the resolved user. Not reachable while the gate is closed | n/a | 400 `access_denied`, `actor_denied`. The ID-JAG is not consumed |
 | `resolve` issuer: the actor policy could not decide. Not reachable while the gate is closed | n/a | 500 `server_error`, generic text ("The actor could not be checked."). The ID-JAG is not consumed |
 | Redemption from a `resolve` issuer while resolution is not enabled (see "The gate") | n/a | 400 `access_denied`, `subject_unknown`. The ID-JAG is not consumed |
+| `resolve` issuer: the redeeming client was registered through DCR and is not resource-scoped. Not reachable while the gate is closed | n/a | 400 `access_denied`, `client_not_permitted: <hint>`. The ID-JAG is not consumed |
+| `resolve` issuer: the ID-JAG has no `resource` claim. Not reachable while the gate is closed | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must carry a 'resource' claim.` The ID-JAG is not consumed |
 | `resolve` issuer: `upstream_subject` missing or malformed, or naming an issuer and claim the resolver does not resolve (today the first upstream's issuer and subject claim). Not reachable while the gate is closed | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>`. The ID-JAG is not consumed |
 | `resolve` issuer: the subject maps to no user, more than one, or an empty user. Not reachable while the gate is closed | n/a | 400 `access_denied`, `subject_unknown`. The ID-JAG is not consumed |
 | `resolve` issuer: the resolver is unavailable. Not reachable while the gate is closed | n/a | 500 `server_error`, generic text. The ID-JAG is not consumed |

@@ -6,6 +6,7 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/url"
 	"testing"
 	"time"
@@ -323,6 +324,82 @@ func TestRedeemer_Populate(t *testing.T) {
 			assert.NotEmpty(t, responder.GetAccessToken())
 			// The one-hour lifespan does not stretch a session that ends sooner.
 			assert.InDelta(t, int64(tt.expiresIn.Seconds()), responder.GetExtra("expires_in"), 10)
+		})
+	}
+}
+
+func TestRedeemer_DelegatedAccessLifetime(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		lifespan  time.Duration
+		remaining time.Duration
+		marked    bool
+		want      time.Duration
+		wantErr   bool
+	}{
+		{name: "marked, longer lifespan, longer validity", lifespan: time.Hour, remaining: 10 * time.Minute,
+			marked: true, want: 5 * time.Minute},
+		{name: "marked, short lifespan", lifespan: 2 * time.Minute, remaining: 10 * time.Minute,
+			marked: true, want: 2 * time.Minute},
+		{name: "marked, short validity", lifespan: time.Hour, remaining: time.Minute, marked: true, want: time.Minute},
+		{name: "not marked is not capped", lifespan: time.Hour, remaining: 10 * time.Minute, want: 10 * time.Minute},
+		{name: "marked and expired", lifespan: time.Hour, remaining: -time.Minute, marked: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			deps := testIssuanceDeps(&testJWTBearerAssertionValidator{}, redemptionIssuers(t))
+			deps.config.AccessTokenLifespan = tt.lifespan
+			r := newRedeemer(deps)
+			d := redemption{
+				claims:          &ValidatedClaims{Expiry: time.Now().Add(tt.remaining)},
+				delegatedAccess: tt.marked,
+			}
+
+			got, err := r.assertionBoundedLifetime(context.Background(), d)
+
+			if tt.wantErr {
+				requireRefusal(t, err, "invalid_grant", "invalid_assertion: The JWT bearer assertion has expired.")
+				return
+			}
+			require.NoError(t, err)
+			assert.InDelta(t, tt.want.Seconds(), got.Seconds(), 5)
+		})
+	}
+}
+
+func TestNewRedemptionSession_ActIssuer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		act             any
+		delegatedAccess bool
+		want            any
+	}{
+		{"marked token fills an absent iss", map[string]any{"sub": "agent"}, true,
+			map[string]any{"sub": "agent", "iss": idJAGTestIssuer}},
+		{"marked token keeps an explicit iss", map[string]any{"sub": "agent", "iss": "https://actor.example.com"}, true,
+			map[string]any{"sub": "agent", "iss": "https://actor.example.com"}},
+		{"marked token leaves a nested actor alone",
+			map[string]any{"sub": "agent", "act": map[string]any{"sub": "inner"}}, true,
+			map[string]any{"sub": "agent", "iss": idJAGTestIssuer, "act": map[string]any{"sub": "inner"}}},
+		{"namespaced token is unchanged", map[string]any{"sub": "agent"}, false, map[string]any{"sub": "agent"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			claims := validIDJAGClaims()
+			claims.Extra["act"] = tt.act
+			before := maps.Clone(tt.act.(map[string]any))
+
+			sess := newRedemptionSession(
+				redemption{claims: claims, carryAct: true, delegatedAccess: tt.delegatedAccess}, idJAGTestClientID, time.Minute)
+
+			assert.Equal(t, tt.want, sess.JWTClaims.Extra["act"])
+			assert.Equal(t, before, claims.Extra["act"], "the assertion's claims must not change")
 		})
 	}
 }

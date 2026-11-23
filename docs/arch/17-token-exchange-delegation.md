@@ -1590,6 +1590,21 @@ must send:
    such as Microsoft Entra, gives each registration a different `sub`; use a
    stable claim such as `oid` there, or redemptions fail with `subject_unknown`.
 
+The issued token has `sub` set to the local user and `act` copied from the
+ID-JAG. The token's `iss` is this server, so when the ID-JAG's `act` has no
+`iss` the server writes the ID-JAG issuer into the copy, the same issuer the
+actor check used. An `act.iss` the ID-JAG already carries, and any nested actor,
+stay as they are, and the ID-JAG itself is not changed. A `namespaced` redemption
+copies `act` as is. It carries the no-upstream-session claim and the
+delegated-access marker (see "Delegated-access marker"). It has no `tsid` and
+no refresh token is issued. Its granted audience is the resource.
+
+The token's lifetime is the shortest of: the server's access-token lifespan (or
+the client's, once per-client lifespans exist), the ID-JAG's remaining
+validity, and five minutes for a marked token. The five-minute cap is applied
+last, so it wins over a longer client lifespan. An expired ID-JAG is refused
+first.
+
 ### Redemption refusal reasons
 
 Both assertion forms refuse with an `error_description` that starts with a
@@ -1758,8 +1773,8 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   every assertion-derived token — but its `client_id` is the real redeeming
   client's, and the request keeps that client for storage marshaling.
 - **The actor chain survives redemption.** The assertion's `act` claim (for an
-  Okta-minted ID-JAG, the agent's identity at the IdP) is copied verbatim into
-  the issued token, so a resource server or auditor can still tell which agent
+  Okta-minted ID-JAG, the agent's identity at the IdP) is copied into
+  the issued token (for a `resolve` issuer with `iss` filled in when absent, see "Resolution at redemption"), so a resource server or auditor can still tell which agent
   acted for the subject. Other ID-JAG-specific claims (`aud_tenant`,
   `sub_profile`) are validated as opaque extras and not propagated.
 - **The actor, for `resolve` issuers only.** The check has two steps, and both
@@ -2966,8 +2981,10 @@ names another audience, because a verified signature is enough to refuse a token
 though not to accept one. A token it did not sign goes to the validator unchanged.
 This costs one signature check per ID-JAG request with an actor token.
 
-The authorization server issues no marker yet. The refusals are in place first
-so that no marked token can ever be exchanged.
+The authorization server issues the marker only on a token for a resolved
+`resolve` redemption, and caps that token's lifetime at five minutes. While the
+gate is closed it issues none. The refusals above are in place so that no marked
+token can ever be exchanged.
 
 ## Implementation
 
@@ -2992,7 +3009,7 @@ so that no marked token can ever be exchanged.
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — shared `DelegateClientConfig` CRD contract
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — Secret-reference to pod-environment conversion
 - `pkg/authserver/server/tokenexchange/jwt_bearer_handler.go` — `JWTBearerHandler`, `JWTBearerIssuanceFactory`, `NewSharedTrustedIssuerValidator`, synthetic client-ID minting
-- `pkg/authserver/server/tokenexchange/redeemer.go` — `redeemer`, the consume, lifetime, session and populate steps both JWT-bearer handlers share
+- `pkg/authserver/server/tokenexchange/redeemer.go` — `redeemer`, the consume, lifetime, session and populate steps both JWT-bearer handlers share, the delegated-access marker on a resolved redemption and its five-minute cap
 - `pkg/authserver/server/tokenexchange/issuance_deps.go` — `issuanceDeps`, the compose-time inputs and per-form issuer policy filtering for both handlers
 - `pkg/authserver/storage/types.go` — `SyntheticClientIDPrefix`, `NewSyntheticClient`, `IsSyntheticClientID`
 - `pkg/authserver/storage/redis.go` — synthetic-client-aware `marshalRequester`/`unmarshalRequester`

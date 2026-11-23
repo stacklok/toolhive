@@ -6,6 +6,7 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"maps"
 	"time"
 
 	"github.com/ory/fosite"
@@ -32,18 +33,27 @@ type redeemer struct {
 type redemption struct {
 	claims   *ValidatedClaims
 	resource string
-	// subject is the subject of the issued token.
+	// subject is the subject of the issued token: <iss>#<sub> for a namespaced
+	// redemption, the local user ID for a resolved one.
 	subject       string
 	replayPurpose string
 	replayKey     string
 	// carryAct copies the assertion's act claim into the issued token.
 	carryAct bool
+	// delegatedAccess is set only for a resolved redemption from a resolve
+	// issuer. The session builder stamps the delegated-access marker and the
+	// lifetime step caps the lifetime.
+	delegatedAccess bool
 	// syntheticClientID, when set, replaces the request's client with a
 	// synthetic one of that ID, and is the client_id the issued token carries.
 	// When empty the request's own client is kept and its ID is the token's
 	// client_id.
 	syntheticClientID string
 }
+
+// delegatedAccessMarkerCap is the longest lifetime of a token that carries the
+// delegated-access marker.
+const delegatedAccessMarkerCap = 5 * time.Minute
 
 // newRedeemer builds the redeemer from validated dependencies. Callers run
 // deps.validate first, so it cannot fail.
@@ -69,7 +79,7 @@ func (r *redeemer) complete(ctx context.Context, req fosite.AccessRequester, d r
 	if err := r.consumeAssertion(ctx, d.replayPurpose, d.claims.Issuer, d.replayKey, d.claims.Expiry); err != nil {
 		return err
 	}
-	lifetime, err := r.assertionBoundedLifetime(ctx, d.claims.Expiry)
+	lifetime, err := r.assertionBoundedLifetime(ctx, d)
 	if err != nil {
 		return err
 	}
@@ -125,17 +135,38 @@ func (r *redeemer) consumeAssertion(
 
 // assertionBoundedLifetime returns the issued token's lifetime: the
 // configured access-token lifespan, capped by the assertion's remaining
-// validity so a token derived from an assertion can never outlive it.
-func (r *redeemer) assertionBoundedLifetime(ctx context.Context, expiry time.Time) (time.Duration, error) {
-	remaining := time.Until(expiry)
+// validity so a token derived from an assertion can never outlive it, and, for
+// a token that carries the delegated-access marker, by
+// delegatedAccessMarkerCap.
+func (r *redeemer) assertionBoundedLifetime(ctx context.Context, d redemption) (time.Duration, error) {
+	remaining := time.Until(d.claims.Expiry)
 	if remaining <= 0 {
 		return 0, invalidAssertion("The JWT bearer assertion has expired.")
 	}
-	lifetime := r.config.GetAccessTokenLifespan(ctx)
-	if remaining < lifetime {
-		lifetime = remaining
+	lifetime := min(r.config.GetAccessTokenLifespan(ctx), remaining)
+	// Last, so the cap wins over every earlier bound.
+	if d.delegatedAccess {
+		lifetime = min(lifetime, delegatedAccessMarkerCap)
 	}
 	return lifetime, nil
+}
+
+// issuedAct returns the act claim for the issued token. For a marked token the
+// outer iss is this server, so an act without an iss would be read as acted by
+// this server's issuer; actor.Effective reads it as the assertion's issuer, so
+// that issuer is written into a copy. The assertion's claims are not changed.
+// An explicit iss, nested actors and other redemptions are left as they are.
+func issuedAct(act any, d redemption) any {
+	m, ok := act.(map[string]any)
+	if !ok || !d.delegatedAccess {
+		return act
+	}
+	if _, present := m["iss"]; present {
+		return act
+	}
+	filled := maps.Clone(m)
+	filled["iss"] = d.claims.Issuer
+	return filled
 }
 
 // newRedemptionSession builds the bounded access-token session for a
@@ -152,12 +183,17 @@ func newRedemptionSession(d redemption, clientID string, lifetime time.Duration)
 	// Only when carryAct is set, carry the assertion's actor chain (RFC 8693
 	// §4.1 "act", the requesting agent's identity) into the issued token, so a
 	// resource server or auditor can still tell WHICH agent acted for the
-	// subject after redemption. Copied verbatim: act is defined as a
-	// nested-JSON claim and buildValidatedClaims left it untouched in Extra.
+	// subject after redemption. Copied as is, except for the iss fill in
+	// issuedAct: act is defined as a nested-JSON claim and
+	// buildValidatedClaims left it untouched in Extra.
 	if d.carryAct {
 		if act, ok := d.claims.Extra["act"]; ok {
-			issuedSession.JWTClaims.Extra["act"] = act
+			issuedSession.JWTClaims.Extra["act"] = issuedAct(act, d)
 		}
+	}
+	// Mark the token as issued under delegated access.
+	if d.delegatedAccess {
+		issuedSession.JWTClaims.Extra[claimnames.DelegatedAccessKey] = true
 	}
 	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
 	return issuedSession

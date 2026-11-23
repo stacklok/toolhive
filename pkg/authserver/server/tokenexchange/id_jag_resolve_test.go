@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/subject"
@@ -64,6 +65,8 @@ type resolveFixture struct {
 	policy   *JWTBearerGrantPolicy
 	consumer *recordingAssertionConsumer
 	log      *strings.Builder
+	// req is the request the last redeem completed.
+	req *fosite.AccessRequest
 }
 
 // newResolveFixture builds a resolve handler whose resolver is set directly,
@@ -91,8 +94,8 @@ func (f *resolveFixture) redeem(t *testing.T, claims *ValidatedClaims) (redempti
 	if err != nil {
 		return d, err
 	}
-	req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
-	return d, f.h.redeemer.complete(context.Background(), req, d)
+	f.req = newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+	return d, f.h.redeemer.complete(context.Background(), f.req, d)
 }
 
 // requireSubjectLog asserts the log holds exactly one refusal line with the
@@ -218,7 +221,13 @@ func TestIDJAGResolve_Found(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, resolveTestUser, d.subject)
+	assert.True(t, d.delegatedAccess)
 	assert.Equal(t, "id-jag-jti", f.consumer.key)
+	sess, ok := f.req.GetSession().(*session.Session)
+	require.True(t, ok)
+	assert.Equal(t, resolveTestUser, sess.GetSubject())
+	assert.Equal(t, true, sess.JWTClaims.Extra[claimnames.DelegatedAccessKey])
+	assert.Equal(t, fosite.Arguments{idJAGTestResource}, f.req.GetGrantedAudience())
 }
 
 func TestIDJAGIssuanceFactory_SubjectResolution(t *testing.T) {
@@ -286,6 +295,27 @@ func TestIDJAGHandler_GateRunsBeforeResolution(t *testing.T) {
 	requireRefusal(t, err, "access_denied", descSubjectUnknown)
 	assert.Empty(t, consumer.key, "the ID-JAG must stay unused")
 	assert.Empty(t, req.GetSession().GetSubject(), "no session is installed")
+}
+
+func TestIDJAGResolve_NamespacedSession(t *testing.T) {
+	t.Parallel()
+
+	consumer := &recordingAssertionConsumer{}
+	deps := subjectModeDeps(t, subjectModePolicy(SubjectModeNamespaced, []JWTBearerSubjectBinding{
+		{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+	}), consumer)
+	h := newQuietIDJAGHandler(t, deps)
+
+	d, err := h.idJAGRedemption(context.Background(), validIDJAGClaims(), h.policies[idJAGTestIssuer],
+		idJAGTestClientID, idJAGTestResource)
+	require.NoError(t, err)
+	req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+	require.NoError(t, h.redeemer.complete(context.Background(), req, d))
+
+	sess, ok := req.GetSession().(*session.Session)
+	require.True(t, ok)
+	assert.Equal(t, idJAGTestIssuer+"#"+idJAGTestSubject, sess.GetSubject())
+	assert.NotContains(t, sess.JWTClaims.Extra, claimnames.DelegatedAccessKey)
 }
 
 func TestIDJAGResolve_HandlerDoesNotNarrowResolver(t *testing.T) {

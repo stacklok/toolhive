@@ -644,7 +644,7 @@ func (r *VirtualMCPServerReconciler) validateAuthServerConfigCABundles(
 	if !stderrors.As(err, &invalidCABundleErr) {
 		return false, err
 	}
-	message := fmt.Sprintf("invalid CA bundle: %v", err)
+	message := ctrlutil.InvalidCABundleMessage(err)
 	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 	statusManager.SetMessage(message)
 	statusManager.SetAuthServerConfigValidatedCondition(

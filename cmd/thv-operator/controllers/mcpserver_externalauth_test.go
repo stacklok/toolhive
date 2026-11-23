@@ -961,11 +961,13 @@ func TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T) {
 		authRef     string
 		interceptor *interceptor.Funcs
 		wantErr     error
-		wantAnyErr  bool
+		// wantNotFound expects the lookup of the referenced config to fail
+		// as not found, which must requeue and never record the obo rejection.
+		wantNotFound bool
 	}{
 		{name: "rejection is persisted and not requeued", authRef: "obo-config"},
 		{name: "failed status write is retried", authRef: "obo-config", interceptor: &failRejectionWrite, wantErr: statusErr},
-		{name: "non-validation error is requeued", authRef: "missing-config", wantAnyErr: true},
+		{name: "missing referenced config is requeued", authRef: "missing-config", wantNotFound: true},
 	}
 
 	for _, tt := range tests {
@@ -998,14 +1000,22 @@ func TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T) {
 				require.ErrorIs(t, err, tt.wantErr, "an unpersisted rejection must be retried, not dropped")
 				return
 			}
-			if tt.wantAnyErr {
-				require.Error(t, err, "a non-validation error must be returned so it requeues")
+
+			actual := &mcpv1beta1.MCPServer{}
+			if tt.wantNotFound {
+				require.Error(t, err, "a missing referenced config must be returned so it requeues")
+				assert.EqualError(t, err, "MCPExternalAuthConfig missing-config not found in namespace default")
+				require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+				validated := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+				if validated != nil {
+					assert.NotEqual(t, ctrlutil.MsgOBORequiresIncomingAuth, validated.Message,
+						"a lookup failure must not be recorded as the obo rejection")
+				}
 				return
 			}
 			require.NoError(t, err, "a spec defect must not be returned as an error (that requeues with backoff)")
 			assert.Equal(t, ctrl.Result{}, result)
 
-			actual := &mcpv1beta1.MCPServer{}
 			require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
 			assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, actual.Status.Phase)
 			ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)

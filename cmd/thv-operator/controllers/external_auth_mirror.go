@@ -34,7 +34,9 @@ const fallbackInvalidReason = "InvalidExternalAuthConfig"
 // malformed obo config is Valid=False / InvalidConfig), so the Reason alone
 // cannot tell the two owners apart. No local writer of InvalidConfig or
 // InvalidCABundle may start its message with this prefix;
-// TestMirroredMessagePrefix_NotUsedByLocalMessages checks the fixed ones.
+// TestMirroredMessagePrefix_NotUsedByLocalMessages checks the obo
+// incoming-auth message and the shared CA bundle format
+// (ctrlutil.InvalidCABundleMessage).
 const mirroredMessagePrefix = "Referenced MCPExternalAuthConfig "
 
 // mirroredInvalidExternalAuthConfigError signals that a referenced

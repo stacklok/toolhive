@@ -6,7 +6,6 @@ package controllers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -373,15 +372,18 @@ func TestExternalAuthMirror_OBOIncomingAuthRejectionClearsOnRevert(t *testing.T)
 func TestMirroredMessagePrefix_NotUsedByLocalMessages(t *testing.T) {
 	t.Parallel()
 
-	localMessages := map[string]string{
-		"obo incoming auth": ctrlutil.MsgOBORequiresIncomingAuth,
-		"CA bundle":         fmt.Sprintf("invalid CA bundle: %v", errors.New("missing key")),
+	localConditions := map[string]struct{ reason, message string }{
+		"obo incoming auth": {mcpv1beta1.ConditionReasonInvalidConfig, ctrlutil.MsgOBORequiresIncomingAuth},
+		"CA bundle": {
+			mcpv1beta1.ConditionReasonInvalidCABundle,
+			ctrlutil.InvalidCABundleMessage(errors.New("missing key")),
+		},
 	}
-	for name, msg := range localMessages {
-		assert.False(t, strings.HasPrefix(msg, mirroredMessagePrefix),
-			"%s message %q must not start with the mirrored prefix", name, msg)
+	for name, c := range localConditions {
+		assert.False(t, strings.HasPrefix(c.message, mirroredMessagePrefix),
+			"%s message %q must not start with the mirrored prefix", name, c.message)
 		assert.True(t, isLocalValidationFailure(&metav1.Condition{
-			Status: metav1.ConditionFalse, Reason: mcpv1beta1.ConditionReasonInvalidConfig, Message: msg,
+			Status: metav1.ConditionFalse, Reason: c.reason, Message: c.message,
 		}), "%s message must be treated as locally owned", name)
 	}
 }

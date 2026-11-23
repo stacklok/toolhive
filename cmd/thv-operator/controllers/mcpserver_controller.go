@@ -264,7 +264,7 @@ func (r *MCPServerReconciler) handleInvalidCABundle(
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: server.Generation,
 			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-			Message:            fmt.Sprintf("invalid CA bundle: %v", err),
+			Message:            ctrlutil.InvalidCABundleMessage(err),
 		})
 	})
 }
@@ -2508,7 +2508,7 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 			}
 			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 				Type: mcpv1beta1.ConditionTypeExternalAuthConfigValidated, Status: metav1.ConditionFalse,
-				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid CA bundle: %v", err),
+				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: ctrlutil.InvalidCABundleMessage(err),
 				ObservedGeneration: m.Generation,
 			})
 			return err
@@ -2563,12 +2563,12 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 // A CA bundle failure (ConditionReasonInvalidCABundle) is deliberately not
 // preserved here: its failing input is ConfigMap content, which neither
 // generation nor configHash tracks, and the check that records it re-runs
-// earlier in this same function. Holding it would make the failure permanent.
+// earlier in handleExternalAuthConfig. Holding it would make the failure permanent.
 // Neither is an InvalidConfig mirrored from the referenced
 // MCPExternalAuthConfig (see isLocalValidationFailure): the source can heal
 // back to an unchanged ConfigHash, and holding it would then be permanent too.
 // The obo incoming-auth rejection (ctrlutil.MsgOBORequiresIncomingAuth) is not
-// held either: it re-runs earlier in this same function and returns before the
+// held either: it re-runs earlier in handleExternalAuthConfig and returns before the
 // stored hash advances, so a source that reverts from obo to its earlier spec
 // matches the stored hash, and holding it would keep a stale False.
 func setMCPServerExternalAuthConfigValidCondition(
@@ -2695,7 +2695,7 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1b
 				Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
 				Status:             metav1.ConditionFalse,
 				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-				Message:            fmt.Sprintf("invalid CA bundle: %v", err),
+				Message:            ctrlutil.InvalidCABundleMessage(err),
 				ObservedGeneration: m.Generation,
 			})
 			return err

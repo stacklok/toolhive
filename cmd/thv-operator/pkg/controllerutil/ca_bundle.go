@@ -35,6 +35,14 @@ func invalidCABundleError(err error) error {
 	return &InvalidCABundleError{err: err}
 }
 
+// InvalidCABundleMessage is the condition Message the workload controllers
+// write for a CA bundle failure. Controllers and tests share it so the message
+// format cannot drift from what TestMirroredMessagePrefix_NotUsedByLocalMessages
+// checks.
+func InvalidCABundleMessage(err error) string {
+	return fmt.Sprintf("invalid CA bundle: %v", err)
+}
+
 // ResolveCABundle reads and validates a CA bundle referenced by a workload.
 // ConfigMapKeySelector is deliberately resolved here rather than left to pod
 // admission: an optional or malformed reference must never result in a

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -67,6 +69,15 @@ func startAS2For(
 	opts ...authserverrunner.EmbeddedAuthServerOption,
 ) *as2Env {
 	t.Helper()
+	return startAS2With(t, listener, as1Issuer, subject, resources, nil, opts...)
+}
+
+// startAS2With is startAS2For with mutate applied to AS-2's config last.
+func startAS2With(
+	t *testing.T, listener net.Listener, as1Issuer, subject string, resources []string,
+	mutate func(cfg *authserver.RunConfig, issuer string), opts ...authserverrunner.EmbeddedAuthServerOption,
+) *as2Env {
+	t.Helper()
 	key := newAssertionKey(t, "as2-client-key")
 	jwksFile := filepath.Join(t.TempDir(), "as2-client.jwks")
 	writeJWKS(t, jwksFile, key)
@@ -99,6 +110,9 @@ func startAS2For(
 				}},
 				AcceptedAudiences: []string{issuer},
 			}},
+		}
+		if mutate != nil {
+			mutate(cfg, issuer)
 		}
 	}, nil, opts...)
 	return &as2Env{
@@ -146,10 +160,21 @@ func startTwoServerIDJAGFor(
 	opts ...authserverrunner.EmbeddedAuthServerOption,
 ) *twoServerIDJAG {
 	t.Helper()
+	return startTwoServerIDJAGConfigured(t, as2Resources, mutate, nil, opts...)
+}
+
+// startTwoServerIDJAGConfigured is startTwoServerIDJAGFor with mutateAS2
+// applied to AS-2's config.
+func startTwoServerIDJAGConfigured(
+	t *testing.T, as2Resources []string, mutate func(cfg *authserver.RunConfig),
+	mutateAS2 func(cfg *authserver.RunConfig, issuer string),
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) *twoServerIDJAG {
+	t.Helper()
 	l1, l2 := listenLoopback(t), listenLoopback(t)
 	as1Issuer := "http://" + l1.Addr().String()
 
-	as2 := startAS2For(t, l2, as1Issuer, "user-1", as2Resources)
+	as2 := startAS2With(t, l2, as1Issuer, "user-1", as2Resources, mutateAS2)
 
 	as1 := startXRTServerOn(t, "memory", l1, func(cfg *authserver.RunConfig, _ string) {
 		for _, delegate := range cfg.InboundGrants.TokenExchange.DelegateClients {
@@ -242,4 +267,54 @@ func TestIDJAGRedemptionRefusesResourceTheClaimDoesNotCover(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.status, res.body)
 	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
 	assert.Equal(t, []any{xrtIDJAGResource}, access["aud"])
+}
+
+// TestIDJAGRedemptionFromResolveIssuerChecksActor proves a resolve issuer
+// accepts the act.iss AS-1's real issuance puts in the ID-JAG (not AS-1's own
+// issuer) when actor_issuers lists it, and that the redemption then reaches the
+// gate; with it unlisted, the actor check refuses first.
+func TestIDJAGRedemptionFromResolveIssuerChecksActor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		actorIssuers []string
+		wantReason   string
+	}{
+		{"actor issuer listed", []string{actorTestActIssuer}, "subject_unknown"},
+		{"actor issuer not listed", []string{"https://other-agents.example.com"}, "actor_denied"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			validator := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+			validator.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(tokenexchange.ActorResult{
+				AgentID: "spiffe://example.org/ns/agents/sa/broker", ExpiresAt: time.Now().Add(time.Hour),
+			}, nil).Times(1)
+			idp := startRealLoginUpstream(t)
+			h := startTwoServerIDJAGConfigured(t, []string{xrtIDJAGResource}, setBrokerActorProfile,
+				func(cfg *authserver.RunConfig, issuer string) {
+					cfg.Upstreams = []authserver.UpstreamRunConfig{realLoginUpstream(t, idp, issuer)}
+					policy := &cfg.InboundGrants.JWTBearer.IssuerPolicies[0]
+					policy.SubjectBindings = nil
+					policy.SubjectMode = tokenexchange.SubjectModeResolve
+					policy.ActorIssuers = tc.actorIssuers
+					policy.AcceptedAssertionTypes = []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG}
+				}, withActorTestValidator(validator))
+
+			idJAG := h.mintIDJAGWith(t, actorPairWith("actor-token"))
+			parsed, err := jwt.ParseSigned(idJAG, []jose.SignatureAlgorithm{jose.RS256, jose.ES256})
+			require.NoError(t, err)
+			var claims map[string]any
+			require.NoError(t, parsed.UnsafeClaimsWithoutVerification(&claims))
+			act, ok := claims["act"].(map[string]any)
+			require.True(t, ok, "the ID-JAG must carry act")
+			assert.Equal(t, actorTestActIssuer, act["iss"])
+
+			res := h.as2.redeem(t, h.as2.client, idJAG)
+			assert.Equal(t, http.StatusBadRequest, res.status, res.body)
+			assert.Equal(t, "access_denied", res.body["error"])
+			assert.Equal(t, tc.wantReason, res.body["error_description"])
+			assert.NotContains(t, res.body, "access_token")
+		})
+	}
 }

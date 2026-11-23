@@ -551,6 +551,162 @@ aggregation:
 			errMsg:  "environment variable EMPTY_TOKEN not set or empty",
 		},
 		{
+			// The secret stays behind clientSecretEnv: the OBO strategy reads it
+			// at request time and rejects a config that sets both fields.
+			name: "obo clientSecretEnv is checked but not resolved",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    entra-api:
+      type: obo
+      obo:
+        tokenUrl: https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token
+        clientId: client-123
+        clientSecretEnv: OBO_SECRET
+        scopes:
+          - api://backend/.default
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			envVars: map[string]string{"OBO_SECRET": "secret-value"},
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				backend, ok := cfg.OutgoingAuth.Backends["entra-api"]
+				if !ok || backend.OBO == nil {
+					t.Fatal("entra-api obo backend not found")
+				}
+				if backend.OBO.ClientSecretEnv != "OBO_SECRET" {
+					t.Errorf("OBO.ClientSecretEnv = %v, want OBO_SECRET", backend.OBO.ClientSecretEnv)
+				}
+				if backend.OBO.ClientSecret != "" {
+					t.Errorf("OBO.ClientSecret = %q, want empty (the env var must not be resolved at load)", backend.OBO.ClientSecret)
+				}
+			},
+		},
+		{
+			name: "obo fails when clientSecretEnv is unset",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    entra-api:
+      type: obo
+      obo:
+        tokenUrl: https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token
+        clientId: client-123
+        clientSecretEnv: OBO_SECRET
+        scopes:
+          - api://backend/.default
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			wantErr: true,
+			errMsg:  "environment variable OBO_SECRET not set",
+		},
+		{
+			name: "obo fails when clientSecretEnv is empty",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    entra-api:
+      type: obo
+      obo:
+        tokenUrl: https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token
+        clientId: client-123
+        clientSecretEnv: OBO_SECRET
+        scopes:
+          - api://backend/.default
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			envVars: map[string]string{"OBO_SECRET": ""},
+			wantErr: true,
+			errMsg:  "environment variable OBO_SECRET not set",
+		},
+		{
+			name: "obo fails when both clientSecret and clientSecretEnv are set",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    entra-api:
+      type: obo
+      obo:
+        tokenUrl: https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token
+        clientId: client-123
+        clientSecret: literal-secret
+        clientSecretEnv: OBO_SECRET
+        scopes:
+          - api://backend/.default
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			envVars: map[string]string{"OBO_SECRET": "secret-value"},
+			wantErr: true,
+			errMsg:  "only one of clientSecret or clientSecretEnv must be set",
+		},
+		{
+			name: "obo fails without an obo block",
+			yaml: `
+name: test-vmcp
+groupRef: test-group
+
+incomingAuth:
+  type: anonymous
+
+outgoingAuth:
+  source: inline
+  backends:
+    entra-api:
+      type: obo
+
+aggregation:
+  conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
+`,
+			wantErr: true,
+			errMsg:  "backend entra-api: obo configuration is required",
+		},
+		{
 			name: "valid audit configuration",
 			yaml: `
 name: test-vmcp

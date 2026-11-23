@@ -11,9 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -398,7 +395,9 @@ func TestOBOAuthenticate_ConditionalAccess_FailsFastWithAudit(t *testing.T) {
 // returns an error that still matches its entra sentinel but carries none of
 // Entra's provider detail (the error reaches MCP clients via the tool error),
 // injects nothing, and that only a conditional-access denial emits the audit
-// record — which keeps the detail server-side.
+// record — which keeps the detail server-side. Every other failure keeps it in
+// the diagnostic log instead, at DEBUG for invalid_grant and WARN otherwise; a
+// non-entra error is logged without its message.
 func TestOBOAuthenticate_ExchangeErrorMapping(t *testing.T) {
 	t.Parallel()
 
@@ -415,16 +414,28 @@ func TestOBOAuthenticate_ExchangeErrorMapping(t *testing.T) {
 		err          error
 		wantSentinel error // nil: matches none of the entra sentinels
 		wantAudit    bool
+		// wantLogLevel is the diagnostic log level; "" means no diagnostic log.
+		wantLogLevel string
+		// wantLogDetail is whether the diagnostic log carries Entra's detail.
+		wantLogDetail bool
+		// wantMessage, when set, is the exact client-facing error text.
+		wantMessage string
 	}{
 		{name: "interaction required", err: exErr(entra.KindInteractionRequired),
 			wantSentinel: entra.ErrInteractionRequired, wantAudit: true},
-		{name: "invalid grant", err: exErr(entra.KindInvalidGrant), wantSentinel: entra.ErrInvalidGrant},
-		{name: "invalid client", err: exErr(entra.KindInvalidClient), wantSentinel: entra.ErrInvalidClient},
-		{name: "transient", err: exErr(entra.KindTransient), wantSentinel: entra.ErrTransient},
-		{name: "unknown kind", err: exErr(entra.KindUnknown)},
+		{name: "invalid grant", err: exErr(entra.KindInvalidGrant), wantSentinel: entra.ErrInvalidGrant,
+			wantLogLevel: "DEBUG", wantLogDetail: true},
+		{name: "invalid client", err: exErr(entra.KindInvalidClient), wantSentinel: entra.ErrInvalidClient,
+			wantLogLevel: "WARN", wantLogDetail: true, wantMessage: "obo: token exchange failed"},
+		{name: "transient", err: exErr(entra.KindTransient), wantSentinel: entra.ErrTransient,
+			wantLogLevel: "WARN", wantLogDetail: true},
+		{name: "unknown kind", err: exErr(entra.KindUnknown),
+			wantLogLevel: "WARN", wantLogDetail: true, wantMessage: "obo: token exchange failed"},
 		{name: "wrapped exchange error", err: fmt.Errorf("cache: %w", exErr(entra.KindInvalidClient)),
-			wantSentinel: entra.ErrInvalidClient},
-		{name: "non-entra error", err: errors.New("unexpected failure " + description)},
+			wantSentinel: entra.ErrInvalidClient, wantLogLevel: "WARN", wantLogDetail: true,
+			wantMessage: "obo: token exchange failed"},
+		{name: "non-entra error", err: errors.New("unexpected failure " + description),
+			wantLogLevel: "WARN", wantMessage: "obo: token exchange failed"},
 	}
 
 	for _, tt := range tests {
@@ -433,13 +444,32 @@ func TestOBOAuthenticate_ExchangeErrorMapping(t *testing.T) {
 
 			var auditBuf bytes.Buffer
 			auditLogger := slog.New(slog.NewJSONHandler(&auditBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			var logBuf bytes.Buffer
 			stub := &oboStubExchanger{err: tt.err}
 			s := oboStrategyWithStub(stub, auditLogger)
+			s.logger = slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 			ctx := auth.WithIdentity(t.Context(), oboInboundIdentity("user-token"))
 
 			req, err := oboServeAuthenticate(ctx, t, s, validOBOStrategy())
 			require.Error(t, err)
 			assert.Empty(t, req.Header.Get("Authorization"))
+			if tt.wantMessage != "" {
+				assert.Equal(t, tt.wantMessage, err.Error())
+			}
+
+			logOut := logBuf.String()
+			if tt.wantLogLevel == "" {
+				assert.Empty(t, logOut, "this failure is recorded in the audit log, not the diagnostic log")
+			} else {
+				assert.Contains(t, logOut, `"level":"`+tt.wantLogLevel+`"`)
+				if tt.wantLogDetail {
+					assert.Contains(t, logOut, description, "the diagnostic log keeps Entra's description")
+					assert.Contains(t, logOut, oauthError, "the diagnostic log keeps Entra's error code")
+				} else {
+					assert.Contains(t, logOut, "unclassified error")
+					assert.NotContains(t, logOut, description, "a non-entra error's text must not be logged")
+				}
+			}
 
 			assert.NotContains(t, err.Error(), description, "Entra's error_description must not reach the client")
 			assert.NotContains(t, err.Error(), oauthError, "Entra's error code must not reach the client")
@@ -609,124 +639,57 @@ func TestOBOExchangerCacheKey(t *testing.T) {
 }
 
 // TestOBOGetOrCreateExchanger_BuildsOnceUnderContention exercises the
-// double-checked lock: callers released together all miss on the read-locked
-// check, and the builder holds the write lock until every other caller is
-// parked on the mutex. Callers that queued on the write lock must find the
+// double-checked lock deterministically: the afterReadMiss hook holds every
+// caller after its read-locked miss until all of them have missed, so they all
+// then queue on the write lock. Every caller after the first must find the
 // Exchanger on the second check rather than building another one.
-//
-// A caller that reached the read lock only after the build began never needs the
-// second check, so an attempt where no caller was parked on the write lock
-// proves nothing; such attempts are retried. Callers busy-wait on a gate rather
-// than block on a channel, so each is already running on its own P when
-// released and their read checks overlap. One P is left free for the test
-// goroutine to open the gate.
 func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 	t.Parallel()
 
-	procs := runtime.GOMAXPROCS(0)
-	if procs < 3 {
-		t.Skip("needs GOMAXPROCS >= 3 for callers to overlap on the read-locked check")
-	}
-	callers := int32(min(procs-1, 8))
-	const maxAttempts = 200
+	const callers = 8
 	cfg := validOBOStrategy().OBO
 
-	for range maxAttempts {
-		var builds, writeWaiters atomic.Int32
-		s := newOBOStrategy(oboMapEnv{}, nil, func(_ *authtypes.OBOConfig, _ string) (exchange.Exchanger, error) {
-			if builds.Add(1) == 1 {
-				writeWaiters.Store(int32(awaitParkedOnMutex(
-					"TestOBOGetOrCreateExchanger_BuildsOnceUnderContention", int(callers)-1)))
+	var builds atomic.Int32
+	s := newOBOStrategy(oboMapEnv{}, nil, func(_ *authtypes.OBOConfig, _ string) (exchange.Exchanger, error) {
+		builds.Add(1)
+		return &oboStubExchanger{}, nil
+	})
+
+	var missed atomic.Int32
+	allMissed := make(chan struct{})
+	s.afterReadMiss = func() {
+		if missed.Add(1) == callers {
+			close(allMissed)
+		}
+		select {
+		case <-allMissed:
+		case <-time.After(5 * time.Second):
+			// Fall through: the build count assertion reports the failure.
+		}
+	}
+
+	results := make(chan error, callers)
+	for range callers {
+		go func() {
+			ex, err := s.getOrCreateExchanger(cfg, "resolved-secret")
+			if err == nil && ex == nil {
+				err = errors.New("nil exchanger")
 			}
-			return &oboStubExchanger{}, nil
-		})
-
-		var ready atomic.Int32
-		var gate atomic.Bool
-		var wg sync.WaitGroup
-		for range callers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				ready.Add(1)
-				for !gate.Load() {
-					// Busy-wait deliberately: the caller stays on its P, so it
-					// starts the instant the gate opens.
-				}
-				ex, err := s.getOrCreateExchanger(cfg, "resolved-secret")
-				assert.NoError(t, err)
-				assert.NotNil(t, ex)
-			}()
-		}
-		require.Eventually(t, func() bool { return ready.Load() == callers },
-			5*time.Second, time.Millisecond, "callers must reach the gate")
-		gate.Store(true)
-		waitGroupWithTimeout(t, &wg)
-
-		if writeWaiters.Load() == 0 {
-			continue // the second check was not exercised; try again
-		}
-		assert.Equal(t, int32(1), builds.Load(),
-			"callers queued on the write lock must reuse the Exchanger built by the first")
-		return
+			results <- err
+		}()
 	}
-	t.Fatalf("no attempt in %d had a caller parked on the write lock", maxAttempts)
-}
-
-// awaitParkedOnMutex polls goroutine stacks until want goroutines created by
-// testName are blocked on an RWMutex inside getOrCreateExchanger, or a timeout
-// passes. It returns how many of them were waiting on the write lock (Lock)
-// rather than the read lock. It runs inside the builder, on a caller's
-// goroutine, so it reports rather than failing the test.
-func awaitParkedOnMutex(testName string, want int) int {
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		parked, writers := 0, 0
-		for _, g := range goroutineStacks() {
-			if !strings.Contains(g, testName) || !strings.Contains(g, "getOrCreateExchanger") {
-				continue
-			}
-			switch {
-			case strings.Contains(g, "(*RWMutex).Lock("):
-				parked++
-				writers++
-			case strings.Contains(g, "(*RWMutex).RLock("):
-				parked++
-			}
+	for range callers {
+		select {
+		case err := <-results:
+			require.NoError(t, err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for getOrCreateExchanger callers")
 		}
-		if parked >= want || time.Now().After(deadline) {
-			return writers
-		}
-		time.Sleep(time.Millisecond)
 	}
-}
 
-// goroutineStacks returns the stack trace of every goroutine, one per element.
-func goroutineStacks() []string {
-	buf := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(buf, true)
-		if n < len(buf) {
-			return strings.Split(string(buf[:n]), "\n\n")
-		}
-		buf = make([]byte, 2*len(buf))
-	}
-}
-
-// waitGroupWithTimeout waits for wg, failing the test if it does not finish in
-// time. Call it only from the test goroutine.
-func waitGroupWithTimeout(t *testing.T, wg *sync.WaitGroup) {
-	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for goroutines to finish")
-	}
+	require.Equal(t, int32(callers), missed.Load(), "every caller must miss on the read-locked check")
+	assert.Equal(t, int32(1), builds.Load(),
+		"callers queued on the write lock must reuse the Exchanger built by the first")
 }
 
 func TestOBOValidate_Valid(t *testing.T) {
@@ -747,6 +710,7 @@ func TestOBOValidate_Invalid(t *testing.T) {
 		{name: "nil obo", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO = nil }, wantMsg: "OBO configuration is required"},
 		{name: "missing token url", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.TokenURL = "" }, wantMsg: "tokenUrl is required"},
 		{name: "missing client id", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.ClientID = "" }, wantMsg: "clientId is required"},
+		{name: "whitespace client id", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.ClientID = "  " }, wantMsg: "clientId is required"},
 		{name: "no audience or scopes", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.Scopes = nil; s.OBO.Audience = "" }, wantMsg: "one of audience or scopes is required"},
 		{name: "both secret sources", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.ClientSecretEnv = "ENV" }, wantMsg: "mutually exclusive"},
 		{name: "no secret source", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.ClientSecret = "" }, wantMsg: "a client secret is required"},

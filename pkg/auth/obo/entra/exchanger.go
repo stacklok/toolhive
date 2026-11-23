@@ -333,7 +333,7 @@ func parseResponse(status int, body []byte, now time.Time) (exchange.Token, erro
 	if err := json.Unmarshal(body, &tr); err != nil {
 		// Unparsable body: classify by status alone, without echoing the body.
 		kind := KindUnknown
-		if status >= http.StatusInternalServerError {
+		if isTransientStatus(status) {
 			kind = KindTransient
 		}
 		return exchange.Token{}, &ExchangeError{

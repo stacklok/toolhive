@@ -1092,8 +1092,10 @@ exchanger per (token URL, client ID, cache skew, client-secret fingerprint).
 Health-check probes carry no user and skip the exchange. A conditional-access
 or claims challenge fails the backend request and writes an
 `obo_token_exchange` audit event. The error returned to the MCP client names
-only the failure class (denied, invalid grant, client authentication, or
-transient); Entra's error code and description go to the vMCP log instead. OBO works for inline `outgoingAuth`
+at most the failure class (denied, invalid grant, or transient); a rejected
+client credential reads as a plain "token exchange failed", since it is the
+operator's problem. Entra's error code and description go to the vMCP log
+instead. OBO works for inline `outgoingAuth`
 backends, where the operator mounts each config's client secret under
 `TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>_<HASH8>` (a short hash of the
 config name keeps names such as `my-cfg` and `my.cfg` distinct), and for discovered backends

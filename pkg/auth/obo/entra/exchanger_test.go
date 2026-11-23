@@ -356,6 +356,27 @@ func TestExchanger_ExchangeToken_Failures(t *testing.T) {
 			wantKind:     entra.KindUnknown,
 			wantSentinel: nil,
 		},
+		{
+			name:         "429 with an HTML body is transient",
+			status:       http.StatusTooManyRequests,
+			body:         `<html><body>Too Many Requests</body></html>`,
+			wantKind:     entra.KindTransient,
+			wantSentinel: entra.ErrTransient,
+		},
+		{
+			name:         "408 with an empty body is transient",
+			status:       http.StatusRequestTimeout,
+			body:         ``,
+			wantKind:     entra.KindTransient,
+			wantSentinel: entra.ErrTransient,
+		},
+		{
+			name:         "malformed 4xx body stays unclassified",
+			status:       http.StatusBadRequest,
+			body:         `<html>bad request</html>`,
+			wantKind:     entra.KindUnknown,
+			wantSentinel: nil,
+		},
 	}
 
 	for _, tt := range tests {

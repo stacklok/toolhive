@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,10 +52,19 @@ type OBOStrategy struct {
 	envReader   env.Reader
 	auditLogger *slog.Logger
 
+	// logger receives the diagnostic log of exchange failures. nil means
+	// slog.Default(), read at log time; tests set it to capture the output.
+	logger *slog.Logger
+
 	// buildExchanger constructs the cached Exchanger for a config. It is a field
 	// so tests can inject a stub Exchanger instead of a real Entra HTTP client;
 	// production uses defaultBuildOBOExchanger.
 	buildExchanger func(cfg *authtypes.OBOConfig, clientSecret string) (exchange.Exchanger, error)
+
+	// afterReadMiss, when set, runs in getOrCreateExchanger between the
+	// read-locked miss and taking the write lock. Tests use it to make every
+	// caller miss before any of them builds; production leaves it nil.
+	afterReadMiss func()
 
 	// mu guards exchangers.
 	mu sync.RWMutex
@@ -201,6 +211,10 @@ func (s *OBOStrategy) getOrCreateExchanger(cfg *authtypes.OBOConfig, clientSecre
 	}
 	s.mu.RUnlock()
 
+	if s.afterReadMiss != nil {
+		s.afterReadMiss()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ex, ok := s.exchangers[key]; ok {
@@ -237,32 +251,52 @@ func (s *OBOStrategy) mapExchangeError(
 	case errors.Is(err, entra.ErrInvalidGrant):
 		// The end-user token was rejected (expired, malformed, or not consented):
 		// a per-caller condition, so it is logged at DEBUG only.
-		logExchangeFailure(ctx, slog.LevelDebug, err)
+		s.logExchangeFailure(ctx, slog.LevelDebug, err)
 		return fmt.Errorf("obo: token exchange failed: %w", entra.ErrInvalidGrant)
+	case errors.Is(err, entra.ErrInvalidClient):
+		// A rejected client credential is the operator's problem, not the
+		// caller's, so the message does not say so; the proxy middleware hides
+		// it behind an opaque 502 for the same reason. errors.Is still matches.
+		s.logExchangeFailure(ctx, slog.LevelWarn, err)
+		return &opaqueExchangeError{sentinel: entra.ErrInvalidClient}
+	case errors.Is(err, entra.ErrTransient):
+		s.logExchangeFailure(ctx, slog.LevelWarn, err)
+		return fmt.Errorf("obo: token exchange failed: %w", entra.ErrTransient)
 	default:
-		// invalid_client, a transient IdP failure, or an unclassified error.
-		logExchangeFailure(ctx, slog.LevelWarn, err)
-		for _, sentinel := range []error{entra.ErrInvalidClient, entra.ErrTransient} {
-			if errors.Is(err, sentinel) {
-				return fmt.Errorf("obo: token exchange failed: %w", sentinel)
-			}
-		}
-		return errors.New("obo: token exchange failed")
+		s.logExchangeFailure(ctx, slog.LevelWarn, err)
+		return errors.New(oboExchangeFailedMessage)
 	}
 }
+
+// oboExchangeFailedMessage is the generic client-facing exchange failure text.
+const oboExchangeFailedMessage = "obo: token exchange failed"
+
+// opaqueExchangeError reports a generic exchange failure to the client while
+// still matching sentinel with errors.Is.
+type opaqueExchangeError struct {
+	sentinel error
+}
+
+func (*opaqueExchangeError) Error() string { return oboExchangeFailedMessage }
+
+func (e *opaqueExchangeError) Unwrap() error { return e.sentinel }
 
 // logExchangeFailure records an exchange failure in the diagnostic log. Only
 // *entra.ExchangeError detail is logged: its Error() composes solely
 // non-sensitive fields. Any other error is logged without its message so no
 // Exchanger implementation can leak credential material here, matching the
 // proxy middleware.
-func logExchangeFailure(ctx context.Context, level slog.Level, err error) {
+func (s *OBOStrategy) logExchangeFailure(ctx context.Context, level slog.Level, err error) {
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	var exErr *entra.ExchangeError
 	if errors.As(err, &exErr) {
-		slog.Log(ctx, level, "obo: token exchange failed", "error", exErr.Error())
+		logger.Log(ctx, level, "obo: token exchange failed", "error", exErr.Error())
 		return
 	}
-	slog.Log(ctx, level, "obo: token exchange failed with an unclassified error")
+	logger.Log(ctx, level, "obo: token exchange failed with an unclassified error")
 }
 
 // auditInteractionRequired emits the audit record for a fail-fast
@@ -317,7 +351,7 @@ func parseOBOConfig(strategy *authtypes.BackendAuthStrategy) (*authtypes.OBOConf
 	if cfg.TokenURL == "" {
 		return nil, fmt.Errorf("tokenUrl is required")
 	}
-	if cfg.ClientID == "" {
+	if strings.TrimSpace(cfg.ClientID) == "" {
 		return nil, fmt.Errorf("clientId is required")
 	}
 	if cfg.ClientSecret != "" && cfg.ClientSecretEnv != "" {

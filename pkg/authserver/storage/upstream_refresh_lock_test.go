@@ -347,6 +347,11 @@ func TestUpstreamRefreshLockerFrom(t *testing.T) {
 
 	t.Run("returns nil for a decorator over a backend without the capability", func(t *testing.T) {
 		t.Parallel()
+		assert.Nil(t, UpstreamRefreshLockerFrom(NewCIMDShapeGuardStorage(lockerlessBackend{})))
+	})
+
+	t.Run("returns nil when the chain ends in an Unwrap that returns nothing", func(t *testing.T) {
+		t.Parallel()
 		assert.Nil(t, UpstreamRefreshLockerFrom(unwrappingStorage{}))
 	})
 
@@ -363,6 +368,12 @@ type unwrappingStorage struct {
 }
 
 func (unwrappingStorage) Unwrap() Storage { return nil }
+
+// lockerlessBackend is a full Storage that provides no lease, so a real
+// decorator can be put over it.
+type lockerlessBackend struct {
+	Storage
+}
 
 // lockerlessStorage is an UpstreamTokenStorage that provides neither the lock
 // capability nor Unwrap, standing in for a third-party backend.

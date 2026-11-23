@@ -83,12 +83,12 @@ const upstreamConflictReadTimeout = 5 * time.Second
 //   - locker, when the storage backend provides one, serializes the whole
 //     read-redeem-write sequence ACROSS PROCESSES with a lease over the same
 //     row identity singleflight uses, so only the lease holder calls the
-//     upstream provider. This is what keeps a strict single-use-rotation IdP
-//     from seeing two replicas redeem one refresh token as a replay. The
-//     lease is advisory, so two residual gaps remain: one lost in a Redis
-//     failover that promoted a replica before the acquisition replicated, and
-//     a holder the host paused past the TTL. Those, and a backend that
-//     provides no lease at all, end at the layer below.
+//     upstream provider — see storage.UpstreamRefreshLocker for why that is
+//     needed on top of the layer below. The lease is advisory, so two
+//     residual gaps remain: one lost in a Redis failover that promoted a
+//     replica before the acquisition replicated, and a holder the host paused
+//     past the TTL. Those, and a backend that provides no lease at all, end
+//     at the layer below.
 //   - CompareAndSwapUpstreamTokens (see refreshAndStore) makes the STORED row
 //     deterministic ACROSS PROCESSES: every write is conditioned on the refresh
 //     token this call redeemed still being the one stored, so a replica whose

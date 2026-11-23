@@ -1451,10 +1451,8 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 // Upstream Token Storage
 // -----------------------
 
-// ResolveUpstreamTokenRowID returns an opaque ID identifying one logical
-// upstream-token row, used to coordinate refreshes of it: the auth server's
-// in-process singleflight group and the cross-process UpstreamRefreshLocker
-// lease are both keyed by it. See UpstreamTokenStorage for the contract.
+// ResolveUpstreamTokenRowID implements UpstreamTokenStorage, which defines
+// what the ID identifies and what may be done with it.
 func (*MemoryStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, providerName string) (UpstreamTokenRowID, error) {
 	if sessionID == "" {
 		return "", fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")

@@ -483,6 +483,8 @@ func TestMiddleware_NoIdentity_401(t *testing.T) {
 			rec, spy := serve(t, mw, request(t, nil))
 
 			assert.Equal(t, http.StatusUnauthorized, rec.Code)
+			assert.Equal(t, invalidTokenChallenge, rec.Header().Get("WWW-Authenticate"),
+				"every 401 must carry a Bearer challenge")
 			assert.False(t, spy.called)
 			assert.Equal(t, 0, stub.calls, "no exchange without an identity")
 		})
@@ -500,6 +502,8 @@ func TestMiddleware_InboundIdentityWithoutToken_401(t *testing.T) {
 	rec, spy := serve(t, mw, request(t, inboundIdentity("")))
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Equal(t, invalidTokenChallenge, rec.Header().Get("WWW-Authenticate"),
+		"every 401 must carry a Bearer challenge")
 	assert.False(t, spy.called)
 	assert.Equal(t, 0, stub.calls)
 }
@@ -604,16 +608,18 @@ func TestMiddleware_ExchangeErrors_StatusMapping(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		err        error
-		wantStatus int
-		wantBody   string
+		name          string
+		err           error
+		wantStatus    int
+		wantBody      string
+		wantChallenge string
 	}{
 		{
-			name:       "invalid grant is 401",
-			err:        &entra.ExchangeError{Kind: entra.KindInvalidGrant, OAuthError: "invalid_grant"},
-			wantStatus: http.StatusUnauthorized,
-			wantBody:   unauthorizedMessage,
+			name:          "invalid grant is 401 with an invalid_token challenge",
+			err:           &entra.ExchangeError{Kind: entra.KindInvalidGrant, OAuthError: "invalid_grant"},
+			wantStatus:    http.StatusUnauthorized,
+			wantBody:      unauthorizedMessage,
+			wantChallenge: invalidTokenChallenge,
 		},
 		{
 			name:       "invalid client is 502",
@@ -645,10 +651,31 @@ func TestMiddleware_ExchangeErrors_StatusMapping(t *testing.T) {
 
 			assert.Equal(t, tt.wantStatus, rec.Code)
 			assert.Contains(t, rec.Body.String(), tt.wantBody)
+			assert.Equal(t, tt.wantChallenge, rec.Header().Get("WWW-Authenticate"))
 			assert.False(t, spy.called, "downstream must not be called on an exchange failure")
 		})
 	}
 }
+
+// TestMiddleware_InvalidGrant_UpstreamProvider_ReauthChallenge verifies that in
+// upstream-provider mode a rejected provider token asks the client to
+// re-authenticate with the embedded auth server, the recovery that yields a
+// fresh provider token.
+func TestMiddleware_InvalidGrant_UpstreamProvider_ReauthChallenge(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubExchanger{err: &entra.ExchangeError{Kind: entra.KindInvalidGrant, OAuthError: "invalid_grant"}}
+	mw := newMiddleware(stub, testProvider, testTarget, nil)
+
+	rec, spy := serve(t, mw, request(t, upstreamIdentity(testProvider, "expired-upstream-token")))
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Contains(t, rec.Header().Get("WWW-Authenticate"), "re-authentication required")
+	assert.False(t, spy.called)
+}
+
+// invalidTokenChallenge is the WWW-Authenticate value on an inbound-mode 401.
+const invalidTokenChallenge = `Bearer error="invalid_token"`
 
 // TestMiddleware_UnclassifiedError_NotLoggedToDefault covers the "no token or
 // secret in logs" guarantee on the failure path that uses the package-global

@@ -137,8 +137,8 @@ type RunConfig struct {
 	// When true, the embedded auth server handles OAuth flows for clients, but instead of
 	// injecting upstream IdP tokens the proxy strips the client's credential headers
 	// (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
-	// backend receives an unauthenticated request. Incompatible with token exchange
-	// and AWS STS, which would re-add credentials after the strip.
+	// backend receives an unauthenticated request. Incompatible with token exchange,
+	// AWS STS and OBO, which would re-add credentials after the strip.
 	//nolint:lll // field tags require full JSON+YAML names
 	DisableUpstreamTokenInjection bool `json:"disable_upstream_token_injection,omitempty" yaml:"disable_upstream_token_injection,omitempty"`
 

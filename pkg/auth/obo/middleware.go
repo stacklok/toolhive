@@ -205,12 +205,12 @@ func (*middleware) Close() error { return nil }
 // subjectToken resolves the OBO subject (assertion) from the request's
 // authenticated Identity. Inbound mode uses Identity.Token; upstream-provider
 // mode uses Identity.UpstreamTokens[name]. On failure it writes a 401 (with a
-// re-auth challenge for a missing provider token, mirroring upstreamswap) and
+// Bearer challenge, see writeInvalidToken and writeUpstreamAuthRequired) and
 // returns ok=false.
 func (m *middleware) subjectToken(w http.ResponseWriter, r *http.Request) (string, bool) {
 	identity, ok := auth.IdentityFromContext(r.Context())
 	if !ok {
-		http.Error(w, unauthorizedMessage, http.StatusUnauthorized)
+		writeInvalidToken(w)
 		return "", false
 	}
 
@@ -224,10 +224,20 @@ func (m *middleware) subjectToken(w http.ResponseWriter, r *http.Request) (strin
 	}
 
 	if identity.Token == "" {
-		http.Error(w, unauthorizedMessage, http.StatusUnauthorized)
+		writeInvalidToken(w)
 		return "", false
 	}
 	return identity.Token, true
+}
+
+// writeInvalidToken writes a 401 with an RFC 6750 WWW-Authenticate Bearer
+// invalid_token challenge. RFC 9110 requires a challenge on every 401, and MCP
+// clients read it to decide to re-authenticate. The challenge carries no
+// resource_metadata parameter: the auth middleware builds that from the
+// TokenValidator, which this middleware does not have.
+func writeInvalidToken(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+	http.Error(w, unauthorizedMessage, http.StatusUnauthorized)
 }
 
 // writeUpstreamAuthRequired writes a 401 with an RFC 6750 WWW-Authenticate
@@ -253,9 +263,15 @@ func (m *middleware) writeExchangeError(w http.ResponseWriter, r *http.Request, 
 
 	case errors.Is(err, entra.ErrInvalidGrant):
 		// The end-user token was rejected by the IdP (expired, malformed, or
-		// not consented for this backend).
+		// not consented for this backend). In upstream-provider mode the
+		// recovery is re-authenticating with the embedded auth server so a
+		// fresh provider token is issued, the same challenge as a missing one.
 		slog.DebugContext(r.Context(), "obo: subject token rejected by identity provider")
-		http.Error(w, unauthorizedMessage, http.StatusUnauthorized)
+		if m.providerName != "" {
+			writeUpstreamAuthRequired(w)
+		} else {
+			writeInvalidToken(w)
+		}
 
 	case r.Context().Err() != nil &&
 		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):

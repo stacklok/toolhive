@@ -38,8 +38,9 @@ type MiddlewareParameters struct {
 	// ClientID is the confidential client's application (client) ID.
 	ClientID string `json:"clientId"`
 
-	// Audience is the backend target identifier. Used as the exchange scope when
-	// Scopes is empty (see ExchangeTarget).
+	// Audience is the backend resource identifier (Application ID URI or client
+	// ID). Used as the exchange scope <audience>/.default when Scopes is empty
+	// (see ExchangeTarget).
 	Audience string `json:"audience"`
 
 	// Scopes are the delegated scopes to request, e.g.

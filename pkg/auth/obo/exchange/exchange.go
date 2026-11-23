@@ -23,7 +23,8 @@ import (
 //
 // The audience parameter is a provider-defined target identifier for the
 // backend the token is minted for. The Entra implementation sends it verbatim
-// as the OAuth scope (typically "<resource>/.default"). It is opaque to the
+// as the OAuth scope (typically "<resource>/.default", which Target produces
+// from a bare audience). It is opaque to the
 // cache decorator, which only uses it to partition entries. Callers derive it
 // with Target so every surface sends the provider the same value for the same
 // configuration.
@@ -71,8 +72,11 @@ type TokenExchanger interface {
 // Target collapses a configuration's distinct audience and scopes fields onto
 // the single value an Exchanger takes as its audience argument. Space-joined
 // scopes win when present (the Entra-native form, e.g.
-// "api://<backend>/.default"); otherwise the trimmed audience is used. An empty
-// result means neither was usefully set.
+// "api://<backend>/.default"). Otherwise the audience is treated as a resource
+// identifier, the way MSAL treats one: it is trimmed, a trailing "/" is
+// dropped, and "/.default" is appended unless already present, because the
+// Entra v2.0 endpoint accepts only scopes and rejects a bare resource
+// (AADSTS70011). An empty result means neither was usefully set.
 //
 // This is the one implementation of the collapse rule. The proxy middleware,
 // the operator validation, the vMCP converter, and the vMCP strategy all call
@@ -82,5 +86,13 @@ func Target(audience string, scopes []string) string {
 	if joined := strings.TrimSpace(strings.Join(scopes, " ")); joined != "" {
 		return joined
 	}
-	return strings.TrimSpace(audience)
+	aud := strings.TrimSuffix(strings.TrimSpace(audience), "/")
+	if aud == "" || strings.HasSuffix(aud, defaultScopeSuffix) {
+		return aud
+	}
+	return aud + defaultScopeSuffix
 }
+
+// defaultScopeSuffix turns a resource identifier into the Entra v2.0 scope that
+// requests every statically configured permission of that resource.
+const defaultScopeSuffix = "/.default"

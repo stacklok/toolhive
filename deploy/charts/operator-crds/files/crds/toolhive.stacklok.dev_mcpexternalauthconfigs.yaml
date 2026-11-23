@@ -2761,10 +2761,14 @@ spec:
                 properties:
                   audience:
                     description: |-
-                      Audience is the backend target identifier requested in the exchanged
-                      token. Used as the exchange target when Scopes is empty. At least one of
-                      audience or scopes must be set; the operator enforces that at reconcile
-                      (it is not an admission-time rule — see the type doc).
+                      Audience is the backend resource the exchanged token is for: its
+                      Application ID URI (e.g. api://backend) or application (client) ID. Used
+                      when Scopes is empty, as the scope <audience>/.default (a trailing "/" is
+                      dropped, and a value already ending in /.default is sent as is), because
+                      the Entra v2.0 endpoint accepts only scopes. To request specific delegated
+                      permissions, use Scopes instead. At least one of audience or scopes must be
+                      set; the operator enforces that at reconcile (it is not an admission-time
+                      rule — see the type doc).
                     type: string
                   authority:
                     description: |-
@@ -5927,10 +5931,14 @@ spec:
                 properties:
                   audience:
                     description: |-
-                      Audience is the backend target identifier requested in the exchanged
-                      token. Used as the exchange target when Scopes is empty. At least one of
-                      audience or scopes must be set; the operator enforces that at reconcile
-                      (it is not an admission-time rule — see the type doc).
+                      Audience is the backend resource the exchanged token is for: its
+                      Application ID URI (e.g. api://backend) or application (client) ID. Used
+                      when Scopes is empty, as the scope <audience>/.default (a trailing "/" is
+                      dropped, and a value already ending in /.default is sent as is), because
+                      the Entra v2.0 endpoint accepts only scopes. To request specific delegated
+                      permissions, use Scopes instead. At least one of audience or scopes must be
+                      set; the operator enforces that at reconcile (it is not an admission-time
+                      rule — see the type doc).
                     type: string
                   authority:
                     description: |-

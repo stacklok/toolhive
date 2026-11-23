@@ -205,7 +205,9 @@ type OBOConfig struct {
 	// The value will be resolved at runtime from this environment variable.
 	ClientSecretEnv string `json:"clientSecretEnv,omitempty" yaml:"clientSecretEnv,omitempty"`
 
-	// Audience is the target audience (resource URI) for the exchanged token.
+	// Audience is the backend resource (Application ID URI or client ID) for the
+	// exchanged token. Used when Scopes is empty, sent to Entra as
+	// <audience>/.default (see exchange.Target).
 	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
 
 	// Scopes are the requested scopes for the exchanged token.

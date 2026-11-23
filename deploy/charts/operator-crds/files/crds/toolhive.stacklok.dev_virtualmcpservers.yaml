@@ -3905,8 +3905,10 @@ spec:
                                 Used when Type = "obo".
                               properties:
                                 audience:
-                                  description: Audience is the target audience (resource
-                                    URI) for the exchanged token.
+                                  description: |-
+                                    Audience is the backend resource (Application ID URI or client ID) for the
+                                    exchanged token. Used when Scopes is empty, sent to Entra as
+                                    <audience>/.default (see exchange.Target).
                                   type: string
                                 cacheSkewSeconds:
                                   description: |-
@@ -4209,8 +4211,10 @@ spec:
                               Used when Type = "obo".
                             properties:
                               audience:
-                                description: Audience is the target audience (resource
-                                  URI) for the exchanged token.
+                                description: |-
+                                  Audience is the backend resource (Application ID URI or client ID) for the
+                                  exchanged token. Used when Scopes is empty, sent to Entra as
+                                  <audience>/.default (see exchange.Target).
                                 type: string
                               cacheSkewSeconds:
                                 description: |-
@@ -9473,8 +9477,10 @@ spec:
                                 Used when Type = "obo".
                               properties:
                                 audience:
-                                  description: Audience is the target audience (resource
-                                    URI) for the exchanged token.
+                                  description: |-
+                                    Audience is the backend resource (Application ID URI or client ID) for the
+                                    exchanged token. Used when Scopes is empty, sent to Entra as
+                                    <audience>/.default (see exchange.Target).
                                   type: string
                                 cacheSkewSeconds:
                                   description: |-
@@ -9777,8 +9783,10 @@ spec:
                               Used when Type = "obo".
                             properties:
                               audience:
-                                description: Audience is the target audience (resource
-                                  URI) for the exchanged token.
+                                description: |-
+                                  Audience is the backend resource (Application ID URI or client ID) for the
+                                  exchanged token. Used when Scopes is empty, sent to Entra as
+                                  <audience>/.default (see exchange.Target).
                                 type: string
                               cacheSkewSeconds:
                                 description: |-

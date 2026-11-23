@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -205,12 +206,14 @@ func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunctio
 	return middleware.CreateTokenInjectionMiddleware(t.tokenSource)
 }
 
-// hasTokenExchangeMiddleware checks if any middleware in the slice is a token exchange middleware.
-// When token exchange is configured, it handles its own Authorization header injection,
-// so the oauth-token-injection middleware should be skipped to avoid overwriting the exchanged token.
-func hasTokenExchangeMiddleware(middlewares []types.NamedMiddleware) bool {
+// hasTokenInjectingMiddleware checks if any middleware in the slice sets the
+// backend Authorization header from an exchanged token (token exchange or OBO).
+// Such a middleware handles its own Authorization header injection, so the
+// oauth-token-injection middleware should be skipped to avoid overwriting the
+// exchanged token.
+func hasTokenInjectingMiddleware(middlewares []types.NamedMiddleware) bool {
 	for _, mw := range middlewares {
-		if mw.Name == tokenexchange.MiddlewareType {
+		if mw.Name == tokenexchange.MiddlewareType || mw.Name == obo.MiddlewareType {
 			return true
 		}
 	}
@@ -326,8 +329,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	isRemote := t.remoteURL != ""
 
 	// Add OAuth token injection middleware for remote authentication if we have a token source.
-	// Skip if token exchange is configured (it handles its own Authorization header injection).
-	if isRemote && t.tokenSource != nil && !hasTokenExchangeMiddleware(t.middlewares) {
+	// Skip if token exchange or OBO is configured (each handles its own Authorization header injection).
+	if isRemote && t.tokenSource != nil && !hasTokenInjectingMiddleware(t.middlewares) {
 		tokenMiddleware := t.createTokenInjectionMiddleware()
 		middlewares = append(middlewares, types.NamedMiddleware{
 			Name:     "oauth-token-injection",

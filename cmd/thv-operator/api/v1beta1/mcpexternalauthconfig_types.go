@@ -143,7 +143,7 @@ type MCPExternalAuthConfigSpec struct {
 //   - clientSecretRef → resolved into a pod env var; only the env var name
 //     travels in the contract, as clientSecretEnvVar
 //   - audience / scopes → collapsed to a single exchange target by
-//     exchange.Target (space-joined scopes win, otherwise audience)
+//     exchange.Target (space-joined scopes win, otherwise <audience>/.default)
 //   - cacheSkew → the contract's integer-seconds cacheSkewSeconds
 //
 // Every field is optional at the CRD level, and the schema deliberately carries
@@ -215,10 +215,14 @@ type OBOConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// Audience is the backend target identifier requested in the exchanged
-	// token. Used as the exchange target when Scopes is empty. At least one of
-	// audience or scopes must be set; the operator enforces that at reconcile
-	// (it is not an admission-time rule — see the type doc).
+	// Audience is the backend resource the exchanged token is for: its
+	// Application ID URI (e.g. api://backend) or application (client) ID. Used
+	// when Scopes is empty, as the scope <audience>/.default (a trailing "/" is
+	// dropped, and a value already ending in /.default is sent as is), because
+	// the Entra v2.0 endpoint accepts only scopes. To request specific delegated
+	// permissions, use Scopes instead. At least one of audience or scopes must be
+	// set; the operator enforces that at reconcile (it is not an admission-time
+	// rule — see the type doc).
 	// +optional
 	Audience string `json:"audience,omitempty"`
 

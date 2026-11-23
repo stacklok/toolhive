@@ -499,7 +499,8 @@ link Kubernetes code; a test in `pkg/auth/obo` enforces that.
 `MCPExternalAuthConfig` of type `obo` and injects it through
 `AdditionalMiddlewareConfigs`, after authentication and before recovery. Its
 parameters are `obo.MiddlewareParameters`: `tokenUrl`, `clientId`, `audience`,
-`scopes` (space-joined scopes win over audience), `clientSecretEnvVar` (the
+`scopes` (space-joined scopes win over audience; an audience is a resource
+identifier and is sent as `<audience>/.default`), `clientSecretEnvVar` (the
 name of the env var the operator mounts the client secret under,
 `TOOLHIVE_OBO_CLIENT_SECRET`), optional `subjectTokenProviderName`, and
 optional `cacheSkewSeconds`. The factory fails at startup if the parameters are
@@ -522,9 +523,9 @@ body that does not disclose the provider error:
 
 | Condition | Status |
 |---|---|
-| No authenticated identity or no subject token | 401 |
-| Named upstream provider token missing | 401 with `WWW-Authenticate: Bearer error="invalid_token"` |
-| Entra `invalid_grant` (subject token rejected) | 401 |
+| No authenticated identity or no subject token | 401 with `WWW-Authenticate: Bearer error="invalid_token"` |
+| Named upstream provider token missing | 401 with `WWW-Authenticate: Bearer error="invalid_token"` and a re-authentication `error_description` |
+| Entra `invalid_grant` (subject token rejected) | 401 with the same challenge as the row above for the active subject source |
 | Conditional access, MFA, or claims challenge (`interaction_required`, a `claims` value, AADSTS50076/50079) | 403, plus an `obo_token_exchange` audit event with outcome `denied` |
 | Entra HTTP 5xx, 429 or 408, whatever the body says (transient) | 502 |
 | Entra `temporarily_unavailable` on another status, unless the reply is also a claims challenge (transient) | 502 |
@@ -534,6 +535,18 @@ body that does not disclose the provider error:
 
 Throttling is reported as a plain 502: Entra's `Retry-After` header is not
 forwarded to the client.
+
+The 401 challenges carry no `resource_metadata` parameter, unlike the
+authentication middleware's, because that value is built by the token
+validator, which this middleware does not have.
+
+The 403 on a conditional-access or claims challenge deliberately departs from
+Microsoft's guidance for a web API, which is to return 401 with a
+`WWW-Authenticate` challenge carrying `error="insufficient_claims"` and the
+`claims` value so the client can step up. The proxy does not pass the claims
+challenge through: an MCP client cannot run Entra's interactive step-up, and
+the claims value would disclose the tenant's conditional-access policy. The
+request fails with 403 and the decision is audited.
 
 ### 10. Audit Middleware
 

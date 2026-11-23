@@ -1934,8 +1934,8 @@ type AuthenticationRunConfig struct {
 	// When true, the embedded auth server handles OAuth flows for clients, but instead of
 	// injecting upstream IdP tokens the proxy strips the client's credential headers
 	// (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
-	// backend receives an unauthenticated request. Incompatible with token exchange
-	// and AWS STS, which would re-add credentials after the strip.
+	// backend receives an unauthenticated request. Incompatible with token exchange,
+	// AWS STS and OBO, which would re-add credentials after the strip.
 	DisableUpstreamTokenInjection OptBool `json:"disable_upstream_token_injection"`
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the

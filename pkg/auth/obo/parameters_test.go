@@ -33,13 +33,21 @@ func TestMiddlewareParameters_ExchangeTarget(t *testing.T) {
 			scopes:   []string{"api://backend/.default"},
 			want:     "api://backend/.default",
 		},
-		{name: "audience used when no scopes", audience: "api://backend", want: "api://backend"},
+		{name: "audience resource gets /.default", audience: "api://backend", want: "api://backend/.default"},
+		{name: "audience trailing slash dropped", audience: " api://backend/ ", want: "api://backend/.default"},
+		{name: "audience already a .default scope", audience: "api://backend/.default", want: "api://backend/.default"},
+		{
+			name:     "audience client id gets /.default",
+			audience: "00000000-0000-0000-0000-000000000001",
+			want:     "00000000-0000-0000-0000-000000000001/.default",
+		},
 		{
 			name:     "audience used when scopes are blank",
 			audience: "api://backend",
 			scopes:   []string{"", "  "},
-			want:     "api://backend",
+			want:     "api://backend/.default",
 		},
+		{name: "whitespace-only audience is empty", audience: "  ", want: ""},
 		{name: "empty when neither set", want: ""},
 	}
 

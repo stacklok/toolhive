@@ -168,32 +168,146 @@ func TestAcquireUpstreamRefreshLock(t *testing.T) {
 	}
 }
 
+// TestRedisUpstreamRefreshLock_BackendFailures covers what the Redis backend
+// reports when it cannot be reached. The distinction matters: the refresher
+// treats ErrUpstreamRefreshLockHeld as "wait for the holder" and anything else
+// as "fail closed", so a fault reported as a refusal would park a request that
+// should have errored, and a refusal reported as a fault would fail a request
+// that only needed to wait.
+func TestRedisUpstreamRefreshLock_BackendFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an unreachable backend is a fault, not a refusal", func(t *testing.T) {
+		t.Parallel()
+		s, mr := newTestRedisStorage(t)
+		t.Cleanup(func() { _ = s.Close() })
+		mr.Close()
+
+		lease, err := s.AcquireUpstreamRefreshLock(t.Context(), testRowID, time.Minute)
+		assert.Nil(t, lease)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrUpstreamRefreshLockHeld,
+			"a caller must fail closed here, not wait for a holder that does not exist")
+	})
+
+	t.Run("release reports a backend that went away", func(t *testing.T) {
+		t.Parallel()
+		s, mr := newTestRedisStorage(t)
+		t.Cleanup(func() { _ = s.Close() })
+
+		lease, err := s.AcquireUpstreamRefreshLock(t.Context(), testRowID, time.Minute)
+		require.NoError(t, err)
+
+		mr.Close()
+		// Reported rather than swallowed, so the caller can log that the row
+		// stays locked until the TTL runs out.
+		assert.Error(t, lease.Release(t.Context()))
+	})
+
+	t.Run("a lease whose acquisition reply was lost does not block the row", func(t *testing.T) {
+		t.Parallel()
+		s, mr := newTestRedisStorage(t)
+		t.Cleanup(func() {
+			_ = s.Close()
+			mr.Close()
+		})
+
+		// Stand in for the reply that never came back: the SET landed, so the
+		// key is there, but no caller holds a lease over it. Clearing it is
+		// best-effort, and the owner token is the one the failed acquisition
+		// generated, so only that key is affected.
+		key := redisUpstreamRefreshLockKey(s.keyPrefix, testRowID)
+		require.NoError(t, s.client.Set(t.Context(), key, "orphaned-owner", time.Hour).Err())
+		s.clearUnreleasableUpstreamRefreshLock(t.Context(), key, "orphaned-owner")
+
+		lease, err := s.AcquireUpstreamRefreshLock(t.Context(), testRowID, time.Minute)
+		require.NoError(t, err, "a lease nobody holds must not block the row for its whole TTL")
+		assert.NotNil(t, lease)
+	})
+
+	t.Run("clearing leaves a lease another holder owns alone", func(t *testing.T) {
+		t.Parallel()
+		s, mr := newTestRedisStorage(t)
+		t.Cleanup(func() {
+			_ = s.Close()
+			mr.Close()
+		})
+
+		held, err := s.AcquireUpstreamRefreshLock(t.Context(), testRowID, time.Minute)
+		require.NoError(t, err)
+		require.NotNil(t, held)
+
+		// The cleanup runs with the owner token of an acquisition that failed,
+		// which is not the one stored, so the live lease must survive.
+		key := redisUpstreamRefreshLockKey(s.keyPrefix, testRowID)
+		s.clearUnreleasableUpstreamRefreshLock(t.Context(), key, "some-other-owner")
+
+		_, err = s.AcquireUpstreamRefreshLock(t.Context(), testRowID, time.Minute)
+		assert.ErrorIs(t, err, ErrUpstreamRefreshLockHeld)
+	})
+}
+
 // TestMemoryStorage_cleanupExpiredRefreshLeases checks that a lease nobody
 // releases does not accumulate in the in-memory backend, and that the sweep
 // cannot take a live lease with it.
 func TestMemoryStorage_cleanupExpiredRefreshLeases(t *testing.T) {
 	t.Parallel()
 
-	// withStorage calls t.Parallel on the subtest.
 	t.Run("sweeps an expired lease and keeps a live one", func(t *testing.T) {
-		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			_, err := s.AcquireUpstreamRefreshLock(ctx, "expiring-row", 10*time.Millisecond)
-			require.NoError(t, err)
-			_, err = s.AcquireUpstreamRefreshLock(ctx, "live-row", time.Hour)
-			require.NoError(t, err)
+		t.Parallel()
+		ctx, s := newLeaseSweepStorage(t)
 
-			time.Sleep(30 * time.Millisecond)
-			s.cleanupExpired()
+		_, err := s.AcquireUpstreamRefreshLock(ctx, "expiring-row", 10*time.Millisecond)
+		require.NoError(t, err)
+		_, err = s.AcquireUpstreamRefreshLock(ctx, "live-row", time.Hour)
+		require.NoError(t, err)
 
-			s.mu.RLock()
-			_, expiredPresent := s.upstreamRefreshLeases["expiring-row"]
-			_, livePresent := s.upstreamRefreshLeases["live-row"]
-			s.mu.RUnlock()
+		time.Sleep(30 * time.Millisecond)
+		s.cleanupExpired()
 
-			assert.False(t, expiredPresent, "an expired lease should be swept")
-			assert.True(t, livePresent, "a live lease must survive the sweep")
-		})
+		s.mu.RLock()
+		_, expiredPresent := s.upstreamRefreshLeases["expiring-row"]
+		_, livePresent := s.upstreamRefreshLeases["live-row"]
+		s.mu.RUnlock()
+
+		assert.False(t, expiredPresent, "an expired lease should be swept")
+		assert.True(t, livePresent, "a live lease must survive the sweep")
 	})
+
+	// cleanupExpired collects under the read lock and deletes under the write
+	// lock, so a lease it collected may have been released and re-acquired by
+	// the time the delete runs. The delete is driven directly here because
+	// nothing can interleave with it from outside.
+	t.Run("keeps a lease re-acquired since it was collected", func(t *testing.T) {
+		t.Parallel()
+		ctx, s := newLeaseSweepStorage(t)
+
+		expiring, err := s.AcquireUpstreamRefreshLock(ctx, "contended-row", 10*time.Millisecond)
+		require.NoError(t, err)
+
+		time.Sleep(30 * time.Millisecond)
+		collected := []UpstreamTokenRowID{"contended-row"}
+
+		// The holder gives up its expired lease and a new one takes the row.
+		require.NoError(t, expiring.Release(ctx))
+		_, err = s.AcquireUpstreamRefreshLock(ctx, "contended-row", time.Hour)
+		require.NoError(t, err)
+
+		s.mu.Lock()
+		s.deleteExpiredRefreshLeasesLocked(time.Now(), collected)
+		_, present := s.upstreamRefreshLeases["contended-row"]
+		s.mu.Unlock()
+
+		assert.True(t, present,
+			"deleting the new holder's lease would let a second replica redeem alongside it")
+	})
+}
+
+func newLeaseSweepStorage(t *testing.T) (context.Context, *MemoryStorage) {
+	t.Helper()
+	s := NewMemoryStorage()
+	t.Cleanup(func() { _ = s.Close() })
+	return t.Context(), s
 }
 
 // TestUpstreamRefreshLockerFrom covers capability discovery. Decorators embed
@@ -222,11 +336,33 @@ func TestUpstreamRefreshLockerFrom(t *testing.T) {
 		assert.Nil(t, UpstreamRefreshLockerFrom(lockerlessStorage{}))
 	})
 
+	t.Run("finds the capability through a chain of decorators", func(t *testing.T) {
+		t.Parallel()
+		s := NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		assert.NotNil(t, UpstreamRefreshLockerFrom(
+			NewCIMDShapeGuardStorage(NewCIMDShapeGuardStorage(s)),
+		))
+	})
+
+	t.Run("returns nil for a decorator over a backend without the capability", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, UpstreamRefreshLockerFrom(unwrappingStorage{}))
+	})
+
 	t.Run("returns nil for a nil storage", func(t *testing.T) {
 		t.Parallel()
 		assert.Nil(t, UpstreamRefreshLockerFrom(nil))
 	})
 }
+
+// unwrappingStorage is a decorator whose Unwrap returns nothing, standing in
+// for a chain that ends before any backend provides the capability.
+type unwrappingStorage struct {
+	UpstreamTokenStorage
+}
+
+func (unwrappingStorage) Unwrap() Storage { return nil }
 
 // lockerlessStorage is an UpstreamTokenStorage that provides neither the lock
 // capability nor Unwrap, standing in for a third-party backend.

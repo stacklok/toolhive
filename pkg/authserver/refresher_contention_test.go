@@ -20,6 +20,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// contentionWaitTimeout bounds every barrier in this test. It is far longer
+// than anything the test legitimately waits for, so it only ever fires on a
+// deadlock or a panicking goroutine.
+const contentionWaitTimeout = 10 * time.Second
+
 // blockingProvider parks inside RefreshTokens until the test releases it, so a
 // second replica can be observed while the first is mid-redemption. It counts
 // its calls, which is the assertion this whole test exists for: one upstream
@@ -152,7 +157,9 @@ func TestRefreshAndStore_TwoReplicasRedeemOnce(t *testing.T) {
 	// release below would leave a refresher blocked for the rest of the run.
 	t.Cleanup(func() {
 		provider.releaseAll()
-		wg.Wait()
+		// Teardown, so a hang here is reported rather than left to run out the
+		// package's test timeout with no indication of which test stuck.
+		waitWithTimeout(t, &wg, "refreshers still running at teardown")
 	})
 
 	wg.Add(1)
@@ -164,7 +171,7 @@ func TestRefreshAndStore_TwoReplicasRedeemOnce(t *testing.T) {
 	// The leader is now inside the provider, holding the lease.
 	select {
 	case <-provider.entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(contentionWaitTimeout):
 		t.Fatal("the first refresher never reached the upstream provider")
 	}
 
@@ -180,7 +187,7 @@ func TestRefreshAndStore_TwoReplicasRedeemOnce(t *testing.T) {
 	// release, the waiter cannot legitimately reach the provider.
 	select {
 	case <-refused:
-	case <-time.After(10 * time.Second):
+	case <-time.After(contentionWaitTimeout):
 		// Getting here means the second replica never asked for the lease at
 		// all. The interesting number is then how many redemptions the
 		// provider has seen: uncoordinated, the waiter walks straight past it
@@ -193,7 +200,7 @@ func TestRefreshAndStore_TwoReplicasRedeemOnce(t *testing.T) {
 		"the waiter must not redeem the refresh token while another replica holds the lease")
 
 	provider.releaseAll()
-	wg.Wait()
+	waitWithTimeout(t, &wg, "both refreshers should finish once the provider is released")
 
 	require.NoError(t, leaderErr)
 	require.NoError(t, waiterErr)
@@ -212,6 +219,24 @@ func TestRefreshAndStore_TwoReplicasRedeemOnce(t *testing.T) {
 	stored, err := stor.GetUpstreamTokens(ctx, "session", "github")
 	require.NoError(t, err)
 	assert.Equal(t, "new-refresh", stored.RefreshToken, "the rotated row must be what is persisted")
+}
+
+// waitWithTimeout waits for wg with a fail-fast path, so a refresher that
+// deadlocks on the lease is reported here rather than hanging the package
+// until the global test timeout.
+func waitWithTimeout(t *testing.T, wg *sync.WaitGroup, msg string) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(contentionWaitTimeout):
+		t.Fatal(msg)
+	}
 }
 
 // newContendingRefresher builds one replica's refresher. Each call produces an

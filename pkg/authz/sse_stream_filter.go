@@ -584,6 +584,13 @@ func mentionsToolsValue(v any, depth int) bool {
 		// Plain text that merely mentions tools (such as "Found 3 tools") names no member,
 		// so only a JSON-encoded tools key in the text counts, checked below.
 		trimmed := strings.TrimSpace(t)
+		// A JSON string literal can itself hold JSON, so unwrap it and look again.
+		if depth < maxToolsSniffDepth && strings.HasPrefix(trimmed, `"`) {
+			var unwrapped string
+			if json.Unmarshal([]byte(trimmed), &unwrapped) == nil {
+				return mentionsToolsValue(unwrapped, depth+1)
+			}
+		}
 		if depth < maxToolsSniffDepth && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
 			var inner any
 			if json.Unmarshal([]byte(trimmed), &inner) == nil {

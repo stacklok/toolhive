@@ -1019,6 +1019,63 @@ func TestSSEStreamPassesInitializeCapabilitiesThrough(t *testing.T) {
 	assert.Equal(t, body, rr.Body.String())
 }
 
+func TestSSEStreamFailsClosedOnToolNamesOffFindToolShape(t *testing.T) {
+	t.Parallel()
+
+	// Each tool answer names a tool outside a readable find_tool text output. Before
+	// the fix these passed through unfiltered. Each must now fail closed with an error
+	// that carries the request id and no tool name.
+	const secretList = `{"tools":[{"name":"secret","description":"restricted"}]}`
+	nestedString := func() string {
+		inner, err := json.Marshal(secretList)
+		require.NoError(t, err)
+		outer, err := json.Marshal(string(inner))
+		require.NoError(t, err)
+		return string(outer)
+	}()
+	tests := []struct {
+		name   string
+		result string
+	}{
+		{
+			name: "non-text content item",
+			result: `{"content":[{"type":"resource","resource":{"uri":"file:///x","text":` +
+				mustJSONString(t, secretList) + `}}]}`,
+		},
+		{
+			name:   "json array as text",
+			result: `{"content":[{"type":"text","text":` + mustJSONString(t, "["+secretList+"]") + `}]}`,
+		},
+		{
+			name:   "nested json string as text",
+			result: `{"content":[{"type":"text","text":` + nestedString + `}]}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				"secret": {authorized: false},
+			}}
+			rr := runSSEStream(t, authorizer, "text/event-stream",
+				sseStreamEvent(`{"jsonrpc":"2.0","id":67,"result":`+tc.result+`}`))
+
+			assert.NotContains(t, rr.Body.String(), "secret", "the tool name must not reach the client")
+			assert.Contains(t, rr.Body.String(), `"error"`)
+			assert.Contains(t, rr.Body.String(), `"id":67`)
+		})
+	}
+}
+
+// mustJSONString returns s as a JSON string literal for embedding in a test payload.
+func mustJSONString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	require.NoError(t, err)
+	return string(b)
+}
+
 // TestStreamFilterLogsErrorsAtWarn pins the log level split: filters built for the
 // GET event stream log a filtering error at WARN, while the POST writer keeps ERROR.
 func TestStreamFilterLogsErrorsAtWarn(t *testing.T) {

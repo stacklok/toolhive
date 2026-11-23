@@ -3596,6 +3596,15 @@ spec:
                               the OIDC middleware needs to fetch its JWKS from that address.
                               Use with caution - only enable for trusted internal IDPs or testing.
                             type: boolean
+                          jwksAuthTokenPath:
+                            description: |-
+                              JWKSAuthTokenPath is the absolute file path to a bearer token that the
+                              OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+                              Needed when the issuer requires authentication for those endpoints, such
+                              as the Kubernetes API server. Typically populated by the Kubernetes
+                              operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+                              pod's service-account token when using Kubernetes service-account auth.
+                            type: string
                           jwksUrl:
                             description: |-
                               JWKSURL is the explicit JWKS endpoint URL.
@@ -9264,6 +9273,15 @@ spec:
                               the OIDC middleware needs to fetch its JWKS from that address.
                               Use with caution - only enable for trusted internal IDPs or testing.
                             type: boolean
+                          jwksAuthTokenPath:
+                            description: |-
+                              JWKSAuthTokenPath is the absolute file path to a bearer token that the
+                              OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+                              Needed when the issuer requires authentication for those endpoints, such
+                              as the Kubernetes API server. Typically populated by the Kubernetes
+                              operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+                              pod's service-account token when using Kubernetes service-account auth.
+                            type: string
                           jwksUrl:
                             description: |-
                               JWKSURL is the explicit JWKS endpoint URL.

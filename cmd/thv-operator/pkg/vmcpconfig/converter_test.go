@@ -236,6 +236,35 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			},
 		},
 		{
+			name:          "k8s service account JWKSAuthTokenPath maps to JWKSAuthTokenPath",
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:            "https://kubernetes.default.svc",
+				JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Equal(t,
+					"/var/run/secrets/kubernetes.io/serviceaccount/token",
+					config.IncomingAuth.OIDC.JWKSAuthTokenPath)
+			},
+		},
+		{
+			name:          "empty JWKSAuthTokenPath results in empty JWKSAuthTokenPath",
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeInline),
+			mockReturn:    &oidc.OIDCConfig{Issuer: "https://issuer.example.com"},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Empty(t, config.IncomingAuth.OIDC.JWKSAuthTokenPath)
+			},
+		},
+		{
 			name:          "non-inline type does not set ClientSecretEnv",
 			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
 			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount),

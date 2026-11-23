@@ -42,6 +42,12 @@ type JWTBearerIssuerPolicyRunConfig struct {
 	// AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes
 	// for the canonical config path; unset accepts both jwt_bearer and id_jag.
 	AcceptedAssertionTypes []tx.JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty"` //nolint:lll // struct tag cannot be wrapped
+
+	// SubjectMode and ActorIssuers mirror the JWTBearerGrantPolicy fields of the
+	// same names for the canonical config path. They are Go-only: set only from
+	// Go (embedders), so config files cannot set them.
+	SubjectMode  tx.SubjectMode `json:"-" yaml:"-"`
+	ActorIssuers []string       `json:"-" yaml:"-"`
 }
 
 // InboundGrantCapabilities reports the effective grant families after normalization.
@@ -207,6 +213,8 @@ func applyJWTBearerPolicies(
 			SubjectBindings:        cloneSubjectBindings(policy.SubjectBindings),
 			AcceptedAudiences:      slices.Clone(policy.AcceptedAudiences),
 			AcceptedAssertionTypes: slices.Clone(policy.AcceptedAssertionTypes),
+			SubjectMode:            policy.SubjectMode,
+			ActorIssuers:           slices.Clone(policy.ActorIssuers),
 		}
 	}
 	return nil
@@ -253,6 +261,7 @@ func cloneTrustedIssuers(issuers []tx.TrustedIssuer) []tx.TrustedIssuer {
 			policy.SubjectBindings = cloneSubjectBindings(policy.SubjectBindings)
 			policy.AcceptedAudiences = slices.Clone(policy.AcceptedAudiences)
 			policy.AcceptedAssertionTypes = slices.Clone(policy.AcceptedAssertionTypes)
+			policy.ActorIssuers = slices.Clone(policy.ActorIssuers)
 			cloned[i].JWTBearerGrant = &policy
 		}
 	}

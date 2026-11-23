@@ -176,6 +176,7 @@ func newIDJAGIssuanceHandler(
 			"have the IdP use the token endpoint as aud, or stop listing the issuer in allowed_audiences",
 			"issuer", asIssuer)
 	}
+	warnSubjectResolutionDisabled(logger, h.policies)
 	return h, nil
 }
 
@@ -241,15 +242,11 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
-	if err := server.ValidateIDJAGClientAudience(
-		resource, requester.GetClient(), h.audienceStrategy.GetAudienceStrategy(ctx)); err != nil {
-		if errors.Is(err, server.ErrInvalidTarget) {
-			// A valid ID-JAG whose resource this client may not target. The
-			// resource may come from the request or from the assertion's
-			// resource claim. Draft -06 section 4.4.1 requires access_denied
-			// here, and the description does not echo the resource.
-			return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonResourceDenied, ""))
-		}
+	if err := h.checkClientAudience(ctx, requester, resource); err != nil {
+		return err
+	}
+	// Closed until subject resolution is enabled; see delegatedAccessEnabled.
+	if err := checkSubjectModeGate(policy); err != nil {
 		return err
 	}
 	clientID := requester.GetClient().GetID()
@@ -283,7 +280,8 @@ func (h *IDJAGHandler) PopulateTokenEndpointResponse(
 
 // checkIDJAGPolicy runs the per-issuer policy checks in the same order as
 // the plain handler (assertion age, then resource, then subject binding) and
-// returns the resource the token is for.
+// returns the resource the token is for. The subject binding check is for
+// namespaced issuers; a resolve issuer has no bindings.
 func (h *IDJAGHandler) checkIDJAGPolicy(
 	requester fosite.AccessRequester, claims *ValidatedClaims, policy *JWTBearerGrantPolicy,
 ) (string, error) {
@@ -294,10 +292,27 @@ func (h *IDJAGHandler) checkIDJAGPolicy(
 	if err != nil {
 		return "", err
 	}
+	if policy.SubjectMode == SubjectModeResolve {
+		return resource, nil
+	}
 	if err := checkSubjectBinding(claims, policy, resource); err != nil {
 		return "", idJAGBindingRefusal(err)
 	}
 	return resource, nil
+}
+
+// checkClientAudience refuses a valid ID-JAG whose resource the client may
+// not target. The resource may come from the request or from the assertion's
+// resource claim. Draft -06 section 4.4.1 requires access_denied here, and the
+// description does not echo the resource.
+func (h *IDJAGHandler) checkClientAudience(
+	ctx context.Context, requester fosite.AccessRequester, resource string,
+) error {
+	err := server.ValidateIDJAGClientAudience(resource, requester.GetClient(), h.audienceStrategy.GetAudienceStrategy(ctx))
+	if errors.Is(err, server.ErrInvalidTarget) {
+		return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonResourceDenied, ""))
+	}
+	return err
 }
 
 // idJAGResource picks the resource an ID-JAG redemption is for. Draft section

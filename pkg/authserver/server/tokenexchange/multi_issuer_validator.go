@@ -149,6 +149,18 @@ type JWTBearerGrantPolicy struct {
 	// docs/arch/17-token-exchange-delegation.md.
 	AcceptedAssertionTypes []JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty" enums:"jwt_bearer,id_jag"` //nolint:lll // struct tag cannot be wrapped
 
+	// SubjectMode selects how an ID-JAG's subject becomes the issued token's
+	// sub. Empty or "namespaced" issues <iss>#<sub>. "resolve" maps the subject
+	// to a local user; it must have no subject_bindings and
+	// accepted_assertion_types of exactly [id_jag], and every redemption from
+	// such an issuer is refused in this build. Set only from Go (embedders),
+	// like RequiredSubjectClaims, so config files cannot set it.
+	SubjectMode SubjectMode `json:"-" yaml:"-"`
+	// ActorIssuers are the act.iss values accepted besides the ID-JAG's own
+	// iss, only with subject_mode resolve. Set only from Go (embedders), like
+	// RequiredSubjectClaims, so config files cannot set it.
+	ActorIssuers []string `json:"-" yaml:"-"`
+
 	maxAssertionAge time.Duration
 }
 
@@ -547,6 +559,7 @@ func cloneJWTBearerGrantPolicy(policy *JWTBearerGrantPolicy) *JWTBearerGrantPoli
 	clone := *policy
 	clone.AcceptedAudiences = slices.Clone(policy.AcceptedAudiences)
 	clone.AcceptedAssertionTypes = slices.Clone(policy.AcceptedAssertionTypes)
+	clone.ActorIssuers = slices.Clone(policy.ActorIssuers)
 	clone.SubjectBindings = make([]JWTBearerSubjectBinding, len(policy.SubjectBindings))
 	for i, binding := range policy.SubjectBindings {
 		clone.SubjectBindings[i] = JWTBearerSubjectBinding{
@@ -1452,8 +1465,13 @@ func validateJWTBearerGrantPolicy(ti TrustedIssuer, selfIssuer string, allowedAu
 	if err != nil || age <= 0 {
 		return fmt.Errorf("issuer_url %q: jwt_bearer_grant.max_assertion_age must be a positive duration", ti.IssuerURL)
 	}
-	if err := validateJWTBearerSubjectBindings(ti, policy.SubjectBindings); err != nil {
+	if err := validateSubjectMode(ti); err != nil {
 		return err
+	}
+	if policy.SubjectMode != SubjectModeResolve {
+		if err := validateJWTBearerSubjectBindings(ti, policy.SubjectBindings); err != nil {
+			return err
+		}
 	}
 	for _, assertionType := range policy.AcceptedAssertionTypes {
 		if assertionType != JWTBearerAssertionTypeJWTBearer && assertionType != JWTBearerAssertionTypeIDJAG {

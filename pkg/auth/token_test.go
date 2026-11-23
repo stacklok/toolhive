@@ -20,7 +20,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3859,5 +3861,72 @@ func TestTokenValidator_SigningAlgorithms(t *testing.T) {
 				require.Equal(t, wantStatus, rec.Code)
 			})
 		}
+	}
+}
+
+// TestAuthTokenFileClientsRefuseCrossHostRedirects checks that the clients
+// built with AuthTokenFile (OIDC discovery and JWKS, RFC 7662 introspection)
+// never carry the bearer token to a host a redirect names.
+func TestAuthTokenFileClientsRefuseCrossHostRedirects(t *testing.T) {
+	t.Parallel()
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("sa-token"), 0o600))
+
+	tests := []struct {
+		name string
+		call func(t *testing.T, originURL, caCertPath string) error
+	}{
+		{
+			name: "OIDC discovery",
+			call: func(t *testing.T, originURL, caCertPath string) error {
+				t.Helper()
+				v, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+					Issuer:         originURL,
+					Audience:       "test-audience",
+					CACertPath:     caCertPath,
+					AuthTokenFile:  tokenFile,
+					AllowPrivateIP: true,
+				})
+				require.NoError(t, err)
+				_, err = discoverOIDCConfiguration(context.Background(), originURL, v.client, false)
+				return err
+			},
+		},
+		{
+			name: "RFC 7662 introspection",
+			call: func(t *testing.T, originURL, caCertPath string) error {
+				t.Helper()
+				p, err := NewRFC7662ProviderWithAuth(
+					originURL+"/introspect", "client", "secret", caCertPath, tokenFile, true)
+				require.NoError(t, err)
+				_, err = p.IntrospectToken(context.Background(), "opaque-token")
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var sinkHits atomic.Int32
+			sink := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				sinkHits.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(sink.Close)
+
+			// 307 keeps the method and body, so the introspection POST would be replayed too.
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, sink.URL+r.URL.Path, http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(origin.Close)
+
+			// httptest TLS servers share one certificate, so this trusts both.
+			err := tt.call(t, origin.URL, writeTestServerCert(t, origin))
+			require.ErrorIs(t, err, networking.ErrRedirectRefused)
+			require.Zero(t, sinkHits.Load(), "token-bearing request must not reach the redirect target")
+		})
 	}
 }

@@ -147,7 +147,7 @@ func (*resolver) resolveFromK8sServiceAccountConfig(
 	if useClusterAuth {
 		result.ThvCABundlePath = defaultK8sCABundlePath
 		result.JWKSAllowPrivateIP = true
-		if sendServiceAccountToken(config.UseClusterAuth, result.Issuer, result.JWKSURL, result.IntrospectionURL) {
+		if sendServiceAccountToken(config.UseClusterAuth, result.Issuer, result.JWKSURL) {
 			result.JWKSAuthTokenPath = defaultK8sTokenPath
 		}
 	}
@@ -169,28 +169,27 @@ var inClusterAPIServerHosts = map[string]struct{}{
 }
 
 // sendServiceAccountToken reports whether the workload's own service account
-// token is attached to OIDC discovery, JWKS and introspection requests.
+// token is attached to the requests that fetch the issuer's signing keys.
 //
 // The token authenticates the workload to the Kubernetes API server, which
 // serves the service account issuer's discovery and JWKS endpoints. Sending it
 // anywhere else hands a credential for the workload's RBAC (for example the
 // proxy runner's or vMCP's Role) to a third party. So when useClusterAuth is
-// left at its default, the token is sent only if the issuer and any explicit
-// JWKS or introspection URL are the in-cluster API server. An explicit
-// useClusterAuth: true sends it unconditionally, and false never sends it.
-func sendServiceAccountToken(useClusterAuth *bool, issuer, jwksURL, introspectionURL string) bool {
+// left at its default, the token is sent only if the URL actually fetched is
+// the in-cluster API server: jwksUrl when it is set (the validator then skips
+// discovery and never contacts the issuer), otherwise the issuer used for
+// discovery. Introspection is not considered: a kubernetesServiceAccount
+// config has no client credentials, so the validator's introspection client
+// never carries the token. An explicit useClusterAuth: true sends it
+// unconditionally, and false never sends it.
+func sendServiceAccountToken(useClusterAuth *bool, issuer, jwksURL string) bool {
 	if useClusterAuth != nil {
 		return *useClusterAuth
 	}
-	if !isInClusterAPIServerURL(issuer) {
-		return false
+	if jwksURL != "" {
+		return isInClusterAPIServerURL(jwksURL)
 	}
-	for _, u := range []string{jwksURL, introspectionURL} {
-		if u != "" && !isInClusterAPIServerURL(u) {
-			return false
-		}
-	}
-	return true
+	return isInClusterAPIServerURL(issuer)
 }
 
 // isInClusterAPIServerURL reports whether rawURL is an https URL whose host is

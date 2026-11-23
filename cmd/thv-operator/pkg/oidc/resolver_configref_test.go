@@ -210,12 +210,22 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 			expected: clusterAuth(inCluster, "https://attacker.example/jwks", "", false),
 		},
 		{
-			name: "default withholds token when introspection URL is external",
+			name: "default sends token to an in-cluster JWKS URL even with an external issuer",
 			ref:  ref,
 			oidcCfg: ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{
-				Issuer: inCluster, IntrospectionURL: "https://attacker.example/introspect",
+				Issuer: externalIssuer, JWKSURL: inClusterJWKS,
 			}),
-			expected: clusterAuth(inCluster, "", "https://attacker.example/introspect", false),
+			expected: clusterAuth(externalIssuer, inClusterJWKS, "", true),
+		},
+		{
+			// Introspection never carries the token for these configs (no client
+			// credentials), so an external introspection URL must not turn it off.
+			name: "default ignores introspection URL",
+			ref:  ref,
+			oidcCfg: ksa(mcpv1beta1.KubernetesServiceAccountOIDCConfig{
+				Issuer: inCluster, IntrospectionURL: "https://idp.example/introspect",
+			}),
+			expected: clusterAuth(inCluster, "", "https://idp.example/introspect", true),
 		},
 		{
 			name:     "default withholds token from a lookalike in-cluster host",

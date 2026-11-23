@@ -707,9 +707,10 @@ func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, int32(callers), store.missed.Load(), "every caller must miss on the read-locked check")
+	require.Equal(t, int32(callers), store.missed.Load(),
+		"every caller must miss in lookup before any reaches lookupOrStore")
 	assert.Equal(t, int32(1), builds.Load(),
-		"callers queued on the write lock must reuse the Exchanger built by the first")
+		"callers that all missed in lookup must share one build via the lookupOrStore re-check")
 }
 
 func TestOBOValidate_Valid(t *testing.T) {

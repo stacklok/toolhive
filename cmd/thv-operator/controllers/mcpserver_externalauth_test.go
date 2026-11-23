@@ -1007,10 +1007,7 @@ func TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T) {
 				assert.EqualError(t, err, "MCPExternalAuthConfig missing-config not found in namespace default")
 				require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
 				validated := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
-				if validated != nil {
-					assert.NotEqual(t, ctrlutil.MsgOBORequiresIncomingAuth, validated.Message,
-						"a lookup failure must not be recorded as the obo rejection")
-				}
+				assert.Nil(t, validated, "a lookup failure must not record a Validated condition")
 				return
 			}
 			require.NoError(t, err, "a spec defect must not be returned as an error (that requeues with backoff)")

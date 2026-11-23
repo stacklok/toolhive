@@ -36,9 +36,12 @@ func invalidCABundleError(err error) error {
 }
 
 // InvalidCABundleMessage is the condition Message the workload controllers
-// write for a CA bundle failure. Controllers and tests share it so the message
-// format cannot drift from what TestMirroredMessagePrefix_NotUsedByLocalMessages
-// checks.
+// write for a CA bundle failure. The message must not start with
+// "Referenced MCPExternalAuthConfig ", the prefix the controllers' external
+// auth mirror reserves for conditions copied from a referenced config;
+// isLocalValidationFailure relies on that to tell a local InvalidCABundle
+// condition from a mirrored one. Every writer goes through this helper so
+// there is one format to keep clear of that prefix.
 func InvalidCABundleMessage(err error) string {
 	return fmt.Sprintf("invalid CA bundle: %v", err)
 }

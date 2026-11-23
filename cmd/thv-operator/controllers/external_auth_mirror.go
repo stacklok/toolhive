@@ -33,7 +33,8 @@ const fallbackInvalidReason = "InvalidExternalAuthConfig"
 // surface the same Reason a consumer uses for its own validation failures (a
 // malformed obo config is Valid=False / InvalidConfig), so the Reason alone
 // cannot tell the two owners apart. No local writer of InvalidConfig or
-// InvalidCABundle starts its message with this prefix.
+// InvalidCABundle may start its message with this prefix;
+// TestMirroredMessagePrefix_NotUsedByLocalMessages checks the fixed ones.
 const mirroredMessagePrefix = "Referenced MCPExternalAuthConfig "
 
 // mirroredInvalidExternalAuthConfigError signals that a referenced

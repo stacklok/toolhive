@@ -5,6 +5,9 @@ package controllers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +21,7 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -226,5 +230,158 @@ func TestExternalAuthMirror_OBOSourceHealsToSameSpec(t *testing.T) {
 				"a healed source must not leave a mirrored InvalidConfig on the consumer")
 			assert.Equal(t, tt.wantReason, healed.Reason)
 		})
+	}
+}
+
+// TestExternalAuthMirror_OBOIncomingAuthRejectionClearsOnRevert covers the
+// consumer's own obo incoming-auth rejection rather than a mirrored one. A
+// consumer without oidcConfigRef references a valid non-obo config and stores
+// its hash. The source switches to obo, so the consumer records InvalidConfig
+// while its stored hash stays at the old value. The source then reverts to the
+// original spec and hash: the consumer must end on True, because the rejection
+// no longer applies, even though its generation and stored hash are unchanged.
+func TestExternalAuthMirror_OBOIncomingAuthRejectionClearsOnRevert(t *testing.T) {
+	t.Parallel()
+
+	const (
+		namespace = "default"
+		authName  = "auth-config"
+	)
+
+	tests := []struct {
+		name        string
+		newConsumer func() client.Object
+		handle      func(ctx context.Context, c client.Client, obj client.Object) error
+		condition   func(obj client.Object) *metav1.Condition
+		wantReason  string
+	}{
+		{
+			name: "MCPServer",
+			newConsumer: func() client.Object {
+				return v1beta1test.NewMCPServer("server", namespace,
+					v1beta1test.WithImage("test-image"),
+					v1beta1test.WithExternalAuthConfigRef(authName),
+					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Generation = 4 }),
+				)
+			},
+			handle: func(ctx context.Context, c client.Client, obj client.Object) error {
+				r := newTestMCPServerReconciler(c, c.Scheme(), kubernetes.PlatformKubernetes)
+				return r.handleExternalAuthConfig(ctx, obj.(*mcpv1beta1.MCPServer))
+			},
+			condition: func(obj client.Object) *metav1.Condition {
+				return meta.FindStatusCondition(obj.(*mcpv1beta1.MCPServer).Status.Conditions,
+					mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			},
+			wantReason: mcpv1beta1.ConditionReasonExternalAuthConfigValid,
+		},
+		{
+			name: "MCPRemoteProxy",
+			newConsumer: func() client.Object {
+				return v1beta1test.NewMCPRemoteProxy("proxy", namespace,
+					v1beta1test.WithRemoteProxyExternalAuthConfigRef(authName),
+					v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+						p.Generation = 4
+						p.Spec.OIDCConfigRef = nil
+					}),
+				)
+			},
+			handle: func(ctx context.Context, c client.Client, obj client.Object) error {
+				r := &MCPRemoteProxyReconciler{Client: c, Scheme: c.Scheme()}
+				return r.handleExternalAuthConfig(ctx, obj.(*mcpv1beta1.MCPRemoteProxy))
+			},
+			condition: func(obj client.Object) *metav1.Condition {
+				return meta.FindStatusCondition(obj.(*mcpv1beta1.MCPRemoteProxy).Status.Conditions,
+					mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+			},
+			wantReason: mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+		},
+	}
+
+	unauthenticated := mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeUnauthenticated}
+	oboSpec := mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeOBO, OBO: validOBOSpec()}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+
+			source := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       authName,
+					Namespace:  namespace,
+					Finalizers: []string{ExternalAuthConfigFinalizerName},
+				},
+				Spec: unauthenticated,
+			}
+			consumer := tt.newConsumer()
+
+			scheme := testutil.NewScheme(t)
+			c := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+				WithObjects(source, consumer).
+				WithStatusSubresource(
+					&mcpv1beta1.MCPExternalAuthConfig{}, &mcpv1beta1.MCPServer{}, &mcpv1beta1.MCPRemoteProxy{}).
+				Build()
+			sourceReconciler := &MCPExternalAuthConfigReconciler{Client: c, Scheme: scheme}
+			sourceKey := client.ObjectKeyFromObject(source)
+
+			// setSourceSpec writes spec, reconciles the source and returns its hash.
+			setSourceSpec := func(spec mcpv1beta1.MCPExternalAuthConfigSpec) string {
+				t.Helper()
+				live := &mcpv1beta1.MCPExternalAuthConfig{}
+				require.NoError(t, c.Get(ctx, sourceKey, live))
+				live.Spec = spec
+				require.NoError(t, c.Update(ctx, live))
+				_, err := sourceReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: sourceKey})
+				require.NoError(t, err)
+				require.NoError(t, c.Get(ctx, sourceKey, live))
+				return live.Status.ConfigHash
+			}
+
+			// 1. Non-obo source: True, and the consumer stores its hash.
+			originalHash := setSourceSpec(unauthenticated)
+			require.NotEmpty(t, originalHash)
+			require.NoError(t, tt.handle(ctx, c, consumer))
+			require.Equal(t, metav1.ConditionTrue, tt.condition(consumer).Status)
+
+			// 2. obo source: the consumer has no incoming OIDC and rejects it.
+			require.NotEqual(t, originalHash, setSourceSpec(oboSpec))
+			require.Error(t, tt.handle(ctx, c, consumer))
+			rejected := tt.condition(consumer)
+			require.NotNil(t, rejected)
+			require.Equal(t, metav1.ConditionFalse, rejected.Status)
+			require.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, rejected.Message)
+
+			// 3. Revert to the original spec: same hash as the consumer stored.
+			require.Equal(t, originalHash, setSourceSpec(unauthenticated))
+			require.NoError(t, tt.handle(ctx, c, consumer))
+			healed := tt.condition(consumer)
+			require.NotNil(t, healed)
+			assert.Equal(t, metav1.ConditionTrue, healed.Status,
+				"the obo incoming-auth rejection must clear once the source is no longer obo")
+			assert.Equal(t, tt.wantReason, healed.Reason)
+		})
+	}
+}
+
+// TestMirroredMessagePrefix_NotUsedByLocalMessages pins the invariant
+// isLocalValidationFailure relies on: no locally written InvalidConfig or
+// InvalidCABundle message starts with mirroredMessagePrefix, or the condition
+// would be mistaken for a mirrored one and cleared by the mirror on every
+// reconcile. The embedded-auth RunConfig build failure carries a dynamic error
+// message and is not listed; its errors come from RunConfig validation and do
+// not name a referenced MCPExternalAuthConfig.
+func TestMirroredMessagePrefix_NotUsedByLocalMessages(t *testing.T) {
+	t.Parallel()
+
+	localMessages := map[string]string{
+		"obo incoming auth": ctrlutil.MsgOBORequiresIncomingAuth,
+		"CA bundle":         fmt.Sprintf("invalid CA bundle: %v", errors.New("missing key")),
+	}
+	for name, msg := range localMessages {
+		assert.False(t, strings.HasPrefix(msg, mirroredMessagePrefix),
+			"%s message %q must not start with the mirrored prefix", name, msg)
+		assert.True(t, isLocalValidationFailure(&metav1.Condition{
+			Status: metav1.ConditionFalse, Reason: mcpv1beta1.ConditionReasonInvalidConfig, Message: msg,
+		}), "%s message must be treated as locally owned", name)
 	}
 }

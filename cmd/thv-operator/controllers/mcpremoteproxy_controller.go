@@ -1115,7 +1115,11 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 // until its referenced configuration or this resource generation changes. An
 // InvalidConfig mirrored from the referenced MCPExternalAuthConfig is not held
 // (see isLocalValidationFailure): the source can heal back to an unchanged
-// ConfigHash, and holding it would make the failure permanent.
+// ConfigHash, and holding it would make the failure permanent. Nor is the obo
+// incoming-auth rejection (ctrlutil.MsgOBORequiresIncomingAuth): it re-runs
+// earlier in handleExternalAuthConfig and returns before the stored hash
+// advances, so a source that reverts from obo to its earlier spec matches the
+// stored hash, and holding it would keep a stale False.
 func setMCPRemoteProxyExternalAuthConfigValidCondition(
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	configName, configHash string,
@@ -1125,6 +1129,7 @@ func setMCPRemoteProxyExternalAuthConfigValidCondition(
 	)
 	if isLocalValidationFailure(previousCondition) &&
 		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
+		previousCondition.Message != ctrlutil.MsgOBORequiresIncomingAuth &&
 		previousCondition.ObservedGeneration == proxy.Generation &&
 		proxy.Status.ExternalAuthConfigHash == configHash {
 		return

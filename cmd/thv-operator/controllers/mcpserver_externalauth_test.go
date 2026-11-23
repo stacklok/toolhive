@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -929,43 +931,93 @@ func TestMCPServerReconciler_handleExternalAuthConfig_OBORequiresIncomingAuth(t 
 // TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal drives Reconcile for
 // an MCPServer that references a valid obo config but has no oidcConfigRef.
 // The rejection is a spec defect, so Reconcile records it on status and returns
-// an empty result with no error rather than requeueing with backoff.
+// an empty result with no error rather than requeueing with backoff. Only a
+// failure to persist that rejection is returned, so the write is retried. A
+// non-validation error (a missing referenced config) is returned and requeued.
 func TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T) {
 	t.Parallel()
 
-	server := v1beta1test.NewMCPServer("server", "default",
-		v1beta1test.WithImage("test"),
-		v1beta1test.WithExternalAuthConfigRef("obo-config"),
-	)
-	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
-		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-			Type: mcpv1beta1.ExternalAuthTypeOBO,
-			OBO:  validOBOSpec(),
+	statusErr := stderrors.New("simulated status write failure")
+	// failRejectionWrite fails only the status write that records the obo
+	// rejection, so an unrelated earlier write cannot satisfy the assertion.
+	failRejectionWrite := interceptor.Funcs{
+		SubResourceUpdate: func(
+			ctx context.Context, c client.Client, subResource string, obj client.Object,
+			opts ...client.SubResourceUpdateOption,
+		) error {
+			if m, ok := obj.(*mcpv1beta1.MCPServer); ok {
+				cond := meta.FindStatusCondition(m.Status.Conditions,
+					mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+				if cond != nil && cond.Reason == mcpv1beta1.ConditionReasonInvalidConfig {
+					return statusErr
+				}
+			}
+			return c.SubResource(subResource).Update(ctx, obj, opts...)
 		},
 	}
-	scheme := testutil.NewScheme(t)
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(server, authConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
-		Build()
-	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
-	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
-	require.NoError(t, err, "a spec defect must not be returned as an error (that requeues with backoff)")
-	assert.Equal(t, ctrl.Result{}, result)
+	tests := []struct {
+		name        string
+		authRef     string
+		interceptor *interceptor.Funcs
+		wantErr     error
+		wantAnyErr  bool
+	}{
+		{name: "rejection is persisted and not requeued", authRef: "obo-config"},
+		{name: "failed status write is retried", authRef: "obo-config", interceptor: &failRejectionWrite, wantErr: statusErr},
+		{name: "non-validation error is requeued", authRef: "missing-config", wantAnyErr: true},
+	}
 
-	actual := &mcpv1beta1.MCPServer{}
-	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
-	assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, actual.Status.Phase)
-	ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
-	require.NotNil(t, ready)
-	assert.Equal(t, metav1.ConditionFalse, ready.Status)
-	validated := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
-	require.NotNil(t, validated)
-	assert.Equal(t, metav1.ConditionFalse, validated.Status)
-	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validated.Reason)
-	assert.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, validated.Message)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := v1beta1test.NewMCPServer("server", "default",
+				v1beta1test.WithImage("test"),
+				v1beta1test.WithExternalAuthConfigRef(tt.authRef),
+			)
+			authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  validOBOSpec(),
+				},
+			}
+			scheme := testutil.NewScheme(t)
+			builder := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(server, authConfig).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{})
+			if tt.interceptor != nil {
+				builder = builder.WithInterceptorFuncs(*tt.interceptor)
+			}
+			fakeClient := builder.Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr, "an unpersisted rejection must be retried, not dropped")
+				return
+			}
+			if tt.wantAnyErr {
+				require.Error(t, err, "a non-validation error must be returned so it requeues")
+				return
+			}
+			require.NoError(t, err, "a spec defect must not be returned as an error (that requeues with backoff)")
+			assert.Equal(t, ctrl.Result{}, result)
+
+			actual := &mcpv1beta1.MCPServer{}
+			require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+			assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, actual.Status.Phase)
+			ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+			require.NotNil(t, ready)
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			validated := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, validated)
+			assert.Equal(t, metav1.ConditionFalse, validated.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validated.Reason)
+			assert.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, validated.Message)
+		})
+	}
 }
 
 // TestMCPServerDeployment_OBOSecretEnvVars verifies that an obo-typed

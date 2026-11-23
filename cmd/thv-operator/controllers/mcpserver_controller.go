@@ -2567,6 +2567,10 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 // Neither is an InvalidConfig mirrored from the referenced
 // MCPExternalAuthConfig (see isLocalValidationFailure): the source can heal
 // back to an unchanged ConfigHash, and holding it would then be permanent too.
+// The obo incoming-auth rejection (ctrlutil.MsgOBORequiresIncomingAuth) is not
+// held either: it re-runs earlier in this same function and returns before the
+// stored hash advances, so a source that reverts from obo to its earlier spec
+// matches the stored hash, and holding it would keep a stale False.
 func setMCPServerExternalAuthConfigValidCondition(
 	m *mcpv1beta1.MCPServer,
 	configName, configHash string,
@@ -2576,6 +2580,7 @@ func setMCPServerExternalAuthConfigValidCondition(
 	)
 	if isLocalValidationFailure(previousCondition) &&
 		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
+		previousCondition.Message != ctrlutil.MsgOBORequiresIncomingAuth &&
 		previousCondition.ObservedGeneration == m.Generation &&
 		m.Status.ExternalAuthConfigHash == configHash {
 		return

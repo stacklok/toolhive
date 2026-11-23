@@ -96,8 +96,7 @@ func TestIDJAGHandler_CanSkipClientAuth(t *testing.T) {
 	idJAG := signAssertionWithType(t, tj, oauthproto.JWTTypeIDJAG)
 	plain := signAssertionWithType(t, tj, nil)
 	idJAGHandler := newIDJAGTestHandler(t, &testJWTBearerAssertionValidator{}, &recordingAssertionConsumer{})
-	plainHandler, err := newJWTBearerHandler(&testJWTBearerAssertionValidator{}, testTokenEndpoint)
-	require.NoError(t, err)
+	plainHandler := newTestJWTBearerHandler(t, testIssuanceDeps(&testJWTBearerAssertionValidator{}, nil))
 
 	const assertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 	tests := []struct {

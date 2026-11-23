@@ -2806,6 +2806,8 @@ so that no marked token can ever be exchanged.
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — shared `DelegateClientConfig` CRD contract
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — Secret-reference to pod-environment conversion
 - `pkg/authserver/server/tokenexchange/jwt_bearer_handler.go` — `JWTBearerHandler`, `JWTBearerIssuanceFactory`, `NewSharedTrustedIssuerValidator`, synthetic client-ID minting
+- `pkg/authserver/server/tokenexchange/redeemer.go` — `redeemer`, the consume, lifetime, session and populate steps both JWT-bearer handlers share
+- `pkg/authserver/server/tokenexchange/issuance_deps.go` — `issuanceDeps`, the compose-time inputs and per-form issuer policy filtering for both handlers
 - `pkg/authserver/storage/types.go` — `SyntheticClientIDPrefix`, `NewSyntheticClient`, `IsSyntheticClientID`
 - `pkg/authserver/storage/redis.go` — synthetic-client-aware `marshalRequester`/`unmarshalRequester`
 - `pkg/authserver/authorizationdetails/authorizationdetails.go`, `errors.go`, `scan.go` — `Registry`, `Type`, `Pending.Grant`, typed `Error`, strict JSON scanner

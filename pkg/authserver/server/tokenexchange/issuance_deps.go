@@ -5,6 +5,8 @@ package tokenexchange
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
@@ -29,8 +31,15 @@ type issuanceDeps struct {
 // endpoint, consumer, then the fosite dependencies. A new field needs its
 // check here.
 func (d issuanceDeps) validate() error {
-	if err := checkValidatorAndEndpoint(d.validator, d.tokenEndpoint); err != nil {
-		return err
+	if d.validator == nil {
+		return errors.New("JWT-bearer assertion validator must not be nil")
+	}
+	if d.tokenEndpoint == "" {
+		return errors.New("JWT-bearer token endpoint must not be empty")
+	}
+	endpoint, err := url.ParseRequestURI(d.tokenEndpoint)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return fmt.Errorf("JWT-bearer token endpoint is invalid: %q", d.tokenEndpoint)
 	}
 	if d.consumer == nil {
 		return errors.New("JWT-bearer storage must implement storage.AssertionJWTConsumer")

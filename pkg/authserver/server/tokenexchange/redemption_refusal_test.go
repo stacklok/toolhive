@@ -159,7 +159,7 @@ func TestJWTBearerRedemptionRefusals(t *testing.T) {
 			t.Parallel()
 			validator := &testJWTBearerAssertionValidator{claims: tt.claims(), err: tt.validatorEr}
 			deps := testIssuanceDeps(validator, refusalPolicies(t))
-			deps.consumer = testAssertionJWTConsumer{}
+			deps.consumer = &recordingAssertionConsumer{}
 			handler := newTestJWTBearerHandler(t, deps)
 			req := fosite.NewAccessRequest(&session.Session{})
 			req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}

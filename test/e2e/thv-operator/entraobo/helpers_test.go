@@ -44,6 +44,19 @@ const (
 	timeout      = 5 * time.Minute
 	pollInterval = 2 * time.Second
 
+	// azTimeout bounds the Azure CLI call, which can stall on a
+	// re-authentication prompt; discoveryTimeout bounds OIDC discovery.
+	azTimeout        = 2 * time.Minute
+	discoveryTimeout = 30 * time.Second
+	// minUserTokenLifetime is how long the user token must stay valid for a
+	// full run; a shorter one would surface as a 401 inside a later spec.
+	minUserTokenLifetime = 15 * time.Minute
+
+	// mcpPort is the in-cluster port of every recorder and proxy: the
+	// container, its Service, the readiness probe, and the MCPServer and
+	// MCPRemoteProxy ports must all agree on it.
+	mcpPort = 8080
+
 	// pingTool is the tool the token-recording backend exposes. vMCP prefixes
 	// it with the backend name.
 	pingTool = "instrumented_ping"
@@ -159,6 +172,12 @@ type tokenClaims struct {
 	OID string `json:"oid"`
 	TID string `json:"tid"`
 	Aud string `json:"aud"`
+	// AZP is the client the token was issued to. For an exchanged token it
+	// must be the middle-tier app.
+	AZP string `json:"azp"`
+
+	// expiry is the verified exp claim.
+	expiry time.Time
 }
 
 // userIdentity is the end user's access token for the middle-tier app.
@@ -176,8 +195,9 @@ func acquireUserIdentity(ctx context.Context, c entraConfig) userIdentity {
 	id := userIdentity{token: c.userToken, source: envUserToken}
 	if id.token == "" {
 		id.source = "az account get-access-token --scope " + c.userScope
-		//nolint:gosec // the scope comes from the maintainer's own environment
-		cmd := exec.CommandContext(ctx, "az", "account", "get-access-token",
+		azCtx, azCancel := context.WithTimeout(ctx, azTimeout)
+		defer azCancel()
+		cmd := exec.CommandContext(azCtx, "az", "account", "get-access-token",
 			"--scope", c.userScope, "--query", "accessToken", "--output", "tsv")
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -194,6 +214,8 @@ func acquireUserIdentity(ctx context.Context, c entraConfig) userIdentity {
 		"user token (is requestedAccessTokenVersion 2 set on the middle-tier app, "+
 			"and was the token requested for the middle-tier app's scope?)")
 	gomega.Expect(id.claims.OID).NotTo(gomega.BeEmpty(), "user token has no oid claim")
+	gomega.Expect(time.Until(id.claims.expiry)).To(gomega.BeNumerically(">", minUserTokenLifetime),
+		"the user token from %s expires within %s; get a fresh one", id.source, minUserTokenLifetime)
 	return id
 }
 
@@ -201,19 +223,22 @@ func acquireUserIdentity(ctx context.Context, c entraConfig) userIdentity {
 // its issuer, audience, and expiry, then returns its claims. Failure messages
 // name the problem but never include the token.
 func verifyAccessToken(ctx context.Context, c entraConfig, token, audience, what string) tokenClaims {
-	provider, err := oidc.NewProvider(ctx, c.issuer())
+	verifyCtx, verifyCancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer verifyCancel()
+	provider, err := oidc.NewProvider(verifyCtx, c.issuer())
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(),
 		"discovering %s (is %s the tenant GUID?)", c.issuer(), envTenantID)
-	idToken, err := provider.Verifier(&oidc.Config{ClientID: audience}).Verify(ctx, token)
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: audience}).Verify(verifyCtx, token)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "verifying %s (fingerprint %s)", what, fingerprint(token))
 	var claims tokenClaims
 	gomega.Expect(idToken.Claims(&claims)).To(gomega.Succeed())
+	claims.expiry = idToken.Expiry
 	return claims
 }
 
 // expectExchangedToken asserts the backend saw exactly one distinct token, and
-// that it is an Entra-signed token for the backend audience issued on behalf of
-// the test user, not the user's own token.
+// that it is an Entra-signed token for the backend audience, issued to the
+// middle-tier app on behalf of the test user, and not the user's own token.
 func expectExchangedToken(seen []string) {
 	gomega.Expect(fingerprints(seen)).To(gomega.HaveLen(1),
 		"the backend should receive exactly one distinct (exchanged) token")
@@ -223,14 +248,31 @@ func expectExchangedToken(seen []string) {
 	claims := verifyAccessToken(ctx, cfg, exchanged, cfg.backendAudience, "exchanged backend token")
 	gomega.Expect(claims.OID).To(gomega.Equal(user.claims.OID),
 		"the exchanged token must be issued on behalf of the test user")
+	gomega.Expect(claims.AZP).To(gomega.Equal(cfg.proxyClientID),
+		"the exchanged token must be issued to the middle-tier app")
 }
 
-// createNamespace creates the suite namespace if it does not exist.
-func createNamespace() {
+// recreateNamespace deletes any namespace a previous or aborted run left
+// behind, waits for it to be gone, and creates a fresh one, so every fixture
+// can be created under its fixed name.
+func recreateNamespace() {
+	deleteNamespaceAndWait()
+	gomega.Expect(k8sClient.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: testNamespace},
+	})).To(gomega.Succeed())
+}
+
+// deleteNamespaceAndWait deletes the suite namespace and waits until it no
+// longer exists.
+func deleteNamespaceAndWait() {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNamespace}}
-	if err := k8sClient.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	if err := k8sClient.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
+		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "deleting namespace %s", testNamespace)
 	}
+	gomega.Eventually(func() bool {
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: testNamespace}, &corev1.Namespace{})
+		return apierrors.IsNotFound(err)
+	}, timeout, pollInterval).Should(gomega.BeTrue(), "namespace %s is still terminating", testNamespace)
 }
 
 // createClientSecret stores a confidential-client secret in a Secret.
@@ -314,26 +356,25 @@ func newRecorderMCPServer(name string) *mcpv1beta1.MCPServer {
 		Spec: mcpv1beta1.MCPServerSpec{
 			Image:           images.PythonImage,
 			Transport:       "streamable-http",
-			ProxyPort:       8080,
-			MCPPort:         8080,
+			ProxyPort:       mcpPort,
+			MCPPort:         mcpPort,
 			Args:            []string{recorderScript()},
 			PodTemplateSpec: recorderPodTemplate(),
 		},
 	}
 }
 
-// waitMCPServerReady waits for the MCPServer to reach the Ready phase.
+// waitMCPServerReady waits for the MCPServer to reach the Ready phase. Failed
+// is not terminal: the controller sets it while a referenced config is not yet
+// valid and retries, so the wait keeps polling and reports the last message.
 func waitMCPServerReady(name string) {
 	gomega.Eventually(func() error {
 		s := &mcpv1beta1.MCPServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: testNamespace}, s); err != nil {
 			return err
 		}
-		if s.Status.Phase == mcpv1beta1.MCPServerPhaseFailed {
-			return gomega.StopTrying(fmt.Sprintf("MCPServer %s failed: %s", name, s.Status.Message))
-		}
 		if s.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
-			return fmt.Errorf("MCPServer %s phase %q", name, s.Status.Phase)
+			return fmt.Errorf("MCPServer %s phase %q: %s", name, s.Status.Phase, s.Status.Message)
 		}
 		return nil
 	}, timeout, pollInterval).Should(gomega.Succeed())
@@ -355,9 +396,9 @@ func deployRecorder(name string) string {
 						Name:    "recorder",
 						Image:   images.PythonImage,
 						Command: []string{"sh", "-c", recorderScript()},
-						Ports:   []corev1.ContainerPort{{ContainerPort: 8080}},
+						Ports:   []corev1.ContainerPort{{ContainerPort: mcpPort}},
 						ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{Path: "/health", Port: intstr.FromInt32(8080)},
+							HTTPGet: &corev1.HTTPGetAction{Path: "/health", Port: intstr.FromInt32(mcpPort)},
 						}},
 					}},
 				},
@@ -368,7 +409,7 @@ func deployRecorder(name string) string {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Spec: corev1.ServiceSpec{
 			Selector: labels,
-			Ports:    []corev1.ServicePort{{Port: 8080, TargetPort: intstr.FromInt32(8080)}},
+			Ports:    []corev1.ServicePort{{Port: mcpPort, TargetPort: intstr.FromInt32(mcpPort)}},
 		},
 	})).To(gomega.Succeed())
 
@@ -383,7 +424,7 @@ func deployRecorder(name string) string {
 		return nil
 	}, timeout, pollInterval).Should(gomega.Succeed())
 
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:8080/mcp", name, testNamespace)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/mcp", name, testNamespace, mcpPort)
 }
 
 // portForward starts `kubectl port-forward svc/<service>` and returns the
@@ -394,7 +435,6 @@ func portForward(service string, port int32) int {
 	localPort := listener.Addr().(*net.TCPAddr).Port
 	gomega.Expect(listener.Close()).To(gomega.Succeed())
 
-	//nolint:gosec // kubeconfig, service, and ports are test-controlled
 	cmd := exec.Command("kubectl", "--kubeconfig="+kubeconfig, "-n", testNamespace, "port-forward",
 		"svc/"+service, fmt.Sprintf("%d:%d", localPort, port))
 	gomega.Expect(cmd.Start()).To(gomega.Succeed())
@@ -416,7 +456,7 @@ func portForward(service string, port int32) int {
 // recordedTokens returns the distinct bearer tokens the recorder behind
 // service has received.
 func recordedTokens(service string) []string {
-	port := portForward(service, 8080)
+	port := portForward(service, mcpPort)
 	stats, err := virtualmcp.GetInstrumentedMCPBackendStatsFromURL(fmt.Sprintf("http://127.0.0.1:%d/stats", port))
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	return stats.SeenBearerTokens
@@ -444,21 +484,27 @@ func callPing(endpoint, token, tool string) {
 
 // initializeStatus sends one MCP initialize request to endpoint with token as
 // the bearer and returns the HTTP status. Negative cases use it to observe the
-// status code the proxy chose.
-func initializeStatus(endpoint, token string) int {
+// status code the proxy chose. It returns transport errors rather than failing,
+// so a caller inside Eventually retries them; Gomega's Expect fails on a
+// non-nil trailing error for one-shot callers.
+func initializeStatus(endpoint, token string) (int, error) {
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{` +
 		`"protocolVersion":"2025-06-18","capabilities":{},` +
 		`"clientInfo":{"name":"entra-obo-e2e","version":"1.0.0"}}}`)
 	reqCtx, reqCancel := context.WithTimeout(ctx, time.Minute)
 	defer reqCancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	if err != nil {
+		return 0, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	if err != nil {
+		return 0, err
+	}
 	_, _ = io.Copy(io.Discard, resp.Body) // drain so the connection is reused
 	_ = resp.Body.Close()
-	return resp.StatusCode
+	return resp.StatusCode, nil
 }

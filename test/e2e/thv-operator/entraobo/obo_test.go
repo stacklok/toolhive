@@ -24,7 +24,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/virtualmcp"
 )
 
-// Shared fixtures, created once by the first container that needs them.
+// Shared fixtures, created once in BeforeSuite.
 const (
 	oidcConfigName    = "entra-oidc"
 	proxySecretName   = "proxy-client"
@@ -35,24 +35,17 @@ const (
 	proxyRunnerContainer = "toolhive"
 )
 
-// ensureSharedFixtures creates the MCPOIDCConfig, the middle-tier client
-// secret, and the OBO config for the backend scope. Containers run in order on
-// one process (`--procs=1`), so the first caller creates them.
-var sharedFixturesCreated bool
-
-func ensureSharedFixtures() {
-	if sharedFixturesCreated {
-		return
-	}
+// createSharedFixtures creates the MCPOIDCConfig, the middle-tier client
+// secret, and the OBO config for the backend scope that every container uses.
+func createSharedFixtures() {
 	createOIDCConfig(oidcConfigName)
 	createClientSecret(proxySecretName, cfg.proxyClientSecret)
 	createOBOConfig(backendOBOConfig, proxySecretName, cfg.backendScope)
-	sharedFixturesCreated = true
 }
 
 // proxyEndpoint port-forwards to a proxy Service and returns its MCP URL.
 func proxyEndpoint(service string) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/mcp", portForward(service, 8080))
+	return fmt.Sprintf("http://127.0.0.1:%d/mcp", portForward(service, mcpPort))
 }
 
 // createOBOMCPServer creates a token-recording MCPServer that authenticates
@@ -127,7 +120,6 @@ var _ = ginkgo.Describe("Entra OBO: MCPServer", ginkgo.Label(entraLiveLabel), gi
 	var endpoint string
 
 	ginkgo.BeforeAll(func() {
-		ensureSharedFixtures()
 		createOBOMCPServer(serverName, backendOBOConfig, false)
 		endpoint = proxyEndpoint(controllerutil.CreateProxyServiceName(serverName))
 	})
@@ -154,7 +146,6 @@ var _ = ginkgo.Describe("Entra OBO: MCPRemoteProxy", ginkgo.Label(entraLiveLabel
 	var endpoint string
 
 	ginkgo.BeforeAll(func() {
-		ensureSharedFixtures()
 		remoteURL := deployRecorder(recorderName)
 
 		gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPRemoteProxy{
@@ -163,21 +154,20 @@ var _ = ginkgo.Describe("Entra OBO: MCPRemoteProxy", ginkgo.Label(entraLiveLabel
 				RemoteURL:             remoteURL,
 				AllowPrivateEndpoint:  true,
 				Transport:             "streamable-http",
-				ProxyPort:             8080,
+				ProxyPort:             mcpPort,
 				OIDCConfigRef:         oidcRef(oidcConfigName),
 				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: backendOBOConfig},
 			},
 		})).To(gomega.Succeed())
+		// Failed is not terminal while a referenced config is still being
+		// validated, so keep polling, as waitMCPServerReady does.
 		gomega.Eventually(func() error {
 			p := &mcpv1beta1.MCPRemoteProxy{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: proxyName, Namespace: testNamespace}, p); err != nil {
 				return err
 			}
-			if p.Status.Phase == mcpv1beta1.MCPRemoteProxyPhaseFailed {
-				return gomega.StopTrying("MCPRemoteProxy failed: " + p.Status.Message)
-			}
 			if p.Status.Phase != mcpv1beta1.MCPRemoteProxyPhaseReady {
-				return fmt.Errorf("MCPRemoteProxy phase %q", p.Status.Phase)
+				return fmt.Errorf("MCPRemoteProxy phase %q: %s", p.Status.Phase, p.Status.Message)
 			}
 			return nil
 		}, timeout, pollInterval).Should(gomega.Succeed())
@@ -205,7 +195,6 @@ var _ = ginkgo.Describe("Entra OBO: VirtualMCPServer inline outgoingAuth", ginkg
 	var endpoint string
 
 	ginkgo.BeforeAll(func() {
-		ensureSharedFixtures()
 		createGroup(groupName)
 
 		outgoing := &mcpv1beta1.OutgoingAuthConfig{
@@ -229,26 +218,31 @@ var _ = ginkgo.Describe("Entra OBO: VirtualMCPServer inline outgoingAuth", ginkg
 		endpoint = createVMCP(vmcpName, groupName, outgoing)
 	})
 
-	ginkgo.It("mounts a distinct client-secret env var per OBO config", func() {
+	ginkgo.It("mounts a distinct client-secret env var per OBO config, each from its own Secret", func() {
 		deployment := &appsv1.Deployment{}
 		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: testNamespace},
 			deployment)).To(gomega.Succeed())
-		var envNames []string
+		// Env var name -> the Secret it reads. Both Secrets hold the same
+		// value, so the exchange alone cannot tell a miswired pair apart.
+		secretByEnv := map[string]string{}
 		for _, c := range deployment.Spec.Template.Spec.Containers {
 			if c.Name != vmcpContainerName {
 				continue
 			}
 			for _, e := range c.Env {
-				if strings.HasPrefix(e.Name, "TOOLHIVE_OBO_CLIENT_SECRET") {
-					gomega.Expect(e.ValueFrom).NotTo(gomega.BeNil(), "%s must come from a Secret", e.Name)
-					envNames = append(envNames, e.Name)
+				if !strings.HasPrefix(e.Name, "TOOLHIVE_OBO_CLIENT_SECRET") {
+					continue
 				}
+				gomega.Expect(e.ValueFrom).NotTo(gomega.BeNil(), "%s must come from a Secret", e.Name)
+				gomega.Expect(e.ValueFrom.SecretKeyRef).NotTo(gomega.BeNil(), "%s must come from a Secret", e.Name)
+				secretByEnv[e.Name] = e.ValueFrom.SecretKeyRef.Name
 			}
 		}
-		gomega.Expect(envNames).To(gomega.ConsistOf(
-			controllerutil.GenerateUniqueOBOSecretEnvVarName(backends[0].oboConfig),
-			controllerutil.GenerateUniqueOBOSecretEnvVarName(backends[1].oboConfig),
-		))
+		want := map[string]string{}
+		for _, b := range backends {
+			want[controllerutil.GenerateUniqueOBOSecretEnvVarName(b.oboConfig)] = b.secret
+		}
+		gomega.Expect(secretByEnv).To(gomega.Equal(want))
 	})
 
 	ginkgo.It("exchanges the user token for each backend", func() {
@@ -269,7 +263,6 @@ var _ = ginkgo.Describe("Entra OBO: VirtualMCPServer discovered outgoingAuth", g
 	var endpoint string
 
 	ginkgo.BeforeAll(func() {
-		ensureSharedFixtures()
 		createGroup(groupName)
 		remoteURL := deployRecorder(recorderName)
 
@@ -311,8 +304,6 @@ var _ = ginkgo.Describe("Entra OBO: VirtualMCPServer discovered outgoingAuth", g
 })
 
 var _ = ginkgo.Describe("Entra OBO: exchange failures", ginkgo.Label(entraLiveLabel), ginkgo.Ordered, func() {
-	ginkgo.BeforeAll(ensureSharedFixtures)
-
 	ginkgo.It("answers 502 when the client secret is wrong, and the server still starts", func() {
 		const name = "obo-wrong-secret"
 		createClientSecret(name, "not-the-client-secret")

@@ -20,7 +20,6 @@ import (
 	"go.uber.org/zap/zapcore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
@@ -66,6 +65,11 @@ var _ = ginkgo.BeforeSuite(func() {
 			" to run it (see test/e2e/thv-operator/entraobo/README.md)")
 	}
 
+	// The fixtures and the namespace have fixed names, and AfterSuite deletes
+	// the namespace, so parallel processes would trample each other.
+	gomega.Expect(ginkgo.GinkgoParallelProcess()).To(gomega.Equal(1),
+		"run this suite with --procs=1 (task thv-operator-e2e-test-entra does)")
+
 	logf.SetLogger(zap.New(zap.WriteTo(ginkgo.GinkgoWriter), zap.UseDevMode(true), zap.Level(zapcore.InfoLevel)))
 	ctx, cancel = context.WithCancel(context.Background())
 
@@ -86,20 +90,20 @@ var _ = ginkgo.BeforeSuite(func() {
 	k8sClient, err = client.New(restCfg, client.Options{Scheme: scheme.Scheme})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-	createNamespace()
-
 	ginkgo.By("acquiring the test user's token for the middle-tier app")
 	user = acquireUserIdentity(ctx, cfg)
 	ginkgo.GinkgoWriter.Printf("user token acquired from %s (fingerprint %s)\n",
 		user.source, fingerprint(user.token))
+
+	ginkgo.By("creating a fresh suite namespace and the shared fixtures")
+	recreateNamespace()
+	createSharedFixtures()
 })
 
 var _ = ginkgo.AfterSuite(func() {
 	if k8sClient != nil {
 		ginkgo.By("deleting the suite namespace")
-		_ = k8sClient.Delete(ctx, &corev1.Namespace{ // best effort; Kind is disposable
-			ObjectMeta: metav1.ObjectMeta{Name: testNamespace},
-		})
+		deleteNamespaceAndWait()
 	}
 	if cancel != nil {
 		cancel()

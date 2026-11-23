@@ -566,14 +566,7 @@ func (s *MemoryStorage) cleanupExpired() {
 		delete(s.pkceRequests, k)
 	}
 
-	for _, k := range expiredRefreshLeases {
-		// Re-check under the write lock: a lease collected as expired above may
-		// have been released and re-acquired by a new holder in between, and
-		// deleting that live lease would let a second refresh start alongside it.
-		if lease, ok := s.upstreamRefreshLeases[k]; ok && now.After(lease.expiresAt) {
-			delete(s.upstreamRefreshLeases, k)
-		}
-	}
+	s.deleteExpiredRefreshLeasesLocked(now, expiredRefreshLeases)
 
 	for _, k := range expiredUpstreamTokens {
 		delete(s.upstreamTokens, k)
@@ -1458,8 +1451,10 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 // Upstream Token Storage
 // -----------------------
 
-// ResolveUpstreamTokenRowID returns an opaque ID for process-local refresh
-// coordination of a logical upstream-token row.
+// ResolveUpstreamTokenRowID returns an opaque ID identifying one logical
+// upstream-token row, used to coordinate refreshes of it: the auth server's
+// in-process singleflight group and the cross-process UpstreamRefreshLocker
+// lease are both keyed by it. See UpstreamTokenStorage for the contract.
 func (*MemoryStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, providerName string) (UpstreamTokenRowID, error) {
 	if sessionID == "" {
 		return "", fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
@@ -1485,6 +1480,21 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 
 	s.storeUpstreamTokensLocked(upstreamKey{sessionID, providerName}, tokens)
 	return nil
+}
+
+// deleteExpiredRefreshLeasesLocked drops the leases cleanupExpired collected as
+// expired. It must be called with s.mu held for writing.
+//
+// Each one is re-checked against the map, because the collection ran under the
+// read lock: a lease that expired then may since have been released and
+// re-acquired by a new holder, and deleting that live lease would let a second
+// replica start redeeming alongside it — the race the lease exists to prevent.
+func (s *MemoryStorage) deleteExpiredRefreshLeasesLocked(now time.Time, expired []UpstreamTokenRowID) {
+	for _, k := range expired {
+		if lease, ok := s.upstreamRefreshLeases[k]; ok && now.After(lease.expiresAt) {
+			delete(s.upstreamRefreshLeases, k)
+		}
+	}
 }
 
 // memoryUpstreamRefreshLease is a held lease from AcquireUpstreamRefreshLock.
@@ -1514,15 +1524,13 @@ func (l *memoryUpstreamRefreshLease) Release(_ context.Context) error {
 // AcquireUpstreamRefreshLock implements UpstreamRefreshLocker for the
 // in-memory backend. See the interface doc for the coordination contract.
 //
-// This backend is reachable from exactly one process, so the cross-replica
-// race the capability exists to prevent cannot occur here and the auth
-// server's own singleflight group already deduplicates concurrent refreshes
-// of one row. Rather than always granting the lease, this implements it for
-// real — mutual exclusion over the row within this process, with the same
-// expiry and ownership rules — so that the behaviour a caller relies on does
-// not silently depend on which backend it was wired against, and so the same
-// tests can cover both backends. The cost is one map operation under the
-// mutex the backend already holds for every other write.
+// This backend is reachable from exactly one process, where the auth server's
+// singleflight group already deduplicates concurrent refreshes of one row, so
+// the lease could simply always be granted. It is implemented for real
+// instead — mutual exclusion with the same expiry and ownership rules — so
+// that what a caller relies on does not depend on which backend it was wired
+// against, and so one contract test covers both. The cost is a map operation
+// under the mutex every other write already takes.
 func (s *MemoryStorage) AcquireUpstreamRefreshLock(
 	_ context.Context, rowID UpstreamTokenRowID, ttl time.Duration,
 ) (UpstreamRefreshLease, error) {

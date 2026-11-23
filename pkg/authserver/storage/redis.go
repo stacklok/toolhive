@@ -1803,8 +1803,10 @@ func (s *RedisStorage) CompareAndSwapUpstreamTokens(
 	return nil
 }
 
-// ResolveUpstreamTokenRowID returns an opaque ID for process-local refresh
-// coordination of a logical upstream-token row.
+// ResolveUpstreamTokenRowID returns an opaque ID identifying one logical
+// upstream-token row, used to coordinate refreshes of it: the auth server's
+// in-process singleflight group and the cross-process UpstreamRefreshLocker
+// lease are both keyed by it. See UpstreamTokenStorage for the contract.
 func (s *RedisStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, providerName string) (UpstreamTokenRowID, error) {
 	if sessionID == "" {
 		return "", fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
@@ -1819,9 +1821,8 @@ func (s *RedisStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, p
 // caller still owns it. The owner token is compared inside the script so the
 // read and the delete cannot interleave with another replica's acquisition:
 // without it, a holder whose lease had already expired could delete the lease
-// a second replica legitimately took in the meantime, and both would then
-// redeem the same refresh token — precisely the race the lease exists to
-// prevent.
+// a second replica legitimately took in the meantime (see
+// UpstreamRefreshLease.Release).
 //
 // KEYS[1] = lease key
 // ARGV[1] = owner token this holder wrote on acquisition
@@ -1834,6 +1835,11 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0
 `)
+
+// upstreamRefreshLockCleanupTimeout bounds the best-effort delete of a lease
+// whose acquisition reply never came back. It runs on a detached context
+// because the context that failed the acquisition is usually already done.
+const upstreamRefreshLockCleanupTimeout = 2 * time.Second
 
 // redisUpstreamRefreshLease is a held lease from AcquireUpstreamRefreshLock.
 type redisUpstreamRefreshLease struct {
@@ -1886,6 +1892,13 @@ func (s *RedisStorage) AcquireUpstreamRefreshLock(
 	key := redisUpstreamRefreshLockKey(s.keyPrefix, rowID)
 	acquired, err := s.client.SetNX(ctx, key, owner, ttl).Result()
 	if err != nil {
+		// The reply can be lost after Redis applied the SET — a timeout, a
+		// dropped connection. The lease would then be held by a holder that
+		// never got a handle to release it, blocking the row for the whole
+		// TTL. Deleting it compares the owner token generated above, so it
+		// clears exactly that case and does nothing when the SET never landed
+		// or another holder owns the key.
+		s.clearUnreleasableUpstreamRefreshLock(ctx, key, owner)
 		return nil, fmt.Errorf("failed to acquire upstream refresh lock: %w", err)
 	}
 	if !acquired {
@@ -1893,6 +1906,26 @@ func (s *RedisStorage) AcquireUpstreamRefreshLock(
 	}
 
 	return &redisUpstreamRefreshLease{client: s.client, key: key, owner: owner}, nil
+}
+
+// clearUnreleasableUpstreamRefreshLock is the best-effort cleanup for an
+// acquisition that failed without telling the caller whether the lease was
+// written. Failing to clear it is not an error worth propagating: the caller
+// is already failing the refresh, and the lease expires on its own.
+func (s *RedisStorage) clearUnreleasableUpstreamRefreshLock(ctx context.Context, key, owner string) {
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), upstreamRefreshLockCleanupTimeout,
+	)
+	defer cancel()
+
+	if _, err := releaseUpstreamRefreshLockScript.Run(
+		cleanupCtx, s.client, []string{key}, owner,
+	).Result(); err != nil {
+		slog.Debug("could not clear an upstream refresh lock after a failed acquisition; "+
+			"it expires on its own",
+			"error", err,
+		)
+	}
 }
 
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.

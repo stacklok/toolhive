@@ -100,13 +100,11 @@ var (
 	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
 
 	// ErrUpstreamRefreshLockHeld is returned by
-	// UpstreamRefreshLocker.AcquireUpstreamRefreshLock when another holder — in
-	// this process or in another replica sharing the backend — already holds
-	// the lease for that row. It means "someone else is refreshing right now",
-	// which is an ordinary outcome, not a fault: the caller must wait and
-	// re-read the row rather than redeem the refresh token itself. Every other
-	// error from AcquireUpstreamRefreshLock is a backend fault, and the caller
-	// must fail closed rather than redeem without coordination.
+	// UpstreamRefreshLocker.AcquireUpstreamRefreshLock when another holder
+	// already holds the lease for that row. It is an ordinary outcome, not a
+	// fault: the caller waits and re-reads the row rather than redeeming the
+	// refresh token itself. Every other error from that method is a backend
+	// fault, where the caller must fail closed instead.
 	ErrUpstreamRefreshLockHeld = errors.New("storage: upstream refresh lock held by another holder")
 
 	// ErrDCRCredentialsChanged is returned by
@@ -1244,9 +1242,8 @@ type ClientRegistry interface {
 
 // UpstreamTokenRowID is an opaque coordination key for one logical upstream
 // token row. Callers must not log it or expose it outside the refresh
-// coordination path. The only place it may be written is a backend's own
-// UpstreamRefreshLocker lease key, which is derived from it and lives no
-// longer than the lease.
+// coordination path; the only place it may be written is a backend's own
+// UpstreamRefreshLocker lease key, which lives no longer than the lease.
 type UpstreamTokenRowID string
 
 // upstreamTokenRowID returns a SHA-256 digest of the supplied row-key components.
@@ -1413,40 +1410,27 @@ type UpstreamTokenStorage interface {
 // backend: a mutual-exclusion lease over one logical upstream token row,
 // honoured by every process sharing that backend.
 //
-// # Why this exists on top of CompareAndSwapUpstreamTokens
-//
-// CompareAndSwapUpstreamTokens makes the STORED row deterministic across
-// replicas: a losing writer fails instead of clobbering the winner. It does
-// not stop the losing replica from CALLING the upstream provider, because
-// both replicas redeem before either one writes. An IdP enforcing strict
-// single-use refresh token rotation (RFC 9700 §4.14.2 replay detection) sees
-// those two redemptions of one refresh token as a replay and may revoke the
-// whole grant — regardless of which write won. Closing that gap requires
-// serializing the read-redeem-write sequence itself, which is what this lease
-// provides.
-//
-// # Contract
+// It exists on top of CompareAndSwapUpstreamTokens because CAS only makes the
+// STORED row deterministic; both replicas still CALL the upstream provider
+// before either one writes, which an IdP enforcing strict single-use rotation
+// can read as a replay. Closing that gap means serializing the whole
+// read-redeem-write sequence, which is what this lease provides. See
+// docs/arch/11-auth-server-storage.md's "Refresh Coordination Scope".
 //
 // Acquisition is non-blocking: it either takes the lease or reports
-// ErrUpstreamRefreshLockHeld immediately. Waiting, re-reading the row and
-// retrying are the caller's job, so a caller can abandon the wait as soon as
-// the row it is waiting for has been refreshed by the holder.
+// ErrUpstreamRefreshLockHeld immediately, leaving waiting and re-reading to
+// the caller, which can therefore stop as soon as the holder has refreshed
+// the row it wanted. The lease is advisory and bounded by ttl, so a holder
+// that crashes cannot block the row forever and a caller must still write
+// through CompareAndSwapUpstreamTokens. Implementations must make expiry and
+// release safe against a stale holder: releasing must only delete the
+// caller's own lease, never one a later holder acquired after this one
+// expired.
 //
-// The lease is advisory and bounded by ttl: it expires on its own so a holder
-// that crashes mid-refresh cannot block the row forever. A caller must
-// therefore treat holding the lease as a strong hint, not a hard guarantee,
-// and still write through CompareAndSwapUpstreamTokens — the two layers are
-// complementary. Implementations must make expiry and release safe against a
-// stale holder: releasing must only delete the caller's own lease, never one
-// a later holder acquired after this one expired.
-//
-// # Detection
-//
-// This capability is deliberately NOT embedded in UpstreamTokenStorage,
-// following the same segregation as DeviceCodeStorage and ExchangeGrantStorage:
-// a single-process backend does not need it, and embedding it would force
-// every future implementation to provide it. Obtain it with
-// UpstreamRefreshLockerFrom, which also peels storage decorators. A backend
+// Like DeviceCodeStorage and ExchangeGrantStorage, it is deliberately not
+// embedded in UpstreamTokenStorage, so a backend that cannot be shared
+// between processes need not provide it. Obtain it with
+// UpstreamRefreshLockerFrom, which also peels storage decorators; a backend
 // without it degrades to CAS-only coordination.
 type UpstreamRefreshLocker interface {
 	// AcquireUpstreamRefreshLock tries to take the lease for rowID for at most
@@ -1462,12 +1446,11 @@ type UpstreamRefreshLocker interface {
 // UpstreamRefreshLocker.AcquireUpstreamRefreshLock.
 type UpstreamRefreshLease interface {
 	// Release gives up the lease so a waiter can proceed without waiting out
-	// the TTL. It must be idempotent, and must not release a lease that a
-	// later holder acquired after this one expired. Release takes its own
-	// context because the context that governed the refresh is typically
-	// already cancelled by the time the caller unwinds. An error means the
-	// lease may still be held until its TTL expires; that is not a correctness
-	// failure, only a delay for the next waiter.
+	// the TTL. It must be idempotent, and must not release a lease a later
+	// holder acquired after this one expired. It takes its own context,
+	// because the one that governed the refresh is typically already cancelled
+	// by the time the caller unwinds. An error only delays the next waiter
+	// until the TTL expires; it is not a correctness failure.
 	Release(ctx context.Context) error
 }
 

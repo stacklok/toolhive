@@ -95,22 +95,10 @@ func newIDJAGTestHandlerWithIssuer(
 	t *testing.T, validator *testJWTBearerAssertionValidator, consumer *recordingAssertionConsumer, asIssuer string,
 ) *IDJAGHandler {
 	t.Helper()
-	handler, err := newIDJAGIssuanceHandler(
-		validator,
-		testTokenEndpoint,
-		consumer,
-		&fosite.Config{
-			AccessTokenLifespan:      time.Hour,
-			AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
-			AccessTokenIssuer:        asIssuer,
-		},
-		&mockAccessTokenStrategy{},
-		&mockAccessTokenStorage{},
-		idJAGResolvedIssuers(t),
-		nil, nil, nil,
-	)
-	require.NoError(t, err)
-	return handler
+	deps := testIssuanceDeps(validator, idJAGResolvedIssuers(t))
+	deps.consumer = consumer
+	deps.config.AccessTokenIssuer = asIssuer
+	return newTestIDJAGHandler(t, deps)
 }
 
 func newIDJAGRequest(t *testing.T, tj *testJWKS, clientID string) *fosite.AccessRequest {
@@ -453,14 +441,6 @@ func TestIDJAGHandler_PopulateGatesOnOwnMatcher(t *testing.T) {
 	assert.NotEmpty(t, resp.GetAccessToken())
 }
 
-func TestIDJAGIssuanceFactory_RequiresSharedValidator(t *testing.T) {
-	t.Parallel()
-
-	_, err := IDJAGIssuanceFactory(idJAGResolvedIssuers(t), nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "shared validator")
-}
-
 func TestIDJAGHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
 	t.Parallel()
 
@@ -519,20 +499,11 @@ func newIDJAGDepartureHandler(
 	resolved, err := ResolveJWTBearerGrantPolicies(trusted)
 	require.NoError(t, err)
 	consumer := &recordingAssertionConsumer{}
-	handler, err := newIDJAGIssuanceHandler(
-		&testJWTBearerAssertionValidator{claims: claims},
-		testTokenEndpoint,
-		consumer,
-		&fosite.Config{
-			AccessTokenIssuer:        asIssuer,
-			AccessTokenLifespan:      time.Hour,
-			AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
-		},
-		&mockAccessTokenStrategy{},
-		&mockAccessTokenStorage{},
-		resolved,
-		nil, []string{idJAGTestResource, idJAGTestSecondResource, idJAGTestUnboundResource}, nil,
-	)
+	deps := testIssuanceDeps(&testJWTBearerAssertionValidator{claims: claims}, resolved)
+	deps.consumer = consumer
+	deps.config.AccessTokenIssuer = asIssuer
+	deps.allowedAudiences = []string{idJAGTestResource, idJAGTestSecondResource, idJAGTestUnboundResource}
+	handler, err := newIDJAGIssuanceHandler(deps, nil, nil)
 	require.NoError(t, err)
 	var buf strings.Builder
 	handler.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -997,13 +968,10 @@ func TestIDJAGHandler_IssuerAudienceSkippedWhenIssuerIsResource(t *testing.T) {
 			require.NoError(t, err)
 			var buf strings.Builder
 			validator := &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}
-			h, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint, &recordingAssertionConsumer{},
-				&fosite.Config{
-					AccessTokenIssuer:        idJAGTestASIssuer,
-					AccessTokenLifespan:      time.Hour,
-					AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
-				},
-				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, tt.allowed,
+			deps := testIssuanceDeps(validator, resolved)
+			deps.config.AccessTokenIssuer = idJAGTestASIssuer
+			deps.allowedAudiences = tt.allowed
+			h, err := newIDJAGIssuanceHandler(deps, nil,
 				slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 			require.NoError(t, err)
 
@@ -1061,14 +1029,11 @@ func TestIDJAGHandler_RealValidatorAudience(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			consumer := &recordingAssertionConsumer{}
-			h, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint, consumer,
-				&fosite.Config{
-					AccessTokenIssuer:        idJAGTestASIssuer,
-					AccessTokenLifespan:      time.Hour,
-					AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
-				},
-				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, []string{idJAGTestResource}, nil)
-			require.NoError(t, err)
+			deps := testIssuanceDeps(validator, resolved)
+			deps.consumer = consumer
+			deps.config.AccessTokenIssuer = idJAGTestASIssuer
+			deps.allowedAudiences = []string{idJAGTestResource}
+			h := newTestIDJAGHandler(t, deps)
 
 			signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: externalJWKS.jwk},
 				(&jose.SignerOptions{}).WithHeader(jose.HeaderType, oauthproto.JWTTypeIDJAG))
@@ -1109,24 +1074,14 @@ func TestIDJAGIssuanceHandler_RegistersWithNoIDJAGIssuers(t *testing.T) {
 			SubjectBindings: []JWTBearerSubjectBinding{
 				{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
 			},
-			// jwt_bearer only, so no issuer accepts id_jag and the resolved
-			// policy map handed to newIDJAGIssuanceHandler is empty.
+			// jwt_bearer only, so no issuer accepts id_jag: the constructor
+			// filters this issuer out itself, leaving an empty policy map.
 			AcceptedAssertionTypes: []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer},
 		},
 	}})
 	require.NoError(t, err)
 
-	handler, err := newIDJAGIssuanceHandler(
-		&testJWTBearerAssertionValidator{claims: validIDJAGClaims()},
-		testTokenEndpoint,
-		&recordingAssertionConsumer{},
-		&fosite.Config{AccessTokenLifespan: time.Hour},
-		&mockAccessTokenStrategy{},
-		&mockAccessTokenStorage{},
-		IssuersAcceptingAssertionType(resolved, JWTBearerAssertionTypeIDJAG),
-		nil, nil, nil,
-	)
-	require.NoError(t, err, "the bound handler must register even with no id_jag issuers")
+	handler := newTestIDJAGHandler(t, testIssuanceDeps(&testJWTBearerAssertionValidator{claims: validIDJAGClaims()}, resolved))
 
 	tj := newTestJWKS(t)
 	req := newIDJAGRequest(t, tj, idJAGTestClientID)
@@ -1203,14 +1158,7 @@ func TestJWTBearerAssertionTypeGating(t *testing.T) {
 			Issuer: issuer, Subject: idJAGTestSubject,
 			IssuedAt: time.Now(), Expiry: time.Now().Add(5 * time.Minute),
 		}
-		handler, err := newJWTBearerIssuanceHandler(
-			&testJWTBearerAssertionValidator{claims: claims},
-			testTokenEndpoint, &recordingAssertionConsumer{},
-			&fosite.Config{AccessTokenLifespan: time.Hour},
-			&mockAccessTokenStrategy{}, &mockAccessTokenStorage{},
-			IssuersAcceptingAssertionType(resolved, JWTBearerAssertionTypeJWTBearer),
-		)
-		require.NoError(t, err)
+		handler := newTestJWTBearerHandler(t, testIssuanceDeps(&testJWTBearerAssertionValidator{claims: claims}, resolved))
 		return handler
 	}
 	// The request form doesn't carry the issuer; newPlainHandler already bound
@@ -1229,15 +1177,7 @@ func TestJWTBearerAssertionTypeGating(t *testing.T) {
 		t.Helper()
 		claims := validIDJAGClaims()
 		claims.Issuer = issuer
-		handler, err := newIDJAGIssuanceHandler(
-			&testJWTBearerAssertionValidator{claims: claims},
-			testTokenEndpoint, &recordingAssertionConsumer{},
-			&fosite.Config{AccessTokenLifespan: time.Hour},
-			&mockAccessTokenStrategy{}, &mockAccessTokenStorage{},
-			resolved,
-			nil, nil, nil,
-		)
-		require.NoError(t, err)
+		handler := newTestIDJAGHandler(t, testIssuanceDeps(&testJWTBearerAssertionValidator{claims: claims}, resolved))
 		return handler
 	}
 
@@ -1280,8 +1220,9 @@ type jwtBearerFactoryStorage struct {
 }
 
 // TestJWTBearerIssuanceFactory_GatesOnAcceptedAssertionTypes drives the
-// production JWTBearerIssuanceFactory, whose filtering is the only thing that
-// keeps an id_jag-only issuer off the plain (client-auth-skippable) path.
+// production JWTBearerIssuanceFactory and pins end to end that an id_jag-only
+// issuer stays off the plain (client-auth-skippable) path. The filtering
+// itself lives in newIssuanceCore and issuanceDeps.policiesFor.
 func TestJWTBearerIssuanceFactory_GatesOnAcceptedAssertionTypes(t *testing.T) {
 	t.Parallel()
 
@@ -1291,19 +1232,7 @@ func TestJWTBearerIssuanceFactory_GatesOnAcceptedAssertionTypes(t *testing.T) {
 		bearerIssuer = "https://bearer-only-issuer.example.com"
 	)
 	issuer := func(issuerURL string, types ...JWTBearerAssertionType) TrustedIssuer {
-		return TrustedIssuer{
-			IssuerURL:              issuerURL,
-			ExpectedAudience:       idJAGTestResource,
-			AllowedDelegateClients: []string{anyDelegateClient},
-			JWTBearerGrant: &JWTBearerGrantPolicy{
-				MaxAssertionAge:   time.Hour.String(),
-				AcceptedAudiences: []string{"https://auth.example.com"},
-				SubjectBindings: []JWTBearerSubjectBinding{
-					{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
-				},
-				AcceptedAssertionTypes: types,
-			},
-		}
+		return testRedemptionIssuer(issuerURL, []string{"https://auth.example.com"}, types...)
 	}
 
 	tests := []struct {
@@ -1375,4 +1304,62 @@ func TestJWTBearerIssuanceFactory_GatesOnAcceptedAssertionTypes(t *testing.T) {
 			assertIssuerNotEnabled(t, handler.HandleTokenEndpointRequest(context.Background(), plainRequest()))
 		})
 	}
+}
+
+// TestIDJAGIssuanceFactory_PassesInputsToHandler drives the production
+// IDJAGIssuanceFactory and pins that its inputs reach the handler.
+func TestIDJAGIssuanceFactory_PassesInputsToHandler(t *testing.T) {
+	t.Parallel()
+
+	const explicitID = "explicit-grant-client"
+	issuers := []TrustedIssuer{testRedemptionIssuer(idJAGTestIssuer, []string{"https://auth.example.com"})}
+	build := func(t *testing.T, explicitGrantClientIDs []string) *IDJAGHandler {
+		t.Helper()
+		cfg := buildTestAuthServerConfig(t)
+		shared, err := NewSharedTrustedIssuerValidator(cfg, issuers)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = shared.Close() })
+
+		f, err := IDJAGIssuanceFactory(issuers, shared, explicitGrantClientIDs)
+		require.NoError(t, err)
+		result, err := f(cfg, &jwtBearerFactoryStorage{
+			fakeFactoryStorage:         fakeFactoryStorage{mockAccessTokenStorage: &mockAccessTokenStorage{}},
+			recordingAssertionConsumer: &recordingAssertionConsumer{},
+		}, &mockAccessTokenStrategy{})
+		require.NoError(t, err)
+		handler, ok := result.(*IDJAGHandler)
+		require.True(t, ok, "factory closure must return *IDJAGHandler, got %T", result)
+		// The factory fixes the validator to the shared real one; swap in a
+		// fake so the claims are controlled.
+		handler.core.validator = &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}
+		return handler
+	}
+	redeem := func(t *testing.T, handler *IDJAGHandler, clientID string) error {
+		t.Helper()
+		req := newIDJAGRequest(t, newTestJWKS(t), "")
+		req.Client = &fosite.DefaultClient{ID: clientID, Audience: []string{idJAGTestResource}}
+		return handler.HandleTokenEndpointRequest(context.Background(), req)
+	}
+
+	t.Run("explicit grant clients", func(t *testing.T) {
+		t.Parallel()
+		handler := build(t, []string{explicitID})
+
+		requireRefusal(t, redeem(t, handler, explicitID), "unauthorized_client",
+			fosite.ErrUnauthorizedClient.WithHint("The client is not registered for the jwt-bearer grant.").GetDescription())
+		assert.NoError(t, redeem(t, handler, idJAGTestClientID), "a client that is not listed is unaffected")
+	})
+
+	t.Run("allowed audiences become the governed resources", func(t *testing.T) {
+		t.Parallel()
+		handler := build(t, nil)
+		handler.core.validator = &testJWTBearerAssertionValidator{claims: func() *ValidatedClaims {
+			claims := validIDJAGClaims()
+			claims.Extra["resource"] = idJAGTestForeignResource
+			return claims
+		}()}
+
+		requireRefusal(t, redeem(t, handler, idJAGTestClientID), "invalid_grant",
+			"invalid_assertion: The ID-JAG assertion resource claim names a resource this server does not govern.")
+	})
 }

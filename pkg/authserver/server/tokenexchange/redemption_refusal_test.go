@@ -122,11 +122,7 @@ func TestIDJAGRedemptionRefusals(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			validator := &testJWTBearerAssertionValidator{claims: tt.claims(), err: tt.validatorEr}
-			handler, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint,
-				&recordingAssertionConsumer{},
-				&fosite.Config{AccessTokenLifespan: time.Hour, AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy},
-				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, refusalPolicies(t), nil, nil, nil)
-			require.NoError(t, err)
+			handler := newTestIDJAGHandler(t, testIssuanceDeps(validator, refusalPolicies(t)))
 			req := newIDJAGRequest(t, newTestJWKS(t), refusalClientID)
 			req.Form.Set("resource", refusalResource)
 			req.Client = &fosite.DefaultClient{ID: refusalClientID, Audience: []string{refusalResource, unboundRefusalResource}}
@@ -134,7 +130,7 @@ func TestIDJAGRedemptionRefusals(t *testing.T) {
 				tt.form(req.Form)
 			}
 
-			err = handler.HandleTokenEndpointRequest(context.Background(), req)
+			err := handler.HandleTokenEndpointRequest(context.Background(), req)
 
 			tt.requireRefusal(t, err)
 		})
@@ -162,10 +158,9 @@ func TestJWTBearerRedemptionRefusals(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			validator := &testJWTBearerAssertionValidator{claims: tt.claims(), err: tt.validatorEr}
-			handler, err := newJWTBearerIssuanceHandler(validator, testTokenEndpoint,
-				testAssertionJWTConsumer{}, &fosite.Config{AccessTokenLifespan: time.Hour},
-				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, refusalPolicies(t))
-			require.NoError(t, err)
+			deps := testIssuanceDeps(validator, refusalPolicies(t))
+			deps.consumer = testAssertionJWTConsumer{}
+			handler := newTestJWTBearerHandler(t, deps)
 			req := fosite.NewAccessRequest(&session.Session{})
 			req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
 			req.Form = map[string][]string{
@@ -173,7 +168,7 @@ func TestJWTBearerRedemptionRefusals(t *testing.T) {
 				"resource":  {refusalResource},
 			}
 
-			err = handler.HandleTokenEndpointRequest(context.Background(), req)
+			err := handler.HandleTokenEndpointRequest(context.Background(), req)
 
 			tt.requireRefusal(t, err)
 		})

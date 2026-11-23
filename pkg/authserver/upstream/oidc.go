@@ -4,6 +4,7 @@
 package upstream
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -425,12 +426,13 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	}, nil
 }
 
+// DefaultSubjectClaim is the ID-token claim an OIDC upstream keys users on when
+// no subject claim is configured.
+const DefaultSubjectClaim = "sub"
+
 // subjectClaimName returns the ID-token claim this upstream keys users on.
 func (p *OIDCProviderImpl) subjectClaimName() string {
-	if p.oidcConfig.SubjectClaim == "" {
-		return "sub"
-	}
-	return p.oidcConfig.SubjectClaim
+	return cmp.Or(p.oidcConfig.SubjectClaim, DefaultSubjectClaim)
 }
 
 // resolveSubject returns the upstream subject for the validated ID token.
@@ -440,7 +442,7 @@ func (p *OIDCProviderImpl) subjectClaimName() string {
 // "sub" — a silent fallback would key the user under the wrong identifier.
 func (p *OIDCProviderImpl) resolveSubject(token *oidc.IDToken) (string, error) {
 	claim := p.subjectClaimName()
-	if claim == "sub" {
+	if claim == DefaultSubjectClaim {
 		return token.Subject, nil
 	}
 

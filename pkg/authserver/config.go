@@ -5,6 +5,7 @@
 package authserver
 
 import (
+	"cmp"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -2392,13 +2394,13 @@ func (c *Config) validateRuntimeSPIFFEBundleSources() error {
 // runtime loader; bundle_endpoint and workload_api pass structural validation
 // but would fail at auth-server startup, so they are rejected here. The
 // operator calls it too, so the config CR and RunConfig.Validate agree.
-// subject is the full field path of the bundle_source, used as the error prefix.
-func ValidateRuntimeSPIFFEBundleSourceType(subject string, sourceType SPIFFEBundleSourceType) error {
+// fieldPath is the full field path of the bundle_source, used as the error prefix.
+func ValidateRuntimeSPIFFEBundleSourceType(fieldPath string, sourceType SPIFFEBundleSourceType) error {
 	if sourceType == SPIFFEBundleSourceTypeFile {
 		return nil
 	}
 	return fmt.Errorf("%s: type %q is not supported by this build; only %q is supported",
-		subject, sourceType, SPIFFEBundleSourceTypeFile)
+		fieldPath, sourceType, SPIFFEBundleSourceTypeFile)
 }
 
 // validateBaselineClientScopes ensures every baseline scope is advertised by
@@ -2439,32 +2441,68 @@ func (c *Config) validateDelegationConfig() error {
 	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
-	return validateResolveIssuerUpstream(c.TrustedIssuers,
-		len(c.Upstreams) > 0 && c.Upstreams[0].Type == UpstreamProviderTypeOIDC)
+	return validateResolveIssuerUpstream(c.TrustedIssuers, c.signInUpstream())
+}
+
+// signInUpstream returns the first upstream's issuer and subject claim, or nil
+// when it is not an OIDC upstream.
+func (c *Config) signInUpstream() *signInUpstream {
+	if len(c.Upstreams) == 0 || c.Upstreams[0].Type != UpstreamProviderTypeOIDC || c.Upstreams[0].OIDCConfig == nil {
+		return nil
+	}
+	oidc := c.Upstreams[0].OIDCConfig
+	return &signInUpstream{
+		issuer:       oidc.Issuer,
+		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
+	}
 }
 
 // validateResolveIssuers runs the resolve-issuer upstream check for the
 // run-config. Config.Validate also runs it, but this one fires first: it must
 // refuse before upstream registration, for the same reason as the delegate
-// clients in Validate.
+// clients in Validate. It runs before the upstream configs are validated, so a
+// missing oidc_config is refused here as not an OIDC identity provider.
 func (c *RunConfig) validateResolveIssuers(issuers []tokenexchange.TrustedIssuer) error {
-	return validateResolveIssuerUpstream(issuers,
-		len(c.Upstreams) > 0 && c.Upstreams[0].Type == UpstreamProviderTypeOIDC)
+	if len(c.Upstreams) == 0 || c.Upstreams[0].Type != UpstreamProviderTypeOIDC || c.Upstreams[0].OIDCConfig == nil {
+		return validateResolveIssuerUpstream(issuers, nil)
+	}
+	oidc := c.Upstreams[0].OIDCConfig
+	return validateResolveIssuerUpstream(issuers, &signInUpstream{
+		issuer:       oidc.IssuerURL,
+		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
+	})
+}
+
+// signInUpstream is the first upstream's issuer and subject claim, which a
+// resolve issuer's subject is matched against. The claim has its default
+// applied.
+type signInUpstream struct {
+	issuer, subjectClaim string
 }
 
 // validateResolveIssuerUpstream refuses a resolve issuer unless the first
-// upstream is an OIDC identity provider (firstUpstreamOIDC). Only the first
-// upstream writes provider-identity rows, and only an OIDC upstream has the
-// issuer URL and subject claim the resolution matches against.
-func validateResolveIssuerUpstream(issuers []tokenexchange.TrustedIssuer, firstUpstreamOIDC bool) error {
-	if firstUpstreamOIDC {
-		return nil
-	}
+// upstream is an OIDC identity provider (signIn is nil otherwise) whose
+// subject claim is stable. Only the first upstream writes
+// provider-identity rows, and only an OIDC upstream has the issuer URL and
+// subject claim the resolution matches against. A mutable claim such as email
+// would let a user rename themselves into another user's identity. The Okta
+// warning ValidateBindingClaim can return is logged once at startup, where the
+// resolver is built.
+func validateResolveIssuerUpstream(issuers []tokenexchange.TrustedIssuer, signIn *signInUpstream) error {
 	for _, issuer := range issuers {
-		if issuer.JWTBearerGrant != nil && issuer.JWTBearerGrant.SubjectMode == tokenexchange.SubjectModeResolve {
+		if issuer.JWTBearerGrant == nil || issuer.JWTBearerGrant.SubjectMode != tokenexchange.SubjectModeResolve {
+			continue
+		}
+		if signIn == nil {
 			return fmt.Errorf(
 				"trusted_issuers: issuer_url %q: jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream",
 				issuer.IssuerURL)
+		}
+		if _, err := subject.ValidateBindingClaim(signIn.issuer, signIn.subjectClaim); err != nil {
+			return fmt.Errorf(
+				"trusted_issuers: issuer_url %q: jwt_bearer_grant.subject_mode resolve "+
+					"needs a stable subject_claim on the first upstream: %w",
+				issuer.IssuerURL, err)
 		}
 	}
 	return nil

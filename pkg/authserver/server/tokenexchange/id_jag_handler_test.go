@@ -1249,7 +1249,7 @@ func TestIDJAGIssuanceFactory_PassesInputsToHandler(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = shared.Close() })
 
-		f, err := IDJAGIssuanceFactory(issuers, shared, explicitGrantClientIDs)
+		f, err := IDJAGIssuanceFactory(issuers, shared, explicitGrantClientIDs, nil)
 		require.NoError(t, err)
 		result, err := f(cfg, &jwtBearerFactoryStorage{
 			fakeFactoryStorage:         fakeFactoryStorage{mockAccessTokenStorage: &mockAccessTokenStorage{}},

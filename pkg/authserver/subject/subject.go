@@ -34,13 +34,20 @@ type Ref struct {
 // Resolver maps a Ref to the canonical local user ID.
 //
 // A nil error always comes with a non-empty user ID. Resolvers never create
-// users; a Ref with no local user returns ErrUnknown. Callers log the errors
-// an implementation returns, so they must not include the Ref's values.
+// users; a Ref with no local user returns ErrUnknown. A Ref whose issuer or
+// claim the resolver does not resolve at all returns ErrNotConfigured, so a
+// caller can tell a wrong assertion from a user that is not provisioned.
+// Callers log the errors an implementation returns, so they must not include
+// the Ref's values.
 type Resolver interface {
 	Resolve(ctx context.Context, ref Ref) (string, error)
 }
 
 var (
+	// ErrNotConfigured means the resolver does not resolve this issuer and
+	// claim. It is a property of the Ref, not of the user: no value of this
+	// issuer and claim would resolve. Callers refuse the token.
+	ErrNotConfigured = errors.New("subject issuer or claim not configured")
 	// ErrUnknown means no local user matches the Ref. Callers refuse the token.
 	ErrUnknown = errors.New("unknown subject")
 	// ErrAmbiguous means more than one local user matches the Ref. Callers

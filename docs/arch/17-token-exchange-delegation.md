@@ -1482,6 +1482,7 @@ registration, and again in `Config.Validate`.
 | `resolve` with any `subject_bindings` | `issuer_url "<url>": jwt_bearer_grant.subject_bindings must be empty when subject_mode is resolve` |
 | `resolve` on an issuer that accepts `jwt_bearer` assertions (an unset `accepted_assertion_types` accepts both forms) | `issuer_url "<url>": jwt_bearer_grant.subject_mode resolve requires accepted_assertion_types [id_jag]` |
 | `resolve` when the server has no upstream, or its first upstream is not `oidc` | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream` |
+| `resolve` when the first upstream's `subject_claim` is mutable (`email`, `preferred_username`, `upn` and the others `subject.ValidateBindingClaim` refuses) | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs a stable subject_claim on the first upstream: <reason>` |
 
 `subject_bindings` stays required for a `namespaced` issuer, with the same
 error as before, and must be empty for a `resolve` issuer. A file-based
@@ -1499,8 +1500,18 @@ leg that writes the provider-identity rows a subject is resolved against, and
 only an OIDC upstream records the issuer URL and subject claim those rows are
 keyed by. An OAuth2 first upstream also writes rows, but they carry no issuer
 URL or subject claim. A later OIDC upstream does not count, and a token-only
-server (no upstreams) is refused. Which ID-JAG claim is matched against those
-rows is defined when resolution is added; no lookup happens in this build.
+server (no upstreams) is refused. The ID-JAG's `upstream_subject` claim is
+resolved by a resolver built from this server's configuration. Today it knows
+one pair: the first upstream's issuer and `subject_claim` (default `sub`). The
+resolver refuses any other `iss` or `claim` with `subject.ErrNotConfigured`, and
+the handler does not check the pair itself. The stored
+provider-identity rows are keyed only by the upstream name and the subject
+value, so the issuer and claim are not read from the rows. The `value` is looked
+up under the first upstream's name.
+
+At startup the server logs a WARN once if the subject claim is `sub` and the
+first upstream's issuer looks like an Okta custom authorization server, because
+`sub` there may not match the sign-in subject and `uid` may be the better claim.
 
 ### The gate
 
@@ -1508,8 +1519,8 @@ Redemptions from a `resolve` issuer are closed by an unexported constant in the
 `tokenexchange` package, `delegatedAccessEnabled`, which is `false`. It is not a
 setting, an acknowledgement or a build tag. A redemption from a `resolve`
 issuer that passes every other check, up to and including the client-audience
-check and the actor check (see "The actor, for `resolve` issuers only" under
-"Bound ID-JAG assertions"), is refused with `400 access_denied` and
+check and the actor issuer check (see "The actor, for `resolve` issuers only"
+under "Bound ID-JAG assertions"), is refused with `400 access_denied` and
 `subject_unknown` before the `jti` is used up, so the ID-JAG stays unused and a
 client sees what it sees for an unknown user. A redemption that fails an
 earlier check gets that check's refusal. When a `resolve` issuer is configured,
@@ -1519,8 +1530,65 @@ refused", with the affected issuer URLs in `issuers`.
 
 The gate exists because the authorization server cannot see how the gateway
 behind it is wired, so no configuration check can prove that the gateway
-enforces the delegated-access marker. Resolution at redemption is added and the
-gate removed in later changes.
+enforces the delegated-access marker. Resolution at redemption is in place
+behind the gate. Removing the gate is a later change.
+
+### Resolution at redemption
+
+None of this runs while the gate is closed: resolution comes after the gate, so
+every `resolve` redemption is refused before it starts.
+
+The check order for a `resolve` issuer is: client authentication and grant,
+assertion validation, `jti`, client binding, policy (resource), client
+audience, actor issuer, gate, resolution, actor policy, consume, lifetime.
+The actor policy runs once the subject has resolved, with the resolved local
+user ID, and before the `jti` is used up (see "The actor, for `resolve` issuers
+only" under "Bound ID-JAG assertions"). Every refusal in resolution and in the
+actor policy happens before the `jti` is used up.
+
+Resolution reads the ID-JAG's `https://toolhive.dev/upstream_subject` claim, an
+object with `iss`, `claim` and `value`, and maps it to a local user through the
+provider-identity rows the sign-in leg wrote. The resolver is built at startup
+from the first upstream. It alone decides which issuers and claims resolve; one
+it does not know is reported with `subject.ErrNotConfigured` and refused as
+foreign, which keeps a wrong assertion apart from a user who is not
+provisioned.
+
+| Case | Client sees | Reason in the Debug log |
+| --- | --- | --- |
+| `upstream_subject` missing, not an object, or `iss`, `claim` or `value` missing or not a non-empty string | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion has a missing or malformed upstream_subject claim.` | `upstream_subject_invalid` |
+| The resolver does not resolve this `iss` and `claim` (today: `iss` is not the first upstream's issuer, or `claim` is not its subject claim) | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion upstream_subject does not name this server's sign-in identity provider and subject claim.` | `upstream_subject_foreign` |
+| No local user, more than one, or an empty user ID | 400 `access_denied`, `subject_unknown` | `subject_unknown` |
+| The resolver failed, or no resolver is configured | 500 `server_error`, generic text ("The subject could not be resolved.") | `subject_resolver_unavailable` |
+
+The ID-JAG is not consumed in any of these cases. The Debug line names the
+issuer, the client and the reason, and never the subject, the `jti` or any
+`upstream_subject` member.
+
+A `resolve` issuer has no subject bindings, so nothing narrows the resource per
+subject. The resource is bounded by the ID-JAG's `resource` claim, which must
+list resources this server governs, and by the client-audience check. A DCR or
+CIMD client that is not resource-scoped is not narrowed by that check.
+
+For redemption to work, the authorization server that issued the ID-JAG (AS-1)
+must send:
+
+1. `upstream_subject` in AS-1's `required_subject_claims`.
+   `required_subject_claims` is AS-1 configuration: it must include
+   `upstream_subject` so the ID-JAG carries
+   `https://toolhive.dev/upstream_subject`.
+2. An actor issuer (`ActorProfile.ActIssuer`) that is listed in this server's
+   `actor_issuers`.
+3. An ID-JAG lifetime (`lifetime`, default 60 seconds, at most 300 seconds)
+   that outlasts the redemption.
+4. The same IdP issuer string and `subject_claim` as this server uses for its
+   first upstream. AS-1 stamps `upstream_subject` from its own first upstream,
+   so a different issuer string or claim makes every redemption fail with
+   `invalid_assertion`. The issuer string and claim name are not enough: both
+   OIDC client registrations (AS-1's and this server's) must also receive the
+   same value for the user. An IdP that issues a pairwise `sub` per application,
+   such as Microsoft Entra, gives each registration a different `sub`; use a
+   stable claim such as `oid` there, or redemptions fail with `subject_unknown`.
 
 ### Redemption refusal reasons
 
@@ -1549,9 +1617,13 @@ its own default text before the reason.
 | A `resource` claim with a value that is not in `allowed_audiences` or is not a valid resource URI, whatever the request holds | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim names a resource this server does not govern.` |
 | Every `resource` claim value is in `allowed_audiences`, but the claim does not list the requested `resource` | n/a (the plain grant has no `resource` claim) | 400 `invalid_target`, no reason (the description does not name the resource) |
 | Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
-| `resolve` issuer: `act` missing or malformed, `act.iss` neither the ID-JAG's `iss` nor in `actor_issuers`, or the actor policy denies the actor | n/a | 400 `access_denied`, `actor_denied`. The ID-JAG is not consumed |
-| `resolve` issuer: the actor policy could not decide | n/a | 500 `server_error`, generic text ("The actor could not be checked."). The ID-JAG is not consumed |
+| `resolve` issuer: `act` missing or malformed, or `act.iss` neither the ID-JAG's `iss` nor in `actor_issuers` | n/a | 400 `access_denied`, `actor_denied`. The ID-JAG is not consumed |
+| `resolve` issuer: the actor policy denies the actor for the resolved user. Not reachable while the gate is closed | n/a | 400 `access_denied`, `actor_denied`. The ID-JAG is not consumed |
+| `resolve` issuer: the actor policy could not decide. Not reachable while the gate is closed | n/a | 500 `server_error`, generic text ("The actor could not be checked."). The ID-JAG is not consumed |
 | Redemption from a `resolve` issuer while resolution is not enabled (see "The gate") | n/a | 400 `access_denied`, `subject_unknown`. The ID-JAG is not consumed |
+| `resolve` issuer: `upstream_subject` missing or malformed, or naming an issuer and claim the resolver does not resolve (today the first upstream's issuer and subject claim). Not reachable while the gate is closed | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>`. The ID-JAG is not consumed |
+| `resolve` issuer: the subject maps to no user, more than one, or an empty user. Not reachable while the gate is closed | n/a | 400 `access_denied`, `subject_unknown`. The ID-JAG is not consumed |
+| `resolve` issuer: the resolver is unavailable. Not reachable while the gate is closed | n/a | 500 `server_error`, generic text. The ID-JAG is not consumed |
 | Issuer's signing keys could not be obtained (key fetch or cache lookup fails, or the key set is empty or too large) | 503 `temporarily_unavailable`, `issuer_unavailable` | same |
 | The request ended (client disconnect or deadline) while the keys were being fetched, or the server has no default audiences configured | 500 `server_error`, generic text | same |
 
@@ -1690,16 +1762,22 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   the issued token, so a resource server or auditor can still tell which agent
   acted for the subject. Other ID-JAG-specific claims (`aud_tenant`,
   `sub_profile`) are validated as opaque extras and not propagated.
-- **The actor, for `resolve` issuers only.** The server checks the actor before
-  the gate, after the client-audience check and before the `jti` is used up,
-  so a refusal leaves the ID-JAG unused. The effective actor is the outermost
+- **The actor, for `resolve` issuers only.** The check has two steps, and both
+  run before the `jti` is used up, so a refusal leaves the ID-JAG unused. The
+  first step checks the actor's issuer. It runs before the gate, after the
+  client-audience check, and needs no storage. The second step asks the actor
+  policy. It runs after the subject has resolved, so the policy sees the local
+  user and not the ID-JAG's own `sub`. The effective actor is the outermost
   `act`; an `act` without `iss` takes the ID-JAG's `iss`, and an `act` inside
   `act` is not checked. A missing or malformed `act` (not an object, no `sub`,
   or an `iss` that is not a non-empty string) is refused with `400 access_denied`,
   `actor_denied`. So is an `act.iss` that is neither the ID-JAG's own `iss` nor
-  in `actor_issuers`; this is checked before the actor policy runs. The actor
-  policy is built once per issuer at startup from the ID-JAG's `iss` and
-  `actor_issuers`. A denial is `actor_denied`. A policy that cannot decide
+  in `actor_issuers`; this is the issuer step, so it is refused before the gate
+  and before resolution. The actor policy is built once per issuer at startup
+  from the ID-JAG's `iss` and `actor_issuers`. It is asked whether this actor,
+  from this issuer and for this client, may act for the resolved user on the
+  resource. While the gate is closed no redemption reaches it. A denial is
+  `actor_denied`. A policy that cannot decide
   gives `500 server_error` instead of a denial. The log line for a refusal
   names the issuer, the client and a reason, never the subject, the `jti` or
   an `act` value. A denial is logged at Debug; a policy that cannot decide is
@@ -1711,6 +1789,9 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   and an `act` without `iss` is checked as the ID-JAG's issuer. Which clients
   may redeem is bounded separately, by the client checks. A finer check needs a
   different `Policy`.
+- **The subject, for `resolve` issuers only.** After the gate, the server maps
+  the ID-JAG's `upstream_subject` to a local user, and the user ID becomes the
+  subject of the redemption. See "Resolution at redemption".
 - Everything else is shared with the plain handler: JWKS verification through
   the shared `MultiIssuerTokenValidator`, `NoUpstreamSessionClaimKey` stamping
   (an ID-JAG conveys no upstream vendor session at this server),
@@ -2897,6 +2978,7 @@ so that no marked token can ever be exchanged.
 - `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the required actor parameters for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
 - `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`, `idJAGGrantOwner`, `grantUpstreamIdentity`, `validateIDJAGActor`, `idJAGMintWithActor`: the grant checks, the actor validator call and the Debug line for an ID-JAG
 - `pkg/authserver/server/id_jag_seam.go` — `OwnsResourceParameter`, `ReasonDPoPNotSupported`; the token endpoint calls them from `pkg/authserver/server/handlers/token.go`
+- `pkg/authserver/server/tokenexchange/id_jag_resolve.go` — `idJAGRedemption`, `resolveSubject`, `upstreamSubjectRef`: the redemption for an ID-JAG and, for a `resolve` issuer, the subject resolution
 - `pkg/authserver/server/tokenexchange/subject_mode.go` — `SubjectMode`, `delegatedAccessEnabled`, `checkSubjectModeGate`, the startup WARN for `resolve` issuers, the subject-mode validation
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
@@ -2904,7 +2986,7 @@ so that no marked token can ever be exchanged.
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — `DelegateClientConfig`, `TrustedIssuerConfig`, `EmbeddedAuthServerConfig`
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — `buildDelegateClientRunConfigs`, `buildTrustedIssuerRunConfigs`, `BuildAuthServerRunConfig`
 - `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup, `WithActorTokenValidators`, and the early `id_jag` check
-- `pkg/authserver/server_impl.go` — static delegate-client registration and precedence over an existing storage registration, `idJAGTargetPolicies`, `resolveActorProfile` (binds each profile to its validator), the DEBUG log in `configuredClientPolicies`
+- `pkg/authserver/server_impl.go` — `newSubjectResolver` (the resolver for `resolve` issuers, built from the first upstream), static delegate-client registration and precedence over an existing storage registration, `idJAGTargetPolicies`, `resolveActorProfile` (binds each profile to its validator), the DEBUG log in `configuredClientPolicies`
 - `pkg/authserver/server/endpoints.go` — `TokenEndpointPath`
 - `pkg/authserver/server/handlers/discovery.go` — advertised token-exchange and JWT-bearer grants, client-secret authentication methods
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — shared `DelegateClientConfig` CRD contract

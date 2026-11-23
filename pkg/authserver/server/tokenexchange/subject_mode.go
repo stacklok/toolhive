@@ -24,6 +24,13 @@ const (
 	SubjectModeResolve SubjectMode = "resolve"
 )
 
+// HasResolveIssuer reports whether any trusted issuer has subject_mode resolve.
+func HasResolveIssuer(trustedIssuers []TrustedIssuer) bool {
+	return slices.ContainsFunc(trustedIssuers, func(ti TrustedIssuer) bool {
+		return ti.JWTBearerGrant != nil && ti.JWTBearerGrant.SubjectMode == SubjectModeResolve
+	})
+}
+
 // delegatedAccessEnabled is the gate on redemptions from resolve issuers. While
 // it is false, every such redemption is refused as an unknown subject before
 // anything is consumed, so a client sees what it sees for an unmapped user. It

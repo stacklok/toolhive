@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -2838,6 +2839,13 @@ func TestConfigValidate_ResolveIssuerUpstream(t *testing.T) {
 			},
 		}
 	}
+	oidcWithClaim := func(claim string) UpstreamConfig {
+		u := oidcUpstream
+		cfg := *oidcUpstream.OIDCConfig
+		cfg.SubjectClaim = claim
+		u.OIDCConfig = &cfg
+		return u
+	}
 	bindings := []tokenexchange.JWTBearerSubjectBinding{{Subject: "user", AllowedResources: []string{"https://mcp.example.com"}}}
 	const needsOIDC = `trusted_issuers: issuer_url "https://idp.example.com": ` +
 		`jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream`
@@ -2846,7 +2854,8 @@ func TestConfigValidate_ResolveIssuerUpstream(t *testing.T) {
 		name      string
 		upstreams []UpstreamConfig
 		issuer    tokenexchange.TrustedIssuer
-		wantErr   string
+		wantErr   string // an exact message, or a substring when wantErrIs is set
+		wantErrIs error
 	}{
 		{name: "resolve with no upstreams", issuer: issuer(tokenexchange.SubjectModeResolve, nil), wantErr: needsOIDC},
 		{
@@ -2860,6 +2869,20 @@ func TestConfigValidate_ResolveIssuerUpstream(t *testing.T) {
 		{
 			name: "resolve with an oidc first upstream", upstreams: []UpstreamConfig{oidcUpstream},
 			issuer: issuer(tokenexchange.SubjectModeResolve, nil),
+		},
+		{
+			name: "resolve with a mutable subject claim", upstreams: []UpstreamConfig{oidcWithClaim("email")},
+			issuer:    issuer(tokenexchange.SubjectModeResolve, nil),
+			wantErr:   "needs a stable subject_claim on the first upstream",
+			wantErrIs: subject.ErrInvalidBindingClaim,
+		},
+		{
+			name: "resolve with a stable subject claim", upstreams: []UpstreamConfig{oidcWithClaim("oid")},
+			issuer: issuer(tokenexchange.SubjectModeResolve, nil),
+		},
+		{
+			name: "namespaced issuer ignores a mutable subject claim", upstreams: []UpstreamConfig{oidcWithClaim("email")},
+			issuer: issuer("", bindings),
 		},
 		{name: "namespaced issuer with no upstreams", issuer: issuer("", bindings)},
 		{
@@ -2883,6 +2906,11 @@ func TestConfigValidate_ResolveIssuerUpstream(t *testing.T) {
 			err := cfg.Validate()
 			if tt.wantErr == "" {
 				require.NoError(t, err)
+				return
+			}
+			if tt.wantErrIs != nil {
+				require.ErrorIs(t, err, tt.wantErrIs)
+				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
 			require.EqualError(t, err, tt.wantErr)
@@ -3068,10 +3096,17 @@ func TestRunConfigValidate_ResolveIssuerUpstream(t *testing.T) {
 			SubjectMode:            tokenexchange.SubjectModeResolve,
 		},
 	}
+	oidcRunUpstream := func(claim string) UpstreamRunConfig {
+		return UpstreamRunConfig{
+			Name: "oidc", Type: UpstreamProviderTypeOIDC,
+			OIDCConfig: &OIDCUpstreamRunConfig{IssuerURL: "https://accounts.google.com", SubjectClaim: claim},
+		}
+	}
 	tests := []struct {
 		name      string
 		upstreams []UpstreamRunConfig
-		wantErr   string
+		wantErr   string // an exact message, or a substring when wantErrIs is set
+		wantErrIs error
 	}{
 		{
 			name:      "oauth2 first upstream is refused",
@@ -3080,8 +3115,24 @@ func TestRunConfigValidate_ResolveIssuerUpstream(t *testing.T) {
 				`jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream`,
 		},
 		{
-			name:      "oidc first upstream passes",
+			name:      "oidc first upstream without oidc_config is refused",
 			upstreams: []UpstreamRunConfig{{Name: "oidc", Type: UpstreamProviderTypeOIDC}},
+			wantErr: `trusted_issuers: issuer_url "https://idp.example.com": ` +
+				`jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream`,
+		},
+		{
+			name:      "oidc first upstream with the default claim passes",
+			upstreams: []UpstreamRunConfig{oidcRunUpstream("")},
+		},
+		{
+			name:      "mutable subject claim is refused",
+			upstreams: []UpstreamRunConfig{oidcRunUpstream("email")},
+			wantErr:   "needs a stable subject_claim on the first upstream",
+			wantErrIs: subject.ErrInvalidBindingClaim,
+		},
+		{
+			name:      "stable subject claim passes",
+			upstreams: []UpstreamRunConfig{oidcRunUpstream("oid")},
 		},
 	}
 	for _, tt := range tests {
@@ -3095,6 +3146,11 @@ func TestRunConfigValidate_ResolveIssuerUpstream(t *testing.T) {
 			err := cfg.Validate()
 			if tt.wantErr == "" {
 				require.NoError(t, err)
+				return
+			}
+			if tt.wantErrIs != nil {
+				require.ErrorIs(t, err, tt.wantErrIs)
+				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
 			require.EqualError(t, err, tt.wantErr)

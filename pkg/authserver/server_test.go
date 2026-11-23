@@ -511,11 +511,7 @@ func TestNewServer_JWTBearerGrantAssertionTypeGating(t *testing.T) {
 func TestBuildJWTBearerFactories_RegistersBothHandlers(t *testing.T) {
 	t.Parallel()
 
-	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"keys":[]}`))
-	}))
-	t.Cleanup(jwksServer.Close)
-
+	jwksURL := testJWKSURL(t)
 	tests := []struct {
 		name     string
 		accepted []tokenexchange.JWTBearerAssertionType
@@ -528,7 +524,7 @@ func TestBuildJWTBearerFactories_RegistersBothHandlers(t *testing.T) {
 			t.Parallel()
 			issuers := []tokenexchange.TrustedIssuer{{
 				IssuerURL:         "https://issuer.example.com",
-				JWKSURL:           jwksServer.URL,
+				JWKSURL:           jwksURL,
 				InsecureAllowHTTP: true,
 				AllowPrivateIPs:   true,
 				JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
@@ -540,29 +536,48 @@ func TestBuildJWTBearerFactories_RegistersBothHandlers(t *testing.T) {
 					AcceptedAudiences:      []string{"https://example.com"},
 				},
 			}}
-			rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
-			require.NoError(t, err)
-			asConfig, err := oauthserver.NewAuthorizationServerConfig(&oauthserver.AuthorizationServerParams{
-				Issuer:               "https://example.com",
-				AccessTokenLifespan:  time.Hour,
-				RefreshTokenLifespan: 24 * time.Hour,
-				AuthCodeLifespan:     10 * time.Minute,
-				HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
-				SigningKeyID:         "key-1",
-				SigningKeyAlgorithm:  "RS256",
-				SigningKey:           rsaKey,
-				AllowedAudiences:     []string{"https://mcp.example.com"},
-			})
-			require.NoError(t, err)
-			shared, err := tokenexchange.NewSharedTrustedIssuerValidator(asConfig, issuers)
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = shared.Close() })
+			shared := newTestSharedValidator(t, issuers)
 
-			factories, err := buildJWTBearerFactories(issuers, shared, nil)
+			factories, err := buildJWTBearerFactories(issuers, shared, nil, nil)
 			require.NoError(t, err)
 			assert.Len(t, factories, 2)
 		})
 	}
+}
+
+// testJWKSURL starts a JWKS endpoint with no keys and returns its URL, for
+// trusted issuers whose assertions the test never validates.
+func testJWKSURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// newTestSharedValidator builds the shared trusted-issuer validator for issuers
+// against a throwaway authorization server config.
+func newTestSharedValidator(t *testing.T, issuers []tokenexchange.TrustedIssuer) *tokenexchange.MultiIssuerTokenValidator {
+	t.Helper()
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	asConfig, err := oauthserver.NewAuthorizationServerConfig(&oauthserver.AuthorizationServerParams{
+		Issuer:               "https://example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: 24 * time.Hour,
+		AuthCodeLifespan:     10 * time.Minute,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+		AllowedAudiences:     []string{"https://mcp.example.com"},
+	})
+	require.NoError(t, err)
+	shared, err := tokenexchange.NewSharedTrustedIssuerValidator(asConfig, issuers)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = shared.Close() })
+	return shared
 }
 
 // capturingSlogHandler records log records for assertions. slog's default

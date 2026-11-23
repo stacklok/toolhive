@@ -71,7 +71,7 @@ func TestResolve(t *testing.T) {
 		{
 			name:    "second issuer with the claim of another issuer",
 			ref:     subject.Ref{Issuer: oktaCustomIssuer, Claim: "sub", Value: "abc"},
-			wantErr: subject.ErrUnknown,
+			wantErr: subject.ErrNotConfigured,
 		},
 		{
 			name: "no row",
@@ -93,12 +93,12 @@ func TestResolve(t *testing.T) {
 		{
 			name:    "issuer without provider",
 			ref:     subject.Ref{Issuer: "https://other.example.com", Claim: "sub", Value: "abc"},
-			wantErr: subject.ErrUnknown,
+			wantErr: subject.ErrNotConfigured,
 		},
 		{
 			name:    "claim is not the subject claim",
 			ref:     subject.Ref{Issuer: idpIssuer, Claim: "email", Value: "abc"},
-			wantErr: subject.ErrUnknown,
+			wantErr: subject.ErrNotConfigured,
 		},
 		{
 			name: "nil row",

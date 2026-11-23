@@ -9,24 +9,28 @@ scope handling, consent errors, and conditional access.
 It is opt-in and never runs in CI:
 
 - Every spec skips unless all the required `TOOLHIVE_E2E_ENTRA_*` variables
-  are set. The skip message names the missing ones.
+  are set. The skip message names the missing ones. The
+  `thv-operator-e2e-test-entra` task fails instead of skipping, so a green
+  run of that task always means the suite ran.
 - The specs carry the Ginkgo label `entra-live`, and
   `task thv-operator-e2e-test-run` (what CI runs) excludes that label, so a
   runner with stray variables still cannot reach a tenant.
 
 ## What it checks
 
-Every scenario sends a real user token, calls a tool on a backend that records
-the bearer tokens it receives, and then verifies the recorded token in the test
-process. The token must be signed by the tenant (checked against its JWKS),
-carry the v2 issuer and the backend audience, belong to the test user (`oid`),
-and differ from the user's own token.
+Each success scenario sends a real user token, calls a tool on a backend that
+records the bearer tokens it receives, and then verifies the recorded token in
+the test process. The token must be signed by the tenant (checked against its
+JWKS), carry the v2 issuer and the backend audience, be issued to the
+middle-tier app (`azp`) on behalf of the test user (`oid`), and differ from the
+user's own token. The failure scenarios assert the HTTP status the proxy
+returns and, where it names the cause, the proxyrunner log.
 
 | Spec | Proves |
 |---|---|
 | `Entra OBO: MCPServer` | The proxyrunner exchanges the user token. A token for another audience (the exchanged backend token) is refused with 401 at the incoming OIDC layer. |
 | `Entra OBO: MCPRemoteProxy` | The same exchange through a remote proxy. |
-| `Entra OBO: VirtualMCPServer inline outgoingAuth` | Two backends with separate OBO configs and Secrets each receive their own exchanged token, and the vMCP pod carries two distinct `TOOLHIVE_OBO_CLIENT_SECRET_<NAME>` variables. |
+| `Entra OBO: VirtualMCPServer inline outgoingAuth` | Two backends with separate OBO configs and Secrets each receive their own exchanged token, and the vMCP pod carries two distinct `TOOLHIVE_OBO_CLIENT_SECRET_<NAME>` variables, each read from its own backend's Secret. |
 | `Entra OBO: VirtualMCPServer discovered outgoingAuth` | vMCP exchanges the token for a discovered MCPServerEntry backend. The MCPServer-backend case is pending: vMCP reaches a discovered MCPServer through its proxy, which would exchange the token a second time. |
 | `Entra OBO: exchange failures` | A wrong client secret gives 502 while the server still starts. Optionally, an unconsented scope gives 401, and a conditional-access challenge gives 403 plus an `obo_token_exchange` audit event. |
 
@@ -35,6 +39,15 @@ SHA-256 fingerprint instead, and the backend's request log does not print the
 tokens it records.
 
 ## One-time tenant setup
+
+> **Use a dedicated, non-production tenant.** The setup creates a long-lived
+> client secret, lets any signed-in user of the tenant mint tokens for the
+> middle-tier app through the Azure CLI without a consent prompt (step 2.4),
+> and grants admin consent. During a run the secret sits in Kubernetes Secrets
+> and the recorder serves exchanged tokens on an unauthenticated `/stats`
+> endpoint inside the cluster. Give the secret the shortest practical expiry,
+> rotate or delete it when you are done, and run the suite on a single-user
+> machine with a disposable Kind cluster.
 
 Do this once in the [Entra admin center](https://entra.microsoft.com). Copy
 `entra-obo.env.example` to `.env.entra-obo` at the repo root (gitignored) and
@@ -96,6 +109,14 @@ sign in interactively once with `az login`, and the suite reuses that session.
 
 ## Running it
 
+Prerequisites on the host: `kubectl` (the suite port-forwards to Services),
+the Azure CLI unless `TOOLHIVE_E2E_ENTRA_USER_TOKEN` is set, and outbound
+access to `login.microsoftonline.com`. The recorder pods `pip install` their
+dependencies, so the cluster needs egress to PyPI.
+
+Run the tasks from the repo root: `task -d cmd/thv-operator` resolves
+`.env.entra-obo` against `cmd/thv-operator` and does not find it.
+
 ```bash
 # Once per session: sign in as the test user. MFA is answered here.
 az login --tenant <tenant GUID> --allow-no-subscriptions
@@ -115,9 +136,11 @@ To use a token from somewhere else, set `TOOLHIVE_E2E_ENTRA_USER_TOKEN` to an
 access token for the middle-tier app. The Azure CLI is then not needed. Access
 tokens last about an hour.
 
-Every resource is created in the `entra-obo-e2e` namespace, which is deleted
-when the suite ends. To rerun after an aborted run, delete it first:
-`kubectl --kubeconfig kconfig.yaml delete namespace entra-obo-e2e`.
+Every resource is created in the `entra-obo-e2e` namespace. The suite deletes
+any namespace a previous or aborted run left behind and waits for it to be
+gone before it starts, and deletes it again when it ends, so you can rerun
+right away. Run it with `--procs=1`, as the task does: the fixtures have fixed
+names, and the suite fails fast under parallel processes.
 
 ## Troubleshooting
 

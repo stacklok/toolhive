@@ -344,6 +344,19 @@ func TestAddExternalAuthConfigOptions_OBOErrors(t *testing.T) {
 			},
 			oidcConfig: issuer,
 		},
+		{
+			// The proxy's middleware factory refuses an empty secret, so the
+			// RunConfig must not be emitted for one.
+			name: "secret with an empty value is transient",
+			cfg:  validOBOConfig(),
+			client: func(_ *testing.T, a *mcpv1beta1.MCPExternalAuthConfig) client.Client {
+				return fake.NewClientBuilder().WithScheme(scheme).WithObjects(a, &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: oboTestSecretName, Namespace: oboTestNamespace},
+					Data:       map[string][]byte{oboTestSecretKey: {}},
+				}).Build()
+			},
+			oidcConfig: issuer,
+		},
 	}
 
 	for _, tt := range tests {
@@ -402,9 +415,10 @@ func TestValidateOBOIncomingAuth(t *testing.T) {
 	}
 }
 
-// TestAddOBOSecretEnvVars covers the OBO-only secret-env dispatcher. Only obo
-// contributes an env var; the other secret-bearing types are populated so the
-// empty result is a real invariant, not an artifact of an absent secret ref.
+// TestAddOBOSecretEnvVars covers the OBO-only secret-env dispatcher across every
+// ExternalAuthType. Only obo contributes an env var; the other secret-bearing
+// types are populated so the empty result is a real invariant, not an artifact
+// of an absent secret ref.
 func TestAddOBOSecretEnvVars(t *testing.T) {
 	t.Parallel()
 
@@ -437,6 +451,19 @@ func TestAddOBOSecretEnvVars(t *testing.T) {
 			},
 		},
 	}
+	// Types with no secret-bearing sub-spec.
+	for name, typ := range map[string]mcpv1beta1.ExternalAuthType{
+		"un":  mcpv1beta1.ExternalAuthTypeUnauthenticated,
+		"eas": mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+		"aws": mcpv1beta1.ExternalAuthTypeAWSSts,
+		"ui":  mcpv1beta1.ExternalAuthTypeUpstreamInject,
+		"xaa": mcpv1beta1.ExternalAuthTypeXAA,
+	} {
+		others = append(others, &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oboTestNamespace},
+			Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: typ},
+		})
+	}
 	objs := []client.Object{oboCR("obo", validOBOConfig()), oboCR("obo-bad", nil)}
 	for _, o := range others {
 		objs = append(objs, o)
@@ -454,6 +481,11 @@ func TestAddOBOSecretEnvVars(t *testing.T) {
 		{name: "tokenExchange contributes no env vars here", ref: &mcpv1beta1.ExternalAuthConfigRef{Name: "te"}},
 		{name: "bearerToken contributes no env vars here", ref: &mcpv1beta1.ExternalAuthConfigRef{Name: "bt"}},
 		{name: "headerInjection contributes no env vars here", ref: &mcpv1beta1.ExternalAuthConfigRef{Name: "hi"}},
+		{name: "unauthenticated contributes no env vars here", ref: &mcpv1beta1.ExternalAuthConfigRef{Name: "un"}},
+		{name: "embeddedAuthServer contributes no env vars here", ref: &mcpv1beta1.ExternalAuthConfigRef{Name: "eas"}},
+		{name: "awsSts contributes no env vars here", ref: &mcpv1beta1.ExternalAuthConfigRef{Name: "aws"}},
+		{name: "upstreamInject contributes no env vars here", ref: &mcpv1beta1.ExternalAuthConfigRef{Name: "ui"}},
+		{name: "xaa contributes no env vars here", ref: &mcpv1beta1.ExternalAuthConfigRef{Name: "xaa"}},
 		{
 			name: "obo mounts the client secret under the fixed proxy env var",
 			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "obo"},

@@ -296,16 +296,18 @@ func validateOBOSecretRef(ref *mcpv1beta1.SecretKeyRef) error {
 	return nil
 }
 
-// verifyOBOClientSecret confirms the referenced Secret exists and carries the
-// key. A missing Secret or key is transient (the user may still create it), so
-// it returns a plain error the reconciler requeues, not an *obo.ValidationError.
+// verifyOBOClientSecret confirms the referenced Secret exists and carries a
+// non-empty value under the key; the proxy's middleware factory refuses an
+// empty client secret, so an empty value would crash-loop the pod. A missing
+// Secret, key or value is transient (the user may still fill it in), so it
+// returns a plain error the reconciler requeues, not an *obo.ValidationError.
 func verifyOBOClientSecret(ctx context.Context, c client.Client, namespace string, ref *mcpv1beta1.SecretKeyRef) error {
 	var secret corev1.Secret
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, &secret); err != nil {
 		return fmt.Errorf("obo: referenced client secret is not available: %w", err)
 	}
-	if _, ok := secret.Data[ref.Key]; !ok {
-		return fmt.Errorf("obo: referenced client secret is missing the configured key")
+	if v, ok := secret.Data[ref.Key]; !ok || len(v) == 0 {
+		return fmt.Errorf("obo: referenced client secret key is missing or empty")
 	}
 	return nil
 }

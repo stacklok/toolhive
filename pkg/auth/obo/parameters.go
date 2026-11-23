@@ -5,6 +5,7 @@ package obo
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/auth/obo/exchange"
@@ -71,7 +72,8 @@ type MiddlewareParameters struct {
 	SubjectTokenProviderName string `json:"subjectTokenProviderName,omitempty"`
 
 	// CacheSkewSeconds overrides the token cache's default expiry skew. Zero
-	// leaves the cache default; negative is rejected by Validate.
+	// leaves the cache default; Validate rejects a negative value and one above
+	// math.MaxInt32, the bound the operator applies.
 	CacheSkewSeconds int `json:"cacheSkewSeconds"`
 }
 
@@ -100,6 +102,10 @@ func (p *MiddlewareParameters) Validate() error {
 	}
 	if p.CacheSkewSeconds < 0 {
 		return fmt.Errorf("obo parameters: cacheSkewSeconds must not be negative")
+	}
+	// A larger value overflows time.Duration when converted to seconds.
+	if p.CacheSkewSeconds > math.MaxInt32 {
+		return fmt.Errorf("obo parameters: cacheSkewSeconds must be at most %d", math.MaxInt32)
 	}
 	return nil
 }

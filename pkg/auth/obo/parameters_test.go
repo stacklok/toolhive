@@ -4,6 +4,7 @@
 package obo_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,6 +123,11 @@ func TestMiddlewareParameters_Validate_Invalid(t *testing.T) {
 			name:        "negative cacheSkewSeconds",
 			mutate:      func(p *obo.MiddlewareParameters) { p.CacheSkewSeconds = -1 },
 			wantErrText: "cacheSkewSeconds must not be negative",
+		},
+		{
+			name:        "cacheSkewSeconds above MaxInt32",
+			mutate:      func(p *obo.MiddlewareParameters) { p.CacheSkewSeconds = math.MaxInt32 + 1 },
+			wantErrText: "cacheSkewSeconds must be at most",
 		},
 	}
 

@@ -158,10 +158,7 @@ func TokenURL(tenantID, authority string) (string, error) {
 // clouds), and a hard allowlist would reject legitimate sovereign / B2C / CIAM endpoints
 // (which use different hosts and token paths) while giving only false assurance.
 func NewFromTokenURL(tokenURL, clientID, clientSecret string, httpClient *http.Client) (*Exchanger, error) {
-	if strings.TrimSpace(tokenURL) == "" {
-		return nil, fmt.Errorf("entra obo: token URL is required")
-	}
-	if err := validateHTTPSURL(tokenURL, "token URL"); err != nil {
+	if err := ValidateTokenURL(tokenURL); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(clientID) == "" {
@@ -177,6 +174,17 @@ func NewFromTokenURL(tokenURL, clientID, clientSecret string, httpClient *http.C
 		clientSecret: clientSecret,
 		httpClient:   newHTTPClient(httpClient),
 	}, nil
+}
+
+// ValidateTokenURL applies the checks NewFromTokenURL makes on a token URL:
+// present, absolute, https (http only for a loopback host), with no query or
+// fragment. Callers that build the Exchanger lazily use it to reject a bad URL
+// when the configuration is validated rather than on the first exchange.
+func ValidateTokenURL(tokenURL string) error {
+	if strings.TrimSpace(tokenURL) == "" {
+		return fmt.Errorf("entra obo: token URL is required")
+	}
+	return validateHTTPSURL(tokenURL, "token URL")
 }
 
 // newHTTPClient returns the client used for the exchange. The redirect guard is

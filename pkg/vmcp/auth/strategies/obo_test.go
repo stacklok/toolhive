@@ -731,6 +731,10 @@ func TestOBOValidate_Invalid(t *testing.T) {
 		{name: "nil obo", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO = nil }, wantMsg: "OBO configuration is required"},
 		{name: "missing token url", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.TokenURL = "" }, wantMsg: "tokenUrl is required"},
 		{name: "whitespace token url", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.TokenURL = " \t " }, wantMsg: "tokenUrl is required"},
+		{name: "relative token url", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.TokenURL = "/oauth2/v2.0/token" }, wantMsg: "invalid tokenUrl"},
+		{name: "non-https token url", mutate: func(s *authtypes.BackendAuthStrategy) {
+			s.OBO.TokenURL = "http://login.example.com/token"
+		}, wantMsg: "invalid tokenUrl"},
 		{name: "missing client id", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.ClientID = "" }, wantMsg: "clientId is required"},
 		{name: "whitespace client id", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.ClientID = "  " }, wantMsg: "clientId is required"},
 		{name: "no audience or scopes", mutate: func(s *authtypes.BackendAuthStrategy) { s.OBO.Scopes = nil; s.OBO.Audience = "" }, wantMsg: "one of audience or scopes is required"},

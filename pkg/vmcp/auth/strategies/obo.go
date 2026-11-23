@@ -370,6 +370,12 @@ func parseOBOConfig(strategy *authtypes.BackendAuthStrategy) (*authtypes.OBOConf
 	if strings.TrimSpace(cfg.TokenURL) == "" {
 		return nil, fmt.Errorf("tokenUrl is required")
 	}
+	// The Exchanger is built on the first authenticated request, after the
+	// health-check skip, so check the URL here or a relative or non-https
+	// tokenUrl would leave the backend healthy while every call fails.
+	if err := entra.ValidateTokenURL(cfg.TokenURL); err != nil {
+		return nil, fmt.Errorf("invalid tokenUrl: %w", err)
+	}
 	if strings.TrimSpace(cfg.ClientID) == "" {
 		return nil, fmt.Errorf("clientId is required")
 	}

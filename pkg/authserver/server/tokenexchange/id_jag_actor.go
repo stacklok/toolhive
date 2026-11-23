@@ -60,8 +60,9 @@ func (h *IDJAGHandler) checkActor(
 		}
 		return h.refuseActor(ctx, claims.Issuer, clientID, reason)
 	}
-	// DefaultPolicy repeats this check on purpose: Policy is an interface, and
-	// another implementation might not check the issuer.
+	// DefaultPolicy repeats this check on purpose. actorPolicies holds the
+	// Policy interface, so a future implementation might not check the issuer,
+	// and actor_issuers must still bind whatever policy is in place.
 	if a.Issuer != claims.Issuer && !slices.Contains(policy.ActorIssuers, a.Issuer) {
 		return h.refuseActor(ctx, claims.Issuer, clientID, actor.ReasonIssuerNotAllowed)
 	}
@@ -72,7 +73,7 @@ func (h *IDJAGHandler) checkActor(
 	})
 	if err != nil {
 		// The cause travels in the returned error, which is logged once.
-		h.logActorRefusal(ctx, claims.Issuer, clientID, reasonActorPolicyErr)
+		h.logActorRefusal(ctx, slog.LevelWarn, claims.Issuer, clientID, reasonActorPolicyErr)
 		return serverFailure(hintActorCheckFailed, err)
 	}
 	if !decision.Allow {
@@ -82,18 +83,22 @@ func (h *IDJAGHandler) checkActor(
 }
 
 func (h *IDJAGHandler) refuseActor(ctx context.Context, issuer, clientID, reason string) error {
-	h.logActorRefusal(ctx, issuer, clientID, reason)
+	h.logActorRefusal(ctx, slog.LevelDebug, issuer, clientID, reason)
 	return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonActorDenied, ""))
 }
 
-// logActorRefusal logs at Debug: the client already gets the refusal
-// (actor_denied or server_error), so the line is only for diagnosis. It
-// carries no subject, jti or act value.
-func (h *IDJAGHandler) logActorRefusal(ctx context.Context, issuer, clientID, reason string) {
+// logActorRefusal logs one line for a refused actor check. A denial is logged
+// at Debug: a caller can trigger it at request rate and already gets the
+// refusal, so the line is only for diagnosis. A policy that cannot decide is
+// logged at Warn: it is a server fault the caller did not cause, and operators
+// need to see it. The line carries no subject, jti or act value.
+func (h *IDJAGHandler) logActorRefusal(
+	ctx context.Context, level slog.Level, issuer, clientID, reason string,
+) {
 	logger := h.logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.DebugContext(ctx, "ID-JAG redemption refused: actor check failed",
+	logger.Log(ctx, level, "ID-JAG redemption refused: actor check failed",
 		"issuer", issuer, "client_id", clientID, "reason", reason)
 }

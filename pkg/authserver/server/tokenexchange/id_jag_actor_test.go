@@ -82,12 +82,12 @@ func requireActorOutcome(t *testing.T, err error, consumer *recordingAssertionCo
 	assert.Empty(t, consumer.key, "the ID-JAG must stay unused")
 }
 
-// requireActorLog asserts the log holds exactly one actor-refusal line, with
-// the issuer, the client and wantReason, and returns it.
-func requireActorLog(t *testing.T, buf *strings.Builder, wantReason string) string {
+// requireActorLog asserts the log holds exactly one actor-refusal line at
+// level, with the issuer, the client and wantReason, and returns it.
+func requireActorLog(t *testing.T, buf *strings.Builder, level, wantReason string) string {
 	t.Helper()
 	var lines []string
-	for _, line := range logLinesAt(buf, "DEBUG") {
+	for _, line := range logLinesAt(buf, level) {
 		if strings.Contains(line, "actor check failed") {
 			lines = append(lines, line)
 		}
@@ -126,7 +126,7 @@ func TestIDJAGActor_EffectiveActor(t *testing.T) {
 			consumer, buf, err := actorRedeem(t, resolvePolicyWithActors(actorTestAllowedIssuer), claimsWithAct(tt.act), nil)
 			requireActorOutcome(t, err, consumer, tt.want)
 			if tt.wantReason != "" {
-				requireActorLog(t, buf, tt.wantReason)
+				requireActorLog(t, buf, "DEBUG", tt.wantReason)
 			}
 		})
 	}
@@ -160,7 +160,7 @@ func TestIDJAGActor_IssuerAllowlist(t *testing.T) {
 
 			requireActorOutcome(t, err, consumer, tt.want)
 			if tt.want == descActorDenied {
-				requireActorLog(t, buf, actor.ReasonIssuerNotAllowed)
+				requireActorLog(t, buf, "DEBUG", actor.ReasonIssuerNotAllowed)
 			}
 		})
 	}
@@ -174,13 +174,14 @@ func TestIDJAGActor_Policy(t *testing.T) {
 		decision   actor.Decision
 		err        error
 		wantErr    string
+		wantLevel  string
 		wantReason string
 	}{
 		{
 			name: "deny", decision: actor.Decision{Reason: actor.ReasonIssuerNotAllowed},
-			wantErr: descActorDenied, wantReason: actor.ReasonIssuerNotAllowed,
+			wantErr: descActorDenied, wantLevel: "DEBUG", wantReason: actor.ReasonIssuerNotAllowed,
 		},
-		{name: "error", err: errors.New("directory down"), wantReason: reasonActorPolicyErr},
+		{name: "error", err: errors.New("directory down"), wantLevel: "WARN", wantReason: reasonActorPolicyErr},
 		{name: "allow", decision: actor.Decision{Allow: true, Reason: actor.ReasonAllowed}, wantErr: descSubjectUnknown},
 	}
 	for _, tt := range tests {
@@ -206,7 +207,7 @@ func TestIDJAGActor_Policy(t *testing.T) {
 				requireActorOutcome(t, err, consumer, tt.wantErr)
 			}
 			if tt.wantReason != "" {
-				line := requireActorLog(t, buf, tt.wantReason)
+				line := requireActorLog(t, buf, tt.wantLevel, tt.wantReason)
 				assert.NotContains(t, line, "error=")
 				for _, secret := range []string{
 					idJAGTestSubject, "id-jag-jti", actorTestSubject, actorTestAllowedIssuer, "directory down",

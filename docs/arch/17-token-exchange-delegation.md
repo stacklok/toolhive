@@ -1562,7 +1562,8 @@ help. The exception is `actor_denied` for a missing or malformed `act`: an
 ID-JAG re-issued with a correct `act` can pass the actor check (while the gate
 is closed it is still refused with `subject_unknown`). A client that retries a
 reasonless `invalid_grant` once with a new ID-JAG therefore stops retrying
-`invalid_assertion` refusals and the `access_denied` refusals.
+`invalid_assertion` refusals and the `access_denied` refusals that a new ID-JAG
+with the same claims would not change.
 `issuer_unavailable` is the retryable one: the assertion was never judged, because
 this server could not reach the issuer's signing keys, so the same ID-JAG may
 succeed once the issuer is reachable again. It is a 503 with no `Retry-After`
@@ -1701,7 +1702,8 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   `actor_issuers`. A denial is `actor_denied`. A policy that cannot decide
   gives `500 server_error` instead of a denial. The log line for a refusal
   names the issuer, the client and a reason, never the subject, the `jti` or
-  an `act` value. A `namespaced` issuer is not checked: its `act` is still
+  an `act` value. A denial is logged at Debug; a policy that cannot decide is
+  logged at Warn. A `namespaced` issuer is not checked: its `act` is still
   copied without being read.
 
   The default policy checks only the actor's issuer. It does not restrict

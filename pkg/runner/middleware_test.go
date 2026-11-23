@@ -485,11 +485,25 @@ func TestPopulateMiddlewareConfigs_OBOSubjectProviderDefault(t *testing.T) {
 		return got
 	}
 
+	withUpstreams := func(names ...string) *authserver.RunConfig {
+		cfg := createMinimalAuthServerConfig()
+		template := cfg.Upstreams[0]
+		cfg.Upstreams = nil
+		for _, n := range names {
+			u := template
+			u.Name = n
+			cfg.Upstreams = append(cfg.Upstreams, u)
+		}
+		return cfg
+	}
+
 	tests := []struct {
-		name     string
-		params   map[string]any
-		embedded *authserver.RunConfig
-		want     any // expected subjectTokenProviderName; nil means absent
+		name      string
+		params    map[string]any
+		rawParams json.RawMessage // used instead of params when set
+		embedded  *authserver.RunConfig
+		want      any // expected subjectTokenProviderName; nil means absent
+		wantErr   string
 	}{
 		{
 			name:     "defaulted to the first upstream",
@@ -510,25 +524,74 @@ func TestPopulateMiddlewareConfigs_OBOSubjectProviderDefault(t *testing.T) {
 			want:     "test-upstream",
 		},
 		{
+			name:     "several upstreams take the first, as upstream swap does",
+			params:   map[string]any{"clientId": "c"},
+			embedded: withUpstreams("first", "second"),
+			want:     "first",
+		},
+		{
+			name:     "unnamed upstream resolves to the default name",
+			params:   map[string]any{"clientId": "c"},
+			embedded: withUpstreams(""),
+			want:     authserver.DefaultUpstreamName,
+		},
+		{
+			// No upstreams makes the auth server token-only, which strips the
+			// inbound credential; the default is skipped and the OBO guard
+			// rejects the combination.
+			name:     "embedded auth server with no upstreams is rejected",
+			params:   map[string]any{"clientId": "c"},
+			embedded: withUpstreams(),
+			wantErr:  "cannot be combined with OBO middleware",
+		},
+		{
 			name:   "no embedded auth server leaves inbound mode",
 			params: map[string]any{"clientId": "c"},
 			want:   nil,
+		},
+		{
+			name:      "null parameters are defaulted",
+			rawParams: json.RawMessage(`null`),
+			embedded:  createMinimalAuthServerConfig(),
+			want:      "test-upstream",
+		},
+		{
+			name:      "parameters that are not an object are an error",
+			rawParams: json.RawMessage(`[]`),
+			embedded:  createMinimalAuthServerConfig(),
+			wantErr:   "invalid OBO middleware parameters",
+		},
+		{
+			name:      "non-string provider name is an error",
+			rawParams: json.RawMessage(`{"subjectTokenProviderName": 5}`),
+			embedded:  createMinimalAuthServerConfig(),
+			wantErr:   "invalid OBO subjectTokenProviderName",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			injected := mkOBO(t, tt.params)
+			injected := types.MiddlewareConfig{Type: obo.MiddlewareType, Parameters: tt.rawParams}
+			if tt.rawParams == nil {
+				injected = mkOBO(t, tt.params)
+			}
 			cfg := &RunConfig{
 				EmbeddedAuthServerConfig:    tt.embedded,
 				AdditionalMiddlewareConfigs: []types.MiddlewareConfig{injected},
 			}
-			require.NoError(t, PopulateMiddlewareConfigs(cfg))
+			err := PopulateMiddlewareConfigs(cfg)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
 
 			got := subjectOf(t, cfg)
 			assert.Equal(t, tt.want, got["subjectTokenProviderName"])
-			assert.Equal(t, "c", got["clientId"], "other parameters are kept")
+			if v, ok := tt.params["clientId"]; ok {
+				assert.Equal(t, v, got["clientId"], "other parameters are kept")
+			}
 			if v, ok := tt.params["futureKey"]; ok {
 				assert.Equal(t, v, got["futureKey"], "unknown keys are kept")
 			}
@@ -536,6 +599,25 @@ func TestPopulateMiddlewareConfigs_OBOSubjectProviderDefault(t *testing.T) {
 				"the carrier keeps the operator's original parameters")
 		})
 	}
+
+	t.Run("a non-OBO middleware beside an OBO one is left alone", func(t *testing.T) {
+		t.Parallel()
+		const otherType = "test-other"
+		other, err := types.NewMiddlewareConfig(otherType, map[string]any{"subjectTokenProviderName": ""})
+		require.NoError(t, err)
+		cfg := &RunConfig{
+			EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{
+				*other, mkOBO(t, map[string]any{"clientId": "c"}),
+			},
+		}
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		assert.Equal(t, "test-upstream", subjectOf(t, cfg)["subjectTokenProviderName"])
+		gotOther := cfg.MiddlewareConfigs[indexOfMiddleware(t, cfg.MiddlewareConfigs, otherType)]
+		assert.JSONEq(t, string(other.Parameters), string(gotOther.Parameters),
+			"a non-OBO middleware's parameters are not defaulted")
+	})
 }
 
 // TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs_RoundTrip exercises

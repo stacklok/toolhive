@@ -35,6 +35,15 @@ const (
 	testSubject  = "user-123"
 )
 
+const (
+	// invalidTokenChallenge is the WWW-Authenticate value on an inbound-mode 401.
+	invalidTokenChallenge = `Bearer error="invalid_token"`
+	// upstreamReauthChallenge is the WWW-Authenticate value on an
+	// upstream-provider-mode 401, asking the client to re-authenticate.
+	upstreamReauthChallenge = `Bearer error="invalid_token", ` +
+		`error_description="upstream token is unavailable; re-authentication required"`
+)
+
 // stubExchanger is a configurable exchange.Exchanger test double. It records the
 // arguments of the last call and the call count.
 type stubExchanger struct {
@@ -670,12 +679,10 @@ func TestMiddleware_InvalidGrant_UpstreamProvider_ReauthChallenge(t *testing.T) 
 	rec, spy := serve(t, mw, request(t, upstreamIdentity(testProvider, "expired-upstream-token")))
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Header().Get("WWW-Authenticate"), "re-authentication required")
+	assert.Equal(t, upstreamReauthChallenge, rec.Header().Get("WWW-Authenticate"))
+	assert.Equal(t, unauthorizedMessage+"\n", rec.Body.String())
 	assert.False(t, spy.called)
 }
-
-// invalidTokenChallenge is the WWW-Authenticate value on an inbound-mode 401.
-const invalidTokenChallenge = `Bearer error="invalid_token"`
 
 // TestMiddleware_UnclassifiedError_NotLoggedToDefault covers the "no token or
 // secret in logs" guarantee on the failure path that uses the package-global

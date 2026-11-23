@@ -640,6 +640,13 @@ func TestOBOExchangerCacheKey(t *testing.T) {
 
 // TestOBOGetOrCreateExchanger_BuildsOnceUnderContention proves concurrent first
 // requests for one backend share a single build.
+//
+// The first build is held open until every caller has reached the builder, or
+// a short timeout passes. If getOrCreateExchanger released the lock between
+// the lookup and the build, every caller would miss the cache and reach the
+// builder while it is held, giving one build per caller. With the build under
+// the lock, the other callers wait on the mutex, the hold times out, and they
+// then find the stored Exchanger.
 func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 	t.Parallel()
 
@@ -647,8 +654,15 @@ func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 	cfg := validOBOStrategy().OBO
 
 	var builds atomic.Int32
+	allBuilding := make(chan struct{})
 	s := newOBOStrategy(oboMapEnv{}, nil, func(_ *authtypes.OBOConfig, _ string) (exchange.Exchanger, error) {
-		builds.Add(1)
+		if builds.Add(1) == callers {
+			close(allBuilding)
+		}
+		select {
+		case <-allBuilding:
+		case <-time.After(200 * time.Millisecond):
+		}
 		return &oboStubExchanger{}, nil
 	})
 
@@ -684,9 +698,14 @@ func TestOBOGetOrCreateExchanger_BuildsOnceUnderContention(t *testing.T) {
 func TestOBOGetOrCreateExchanger_RotatedSecretReplacesOld(t *testing.T) {
 	t.Parallel()
 
+	const failingSecret = "secret-v3-fails"
+	errBuild := errors.New("build failed")
 	builds := 0
-	s := newOBOStrategy(oboMapEnv{}, nil, func(_ *authtypes.OBOConfig, _ string) (exchange.Exchanger, error) {
+	s := newOBOStrategy(oboMapEnv{}, nil, func(_ *authtypes.OBOConfig, secret string) (exchange.Exchanger, error) {
 		builds++
+		if secret == failingSecret {
+			return nil, errBuild
+		}
 		return &oboStubExchanger{}, nil
 	})
 	cfg := validOBOStrategy().OBO
@@ -708,6 +727,14 @@ func TestOBOGetOrCreateExchanger_RotatedSecretReplacesOld(t *testing.T) {
 	_, err = s.getOrCreateExchanger(cfg, "secret-v2")
 	require.NoError(t, err)
 	assert.Equal(t, 3, builds, "the current secret's Exchanger is reused")
+
+	// A failed build for a newer secret must not evict the working Exchanger:
+	// eviction happens only once the replacement is built.
+	_, err = s.getOrCreateExchanger(cfg, failingSecret)
+	require.ErrorIs(t, err, errBuild)
+	assert.Contains(t, s.exchangers, oboExchangerCacheKey(cfg, "secret-v2"),
+		"a failed build must leave the current secret's Exchanger in place")
+	assert.Len(t, s.exchangers, 2)
 }
 
 func TestOBOValidate_Valid(t *testing.T) {

@@ -1392,25 +1392,76 @@ func (v *TokenValidator) loadUpstreamTokens(
 // issuer" true by construction instead of by deployment convention, and leaves the
 // claim comparison below as a redundant restatement of what validateClaims proved.
 func (v *TokenValidator) isSessionlessGrant(identity *Identity, claims jwt.MapClaims) bool {
-	// Trim on both sides, as validateClaims does: an issuer configured with stray
-	// whitespace must not silently turn this gate off and deny every session-less
-	// grant with no diagnostic.
-	embeddedIssuer := strings.TrimSpace(v.embeddedAuthServerIssuer)
-	if embeddedIssuer == "" || strings.TrimSpace(v.issuer) != embeddedIssuer {
+	if !v.boundToEmbeddedIssuer() {
 		return false
 	}
 	if identity.UpstreamTokens != nil {
 		return false
 	}
 	issuer, ok := claims["iss"].(string)
-	if !ok || strings.TrimSpace(issuer) != embeddedIssuer {
+	if !ok || strings.TrimSpace(issuer) != strings.TrimSpace(v.embeddedAuthServerIssuer) {
 		return false
 	}
+	return sessionlessProof(identity, claims)
+}
+
+// boundToEmbeddedIssuer reports whether the validator's own issuer is the
+// embedded authorization server's.
+func (v *TokenValidator) boundToEmbeddedIssuer() bool {
+	// Trim on both sides, as validateClaims does: an issuer configured with stray
+	// whitespace must not silently turn this gate off, which would deny every
+	// session-less grant with no diagnostic.
+	embeddedIssuer := strings.TrimSpace(v.embeddedAuthServerIssuer)
+	return embeddedIssuer != "" && strings.TrimSpace(v.issuer) == embeddedIssuer
+}
+
+// sessionlessProof reports whether the token affirmatively proves it was minted
+// without an upstream session: a well-formed act chain or the
+// no-upstream-session marker.
+func sessionlessProof(identity *Identity, claims jwt.MapClaims) bool {
 	if chain := identity.DelegationChain; chain != nil && !chain.Malformed && len(chain.Chain) > 0 {
 		return true
 	}
 	marker, ok := claims[claimnames.NoUpstreamSessionKey].(bool)
 	return ok && marker
+}
+
+// classifyRoute derives the admission route from the raw validated claims.
+//
+// A token gets a route only when the validator is bound to the embedded
+// authorization server. Every token that is
+// neither interactive nor delegated, including one carrying both a tsid and the
+// delegated-access marker, is left unspecified and reads nothing.
+func (v *TokenValidator) classifyRoute(identity *Identity, claims jwt.MapClaims) AdmissionRoute {
+	if !v.boundToEmbeddedIssuer() {
+		return AdmissionRouteUnspecified
+	}
+	_, markerPresent := claims[claimnames.DelegatedAccessKey]
+	hasTSID := hasUsableTSID(claims)
+
+	if isInteractiveToken(identity, claims, hasTSID, markerPresent) {
+		return AdmissionRouteInteractive
+	}
+	// validateClaims checks "aud" only when an audience is configured, so the
+	// delegated route is granted only when that check actually ran.
+	if markerPresent && !hasTSID && strings.TrimSpace(v.audience) != "" {
+		return AdmissionRouteDelegated
+	}
+	return AdmissionRouteUnspecified
+}
+
+// hasUsableTSID reports whether the claims carry a non-empty string tsid, the
+// same predicate loadUpstreamTokens uses to decide whether to load credentials.
+func hasUsableTSID(claims jwt.MapClaims) bool {
+	tsid, ok := claims[claimnames.TokenSessionIDKey].(string)
+	return ok && tsid != ""
+}
+
+// isInteractiveToken reports whether a token from a bound validator came from
+// an interactive login: it has a usable tsid, no delegated-access marker, and
+// no proof of a session-less mint.
+func isInteractiveToken(identity *Identity, claims jwt.MapClaims, hasTSID, markerPresent bool) bool {
+	return hasTSID && !markerPresent && !sessionlessProof(identity, claims)
 }
 
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.

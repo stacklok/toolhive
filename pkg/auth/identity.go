@@ -73,6 +73,24 @@ type PrincipalInfo struct {
 	DelegationChain *audit.DelegationChain `json:"delegation,omitempty"`
 }
 
+// AdmissionRoute identifies how TokenValidator admitted a token minted by the
+// embedded authorization server.
+type AdmissionRoute string
+
+const (
+	// AdmissionRouteUnspecified is the zero value: the token is neither
+	// interactive nor delegated, so nothing is read for it.
+	AdmissionRouteUnspecified AdmissionRoute = ""
+	// AdmissionRouteInteractive is a token minted from an interactive login
+	// session: it carries a token session ID and neither the delegated-access
+	// marker nor proof of a session-less mint.
+	AdmissionRouteInteractive AdmissionRoute = "interactive"
+	// AdmissionRouteDelegated is a token carrying the delegated-access marker and
+	// no usable tsid, validated with a configured audience (so its "aud" was
+	// checked).
+	AdmissionRouteDelegated AdmissionRoute = "delegated"
+)
+
 // Identity represents an authenticated user or service account.
 // This is the primary type for representing authenticated principals throughout ToolHive.
 //
@@ -112,6 +130,16 @@ type Identity struct {
 	// minted by a session-less grant. It is internal runtime provenance and is
 	// intentionally not included in PrincipalInfo or MarshalJSON.
 	SessionlessGrant bool
+
+	// AdmissionRoute records how TokenValidator admitted this token. It is set
+	// only by TokenValidator, and only when the validator is bound to the
+	// embedded authorization server.
+	// The delegated route also requires a configured audience. It is internal
+	// provenance and is intentionally not included in PrincipalInfo,
+	// SafeIdentity, or MarshalJSON. Consumers that grant anything must compare
+	// for equality with AdmissionRouteDelegated (or AdmissionRouteInteractive),
+	// never with != AdmissionRouteUnspecified.
+	AdmissionRoute AdmissionRoute
 
 	// UpstreamTokens maps upstream provider names to their access tokens.
 	// This is populated by the auth middleware when an embedded auth server

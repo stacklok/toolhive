@@ -3930,3 +3930,76 @@ func TestAuthTokenFileClientsRefuseCrossHostRedirects(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyRoute(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "test-issuer"
+	marker := claimnames.DelegatedAccessKey
+	tsid := claimnames.TokenSessionIDKey
+	noSession := claimnames.NoUpstreamSessionKey
+	act := map[string]any{"sub": "delegated-agent"}
+
+	bound := func(audience string) *TokenValidator {
+		return &TokenValidator{issuer: issuer, embeddedAuthServerIssuer: issuer, audience: audience}
+	}
+
+	tests := []struct {
+		name      string
+		validator *TokenValidator
+		claims    jwt.MapClaims
+		want      AdmissionRoute
+	}{
+		{name: "tsid only", validator: bound("aud"), claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteInteractive},
+		{name: "tsid without audience is still interactive", validator: bound(""),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteInteractive},
+		{name: "tsid and marker is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1", marker: true}, want: AdmissionRouteUnspecified},
+		{name: "tsid with no_upstream_session is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1", noSession: true}, want: AdmissionRouteUnspecified},
+		{name: "tsid with no_upstream_session false is interactive", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1", noSession: false}, want: AdmissionRouteInteractive},
+		{name: "tsid with act chain is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1", "act": act}, want: AdmissionRouteUnspecified},
+		{name: "empty tsid, no marker is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: ""}, want: AdmissionRouteUnspecified},
+		{name: "no tsid, no marker is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{}, want: AdmissionRouteUnspecified},
+
+		{name: "marker only", validator: bound("aud"), claims: jwt.MapClaims{marker: true}, want: AdmissionRouteDelegated},
+		{name: "marker false counts by presence", validator: bound("aud"),
+			claims: jwt.MapClaims{marker: false}, want: AdmissionRouteDelegated},
+		{name: "marker with act chain", validator: bound("aud"),
+			claims: jwt.MapClaims{marker: true, "act": act}, want: AdmissionRouteDelegated},
+		{name: "empty tsid and marker is delegated", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "", marker: true}, want: AdmissionRouteDelegated},
+		{name: "non-string tsid and marker is delegated", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: 7, marker: true}, want: AdmissionRouteDelegated},
+		{name: "marker without audience is unspecified", validator: bound(""),
+			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified},
+		{name: "marker with whitespace audience is unspecified", validator: bound("  "),
+			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified},
+
+		{name: "unbound: no embedded issuer", validator: &TokenValidator{issuer: issuer, audience: "aud"},
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
+		{name: "unbound: embedded issuer != issuer",
+			validator: &TokenValidator{issuer: issuer, embeddedAuthServerIssuer: "foreign-issuer", audience: "aud"},
+			claims:    jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified},
+		{name: "unbound: embedded issuer, no issuer",
+			validator: &TokenValidator{embeddedAuthServerIssuer: issuer, audience: "aud"},
+			claims:    jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			claims := maps.Clone(tt.claims)
+			claims["sub"] = "test-user"
+			identity, err := claimsToIdentity(claims, "token")
+			require.NoError(t, err)
+
+			require.Equal(t, tt.want, tt.validator.classifyRoute(identity, claims))
+		})
+	}
+}

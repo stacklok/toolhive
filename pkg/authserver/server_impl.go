@@ -31,6 +31,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
+	"github.com/stacklok/toolhive/pkg/authserver/subjectresolver"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/bodylimit/httplimit"
@@ -897,7 +899,7 @@ func buildProvider(
 	}
 	factories = append(factories, tokenExchangeFactories...)
 	if jwtBearerEnabled {
-		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg))
+		jwtBearerFactories, err := buildJWTBearerFactoriesForConfig(cfg, shared, stor)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -986,6 +988,19 @@ func refreshGrantValidatorChain(
 	return append([]fosite.TokenEndpointHandler{guard}, cfg.RefreshGrantHandlers...), nil
 }
 
+// buildJWTBearerFactoriesForConfig builds the JWT-bearer and ID-JAG factories
+// for cfg, giving the ID-JAG factory the subject resolver when a trusted
+// issuer has subject_mode resolve.
+func buildJWTBearerFactoriesForConfig(
+	cfg Config, shared *tokenexchange.MultiIssuerTokenValidator, stor storage.Storage,
+) ([]oauthserver.Factory, error) {
+	resolver, err := newSubjectResolver(cfg, stor)
+	if err != nil {
+		return nil, err
+	}
+	return buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg), resolver)
+}
+
 // buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together
 // with the bound ID-JAG factory. Both handlers are always registered with
 // JWT-bearer enabled, each tolerating an empty per-issuer policy map: an
@@ -994,20 +1009,48 @@ func refreshGrantValidatorChain(
 // generic invalid_request. Both ride the same per-issuer JWT-bearer policy,
 // split by JOSE typ (plain assertions to JWTBearerHandler, oauth-id-jag+jwt to
 // IDJAGHandler). explicitGrantClientIDs names the clients whose registered
-// grant_types the ID-JAG handler enforces.
+// grant_types the ID-JAG handler enforces. resolver goes to the ID-JAG factory
+// only.
 func buildJWTBearerFactories(
 	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
-	explicitGrantClientIDs []string,
+	explicitGrantClientIDs []string, resolver subject.Resolver,
 ) ([]oauthserver.Factory, error) {
 	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 	}
-	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs)
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs, resolver)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
 	}
 	return []oauthserver.Factory{jwtBearerFactory, idJAGFactory}, nil
+}
+
+// newSubjectResolver builds the resolver for resolve issuers from the first
+// (sign-in) upstream: its issuer and subject claim are the only upstream_subject
+// values the resolver accepts. It returns a nil interface, not a nil
+// *subjectresolver.Resolver, when no trusted issuer has subject_mode resolve.
+// It logs once, at WARN, when the subject claim is sub on an Okta custom
+// authorization server.
+func newSubjectResolver(cfg Config, store subjectresolver.IdentityStore) (subject.Resolver, error) {
+	if !tokenexchange.HasResolveIssuer(cfg.TrustedIssuers) {
+		return nil, nil
+	}
+	signIn := cfg.signInUpstream()
+	if signIn == nil {
+		return nil, errors.New(
+			"subject_mode resolve needs an OIDC identity provider as the first upstream")
+	}
+	resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
+		signIn.issuer: {Name: ResolveUpstreamName(cfg.Upstreams[0].Name), SubjectClaim: signIn.subjectClaim},
+	}, store)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create subject resolver: %w", err)
+	}
+	if warning, err := subject.ValidateBindingClaim(signIn.issuer, signIn.subjectClaim); err == nil && warning != "" {
+		slog.Warn(warning, "issuer", signIn.issuer, "subject_claim", signIn.subjectClaim)
+	}
+	return resolver, nil
 }
 
 // buildDeviceFlowFactory builds the RFC 8628 device authorization grant

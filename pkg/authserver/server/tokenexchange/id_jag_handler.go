@@ -15,8 +15,8 @@ import (
 	"github.com/ory/x/errorsx"
 
 	"github.com/stacklok/toolhive/pkg/authserver/actor"
-	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
@@ -100,6 +100,12 @@ type IDJAGHandler struct {
 	// (allowed_audiences). Every value of an ID-JAG resource claim must be in
 	// it; an empty set refuses every claim.
 	governedResources []string
+
+	// resolver resolves the subject of a resolve issuer's ID-JAG. It decides
+	// which upstream_subject issuers and claims resolve. Only
+	// IDJAGIssuanceFactory sets it; it is nil for a handler built directly with
+	// newIDJAGIssuanceHandler.
+	resolver subject.Resolver
 
 	// logger receives the draft-departure lines; nil means slog.Default().
 	logger *slog.Logger
@@ -212,7 +218,8 @@ func (*IDJAGHandler) CanSkipClientAuth(ctx context.Context, requester fosite.Acc
 
 // HandleTokenEndpointRequest validates the ID-JAG assertion, its client
 // binding, and per-issuer policy, then prepares a bounded access-token
-// session.
+// session. After the subject-mode gate, a resolve issuer's subject is resolved
+// to a local user.
 func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester fosite.AccessRequester) error {
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
@@ -255,25 +262,22 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err := h.checkClientAudience(ctx, requester, resource); err != nil {
 		return err
 	}
-	if err := h.checkActor(ctx, claims, policy, requester.GetClient().GetID(), resource); err != nil {
+	if err := h.checkActorIssuer(ctx, claims, policy, requester.GetClient().GetID()); err != nil {
 		return err
 	}
-	// Closed until subject resolution is enabled; see delegatedAccessEnabled.
+	// Closed until delegated access is enabled; see delegatedAccessEnabled.
+	// Today resolution and the actor policy, which runs after it, are tested
+	// through idJAGRedemption and redeemer.complete; full-handler tests with
+	// the gate open belong with the change that opens it.
 	if err := checkSubjectModeGate(policy); err != nil {
 		return err
 	}
 	clientID := requester.GetClient().GetID()
-	if err := h.redeemer.complete(ctx, requester, redemption{
-		claims:   claims,
-		resource: resource,
-		// Subject is namespaced by issuer exactly like the plain handler's. The
-		// client, unlike there, is the real authenticated one, so no synthetic
-		// replacement happens.
-		subject:       claimnames.QualifySubject(claims.Issuer, claims.Subject),
-		replayPurpose: idJAGReplayPurpose,
-		replayKey:     claims.JWTID,
-		carryAct:      true,
-	}); err != nil {
+	d, err := h.idJAGRedemption(ctx, claims, policy, requester.GetClient(), resource)
+	if err != nil {
+		return err
+	}
+	if err := h.redeemer.complete(ctx, requester, d); err != nil {
 		return err
 	}
 	h.logDraftDepartures(ctx, claims, policy, clientID)
@@ -305,10 +309,12 @@ func (h *IDJAGHandler) checkIDJAGPolicy(
 	if err != nil {
 		return "", err
 	}
-	// A resolve issuer skips the whole binding check, the per-resource rule
-	// included, and redemption still builds <iss>#<sub>. Only the closed gate
-	// (delegatedAccessEnabled) stops issuance. The change that opens it must
-	// add resolution and a per-resource check here in the same change.
+	// A resolve issuer has no subject bindings, so nothing here narrows the
+	// resource per subject. The resource is bounded by the resource claim
+	// (governed resources) and by checkClientAudience. checkClientAudience does
+	// not narrow a DCR or CIMD client that is not resource-scoped, so such a
+	// client is refused when the subject is resolved, after the gate, in
+	// idJAGRedemption.
 	if policy.SubjectMode == SubjectModeResolve {
 		return resource, nil
 	}
@@ -523,14 +529,26 @@ func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims
 // instead of falling through to fosite's generic invalid_request. The two
 // handlers share the per-issuer policy and split one grant type by assertion
 // typ. explicitGrantClientIDs names the clients that must list the jwt-bearer
-// grant in their registered grant types. See JWTBearerIssuanceFactory for the
-// shared validator's ownership contract.
+// grant in their registered grant types. subjects is required when a trusted
+// issuer has subject_mode resolve: the factory then returns an error if it is
+// nil. The resolver alone decides which upstream_subject issuers and claims
+// resolve, reporting the others with subject.ErrNotConfigured. See
+// JWTBearerIssuanceFactory for the shared validator's ownership contract.
 func IDJAGIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
+	resolver subject.Resolver,
 ) (server.Factory, error) {
+	if resolver == nil && HasResolveIssuer(trustedIssuers) {
+		return nil, errors.New("a subject resolver is required when a trusted issuer has subject_mode resolve")
+	}
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(deps issuanceDeps) (any, error) {
-			return newIDJAGIssuanceHandler(deps, explicitGrantClientIDs, nil)
+			h, err := newIDJAGIssuanceHandler(deps, explicitGrantClientIDs, nil)
+			if err != nil {
+				return nil, err
+			}
+			h.resolver = resolver
+			return h, nil
 		})
 }
 

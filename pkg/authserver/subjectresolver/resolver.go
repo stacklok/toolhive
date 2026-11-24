@@ -84,18 +84,18 @@ func New(providers map[string]Provider, store IdentityStore) (*Resolver, error) 
 	return &Resolver{providers: copied, store: store}, nil
 }
 
-// Resolve returns the local user ID for ref. Callers check Ref.Claim against
-// their own configuration first so they can return a precise error. A claim
-// that is not the provider's subject claim is ErrUnknown here by design, so a
-// value from another claim is never looked up as a stored subject.
+// Resolve returns the local user ID for ref. A claim that is not the
+// provider's subject claim is refused here by design, so a value from another
+// claim is never looked up as a stored subject.
 //
-// It returns subject.ErrUnknown when the issuer or claim is not configured, no
-// provider identity matches, or the identity points at a user that no longer
+// It returns subject.ErrNotConfigured when the issuer has no provider or the
+// claim is not the provider's subject claim, subject.ErrUnknown when no
+// provider identity matches or the identity points at a user that no longer
 // exists, and subject.ErrUnavailable when the store cannot answer.
 func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error) {
 	p, ok := r.providers[ref.Issuer]
 	if !ok || ref.Claim != p.SubjectClaim {
-		return "", subject.ErrUnknown
+		return "", subject.ErrNotConfigured
 	}
 	identity, err := r.store.GetProviderIdentity(ctx, p.Name, ref.Value)
 	if err != nil {

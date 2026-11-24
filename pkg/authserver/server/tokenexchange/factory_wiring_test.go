@@ -20,7 +20,7 @@ func TestJWTBearerGrantFactories_RequireSharedValidator(t *testing.T) {
 		build func() (any, error)
 	}{
 		{"JWTBearerIssuanceFactory", func() (any, error) { return JWTBearerIssuanceFactory(issuers, nil) }},
-		{"IDJAGIssuanceFactory", func() (any, error) { return IDJAGIssuanceFactory(issuers, nil, nil) }},
+		{"IDJAGIssuanceFactory", func() (any, error) { return IDJAGIssuanceFactory(issuers, nil, nil, nil) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

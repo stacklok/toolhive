@@ -18,7 +18,10 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/actor"
 	"github.com/stacklok/toolhive/pkg/authserver/actor/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
+	subjectmocks "github.com/stacklok/toolhive/pkg/authserver/subject/mocks"
 )
 
 const (
@@ -138,21 +141,19 @@ func TestIDJAGActor_IssuerAllowlist(t *testing.T) {
 	tests := []struct {
 		name      string
 		actIssuer string
-		// wantPolicyCalls is 0 when the issuer pre-check must refuse before the
-		// policy is consulted.
-		wantPolicyCalls int
-		want            string
+		want      string
 	}{
-		{"act.iss is the ID-JAG's own iss", idJAGTestIssuer, 1, descSubjectUnknown},
-		{"act.iss is in actor_issuers", actorTestAllowedIssuer, 1, descSubjectUnknown},
-		{"act.iss is not listed", actorTestOtherIssuer, 0, descActorDenied},
+		{"act.iss is the ID-JAG's own iss", idJAGTestIssuer, descSubjectUnknown},
+		{"act.iss is in actor_issuers", actorTestAllowedIssuer, descSubjectUnknown},
+		{"act.iss is not listed", actorTestOtherIssuer, descActorDenied},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			// The policy runs after resolution, which the closed gate precedes,
+			// so the handler never reaches it.
 			policy := mocks.NewMockPolicy(gomock.NewController(t))
-			policy.EXPECT().Evaluate(gomock.Any(), gomock.Any()).Times(tt.wantPolicyCalls).
-				Return(actor.Decision{Allow: true, Reason: actor.ReasonAllowed}, nil)
+			policy.EXPECT().Evaluate(gomock.Any(), gomock.Any()).Times(0)
 			claims := claimsWithAct(map[string]any{"sub": "a", "iss": tt.actIssuer})
 
 			consumer, buf, err := actorRedeem(t, resolvePolicyWithActors(actorTestAllowedIssuer), claims,
@@ -166,6 +167,23 @@ func TestIDJAGActor_IssuerAllowlist(t *testing.T) {
 	}
 }
 
+// actorPolicyFixture is a resolve fixture whose resolver returns resolveTestUser
+// and whose actor policy for the ID-JAG issuer is policy.
+func actorPolicyFixture(t *testing.T, policy actor.Policy) *resolveFixture {
+	t.Helper()
+	resolver := subjectmocks.NewMockResolver(gomock.NewController(t))
+	resolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(resolveTestUser, nil).AnyTimes()
+	f := newResolveFixture(t, resolver)
+	f.h.actorPolicies[idJAGTestIssuer] = policy
+	return f
+}
+
+func actClaims() *ValidatedClaims {
+	claims := resolveClaims(validUpstreamSubject())
+	claims.Extra["act"] = map[string]any{"sub": actorTestSubject, "iss": actorTestAllowedIssuer}
+	return claims
+}
+
 func TestIDJAGActor_Policy(t *testing.T) {
 	t.Parallel()
 
@@ -173,16 +191,23 @@ func TestIDJAGActor_Policy(t *testing.T) {
 		name       string
 		decision   actor.Decision
 		err        error
-		wantErr    string
+		wantStatus int
+		wantCode   string
+		wantDesc   string
 		wantLevel  string
 		wantReason string
 	}{
 		{
 			name: "deny", decision: actor.Decision{Reason: actor.ReasonIssuerNotAllowed},
-			wantErr: descActorDenied, wantLevel: "DEBUG", wantReason: actor.ReasonIssuerNotAllowed,
+			wantStatus: http.StatusBadRequest, wantCode: "access_denied", wantDesc: descActorDenied,
+			wantLevel: "DEBUG", wantReason: actor.ReasonIssuerNotAllowed,
 		},
-		{name: "error", err: errors.New("directory down"), wantLevel: "WARN", wantReason: reasonActorPolicyErr},
-		{name: "allow", decision: actor.Decision{Allow: true, Reason: actor.ReasonAllowed}, wantErr: descSubjectUnknown},
+		{
+			name: "error", err: errors.New("directory down"), wantStatus: http.StatusInternalServerError,
+			wantCode: "server_error", wantDesc: fosite.ErrServerError.WithHint(hintActorCheckFailed).GetDescription(),
+			wantLevel: "WARN", wantReason: reasonActorPolicyErr,
+		},
+		{name: "allow", decision: actor.Decision{Allow: true, Reason: actor.ReasonAllowed}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -194,23 +219,20 @@ func TestIDJAGActor_Policy(t *testing.T) {
 					got = req
 					return tt.decision, tt.err
 				})
-			claims := claimsWithAct(map[string]any{"sub": actorTestSubject, "iss": actorTestAllowedIssuer})
+			f := actorPolicyFixture(t, policy)
 
-			consumer, buf, err := actorRedeem(t, resolvePolicyWithActors(actorTestAllowedIssuer), claims,
-				func(h *IDJAGHandler) { h.actorPolicies[idJAGTestIssuer] = policy })
+			_, err := f.redeem(t, actClaims())
 
-			if tt.err != nil {
-				requireRefusalStatus(t, err, http.StatusInternalServerError, "server_error",
-					fosite.ErrServerError.WithHint(hintActorCheckFailed).GetDescription())
-				assert.Empty(t, consumer.key)
+			if tt.wantCode == "" {
+				require.NoError(t, err)
+				assert.Equal(t, "id-jag-jti", f.consumer.key)
 			} else {
-				requireActorOutcome(t, err, consumer, tt.wantErr)
-			}
-			if tt.wantReason != "" {
-				line := requireActorLog(t, buf, tt.wantLevel, tt.wantReason)
+				requireRefusalStatus(t, err, tt.wantStatus, tt.wantCode, tt.wantDesc)
+				assert.Empty(t, f.consumer.key, "the ID-JAG must stay unused")
+				line := requireActorLog(t, f.log, tt.wantLevel, tt.wantReason)
 				assert.NotContains(t, line, "error=")
 				for _, secret := range []string{
-					idJAGTestSubject, "id-jag-jti", actorTestSubject, actorTestAllowedIssuer, "directory down",
+					idJAGTestSubject, "id-jag-jti", actorTestSubject, actorTestAllowedIssuer, resolveTestUser, "directory down",
 				} {
 					assert.NotContains(t, line, secret)
 				}
@@ -218,10 +240,44 @@ func TestIDJAGActor_Policy(t *testing.T) {
 			assert.Equal(t, idJAGTestIssuer, got.TokenIssuer)
 			assert.Equal(t, idJAGTestClientID, got.ClientID)
 			assert.Equal(t, idJAGTestResource, got.Resource)
-			assert.Equal(t, idJAGTestSubject, got.User, "the policy gets the user's subject, not the actor's")
+			assert.Equal(t, resolveTestUser, got.User, "the policy gets the resolved user, not the ID-JAG subject")
+			assert.NotEqual(t, idJAGTestSubject, got.User)
 			require.NotNil(t, got.Actor)
 			assert.Equal(t, actorTestAllowedIssuer, got.Actor.Issuer)
 			assert.Equal(t, actorTestSubject, got.Actor.Subject)
+		})
+	}
+}
+
+func TestIDJAGActor_PolicyNotCalledWhenResolutionFails(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		upstream map[string]any
+		err      error
+	}{
+		{"unknown subject", validUpstreamSubject(), subject.ErrUnknown},
+		{"foreign upstream_subject", upstreamSubjectClaim("https://other.example.com", resolveTestClaim, "v"),
+			subject.ErrNotConfigured},
+		{"resolver unavailable", validUpstreamSubject(), subject.ErrUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resolver := subjectmocks.NewMockResolver(gomock.NewController(t))
+			resolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return("", tt.err).AnyTimes()
+			policy := mocks.NewMockPolicy(gomock.NewController(t))
+			policy.EXPECT().Evaluate(gomock.Any(), gomock.Any()).Times(0)
+			f := newResolveFixture(t, resolver)
+			f.h.actorPolicies[idJAGTestIssuer] = policy
+			claims := actClaims()
+			claims.Extra[claimnames.UpstreamSubjectKey] = tt.upstream
+
+			_, err := f.redeem(t, claims)
+
+			require.Error(t, err)
+			assert.Empty(t, f.consumer.key, "the ID-JAG must stay unused")
 		})
 	}
 }

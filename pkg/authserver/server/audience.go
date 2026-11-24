@@ -192,10 +192,18 @@ func ValidateClientAudience(resource string, client fosite.Client, match fosite.
 // no resource allowlist: such a client may request nothing. Clients with a
 // resource allowlist, such as SPIFFE clients, are checked against it.
 func ValidateIDJAGClientAudience(resource string, client fosite.Client, match fosite.AudienceMatchingStrategy) error {
-	if _, scoped := client.(ResourceScopedClient); !scoped && registration.DCRIssued(client) {
+	if IsUnscopedDCRClient(client) {
 		return nil
 	}
 	return ValidateClientAudience(resource, client, match)
+}
+
+// IsUnscopedDCRClient reports whether client was registered by DCR or CIMD and
+// has no resource allowlist of its own, so no per-client check narrows the
+// resources it may request.
+func IsUnscopedDCRClient(client fosite.Client) bool {
+	_, scoped := client.(ResourceScopedClient)
+	return !scoped && registration.DCRIssued(client)
 }
 
 // errResourceNotPermitted is the single refusal both the server-level and the

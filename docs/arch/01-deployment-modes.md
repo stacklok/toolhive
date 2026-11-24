@@ -15,7 +15,7 @@ graph LR
         Operator[Operator Mode<br/>thv-operator]
     end
 
-    CLI --> Docker[Docker/Podman<br/>Colima<br/>Rancher Desktop<br/>OrbStack]
+    CLI --> Docker[Docker/Podman<br/>Colima/Rancher/OrbStack<br/>Apple container]
     UI --> Docker
     Operator --> K8s[Kubernetes]
 
@@ -31,7 +31,7 @@ graph LR
 | Feature | Local CLI | Local UI | Kubernetes |
 |---------|-----------|----------|------------|
 | **Binary** | `thv` | `thv` (API server) | `thv-operator` + `thv-proxyrunner` |
-| **Container Runtime** | Docker/Podman/Colima/Rancher/OrbStack | Docker/Podman/Colima/Rancher/OrbStack | Kubernetes |
+| **Container Runtime** | Docker/Podman/Colima/Rancher/OrbStack/Apple container | Docker/Podman/Colima/Rancher/OrbStack/Apple container | Kubernetes |
 | **Process Management** | Detached processes | API-managed | Operator-managed |
 | **State Storage** | Local filesystem | Local filesystem | etcd (K8s API) |
 | **Scaling** | Single machine | Single machine | Cluster-wide |
@@ -45,7 +45,7 @@ graph LR
 graph TB
     User[User] -->|CLI Commands| THV[thv binary]
     THV -->|spawn detached| Proxy[Proxy Process]
-    Proxy -->|Docker API| Runtime[Container Runtime<br/>Docker/Podman/Colima<br/>Rancher Desktop/OrbStack]
+    Proxy -->|Runtime API / CLI| Runtime[Container Runtime<br/>Docker/Podman/Colima<br/>Rancher/OrbStack/Apple container]
     Runtime -->|creates| Container[MCP Server Container]
     Proxy -->|stdin/stdout or HTTP| Container
     Client[MCP Client] -->|HTTP/SSE/Streamable| Proxy
@@ -65,7 +65,7 @@ graph TB
    - Instantiates workloads API (`pkg/workloads/manager.go`)
 
 3. **Workload Manager**:
-   - Detects available container runtime (Podman → Docker → Colima)
+   - Detects available container runtime (Docker/Podman/Colima → Apple container on macOS)
    - Creates container via Runtime API
    - Spawns detached proxy process
 
@@ -83,18 +83,20 @@ graph TB
 
 ### Container Runtime Selection
 
-**Implementation**: `pkg/container/docker/sdk/factory.go` (with per-runtime socket discovery in `pkg/container/docker/sdk/client_unix.go`)
+**Implementation**: `pkg/container/factory.go`, `pkg/container/docker/sdk/factory.go` (socket discovery in `pkg/container/docker/sdk/client_unix.go`), and `pkg/container/apple/`
 
-The CLI automatically detects container runtimes in this order:
+Set `TOOLHIVE_RUNTIME` (`docker`, `apple`, or `kubernetes`) to pin a specific runtime (both container execution and image management honor `TOOLHIVE_RUNTIME` to avoid split-brain across runtimes). Otherwise, ToolHive auto-detects registered runtimes in priority order:
 
-1. **Podman** - Checks for Podman socket at:
+1. **Docker-compatible runtimes** (`Priority: 100`) — checks sockets in this order:
+
+   - **Podman** - Checks for Podman socket at:
    - `$TOOLHIVE_PODMAN_SOCKET` (if set)
    - `/var/run/podman/podman.sock`
    - `$XDG_RUNTIME_DIR/podman/podman.sock`
    - `~/.local/share/containers/podman/machine/podman.sock` (Podman Machine on macOS)
    - `$TMPDIR/podman/*-api.sock` (Podman Machine API on macOS)
 
-2. **Docker** (including Docker Desktop, Rancher Desktop, and OrbStack) - Checks for Docker socket at:
+   - **Docker** (including Docker Desktop, Rancher Desktop, and OrbStack) - Checks for Docker socket at:
    - `$TOOLHIVE_DOCKER_SOCKET` (if set)
    - `/var/run/docker.sock`
    - `~/.docker/run/docker.sock` (Docker Desktop on macOS)
@@ -102,9 +104,16 @@ The CLI automatically detects container runtimes in this order:
    - `~/.rd/docker.sock` (Rancher Desktop on macOS)
    - `~/.orbstack/run/docker.sock` (OrbStack on macOS)
 
-3. **Colima** - Checks for Colima socket at:
-   - `$TOOLHIVE_COLIMA_SOCKET` (if set)
-   - `~/.colima/default/docker.sock`
+   - **Colima** - Checks for Colima socket at:
+     - `$TOOLHIVE_COLIMA_SOCKET` (if set)
+     - `~/.colima/default/docker.sock`
+
+2. **Apple macOS native container** (`Priority: 150`, `darwin` builds only) — passively checks for Apple Silicon (`arm64`), `container` CLI v1.0+ in `PATH`, and a running daemon (`container system status`). Never auto-starts the daemon.
+   - Uses two-phase stdio lifecycle (`container create -i` followed by `container start -a -i`); re-attaching stdio to an already-running container is not supported.
+   - Environment variables (including resolved secrets) are passed via a `0600` temporary `--env-file` deleted immediately after container creation/start rather than `-e` CLI arguments. Multi-line environment variable values containing newlines (`\n` or `\r`) are rejected (unlike Docker's API), so multi-line secrets such as PEM keys should be mounted as files rather than passed as environment variables.
+   - `--isolate-network` requires macOS 26 (Tahoe) or later for custom `--internal` vmnet networks and mounts Squid/Envoy proxy configs via temporary read-only VirtioFS directories. Direct outbound internet egress, the `default` vmnet gateway, and host loopback (`127.0.0.1`) listeners are unreachable from the isolated container, and Squid/Envoy block proxied traffic to all discovered vmnet gateway IPs unless `--allow-docker-gateway` is set. Because `apple/container`'s `--internal` network uses macOS `vmnet` `hostOnly` mode, host services bound to wildcard interfaces (`0.0.0.0` / `::`) remain directly reachable on the internal network's own vmnet gateway IP without going through the proxy; keep local host services bound to `127.0.0.1`.
+   - `--network host` (because Apple containers run inside isolated Linux VMs) and `--privileged` are rejected.
+   - Live hardware integration tests are gated behind the `apple_container_integration` build tag (not executed on Linux CI) and run on Apple Silicon Macs with `container system start` via `task test-integration-apple-container` (macOS 26+ required for network-isolation specs).
 
 ### Detached Process Model
 
@@ -153,7 +162,7 @@ graph TB
     User[User] -->|Web Browser| Studio[ToolHive Studio<br/>Web UI]
     Studio -->|REST API| APIServer[thv serve<br/>API Server]
     APIServer -->|Internal| Workloads[Workloads Manager]
-    Workloads -->|Runtime API| Runtime[Container Runtime<br/>Docker/Podman/Rancher]
+    Workloads -->|Runtime API| Runtime[Container Runtime<br/>Docker/Podman/Rancher/Apple]
     Runtime -->|creates| Container[MCP Server Container]
     Container -->|managed by| Proxy[Proxy Process]
     Client[MCP Client] -->|HTTP| Proxy
@@ -430,6 +439,12 @@ classDiagram
         ...
     }
 
+    class AppleRuntime {
+        +DeployWorkload()
+        +StopWorkload()
+        ...
+    }
+
     class KubernetesRuntime {
         +DeployWorkload()
         +StopWorkload()
@@ -437,11 +452,13 @@ classDiagram
     }
 
     Runtime <|-- DockerRuntime
+    Runtime <|-- AppleRuntime
     Runtime <|-- KubernetesRuntime
 ```
 
 **Implementation files:**
 - Docker: `pkg/container/docker/` (implementation details in Docker engine integration)
+- Apple container: `pkg/container/apple/` (wraps `apple/container` 1.0+ CLI on macOS Apple Silicon)
 - Kubernetes: Operator uses Kubernetes API directly, not the Runtime interface
 
 ### RunConfig Portability

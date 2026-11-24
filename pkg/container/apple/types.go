@@ -169,6 +169,26 @@ type appleContainerNetworkJSON struct {
 	Hostname    string `json:"hostname,omitempty"`
 }
 
+// appleNetworkJSON mirrors the JSON emitted by `container network list --format json`
+// and `container network inspect <name>` across apple/container 1.0+ releases.
+type appleNetworkJSON struct {
+	ID            string                 `json:"id"`
+	State         string                 `json:"state,omitempty"`
+	Config        appleNetworkConfigJSON `json:"config,omitempty"`
+	Configuration appleNetworkConfigJSON `json:"configuration,omitempty"`
+	Status        appleNetworkStatusJSON `json:"status,omitempty"`
+}
+
+type appleNetworkConfigJSON struct {
+	Mode string `json:"mode,omitempty"`
+}
+
+type appleNetworkStatusJSON struct {
+	IPv4Gateway string `json:"ipv4Gateway,omitempty"`
+	IPv4Subnet  string `json:"ipv4Subnet,omitempty"`
+	IPv6Subnet  string `json:"ipv6Subnet,omitempty"`
+}
+
 func parseAppleTimestamp(secs *float64) time.Time {
 	if secs == nil || math.IsNaN(*secs) || math.IsInf(*secs, 0) || *secs <= 0 {
 		return time.Time{}

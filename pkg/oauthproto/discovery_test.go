@@ -731,3 +731,195 @@ func TestBuildDiscoveryHTTPClient_BoundsIdleConnectionPool(t *testing.T) {
 	custom := &http.Client{}
 	assert.Same(t, custom, buildDiscoveryHTTPClient(custom))
 }
+
+func TestFetchAuthorizationServerMetadata_OriginTrailingSlashIssuer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		expectedSuffix string
+		metadataSuffix string
+		wantErr        bool
+	}{
+		{
+			name:           "expected without slash, metadata with trailing slash",
+			expectedSuffix: "",
+			metadataSuffix: "/",
+			wantErr:        false,
+		},
+		{
+			name:           "expected with trailing slash, metadata without slash",
+			expectedSuffix: "/",
+			metadataSuffix: "",
+			wantErr:        false,
+		},
+		{
+			name:           "path issuer without slash, metadata with trailing slash is rejected",
+			expectedSuffix: "/tenant",
+			metadataSuffix: "/tenant/",
+			wantErr:        true,
+		},
+		{
+			name:           "path issuer with trailing slash, metadata without slash is rejected",
+			expectedSuffix: "/tenant/",
+			metadataSuffix: "/tenant",
+			wantErr:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.NotFoundHandler())
+			t.Cleanup(server.Close)
+
+			expectedIssuer := server.URL + tt.expectedSuffix
+			metadataIssuer := server.URL + tt.metadataSuffix
+
+			server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSONMetadata(w, AuthorizationServerMetadata{
+					Issuer:               metadataIssuer,
+					TokenEndpoint:        server.URL + "/token",
+					RegistrationEndpoint: server.URL + "/register",
+				})
+			})
+
+			md, err := FetchAuthorizationServerMetadata(context.Background(), expectedIssuer, server.Client())
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "issuer mismatch")
+				assert.Nil(t, md)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, md)
+			assert.Equal(t, metadataIssuer, md.Issuer)
+
+			mdFromURL, err := FetchAuthorizationServerMetadataFromURL(
+				context.Background(),
+				server.URL+"/.well-known/oauth-authorization-server",
+				expectedIssuer,
+				server.Client(),
+			)
+			require.NoError(t, err)
+			require.NotNil(t, mdFromURL)
+			assert.Equal(t, metadataIssuer, mdFromURL.Issuer)
+		})
+	}
+}
+
+func TestIssuersEqual(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		expected string
+		got      string
+		want     bool
+	}{
+		{
+			name:     "exact match without slash",
+			expected: "https://host.example.com",
+			got:      "https://host.example.com",
+			want:     true,
+		},
+		{
+			name:     "exact match with slash",
+			expected: "https://host.example.com/",
+			got:      "https://host.example.com/",
+			want:     true,
+		},
+		{
+			name:     "trailing slash on got",
+			expected: "https://host.example.com",
+			got:      "https://host.example.com/",
+			want:     true,
+		},
+		{
+			name:     "trailing slash on expected",
+			expected: "https://host.example.com/",
+			got:      "https://host.example.com",
+			want:     true,
+		},
+		{
+			name:     "different host",
+			expected: "https://host.example.com",
+			got:      "https://other.example.com/",
+			want:     false,
+		},
+		{
+			name:     "different scheme",
+			expected: "https://host.example.com",
+			got:      "http://host.example.com/",
+			want:     false,
+		},
+		{
+			name:     "different port",
+			expected: "https://host.example.com:8443",
+			got:      "https://host.example.com/",
+			want:     false,
+		},
+		{
+			name:     "same port with trailing slash",
+			expected: "https://host.example.com:8443",
+			got:      "https://host.example.com:8443/",
+			want:     true,
+		},
+		{
+			name:     "path issuer without slash vs with trailing slash",
+			expected: "https://host.example.com/tenant",
+			got:      "https://host.example.com/tenant/",
+			want:     false,
+		},
+		{
+			name:     "path issuer with trailing slash vs without slash",
+			expected: "https://host.example.com/tenant/",
+			got:      "https://host.example.com/tenant",
+			want:     false,
+		},
+		{
+			name:     "path issuer exact match",
+			expected: "https://host.example.com/tenant",
+			got:      "https://host.example.com/tenant",
+			want:     true,
+		},
+		{
+			name:     "query present on got",
+			expected: "https://host.example.com",
+			got:      "https://host.example.com/?foo=bar",
+			want:     false,
+		},
+		{
+			name:     "empty query marker present on got",
+			expected: "https://host.example.com",
+			got:      "https://host.example.com/?",
+			want:     false,
+		},
+		{
+			name:     "fragment present on got",
+			expected: "https://host.example.com",
+			got:      "https://host.example.com/#frag",
+			want:     false,
+		},
+		{
+			name:     "userinfo present",
+			expected: "https://host.example.com",
+			got:      "https://user@host.example.com/",
+			want:     false,
+		},
+		{
+			name:     "empty string vs slash",
+			expected: "",
+			got:      "/",
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, issuersEqual(tt.expected, tt.got))
+		})
+	}
+}

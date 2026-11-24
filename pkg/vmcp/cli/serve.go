@@ -437,7 +437,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if usage != nil {
 		defer usage.shutdown()
 		agg = usage.observe(agg)
-		usageMiddleware = usage.middleware()
+		usageMiddleware = usage.middleware(optCfg != nil)
 		codeModeCfg = usage.codeModeConfig(codeModeCfg)
 	}
 

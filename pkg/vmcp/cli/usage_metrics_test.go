@@ -21,6 +21,7 @@ import (
 
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -30,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
 func strategy(strategyType string) *authtypes.BackendAuthStrategy {
@@ -462,7 +464,7 @@ func TestUsageMetricsMiddleware_CountsToolCalls(t *testing.T) {
 	require.NoError(t, err)
 	u := &usageMetrics{collector: collector}
 
-	handler := mcp.ParsingMiddleware(u.middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := mcp.ParsingMiddleware(u.middleware(false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})))
 
@@ -478,15 +480,80 @@ func TestUsageMetricsMiddleware_CountsToolCalls(t *testing.T) {
 	assert.Equal(t, int64(1), collector.GetCurrentCount(), "only tools/call is counted")
 }
 
-func TestUsageMetrics_CodeModeConfigOff(t *testing.T) {
-	t.Parallel()
-	assert.Nil(t, (&usageMetrics{}).codeModeConfig(nil), "code mode off stays off")
-}
-
-func TestUsageMetrics_CodeModeToolCallsReported(t *testing.T) {
+//nolint:paralleltest // t.Setenv supplies the anonymous ID and forbids t.Parallel.
+func TestUsageMetricsMiddleware_CountsCodeModeCalls(t *testing.T) {
 	// Not parallel: t.Setenv supplies the anonymous ID, without which a local
 	// client sends nothing.
 	t.Setenv(usagemetrics.EnvVarAnonymousID, "test-anonymous-id")
+
+	call := func(tool, args string) string {
+		return `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tool + `","arguments":` + args + `}}`
+	}
+	callTool := func(args string) string { return call(optimizerdec.CallToolName, args) }
+
+	tests := []struct {
+		name         string
+		optimizer    bool
+		body         string
+		wantCodeMode bool
+	}{
+		{
+			name: "optimizer: call_tool runs a script", optimizer: true, wantCodeMode: true,
+			body: callTool(`{"tool_name":"` + script.ExecuteToolScriptName + `","parameters":{"script":"1"}}`),
+		},
+		{
+			name: "optimizer: differently cased tool_name", optimizer: true, wantCodeMode: true,
+			body: callTool(`{"Tool_Name":"` + script.ExecuteToolScriptName + `","parameters":{}}`),
+		},
+		{
+			name: "optimizer: tool_name nested in parameters", optimizer: true, wantCodeMode: true,
+			body: callTool(`{"parameters":{"tool_name":"` + script.ExecuteToolScriptName + `"}}`),
+		},
+		{
+			name: "optimizer: call_tool runs another tool", optimizer: true,
+			body: callTool(`{"tool_name":"fetch","parameters":{}}`),
+		},
+		{
+			name: "optimizer: undecodable call_tool arguments", optimizer: true,
+			body: callTool(`{"tool_name":7}`),
+		},
+		{
+			name: "no optimizer: call_tool is a backend tool",
+			body: callTool(`{"tool_name":"` + script.ExecuteToolScriptName + `"}`),
+		},
+		{
+			name: "no optimizer: direct script call", wantCodeMode: true,
+			body: call(script.ExecuteToolScriptName, `{"script":"1"}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := reportAfter(t, func(u *usageMetrics) {
+				handler := mcp.ParsingMiddleware(u.middleware(tt.optimizer)(
+					http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusOK)
+					})))
+				req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(tt.body))
+				req.Header.Set("Content-Type", "application/json")
+				handler.ServeHTTP(httptest.NewRecorder(), req)
+			})
+
+			assert.EqualValues(t, 1, report["count"])
+			if tt.wantCodeMode {
+				assert.EqualValues(t, 1, report["code_mode_calls"])
+			} else {
+				assert.NotContains(t, report, "code_mode_calls")
+			}
+		})
+	}
+}
+
+// reportAfter starts usage metrics that report to a local server, runs fn, shuts
+// the metrics down, and returns the final report. The caller sets the anonymous
+// ID.
+func reportAfter(t *testing.T, fn func(*usageMetrics)) map[string]any {
+	t.Helper()
 
 	reports := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -504,24 +571,41 @@ func TestUsageMetrics_CodeModeToolCallsReported(t *testing.T) {
 	u := newUsageMetrics(registry, usageFacts{authMode: usagemetrics.ValueNone},
 		usagemetrics.WithEndpoint(server.URL))
 	require.NotNil(t, u)
-
-	cfg := &codemode.Config{StepLimit: 7}
-	got := u.codeModeConfig(cfg)
-	require.NotNil(t, got)
-	require.NotSame(t, cfg, got, "the caller's config must not be changed")
-	assert.Nil(t, cfg.OnScript)
-	assert.Equal(t, uint64(7), got.StepLimit)
-
-	u.collector.IncrementToolCall() // the execute_tool_script call itself
-	got.OnScript(context.Background(), codemode.ScriptStats{ToolCalls: 3})
-	got.OnScript(context.Background(), codemode.ScriptStats{ToolCalls: 2})
+	fn(u)
 	u.shutdown()
 
 	select {
 	case report := <-reports:
-		assert.EqualValues(t, 1, report["count"], "script tool calls never add to count")
-		assert.EqualValues(t, 5, report["code_mode_tool_calls"])
+		return report
 	default:
-		t.Fatal("shutdown sent no report")
+		require.FailNow(t, "shutdown sent no report")
+		return nil
 	}
+}
+
+func TestUsageMetrics_CodeModeConfigOff(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, (&usageMetrics{}).codeModeConfig(nil), "code mode off stays off")
+}
+
+func TestUsageMetrics_CodeModeToolCallsReported(t *testing.T) {
+	// Not parallel: t.Setenv supplies the anonymous ID, without which a local
+	// client sends nothing.
+	t.Setenv(usagemetrics.EnvVarAnonymousID, "test-anonymous-id")
+
+	report := reportAfter(t, func(u *usageMetrics) {
+		cfg := &codemode.Config{StepLimit: 7}
+		got := u.codeModeConfig(cfg)
+		require.NotNil(t, got)
+		require.NotSame(t, cfg, got, "the caller's config must not be changed")
+		assert.Nil(t, cfg.OnScript)
+		assert.Equal(t, uint64(7), got.StepLimit)
+
+		u.collector.IncrementToolCall() // the execute_tool_script call itself
+		got.OnScript(context.Background(), codemode.ScriptStats{ToolCalls: 3})
+		got.OnScript(context.Background(), codemode.ScriptStats{ToolCalls: 2})
+	})
+
+	assert.EqualValues(t, 1, report["count"], "script tool calls never add to count")
+	assert.EqualValues(t, 5, report["code_mode_tool_calls"])
 }

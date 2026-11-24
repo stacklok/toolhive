@@ -50,6 +50,7 @@
     {
       "description": "Keep toolhive-actions out of the routine group: skills-publish runs with the release job's OIDC signing token, so each bump gets its own PR",
       "groupName": "toolhive-actions",
+      "minimumReleaseAge": "3 days",
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["/^stackloklabs\\/toolhive-actions$/i"]
     },

@@ -240,10 +240,13 @@ signature, not by the publisher's ordering.
 **In CI:** both skills workflows call the `skills-publish` action from
 [StacklokLabs/toolhive-actions](https://github.com/StacklokLabs/toolhive-actions),
 pinned by commit, with a `thv` built from the checkout. The action finds every
-directory under `skills/` with a `SKILL.md`, validates each one (an error stops
-the job before anything is built), builds it once per tag, and with
-`push: 'true'` pushes and signs one tag at a time, so `latest` moves only after
-the release tag is published for every skill. Release pushes
+directory under `skills/` with a `SKILL.md`. A directory without one is
+skipped with a warning annotation rather than failing the job, so a skill whose
+`SKILL.md` is missing or misnamed goes unpublished while the job stays green.
+The action validates each skill it finds (an error stops the job before
+anything is built), builds it once per tag, and with `push: 'true'` pushes and
+signs one tag at a time across all skills, so `latest` moves only after the
+release tag is published for every skill. Release pushes
 (`.github/workflows/skills-publish.yml`, called only from `releaser.yml`) pass
 no signing flags at all, so the ambient rung of the ladder signs them with the
 job's OIDC token. That needs `id-token: write` on both the reusable

@@ -2054,7 +2054,8 @@ tokens issued through token exchange use their own entry type and registry; see
 **Wiring.** Pass `runner.WithAuthorizationDetailsRegistry` to
 `NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`, or set
 `authserver.Config.AuthorizationDetailsRegistry` before `authserver.New`.
-Setting a registry while token exchange is disabled is a startup error.
+Setting a registry while token exchange is disabled is a startup error
+(`authserver.ErrAuthorizationDetailsRegistryUnreachable`).
 
 ```go
 registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{

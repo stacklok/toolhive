@@ -2324,7 +2324,7 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
 		return err
 	}
-	if err := c.validateAuthorizationDetailsRequiresTokenExchange(); err != nil {
+	if err := c.validateAuthorizationDetailsRegistryReachable(); err != nil {
 		return err
 	}
 	if err := c.validateSPIFFEAssociationsRequireTokenExchange(); err != nil {
@@ -2546,12 +2546,23 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 	return nil
 }
 
-// validateAuthorizationDetailsRequiresTokenExchange rejects a registry combined
-// with a disabled token-exchange grant: authorization_details is only handled
-// on token exchange, so the registry could never be reached.
-func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
-	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+// ErrAuthorizationDetailsRegistryUnreachable is returned when an authorization
+// details registry is configured but no grant that handles it is enabled.
+var ErrAuthorizationDetailsRegistryUnreachable = errors.New(
+	"authorization details registry requires token exchange to be enabled")
+
+// AuthorizationDetailsRegistryReachable reports whether an authorization
+// details registry can be reached: authorization_details is only handled on
+// token exchange, so the registry is reachable only when that grant is enabled.
+func AuthorizationDetailsRegistryReachable(tokenExchangeEnabled bool) bool {
+	return tokenExchangeEnabled
+}
+
+// validateAuthorizationDetailsRegistryReachable rejects a registry that no
+// enabled grant could ever reach.
+func (c *Config) validateAuthorizationDetailsRegistryReachable() error {
+	if c.AuthorizationDetailsRegistry != nil && !AuthorizationDetailsRegistryReachable(!c.DisableTokenExchange) {
+		return ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
 }

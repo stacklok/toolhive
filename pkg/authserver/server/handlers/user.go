@@ -15,15 +15,42 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
+// ErrUpstreamCannotCreateUsers is returned by ResolveUser when the identity has no
+// link yet and the upstream is not the one allowed to create users (see
+// WithCreateOnlyFor).
+var ErrUpstreamCannotCreateUsers = errors.New("upstream is not allowed to create users")
+
 // UserResolver handles finding or creating users based on provider identity.
 // It manages the mapping between upstream provider subjects and internal user IDs.
 type UserResolver struct {
 	storage storage.UserStorage
+	// createOnlyFor, when set, is the only provider whose identities may create users.
+	createOnlyFor string
+}
+
+// ResolverOption configures a UserResolver.
+type ResolverOption func(*UserResolver)
+
+// WithCreateOnlyFor restricts user and identity-link creation to providerID.
+// Looking up an existing link works for every provider, so a later upstream whose
+// identity is already linked still resolves to its user. For any other provider
+// with no link, ResolveUser returns ErrUpstreamCannotCreateUsers and writes
+// nothing. This keeps one person from getting a second user through a later
+// upstream. Without the option any provider may create users.
+//
+// The resolver does not know the order of the login chain; the caller names the
+// provider that establishes users.
+func WithCreateOnlyFor(providerID string) ResolverOption {
+	return func(r *UserResolver) { r.createOnlyFor = providerID }
 }
 
 // NewUserResolver creates a new UserResolver with the given storage.
-func NewUserResolver(stor storage.UserStorage) *UserResolver {
-	return &UserResolver{storage: stor}
+func NewUserResolver(stor storage.UserStorage, opts ...ResolverOption) *UserResolver {
+	r := &UserResolver{storage: stor}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // ResolveUser finds an existing user or creates a new one for the provider identity.
@@ -32,7 +59,8 @@ func NewUserResolver(stor storage.UserStorage) *UserResolver {
 // The resolution process:
 //  1. Look up existing identity by (providerID, providerSubject)
 //  2. If found, return the linked user
-//  3. If not found, create a new user and link the identity
+//  3. If not found, create a new user and link the identity (only for the provider
+//     named by WithCreateOnlyFor, when set)
 func (r *UserResolver) ResolveUser(
 	ctx context.Context,
 	providerID string,
@@ -51,7 +79,11 @@ func (r *UserResolver) ResolveUser(
 		if !errors.Is(err, storage.ErrNotFound) {
 			return nil, fmt.Errorf("failed to lookup provider identity: %w", err)
 		}
-		// No existing identity — create new user and link
+		// No existing identity — create new user and link, if this provider may.
+		if r.createOnlyFor != "" && providerID != r.createOnlyFor {
+			return nil, fmt.Errorf("%w: %q (users are created through %q)",
+				ErrUpstreamCannotCreateUsers, providerID, r.createOnlyFor)
+		}
 		return r.createUserWithIdentity(ctx, providerID, providerSubject)
 	}
 

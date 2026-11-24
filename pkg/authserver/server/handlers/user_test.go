@@ -421,3 +421,49 @@ func TestUserResolver_CreateUserWithIdentity_LinkFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestUserResolver_WithCreateOnlyFor(t *testing.T) {
+	t.Parallel()
+
+	const subject = "subject-1"
+
+	tests := []struct {
+		name     string
+		provider string
+		// linked is whether an identity link already exists for (provider, subject).
+		linked bool
+		// wantErr is the sentinel the call must return; nil means success.
+		wantErr   error
+		wantUsers int
+	}{
+		{name: "first provider with no link creates the user", provider: "first", wantUsers: 1},
+		{name: "first provider with a link resolves it", provider: "first", linked: true, wantUsers: 1},
+		{name: "later provider with a link resolves it", provider: "later", linked: true, wantUsers: 1},
+		{name: "later provider with no link is refused", provider: "later", wantErr: ErrUpstreamCannotCreateUsers},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { require.NoError(t, stor.Close()) })
+			ctx := context.Background()
+			if tt.linked {
+				// Seed a user and link through an unrestricted resolver.
+				_, err := NewUserResolver(stor).ResolveUser(ctx, tt.provider, subject)
+				require.NoError(t, err)
+			}
+
+			user, err := NewUserResolver(stor, WithCreateOnlyFor("first")).ResolveUser(ctx, tt.provider, subject)
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				require.Nil(t, user)
+			} else {
+				require.NoError(t, err)
+				require.NotEmpty(t, user.ID)
+			}
+			require.Equal(t, tt.wantUsers, stor.Stats().Users, "a refused call must create no user")
+			require.Equal(t, tt.wantUsers, stor.Stats().ProviderIdentities, "a refused call must create no link")
+		})
+	}
+}

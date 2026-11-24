@@ -2067,6 +2067,24 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 })
 ```
 
+**MCP call type.** `pkg/mcp/toolcalldetails` defines
+`https://toolhive.dev/mcp_tool_call`, which is meant to narrow an access token
+to one MCP call: a tool call (`server`, `tool`, `arguments_sha256`,
+`operation_id`) or a list call (`server`, `method`). Nothing registers it by default; an embedder
+adds it with `toolcalldetails.Register` to the types passed to
+`authorizationdetails.New`. It is registered for token exchange and JWT-bearer.
+On token exchange its hook refuses any request whose `requested_token_type` is
+not the ID-JAG type, with `invalid_request` and `id_jag_required`. Requests for
+an ID-JAG still refuse the parameter, and JWT-bearer redemption still ignores
+the registry, so registering the type does not narrow any token yet. The hook
+accepts exactly one entry of its type, with no other members, and grants it
+unchanged; it does not see entries of other registered types. Otherwise it
+refuses with `invalid_authorization_details` and one of
+`single_entry_required`, `malformed_entry`, `invalid_arguments_hash` or
+`invalid_method`. The authorization server checks only the entry's shape; the
+receiver of the token enforces the call, using `toolcalldetails.ParseEntry` for
+the same shape check.
+
 ## Refresh tokens through token exchange
 
 A configured confidential client can exchange a user's login access token for

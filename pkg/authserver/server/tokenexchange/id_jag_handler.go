@@ -570,15 +570,16 @@ func IDJAGIssuanceFactory(
 }
 
 // checkClientAccessTokenLifespans refuses an empty client ID and a lifespan
-// outside (0, server.MaxAccessTokenLifespan], so a zero never means unlimited.
+// outside [server.MinClientAccessTokenLifespan, server.MaxAccessTokenLifespan],
+// so a zero never means unlimited and a token is never dead on arrival.
 func checkClientAccessTokenLifespans(lifespans map[string]time.Duration) error {
 	for id, lifespan := range lifespans {
 		if id == "" {
 			return errors.New("client access token lifespans must not contain an empty client ID")
 		}
-		if lifespan <= 0 || lifespan > server.MaxAccessTokenLifespan {
-			return fmt.Errorf("client %q: access token lifespan must be greater than 0 and at most %v, got %v",
-				id, server.MaxAccessTokenLifespan, lifespan)
+		if lifespan < server.MinClientAccessTokenLifespan || lifespan > server.MaxAccessTokenLifespan {
+			return fmt.Errorf("client %q: access token lifespan must be at least %v and at most %v, got %v",
+				id, server.MinClientAccessTokenLifespan, server.MaxAccessTokenLifespan, lifespan)
 		}
 	}
 	return nil

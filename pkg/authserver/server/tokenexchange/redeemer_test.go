@@ -370,9 +370,7 @@ func TestRedeemer_ClientAccessTokenLifespan(t *testing.T) {
 		{
 			// A pin, not a probe: the plain handler has no client lifespans to
 			// consult, so its redemption leaves clientLifespan zero and keeps
-			// the server lifespan. The ID-JAG handler built from the same deps
-			// has a lifespan for the client_id the plain token carries, so a
-			// change that routed plain redemption through it would fail here.
+			// the server lifespan.
 			name:           "plain grant ignores it",
 			plain:          true,
 			assertionLeft:  5 * time.Minute,
@@ -451,14 +449,15 @@ func TestRedeemer_DelegatedAccessLifetime(t *testing.T) {
 				clientLifespan:  tt.clientLifespan,
 			}
 
-			got, err := r.assertionBoundedLifetime(context.Background(), d)
+			got, err := r.assertionBoundedExpiry(context.Background(), d)
 
 			if tt.wantErr {
 				requireRefusal(t, err, "invalid_grant", "invalid_assertion: The JWT bearer assertion has expired.")
 				return
 			}
 			require.NoError(t, err)
-			assert.InDelta(t, tt.want.Seconds(), got.Seconds(), 5)
+			assert.InDelta(t, tt.want.Seconds(), time.Until(got).Seconds(), 5)
+			assert.False(t, got.After(d.claims.Expiry), "the token must not outlive the assertion")
 		})
 	}
 }
@@ -489,10 +488,31 @@ func TestNewRedemptionSession_ActIssuer(t *testing.T) {
 			before := maps.Clone(tt.act.(map[string]any))
 
 			sess := newRedemptionSession(
-				redemption{claims: claims, carryAct: true, delegatedAccess: tt.delegatedAccess}, idJAGTestClientID, time.Minute)
+				redemption{claims: claims, carryAct: true, delegatedAccess: tt.delegatedAccess}, idJAGTestClientID,
+				time.Now().Add(time.Minute))
 
 			assert.Equal(t, tt.want, sess.JWTClaims.Extra["act"])
 			assert.Equal(t, before, claims.Extra["act"], "the assertion's claims must not change")
 		})
+	}
+}
+
+// TestRedeemer_ExpiryIsTheAssertionExpiry pins that when the assertion is the
+// tightest bound, the issued expiry is the assertion's exp itself, not a
+// remaining duration re-added to a later clock reading.
+func TestRedeemer_ExpiryIsTheAssertionExpiry(t *testing.T) {
+	t.Parallel()
+
+	deps := testIssuanceDeps(&testJWTBearerAssertionValidator{}, redemptionIssuers(t))
+	deps.config.AccessTokenLifespan = time.Hour
+	r := newRedeemer(deps)
+	expiry := time.Now().Add(30 * time.Second).Truncate(time.Second)
+	for _, marked := range []bool{false, true} {
+		d := redemption{claims: &ValidatedClaims{Expiry: expiry}, delegatedAccess: marked, clientLifespan: time.Minute}
+
+		got, err := r.assertionBoundedExpiry(context.Background(), d)
+
+		require.NoError(t, err)
+		assert.True(t, got.Equal(expiry), "marked=%v: got %v, want the assertion exp %v", marked, got, expiry)
 	}
 }

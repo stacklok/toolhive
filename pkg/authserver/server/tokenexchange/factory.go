@@ -4,6 +4,7 @@
 package tokenexchange
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -67,7 +68,8 @@ func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) F
 // gets that lifespan in place of the server's; one without an entry keeps the
 // server's. Either way the token still never outlives its ID-JAG, and a marked
 // token stays under the delegated-access marker cap. Every value must be in
-// (0, server.MaxAccessTokenLifespan]. Only IDJAGIssuanceFactory applies it.
+// [server.MinClientAccessTokenLifespan, server.MaxAccessTokenLifespan]. Only
+// IDJAGIssuanceFactory applies it.
 // The map is copied.
 func WithClientAccessTokenLifespans(lifespans map[string]time.Duration) FactoryOption {
 	cloned := maps.Clone(lifespans)
@@ -155,7 +157,7 @@ func FactoryWithSharedTrustedIssuerValidator(
 	}
 	resolved := resolveFactoryOptions(options)
 	if len(resolved.clientAccessTokenLifespans) > 0 {
-		return nil, fmt.Errorf("tokenexchange: per-client access token lifespans apply to ID-JAG redemption only")
+		return nil, errors.New("tokenexchange: per-client access token lifespans apply to ID-JAG redemption only")
 	}
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
 		selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)

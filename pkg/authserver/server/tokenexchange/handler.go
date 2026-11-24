@@ -378,7 +378,10 @@ func (h *Handler) PopulateTokenEndpointResponse(
 // such as min(subject_remaining, delegation) or a redeeming client's own
 // lifespan, even one longer than lifespan: fosite takes both exp and
 // expires_in from the session expiry whenever it is set. lifespan applies only
-// to a session with no expiry.
+// to a session with no expiry. That is fosite behaviour, not ours: a fosite
+// upgrade that took exp from lifespan instead would quietly cap a longer
+// client lifespan at the server lifespan. The "client lifespan longer than the
+// server lifespan" case in TestRedeemer_ClientAccessTokenLifespan guards it.
 //
 // If the session's bound has already elapsed since HandleTokenEndpointRequest
 // computed it, the call fails closed with the error elapsed returns

@@ -40,8 +40,10 @@ func TestJWTBearerGrantFactories_RequireSharedValidator(t *testing.T) {
 
 // TestFactoryOptions_Refusals pins that a factory refuses an option it does
 // not apply, and that IDJAGIssuanceFactory refuses a client lifespan outside
-// (0, MaxAccessTokenLifespan], so a zero never means unlimited. The option checks run before the shared-validator check,
-// so no validator is needed here.
+// [MinClientAccessTokenLifespan, MaxAccessTokenLifespan]. No case sets
+// trusted issuers, so no shared validator is needed: in
+// FactoryWithSharedTrustedIssuerValidator the shared-validator check runs
+// before the lifespan refusal.
 func TestFactoryOptions_Refusals(t *testing.T) {
 	t.Parallel()
 
@@ -77,8 +79,9 @@ func TestFactoryOptions_Refusals(t *testing.T) {
 			build:   idJAG(WithAuthorizationDetailsRegistry(registry)),
 			wantErr: "ID-JAG redemption does not apply an authorization details registry",
 		},
-		{name: "ID-JAG refuses a zero lifespan", build: idJAG(lifespans("client", 0)), wantErr: "must be greater than 0"},
-		{name: "ID-JAG refuses a negative lifespan", build: idJAG(lifespans("client", -time.Second)), wantErr: "must be greater than 0"},
+		{name: "ID-JAG refuses a zero lifespan", build: idJAG(lifespans("client", 0)), wantErr: "must be at least 2s"},
+		{name: "ID-JAG refuses a negative lifespan", build: idJAG(lifespans("client", -time.Second)), wantErr: "must be at least 2s"},
+		{name: "ID-JAG refuses a lifespan just under the floor", build: idJAG(lifespans("client", 2*time.Second-time.Millisecond)), wantErr: "must be at least 2s"},
 		{name: "ID-JAG refuses a lifespan one second above the maximum", build: idJAG(lifespans("client", 24*time.Hour+time.Second)), wantErr: "at most 24h0m0s"},
 		{name: "ID-JAG refuses an empty client ID", build: idJAG(lifespans("", time.Minute)), wantErr: "empty client ID"},
 	}

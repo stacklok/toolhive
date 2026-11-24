@@ -256,10 +256,12 @@ func TestIDJAGResolve_Found(t *testing.T) {
 	assert.Equal(t, fosite.Arguments{idJAGTestResource}, f.req.GetGrantedAudience())
 }
 
-// TestIDJAGResolve_ClientLifespanUnderMarkerCap pins that a marked (resolved)
-// redemption carries the client's lifespan and the marker cap still wins. The
-// lifetime order itself is covered by TestRedeemer_DelegatedAccessLifetime.
-func TestIDJAGResolve_ClientLifespanUnderMarkerCap(t *testing.T) {
+// TestIDJAGResolve_FillsClientLifespan is a wiring test: the resolve path
+// copies the client's lifespan into the redemption. The clientLifespan check
+// is the assertion that depends on it; the expiry check only confirms the
+// session is still capped, and would pass without the lifespan. The lifetime
+// order is covered by TestRedeemer_DelegatedAccessLifetime.
+func TestIDJAGResolve_FillsClientLifespan(t *testing.T) {
 	t.Parallel()
 
 	mock := mocks.NewMockResolver(gomock.NewController(t))

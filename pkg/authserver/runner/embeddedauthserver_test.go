@@ -4235,7 +4235,8 @@ func TestResolveDelegateClients_AccessTokenLifespan(t *testing.T) {
 	}{
 		{name: "omitted keeps the server lifespan", want: 0},
 		{name: "parsed", lifespan: "30s", want: 30 * time.Second},
-		{name: "zero is refused", lifespan: "0s", wantErr: "access_token_lifespan must be greater than 0"},
+		{name: "zero is refused", lifespan: "0s", wantErr: "access_token_lifespan must be at least 2s"},
+		{name: "sub-second is refused", lifespan: "100ms", wantErr: "access_token_lifespan must be at least 2s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

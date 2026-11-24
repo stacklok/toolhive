@@ -943,8 +943,8 @@ func (s *AuthenticationDelegateClientIDJAGTarget) SetResources(val []string) {
 type AuthenticationDelegateClientRunConfig struct {
 	// AccessTokenLifespan is the lifetime of the access tokens this client
 	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
-	// server's access_token_lifespan applies. When set it must be greater than
-	// zero and at most 24h. It is an upper bound: a token never outlives the
+	// server's access_token_lifespan applies. When set it must be at least 2s
+	// and at most 24h. It is an upper bound: a token never outlives the
 	// assertion it was redeemed from, and a token that carries the
 	// delegated-access marker is capped further. Other grants ignore it.
 	AccessTokenLifespan OptString `json:"access_token_lifespan"`

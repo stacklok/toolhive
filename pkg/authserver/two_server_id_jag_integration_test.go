@@ -263,7 +263,12 @@ func TestIDJAGRedemptionUsesClientAccessTokenLifespan(t *testing.T) {
 	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
 	exp, ok := access["exp"].(float64)
 	require.True(t, ok, "exp must be a number")
-	assert.WithinDuration(t, time.Now().Add(lifespan), time.Unix(int64(exp), 0), 3*time.Second)
+	iat, ok := access["iat"].(float64)
+	require.True(t, ok, "iat must be a number")
+	// exp - iat takes the runner's speed out of it: both are signed in whole
+	// seconds from the same session, so they differ by the lifespan, give or
+	// take the second boundary between them.
+	assert.InDelta(t, lifespan.Seconds(), exp-iat, 1)
 }
 
 // TestIDJAGRedemptionRefusesResourceTheClaimDoesNotCover proves AS-2 refuses an

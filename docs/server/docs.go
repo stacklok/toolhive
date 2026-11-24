@@ -248,7 +248,7 @@ const docTemplate = `{
             "authserver.DelegateClientRunConfig": {
                 "properties": {
                     "access_token_lifespan": {
-                        "description": "AccessTokenLifespan is the lifetime of the access tokens this client\nobtains by redeeming an ID-JAG, as a Go duration string. If omitted, the\nserver's access_token_lifespan applies. When set it must be greater than\nzero and at most 24h. It is an upper bound: a token never outlives the\nassertion it was redeemed from, and a token that carries the\ndelegated-access marker is capped further. Other grants ignore it.",
+                        "description": "AccessTokenLifespan is the lifetime of the access tokens this client\nobtains by redeeming an ID-JAG, as a Go duration string. If omitted, the\nserver's access_token_lifespan applies. When set it must be at least 2s\nand at most 24h. It is an upper bound: a token never outlives the\nassertion it was redeemed from, and a token that carries the\ndelegated-access marker is capped further. Other grants ignore it.",
                         "type": "string"
                     },
                     "audiences": {

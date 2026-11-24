@@ -261,21 +261,13 @@ type ConfigOptions struct {
 	// request-token claims are used.
 	//
 	// Any claim that access token omits falls back to the SAME provider's id_token,
-	// apart from the token-describing claims and `sub` named in
-	// idTokenClaimsNeverSupplemented. Providers routinely split what they assert
-	// across the two tokens — `email` in the id_token only, and group membership in
-	// the id_token only, are both common — so this is what makes `principal has
-	// claim_email` and `principal in THVGroup::"..."` mean "this upstream asserted
-	// it" rather than "this upstream asserted it in one particular token".
-	//
-	// Precedence is fill-only: a claim the access token asserts is used verbatim and
-	// is never overwritten or extended, so an access token carrying a PARTIAL
-	// `groups` list keeps exactly that list and the id_token's fuller list is not
-	// unioned in. See resolveClaims for why that is the safe direction.
-	//
-	// `scope`/`scp` are the exception: they assert the authority the presented access
-	// token carries, not a fact about the user, so they are read from that token or
-	// not at all.
+	// apart from those named in idTokenClaimsNeverSupplemented (token-describing
+	// claims, the delegated grant such as `scope`/`scp`, and `sub`). Providers
+	// routinely split what they assert across the two tokens, so this is what makes
+	// `principal has claim_email` and `principal in THVGroup::"..."` mean "this
+	// upstream asserted it" rather than "this upstream asserted it in one particular
+	// token". Precedence is fill-only: a claim the access token asserts is never
+	// overwritten or extended. See resolveClaims for the rationale and its limits.
 	//
 	// The sole nil-map exception uses only request-token claims because no upstream
 	// provider credential exists, never as a substitute for another provider's
@@ -659,18 +651,12 @@ func (a *Authorizer) IsAuthorized(
 //
 // # Why the supplement is a deny-list, and why group and role claims are admitted
 //
-// This used to be an allow-list of {`name`, `email`}, on the stated reasoning that
-// authorization-bearing claims (`groups`, `roles`, `scope`) were "left alone for
-// now" because admitting them would newly GRANT requests that denied, and so
-// belonged in its own change rather than riding along with a deny-all fix. That
-// change is #6049, and this is it: `groups` and `roles` are now admitted, `scope`
-// deliberately still is not (see idTokenClaimsNeverSupplemented for that split).
-//
-// The shortest form of the argument is parity. The code above admits EVERY claim of
-// the upstream access token with no allow-list at all. An allow-list applied only
-// to the id_token was therefore an asymmetry between two tokens at the same trust
-// level from the same provider, not a trust boundary being held. Inverting to a
-// deny-list restores parity; it does not widen a boundary. Three further points:
+// The id_token may supply any claim except those in idTokenClaimsNeverSupplemented,
+// so `groups` and `roles` are admitted and `scope` is not. The shortest form of
+// the argument is parity: every claim of the upstream access token is admitted
+// with no allow-list at all, so an allow-list applied only to the id_token would
+// be an asymmetry between two tokens at the same trust level from the same
+// provider, not a trust boundary being held. Three further points:
 //
 //   - Provenance does not distinguish the two tokens. They are projections of one
 //     credential bundle from one authentication event at one provider (see above),
@@ -684,32 +670,38 @@ func (a *Authorizer) IsAuthorized(
 //     Auth0/Okta put it under URI-style names such as
 //     "https://example.com/groups". No fixed list can enumerate names ToolHive
 //     does not choose, and every name missing from one denies silently — the
-//     defect shape of both #5916 and #6049, and the reason `hd` and per-tenant
-//     organization claims would have come back as a third round. Inverting the
-//     rule names instead the claims that must NEVER be read
-//     (idTokenClaimsNeverSupplemented, which is closed and spec-derived) and
+//     defect shape of both #5916 and #6049. The rule instead names the claims
+//     that must NEVER be read (idTokenClaimsNeverSupplemented, spec-derived) and
 //     admits the rest.
 //   - Parity is between the two tokens' claims ABOUT THE USER, which is why the
-//     deny-list is not empty. A claim that asserts what a token may DO rather than
-//     who its bearer is — `scope`/`scp` — is not symmetric between them, because
-//     only the presented access token's authority is at issue. That is a different
-//     argument from "an allow-list can't work", and it survives it.
+//     deny-list is not empty; idTokenClaimsNeverSupplemented explains each entry,
+//     including why a scope is not symmetric between the tokens.
 //
 // # Precedence is fill-only, deliberately not union
 //
 // A claim the access token asserts is used verbatim and is never overwritten or
 // extended, set-valued claims included. So a provider asserting a PARTIAL `groups`
 // list in its access token and the full list in its id_token keeps the partial
-// one. That is intentional and is the safe direction: per-application claim
-// filtering (Okta group filters, Entra group-claim configuration) is applied when
-// the token is minted for a given audience, so the access token's list is the
-// provider's answer to "which of this user's groups are relevant to this resource
-// server". Unioning in the id_token's list — minted for ToolHive's own auth-server
-// client — would restore groups the provider chose to withhold from this audience,
-// widening authority beyond what it asserted for it. Fill-only can only supply a
-// claim the provider left entirely absent here; it can never contradict or extend
-// one. A deployment wanting the fuller list should have the upstream assert it in
-// the access token.
+// one. That is intentional: per-application claim filtering (Okta group filters,
+// Entra group-claim configuration) is applied when the token is minted for a
+// given audience, so the access token's list is the provider's answer to "which
+// of this user's groups are relevant to this resource server". Unioning in the
+// id_token's list — minted for ToolHive's own auth-server client — would restore
+// groups the provider chose to withhold from this audience. A deployment wanting
+// the fuller list should have the upstream assert it in the access token.
+//
+// Fill-only does not contradict or extend a claim the access token asserts, but
+// it does supply one the access token leaves out, and that has two consequences:
+//
+//   - Default group selection takes the first of defaultGroupClaimNames present,
+//     so filling one default name could hide another the access token asserted.
+//     defaultGroupClaimsToWithhold prevents that.
+//   - When a per-audience filter matches none of the user's groups, providers
+//     typically omit the claim rather than emit an empty list, and the id_token's
+//     list is then filled in. Fill-only therefore does not preserve audience
+//     filtering that yields an empty set. A deployment relying on such a filter
+//     to withhold group membership from this resource server should have the
+//     upstream emit an empty claim instead, or keep groups out of the id_token.
 //
 // A claim absent from both tokens stays absent, so `has`-guarded policies still
 // fail closed.
@@ -721,9 +713,8 @@ func (a *Authorizer) IsAuthorized(
 // rejecting it once expired would flip a policy from permit to deny mid-session.
 // See Identity.UpstreamIDTokens for that contract and its two consumers.
 //
-// One consequence of that is now load-bearing rather than incidental. For a
-// provider that asserts groups only in its id_token, group membership is a
-// login-time fact: upstream access tokens are refreshed, so groups read from them
+// For a provider that asserts groups only in its id_token, group membership is
+// therefore a login-time fact: upstream access tokens are refreshed, so groups read from them
 // track the provider, whereas a stored id_token is replaced only when a refresh
 // rotates one, so a group revoked upstream can keep granting until the ToolHive
 // session ends. Enforcing `exp` is not the remedy — it would flip permit to deny
@@ -777,6 +768,12 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, stri
 		// Policies that reference upstream-only claims (groups, hd, custom
 		// namespaced claims) see those attributes as absent on this branch and
 		// must be authored defensively (`principal has claim_groups && ...`).
+		//
+		// Unlike the JWT path below, this branch does not read the provider's
+		// stored id_token, deliberately: this fallback evaluates the request
+		// token's claims under their own label, and mixing id_token claims in
+		// would give one claim set two trust roots under a label that names
+		// only one.
 		if !looksLikeJWT(upstreamToken) {
 			// The Warn shares claimKeyLog with logClaimKeys below so a busy
 			// Google/GitHub deployment does not emit one line per tool call.

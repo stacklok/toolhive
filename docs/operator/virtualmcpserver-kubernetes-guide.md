@@ -659,10 +659,10 @@ token does **not** carry falls back to **that same provider's `id_token`**
 either way, since both tokens come from one login at one provider: `principal has
 claim_email` means "this upstream asserted an email", and `principal in
 THVGroup::"platform-eng"` means "this upstream put the user in that group". When a
-fallback happens the proxy logs, once per 30s:
+fallback happens the proxy logs, at debug level and at most once per 30s:
 
 ```
-WARN upstream access token omits claims the upstream ID token asserts; using the
+DEBUG upstream access token omits claims the upstream ID token asserts; using the
      ID token's values for Cedar evaluation provider=okta claims="[email groups]"
 ```
 
@@ -678,11 +678,13 @@ token carries:
 
 * Claims that describe the `id_token` itself rather than the user — `iss`, `aud`,
   `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
-  `sid`, `client_id`. That `id_token`'s audience is ToolHive's own auth-server
+  `sid`, `client_id`, and the token-type and token-binding claims `typ`,
+  `token_use`, `uti`, `rh`, `cnf`. That `id_token`'s audience is ToolHive's own auth-server
   client, so a policy gating on the resource-server `aud`, on token lifetime, or
   on the requesting `client_id` would otherwise read a fact about a different
   token.
-* **`scope` and `scp`**, the delegated grant. A group is a fact about the *user*,
+* **`scope` and `scp`**, the delegated grant, along with the RFC 8693
+  delegation claims `act` and `may_act`. A group is a fact about the *user*,
   which either token can report; a scope is the authority *a particular token*
   carries, and the only authority at issue is the access token's. Where a provider
   emits `scope` in an `id_token` at all (it is not a standard `id_token` claim) it
@@ -704,7 +706,23 @@ resource server", and unioning in a list minted for a different audience would
 restore groups the provider chose to withhold. If policies need the fuller list,
 configure the upstream to assert it in the access token.
 
-> ### ⚠️ Group revocation latency is session-scoped for `id_token`-sourced claims
+Fill-only has two consequences worth knowing:
+
+* **Default group selection stays with the access token.** Without
+  `groupClaimName`, ToolHive uses the first of `groups`, `roles` and
+  `cognito:groups` present. If the access token asserts any of those, the
+  `id_token` does not fill the others, so an `id_token`-only `groups` cannot hide
+  the access token's `roles`. A claim you name in `groupClaimName` or
+  `roleClaimName` is still filled from the `id_token`.
+* **An empty per-audience filter is not preserved.** When a group filter matches
+  none of the user's groups, providers typically omit the claim from the access
+  token rather than emit an empty list, and the `id_token`'s list is then filled
+  in. If you rely on such a filter to withhold group membership from this
+  resource server, have the upstream emit an empty claim, or keep groups out of
+  the `id_token`.
+
+> **Warning**: group revocation latency is session-scoped for `id_token`-sourced
+> claims.
 >
 > **Read this if your provider asserts groups in the `id_token` only.** Where a
 > claim comes from the `id_token`, policies evaluate it as a **login-time fact**,
@@ -726,13 +744,19 @@ configure the upstream to assert it in the access token.
 > **What to do**: if your authorization model needs group revocation to propagate
 > faster than the session, either have the upstream assert groups in its **access
 > token** (which restores refresh-rate propagation), or shorten
-> `refreshTokenLifespan` to bound the window. Deployments whose groups already
-> come from the access token are unaffected.
->
-> Note this is not a regression: before ToolHive read the `id_token`, these
-> deployments had an empty group set and denied *every* request, so the change is
-> broken → works-with-login-time-groups. But the revocation window is new
-> information, and it is wider than the access-token path's.
+> `refreshTokenLifespan` to bound the window. Groups the access token asserts
+> keep refresh-rate propagation.
+
+What reading the `id_token` changes depends on where your provider puts claims:
+
+* **Groups and roles in the access token**: group extraction is unchanged. Other
+  claims the access token omits (`hd`, `email_verified`, `acr`, `amr`, custom
+  claims) can now be filled from the `id_token`.
+* **Groups or roles in the `id_token` only**: these deployments previously saw no
+  group claim at all. `permit` rules keyed on `THVGroup` now match as intended,
+  and `forbid` rules keyed on `THVGroup` or on a supplemented claim can now match
+  too, so decisions can change in both directions. Review `forbid` rules before
+  upgrading.
 
 The token the client presented — the one ToolHive's auth server issued — is not
 a claim source here, even though it mirrors a `name` and `email`, so on this path a

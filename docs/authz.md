@@ -668,7 +668,7 @@ principal and the context, naming the trust root behind the claims:
 | Value | Meaning |
 | --- | --- |
 | `request` | No `primaryUpstreamProvider` is configured. Claims come from the request's token, and no provenance was ever demanded. |
-| `upstream:<provider>` | Claims come from that upstream's access token (with the profile-claim id_token supplement where it applies). |
+| `upstream:<provider>` | Claims come from that upstream's access token, with any claim it omits filled from the same upstream's id_token (see [Claims from the upstream id_token](#claims-from-the-upstream-id_token)). |
 | `request:no-upstream-session` | The validated embedded-auth-server token was proven to have been minted with no upstream login, so no upstream credential can exist for it. |
 | `request:upstream-opaque` | An upstream credential exists but is an opaque OAuth 2.0 access token whose claims cannot be read, so evaluation degraded to the request token's claims. |
 
@@ -688,6 +688,31 @@ permit(principal, action == Action::"call_tool", resource == Tool::"deploy") whe
 The attribute is written after claim prefixing and its name does not start with
 `claim_`, so a token carrying a claim named `thv_claim_source` becomes
 `claim_thv_claim_source` and cannot spoof its own provenance.
+
+##### Claims from the upstream id_token
+
+On the `upstream:<provider>` path, any claim the upstream's access token omits is
+filled from that same upstream's stored id_token. This includes group and role
+claims under any name, `hd`, `email_verified`, `acr`, `amr` and custom claims.
+The ToolHive-issued token is still never read on this path.
+
+- **Fill-only**: a claim the access token asserts is used as-is, never replaced
+  or unioned with the id_token's value.
+- **Never filled**: claims that describe the id_token itself (`iss`, `aud`,
+  `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
+  `sid`, `client_id`, `typ`, `token_use`, `uti`, `rh`, `cnf`), the delegated
+  grant (`scope`, `scp`, `act`, `may_act`), and `sub`.
+- **Default group selection**: if the access token asserts any of `groups`,
+  `roles` or `cognito:groups`, the id_token does not fill the others. A name set
+  as `group_claim_name` or `role_claim_name` is still filled.
+- **Empty audience filters are not preserved**: a provider that omits the group
+  claim from the access token because a per-audience filter matched nothing will
+  have the id_token's groups filled in. Emit an empty claim instead, or keep
+  groups out of the id_token, if you rely on that filter.
+- **Login-time facts**: the id_token is used even after it expires and is
+  replaced only when a refresh rotates one, so a group revoked upstream can keep
+  granting until the ToolHive session ends. Shorten the session, or have the
+  upstream put groups in the access token, if that window is too long.
 
 ##### What the fallback claims actually are
 

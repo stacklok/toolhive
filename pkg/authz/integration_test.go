@@ -1018,8 +1018,8 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 		},
 		{
 			// #6049 through the full middleware: the pinned upstream asserts group
-			// membership in its id_token only, so the resolved claim set had no
-			// `groups` key and tools/call returned 403 for every user.
+			// membership in its id_token only, so reading the access token alone
+			// would leave no `groups` key and tools/call would 403 for every user.
 			name:         "upstream_id_token_groups_authorize",
 			directClaims: jwt.MapClaims{"sub": "thv-user"},
 			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
@@ -1044,9 +1044,9 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 			expectAllowed: false,
 		},
 		{
-			// The same invariant with the #6049 id_token path live: opening the
-			// pinned provider's id_token as a group source did not open the
-			// ToolHive-issued token. Neither of the provider's own tokens names the
+			// The same invariant with the id_token path live: reading the pinned
+			// provider's id_token as a group source does not make the
+			// ToolHive-issued token one. Neither of the provider's own tokens names the
 			// permitted group, so the request stays 403 even though the token the
 			// client presented does.
 			name: "direct_groups_still_ignored_when_an_id_token_is_present",

@@ -1710,11 +1710,11 @@ func TestMergeIDTokenClaims(t *testing.T) {
 		},
 		{
 			// #6049: these are asserted by the same IdP for the same login as the
-			// access token's claims, so they are admitted. Withholding them was the
+			// access token's claims, so they are admitted. Withholding them would be a
 			// deny-all trap for every `principal in THVGroup::"..."` policy against a
 			// provider that puts group membership in the id_token only.
 			//
-			// This is the case that flipped in #6049; the invariant that a group claim
+			// The invariant that a group claim
 			// on the TOOLHIVE-ISSUED token grants nothing is a different property and
 			// is pinned elsewhere (TestResolveClaimsUpstreamSupplement's
 			// leaked-from-as-token fixtures,
@@ -1948,8 +1948,7 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 		"email":     "leaked-from-as-token@example.com",
 		"name":      "Leaked From AS Token",
 		"client_id": "vscode",
-		// #6049 opened the id_token as a source of group claims. It did not open
-		// the issued token, so this group must never appear in any resolved claim
+		// The id_token is a source of group claims; the issued token is not, so this group must never appear in any resolved claim
 		// set below — including the cases where the id_token does supply groups.
 		"groups": []interface{}{"leaked-from-as-token"},
 	}
@@ -1990,9 +1989,9 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 		},
 		{
 			// The #6049 shape: the pinned upstream asserts group membership in its
-			// id_token only, so before that change the resolved claim set had no
-			// `groups` key and every THVGroup policy denied for everyone. `hd` and
-			// custom namespaced claims ride the same rule.
+			// id_token only, so the access token alone carries no `groups` key and
+			// every THVGroup policy would deny. `hd` and custom namespaced claims
+			// ride the same rule.
 			name:     "access_token_without_groups_falls_back_to_id_token_groups",
 			provider: providerName,
 			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
@@ -2063,8 +2062,8 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 			// login, not presented as a credential, so `exp` is deliberately not
 			// enforced. Enforcing it would make a policy permit early in a session
 			// and silently deny later, since sessions outlive id_tokens by days.
-			// Since #6049 this covers group membership too, which is why
-			// resolveClaims documents it as a login-time fact.
+			// This covers group membership too, which is why resolveClaims
+			// documents it as a login-time fact.
 			name:     "expired_id_token_is_still_used",
 			provider: providerName,
 			upstreamToken: makeUnsignedJWT(jwt.MapClaims{
@@ -2821,8 +2820,8 @@ func TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups(t *testing.T) {
 		},
 		{
 			// #6049: the upstream asserts group membership in its id_token only —
-			// common where groups are a profile-scope claim. This denied for every
-			// user before that change; it is the grant the change exists to make.
+			// common where groups are a profile-scope claim. Reading the access token
+			// alone would deny every user.
 			name: "id_token_groups_authorize_when_the_access_token_omits_them",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
@@ -2869,9 +2868,9 @@ func TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups(t *testing.T) {
 			wantAuthorize: false,
 		},
 		{
-			// The security invariant #6049 must not weaken, retested with the
-			// id_token path live: opening the id_token as a group source did not open
-			// the ToolHive-issued token. The issued token names the permitted group,
+			// The issued-token invariant, retested with the id_token path live:
+			// reading the id_token as a group source does not make the
+			// ToolHive-issued token one. The issued token names the permitted group,
 			// the pinned upstream names none in either of its tokens, so this denies.
 			name: "toolhive_groups_still_ignored_when_an_id_token_is_present",
 			identity: &auth.Identity{

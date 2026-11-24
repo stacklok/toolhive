@@ -1266,3 +1266,34 @@ func TestFactory_Create_RejectsNegativeReadTimeout(t *testing.T) {
 	assert.Nil(t, transport)
 	assert.EqualError(t, err, "read timeout must be non-negative, got -1s")
 }
+
+func TestAttemptReattachment_ReattachNotSupported(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	mockDeployer := mocks.NewMockRuntime(ctrl)
+
+	mockDeployer.EXPECT().
+		IsWorkloadRunning(gomock.Any(), "apple-container").
+		Return(true, nil).
+		Times(1)
+
+	mockDeployer.EXPECT().
+		AttachToWorkload(gomock.Any(), "apple-container").
+		Return(nil, nil, rt.NewContainerError(
+			rt.ErrReattachNotSupported,
+			"apple-container",
+			"re-attaching stdio is not supported",
+		)).
+		Times(1)
+
+	transport := &StdioTransport{
+		containerName: "apple-container",
+		deployer:      mockDeployer,
+		shutdownCh:    make(chan struct{}),
+		retryConfig:   testRetryConfig(),
+	}
+
+	reattached := transport.attemptReattachment(context.Background(), newMockReadCloser(""))
+	assert.False(t, reattached)
+}

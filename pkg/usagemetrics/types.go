@@ -41,7 +41,7 @@ type Profile struct {
 	RegistrySource string `json:"registry_source,omitempty"`
 	// CatalogServer is the built-in registry entry name, or "custom".
 	CatalogServer string `json:"catalog_server,omitempty"`
-	// Runtime is docker, podman, colima, kubernetes, none or other.
+	// Runtime is docker, podman, colima, apple, kubernetes, none or other.
 	Runtime string `json:"runtime,omitempty"`
 	// AuthMode is the incoming authentication: none, oidc, local, embedded or other.
 	AuthMode string `json:"auth_mode,omitempty"`
@@ -99,7 +99,7 @@ var (
 		ValueBuiltin, RegistrySourceCustomRemote, RegistrySourceCustomAPI, RegistrySourceCustomLocal,
 		RegistrySourcePackageUVX, RegistrySourcePackageNPX, RegistrySourcePackageGo, ValueNone,
 	}
-	allowedRuntimes  = []string{"docker", "podman", "colima", RuntimeKubernetes, ValueNone}
+	allowedRuntimes  = []string{"docker", "podman", "colima", "apple", RuntimeKubernetes, ValueNone}
 	allowedAuthModes = []string{ValueNone, AuthModeOIDC, AuthModeLocal, AuthModeEmbedded}
 	allowedAuthz     = []string{ValueOn, ValueOff}
 	allowedFeatures  = []string{FeatureOptimizer, FeatureCodeMode, FeatureCompositeTools, FeatureOutgoingAuth}

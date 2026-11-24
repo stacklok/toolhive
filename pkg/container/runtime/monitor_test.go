@@ -229,6 +229,37 @@ func TestWorkloadMonitor_ContainerRemoved(t *testing.T) {
 	}
 }
 
+func TestWorkloadMonitor_WorkloadNotFoundTriggersRemoved(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRT := rtmocks.NewMockRuntime(ctrl)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	startTime := time.Now().Add(-1 * time.Minute)
+
+	mockRT.EXPECT().IsWorkloadRunning(gomock.Any(), "remove-workload-test").Return(true, nil).Times(1)
+	mockRT.EXPECT().GetWorkloadInfo(gomock.Any(), "remove-workload-test").Return(runtime.ContainerInfo{
+		StartedAt: startTime,
+	}, nil).Times(1)
+	mockRT.EXPECT().IsWorkloadRunning(gomock.Any(), "remove-workload-test").Return(false, runtime.ErrWorkloadNotFound).Times(1)
+
+	m := runtime.NewMonitor(mockRT, "remove-workload-test")
+	ch, err := m.StartMonitoring(ctx)
+	require.NoError(t, err)
+
+	select {
+	case exitErr := <-ch:
+		require.Error(t, exitErr)
+		assert.ErrorIs(t, exitErr, runtime.ErrContainerRemoved)
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for container removed error")
+	}
+}
+
 func TestWorkloadMonitor_ContainerRestarted(t *testing.T) {
 	t.Parallel()
 

@@ -391,8 +391,9 @@ func newEmbeddedAuthServerWithStorage(
 	if err != nil {
 		return nil, err
 	}
-	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange {
-		return nil, fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if options.authorizationDetailsRegistry != nil &&
+		!authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange) {
+		return nil, authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	// Refuse a required_subject_claims that cannot be satisfied before upstream
 	// resolution, which may register this server at an upstream via DCR.
@@ -730,8 +731,8 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 	if err != nil {
 		return fmt.Errorf("normalize inbound grants: %w", err)
 	}
-	if !normalized.Capabilities.TokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if !authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange) {
+		return authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
 }

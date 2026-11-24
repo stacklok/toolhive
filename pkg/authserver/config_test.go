@@ -195,15 +195,7 @@ func TestConfigValidate(t *testing.T) {
 		TokenEndpoint:         "https://idp.example.com/token",
 	}
 	validUpstreams := []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}
-	detailsRegistry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
-		"example": {
-			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
-				return authorizationdetails.Result{Entries: req.Entries}, nil
-			},
-		},
-	})
-	require.NoError(t, err)
+	detailsRegistry := newTokenExchangeDetailsRegistry(t)
 	validOIDCUpstream := &upstream.OIDCConfig{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
 		Issuer:            "https://accounts.google.com",
@@ -284,7 +276,7 @@ func TestConfigValidate(t *testing.T) {
 		{name: "typed-nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{(*recordingRefreshHandler)(nil)}}, wantErr: true, errMsg: "refresh grant handler 0 is nil"},
 		{name: "refresh grant handler accepted", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}}}},
 
-		{name: "authorization details registry combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry, DisableTokenExchange: true}, wantErr: true, errMsg: "authorization details registry requires token exchange"},
+		{name: "authorization details registry combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry, DisableTokenExchange: true}, wantErr: true, errMsg: "authorization details registry requires token exchange to be enabled"},
 		{name: "authorization details registry with token exchange enabled passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry}},
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -344,6 +336,47 @@ func minimalValidConfig(t *testing.T) Config {
 		}},
 		AllowedAudiences: []string{"https://resource.example.com"},
 	}
+}
+
+// newTokenExchangeDetailsRegistry returns a registry with one type accepted on
+// token exchange, whose hook grants the entries unchanged.
+func newTokenExchangeDetailsRegistry(t *testing.T) *authorizationdetails.Registry {
+	t.Helper()
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		"example": {
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
+	return registry
+}
+
+func TestAuthorizationDetailsRegistryReachable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		tokenExchangeEnabled bool
+		want                 bool
+	}{
+		{name: "token exchange enabled", tokenExchangeEnabled: true, want: true},
+		{name: "token exchange disabled", tokenExchangeEnabled: false, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, AuthorizationDetailsRegistryReachable(tt.tokenExchangeEnabled))
+		})
+	}
+
+	t.Run("config validation returns the sentinel", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{AuthorizationDetailsRegistry: newTokenExchangeDetailsRegistry(t), DisableTokenExchange: true}
+		require.ErrorIs(t, cfg.validateAuthorizationDetailsRegistryReachable(), ErrAuthorizationDetailsRegistryUnreachable)
+	})
 }
 
 func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {

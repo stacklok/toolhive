@@ -328,14 +328,15 @@ func (c *ValidatingCache[K, V]) RemoveMatching(pred func(K, V) bool) int {
 	return removed
 }
 
-// Sweep evicts every entry for which pred reports true, returning the number
+// Sweep evicts every entry for which pred reports true, returning the keys it
 // evicted. Unlike RemoveMatching, pred runs OUTSIDE the cache lock — once per
 // snapshot entry — so it may perform I/O such as a storage liveness check. Each
 // removal is re-validated under the lock (sameEntry) so a concurrent Set that
-// replaced the entry is not evicted. Like RemoveMatching, it is intended for
-// infrequent proactive reconciliation (e.g. a background TTL sweep), not the
-// hot path.
-func (c *ValidatingCache[K, V]) Sweep(ctx context.Context, pred func(context.Context, K, V) bool) int {
+// replaced the entry is not evicted, and its key is not returned. Once ctx ends,
+// Sweep stops calling pred and leaves the remaining entries in place. Like
+// RemoveMatching, it is intended for infrequent proactive reconciliation (e.g. a
+// background TTL sweep), not the hot path.
+func (c *ValidatingCache[K, V]) Sweep(ctx context.Context, pred func(context.Context, K, V) bool) []K {
 	// Snapshot the candidate entries under a short lock. Keys() returns a copy
 	// and Peek does not update recency, so this leaves the LRU order unchanged.
 	c.mu.Lock()
@@ -347,8 +348,11 @@ func (c *ValidatingCache[K, V]) Sweep(ctx context.Context, pred func(context.Con
 	}
 	c.mu.Unlock()
 
-	evicted := 0
+	var evicted []K
 	for _, e := range entries {
+		if ctx.Err() != nil {
+			break
+		}
 		if !pred(ctx, e.key, e.val) {
 			continue
 		}
@@ -358,7 +362,7 @@ func (c *ValidatingCache[K, V]) Sweep(ctx context.Context, pred func(context.Con
 		c.mu.Lock()
 		if current, ok := c.lruCache.Peek(e.key); ok && sameEntry(current, e.val) {
 			c.lruCache.Remove(e.key) // buffers the eviction; drained below
-			evicted++
+			evicted = append(evicted, e.key)
 		}
 		c.mu.Unlock()
 	}

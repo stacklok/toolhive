@@ -6165,3 +6165,13 @@ func TestRedisStorage_ReconcileConfiguredClient_WarnsOnceAcrossWatchRetry(t *tes
 	assert.Equal(t, []string{"a", "c"}, warns[0]["old_scopes"], "the WARN reports the row the winning attempt replaced")
 	assert.Equal(t, []string{"a", "b"}, warns[0]["new_scopes"])
 }
+
+func TestRedisStorage_UserIdentityContract(t *testing.T) {
+	t.Parallel()
+	runUserIdentityStorageContract(t, func(t *testing.T) UserStorage {
+		t.Helper()
+		s, _ := newTestRedisStorage(t)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}

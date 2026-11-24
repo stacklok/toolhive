@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -98,6 +99,21 @@ func (u *usageMetrics) middleware() func(http.Handler) http.Handler {
 // observe wraps an aggregator so every aggregation updates the reported tool count.
 func (u *usageMetrics) observe(agg aggregator.Aggregator) aggregator.Aggregator {
 	return &toolCountObserver{Aggregator: agg, toolCount: &u.toolCount}
+}
+
+// codeModeConfig returns a copy of cfg whose observer adds each script's tool
+// calls to the usage report as code_mode_tool_calls. Those calls never pass
+// through the HTTP middleware, so they are not part of count. A nil cfg (code
+// mode off) stays nil.
+func (u *usageMetrics) codeModeConfig(cfg *codemode.Config) *codemode.Config {
+	if cfg == nil {
+		return nil
+	}
+	out := *cfg
+	out.OnScript = func(_ context.Context, stats codemode.ScriptStats) {
+		u.collector.AddCodeModeToolCalls(int64(stats.ToolCalls))
+	}
+	return &out
 }
 
 // shutdown stops the collector, sending a final report if any tool calls were counted.

@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	aggmocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
@@ -475,4 +476,52 @@ func TestUsageMetricsMiddleware_CountsToolCalls(t *testing.T) {
 	}
 
 	assert.Equal(t, int64(1), collector.GetCurrentCount(), "only tools/call is counted")
+}
+
+func TestUsageMetrics_CodeModeConfigOff(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, (&usageMetrics{}).codeModeConfig(nil), "code mode off stays off")
+}
+
+func TestUsageMetrics_CodeModeToolCallsReported(t *testing.T) {
+	// Not parallel: t.Setenv supplies the anonymous ID, without which a local
+	// client sends nothing.
+	t.Setenv(usagemetrics.EnvVarAnonymousID, "test-anonymous-id")
+
+	reports := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var report map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&report))
+		reports <- report
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	ctrl := gomock.NewController(t)
+	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
+	registry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+
+	u := newUsageMetrics(registry, usageFacts{authMode: usagemetrics.ValueNone},
+		usagemetrics.WithEndpoint(server.URL))
+	require.NotNil(t, u)
+
+	cfg := &codemode.Config{StepLimit: 7}
+	got := u.codeModeConfig(cfg)
+	require.NotNil(t, got)
+	require.NotSame(t, cfg, got, "the caller's config must not be changed")
+	assert.Nil(t, cfg.OnScript)
+	assert.Equal(t, uint64(7), got.StepLimit)
+
+	u.collector.IncrementToolCall() // the execute_tool_script call itself
+	got.OnScript(context.Background(), codemode.ScriptStats{ToolCalls: 3})
+	got.OnScript(context.Background(), codemode.ScriptStats{ToolCalls: 2})
+	u.shutdown()
+
+	select {
+	case report := <-reports:
+		assert.EqualValues(t, 1, report["count"], "script tool calls never add to count")
+		assert.EqualValues(t, 5, report["code_mode_tool_calls"])
+	default:
+		t.Fatal("shutdown sent no report")
+	}
 }

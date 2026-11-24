@@ -433,10 +433,12 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		features: vmcpFeatures(optCfg != nil, vmcpCfg.CodeMode, len(vmcpCfg.CompositeTools), vmcpCfg.OutgoingAuth),
 	})
 	var usageMiddleware func(http.Handler) http.Handler
+	codeModeCfg := codemode.FromConfig(vmcpCfg.CodeMode)
 	if usage != nil {
 		defer usage.shutdown()
 		agg = usage.observe(agg)
 		usageMiddleware = usage.middleware()
+		codeModeCfg = usage.codeModeConfig(codeModeCfg)
 	}
 
 	// Resolve transport defaults once here at the composition root: the
@@ -465,7 +467,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		Watcher:                 nil, // set below if backendWatcher is non-nil
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
-		CodeModeConfig:          codemode.FromConfig(vmcpCfg.CodeMode),
+		CodeModeConfig:          codeModeCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
 		// Core collaborators: server.New routes through core.New + Serve, so the core

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
@@ -203,6 +204,16 @@ func (d *decorator) CallTool(
 		return d.VMCP.CallTool(ctx, identity, name, args, meta)
 	}
 
+	// Count the script's tool calls for the observer. The counter is atomic
+	// because parallel() runs calls concurrently; the engine has joined them all
+	// by the time CallTool returns.
+	var toolCalls atomic.Int64
+	if d.cfg.OnScript != nil {
+		defer func() {
+			notify(ctx, d.cfg.OnScript, ScriptStats{ToolCalls: int(toolCalls.Load())})
+		}()
+	}
+
 	src, ok := args["script"].(string)
 	if !ok || src == "" {
 		return errorResult(fmt.Sprintf("%s requires a non-empty 'script' string argument",
@@ -236,7 +247,7 @@ func (d *decorator) CallTool(
 	execCtx, cancel := context.WithTimeout(ctx, defaultScriptTimeout)
 	defer cancel()
 
-	exec := script.New(d.bindTools(identity, tools), d.cfg.scriptConfig())
+	exec := script.New(d.bindTools(identity, tools, &toolCalls), d.cfg.scriptConfig())
 	result, err := exec.Execute(execCtx, src, data)
 	if err != nil {
 		// The engine already produces descriptive messages (runtime errors, step-limit
@@ -286,8 +297,9 @@ func virtualTool(innerTools []vmcp.Tool) vmcp.Tool {
 // values. Each Call closure routes through inner.CallTool with the captured identity, so
 // the inner target is admission-checked, and applies the configured per-call timeout (the
 // engine itself imposes none — see the [script.Tool].Call contract). The virtual tool is
-// never bound, so a script cannot recurse into execute_tool_script.
-func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []script.Tool {
+// never bound, so a script cannot recurse into execute_tool_script. Every call,
+// including one that fails or is denied, increments toolCalls.
+func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool, toolCalls *atomic.Int64) []script.Tool {
 	out := make([]script.Tool, 0, len(tools))
 	for _, t := range tools {
 		if t.Name == script.ExecuteToolScriptName {
@@ -298,6 +310,7 @@ func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []scri
 			Name:        name,
 			Description: t.Description,
 			Call: func(callCtx context.Context, arguments map[string]any) (*mcp.CallToolResult, error) {
+				toolCalls.Add(1)
 				if d.cfg.ToolCallTimeout > 0 {
 					var cancel context.CancelFunc
 					callCtx, cancel = context.WithTimeout(callCtx, d.cfg.ToolCallTimeout)

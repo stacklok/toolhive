@@ -69,6 +69,11 @@ type Config struct {
 	// ToolCallTimeout bounds each individual inner tool call made from a script.
 	// Zero (or negative) resolves to defaultToolCallTimeout.
 	ToolCallTimeout time.Duration
+
+	// OnScript, when non-nil, is called once per execute_tool_script call with
+	// the number of tool calls the script made. Nil (the default) leaves behavior
+	// unchanged. See [ScriptObserver] for the contract.
+	OnScript ScriptObserver
 }
 
 // scriptConfig projects the (already resolved) decorator config onto the engine's

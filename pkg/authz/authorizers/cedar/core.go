@@ -831,7 +831,8 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 		return upstreamClaims
 	}
 
-	merged, filled := supplementFromIDTokenClaims(upstreamClaims, idTokenClaims)
+	merged, filled := supplementFromIDTokenClaims(upstreamClaims, idTokenClaims,
+		a.defaultGroupClaimsToWithhold(upstreamClaims))
 	if len(filled) > 0 {
 		// Rate-limited on its own timer, not claimKeyLog: sharing one would let
 		// this Warn consume the window and permanently starve the claim-key dump
@@ -847,6 +848,34 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 		})
 	}
 	return merged
+}
+
+// defaultGroupClaimsToWithhold returns the defaultGroupClaimNames entries the
+// id_token must not fill for this access token.
+//
+// Fill-only precedence is per claim, but default group extraction is not: it takes
+// the first of defaultGroupClaimNames the claim set carries. If the access token
+// asserts `roles` and the id_token alone asserts `groups`, filling `groups` would
+// make the id_token's list win that first-match loop and the access token's own
+// roles would never be read. So once the access token asserts any default group
+// claim (presence, as in fill-only precedence), the other default names are not
+// filled, and default selection sees exactly what the access token asserted.
+//
+// A name the deployment configured as GroupClaimName or RoleClaimName is exempt:
+// the operator asked for that claim by name, so the id_token may supply it — the
+// #6049 case. With nothing asserted by the access token there is nothing to
+// displace, and every default name may be filled.
+func (a *Authorizer) defaultGroupClaimsToWithhold(accessTokenClaims jwt.MapClaims) []string {
+	accessAssertsDefault := slices.ContainsFunc(defaultGroupClaimNames, func(name string) bool {
+		_, ok := accessTokenClaims[name]
+		return ok
+	})
+	if !accessAssertsDefault {
+		return nil
+	}
+	return slices.DeleteFunc(slices.Clone(defaultGroupClaimNames), func(name string) bool {
+		return name == a.groupClaimName || name == a.roleClaimName
+	})
 }
 
 // idTokenClaimsNeverSupplemented names the claims that are never read out of the
@@ -911,8 +940,9 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 
 // supplementFromIDTokenClaims returns a fresh claim set holding every access-token
 // claim plus, for each id_token claim that the access token does not carry and that
-// is not in idTokenClaimsNeverSupplemented, the id_token's value. It also returns
-// the sorted list of names actually supplied by the id_token, for logging.
+// is in neither idTokenClaimsNeverSupplemented nor withheld, the id_token's value.
+// It also returns the sorted list of names actually supplied by the id_token, for
+// logging. withheld carries per-request exclusions (defaultGroupClaimsToWithhold).
 //
 // Precedence is fill-only: an access-token claim is never overwritten or extended,
 // so a claim the access token does assert can neither be shadowed nor unioned with
@@ -922,14 +952,16 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 //
 // Neither input is mutated and the result aliases neither, so the caller may hand
 // it to code that adds synthetic keys.
-func supplementFromIDTokenClaims(accessTokenClaims, idTokenClaims jwt.MapClaims) (merged jwt.MapClaims, filled []string) {
+func supplementFromIDTokenClaims(
+	accessTokenClaims, idTokenClaims jwt.MapClaims, withheld []string,
+) (merged jwt.MapClaims, filled []string) {
 	merged = make(jwt.MapClaims, len(accessTokenClaims)+len(idTokenClaims))
 	for k, v := range accessTokenClaims {
 		merged[k] = v
 	}
 
 	for name, v := range idTokenClaims {
-		if _, never := idTokenClaimsNeverSupplemented[name]; never {
+		if _, never := idTokenClaimsNeverSupplemented[name]; never || slices.Contains(withheld, name) {
 			continue
 		}
 		if _, ok := merged[name]; ok {

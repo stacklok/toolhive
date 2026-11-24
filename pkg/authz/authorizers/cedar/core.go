@@ -852,28 +852,38 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 // defaultGroupClaimsToWithhold returns the defaultGroupClaimNames entries the
 // id_token must not fill for this access token.
 //
-// Fill-only precedence is per claim, but default group extraction is not: it takes
-// the first of defaultGroupClaimNames the claim set carries. If the access token
-// asserts `roles` and the id_token alone asserts `groups`, filling `groups` would
-// make the id_token's list win that first-match loop and the access token's own
-// roles would never be read. So once the access token asserts any default group
-// claim (presence, as in fill-only precedence), the other default names are not
-// filled, and default selection sees exactly what the access token asserted.
+// Fill-only precedence is per claim, but default group extraction is not: it
+// takes the first of defaultGroupClaimNames that yields groups. If the access
+// token asserts `roles` and the id_token alone asserts `groups`, filling `groups`
+// would make the id_token's list win that first-match loop and the access token's
+// own roles would never be read. So once the access token carries a default group
+// claim that extraction would select (a recognized array, the same test
+// extractGroups applies), the other default names are not filled, and default
+// selection sees exactly what the access token asserted. A null or scalar default
+// claim is skipped by extraction, so it does not trigger the withhold either.
 //
-// A name the deployment configured as GroupClaimName or RoleClaimName is exempt:
-// the operator asked for that claim by name, so the id_token may supply it — the
-// #6049 case. With nothing asserted by the access token there is nothing to
-// displace, and every default name may be filled.
+// Only GroupClaimName is exempt: it takes priority over the defaults, so the
+// operator asked for that claim by name and the id_token may supply it — the #6049
+// case. RoleClaimName is not exempt, because it is read in addition to the default
+// loop rather than instead of it; a default-named RoleClaimName filled from the
+// id_token would also win that loop. Such a role claim is therefore not filled from
+// the id_token once the access token asserts another default group claim. With no
+// selectable default in the access token there is nothing to displace, and every
+// default name may be filled.
 func (a *Authorizer) defaultGroupClaimsToWithhold(accessTokenClaims jwt.MapClaims) []string {
-	accessAssertsDefault := slices.ContainsFunc(defaultGroupClaimNames, func(name string) bool {
-		_, ok := accessTokenClaims[name]
-		return ok
+	accessSelectsDefault := slices.ContainsFunc(defaultGroupClaimNames, func(name string) bool {
+		v, ok := accessTokenClaims[name]
+		if !ok || v == nil {
+			return false
+		}
+		groups, recognized := authclaims.DecodeStringArrayLenient(v)
+		return recognized && groups != nil
 	})
-	if !accessAssertsDefault {
+	if !accessSelectsDefault {
 		return nil
 	}
 	return slices.DeleteFunc(slices.Clone(defaultGroupClaimNames), func(name string) bool {
-		return name == a.groupClaimName || name == a.roleClaimName
+		return name == a.groupClaimName
 	})
 }
 

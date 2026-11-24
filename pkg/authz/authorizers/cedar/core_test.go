@@ -2944,6 +2944,7 @@ func TestAuthorizeWithJWTClaims_DefaultGroupClaimSelection(t *testing.T) {
 	tests := []struct {
 		name           string
 		groupClaimName string
+		roleClaimName  string
 		accessToken    jwt.MapClaims
 		idToken        jwt.MapClaims
 		wantAuthorize  bool
@@ -2978,6 +2979,16 @@ func TestAuthorizeWithJWTClaims_DefaultGroupClaimSelection(t *testing.T) {
 			idToken:        jwt.MapClaims{"sub": "upstream-user", "groups": []interface{}{"admin"}},
 			wantAuthorize:  true,
 		},
+		{
+			// A default-named RoleClaimName is read in addition to the default loop,
+			// so filling it from the id_token would also make it win that loop and
+			// hide the access token's `roles`.
+			name:          "default_named_role_claim_does_not_displace_access_token_roles",
+			roleClaimName: "groups",
+			accessToken:   jwt.MapClaims{"sub": "upstream-user", "roles": []interface{}{"admin"}},
+			idToken:       jwt.MapClaims{"sub": "upstream-user", "groups": []interface{}{"eng"}},
+			wantAuthorize: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2989,6 +3000,7 @@ func TestAuthorizeWithJWTClaims_DefaultGroupClaimSelection(t *testing.T) {
 				EntitiesJSON:            `[]`,
 				PrimaryUpstreamProvider: providerName,
 				GroupClaimName:          tt.groupClaimName,
+				RoleClaimName:           tt.roleClaimName,
 			}, "")
 			require.NoError(t, err)
 
@@ -3005,6 +3017,94 @@ func TestAuthorizeWithJWTClaims_DefaultGroupClaimSelection(t *testing.T) {
 				ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "deploy", nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// TestDefaultGroupClaimsToWithhold pins the withhold rule against each claim-name
+// configuration, so it stays in step with default group extraction.
+func TestDefaultGroupClaimsToWithhold(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		groupClaimName string
+		roleClaimName  string
+		accessToken    jwt.MapClaims
+		want           []string
+	}{
+		{
+			name:        "no_default_in_access_token_withholds_nothing",
+			accessToken: jwt.MapClaims{"sub": "u"},
+			want:        nil,
+		},
+		{
+			name:        "access_token_roles_withholds_every_default",
+			accessToken: jwt.MapClaims{"roles": []interface{}{"admin"}},
+			want:        []string{"groups", "roles", "cognito:groups"},
+		},
+		{
+			name:        "access_token_cognito_groups_withholds_every_default",
+			accessToken: jwt.MapClaims{"cognito:groups": []interface{}{"admins"}},
+			want:        []string{"groups", "roles", "cognito:groups"},
+		},
+		{
+			// An empty list is still selected by extraction (it suppresses the
+			// fallback), so it is an assertion that must not be displaced.
+			name:        "empty_list_withholds",
+			accessToken: jwt.MapClaims{"roles": []interface{}{}},
+			want:        []string{"groups", "roles", "cognito:groups"},
+		},
+		{
+			// Extraction skips null and scalar values, so nothing is selected and
+			// nothing can be displaced.
+			name:        "null_default_withholds_nothing",
+			accessToken: jwt.MapClaims{"roles": nil},
+			want:        nil,
+		},
+		{
+			name:        "scalar_default_withholds_nothing",
+			accessToken: jwt.MapClaims{"roles": "admin"},
+			want:        nil,
+		},
+		{
+			name:           "default_named_group_claim_is_exempt",
+			groupClaimName: "groups",
+			accessToken:    jwt.MapClaims{"roles": []interface{}{"admin"}},
+			want:           []string{"roles", "cognito:groups"},
+		},
+		{
+			name:          "default_named_role_claim_is_not_exempt",
+			roleClaimName: "groups",
+			accessToken:   jwt.MapClaims{"roles": []interface{}{"admin"}},
+			want:          []string{"groups", "roles", "cognito:groups"},
+		},
+		{
+			// A custom name is never a default, so it is never withheld.
+			name:           "custom_group_claim_leaves_defaults_withheld",
+			groupClaimName: "https://example.com/groups",
+			accessToken:    jwt.MapClaims{"groups": []interface{}{"eng"}},
+			want:           []string{"groups", "roles", "cognito:groups"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:                []string{`permit(principal, action, resource);`},
+				EntitiesJSON:            `[]`,
+				PrimaryUpstreamProvider: "okta",
+				GroupClaimName:          tt.groupClaimName,
+				RoleClaimName:           tt.roleClaimName,
+			}, "")
+			require.NoError(t, err)
+
+			got := authorizer.(*Authorizer).defaultGroupClaimsToWithhold(tt.accessToken)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, []string{"groups", "roles", "cognito:groups"}, defaultGroupClaimNames,
+				"defaultGroupClaimNames must not be mutated")
 		})
 	}
 }

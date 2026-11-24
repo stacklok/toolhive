@@ -454,8 +454,8 @@ func (h *IDJAGHandler) defaultAudiences(ctx context.Context) []string {
 }
 
 // validateAssertion verifies the assertion and refuses an aud array with more
-// than one element and a cnf claim, for every issuer. It runs before the
-// assertion is consumed.
+// than one element, a cnf claim and an authorization_details claim, for every
+// issuer. It runs before the assertion is consumed.
 func (h *IDJAGHandler) validateAssertion(ctx context.Context, assertion string) (*ValidatedClaims, error) {
 	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
 	if err != nil {
@@ -469,8 +469,11 @@ func (h *IDJAGHandler) validateAssertion(ctx context.Context, assertion string) 
 	// verify proof of possession yet, so accepting the ID-JAG would silently
 	// drop the key binding the IdP asked for. The refusal stays until proof of
 	// possession (DPoP or mTLS) is verified.
-	if hasConfirmationClaim(claims) {
+	if restrictionsOf(claims).Confirmation {
 		return nil, invalidAssertion("The ID-JAG assertion must not carry a 'cnf' claim.")
+	}
+	if err := h.redeemer.refuseSignedDetails(ctx, claims); err != nil {
+		return nil, err
 	}
 	return claims, nil
 }

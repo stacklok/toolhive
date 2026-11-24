@@ -96,10 +96,11 @@ func (s *grantsBySignature) GetExchangeGrant(_ context.Context, signature string
 }
 
 // ActorTokenOptions shapes the actor token ActorTokenIDJAGRequestForTest
-// presents. Without options the token is a valid unmarked token signed with the
+// presents. Without options the token is a valid unrestricted token signed with the
 // handler's own key.
 type ActorTokenOptions struct {
 	Marked     bool     // adds the delegated-access marker
+	Details    bool     // adds an authorization_details claim
 	Expired    bool     // gives the token an expiry in the past
 	Audience   []string // replaces the audience when non-empty
 	ForeignKey bool     // signs with a key the handler does not trust
@@ -136,10 +137,7 @@ func ActorTokenIDJAGRequestForTest(
 	if opts.Issuer != "" {
 		claims.Issuer = opts.Issuer
 	}
-	extra := validExtraClaims()
-	if opts.Marked {
-		extra = markedExtra()
-	}
+	extra := terminalClaims(validExtraClaims(), opts.Marked, opts.Details)
 	signer := tj
 	if opts.ForeignKey {
 		signer = newTestJWKS(t)

@@ -124,16 +124,20 @@ type Identity struct {
 	// Metadata stores additional identity information.
 	Metadata map[string]string
 
-	// SessionlessGrant is true only when TokenValidator validated this token for
-	// the configured embedded authorization-server issuer, no upstream session
-	// credentials were loaded, and the token affirmatively proves that it was
-	// minted by a session-less grant. It is internal runtime provenance and is
-	// intentionally not included in PrincipalInfo or MarshalJSON.
+	// SessionlessGrant is true only when TokenValidator validated this token as a
+	// signed JWT (never an introspection response) for the configured embedded
+	// authorization-server issuer, no upstream session credentials were loaded,
+	// and the token affirmatively proves that it was minted by a session-less
+	// grant. It is internal runtime provenance and is intentionally not included
+	// in PrincipalInfo or MarshalJSON.
 	SessionlessGrant bool
 
 	// AdmissionRoute records how TokenValidator admitted this token. It is set
 	// only by TokenValidator, and only when the validator is bound to the
-	// embedded authorization server.
+	// embedded authorization server and the JWT was verified with the
+	// in-process key provider (WithKeyProvider). A key found only through the
+	// HTTP JWKS fallback, or an introspection response, gets no route, so a
+	// validator bound without WithKeyProvider never assigns one.
 	// The delegated route also requires a configured audience. It is internal
 	// provenance and is intentionally not included in PrincipalInfo,
 	// SafeIdentity, or MarshalJSON. Consumers that grant anything must compare

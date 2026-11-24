@@ -2579,10 +2579,40 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		return s
 	}
 
+	serve := func(t *testing.T, v *TokenValidator, token string) (*Identity, *httptest.ResponseRecorder) {
+		t.Helper()
+		var captured *Identity
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured, _ = IdentityFromContext(r.Context())
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return captured, rr
+	}
+
 	claimsWithTsid := jwt.MapClaims{
 		"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
 		"exp":                        time.Now().Add(time.Hour).Unix(),
 		claimnames.TokenSessionIDKey: "session-xyz",
+	}
+
+	// embeddedKeys stands in for the embedded authorization server's in-process
+	// key provider, serving pub under kid.
+	embeddedKeys := func(t *testing.T, kid string, pub *rsa.PublicKey) TokenValidatorOption {
+		t.Helper()
+		provider := keysmocks.NewMockPublicKeyProvider(gomock.NewController(t))
+		provider.EXPECT().PublicKeys(gomock.Any()).
+			Return([]*keys.PublicKeyData{{KeyID: kid, Algorithm: "RS256", PublicKey: pub}}, nil).AnyTimes()
+		return WithKeyProvider(provider)
+	}
+	boundOpts := func(t *testing.T) []TokenValidatorOption {
+		t.Helper()
+		return []TokenValidatorOption{
+			WithEmbeddedAuthServerIssuer("test-issuer"),
+			embeddedKeys(t, testKeyID, &privateKey.PublicKey),
+		}
 	}
 
 	t.Run("enriches identity with upstream tokens", func(t *testing.T) {
@@ -2995,6 +3025,58 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				} else {
 					require.Nil(t, captured.UpstreamTokens)
 				}
+			})
+		}
+	})
+
+	// An introspection response is the endpoint's word, not a token the embedded
+	// authorization server signed, so it never earns session-less provenance even
+	// when it carries every claim a signed token would.
+	t.Run("introspected claims never establish session-less grant, signed ones still do", func(t *testing.T) {
+		t.Parallel()
+
+		const opaque = "opaque-token"
+		introspection := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active": true, "sub": "test-user", "iss": "test-issuer", "aud": "test-audience",
+				"exp":                           time.Now().Add(time.Hour).Unix(),
+				claimnames.DelegatedAccessKey:   true,
+				claimnames.NoUpstreamSessionKey: true,
+			})
+		}))
+		t.Cleanup(introspection.Close)
+
+		v := makeValidator(t, boundOpts(t)...)
+		v.introspectURL = introspection.URL
+		v.registry = NewRegistry()
+		v.registry.AddProvider(NewRFC7662Provider(introspection.URL))
+
+		tests := []struct {
+			name                 string
+			token                string
+			wantSessionlessGrant bool
+		}{
+			{name: "opaque token via introspection", token: opaque},
+			{
+				name: "signed JWT through the same validator",
+				token: signToken(jwt.MapClaims{
+					"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
+					"exp":                           time.Now().Add(time.Hour).Unix(),
+					claimnames.NoUpstreamSessionKey: true,
+				}),
+				wantSessionlessGrant: true,
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				captured, rr := serve(t, v, tt.token)
+
+				require.Equal(t, http.StatusOK, rr.Code)
+				require.NotNil(t, captured)
+				require.Equal(t, tt.wantSessionlessGrant, captured.SessionlessGrant)
 			})
 		}
 	})
@@ -3945,10 +4027,11 @@ func TestClassifyRoute(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		validator *TokenValidator
-		claims    jwt.MapClaims
-		want      AdmissionRoute
+		name       string
+		validator  *TokenValidator
+		claims     jwt.MapClaims
+		want       AdmissionRoute
+		provenance *tokenProvenance // nil means provenanceSignedEmbeddedKey
 	}{
 		{name: "tsid only", validator: bound("aud"), claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteInteractive},
 		{name: "tsid without audience is still interactive", validator: bound(""),
@@ -3980,6 +4063,14 @@ func TestClassifyRoute(t *testing.T) {
 		{name: "marker with whitespace audience is unspecified", validator: bound("  "),
 			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified},
 
+		{name: "introspected claims with tsid", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified, provenance: new(provenanceUnverified)},
+		{name: "introspected claims with marker", validator: bound("aud"),
+			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified, provenance: new(provenanceUnverified)},
+		{name: "signed with another key set, tsid", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified, provenance: new(provenanceSignedOther)},
+		{name: "signed with another key set, marker and audience", validator: bound("aud"),
+			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified, provenance: new(provenanceSignedOther)},
 		{name: "unbound: no embedded issuer", validator: &TokenValidator{issuer: issuer, audience: "aud"},
 			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
 		{name: "unbound: embedded issuer != issuer",
@@ -3999,7 +4090,11 @@ func TestClassifyRoute(t *testing.T) {
 			identity, err := claimsToIdentity(claims, "token")
 			require.NoError(t, err)
 
-			require.Equal(t, tt.want, tt.validator.classifyRoute(identity, claims))
+			provenance := provenanceSignedEmbeddedKey
+			if tt.provenance != nil {
+				provenance = *tt.provenance
+			}
+			require.Equal(t, tt.want, tt.validator.classifyRoute(identity, claims, provenance))
 		})
 	}
 }

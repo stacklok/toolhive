@@ -10,6 +10,7 @@ import (
 	"go.starlark.net/starlark"
 
 	"github.com/stacklok/toolhive/pkg/foreach"
+	"github.com/stacklok/toolhive/pkg/script/internal/core"
 )
 
 // newParallel creates a parallel() Starlark builtin that executes a list
@@ -54,6 +55,8 @@ func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *sta
 		childStepLimit := max(1, stepLimit/uint64(n)) //nolint:gosec // n is from starlark.List.Len(), always non-negative
 
 		childLogs := make([][]string, n)
+		stats := core.StatsFrom(thread)
+		stats.AddParallel(n)
 
 		results, err := foreach.Concurrent(ctx, n, maxConcurrency,
 			func(_ context.Context, idx int) (starlark.Value, error) {
@@ -66,12 +69,17 @@ func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *sta
 					Print: func(_ *starlark.Thread, msg string) {
 						logs = append(logs, msg)
 					},
+					// Inherit the parent's step-limit handler so the executor
+					// can tell when a child ran out of steps.
+					OnMaxSteps: thread.OnMaxSteps,
 				}
+				core.SetStats(childThread, stats)
 				if childStepLimit > 0 {
 					childThread.SetMaxExecutionSteps(childStepLimit)
 				}
 
 				result, callErr := starlark.Call(childThread, callable, nil, nil)
+				stats.AddSteps(childThread.ExecutionSteps())
 				childLogs[idx] = logs
 				return result, callErr
 			},

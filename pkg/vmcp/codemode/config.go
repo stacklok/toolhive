@@ -71,10 +71,16 @@ type Config struct {
 	ToolCallTimeout time.Duration
 
 	// OnScript, when non-nil, is called once per execute_tool_script call with
-	// the number of tool calls the script started, including failed and denied
-	// ones (zero when the call fails before the script runs). Nil (the default)
-	// leaves behavior unchanged. See [ScriptObserver] for the contract.
+	// the script's outcome, duration and the number of tool calls it started,
+	// including failed and denied ones (zero when the call fails before the
+	// script runs). Nil (the default) leaves behavior unchanged. See
+	// [ScriptObserver] for the contract.
 	OnScript ScriptObserver
+
+	// Telemetry, when non-nil, records OTel metrics and spans for every
+	// execute_tool_script call. Nil (the default) records none. Build it with
+	// [NewTelemetry].
+	Telemetry *Telemetry
 }
 
 // scriptConfig projects the (already resolved) decorator config onto the engine's

@@ -391,8 +391,9 @@ type TokenValidator struct {
 	// nil when no embedded auth server is configured.
 	keyProvider keys.PublicKeyProvider
 
-	// embeddedAuthServerIssuer binds session-less-grant provenance to tokens
-	// validated for this embedded authorization server only.
+	// embeddedAuthServerIssuer binds session-less-grant provenance and the
+	// admission route to tokens validated for this embedded authorization
+	// server only.
 	embeddedAuthServerIssuer string
 
 	// Lazy JWKS registration
@@ -593,9 +594,13 @@ func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOpt
 	}
 }
 
-// WithEmbeddedAuthServerIssuer binds session-less-grant provenance to tokens
-// validated for this embedded authorization server. This runtime-only value is
-// deliberately separate from TokenValidatorConfig, which is user configuration.
+// WithEmbeddedAuthServerIssuer binds session-less-grant provenance and the
+// admission route (Identity.AdmissionRoute) to tokens validated for this
+// embedded authorization server. A bound validator assigns a route only to
+// tokens verified with the in-process key provider (WithKeyProvider), so one
+// bound without WithKeyProvider never assigns a route. This runtime-only value
+// is deliberately separate from TokenValidatorConfig, which is user
+// configuration.
 func WithEmbeddedAuthServerIssuer(issuer string) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.embeddedAuthServerIssuer = issuer
@@ -609,6 +614,10 @@ func WithEmbeddedAuthServerIssuer(issuer string) TokenValidatorOption {
 // and jwksAllowPrivateIP flags.
 //
 // Only PublicKeyProvider is required — the validator never signs tokens.
+//
+// Together with WithEmbeddedAuthServerIssuer, this is what lets the validator
+// assign an admission route: a token verified only through the HTTP JWKS
+// fallback gets no route.
 func WithKeyProvider(provider keys.PublicKeyProvider) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.keyProvider = provider
@@ -1455,7 +1464,7 @@ func (v *TokenValidator) isSessionlessGrant(identity *Identity, claims jwt.MapCl
 func (v *TokenValidator) boundToEmbeddedIssuer() bool {
 	// Trim on both sides, as validateClaims does: an issuer configured with stray
 	// whitespace must not silently turn this gate off, which would deny every
-	// session-less grant with no diagnostic.
+	// session-less grant and leave every route unspecified with no diagnostic.
 	embeddedIssuer := strings.TrimSpace(v.embeddedAuthServerIssuer)
 	return embeddedIssuer != "" && strings.TrimSpace(v.issuer) == embeddedIssuer
 }
@@ -1540,6 +1549,8 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims")
 			return
 		}
+
+		identity.AdmissionRoute = v.classifyRoute(identity, claims, provenance)
 
 		// Enrich Identity with upstream provider tokens when an embedded auth
 		// server is active (reader configured via WithUpstreamTokenReader). The

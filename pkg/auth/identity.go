@@ -165,9 +165,9 @@ type Identity struct {
 	//                      stored access token strings.
 	//
 	// A nil map therefore says only that no credential was loaded, never why.
-	// Authorization code must use SessionlessGrant, which TokenValidator sets
-	// only for a validated embedded-auth-server token that affirmatively proves
-	// it was minted without an upstream session.
+	// Authorization code must use SessionlessGrant or AdmissionRoute, which
+	// TokenValidator sets only for a signed embedded-auth-server token, from the
+	// claims it carries.
 	//
 	// MUST NOT be mutated after the Identity is placed in the publicly-reachable
 	// request context. It MAY be mutated while the Identity is reachable only via

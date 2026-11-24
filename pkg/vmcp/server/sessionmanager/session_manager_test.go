@@ -2310,6 +2310,40 @@ func TestSessionManager_SweepLoop(t *testing.T) {
 		require.NoError(t, cleanup(ctx), "cleanup must cancel the blocked read and wait for the loop")
 		assert.Equal(t, 1, sm.sessions.Len(), "a cancelled read must not evict the session")
 	})
+
+	t.Run("cleanup reports a sweep that outlives its ctx", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		storage := &blockingMetadataStorage{
+			DataStorage: newTestSessionDataStorage(t),
+			entered:     make(chan struct{}, 1),
+			release:     make(chan struct{}),
+		}
+		sm, cleanup, err := New(storage,
+			&FactoryConfig{Base: newMockFactory(t, ctrl, nil), SweepInterval: 10 * time.Millisecond},
+			newFakeRegistry())
+		require.NoError(t, err)
+		sm.sessions.Set("s-1", newEvictionTestSession(t, ctrl, "", 0))
+
+		select {
+		case <-storage.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for the sweep to read storage")
+		}
+
+		// The read ignores cancellation, so the loop cannot stop before ctx ends.
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.ErrorIs(t, cleanup(ctx), context.Canceled)
+
+		close(storage.release)
+		select {
+		case <-sm.sweepDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for the sweep loop to stop after the read returned")
+		}
+	})
 }
 
 // newSweepTestManager builds a Manager over storage with the given sweep
@@ -2345,17 +2379,24 @@ func (r *sweptRecorder) ids() []string {
 	return append([]string(nil), r.got...)
 }
 
-// blockingMetadataStorage is a DataStorage whose LoadMetadata blocks until its
-// context ends, as a hung Redis read does. It signals entered on each call.
+// blockingMetadataStorage is a DataStorage whose LoadMetadata blocks, as a hung
+// Redis read does. It signals entered on each call. With a nil release it
+// returns once its context ends; otherwise it ignores the context and returns
+// only when release is closed.
 type blockingMetadataStorage struct {
 	transportsession.DataStorage
 	entered chan struct{}
+	release chan struct{}
 }
 
 func (s *blockingMetadataStorage) LoadMetadata(ctx context.Context, _ string) (map[string]string, error) {
 	select {
 	case s.entered <- struct{}{}:
 	default:
+	}
+	if s.release != nil {
+		<-s.release
+		return nil, errors.New("storage unavailable")
 	}
 	<-ctx.Done()
 	return nil, ctx.Err()

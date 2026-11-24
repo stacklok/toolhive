@@ -992,9 +992,12 @@ register on successful registration (only when health monitoring is enabled —
 with no monitor there is no subscriber and nothing would ever trigger or
 prune the registry) and deregister on the termination paths the server
 observes — including SDK-initiated HTTP DELETE, via a thin
-`SessionIdManager` wrapper; sessions that end without any Terminate call (TTL
-expiry) are pruned lazily when a triggered resync's liveness guard finds them
-gone.
+`SessionIdManager` wrapper. Sessions that end without any Terminate call (TTL
+expiry, or termination on another replica) are pruned when the session
+manager's background cache sweep reclaims them, independent of backend
+activity. A session the sweep never sees (evicted from the node-local cache
+by LRU pressure first, or the sweep disabled) is pruned lazily when a
+triggered resync's liveness guard finds it gone.
 
 **Scope**: passthrough mode, tools only. When the optimizer is enabled the
 fan-out is a no-op — the advertised `find_tool`/`call_tool` meta-tools do not

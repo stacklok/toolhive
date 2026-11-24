@@ -1439,12 +1439,10 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// removes this gate together with the fan-out's.
 	//
 	// Also gated on health monitoring being enabled: with no monitor there is
-	// no OnChange subscription (see Serve), so no fan-out would ever run the
-	// registry's lazy liveness prune — an entry for a session that ends
-	// without a server-observed Terminate (TTL expiry, node-local cache
-	// eviction, which only calls Close) would retain its worker closure (SDK
-	// session, captured identity and forwarded headers) forever. With no
-	// subscriber the registration could never be triggered anyway.
+	// no OnChange subscription (see Serve), so the registration could never be
+	// triggered. It would only retain its worker closure (SDK session, captured
+	// identity and forwarded headers), and with no fan-out the lazy liveness
+	// prune would never run for a session the cache sweep does not reclaim.
 	if s.optimizerFactory == nil && s.backendHealth() != nil {
 		s.healthResync.add(sessionID, toolsResyncWorker)
 	}

@@ -911,52 +911,118 @@ func TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys(t *testing.T) {
 	}
 }
 
-func TestValidatingCache_Sweep_EvictsMatchingEntries(t *testing.T) {
+func TestValidatingCache_Sweep(t *testing.T) {
 	t.Parallel()
 
-	var evicted []string
-	c := newStringCache(
-		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
-		alwaysAliveCheck,
-		func(k, _ string) { evicted = append(evicted, k) },
-	)
+	tests := []struct {
+		name        string
+		pred        func(k string) bool
+		wantEvicted []string
+	}{
+		{name: "evicts matching entries", pred: func(k string) bool { return k == "b" }, wantEvicted: []string{"b"}},
+		{name: "no match keeps every entry", pred: func(string) bool { return false }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	c.Set("a", "v-a")
-	c.Set("b", "v-b")
-	c.Set("c", "v-c")
+			var onEvict []string
+			c := newStringCache(
+				func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+				alwaysAliveCheck,
+				func(k, _ string) { onEvict = append(onEvict, k) },
+			)
+			for _, k := range []string{"a", "b", "c"} {
+				c.Set(k, "v-"+k)
+			}
 
-	removed := c.Sweep(t.Context(), func(_ context.Context, k string, _ string) bool {
-		return k == "b"
-	})
+			evicted := c.Sweep(t.Context(), func(_ context.Context, k string, _ string) bool { return tt.pred(k) })
 
-	assert.Equal(t, 1, removed)
-	assert.ElementsMatch(t, []string{"b"}, evicted)
-	assert.Equal(t, 2, c.Len())
-
-	// The swept entry is gone; a later Get reloads it via the load callback.
-	v, ok := c.Get(t.Context(), "b")
-	require.True(t, ok)
-	assert.Equal(t, "v-b", v)
+			assert.ElementsMatch(t, tt.wantEvicted, evicted)
+			assert.ElementsMatch(t, tt.wantEvicted, onEvict)
+			assert.Equal(t, 3-len(tt.wantEvicted), c.Len())
+		})
+	}
 }
 
-func TestValidatingCache_Sweep_NoMatch_NoEviction(t *testing.T) {
+// TestValidatingCache_Sweep_PredRunsOutsideLock checks that pred may use the
+// cache: a Set from inside pred would deadlock if Sweep held the cache lock.
+func TestValidatingCache_Sweep_PredRunsOutsideLock(t *testing.T) {
 	t.Parallel()
 
-	var evicted []string
 	c := newStringCache(
 		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
 		alwaysAliveCheck,
-		func(k, _ string) { evicted = append(evicted, k) },
+		nil,
 	)
-
 	c.Set("a", "v-a")
-	c.Set("b", "v-b")
 
-	removed := c.Sweep(t.Context(), func(_ context.Context, _ string, _ string) bool {
-		return false
+	done := make(chan []string)
+	go func() {
+		done <- c.Sweep(t.Context(), func(_ context.Context, k string, _ string) bool {
+			c.Set("other", "v-other")
+			return k == "a"
+		})
+	}()
+	select {
+	case evicted := <-done:
+		assert.Equal(t, []string{"a"}, evicted)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sweep deadlocked: pred ran with the cache lock held")
+	}
+	_, ok := c.Get(t.Context(), "other")
+	assert.True(t, ok)
+}
+
+// TestValidatingCache_Sweep_KeepsConcurrentlyReplacedEntry checks the re-check
+// under the lock: an entry replaced by a concurrent Set after pred selected the
+// old value is neither evicted nor reported.
+func TestValidatingCache_Sweep_KeepsConcurrentlyReplacedEntry(t *testing.T) {
+	t.Parallel()
+
+	var onEvict []string
+	c := newStringCache(
+		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+		alwaysAliveCheck,
+		func(k, _ string) { onEvict = append(onEvict, k) },
+	)
+	c.Set("a", "v-a")
+
+	evicted := c.Sweep(t.Context(), func(_ context.Context, k string, _ string) bool {
+		c.Set(k, "v-a-replaced") // lands between pred and the eviction
+		return true
 	})
 
-	assert.Zero(t, removed)
 	assert.Empty(t, evicted)
+	assert.Empty(t, onEvict)
+	v, ok := c.Get(t.Context(), "a")
+	require.True(t, ok)
+	assert.Equal(t, "v-a-replaced", v)
+}
+
+// TestValidatingCache_Sweep_StopsWhenContextEnds checks that Sweep stops
+// calling pred once ctx ends and leaves the remaining entries in place.
+func TestValidatingCache_Sweep_StopsWhenContextEnds(t *testing.T) {
+	t.Parallel()
+
+	c := newStringCache(
+		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+		alwaysAliveCheck,
+		nil,
+	)
+	for _, k := range []string{"a", "b", "c"} {
+		c.Set(k, "v-"+k)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var calls int
+	evicted := c.Sweep(ctx, func(context.Context, string, string) bool {
+		calls++
+		cancel()
+		return true
+	})
+
+	assert.Equal(t, 1, calls, "pred must not run after ctx ends")
+	assert.Len(t, evicted, 1)
 	assert.Equal(t, 2, c.Len())
 }

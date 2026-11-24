@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"sync"
@@ -234,6 +236,10 @@ func (c *cachingAggregator) sharedSweep(
 ) (val any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			// The returned error carries only the panic value, so log the stack
+			// here; it is the only record of where the panic happened.
+			slog.Error("capability aggregation panicked",
+				"panic", fmt.Sprint(r), "stack", string(debug.Stack()))
 			val = nil
 			err = fmt.Errorf("capability aggregation panicked: %v", r)
 		}

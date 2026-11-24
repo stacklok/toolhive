@@ -105,8 +105,9 @@ type FactoryConfig struct {
 	// session cache. Each sweep checks cached sessions against storage (without
 	// refreshing their TTL) and evicts any whose storage record is gone, closing
 	// their backend connections. This reclaims sessions terminated on another
-	// replica, whose entry would otherwise sit in the cache until LRU eviction
-	// because no further access triggers the lazy checkSession (#6932).
+	// replica or expired after their client abandoned them, whose entry would
+	// otherwise sit in the cache until LRU eviction because no further access
+	// triggers the lazy checkSession (#6932).
 	//
 	// A value of 0 uses defaultSweepInterval. A negative value disables the
 	// sweep entirely (the pre-#6932 behaviour).

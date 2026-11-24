@@ -216,9 +216,9 @@ func (s *Server) runListChangedResync(
 ) {
 	// Liveness guard: if the session is gone (terminated/expired) there is
 	// nothing to resync, and doing the work would waste a full backend sweep.
-	// Also prune the session's health-driven fan-out registration (#5786):
-	// TTL expiry and SDK-initiated termination end sessions without server
-	// involvement, so this lazy prune is what keeps the registry bounded.
+	// Also prune the session's health-driven fan-out registration (#5786).
+	// The session manager's sweep normally does that first; this lazy prune
+	// covers sessions the sweep never sees (see healthResyncRegistry).
 	//
 	// LookupOwner reads metadata only. GetMultiSession would refresh the
 	// session TTL (cache hit) or restore the session (cache miss), so backend

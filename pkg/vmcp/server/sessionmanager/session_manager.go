@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -97,11 +96,31 @@ type Manager struct {
 	// cleanup remain owned by this Manager (cleanup returned from New).
 	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error)
 
-	// sweepStop and sweepStopOnce stop the background cache sweep started by New
-	// when SweepInterval is non-negative. sweepStop is nil when the sweep is
-	// disabled. See sweepLoop.
-	sweepStop     chan struct{}
-	sweepStopOnce sync.Once
+	// sweepCancel cancels the background cache sweep started by New, including
+	// a sweep in flight, and sweepDone is closed once sweepLoop has returned.
+	// Both are nil when the sweep is disabled. See sweepLoop and stopSweep.
+	sweepCancel context.CancelFunc
+	sweepDone   chan struct{}
+
+	// onSessionSwept is called with the ID of each session the background sweep
+	// evicts. Nil unless set with WithSweptSessionHook.
+	onSessionSwept func(sessionID string)
+}
+
+// Option configures optional Manager behavior in New.
+type Option func(*Manager)
+
+// WithSweptSessionHook registers fn to run with the ID of each session the
+// background sweep evicts because its storage record is gone or marked
+// terminated. Those sessions are over for good, so fn can release state the
+// caller keeps per session. fn is not called for other cache removals (LRU
+// pressure, EvictStaleSessions, checkSession drift), since those sessions may
+// still be live. fn runs on the sweep goroutine after the session has been
+// closed, so it must not block. It is never called when the sweep is disabled.
+func WithSweptSessionHook(fn func(sessionID string)) Option {
+	return func(m *Manager) {
+		m.onSessionSwept = fn
+	}
 }
 
 // New creates a Manager backed by the given SessionDataStorage and backend
@@ -121,6 +140,7 @@ func New(
 	storage transportsession.DataStorage,
 	cfg *FactoryConfig,
 	backendRegistry vmcp.BackendRegistry,
+	opts ...Option,
 ) (*Manager, func(context.Context) error, error) {
 	if cfg == nil || cfg.Base == nil {
 		return nil, nil, fmt.Errorf("sessionmanager.New: FactoryConfig.Base (SessionFactory) is required")
@@ -148,6 +168,9 @@ func New(
 		storage:       storage,
 		backendReg:    backendRegistry,
 		backendHealth: cfg.BackendHealth,
+	}
+	for _, opt := range opts {
+		opt(sm)
 	}
 
 	// Surface the resolved optimizer factory to the Serve path. The constructor
@@ -184,22 +207,15 @@ func New(
 
 	// Start the proactive cache sweep that reclaims sessions terminated on
 	// another replica (see sweepLoop). Disabled when SweepInterval is negative.
-	sweepInterval := cfg.SweepInterval
-	if sweepInterval == 0 {
-		sweepInterval = defaultSweepInterval
-	}
-	if sweepInterval > 0 {
-		sm.sweepStop = make(chan struct{})
-		go sm.sweepLoop(sweepInterval)
+	if sweepInterval := resolveSweepInterval(cfg.SweepInterval); sweepInterval > 0 {
+		sweepCtx, sweepCancel := context.WithCancel(context.Background())
+		sm.sweepCancel = sweepCancel
+		sm.sweepDone = make(chan struct{})
+		go sm.sweepLoop(sweepCtx, sweepInterval)
 	}
 
 	cleanup := func(ctx context.Context) error {
-		sm.sweepStopOnce.Do(func() {
-			if sm.sweepStop != nil {
-				close(sm.sweepStop)
-			}
-		})
-		return optimizerCleanup(ctx)
+		return errors.Join(sm.stopSweep(ctx), optimizerCleanup(ctx))
 	}
 	return sm, cleanup, nil
 }
@@ -245,7 +261,8 @@ const validateTimeout = 3 * time.Second
 
 // restoreStorageTimeout bounds storage.Load calls (GETEX) in the
 // GetMultiSession restore path (loadSession) and in the checkSession liveness
-// check. Both are single-key Redis reads; 3 s is generous.
+// check, and each storage.LoadMetadata call in the background cache sweep
+// (sweepExpiredSessions). All are single-key Redis reads; 3 s is generous.
 const restoreStorageTimeout = 3 * time.Second
 
 // restoreMetadataWriteTimeout bounds the storage.Update call that persists
@@ -784,43 +801,88 @@ func referencesMissingBackend(backendIDs string, present map[string]struct{}) bo
 	return false
 }
 
-// sweepLoop periodically runs sweepExpiredSessions until cleanup closes
-// sweepStop. It is the proactive counterpart to checkSession's lazy liveness
-// check: a session terminated on another replica is never accessed again, so
-// checkSession never runs for it and its MultiSession (and open backend
+// resolveSweepInterval maps FactoryConfig.SweepInterval to the period New
+// starts the sweep with: 0 selects defaultSweepInterval, and a negative value
+// is returned as is, meaning the sweep is disabled.
+func resolveSweepInterval(configured time.Duration) time.Duration {
+	if configured == 0 {
+		return defaultSweepInterval
+	}
+	return configured
+}
+
+// sweepLoop periodically runs sweepExpiredSessions until ctx is cancelled by
+// stopSweep, then closes sweepDone. It is the proactive counterpart to
+// checkSession's lazy liveness check: a session terminated on another replica,
+// or one that expired after its client abandoned it, is never accessed again,
+// so checkSession never runs for it and its MultiSession (and open backend
 // connections) would otherwise sit in the cache until LRU eviction (#6932).
-func (sm *Manager) sweepLoop(interval time.Duration) {
+func (sm *Manager) sweepLoop(ctx context.Context, interval time.Duration) {
+	defer close(sm.sweepDone)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			evicted := sm.sweepExpiredSessions()
+			evicted := sm.sweepExpiredSessions(ctx)
 			if evicted > 0 {
 				slog.Debug("session cache: sweep evicted terminated sessions",
 					"evicted_sessions", evicted)
 			}
-		case <-sm.sweepStop:
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
+// stopSweep cancels the background sweep, including a sweep in flight, and
+// waits for sweepLoop to return or ctx to end, whichever comes first. It is a
+// no-op when the sweep is disabled and is safe to call more than once.
+func (sm *Manager) stopSweep(ctx context.Context) error {
+	if sm.sweepCancel == nil {
+		return nil
+	}
+	sm.sweepCancel()
+	// Prefer the already-stopped case so a cleanup called with an expired ctx
+	// does not report a failure for a sweep that has in fact stopped.
+	select {
+	case <-sm.sweepDone:
+		return nil
+	default:
+	}
+	select {
+	case <-sm.sweepDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for the session cache sweep to stop: %w", ctx.Err())
+	}
+}
+
 // sweepExpiredSessions evicts every cached session whose storage record is gone
-// or marked terminated. Unlike checkSession (the cache-hit path), it reads via
+// or marked terminated, reports each evicted ID to onSessionSwept, and returns
+// how many it evicted. Unlike checkSession (the cache-hit path), it reads via
 // LoadMetadata, which does NOT refresh the Redis TTL, so sweeping a live
-// session does not extend its lifetime.
-func (sm *Manager) sweepExpiredSessions() int {
-	return sm.sessions.Sweep(context.Background(), func(ctx context.Context, sessionID string, _ vmcpsession.MultiSession) bool {
-		metadata, err := sm.storage.LoadMetadata(ctx, sessionID)
+// session does not extend its lifetime. Each read is bounded by
+// restoreStorageTimeout, and the sweep stops early once ctx ends.
+func (sm *Manager) sweepExpiredSessions(ctx context.Context) int {
+	evicted := sm.sessions.Sweep(ctx, func(ctx context.Context, sessionID string, _ vmcpsession.MultiSession) bool {
+		readCtx, cancel := context.WithTimeout(ctx, restoreStorageTimeout)
+		defer cancel()
+		metadata, err := sm.storage.LoadMetadata(readCtx, sessionID)
 		if errors.Is(err, transportsession.ErrSessionNotFound) {
 			return true
 		}
 		if err != nil {
-			return false // transient storage error — keep cached
+			return false // transient storage error or shutdown — keep cached
 		}
 		return metadata[MetadataKeyTerminated] == MetadataValTrue
 	})
+	if sm.onSessionSwept != nil {
+		for _, sessionID := range evicted {
+			sm.onSessionSwept(sessionID)
+		}
+	}
+	return len(evicted)
 }
 
 // updateMetadata writes a complete metadata snapshot to storage using a

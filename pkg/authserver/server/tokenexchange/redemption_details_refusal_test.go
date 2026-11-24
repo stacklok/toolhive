@@ -20,24 +20,28 @@ import (
 // issuing a token without it, before the assertion is consumed. Redemption
 // does not refuse the delegated-access marker: an assertion with the marker
 // alone is accepted, and one that carries both is refused for its details. A
-// cnf claim is refused first.
+// cnf claim is refused first, and an issuer that is not enabled for the grant
+// gets that refusal instead, so the details refusal names only issuers the
+// grant accepts.
 func TestRedemptionRefusesAuthorizationDetailsClaim(t *testing.T) {
 	t.Parallel()
 
 	const detailsHint = "invalid_assertion: The assertion must not carry an 'authorization_details' claim."
 
 	type redemptionForm struct {
-		name     string
-		cnfHint  string
-		claims   func() *ValidatedClaims
-		redeemer func(t *testing.T, claims *ValidatedClaims, consumer *recordingAssertionConsumer) (
+		name           string
+		cnfHint        string
+		notEnabledHint string
+		claims         func() *ValidatedClaims
+		redeemer       func(t *testing.T, claims *ValidatedClaims, consumer *recordingAssertionConsumer) (
 			fosite.TokenEndpointHandler, fosite.AccessRequester)
 	}
 	forms := []redemptionForm{
 		{
-			name:    "plain RFC 7523",
-			cnfHint: "invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.",
-			claims:  refusalClaims,
+			name:           "plain RFC 7523",
+			cnfHint:        "invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.",
+			notEnabledHint: "invalid_assertion: The JWT bearer assertion issuer is not enabled for this grant.",
+			claims:         refusalClaims,
 			redeemer: func(t *testing.T, claims *ValidatedClaims, consumer *recordingAssertionConsumer) (
 				fosite.TokenEndpointHandler, fosite.AccessRequester) {
 				t.Helper()
@@ -50,9 +54,10 @@ func TestRedemptionRefusesAuthorizationDetailsClaim(t *testing.T) {
 			},
 		},
 		{
-			name:    "ID-JAG",
-			cnfHint: "invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.",
-			claims:  validIDJAGClaims,
+			name:           "ID-JAG",
+			cnfHint:        "invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.",
+			notEnabledHint: "invalid_assertion: The ID-JAG assertion issuer is not enabled for this grant.",
+			claims:         validIDJAGClaims,
 			redeemer: func(t *testing.T, claims *ValidatedClaims, consumer *recordingAssertionConsumer) (
 				fosite.TokenEndpointHandler, fosite.AccessRequester) {
 				t.Helper()
@@ -65,6 +70,7 @@ func TestRedemptionRefusesAuthorizationDetailsClaim(t *testing.T) {
 		name    string
 		extra   map[string]any
 		claims  map[string]any // the full claim set, when set
+		issuer  string         // overrides the form's issuer when set
 		wantCnf bool
 		wantOK  bool // redemption does not refuse the delegated-access marker
 	}{
@@ -89,6 +95,8 @@ func TestRedemptionRefusesAuthorizationDetailsClaim(t *testing.T) {
 			extra: map[string]any{authorizationDetailsParam: []any{"x"}}},
 		{name: "marker and authorization_details",
 			extra: map[string]any{claimnames.DelegatedAccessKey: true, authorizationDetailsParam: terminalDetails()}},
+		{name: "issuer trusted but not enabled for the grant", issuer: "https://not-enabled.example.com",
+			extra: map[string]any{authorizationDetailsParam: terminalDetails()}},
 		{name: "cnf and authorization_details", wantCnf: true,
 			extra: map[string]any{claimConfirmation: map[string]any{"jkt": "t"}, authorizationDetailsParam: terminalDetails()}},
 	}
@@ -104,6 +112,9 @@ func TestRedemptionRefusesAuthorizationDetailsClaim(t *testing.T) {
 				}
 				maps.Copy(claims.Extra, tt.extra)
 				claims.Claims = tt.claims
+				if tt.issuer != "" {
+					claims.Issuer = tt.issuer
+				}
 				consumer := &recordingAssertionConsumer{}
 				handler, req := form.redeemer(t, claims, consumer)
 
@@ -114,8 +125,11 @@ func TestRedemptionRefusesAuthorizationDetailsClaim(t *testing.T) {
 					return
 				}
 				want := detailsHint
-				if tt.wantCnf {
+				switch {
+				case tt.wantCnf:
 					want = form.cnfHint
+				case tt.issuer != "":
+					want = form.notEnabledHint
 				}
 				requireRefusal(t, err, "invalid_grant", want)
 				assert.Empty(t, consumer.key, "a refused assertion must not be consumed")

@@ -73,7 +73,9 @@ func invalidAssertion(hint string) error {
 // is read: redemption does not refuse the delegated-access marker, so an
 // assertion that carries both is refused for its details.
 //
-// The refusal can newly break a trusted issuer's redemptions, so the operator
+// Both handlers call it after the issuer's policy lookup and before the
+// assertion is consumed, so it runs only for issuers enabled for the grant.
+// The refusal can newly break such an issuer's redemptions, so the operator
 // gets a Warn line naming the issuer. The plain grant needs no client
 // authentication and a refused assertion is not consumed, so one assertion can
 // be resent until it expires: only the first refusal per issuer is logged at

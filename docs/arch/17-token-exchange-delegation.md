@@ -1393,8 +1393,10 @@ spec:
   `authorization_details` claim is refused with `invalid_grant`, whatever the
   value, on this grant and on ID-JAG redemption alike. The issued token would
   not carry the claim, so redeeming the assertion would silently drop the
-  restriction its issuer signed. Only presence counts, and the check runs
-  before the assertion is consumed. See [Terminal tokens](#terminal-tokens).
+  restriction its issuer signed. Only presence counts. The check runs after
+  the issuer's policy lookup, so an issuer that is not enabled for the grant
+  gets that refusal instead, and before the assertion is consumed. See
+  [Terminal tokens](#terminal-tokens).
 - **Synthetic subject and client identity.** The issued token's `sub` is
   `<assertion issuer>#<assertion subject>` (`session.New`'s first argument,
   matching the delegated-token subject qualification pattern in [Accepted
@@ -1650,7 +1652,7 @@ its own default text before the reason.
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | Assertion that carries a `cnf` claim, with any value including `null`, for any issuer | 400 `invalid_grant`, `invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.` | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` Both checks run before the assertion is consumed |
-| Assertion that carries an `authorization_details` claim, with any value including `null`, for any issuer, that passes the checks above (no `cnf` claim; for an ID-JAG, a single `aud`) | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` | same. Both checks run before the assertion is consumed |
+| Assertion that carries an `authorization_details` claim, with any value including `null`, from an issuer enabled for the grant, that passes the checks above (no `cnf` claim; for an ID-JAG, a single `aud`) | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` | same. Both checks run before the assertion is consumed |
 | Subject not listed in `subject_bindings` (namespaced issuers) | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
@@ -1899,8 +1901,9 @@ mTLS) is verified.
 **ID-JAGs that carry `authorization_details` are refused.** Draft §4.4.1 asks
 the server to process the claim, but the issued token cannot carry it yet, so
 the handler refuses the ID-JAG with `invalid_grant` instead of issuing a token
-without the restriction. The check runs after the `cnf` check, for every
-issuer, and before the ID-JAG is consumed (see [Terminal tokens](#terminal-tokens)).
+without the restriction. The check runs after the `cnf` check and the
+issuer's policy lookup, for every issuer enabled for the grant, and before the
+ID-JAG is consumed (see [Terminal tokens](#terminal-tokens)).
 
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
 also lets AS-2's plain handler (`typ` `JWT`, empty or absent) accept AS-1's

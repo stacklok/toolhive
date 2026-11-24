@@ -770,10 +770,10 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, stri
 		// must be authored defensively (`principal has claim_groups && ...`).
 		//
 		// Unlike the JWT path below, this branch does not read the provider's
-		// stored id_token, deliberately: this fallback evaluates the request
-		// token's claims under their own label, and mixing id_token claims in
-		// would give one claim set two trust roots under a label that names
-		// only one.
+		// stored id_token: it evaluates the request token's claims under their
+		// own label. Sourcing claims from the id_token here is tracked in #6048;
+		// a change that does so must also revisit claimSourceUpstreamOpaque,
+		// which today names the request token as the only trust root.
 		if !looksLikeJWT(upstreamToken) {
 			// The Warn shares claimKeyLog with logClaimKeys below so a busy
 			// Google/GitHub deployment does not emit one line per tool call.

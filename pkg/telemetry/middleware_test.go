@@ -2680,3 +2680,31 @@ func dataPointAttributes(m metricdata.Metrics) []map[string]any {
 	}
 	return out
 }
+
+func TestHTTPMiddleware_SanitizeArguments_MultiByteTruncation(t *testing.T) {
+	t.Parallel()
+
+	middleware := &HTTPMiddleware{}
+
+	// "世" is 3 bytes; 100 and 200 are not multiples of 3, so a byte-wise
+	// cut would split a character.
+	t.Run("long value", func(t *testing.T) {
+		t.Parallel()
+		result := middleware.sanitizeArguments(map[string]interface{}{
+			"text": strings.Repeat("世", 100),
+		})
+		assert.True(t, utf8.ValidString(result), "result must be valid UTF-8: %q", result)
+		assert.True(t, strings.HasSuffix(result, "..."))
+	})
+
+	t.Run("long joined result", func(t *testing.T) {
+		t.Parallel()
+		result := middleware.sanitizeArguments(map[string]interface{}{
+			"a": strings.Repeat("世", 33),
+			"b": strings.Repeat("世", 33),
+			"c": strings.Repeat("世", 33),
+		})
+		assert.True(t, utf8.ValidString(result), "result must be valid UTF-8: %q", result)
+		assert.True(t, strings.HasSuffix(result, "..."))
+	})
+}

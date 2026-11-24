@@ -242,6 +242,9 @@ type Config struct {
 	// code mode may be combined with Authz: a script's inner tool calls are re-authorized
 	// by real name through the core admission seam, so Cedar remains the gate on everything
 	// a script can do. See the codemode.decorator doc for the full rationale.
+	//
+	// When TelemetryProvider is set, New attaches code mode OTel metrics and
+	// spans on a copy: the value passed in is not changed.
 	CodeModeConfig *codemode.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
@@ -534,6 +537,16 @@ func New(
 	// never serves one caller's capability view to another.
 	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
+	// Code mode telemetry is built before the core, so a failure here has
+	// nothing to release.
+	codeModeCfg, err := withCodeModeTelemetry(cfg.CodeModeConfig, cfg.TelemetryProvider)
+	if err != nil {
+		return nil, err
+	}
+	if err := registerCodeModeEnabledGauge(cfg.TelemetryProvider, cfg.Name, codeModeCfg != nil); err != nil {
+		return nil, err
+	}
+
 	coreVMCP, err := core.New(deriveCoreConfig(
 		cfg, cachedAgg, rt, backendClient, backendRegistry, workflowDefs,
 		cfg.Authz, elicitation,
@@ -551,8 +564,8 @@ func New(
 	// Serve-layer optimizer (if enabled) indexes it like any other tool, and the script's
 	// inner calls route back through core.CallTool for admission. The decorator delegates
 	// Close to the inner core, so New can release it if Serve fails and srv.Stop owns it on success.
-	if cfg.CodeModeConfig != nil {
-		coreVMCP = codemode.NewDecorator(coreVMCP, cfg.CodeModeConfig)
+	if codeModeCfg != nil {
+		coreVMCP = codemode.NewDecorator(coreVMCP, codeModeCfg)
 	}
 
 	// On the New/Serve path the core is the single aggregator and the source of the

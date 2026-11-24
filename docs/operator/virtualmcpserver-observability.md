@@ -18,7 +18,9 @@ The vMCP telemetry provides visibility into:
 1. **Backend operations**: Track requests to individual backend MCP servers
    including tool calls, resource reads, prompt retrieval, and capability listing
 2. **Workflow executions**: Monitor composite tool workflow performance and errors
-3. **Distributed tracing**: Correlate requests across the vMCP and its backends
+3. **Code mode**: Track `execute_tool_script` executions, their outcome, duration,
+   inner tool calls and `parallel()` fan-out
+4. **Distributed tracing**: Correlate requests across the vMCP and its backends
 
 The vMCP uses a decorator pattern to wrap backend clients and workflow executors
 with telemetry instrumentation. This approach provides consistent metrics and
@@ -110,6 +112,98 @@ Duration of workflow executions.
 
 **Attributes**: Same as `toolhive_vmcp_workflow_executions`.
 
+### Code Mode Metrics
+
+Code mode metrics are recorded when code mode is enabled and telemetry is
+configured. They track calls to the `execute_tool_script` virtual tool. The
+Prometheus exporter adds the `_total` and `_seconds` suffixes.
+
+The `status` attribute holds how the script ended:
+
+| `status` | Meaning |
+|----------|---------|
+| `success` | The script ran and returned a result |
+| `error` | Invalid arguments, a runtime error in the script, or a failed tool call |
+| `timeout` | The script or one of its tool calls hit its deadline |
+| `step_limit` | The script, or a callable it ran under `parallel()`, used up its step budget |
+
+#### `toolhive_vmcp_code_mode_enabled` (Gauge)
+
+`1` when code mode is enabled on the vMCP server, `0` when it is not. It is
+reported whenever telemetry is configured, so disabled servers count too. A code
+mode change restarts the vMCP pod, so the value always matches the running
+configuration.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `server` | string | vMCP server name (same label as `toolhive_mcp_*`) |
+
+#### `toolhive_vmcp_script_executions` (Counter)
+
+Total number of `execute_tool_script` calls. **Attributes**: `status`.
+
+#### `toolhive_vmcp_script_duration` (Histogram, seconds)
+
+Wall-clock duration of each `execute_tool_script` call. **Attributes**: `status`.
+
+**Bucket boundaries**: `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`
+
+#### `toolhive_vmcp_script_tool_calls` (Histogram, `{call}`)
+
+Number of tool calls each script started, including calls that failed or were
+denied. Calls made under `parallel()` count individually. **Attributes**: `status`.
+
+**Bucket boundaries**: `[0, 1, 2, 3, 5, 10, 20, 50, 100, 250]`
+
+#### `toolhive_vmcp_script_parallel_tasks` (Counter, `{task}`)
+
+Total number of callables started by `parallel()`, summed over every
+`parallel()` call in every script. Divide by
+`toolhive_vmcp_script_executions` for the average fan-out per script.
+**Attributes**: `status`.
+
+#### Code mode vs. regular tool calls
+
+The vMCP request metrics already label each `tools/call` with the tool name, so
+no separate counter is needed to split code mode from regular calls:
+`toolhive_mcp_tool_calls` (attribute `tool`) counts `execute_tool_script` as
+one call. A script's inner tool calls do not pass the request middleware, so
+they are counted only by `toolhive_vmcp_script_tool_calls` and, per backend,
+by `toolhive_vmcp_backend_requests`.
+
+The `status` label of `toolhive_mcp_tool_calls` is the HTTP outcome. A script
+that fails still answers with HTTP 200 and `isError: true`, so use
+`toolhive_vmcp_script_executions{status}` for script outcomes.
+
+#### Example PromQL
+
+```promql
+# Share of tool calls that are code mode scripts (last 5 minutes)
+sum(rate(toolhive_mcp_tool_calls_total{tool="execute_tool_script"}[5m]))
+/
+sum(rate(toolhive_mcp_tool_calls_total[5m]))
+
+# Code mode call rate vs. regular call rate
+sum(rate(toolhive_mcp_tool_calls_total{tool="execute_tool_script"}[5m]))
+sum(rate(toolhive_mcp_tool_calls_total{tool!="execute_tool_script"}[5m]))
+
+# vMCP servers with code mode enabled, and the share of all servers
+sum(toolhive_vmcp_code_mode_enabled)
+sum(toolhive_vmcp_code_mode_enabled) / count(toolhive_vmcp_code_mode_enabled)
+
+# Script error rate by status
+sum by (status) (rate(toolhive_vmcp_script_executions_total{status!="success"}[5m]))
+/ ignoring(status) group_left
+sum(rate(toolhive_vmcp_script_executions_total[5m]))
+
+# p95 script duration
+histogram_quantile(0.95, sum by (le) (rate(toolhive_vmcp_script_duration_seconds_bucket[5m])))
+
+# Average tool calls per script, and average parallel() fan-out per script
+sum(rate(toolhive_vmcp_script_tool_calls_sum[5m])) / sum(rate(toolhive_vmcp_script_tool_calls_count[5m]))
+sum(rate(toolhive_vmcp_script_parallel_tasks_total[5m])) / sum(rate(toolhive_vmcp_script_executions_total[5m]))
+```
+
 ## Distributed Tracing
 
 ### Backend Operation Spans
@@ -144,6 +238,28 @@ with the `workflow.name` attribute. These spans nest the individual backend
 operation spans, enabling attribution of workflow errors or latency to specific
 tool calls.
 
+### Code Mode Spans
+
+Each `execute_tool_script` call gets a `codemode.ExecuteToolScript` span. Each
+tool call the script makes gets a `codemode.CallTool` child span, including
+calls made under `parallel()`, and the backend operation span for that call
+nests under it.
+
+| Span | Attribute | Description |
+|------|-----------|-------------|
+| `codemode.ExecuteToolScript` | `script.status` | `success`, `error`, `timeout` or `step_limit` |
+| | `script.tool_count` | Tool calls the script started, including failed and denied ones |
+| | `script.parallel_used` | Whether the script called `parallel()` |
+| | `script.parallel_calls` | Number of `parallel()` calls |
+| | `script.parallel_tasks` | Callables started by `parallel()` |
+| | `script.step_count` | Starlark execution steps, including `parallel()` children |
+| | `script.hash` | First 16 hex characters of the SHA-256 of the script body |
+| `codemode.CallTool` | `tool_name`, `gen_ai.tool.name` | The tool called |
+
+A failed script or tool call sets the span status to `codes.Error` with the
+outcome as its description. The error text is not recorded on spans, because it
+can quote script data; it is in the debug log instead.
+
 ### Trace Context Propagation
 
 The vMCP client passes the current context through to backend calls, preserving
@@ -151,6 +267,22 @@ trace context across the vMCP aggregation layer. The
 `InjectMetaTraceContext` function (`pkg/telemetry/propagation.go`) can inject
 W3C Trace Context (`traceparent`, `tracestate`) into the MCP `_meta` field for
 backends that support it.
+
+## Code Mode Logs
+
+Code mode logs each script at DEBUG, so they are off by default. A failed
+script is the caller's error and can happen at request rate, so it stays at
+DEBUG as well; alert on `toolhive_vmcp_script_executions{status!="success"}`
+instead.
+
+| Message | Fields |
+|---------|--------|
+| `codemode: script started` | `script_hash`, `session_id`, `principal`, `script_len` |
+| `codemode: script finished` | `script_hash`, `session_id`, `status`, `duration`, `tool_calls`, `steps`, `parallel_calls`, `parallel_tasks`, `error` (on failure) |
+
+The script body is never logged; `script_hash` correlates runs of the same
+script. `error` is the message the caller received. `session_id` is empty for
+requests without an MCP session (stateless Modern requests).
 
 ## Configuration
 

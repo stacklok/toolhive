@@ -354,7 +354,7 @@ Filtering a list removes the tools the filter hides and applies the overrides, a
 **Location**: `pkg/usagemetrics/middleware.go`
 
 **Responsibilities**:
-- Count `tools/call` requests by examining parsed MCP data, and separately the ones that call the vMCP code mode tool `execute_tool_script`
+- Count `tools/call` requests by examining parsed MCP data, and separately the ones that call the vMCP code mode tool `execute_tool_script`, directly or through the optimizer's `call_tool`
 - Attribute each call to the MCP client that made it
 - Aggregate counts in-memory
 - Flush metrics to API endpoint periodically (every 15 minutes)
@@ -363,7 +363,7 @@ Filtering a list removes the tools the filter hides and applies the overrides, a
 
 **What each report contains**:
 
-Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. When it stops, it sends a final report only if it counted tool calls. Outside Kubernetes it needs an anonymous ID first: until the first update check creates one, nothing is sent. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
+Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. When it stops, it sends a final report only if it counted tool calls, including tool calls from code mode scripts. Outside Kubernetes it needs an anonymous ID first: until the first update check creates one, nothing is sent. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
 
 | Field | Values |
 |-------|--------|
@@ -379,7 +379,7 @@ Each proxy (and each vMCP server) sends one report every 15 minutes, including w
 | `backend_count` | vMCP only: number of backends |
 | `tool_count` | vMCP only: number of backend tools in the most recent aggregation, after conflict resolution and per-backend filters. Excludes composite and optimizer tools and is not filtered per user; it can differ between callers when backends return different tools per user |
 | `features` | vMCP only: any of `optimizer`, `code_mode`, `composite_tools`, `outgoing_auth` |
-| `code_mode_calls` | vMCP only: how many of the calls in `count` were `execute_tool_script` (code mode) calls. A subset of `count`, not added to it; omitted when zero |
+| `code_mode_calls` | vMCP only: how many of the calls in `count` were `execute_tool_script` (code mode) calls. A subset of `count`, not added to it; omitted when zero. Counts a `tools/call` named `execute_tool_script` and, when the optimizer is on, a `call_tool` call whose `tool_name` is `execute_tool_script` |
 | `code_mode_tool_calls` | vMCP only: tool calls made from inside code mode scripts so far today. Those calls never reach this middleware, so they are not part of `count` or `calls_by_client`; omitted when zero |
 
 The client is taken from `clientInfo.name`: from `_meta` on each request for stateless (2026-07-28) requests, or from the `initialize` request for session-based connections (tracked per session ID, in memory only). When neither applies, because the server never assigns a session ID (stateless streamable HTTP servers, including many remote servers) or the proxy no longer remembers the session (after a restart, on another replica, or once more than 4096 sessions are tracked), the call is attributed to the client the request's `User-Agent` header names, if it is one of the clients listed above. Any other `User-Agent`, such as a generic HTTP library agent (`node`, `python-httpx`, `Go-http-client`), leaves the call `unknown`, never `other`. Only the normalized value is reported; the raw `clientInfo.name` and `User-Agent` are not. vMCP reports each call under the client that made it, and the backend proxy it forwards the call to reports it again under the client `vmcp`, including on a session-less Legacy backend, because vMCP's backend requests carry a `User-Agent` of the form `toolhive/vmcp <version> <build type> (<os>/<arch>)`. If `passthroughHeaders` or a backend's `headerForward` forwards a `User-Agent`, that value is sent instead and the session-less call is attributed to the client it names. To rank clients across proxies and vMCP, exclude `vmcp`.

@@ -209,6 +209,15 @@ func newCounts() counts {
 	return counts{byClient: make(map[string]int64)}
 }
 
+// hasCalls reports whether there is anything worth a report outside the
+// periodic flush: tool calls from clients, or tool calls from code mode
+// scripts. The latter land when a script returns, so they can be pending while
+// total is zero (a script that straddled midnight, or the last script before
+// shutdown).
+func (n counts) hasCalls() bool {
+	return n.total > 0 || n.codeModeToolCalls > 0
+}
+
 func getCurrentDateUTC() string {
 	return time.Now().UTC().Format("2006-01-02")
 }

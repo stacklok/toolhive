@@ -692,7 +692,7 @@ func decideEntry(
 		ClientID:           clientID,
 		Actor:              clientID,
 		RequestedTokenType: oauthproto.TokenTypeRefreshToken,
-		Subject:            detailsSubject(claims),
+		Subject:            detailsSubject(claims, ""),
 	})
 	if err != nil {
 		return nil, "", time.Time{}, err

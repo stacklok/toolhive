@@ -59,34 +59,49 @@ type Request struct {
 	Entries []json.RawMessage
 	// GrantType is the grant type of the token request.
 	GrantType string
-	// ClientID is the authenticated client.
+	// ClientID is the authenticated client on token exchange and on ID-JAG
+	// redemption.
 	ClientID string
 	// Actor is the resolved actor. Without an actor_token it equals ClientID, or
-	// the verified SPIFFE ID for a SPIFFE client.
+	// the verified SPIFFE ID for a SPIFFE client. Token exchange only: empty on
+	// ID-JAG redemption.
 	Actor string
 	// ActorTokenPresent reports whether the request carried an actor_token.
+	// Token exchange only.
 	ActorTokenPresent bool
-	// RequestedTokenType is the requested_token_type of the request.
+	// RequestedTokenType is the requested_token_type of the request. Token
+	// exchange only: empty on ID-JAG redemption, so a hook registered for both
+	// grants branches on GrantType before reading it.
 	RequestedTokenType string
-	// RequestedScopes are the scopes the client asked for.
+	// RequestedScopes are the scopes the client asked for. Token exchange only.
 	RequestedScopes []string
 	// GrantedAudience is the audience the server has already decided to grant.
+	// On ID-JAG redemption it is the granted resource.
 	GrantedAudience []string
 	// Subject describes the validated subject token.
 	Subject Subject
 }
 
-// Subject describes a validated subject token.
+// Subject describes a validated subject token. On ID-JAG redemption it
+// describes the validated ID-JAG.
 type Subject struct {
-	Issuer   string
-	Subject  string
-	ClientID string
-	JWTID    string
-	Audience []string
-	IssuedAt time.Time
-	Expiry   time.Time
-	External bool // validated through a trusted issuer
-	// Claims holds all verified claims, passed to hooks as given.
+	Issuer string
+	// Subject is the token's sub claim, on every grant. It is never replaced by
+	// a resolved local user; see ResolvedUser.
+	Subject string
+	// ResolvedUser is the local user this request resolved the subject to. It
+	// is set only on an ID-JAG redemption from an issuer with subject_mode
+	// resolve, and is empty otherwise, including on token exchange.
+	ResolvedUser string
+	ClientID     string
+	JWTID        string
+	Audience     []string
+	IssuedAt     time.Time
+	Expiry       time.Time
+	External     bool // validated through a trusted issuer
+	// Claims holds the verified claims, passed to hooks as given, except
+	// authorization_details: a hook reads the entries from Request.Entries,
+	// which keep every digit of a number.
 	Claims map[string]any
 }
 
@@ -137,7 +152,9 @@ func New(types map[string]Type) (*Registry, error) {
 // policy, not RFC 9396). Every entry needs a non-empty string "type" that is
 // registered for grantType. The empty array "[]" is valid.
 //
-// Any failure returns ErrInvalid.
+// Any failure returns ErrInvalid. When every entry is a well-formed object with
+// a non-empty string "type" but some type is not registered for grantType, the
+// error is ErrUnknownType, which wraps ErrInvalid.
 func (r *Registry) Parse(raw, grantType string) (*Pending, error) {
 	data := []byte(raw)
 	if len(data) > maxSize || !utf8.Valid(data) || !validArray(data) {
@@ -149,24 +166,29 @@ func (r *Registry) Parse(raw, grantType string) (*Pending, error) {
 		return nil, ErrInvalid
 	}
 
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		name, ok := entryType(entry)
+		if !ok {
+			return nil, ErrInvalid
+		}
+		names[i] = name
+	}
+
 	pending := &Pending{
 		grantType: grantType,
 		types:     r.types,
 		entries:   make(map[string][]json.RawMessage),
 	}
-	for _, entry := range entries {
-		name, ok := entryType(entry)
-		if !ok {
-			return nil, ErrInvalid
-		}
+	for i, name := range names {
 		t, registered := r.types[name]
 		if !registered || !slices.Contains(t.GrantTypes, grantType) {
-			return nil, ErrInvalid
+			return nil, ErrUnknownType
 		}
 		if _, seen := pending.entries[name]; !seen {
 			pending.order = append(pending.order, name)
 		}
-		pending.entries[name] = append(pending.entries[name], entry)
+		pending.entries[name] = append(pending.entries[name], entries[i])
 	}
 	return pending, nil
 }
@@ -208,7 +230,7 @@ func (p *Pending) Grant(ctx context.Context, req Request) (json.RawMessage, erro
 			return nil, hookError(name, err)
 		}
 		if len(result.Entries) == 0 {
-			return nil, fmt.Errorf("type %q returned no entries: %w", name, errInvalidHookResult)
+			return nil, fmt.Errorf("type %q returned no entries: %w", name, ErrNoEntries)
 		}
 		for _, entry := range result.Entries {
 			if err := checkGranted(name, entry); err != nil {

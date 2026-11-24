@@ -48,19 +48,26 @@ func readDetailsParam(form url.Values) (raw string, present bool, err error) {
 	return values[0], true, nil
 }
 
-// detailsSubject builds the hook Subject from validated claims. Audience and
-// Claims are copied, so a hook cannot change the validated claims.
-func detailsSubject(claims *ValidatedClaims) authorizationdetails.Subject {
+// detailsSubject builds the hook Subject from validated claims. Subject is
+// always the token's sub; resolvedUser is the local user the request resolved
+// it to, empty when it resolved none. Audience and Claims are copied, so a
+// hook cannot change the validated claims. The authorization_details claim is
+// left out of Claims: its decoded copy has lost number precision, and a hook
+// reads the entries from Request.Entries.
+func detailsSubject(claims *ValidatedClaims, resolvedUser string) authorizationdetails.Subject {
+	copied := deepCopyClaims(claims.Claims)
+	delete(copied, authorizationDetailsParam)
 	return authorizationdetails.Subject{
-		Issuer:   claims.Issuer,
-		Subject:  claims.Subject,
-		ClientID: claims.ClientID,
-		JWTID:    claims.JWTID,
-		Audience: slices.Clone(claims.Audience),
-		IssuedAt: claims.IssuedAt,
-		Expiry:   claims.Expiry,
-		External: claims.ExternalIssuer != "",
-		Claims:   deepCopyClaims(claims.Claims),
+		Issuer:       claims.Issuer,
+		Subject:      claims.Subject,
+		ResolvedUser: resolvedUser,
+		ClientID:     claims.ClientID,
+		JWTID:        claims.JWTID,
+		Audience:     slices.Clone(claims.Audience),
+		IssuedAt:     claims.IssuedAt,
+		Expiry:       claims.Expiry,
+		External:     claims.ExternalIssuer != "",
+		Claims:       copied,
 	}
 }
 
@@ -108,7 +115,7 @@ func (*Handler) grantAuthorizationDetails(
 		RequestedTokenType: form.Get("requested_token_type"),
 		RequestedScopes:    slices.Clone([]string(requester.GetRequestedScopes())),
 		GrantedAudience:    slices.Clone([]string(requester.GetGrantedAudience())),
-		Subject:            detailsSubject(claims),
+		Subject:            detailsSubject(claims, ""),
 	})
 	if err != nil {
 		return authorizationDetailsGrantError(clientID, err)

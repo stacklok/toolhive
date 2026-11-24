@@ -68,7 +68,9 @@ type embeddedAuthServerOptions struct {
 }
 
 // WithAuthorizationDetailsRegistry configures the embedded authorization server
-// to pass the registry to its RFC 8693 token-exchange handler.
+// to pass the registry to its RFC 8693 token-exchange handler and to its
+// ID-JAG redemption handler, which processes an ID-JAG's signed
+// authorization_details claim with it.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) EmbeddedAuthServerOption {
 	return func(options *embeddedAuthServerOptions) { options.authorizationDetailsRegistry = registry }
 }
@@ -392,7 +394,7 @@ func newEmbeddedAuthServerWithStorage(
 		return nil, err
 	}
 	if options.authorizationDetailsRegistry != nil &&
-		!authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange) {
+		!authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
 		return nil, authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	// Refuse a required_subject_claims that cannot be satisfied before upstream
@@ -731,7 +733,7 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 	if err != nil {
 		return fmt.Errorf("normalize inbound grants: %w", err)
 	}
-	if !authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange) {
+	if !authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
 		return authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil

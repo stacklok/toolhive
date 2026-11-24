@@ -65,15 +65,15 @@ func invalidAssertion(hint string) error {
 	return errorsx.WithStack(redemptionRefusal(fosite.ErrInvalidGrant.ErrorField, reasonInvalidAssertion, hint))
 }
 
-// refuseSignedDetails refuses an assertion that carries an
-// authorization_details claim, on both the plain RFC 7523 and the ID-JAG
-// grant. The ID-JAG draft (section 4.4.1) asks a redeeming server to process
-// the claim, but this server cannot carry a signed restriction into the token,
-// so it refuses instead of issuing a token without it. Only the details claim
-// is read: redemption does not refuse the delegated-access marker, so an
-// assertion that carries both is refused for its details.
+// refuseSignedDetails refuses a plain RFC 7523 assertion that carries an
+// authorization_details claim. RFC 7523 defines no such claim, so the plain
+// grant cannot know what it restricts and refuses it instead of issuing a
+// token without it. An ID-JAG's claim is processed instead (grantSignedDetails).
+// Only the details claim is read: redemption does not refuse the
+// delegated-access marker, so an assertion that carries both is refused for
+// its details.
 //
-// Both handlers call it after the issuer's policy lookup and before the
+// JWTBearerHandler calls it after the issuer's policy lookup and before the
 // assertion is consumed, so it runs only for issuers enabled for the grant.
 // The refusal can newly break such an issuer's redemptions, so the operator
 // gets a Warn line naming the issuer. The plain grant needs no client
@@ -84,10 +84,7 @@ func (r *redeemer) refuseSignedDetails(ctx context.Context, claims *ValidatedCla
 	if !restrictionsOf(claims).AuthorizationDetails {
 		return nil
 	}
-	level := slog.LevelDebug
-	if _, seen := r.detailsWarned.LoadOrStore(claims.Issuer, struct{}{}); !seen {
-		level = slog.LevelWarn
-	}
+	level := r.firstRefusalLevel(claims.Issuer, reasonAuthorizationDetailsAssertion)
 	slog.Log(ctx, level, "Assertion refused", "reason", reasonAuthorizationDetailsAssertion, "issuer", claims.Issuer)
 	return invalidAssertion("The assertion must not carry an 'authorization_details' claim.")
 }

@@ -42,8 +42,8 @@ func NewSharedTrustedIssuerValidator(
 	return NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), trustedIssuers, config.AllowedAudiences)
 }
 
-// FactoryOption configures Factory and FactoryWithSharedTrustedIssuerValidator.
-// RefreshTokenFactory takes RefreshTokenOption instead.
+// FactoryOption configures Factory, FactoryWithSharedTrustedIssuerValidator and
+// IDJAGIssuanceFactory. RefreshTokenFactory takes RefreshTokenOption instead.
 type FactoryOption func(*factoryOptions)
 
 type factoryOptions struct {
@@ -51,8 +51,10 @@ type factoryOptions struct {
 }
 
 // WithAuthorizationDetailsRegistry configures the factory to pass the registry
-// through to the token-exchange Handler. With no registry (or a nil one) the
-// authorization_details parameter is ignored.
+// to its handler. On token exchange, with no registry (or a nil one) the
+// authorization_details parameter is ignored. On ID-JAG redemption, with no
+// registry an ID-JAG that carries an authorization_details claim is refused
+// with unknown_type.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) FactoryOption {
 	return func(o *factoryOptions) { o.authorizationDetailsRegistry = registry }
 }

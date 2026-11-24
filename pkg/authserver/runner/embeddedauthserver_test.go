@@ -1438,7 +1438,8 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.
 		name   string
 		grants *authserver.InboundGrantsRunConfig
 		// refused rows use an OIDC upstream whose discovery endpoint counts requests.
-		refused bool
+		refused        bool
+		trustedIssuers []tokenexchange.TrustedIssuer
 	}{
 		{
 			// An explicit, empty inbound grants block leaves token exchange off.
@@ -1456,6 +1457,12 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.
 			grants: &authserver.InboundGrantsRunConfig{
 				TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
 			},
+		},
+		{
+			// ID-JAG redemption reads the registry for the claim.
+			name:           "token exchange off, JWT-bearer grant on",
+			grants:         jwtBearerOnlyGrants(),
+			trustedIssuers: jwtBearerTrustedIssuers(),
 		},
 	}
 
@@ -1498,6 +1505,7 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.
 					Upstreams:        []authserver.UpstreamRunConfig{upstream},
 					AllowedAudiences: []string{"https://mcp.example.com"},
 					InboundGrants:    tc.grants,
+					TrustedIssuers:   tc.trustedIssuers,
 				}
 
 				server, err := ctor.construct(t, context.Background(), cfg, WithAuthorizationDetailsRegistry(registry))
@@ -1509,11 +1517,32 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.
 				}
 				require.ErrorIs(t, err, authserver.ErrAuthorizationDetailsRegistryUnreachable)
 				assert.Nil(t, server)
-				assert.ErrorContains(t, err, "authorization details registry requires token exchange to be enabled")
+				assert.ErrorContains(t, err, "authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
 				assert.Zero(t, discoveryRequests.Load(), "the check must run before upstream discovery")
 			})
 		}
 	}
+}
+
+// jwtBearerOnlyGrants enables the JWT-bearer grant for the trusted issuer
+// "idp" and leaves token exchange off.
+func jwtBearerOnlyGrants() *authserver.InboundGrantsRunConfig {
+	return &authserver.InboundGrantsRunConfig{
+		JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
+			IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+				IssuerRef:       "idp",
+				MaxAssertionAge: "5m",
+				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+					Subject:          "workload",
+					AllowedResources: []string{"https://mcp.example.com"},
+				}},
+			}},
+		},
+	}
+}
+
+func jwtBearerTrustedIssuers() []tokenexchange.TrustedIssuer {
+	return []tokenexchange.TrustedIssuer{{Name: "idp", IssuerURL: "https://idp.example.com"}}
 }
 
 // TestValidateAuthorizationDetailsRegistryForRunConfig pins the early check in
@@ -1534,10 +1563,11 @@ func TestValidateAuthorizationDetailsRegistryForRunConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name     string
-		registry *authorizationdetails.Registry
-		grants   *authserver.InboundGrantsRunConfig
-		wantErr  error
+		name           string
+		registry       *authorizationdetails.Registry
+		grants         *authserver.InboundGrantsRunConfig
+		trustedIssuers []tokenexchange.TrustedIssuer
+		wantErr        error
 	}{
 		{
 			name:     "registry with token exchange off is refused",
@@ -1557,6 +1587,12 @@ func TestValidateAuthorizationDetailsRegistryForRunConfig(t *testing.T) {
 			},
 		},
 		{
+			name:           "registry with token exchange off and the JWT-bearer grant on passes",
+			registry:       registry,
+			grants:         jwtBearerOnlyGrants(),
+			trustedIssuers: jwtBearerTrustedIssuers(),
+		},
+		{
 			name:   "no registry with token exchange off passes",
 			grants: &authserver.InboundGrantsRunConfig{},
 		},
@@ -1566,6 +1602,7 @@ func TestValidateAuthorizationDetailsRegistryForRunConfig(t *testing.T) {
 			t.Parallel()
 			cfg := minimalRunnerConsentConfig("http://localhost:8080")
 			cfg.InboundGrants = tt.grants
+			cfg.TrustedIssuers = tt.trustedIssuers
 			err := validateAuthorizationDetailsRegistryForRunConfig(
 				cfg, embeddedAuthServerOptions{authorizationDetailsRegistry: tt.registry})
 			if tt.wantErr != nil {

@@ -5,6 +5,7 @@ package authorizationdetails
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 )
 
@@ -16,12 +17,24 @@ var (
 	// and must not echo request data.
 	ErrInvalid = errors.New("invalid authorization_details")
 
+	// ErrUnknownType reports that every entry is well formed but at least one
+	// has a "type" that is not registered for the grant type. It wraps
+	// ErrInvalid, so errors.Is(err, ErrInvalid) still holds; a caller that
+	// tells the two apart checks ErrUnknownType first.
+	ErrUnknownType = fmt.Errorf("%w: unknown type", ErrInvalid)
+
 	// errInvalidHookResult reports that a type's Grant hook returned output the
 	// package rejects: an empty result, an entry that is not an object of that
 	// type, a limit violation, or a typed Error with an unknown Code or an
 	// invalid Reason. It is a defect in the registered hook, not in the
 	// request, so callers should treat it like any other hook failure.
 	errInvalidHookResult = errors.New("invalid authorization details hook result")
+
+	// ErrNoEntries reports that a type's Grant hook granted none of its
+	// entries. It wraps the invalid-hook-result error, so a caller that does
+	// not check for it treats it as an internal failure. A caller that lets a
+	// hook drop every entry of its type checks for it first.
+	ErrNoEntries = fmt.Errorf("%w: no entries", errInvalidHookResult)
 )
 
 // ErrorCode is the OAuth error code a hook may return to the client.

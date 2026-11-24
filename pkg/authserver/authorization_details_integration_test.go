@@ -236,7 +236,11 @@ func TestIntegration_AuthorizationDetailsOverHTTP(t *testing.T) {
 	}
 }
 
-func TestIntegration_AuthorizationDetailsIgnoredOnOtherGrants(t *testing.T) {
+// TestIntegration_AuthorizationDetailsParameterRefusedOnRedemption pins that
+// both redemption forms refuse the authorization_details parameter before any
+// hook runs: redemption takes details only from the claim the ID-JAG's issuer
+// signed.
+func TestIntegration_AuthorizationDetailsParameterRefusedOnRedemption(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -277,15 +281,68 @@ func TestIntegration_AuthorizationDetailsIgnoredOnOtherGrants(t *testing.T) {
 			ts, signAssertion := setupJWTBearerGrantTestServer(t,
 				withAuthorizationDetailsRegistry(newAuthorizationDetailsRegistry(t, &calls)))
 			form := tt.form(ts, signAssertion)
-			form.Set("authorization_details", `[{"type":"unknown"}]`)
+			form.Set("authorization_details", `[{"type":"custom"}]`)
 
 			response := makeTokenRequest(t, ts.Server.URL, form)
 			t.Cleanup(func() { _ = response.Body.Close() })
 			body := parseTokenResponse(t, response)
 
-			require.Equal(t, http.StatusOK, response.StatusCode, body)
-			assert.NotEmpty(t, body["access_token"])
-			assert.Zero(t, calls.Load(), "the registry must remain specific to RFC 8693 token exchange")
+			require.Equal(t, http.StatusBadRequest, response.StatusCode, body)
+			assert.Equal(t, "invalid_authorization_details", body["error"])
+			assert.Equal(t, "parameter_not_allowed", body["error_description"])
+			assert.Empty(t, body["access_token"])
+			assert.Zero(t, calls.Load(), "no hook may run for a refused parameter")
 		})
 	}
+}
+
+// TestIntegration_IDJAGAuthorizationDetailsClaim redeems an ID-JAG whose signed
+// authorization_details claim holds one entry. The response member and the
+// access token's claim both equal the signed entry, with an integer above 2^53
+// kept digit for digit.
+func TestIntegration_IDJAGAuthorizationDetailsClaim(t *testing.T) {
+	t.Parallel()
+
+	const entry = `{"type":"call","server":"github","limit":9007199254740993}`
+	var seen atomic.Int32
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		"call": {
+			GrantTypes: []string{oauthproto.GrantTypeJWTBearer},
+			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				seen.Add(1)
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
+	ts, _ := setupJWTBearerGrantTestServer(t, withAuthorizationDetailsRegistry(registry))
+
+	now := time.Now()
+	assertion := ts.signIDJAGAssertionWith(idJAGClientID,
+		map[string]any{"authorization_details": json.RawMessage("[" + entry + "]")},
+		"external-subject", now, now.Add(2*time.Minute), "authorization-details-claim")
+	response := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {oauthproto.GrantTypeJWTBearer},
+		"assertion":     {assertion},
+		"client_id":     {idJAGClientID},
+		"client_secret": {idJAGClientSecret},
+		"resource":      {testAudience},
+	})
+	t.Cleanup(func() { _ = response.Body.Close() })
+	rawBody, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(rawBody))
+	var body map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rawBody, &body))
+
+	assert.Equal(t, int32(1), seen.Load())
+	assert.Equal(t, "["+entry+"]", string(body["authorization_details"]))
+
+	var accessToken string
+	require.NoError(t, json.Unmarshal(body["access_token"], &accessToken))
+	parsed, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]json.RawMessage
+	require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+	assert.Equal(t, "["+entry+"]", string(claims["authorization_details"]))
 }

@@ -5,7 +5,9 @@ package tokenexchange
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"maps"
 	"sync"
 	"time"
@@ -28,10 +30,23 @@ type redeemer struct {
 	config   *fosite.Config
 	helper   *oauth2.HandleHelper
 
-	// detailsWarned records the assertion issuers whose authorization_details
-	// refusal was already logged at Warn. Only validated assertions reach it,
-	// so its size is bounded by the trusted issuers.
+	// detailsWarned records the (assertion issuer, reason) pairs whose
+	// authorization_details refusal on the plain grant was already logged at
+	// Warn. Only validated assertions from enabled issuers reach it, so its
+	// size is bounded by the trusted issuers times the fixed reasons.
 	detailsWarned sync.Map
+}
+
+// firstRefusalLevel returns Warn the first time a refusal with reason is
+// logged for issuer, and Debug after that. It bounds the Warn volume of a
+// refusal on the plain grant, which needs no client authentication and does
+// not consume a refused assertion, so one assertion can be resent until it
+// expires.
+func (r *redeemer) firstRefusalLevel(issuer, reason string) slog.Level {
+	if _, seen := r.detailsWarned.LoadOrStore([2]string{issuer, reason}, struct{}{}); seen {
+		return slog.LevelDebug
+	}
+	return slog.LevelWarn
 }
 
 // redemption is what a handler's front half decided about a validated
@@ -55,6 +70,10 @@ type redemption struct {
 	// When empty the request's own client is kept and its ID is the token's
 	// client_id.
 	syntheticClientID string
+	// authorizationDetails holds the granted entries of the ID-JAG's
+	// authorization_details claim, nil when it carried none. The issued token
+	// carries them and the response echoes them.
+	authorizationDetails json.RawMessage
 }
 
 // delegatedAccessMarkerCap is the longest lifetime of a token that carries the
@@ -116,8 +135,12 @@ func (r *redeemer) complete(ctx context.Context, req fosite.AccessRequester, d r
 // Each handler gates on its own CanHandleTokenEndpointRequest before calling
 // it.
 func (r *redeemer) populate(ctx context.Context, req fosite.AccessRequester, resp fosite.AccessResponder) error {
-	return issueBoundedAccessToken(ctx, r.helper, r.config.GetAccessTokenLifespan(ctx), req, resp,
-		func() error { return invalidAssertion("The JWT bearer assertion has expired.") })
+	if err := issueBoundedAccessToken(ctx, r.helper, r.config.GetAccessTokenLifespan(ctx), req, resp,
+		func() error { return invalidAssertion("The JWT bearer assertion has expired.") }); err != nil {
+		return err
+	}
+	echoRedemptionDetails(req, resp)
+	return nil
 }
 
 // consumeAssertion marks an assertion's replay key used, mapping consumer
@@ -201,6 +224,7 @@ func newRedemptionSession(d redemption, clientID string, lifetime time.Duration)
 	if d.delegatedAccess {
 		issuedSession.JWTClaims.Extra[claimnames.DelegatedAccessKey] = true
 	}
+	setRedemptionDetails(issuedSession, d.authorizationDetails)
 	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
 	return issuedSession
 }

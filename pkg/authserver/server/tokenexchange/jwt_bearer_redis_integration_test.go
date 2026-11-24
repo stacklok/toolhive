@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -96,4 +97,38 @@ func TestJWTBearerHandler_RedisBacked(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, retrieved.GetClient(), "synthetic client must survive Redis serialization")
 	require.True(t, storage.IsSyntheticClientID(retrieved.GetClient().GetID()))
+}
+
+// TestIDJAGHandler_RedisBackedDetails pins the stored shape of the
+// authorization_details claim: in memory the issued token's claim is raw JSON,
+// and a session read back from Redis holds it decoded, as []any. A reader of a
+// stored session must accept both.
+func TestIDJAGHandler_RedisBackedDetails(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	stor := storage.NewRedisStorageWithClient(redisClient, "test:id-jag:")
+	t.Cleanup(func() { _ = stor.Close() })
+
+	deps := testIssuanceDeps(&testJWTBearerAssertionValidator{claims: detailsClaims(t, "["+testCallEntry+"]")},
+		idJAGResolvedIssuers(t))
+	deps.consumer = stor
+	deps.tokenStorage = stor
+	handler := newTestIDJAGHandler(t, deps)
+	handler.detailsRegistry = newCallDetailsRegistry(t, singleEntryHook(nil))
+
+	ctx := context.Background()
+	req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+	require.NoError(t, stor.RegisterClient(ctx, req.Client))
+	require.NoError(t, handler.HandleTokenEndpointRequest(ctx, req))
+	require.NoError(t, handler.PopulateTokenEndpointResponse(ctx, req, fosite.NewAccessResponse()))
+
+	retrieved, err := stor.GetAccessTokenSession(ctx, "test-signature", &session.Session{})
+	require.NoError(t, err)
+	stored, ok := retrieved.GetSession().(*session.Session)
+	require.True(t, ok)
+	var want []any
+	require.NoError(t, json.Unmarshal([]byte("["+testCallEntry+"]"), &want))
+	require.Equal(t, want, stored.JWTClaims.Extra[authorizationDetailsParam])
 }

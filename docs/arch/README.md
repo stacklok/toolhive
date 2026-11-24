@@ -142,7 +142,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Accepted limitations: client-set equivalence, disjoint subject namespaces, partial provenance
     - Minting ID-JAGs from exchange grants: roles and conformance, request and error contract, target configuration, claims, redeemer guidance, known gaps
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
-    - RFC 9396 `authorization_details` on token exchange: Go-only type registry, validation and echo
+    - RFC 9396 `authorization_details`: Go-only type registry; validation and echo on token exchange; the signed ID-JAG claim processed at redemption, granted whole entries copied into the token and the response, the redemption parameter refused
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
     - SPIFFE client authentication is enforced for trust domains with a `file` bundle source; `bundle_endpoint` and `workload_api` fail validation

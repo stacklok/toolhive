@@ -19,6 +19,11 @@ const (
 
 	// shutdownTimeout is the maximum time to wait for collector shutdown
 	shutdownTimeout = 10 * time.Second
+
+	// codeModeToolName is the vMCP code mode virtual tool. It mirrors
+	// script.ExecuteToolScriptName (a test pins the two together) so this
+	// package, which every proxy links, does not pull in the script engine.
+	codeModeToolName = "execute_tool_script"
 )
 
 // MiddlewareParams represents the parameters for usage metrics middleware
@@ -63,6 +68,9 @@ func (m *Middleware) Handler() types.MiddlewareFunction {
 				return
 			case "tools/call":
 				m.collector.IncrementToolCallFrom(m.toolCallClient(r, parsed))
+				if parsed.ResourceID == codeModeToolName {
+					m.collector.IncrementCodeModeCall()
+				}
 			}
 
 			next.ServeHTTP(w, r)

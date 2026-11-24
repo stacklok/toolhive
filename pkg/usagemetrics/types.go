@@ -21,6 +21,14 @@ type MetricRecord struct {
 	// map holds at most a fixed, small number of entries.
 	CallsByClient map[string]int64 `json:"calls_by_client,omitempty"`
 
+	// CodeModeCalls is how many of the calls in Count invoked the vMCP code
+	// mode tool (execute_tool_script). It is a subset of Count, not added to it.
+	CodeModeCalls int64 `json:"code_mode_calls,omitempty"`
+	// CodeModeToolCalls is how many tool calls code mode scripts made on behalf
+	// of a client. Those calls never pass through the HTTP middleware, so they
+	// are not part of Count.
+	CodeModeToolCalls int64 `json:"code_mode_tool_calls,omitempty"`
+
 	Profile
 }
 
@@ -165,11 +173,10 @@ type ProfileProvider interface {
 type Collector struct {
 	// Unique identifier for this proxy instance (UUID)
 	instanceID string
-	// countsMu guards counter and callsByClient, which change together so the
-	// per-client split always adds up to the count.
-	countsMu      sync.Mutex
-	counter       int64
-	callsByClient map[string]int64
+	// countsMu guards counts, whose fields change together so the per-client
+	// split always adds up to the count.
+	countsMu sync.Mutex
+	counts   counts
 	// profile returns the server profile; called on every flush so values that
 	// change over time (such as vMCP backend counts) stay current. May be nil.
 	profile func() Profile
@@ -183,6 +190,23 @@ type Collector struct {
 	flushCh  chan struct{}
 	started  atomic.Bool
 	shutdown atomic.Bool
+}
+
+// counts holds the per-day tallies a report carries.
+type counts struct {
+	// total is the number of tool calls received from clients.
+	total int64
+	// byClient splits total by normalized client name.
+	byClient map[string]int64
+	// codeModeCalls is the subset of total that invoked execute_tool_script.
+	codeModeCalls int64
+	// codeModeToolCalls is the number of tool calls made from inside code mode
+	// scripts. It is not part of total.
+	codeModeToolCalls int64
+}
+
+func newCounts() counts {
+	return counts{byClient: make(map[string]int64)}
 }
 
 func getCurrentDateUTC() string {

@@ -21,6 +21,8 @@ import (
 
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -29,6 +31,9 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
 const (
@@ -91,9 +96,26 @@ func newUsageMetrics(
 }
 
 // middleware returns the HTTP middleware that counts tool calls. It must run
-// after the MCP parsing middleware.
-func (u *usageMetrics) middleware() func(http.Handler) http.Handler {
-	return usagemetrics.NewMiddleware(u.collector).Handler()
+// after the MCP parsing middleware. With the optimizer on, clients reach code
+// mode through call_tool, so those calls count as code mode calls too.
+func (u *usageMetrics) middleware(optimizerEnabled bool) func(http.Handler) http.Handler {
+	var opts []usagemetrics.MiddlewareOption
+	if optimizerEnabled {
+		opts = append(opts, usagemetrics.WithCodeModeCall(isOptimizerCodeModeCall))
+	}
+	return usagemetrics.NewMiddleware(u.collector, opts...).Handler()
+}
+
+// isOptimizerCodeModeCall reports whether a tools/call is the optimizer's
+// call_tool targeting the code mode tool. It decodes the arguments into
+// optimizer.CallToolInput, as authorization and dispatch do, so it sees the
+// same target they do, including a nested or differently cased tool_name.
+func isOptimizerCodeModeCall(parsed *mcp.ParsedMCPRequest) bool {
+	if parsed.ResourceID != optimizerdec.CallToolName {
+		return false
+	}
+	input, err := schema.Translate[optimizer.CallToolInput](parsed.Arguments)
+	return err == nil && input.ToolName == script.ExecuteToolScriptName
 }
 
 // observe wraps an aggregator so every aggregation updates the reported tool count.
@@ -193,10 +215,10 @@ func (o *toolCountObserver) record(result *aggregator.AggregatedCapabilities, er
 
 // vmcpFeatures lists the vMCP features a configuration turns on.
 func vmcpFeatures(
-	optimizer bool, codeMode *config.CodeModeConfig, compositeTools int, outgoing *config.OutgoingAuthConfig,
+	optimizerEnabled bool, codeMode *config.CodeModeConfig, compositeTools int, outgoing *config.OutgoingAuthConfig,
 ) []string {
 	var features []string
-	if optimizer {
+	if optimizerEnabled {
 		features = append(features, usagemetrics.FeatureOptimizer)
 	}
 	if codeMode != nil && codeMode.Enabled {

@@ -17,6 +17,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -87,6 +88,51 @@ func TestMiddleware_Handler(t *testing.T) {
 			assert.Equal(t, expectedCount, collector.GetCurrentCount())
 		})
 	}
+}
+
+func TestMiddleware_CountsCodeModeCalls(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		method       string
+		tool         string
+		wantTotal    int64
+		wantCodeMode int64
+	}{
+		{name: "code mode tool call", method: "tools/call", tool: codeModeToolName, wantTotal: 1, wantCodeMode: 1},
+		{name: "other tool call", method: "tools/call", tool: "fetch", wantTotal: 1, wantCodeMode: 0},
+		{name: "code mode name on another method", method: "prompts/get", tool: codeModeToolName},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			collector, err := NewCollector()
+			require.NoError(t, err) // never started or flushed
+			handler := NewMiddleware(collector).Handler()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			parsed := &mcp.ParsedMCPRequest{Method: tt.method, ResourceID: tt.tool, IsRequest: true}
+			req = req.WithContext(context.WithValue(req.Context(), mcp.MCPRequestContextKey, parsed))
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			snap := collector.snapshotCounts()
+			assert.Equal(t, tt.wantTotal, snap.total, "count keeps its meaning: every tools/call, code mode or not")
+			assert.Equal(t, tt.wantCodeMode, snap.codeModeCalls)
+			assert.Zero(t, snap.codeModeToolCalls)
+		})
+	}
+}
+
+// TestCodeModeToolNameMatchesScript pins the local copy of the code mode tool
+// name to the engine's constant, which this package does not import.
+func TestCodeModeToolNameMatchesScript(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, script.ExecuteToolScriptName, codeModeToolName)
 }
 
 func TestMiddleware_Close(t *testing.T) {
@@ -370,13 +416,13 @@ func TestMiddleware_AttributesToolCallsToClients(t *testing.T) {
 
 			serveMCP(t, NewMiddleware(collector), tt.calls)
 
-			total, byClient := collector.snapshotCounts()
-			assert.Equal(t, tt.want, byClient)
+			snap := collector.snapshotCounts()
+			assert.Equal(t, tt.want, snap.byClient)
 			var sum int64
-			for _, n := range byClient {
+			for _, n := range snap.byClient {
 				sum += n
 			}
-			assert.Equal(t, sum, total, "counter total must equal the per-client sum")
+			assert.Equal(t, sum, snap.total, "counter total must equal the per-client sum")
 		})
 	}
 }

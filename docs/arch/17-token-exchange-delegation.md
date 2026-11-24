@@ -3006,6 +3006,44 @@ The authorization server issues the marker only on a token for a resolved
 gate is closed it issues none. The refusals above are in place so that no marked
 token can ever be exchanged.
 
+**Admission route.** The token validator records how it admitted a request's
+token in `Identity.AdmissionRoute`. Only the token validator sets it. It is
+internal provenance and is left out of `PrincipalInfo` and the JSON form of the
+identity.
+
+| Value | Meaning |
+| --- | --- |
+| `interactive` | The token came from an interactive login. It carries a non-empty token session ID (`tsid`), no delegated-access marker, and no proof of a session-less mint: no well-formed `act` chain and no `no_upstream_session` claim set to `true`. |
+| `delegated` | The token carries the delegated-access marker (any value) and has no usable `tsid`: the claim is absent, empty or not a string. |
+| (empty) | Every other token. This is the zero value, `AdmissionRouteUnspecified`. |
+
+The validator classifies a route only when both conditions hold:
+
+- It is bound to the embedded authorization server, meaning its own issuer is
+  the embedded server's issuer.
+- The JWT was verified with the embedded server's in-process signing keys. A
+  key found only through the HTTP JWKS fallback, or an introspection response,
+  gets no route. A validator bound to the embedded server but given no
+  in-process key provider never assigns a route.
+
+`SessionlessGrant` is looser on one point: any verified JWT signature counts,
+but claims from an introspection response never do, because they are the
+introspection endpoint's word, not a signature this validator checked.
+
+The `delegated` route also needs the validator to have an audience configured,
+so that the token's `aud` was checked. A marked token validated without an
+audience gets no route.
+
+A token that fits neither route gets no route and nothing is read for it. This
+includes a token that carries both a `tsid` and the delegated-access marker:
+the authorization server never issues one, and it is neither interactive nor
+delegated, so it is treated like any other unclassified token.
+
+Consumers that grant anything must compare for one exact value, such as
+`delegated`. They must never test for a non-empty route or against the empty
+value, because new values may be added and an empty route is also what every
+unbound or introspected token gets.
+
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/actor_validator.go` — `ActorTokenValidator` and its contract, `ActorValidatorRegistration`, `ActIssuerProblem`, `ActorProfile`

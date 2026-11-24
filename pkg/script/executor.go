@@ -25,6 +25,18 @@ type executor struct {
 
 // Execute runs a Starlark script against the bound tools.
 func (e *executor) Execute(ctx context.Context, script string, data map[string]interface{}) (*mcp.CallToolResult, error) {
+	var stats *core.Stats
+	if e.config.OnStats != nil {
+		stats = &core.Stats{}
+		defer func() {
+			e.config.OnStats(Stats{
+				Steps:         stats.Steps(),
+				ParallelCalls: stats.ParallelCalls(),
+				ParallelTasks: stats.ParallelTasks(),
+			})
+		}()
+	}
+
 	globals := e.buildGlobals(ctx)
 
 	// Inject data arguments, rejecting any that shadow builtins or tools
@@ -39,7 +51,7 @@ func (e *executor) Execute(ctx context.Context, script string, data map[string]i
 		globals[k] = sv
 	}
 
-	result, err := core.Execute(script, globals, e.config.StepLimit)
+	result, err := core.ExecuteWithStats(script, globals, e.config.StepLimit, stats)
 	if err != nil {
 		return nil, err
 	}

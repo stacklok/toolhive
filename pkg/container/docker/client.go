@@ -174,6 +174,14 @@ func (c *Client) RuntimeType() runtime.Type {
 	return c.runtimeType
 }
 
+// HostGateway returns the hostname a container uses to reach host services.
+func (c *Client) HostGateway(_ context.Context) (string, error) {
+	if c.runtimeType == runtime.TypePodman {
+		return podmanGatewayHostname, nil
+	}
+	return dockerGatewayHostname, nil
+}
+
 // DeployWorkload creates and starts a workload.
 // It configures the workload based on the provided permission profile and transport type.
 // If options is nil, default options will be used.

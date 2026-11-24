@@ -131,7 +131,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --host string                                        Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --ignore-globally[=true|false]                       Load global ignore patterns from ~/.config/toolhive/thvignore (default true)
       --image-verification string                          Set image verification mode (warn, enabled, disabled) (default "warn")
-      --isolate-network[=true|false]                       Isolate the container network from the host. Use --isolate-network=false to opt out. Not enforced with --network host or --network none (isolation requires bridge networking). (default true)
+      --isolate-network[=true|false]                       Isolate the container network from the host. Use --isolate-network=false to opt out. Not enforced with --network host or --network none (isolation requires bridge networking). On Apple container (macOS 26+), internal vmnet networks use hostOnly mode: direct internet egress and host loopback (127.0.0.1) listeners are blocked, but host services bound to 0.0.0.0 remain directly reachable on the internal network gateway IP. (default true)
       --jwks-allow-private-ip[=true|false]                 Allow JWKS/OIDC endpoints on private IP addresses (use with caution) (default false)
       --jwks-auth-token-file string                        Path to file containing bearer token for authenticating JWKS/OIDC requests
   -l, --label stringArray                                  Set labels on the container (format: key=value)
@@ -164,7 +164,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-port int                                     Port for the HTTP proxy to listen on (host port)
       --proxy-read-timeout duration                        Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)
   -p, --publish stringArray                                Publish a container's port(s) to the host (format: hostPort:containerPort)
-      --read-only-rootfs[=true|false]                      Mount the MCP server container's root filesystem as read-only (Docker/Podman only). /tmp, /var/tmp and /run get a 64 MiB noexec tmpfs unless a volume already targets them; servers that write anywhere else outside their mounted volumes will fail.
+      --read-only-rootfs[=true|false]                      Mount the MCP server container's root filesystem as read-only (Docker/Podman/Apple container). /tmp, /var/tmp and /run get a 64 MiB noexec tmpfs unless a volume already targets them; servers that write anywhere else outside their mounted volumes will fail.
       --remote-auth[=true|false]                           Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string                   OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-bearer-token string                    Bearer token for remote server authentication (alternative to OAuth)

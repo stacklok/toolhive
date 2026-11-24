@@ -387,7 +387,8 @@ A **runtime** is an abstraction over container orchestration systems. It provide
 1. **Docker Runtime**: Docker Engine API
 2. **Podman Runtime**: Podman socket API
 3. **Colima Runtime**: Docker-compatible (uses Docker runtime)
-4. **Kubernetes Runtime**: Kubernetes API (StatefulSets)
+4. **Apple Container Runtime**: Apple's macOS native `container` CLI (`apple/container` 1.0+, Apple Silicon)
+5. **Kubernetes Runtime**: Kubernetes API (StatefulSets)
 
 **Runtime interface:**
 - `DeployWorkload` - Create and start workload
@@ -403,12 +404,14 @@ A **runtime** is an abstraction over container orchestration systems. It provide
 Runtimes are registered with a numeric `Priority` (lower wins) in the runtime registry (`pkg/container/runtime/registry.go`). Today the registered runtimes are:
 
 - **Docker runtime** (`Priority: 100`, registered in `pkg/container/docker/register.go`) — covers Docker, Podman, Colima, Rancher Desktop, and OrbStack via per-runtime socket discovery (Podman → Docker → Colima).
+- **Apple container runtime** (`Priority: 150`, registered in `pkg/container/apple/register.go` on `darwin`) — passively detects Apple Silicon (`arm64`), `container` CLI v1.0+, and a running daemon (`container system status`), or can be selected explicitly with `TOOLHIVE_RUNTIME=apple`. Requires macOS 26+ for `--isolate-network` custom `--internal` (`vmnet` `hostOnly`) networks (note: `hostOnly` blocks direct internet egress and `127.0.0.1` host listeners, while host services bound to `0.0.0.0` remain directly reachable on the internal network's gateway IP). Run live hardware tests on Apple Silicon macOS with `task test-integration-apple-container`.
 - **Kubernetes runtime** (`Priority: 200`, registered in `pkg/container/kubernetes/register.go`) — activated when running in-cluster (via `KUBERNETES_SERVICE_HOST`) or when `TOOLHIVE_RUNTIME=kubernetes` is set.
 
 **Implementation:**
 - Interface: `pkg/container/runtime/types.go`
-- Registry: `pkg/container/runtime/registry.go`
+- Registry: `pkg/container/runtime/registry.go` (and `pkg/container/images/manager_registry.go` for runtime-aligned image managers)
 - Docker SDK factory and socket discovery: `pkg/container/docker/sdk/factory.go`, `pkg/container/docker/sdk/client_unix.go`
+- Apple container runtime: `pkg/container/apple/`
 - Detection: `pkg/container/runtime/types.go`
 
 **Related concepts:** Deployer, Workload, Container

@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os/signal"
 	"strconv"
 	"syscall"
@@ -27,7 +29,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
-const sseSuffix = "sse"
+const (
+	sseSuffix                   = "sse"
+	defaultInspectorHostGateway = "host.docker.internal"
+)
 
 var (
 	inspectorUIPort       int
@@ -112,7 +117,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	authToken := hex.EncodeToString(tokenBytes)
 
 	// find the port of the server if it is running / exists
-	serverPort, proxyMode, err := getServerPortAndProxyMode(ctx, serverName)
+	serverPort, proxyMode, serverURL, err := getServerPortAndProxyMode(ctx, serverName)
 	if err != nil {
 		return fmt.Errorf("failed to find server: %w", err)
 	}
@@ -171,7 +176,10 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	case <-statusChan:
 		slog.Info(fmt.Sprintf("Connected to MCP server: %s", serverName))
 
-		inspectorURL := buildInspectorURL(inspectorUIPort, proxyMode, serverPort, authToken)
+		hostGateway := resolveInspectorHostGateway(ctx, rt)
+		warnIfAppleLoopbackServer(rt, serverName, serverURL, hostGateway)
+
+		inspectorURL := buildInspectorURL(inspectorUIPort, proxyMode, hostGateway, serverPort, authToken)
 		slog.Info(fmt.Sprintf("Inspector UI is now available at %s", inspectorURL))
 
 		return nil
@@ -184,30 +192,30 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func getServerPortAndProxyMode(ctx context.Context, serverName string) (int, types.ProxyMode, error) {
+func getServerPortAndProxyMode(ctx context.Context, serverName string) (int, types.ProxyMode, string, error) {
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return 0, types.ProxyModeStreamableHTTP, fmt.Errorf("failed to create status manager: %w", err)
+		return 0, types.ProxyModeStreamableHTTP, "", fmt.Errorf("failed to create status manager: %w", err)
 	}
 
 	workloadList, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return 0, types.ProxyModeStreamableHTTP, fmt.Errorf("failed to list workloads: %w", err)
+		return 0, types.ProxyModeStreamableHTTP, "", fmt.Errorf("failed to list workloads: %w", err)
 	}
 
 	for _, c := range workloadList {
 		if c.Name == serverName {
 			port := c.Port
 			if port <= 0 {
-				return 0, types.ProxyModeStreamableHTTP, fmt.Errorf("server %s does not have a valid port", serverName)
+				return 0, types.ProxyModeStreamableHTTP, "", fmt.Errorf("server %s does not have a valid port", serverName)
 			}
 
 			// Use ProxyMode which reflects how the proxy exposes the server.
-			return port, types.ProxyMode(c.ProxyMode), nil
+			return port, types.ProxyMode(c.ProxyMode), c.URL, nil
 		}
 	}
 
-	return 0, types.ProxyModeStreamableHTTP, fmt.Errorf("server with name %s not found", serverName)
+	return 0, types.ProxyModeStreamableHTTP, "", fmt.Errorf("server with name %s not found", serverName)
 }
 
 func cleanupInspectorContainer(ctx context.Context, name string) error {
@@ -238,14 +246,61 @@ func cleanupInspectorContainer(ctx context.Context, name string) error {
 	return nil
 }
 
+func resolveInspectorHostGateway(ctx context.Context, rt runtime.Runtime) string {
+	if resolver, ok := rt.(runtime.HostGatewayResolver); ok {
+		if host, err := resolver.HostGateway(ctx); err == nil && host != "" {
+			return host
+		} else if err != nil {
+			slog.Warn("failed to resolve runtime host gateway, falling back to default", "error", err)
+		}
+	}
+	return defaultInspectorHostGateway
+}
+
+func warnIfAppleLoopbackServer(rt runtime.Runtime, serverName, serverURL, hostGateway string) {
+	type runtimeTyper interface {
+		RuntimeType() runtime.Type
+	}
+	typer, ok := rt.(runtimeTyper)
+	if !ok || typer.RuntimeType() != runtime.TypeApple {
+		return
+	}
+	if !isLoopbackURL(serverURL) {
+		return
+	}
+	slog.Warn("MCP server is bound to loopback and cannot be reached from an Apple container via the vmnet gateway; "+
+		"re-run the server with --host "+hostGateway+" to connect via the inspector",
+		"server", serverName, "server_url", serverURL, "host_gateway", hostGateway)
+}
+
+func isLoopbackURL(rawURL string) bool {
+	if rawURL == "" {
+		return false
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // buildInspectorURL constructs the URL for the MCP Inspector UI, encoding the
 // transport mode, server address, and authentication token as query parameters.
-func buildInspectorURL(uiPort int, proxyMode types.ProxyMode, serverPort int, authToken string) string {
+func buildInspectorURL(uiPort int, proxyMode types.ProxyMode, hostGateway string, serverPort int, authToken string) string {
+	if hostGateway == "" {
+		hostGateway = defaultInspectorHostGateway
+	}
 	suffix := "mcp"
 	if proxyMode == types.ProxyModeSSE {
 		suffix = sseSuffix
 	}
+	hostPort := net.JoinHostPort(hostGateway, strconv.Itoa(serverPort))
 	return fmt.Sprintf(
-		"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s&MCP_PROXY_AUTH_TOKEN=%s",
-		uiPort, proxyMode, serverPort, suffix, authToken)
+		"http://localhost:%d?transport=%s&serverUrl=http://%s/%s&MCP_PROXY_AUTH_TOKEN=%s",
+		uiPort, proxyMode, hostPort, suffix, authToken)
 }

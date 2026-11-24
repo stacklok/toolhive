@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -2396,6 +2397,47 @@ func TestConverter_PassthroughHeaders(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, config)
 			assert.Equal(t, tt.want, config.PassthroughHeaders)
+		})
+	}
+}
+
+// TestConverter_Instructions verifies that spec.instructions reaches the vMCP
+// config, takes precedence over spec.config.instructions, and that a value set
+// only in spec.config.instructions is preserved.
+func TestConverter_Instructions(t *testing.T) {
+	t.Parallel()
+
+	topLevel := &instructions.Config{Mode: instructions.ModePrepend, Value: "top"}
+	configLevel := &instructions.Config{Mode: instructions.ModeReplace, Value: "config"}
+	tests := []struct {
+		name     string
+		topLevel *instructions.Config // spec.instructions
+		config   *instructions.Config // spec.config.instructions
+		want     *instructions.Config
+	}{
+		{name: "top-level only", topLevel: topLevel, want: topLevel},
+		{name: "top-level wins over config when both set", topLevel: topLevel, config: configLevel, want: topLevel},
+		{name: "config-level only is preserved", config: configLevel, want: configLevel},
+		{name: "neither set produces nil"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{Instructions: tt.config.DeepCopy()}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Spec.Instructions = tt.topLevel.DeepCopy()
+				}),
+			)
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, _, err := converter.Convert(ctx, vmcp, nil)
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.want, config.Instructions)
 		})
 	}
 }

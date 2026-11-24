@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 )
 
 // makeUnsignedJWT creates a JWT with the given claims using the "none" algorithm.
@@ -1355,4 +1356,73 @@ func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIntegrationInstructionsWithAuthz verifies that the instructions
+// middleware and authorization compose in the order the runner chains them
+// (MCP parsing, then instructions, then authorization): initialize passes
+// authorization and gets the configured instructions, while a tools/list
+// result is still filtered and gains no instructions.
+func TestIntegrationInstructionsWithAuthz(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+	instructionsMiddleware, err := mcpparser.NewInstructionsMiddleware(instructions.Config{Value: "policy"})
+	require.NoError(t, err)
+
+	results := map[string]any{
+		"initialize": map[string]any{
+			"protocolVersion": "2025-11-25",
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": "s", "version": "1"},
+			"instructions":    "server text",
+		},
+		string(mcp.MethodToolsList): mcp.ListToolsResult{Tools: []mcp.Tool{{Name: "weather"}, {Name: "admin_tool"}}},
+	}
+	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := mcpparser.GetMCPMethod(r.Context())
+		response, err := jsonrpc2.NewResponse(jsonrpc2.Int64ID(1), results[method], nil)
+		require.NoError(t, err)
+		body, err := jsonrpc2.EncodeMessage(response)
+		require.NoError(t, err)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+	chain := mcpparser.ParsingMiddleware(instructionsMiddleware(Middleware(authorizer, backend, nil)))
+
+	send := func(t *testing.T, method string) map[string]any {
+		t.Helper()
+		call, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), method, json.RawMessage(`{}`))
+		require.NoError(t, err)
+		body, err := jsonrpc2.EncodeMessage(call)
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user", Claims: jwt.MapClaims{"sub": "user"}}}
+		req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &decoded))
+		result, ok := decoded["result"].(map[string]any)
+		require.True(t, ok, "expected a result, got %s", rec.Body.String())
+		return result
+	}
+
+	initialize := send(t, "initialize")
+	assert.Equal(t, "server text\n\npolicy", initialize["instructions"])
+
+	list := send(t, string(mcp.MethodToolsList))
+	assert.NotContains(t, list, "instructions")
+	tools, ok := list["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1, "authorization must still filter the list")
+	assert.Equal(t, "weather", tools[0].(map[string]any)["name"])
 }

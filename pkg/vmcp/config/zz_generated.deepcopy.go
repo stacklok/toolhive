@@ -22,6 +22,7 @@ package config
 
 import (
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/ratelimit/types"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -240,6 +241,11 @@ func (in *Config) DeepCopyInto(out *Config) {
 		in, out := &in.PassthroughHeaders, &out.PassthroughHeaders
 		*out = make([]string, len(*in))
 		copy(*out, *in)
+	}
+	if in.Instructions != nil {
+		in, out := &in.Instructions, &out.Instructions
+		*out = new(instructions.Config)
+		**out = **in
 	}
 }
 

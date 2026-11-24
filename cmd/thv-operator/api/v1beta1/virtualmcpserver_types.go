@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -59,6 +60,14 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty"`
+
+	// Instructions sets the instructions clients receive in the result of a successful
+	// initialize or server/discover request: the Virtual MCP server combines it with
+	// any instructions it produces, as mode says. Clients commonly add server
+	// instructions to the model's context, so this adds policy or usage guidance
+	// without changing the server. Takes precedence over config.instructions.
+	// +optional
+	Instructions *instructions.Config `json:"instructions,omitempty"`
 
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer

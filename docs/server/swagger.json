@@ -1979,6 +1979,9 @@
                         "description": "Image is the Docker image to run",
                         "type": "string"
                     },
+                    "instructions": {
+                        "$ref": "#/components/schemas/instructions.Config"
+                    },
                     "isolate_network": {
                         "description": "IsolateNetwork indicates whether to isolate the network for the container",
                         "type": "boolean"
@@ -2943,6 +2946,20 @@
                     "printOverlays": {
                         "description": "Whether to print resolved overlay paths for debugging",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "instructions.Config": {
+                "description": "Instructions sets the instructions the server returns in its initialize\nand server/discover results. PopulateMiddlewareConfigs derives the\ninstructions middleware from it.",
+                "properties": {
+                    "mode": {
+                        "description": "Mode says how value combines with the instructions the server returns.\nreplace returns value alone. append returns the server's instructions,\na blank line, and value. prepend returns value, a blank line, and the\nserver's instructions. When the server returns no instructions, every\nmode returns value alone.\n+kubebuilder:validation:Enum=replace;append;prepend\n+kubebuilder:default=append\n+optional",
+                        "type": "string"
+                    },
+                    "value": {
+                        "description": "Value is the text that mode combines with the server's instructions.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
+                        "type": "string"
                     }
                 },
                 "type": "object"

@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggmocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
@@ -45,6 +46,7 @@ func populatedLegacyConfig() *Config {
 		AuthzMiddleware:         passthrough,
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"X-Tenant-Id"},
+		Instructions:            &instructions.Config{Value: "policy"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		TelemetryProvider:       &telemetry.Provider{},
 		UsageMetricsMiddleware:  passthrough,
@@ -85,6 +87,7 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	assert.NotNil(t, got.AuthMiddleware)
 	assert.Same(t, cfg.AuthInfoHandler, got.AuthInfoHandler)
 	assert.Equal(t, cfg.PassthroughHeaders, got.PassthroughHeaders)
+	assert.Same(t, cfg.Instructions, got.Instructions)
 	assert.Same(t, cfg.AuthServer, got.AuthServer)
 	assert.Same(t, cfg.SessionStorage, got.SessionStorage)
 	assert.Equal(t, cfg.Watcher, got.Watcher)

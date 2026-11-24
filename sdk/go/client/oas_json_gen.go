@@ -14666,6 +14666,86 @@ func (s *InstallSkillUnauthorizedApplicationJSON) UnmarshalJSON(data []byte) err
 	return s.Decode(d)
 }
 
+// Encode implements json.Marshaler.
+func (s *InstructionsConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *InstructionsConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.Mode.Set {
+			e.FieldStart("mode")
+			s.Mode.Encode(e)
+		}
+	}
+	{
+		if s.Value.Set {
+			e.FieldStart("value")
+			s.Value.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfInstructionsConfig = [2]string{
+	0: "mode",
+	1: "value",
+}
+
+// Decode decodes InstructionsConfig from json.
+func (s *InstructionsConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode InstructionsConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "mode":
+			if err := func() error {
+				s.Mode.Reset()
+				if err := s.Mode.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"mode\"")
+			}
+		case "value":
+			if err := func() error {
+				s.Value.Reset()
+				if err := s.Value.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"value\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode InstructionsConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *InstructionsConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *InstructionsConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes ListDefaultSecretKeysInternalServerErrorApplicationJSON as json.
 func (s ListDefaultSecretKeysInternalServerErrorApplicationJSON) Encode(e *jx.Encoder) {
 	unwrapped := string(s)
@@ -19073,6 +19153,39 @@ func (s OptIgnoreConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptIgnoreConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes InstructionsConfig as json.
+func (o OptInstructionsConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes InstructionsConfig from json.
+func (o *OptInstructionsConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptInstructionsConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptInstructionsConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptInstructionsConfig) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -32380,6 +32493,12 @@ func (s *RunnerRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.Instructions.Set {
+			e.FieldStart("instructions")
+			s.Instructions.Encode(e)
+		}
+	}
+	{
 		if s.IsolateNetwork.Set {
 			e.FieldStart("isolate_network")
 			s.IsolateNetwork.Encode(e)
@@ -32655,7 +32774,7 @@ func (s *RunnerRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfRunnerRunConfig = [63]string{
+var jsonFieldsNameOfRunnerRunConfig = [64]string{
 	0:  "additional_middleware_configs",
 	1:  "allow_docker_gateway",
 	2:  "allowed_origins",
@@ -32678,47 +32797,48 @@ var jsonFieldsNameOfRunnerRunConfig = [63]string{
 	19: "host",
 	20: "ignore_config",
 	21: "image",
-	22: "isolate_network",
-	23: "jwks_auth_token_file",
-	24: "k8s_pod_template_patch",
-	25: "max_request_body_size",
-	26: "mcpserver_generation",
-	27: "middleware_configs",
-	28: "mutating_webhooks",
-	29: "name",
-	30: "oidc_config",
-	31: "permission_profile_name_or_path",
-	32: "port",
-	33: "proxy_mode",
-	34: "proxy_read_timeout",
-	35: "publish",
-	36: "rate_limit_config",
-	37: "rate_limit_namespace",
-	38: "read_only_rootfs",
-	39: "registry_api_url",
-	40: "registry_server_name",
-	41: "registry_url",
-	42: "remote_auth_config",
-	43: "remote_url",
-	44: "runtime_config",
-	45: "scaling_config",
-	46: "schema_version",
-	47: "secrets",
-	48: "session_ttl",
-	49: "stateless",
-	50: "strict_protocol_validation",
-	51: "target_host",
-	52: "target_port",
-	53: "telemetry_config",
-	54: "thv_ca_bundle",
-	55: "token_exchange_config",
-	56: "tools_filter",
-	57: "tools_override",
-	58: "transport",
-	59: "trust_proxy_headers",
-	60: "upstream_swap_config",
-	61: "validating_webhooks",
-	62: "volumes",
+	22: "instructions",
+	23: "isolate_network",
+	24: "jwks_auth_token_file",
+	25: "k8s_pod_template_patch",
+	26: "max_request_body_size",
+	27: "mcpserver_generation",
+	28: "middleware_configs",
+	29: "mutating_webhooks",
+	30: "name",
+	31: "oidc_config",
+	32: "permission_profile_name_or_path",
+	33: "port",
+	34: "proxy_mode",
+	35: "proxy_read_timeout",
+	36: "publish",
+	37: "rate_limit_config",
+	38: "rate_limit_namespace",
+	39: "read_only_rootfs",
+	40: "registry_api_url",
+	41: "registry_server_name",
+	42: "registry_url",
+	43: "remote_auth_config",
+	44: "remote_url",
+	45: "runtime_config",
+	46: "scaling_config",
+	47: "schema_version",
+	48: "secrets",
+	49: "session_ttl",
+	50: "stateless",
+	51: "strict_protocol_validation",
+	52: "target_host",
+	53: "target_port",
+	54: "telemetry_config",
+	55: "thv_ca_bundle",
+	56: "token_exchange_config",
+	57: "tools_filter",
+	58: "tools_override",
+	59: "transport",
+	60: "trust_proxy_headers",
+	61: "upstream_swap_config",
+	62: "validating_webhooks",
+	63: "volumes",
 }
 
 // Decode decodes RunnerRunConfig from json.
@@ -32973,6 +33093,16 @@ func (s *RunnerRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"image\"")
+			}
+		case "instructions":
+			if err := func() error {
+				s.Instructions.Reset()
+				if err := s.Instructions.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"instructions\"")
 			}
 		case "isolate_network":
 			if err := func() error {

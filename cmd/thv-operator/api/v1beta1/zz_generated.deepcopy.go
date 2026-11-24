@@ -21,6 +21,7 @@ limitations under the License.
 package v1beta1
 
 import (
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/ratelimit/types"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -1661,6 +1662,11 @@ func (in *MCPRemoteProxySpec) DeepCopyInto(out *MCPRemoteProxySpec) {
 		*out = new(ToolConfigRef)
 		**out = **in
 	}
+	if in.Instructions != nil {
+		in, out := &in.Instructions, &out.Instructions
+		*out = new(instructions.Config)
+		**out = **in
+	}
 	if in.TelemetryConfigRef != nil {
 		in, out := &in.TelemetryConfigRef, &out.TelemetryConfigRef
 		*out = new(MCPTelemetryConfigReference)
@@ -1973,6 +1979,11 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 	if in.ToolConfigRef != nil {
 		in, out := &in.ToolConfigRef, &out.ToolConfigRef
 		*out = new(ToolConfigRef)
+		**out = **in
+	}
+	if in.Instructions != nil {
+		in, out := &in.Instructions, &out.Instructions
+		*out = new(instructions.Config)
 		**out = **in
 	}
 	if in.ExternalAuthConfigRef != nil {
@@ -3784,6 +3795,11 @@ func (in *VirtualMCPServerSpec) DeepCopyInto(out *VirtualMCPServerSpec) {
 		in, out := &in.PassthroughHeaders, &out.PassthroughHeaders
 		*out = make([]string, len(*in))
 		copy(*out, *in)
+	}
+	if in.Instructions != nil {
+		in, out := &in.Instructions, &out.Instructions
+		*out = new(instructions.Config)
+		**out = **in
 	}
 	if in.ServiceAccount != nil {
 		in, out := &in.ServiceAccount, &out.ServiceAccount

@@ -3647,6 +3647,35 @@ spec:
                     required:
                     - type
                     type: object
+                  instructions:
+                    description: |-
+                      Instructions sets the instructions clients receive in the result of a
+                      successful initialize or server/discover request: vMCP combines it with
+                      any instructions it produces, as mode says. When using the Kubernetes
+                      operator, VirtualMCPServer.spec.instructions takes precedence over this
+                      field.
+                    properties:
+                      mode:
+                        default: append
+                        description: |-
+                          Mode says how value combines with the instructions the server returns.
+                          replace returns value alone. append returns the server's instructions,
+                          a blank line, and value. prepend returns value, a blank line, and the
+                          server's instructions. When the server returns no instructions, every
+                          mode returns value alone.
+                        enum:
+                        - replace
+                        - append
+                        - prepend
+                        type: string
+                      value:
+                        description: Value is the text that mode combines with the
+                          server's instructions.
+                        minLength: 1
+                        type: string
+                    required:
+                    - value
+                    type: object
                   metadata:
                     additionalProperties:
                       type: string
@@ -5111,6 +5140,35 @@ spec:
                 - message: authzConfig and authzConfigRef are mutually exclusive;
                     use authzConfigRef to reference a shared MCPAuthzConfig
                   rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
+              instructions:
+                description: |-
+                  Instructions sets the instructions clients receive in the result of a successful
+                  initialize or server/discover request: the Virtual MCP server combines it with
+                  any instructions it produces, as mode says. Clients commonly add server
+                  instructions to the model's context, so this adds policy or usage guidance
+                  without changing the server. Takes precedence over config.instructions.
+                properties:
+                  mode:
+                    default: append
+                    description: |-
+                      Mode says how value combines with the instructions the server returns.
+                      replace returns value alone. append returns the server's instructions,
+                      a blank line, and value. prepend returns value, a blank line, and the
+                      server's instructions. When the server returns no instructions, every
+                      mode returns value alone.
+                    enum:
+                    - replace
+                    - append
+                    - prepend
+                    type: string
+                  value:
+                    description: Value is the text that mode combines with the server's
+                      instructions.
+                    minLength: 1
+                    type: string
+                required:
+                - value
+                type: object
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -9336,6 +9394,35 @@ spec:
                     required:
                     - type
                     type: object
+                  instructions:
+                    description: |-
+                      Instructions sets the instructions clients receive in the result of a
+                      successful initialize or server/discover request: vMCP combines it with
+                      any instructions it produces, as mode says. When using the Kubernetes
+                      operator, VirtualMCPServer.spec.instructions takes precedence over this
+                      field.
+                    properties:
+                      mode:
+                        default: append
+                        description: |-
+                          Mode says how value combines with the instructions the server returns.
+                          replace returns value alone. append returns the server's instructions,
+                          a blank line, and value. prepend returns value, a blank line, and the
+                          server's instructions. When the server returns no instructions, every
+                          mode returns value alone.
+                        enum:
+                        - replace
+                        - append
+                        - prepend
+                        type: string
+                      value:
+                        description: Value is the text that mode combines with the
+                          server's instructions.
+                        minLength: 1
+                        type: string
+                    required:
+                    - value
+                    type: object
                   metadata:
                     additionalProperties:
                       type: string
@@ -10800,6 +10887,35 @@ spec:
                 - message: authzConfig and authzConfigRef are mutually exclusive;
                     use authzConfigRef to reference a shared MCPAuthzConfig
                   rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
+              instructions:
+                description: |-
+                  Instructions sets the instructions clients receive in the result of a successful
+                  initialize or server/discover request: the Virtual MCP server combines it with
+                  any instructions it produces, as mode says. Clients commonly add server
+                  instructions to the model's context, so this adds policy or usage guidance
+                  without changing the server. Takes precedence over config.instructions.
+                properties:
+                  mode:
+                    default: append
+                    description: |-
+                      Mode says how value combines with the instructions the server returns.
+                      replace returns value alone. append returns the server's instructions,
+                      a blank line, and value. prepend returns value, a blank line, and the
+                      server's instructions. When the server returns no instructions, every
+                      mode returns value alone.
+                    enum:
+                    - replace
+                    - append
+                    - prepend
+                    type: string
+                  value:
+                    description: Value is the text that mode combines with the server's
+                      instructions.
+                    minLength: 1
+                    type: string
+                required:
+                - value
+                type: object
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.

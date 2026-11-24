@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -77,6 +78,10 @@ type ServerConfig struct {
 	// forwards, unchanged, to every backend it calls (see headerforward.CaptureMiddleware).
 	// Empty disables capture.
 	PassthroughHeaders []string
+
+	// Instructions sets the instructions of the initialize and server/discover
+	// results. If nil, they are returned as produced.
+	Instructions *instructions.Config
 
 	// AuthServer is the optional embedded authorization server. When non-nil, its
 	// routes are registered on the mux alongside the protected resource metadata.
@@ -453,6 +458,7 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		AuthMiddleware:          cfg.AuthMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
 		PassthroughHeaders:      cfg.PassthroughHeaders,
+		Instructions:            cfg.Instructions,
 		AuthServer:              cfg.AuthServer,
 		TelemetryProvider:       cfg.TelemetryProvider,
 		UsageMetricsMiddleware:  cfg.UsageMetricsMiddleware,

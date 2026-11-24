@@ -2227,6 +2227,8 @@ components:
         image:
           description: Image is the Docker image to run
           type: string
+        instructions:
+          $ref: '#/components/schemas/instructions.Config'
         isolate_network:
           description: IsolateNetwork indicates whether to isolate the network for
             the container
@@ -3094,6 +3096,30 @@ components:
         printOverlays:
           description: Whether to print resolved overlay paths for debugging
           type: boolean
+      type: object
+    instructions.Config:
+      description: |-
+        Instructions sets the instructions the server returns in its initialize
+        and server/discover results. PopulateMiddlewareConfigs derives the
+        instructions middleware from it.
+      properties:
+        mode:
+          description: |-
+            Mode says how value combines with the instructions the server returns.
+            replace returns value alone. append returns the server's instructions,
+            a blank line, and value. prepend returns value, a blank line, and the
+            server's instructions. When the server returns no instructions, every
+            mode returns value alone.
+            +kubebuilder:validation:Enum=replace;append;prepend
+            +kubebuilder:default=append
+            +optional
+          type: string
+        value:
+          description: |-
+            Value is the text that mode combines with the server's instructions.
+            +kubebuilder:validation:Required
+            +kubebuilder:validation:MinLength=1
+          type: string
       type: object
     model.Argument:
       properties:

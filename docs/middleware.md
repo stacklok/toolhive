@@ -16,12 +16,13 @@ The middleware chain consists of the following components:
 4. **Token Exchange Middleware**: Exchanges JWT tokens for external service tokens via OAuth 2.0 Token Exchange (optional)
 5. **MCP Parsing Middleware**: Parses JSON-RPC MCP requests and extracts structured data
 6. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
-7. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
-8. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
-9. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
-10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
-11. **On-Behalf-Of (OBO) Middleware**: Exchanges the user's token for a backend-scoped Microsoft Entra token and replaces `Authorization` (optional, operator-configured)
-12. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
+7. **Instructions Middleware**: Sets the `instructions` of `initialize` and `server/discover` results (optional)
+8. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
+9. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
+10. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
+11. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
+12. **On-Behalf-Of (OBO) Middleware**: Exchanges the user's token for a backend-scoped Microsoft Entra token and replaces `Authorization` (optional, operator-configured)
+13. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
 ## Dynamic webhook middleware
 
@@ -884,6 +885,36 @@ A client cannot remove injected headers by naming them in its `Connection` heade
 thv proxy my-server --target-uri https://mcp.example.com --remote-forward-headers "X-Custom-Header=value" --remote-forward-headers "X-API-Key=secret"
 ```
 
+### 13. Instructions Middleware
+
+**Purpose**: Sets the `instructions` an MCP endpoint returns to clients. Clients add server instructions to the model's context while the server is connected, so an operator can add policy or usage guidance without changing the server.
+
+**Location**: `pkg/mcp/instructions_middleware.go`, with the configuration type in `pkg/mcp/instructions`
+
+**Behavior**:
+
+The middleware rewrites the result of a successful `initialize` request and of a successful `server/discover` request, the 2026-07-28 replacement for `initialize`. The mode decides how the configured value combines with the server's instructions:
+
+- `replace`: the value alone.
+- `append` (the default): the server's instructions, a blank line, then the value.
+- `prepend`: the value, a blank line, then the server's instructions.
+
+When the server returns no instructions, every mode returns the value alone.
+
+On a POST, the middleware reads only the response to an `initialize` or `server/discover` request, as a JSON body or an event stream, and only the result whose id is the request's. The response to any other request passes through unread, with its `Content-Length`. On the legacy SSE transport the result arrives on the event stream a GET opened, not in the response to the POST. On such a stream the middleware rewrites the first result that has `protocolVersion`, `capabilities` and `serverInfo`, and passes the rest of the stream through unread.
+
+A rewrite sets the result's `instructions` member and keeps every other member as the server sent it. A body the middleware reads loses its `Content-Length`, since the rewrite changes its length. Error responses and responses with a non-2xx status pass through unchanged.
+
+The middleware fails open. A response to `initialize` or `server/discover` that it cannot read passes through unchanged and is logged as a warning: a body with a content coding or a charset other than UTF-8, an ambiguous `Content-Type`, a body or event larger than 16 MiB, or a message that does not decode as one unambiguous JSON-RPC message, such as one with duplicate or case-variant member names. Like the tool filter, it forwards a request whose response it reads without the client's `Accept-Encoding`, so the backend answers in the clear.
+
+**Configuration**:
+- `thv run --instructions-file <path> [--instructions-mode replace|append|prepend]`
+- RunConfig: `instructions` with `mode` and `value`
+- Operator: `spec.instructions` on MCPServer, MCPRemoteProxy and VirtualMCPServer
+- vMCP: `instructions` in the vMCP configuration. On a VirtualMCPServer, `spec.instructions` takes precedence over `spec.config.instructions`.
+
+**Placement**: Inside the MCP Parser, whose parse names the `initialize` and `server/discover` requests, so the middleware outside it, such as audit and the tool filter, sees the rewritten result. Behind the stdio streamable HTTP proxy, a later handshake is answered from the cached InitializeResult. The cache holds the backend's own result and the middleware rewrites each response, so every client receives the configured text once.
+
 ## Data Flow Through Context
 
 The middleware chain uses Go's `context.Context` to pass data between components:
@@ -1275,15 +1306,16 @@ The middleware chain execution order is critical and controlled by the order in 
 5. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
 6. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
 7. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
-8. **Telemetry Middleware** (if enabled) - Starts the request span; finalizes MCP identity after the inner chain returns
-9. **Rate Limit Middleware** (if configured) - Enforces per-identity/tool limits using the parsed request
-10. **Mutating Webhook Middleware** (if configured) - Patches the parsed MCP request and republishes the parse
-11. **Validating Webhook Middleware** (if configured) - Approves or denies the (possibly mutated) request
-12. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
-13. **Authorization Middleware** (if enabled) - Cedar policy evaluation
-14. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
-15. **On-Behalf-Of (OBO) Middleware** (if an `obo` external auth config is referenced) - Exchanges the user's token at Entra and replaces `Authorization`; spliced in from `AdditionalMiddlewareConfigs`
-16. **Recovery Middleware** (always present) - Catches panics
+8. **Instructions Middleware** (if configured) - Sets the instructions of `initialize` and `server/discover` results
+9. **Telemetry Middleware** (if enabled) - Starts the request span; finalizes MCP identity after the inner chain returns
+10. **Rate Limit Middleware** (if configured) - Enforces per-identity/tool limits using the parsed request
+11. **Mutating Webhook Middleware** (if configured) - Patches the parsed MCP request and republishes the parse
+12. **Validating Webhook Middleware** (if configured) - Approves or denies the (possibly mutated) request
+13. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
+14. **Authorization Middleware** (if enabled) - Cedar policy evaluation
+15. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
+16. **On-Behalf-Of (OBO) Middleware** (if an `obo` external auth config is referenced) - Exchanges the user's token at Entra and replaces `Authorization`; spliced in from `AdditionalMiddlewareConfigs`
+17. **Recovery Middleware** (always present) - Catches panics
 
 **Important Ordering Rules**:
 - Audit wraps the whole chain (directly inside the body-size limit): every request that passes the size cap produces an audit event no matter which middleware rejects it. It does not need to run inside auth or the parser — those publish the identity and parsed MCP data back to it via `auth.IdentityHolder` and `mcp.ParsedRequestHolder`.
@@ -1293,6 +1325,7 @@ The middleware chain execution order is critical and controlled by the order in 
 - Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
+- Instructions must come after the MCP Parser, whose parse names the `initialize` and `server/discover` requests whose results it rewrites. On the CLI flag path it also follows Usage Metrics when that is enabled, since `addCoreMiddlewares` adds it right after the parser
 - Telemetry must come before Rate Limiting so the limiter can annotate the active request span; telemetry finalizes MCP names, attributes, and metrics after downstream processing from the shared parsed-request holder
 - Rate Limiting must come before webhooks so rejected traffic does not invoke outbound webhook requests
 - Mutating webhooks must come before Validating webhooks and before Authorization, so policy evaluation sees the patched request
@@ -1301,7 +1334,7 @@ The middleware chain execution order is critical and controlled by the order in 
 - OBO comes after Header Forward and before Recovery, so it has the final say on the outbound `Authorization` header; it needs the identity the Authentication Middleware publishes, which is why the operator requires `oidcConfigRef` alongside an `obo` config
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
 - Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. The transparent proxy's `Connection` header check (see [Client `Connection` header](#client-connection-header)) runs before all of them. Their rejections (400/413/403) are the only ones not audited.
-- The list above (steps 1-16) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
+- The list above (steps 1-17) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
 
 ### Client `Connection` header
 

@@ -268,6 +268,7 @@ thv run uvx://mcp-server \
 - `header-forward` - Forward request headers to upstream (constant: `HeaderForwardMiddlewareName`)
 - `validating-webhook` - Validating admission webhook
 - `mutating-webhook` - Mutating admission webhook
+- `instructions` - Set the instructions of `initialize` and `server/discover` results
 
 **Implementation**: `pkg/runner/config.go`, `pkg/transport/types/transport.go`
 
@@ -296,6 +297,22 @@ thv run uvx://mcp-server \
 ```
 
 **Implementation**: `pkg/runner/config.go`
+
+### Instructions
+
+**Add text to the instructions the server returns:**
+```json
+{
+  "instructions": {
+    "mode": "append",
+    "value": "Label any output that includes customer data."
+  }
+}
+```
+
+`mode` is `replace`, `append` (the default) or `prepend`. See [Instructions Middleware](../middleware.md#13-instructions-middleware).
+
+**Implementation**: `pkg/mcp/instructions`, `pkg/mcp/instructions_middleware.go`
 
 ## RunConfig Lifecycle
 

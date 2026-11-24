@@ -731,3 +731,58 @@ func TestBuildDiscoveryHTTPClient_BoundsIdleConnectionPool(t *testing.T) {
 	custom := &http.Client{}
 	assert.Same(t, custom, buildDiscoveryHTTPClient(custom))
 }
+
+func TestIssuersEqual(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		expected string
+		got      string
+		want     bool
+	}{
+		{name: "exact match", expected: "https://host.example.com", got: "https://host.example.com", want: true},
+		{name: "slash on got", expected: "https://host.example.com", got: "https://host.example.com/", want: true},
+		{name: "slash on expected", expected: "https://host.example.com/", got: "https://host.example.com", want: true},
+		{name: "different host", expected: "https://host.example.com", got: "https://evil.example.com/", want: false},
+		{name: "different scheme", expected: "https://host.example.com", got: "http://host.example.com/", want: false},
+		{name: "different port", expected: "https://host.example.com", got: "https://host.example.com:8443/", want: false},
+		{name: "path issuer exact", expected: "https://host.example.com/tenant", got: "https://host.example.com/tenant", want: true},
+		{name: "path issuer, slash on got", expected: "https://host.example.com/tenant", got: "https://host.example.com/tenant/", want: false},
+		{name: "path issuer, slash on expected", expected: "https://host.example.com/tenant/", got: "https://host.example.com/tenant", want: false},
+		{name: "query on got", expected: "https://host.example.com", got: "https://host.example.com/?a=b", want: false},
+		{name: "empty query marker on got", expected: "https://host.example.com", got: "https://host.example.com/?", want: false},
+		{name: "fragment on got", expected: "https://host.example.com", got: "https://host.example.com/#frag", want: false},
+		{name: "userinfo on got", expected: "https://host.example.com", got: "https://user@host.example.com/", want: false},
+		{name: "unparsable got", expected: "https://host.example.com", got: "https://host.example.com/%zz", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, issuersEqual(tt.expected, tt.got))
+		})
+	}
+}
+
+func TestFetchAuthorizationServerMetadataFromURL_AcceptsOriginOnlyIssuerWithTrailingSlash(t *testing.T) {
+	t.Parallel()
+
+	var issuer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(AuthorizationServerMetadata{
+			Issuer:                issuer + "/",
+			AuthorizationEndpoint: issuer + "/authorize",
+			TokenEndpoint:         issuer + "/token",
+			RegistrationEndpoint:  issuer + "/register",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	issuer = srv.URL
+
+	md, err := FetchAuthorizationServerMetadataFromURL(
+		context.Background(), issuer+"/.well-known/oauth-authorization-server", issuer, nil)
+	require.NoError(t, err)
+	assert.Equal(t, issuer+"/", md.Issuer)
+}

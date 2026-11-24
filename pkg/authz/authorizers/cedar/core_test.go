@@ -1714,10 +1714,9 @@ func TestMergeIDTokenClaims(t *testing.T) {
 			// deny-all trap for every `principal in THVGroup::"..."` policy against a
 			// provider that puts group membership in the id_token only.
 			//
-			// The invariant that a group claim
-			// on the TOOLHIVE-ISSUED token grants nothing is a different property and
-			// is pinned elsewhere (TestResolveClaimsUpstreamSupplement's
-			// leaked-from-as-token fixtures,
+			// The invariant that a group claim on the TOOLHIVE-ISSUED token grants
+			// nothing is a different property and is pinned elsewhere
+			// (TestResolveClaimsUpstreamSupplement's leaked-from-as-token fixtures,
 			// TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups/toolhive_groups_ignored_when_upstream_configured,
 			// and integration_test.go's direct_groups_ignored_when_upstream_configured).
 			name:              "authorization_bearing_claims_are_filled_from_the_id_token",
@@ -1948,8 +1947,9 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 		"email":     "leaked-from-as-token@example.com",
 		"name":      "Leaked From AS Token",
 		"client_id": "vscode",
-		// The id_token is a source of group claims; the issued token is not, so this group must never appear in any resolved claim
-		// set below — including the cases where the id_token does supply groups.
+		// The id_token is a source of group claims; the issued token is not, so
+		// this group must never appear in any resolved claim set below —
+		// including the cases where the id_token does supply groups.
 		"groups": []interface{}{"leaked-from-as-token"},
 	}
 
@@ -2003,7 +2003,7 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 				"groups":                     []interface{}{"platform-eng"},
 				"hd":                         "example.com",
 				"https://hub.example.com/ou": "infra",
-				// Token-describing claims are withheld even now that the id_token is
+				// Token-describing claims are withheld even though the id_token is
 				// a general claim source, and so is the delegated grant.
 				"aud":   "toolhive-as-client",
 				"sid":   "sess-abc",

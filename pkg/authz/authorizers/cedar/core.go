@@ -691,7 +691,7 @@ func (a *Authorizer) IsAuthorized(
 // the fuller list should have the upstream assert it in the access token.
 //
 // Fill-only does not contradict or extend a claim the access token asserts, but
-// it does supply one the access token leaves out, and that has two consequences:
+// it does supply one the access token leaves out, and that has three consequences:
 //
 //   - Default group selection takes the first of defaultGroupClaimNames present,
 //     so filling one default name could hide another the access token asserted.
@@ -702,6 +702,14 @@ func (a *Authorizer) IsAuthorized(
 //     filtering that yields an empty set. A deployment relying on such a filter
 //     to withhold group membership from this resource server should have the
 //     upstream emit an empty claim instead, or keep groups out of the id_token.
+//   - App-role claims are scoped to the token's audience application. In Entra ID,
+//     `roles` lists the user's role assignments on the app the token was minted
+//     for: the resource API in the access token, ToolHive's auth-server client in
+//     the id_token. Entra omits `roles` when the user has no assignment on the
+//     resource, so the id_token's roles — the CLIENT app's — are filled in. When
+//     the resource API and the auth-server client are different registrations,
+//     use one registration for both, have the upstream emit `roles` in the access
+//     token, or assign no roles on the client app.
 //
 // A claim absent from both tokens stays absent, so `has`-guarded policies still
 // fail closed.
@@ -714,12 +722,13 @@ func (a *Authorizer) IsAuthorized(
 // See Identity.UpstreamIDTokens for that contract and its two consumers.
 //
 // For a provider that asserts groups only in its id_token, group membership is
-// therefore a login-time fact: upstream access tokens are refreshed, so groups read from them
-// track the provider, whereas a stored id_token is replaced only when a refresh
-// rotates one, so a group revoked upstream can keep granting until the ToolHive
-// session ends. Enforcing `exp` is not the remedy — it would flip permit to deny
-// mid-session for every user rather than only the revoked one. Shorten the session
-// (RefreshTokenLifespan) if login-time group membership is too stale to accept.
+// therefore a login-time fact: upstream access tokens are refreshed, so groups
+// read from them track the provider, whereas a stored id_token is replaced only
+// when a refresh rotates one, so a group revoked upstream can keep granting until
+// the ToolHive session ends. Enforcing `exp` is not the remedy — it would flip
+// permit to deny mid-session for every user rather than only the revoked one.
+// Shorten the session (RefreshTokenLifespan) if login-time group membership is too
+// stale to accept.
 func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, string, error) {
 	requestClaims := jwt.MapClaims(identity.Claims)
 
@@ -831,7 +840,7 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 	merged, filled := mergeIDTokenClaims(upstreamClaims, idTokenClaims,
 		a.defaultGroupClaimsToWithhold(upstreamClaims))
 	if len(filled) > 0 {
-		// DEBUG, not WARN: filling from the id_token is the designed path, and
+		// DEBUG because filling from the id_token is the designed path, and
 		// nearly every OIDC id_token carries profile claims the access token omits.
 		// Rate-limited on its own timer, not claimKeyLog: sharing one would let
 		// this line consume the window and permanently starve the claim-key dump
@@ -907,13 +916,12 @@ func (a *Authorizer) defaultGroupClaimsToWithhold(accessTokenClaims jwt.MapClaim
 //     audience, or on token lifetime, would silently read the id_token's — and
 //     `client_id`/`azp` the subtle ones, since they would report ToolHive's own
 //     client rather than the one that made the request. Token-type and
-//     token-binding claims (`typ`, `token_use`, `uti`, `rh`, `cnf`) belong here
-//     for the same reason.
-//   - The delegated grant: `scope` and `scp`, plus RFC 8693's `act`/`may_act`,
-//     which describe delegation the token carries. These are the one place where the
+//     token-binding claims belong here for the same reason.
+//   - The delegated grant. `scope` and `scp` are the one place where the
 //     deny-list is doing real work rather than avoiding confusion, so the
 //     distinction from a group claim matters. A group is a fact about the USER,
-//     which either token can report equally well. A scope is the AUTHORITY THIS
+//     which either token can usually report equally well (app roles are the
+//     exception; see resolveClaims). A scope is the AUTHORITY THIS
 //     TOKEN CARRIES, and the only token whose authority is at issue is the access
 //     token that was presented. Providers do not emit `scope` in an id_token per
 //     spec, but where one appears it can reflect what was REQUESTED rather than
@@ -925,7 +933,8 @@ func (a *Authorizer) defaultGroupClaimsToWithhold(accessTokenClaims jwt.MapClaim
 //     bearing it. Unlike a group claim name, these two are standardized names
 //     (RFC 8693/9068 `scope`, Entra `scp`), so excluding them by name is an
 //     effective control rather than a cosmetic one — the reason an allow-list had
-//     to go for groups does not transfer here.
+//     to go for groups does not transfer here. RFC 8693's `act`/`may_act` are
+//     excluded on the same grounds: they describe delegation a token carries.
 //   - `sub`, because it becomes the Cedar principal entity ID rather than an
 //     attribute, and Cedar has no `has`-style guard in the principal position. An
 //     access token without `sub` violates RFC 9068; failing closed with
@@ -946,12 +955,9 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 	// Token-type and token-binding claims: JWT `typ`, Cognito `token_use`, Entra
 	// `uti`/`rh`, and RFC 7800 `cnf`.
 	"typ": {}, "token_use": {}, "uti": {}, "rh": {}, "cnf": {},
-	// RFC 8693 delegation: who the token acts for, or may act for. Like a scope,
-	// this is authority carried by a token, so only the presented one's counts.
-	"act": {}, "may_act": {},
-	// The delegated grant, which belongs to the presented access token alone.
-	// RFC 8693/9068 spell it `scope`; Entra ID spells it `scp`.
-	"scope": {}, "scp": {},
+	// The delegated grant: RFC 8693/9068 `scope`, Entra `scp`, and RFC 8693
+	// `act`/`may_act`.
+	"scope": {}, "scp": {}, "act": {}, "may_act": {},
 	// The Cedar principal, not an attribute.
 	"sub": {},
 }
@@ -966,7 +972,7 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 // so a claim the access token does assert can neither be shadowed nor unioned with
 // the id_token's value. Absent claims are never fabricated either: a name missing
 // from both tokens is missing from the result, which keeps `has`-guarded policies
-// failing closed. See resolveClaims for why both choices are the safe direction.
+// failing closed. See resolveClaims for the rationale and its limits.
 //
 // Neither input is mutated and the result aliases neither, so the caller may hand
 // it to code that adds synthetic keys.

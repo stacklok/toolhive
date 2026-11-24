@@ -679,13 +679,13 @@ token carries:
 * Claims that describe the `id_token` itself rather than the user — `iss`, `aud`,
   `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
   `sid`, `client_id`, and the token-type and token-binding claims `typ`,
-  `token_use`, `uti`, `rh`, `cnf`. That `id_token`'s audience is ToolHive's own auth-server
-  client, so a policy gating on the resource-server `aud`, on token lifetime, or
-  on the requesting `client_id` would otherwise read a fact about a different
-  token.
+  `token_use`, `uti`, `rh`, `cnf`. That `id_token`'s audience is ToolHive's own
+  auth-server client, so a policy gating on the resource-server `aud`, on token
+  lifetime, or on the requesting `client_id` would otherwise read a fact about a
+  different token.
 * **`scope` and `scp`**, the delegated grant, along with the RFC 8693
   delegation claims `act` and `may_act`. A group is a fact about the *user*,
-  which either token can report; a scope is the authority *a particular token*
+  which either token can usually report; a scope is the authority *a particular token*
   carries, and the only authority at issue is the access token's. Where a provider
   emits `scope` in an `id_token` at all (it is not a standard `id_token` claim) it
   may echo what the client *requested* rather than what the user *granted* — and
@@ -706,20 +706,29 @@ resource server", and unioning in a list minted for a different audience would
 restore groups the provider chose to withhold. If policies need the fuller list,
 configure the upstream to assert it in the access token.
 
-Fill-only has two consequences worth knowing:
+Fill-only has three consequences worth knowing:
 
 * **Default group selection stays with the access token.** Without
   `groupClaimName`, ToolHive uses the first of `groups`, `roles` and
   `cognito:groups` present. If the access token asserts any of those, the
   `id_token` does not fill the others, so an `id_token`-only `groups` cannot hide
-  the access token's `roles`. A claim you name in `groupClaimName` or
-  `roleClaimName` is still filled from the `id_token`.
+  the access token's `roles`. A claim you name in `groupClaimName` is still filled
+  from the `id_token`. A `roleClaimName` that is itself one of those three names
+  is not, once the access token asserts another of them.
 * **An empty per-audience filter is not preserved.** When a group filter matches
   none of the user's groups, providers typically omit the claim from the access
   token rather than emit an empty list, and the `id_token`'s list is then filled
   in. If you rely on such a filter to withhold group membership from this
   resource server, have the upstream emit an empty claim, or keep groups out of
   the `id_token`.
+* **App roles belong to the token's audience app.** In Microsoft Entra ID,
+  `roles` lists the user's role assignments on the app the token was issued for:
+  the resource API in the access token, ToolHive's auth-server client in the
+  `id_token`. Entra omits `roles` when the user has no assignment on the
+  resource, so the `id_token`'s roles, which are the *client* app's, are filled
+  in. If the resource API and the auth-server client are separate registrations,
+  use one registration for both, have Entra emit `roles` in the access token, or
+  assign no roles on the client app.
 
 > **Warning**: group revocation latency is session-scoped for `id_token`-sourced
 > claims.
@@ -744,19 +753,24 @@ Fill-only has two consequences worth knowing:
 > **What to do**: if your authorization model needs group revocation to propagate
 > faster than the session, either have the upstream assert groups in its **access
 > token** (which restores refresh-rate propagation), or shorten
-> `refreshTokenLifespan` to bound the window. Groups the access token asserts
-> keep refresh-rate propagation.
+> `refreshTokenLifespan` to bound the window.
 
-What reading the `id_token` changes depends on where your provider puts claims:
+What the `id_token` contributes depends on where your provider puts claims:
 
-* **Groups and roles in the access token**: group extraction is unchanged. Other
-  claims the access token omits (`hd`, `email_verified`, `acr`, `amr`, custom
-  claims) can now be filled from the `id_token`.
-* **Groups or roles in the `id_token` only**: these deployments previously saw no
-  group claim at all. `permit` rules keyed on `THVGroup` now match as intended,
-  and `forbid` rules keyed on `THVGroup` or on a supplemented claim can now match
-  too, so decisions can change in both directions. Review `forbid` rules before
-  upgrading.
+* **Groups and roles in the access token**: groups come from the access token.
+  Other claims it omits (`hd`, `email_verified`, `acr`, `amr`, custom claims) are
+  filled from the `id_token`.
+* **Groups or roles in the `id_token` only**: group claims are filled from the
+  `id_token`, so `permit` and `forbid` rules keyed on `THVGroup` or on a
+  supplemented claim can both match.
+
+> **Migration: claims from the `id_token`**
+>
+> Releases before the `id_token` supplement read group, role and most other
+> claims from the access token only. Deployments whose provider puts those
+> claims in the `id_token` only saw them as absent. After upgrading they are
+> present, so `forbid` rules keyed on them can start matching as well as
+> `permit` rules. Review `forbid` rules before upgrading.
 
 The token the client presented — the one ToolHive's auth server issued — is not
 a claim source here, even though it mirrors a `name` and `email`, so on this path a

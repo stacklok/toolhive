@@ -2070,7 +2070,12 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 **MCP call type.** `pkg/mcp/toolcalldetails` defines
 `https://toolhive.dev/mcp_tool_call`, which is meant to narrow an access token
 to one MCP call: a tool call (`server`, `tool`, `arguments_sha256`,
-`operation_id`) or a list call (`server`, `method`). Nothing registers it by default; an embedder
+`operation_id`) or a list call (`server`, `method`). `server` is the ID of the
+vMCP backend the call is routed to; `tool` is the request's `params.name`
+exactly as sent, including any backend prefix; for a list call, the vMCP
+answers with that backend's items only. `arguments_sha256` is the lowercase hex
+SHA-256 of the RFC 8785 serialization of `params.arguments`, or of `{}` when
+the arguments are absent or `null`. Nothing registers it by default; an embedder
 adds it with `toolcalldetails.Register` to the types passed to
 `authorizationdetails.New`. It is registered for token exchange and JWT-bearer.
 On token exchange its hook refuses any request whose `requested_token_type` is

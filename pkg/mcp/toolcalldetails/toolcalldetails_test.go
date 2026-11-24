@@ -18,7 +18,7 @@ import (
 
 const (
 	argsHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	toolCall = `{"type":"` + Type + `","server":"github","tool":"pull_request_read","arguments_sha256":"` + argsHash + `","operation_id":"op-1"}`
+	toolCall = `{"type":"` + Type + `","server":"github","tool":"github_pull_request_read","arguments_sha256":"` + argsHash + `","operation_id":"op-1"}`
 	listCall = `{"type":"` + Type + `","server":"github","method":"tools/list"}`
 )
 
@@ -183,7 +183,7 @@ func TestParseEntry(t *testing.T) {
 		{
 			name: "tool call",
 			raw:  toolCall,
-			want: Entry{Server: "github", Tool: "pull_request_read", ArgumentsSHA256: argsHash, OperationID: "op-1"},
+			want: Entry{Server: "github", Tool: "github_pull_request_read", ArgumentsSHA256: argsHash, OperationID: "op-1"},
 		},
 		{
 			name: "list call",

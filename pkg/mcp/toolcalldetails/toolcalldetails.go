@@ -5,7 +5,7 @@
 // narrows an access token to one MCP call. An entry is either a tool call
 //
 //	{"type": "https://toolhive.dev/mcp_tool_call", "server": "github",
-//	 "tool": "pull_request_read", "arguments_sha256": "<64 lowercase hex>",
+//	 "tool": "github_pull_request_read", "arguments_sha256": "<64 lowercase hex>",
 //	 "operation_id": "op-1"}
 //
 // or a list call
@@ -13,10 +13,18 @@
 //	{"type": "https://toolhive.dev/mcp_tool_call", "server": "github",
 //	 "method": "tools/list"}
 //
-// tool is the name the vMCP routes by, as in the request's params.name.
+// server is the ID of the vMCP backend the call is routed to, not the vMCP
+// the token is presented to. tool is the request's params.name exactly as the
+// client sends it, which is the name the vMCP routes by: with the default
+// prefix strategy that includes the backend prefix, as in the example. A
+// tool call matches only when params.name equals tool and the vMCP routes it
+// to the backend named by server. For a list call, server names the one
+// backend whose items the call may list; the vMCP answers it with that
+// backend's items only, not the aggregated list.
+//
 // arguments_sha256 is the lowercase hex SHA-256 of the RFC 8785 (JSON
 // Canonicalization Scheme) serialization of params.arguments, or of {} when
-// params.arguments is absent. A request carries exactly one entry of this
+// params.arguments is absent or null. A request carries exactly one entry of this
 // type, with no members other than those shown above. The hook sees only its
 // own type's entries, so it cannot refuse entries of other registered types
 // sent alongside.
@@ -88,7 +96,9 @@ const (
 // Method. Server is always set. Build an Entry with ParseEntry, which enforces
 // these rules.
 type Entry struct {
-	Server          string
+	// Server is the ID of the vMCP backend the call is routed to.
+	Server string
+	// Tool is the request's params.name exactly as the client sends it.
 	Tool            string
 	ArgumentsSHA256 string
 	OperationID     string
@@ -100,9 +110,11 @@ func (e Entry) IsList() bool {
 	return e.Method != ""
 }
 
-// Register adds the MCP call type to types. It is accepted on RFC 8693 token
-// exchange, only when requesting an ID-JAG, and on the RFC 7523 JWT-bearer
-// grant. It overwrites an existing entry of the same name.
+// Register adds the MCP call type to types, registered for RFC 8693 token
+// exchange (where the hook accepts it only when an ID-JAG is requested) and
+// for the RFC 7523 JWT-bearer grant. The handlers in pkg/authserver do not
+// read the entry on either path yet; see the package doc. It overwrites an
+// existing entry of the same name.
 func Register(types map[string]authorizationdetails.Type) {
 	types[Type] = authorizationdetails.Type{
 		GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
@@ -186,8 +198,9 @@ var (
 // unchanged. The result is never used to pick a resource, scope or audience.
 func grant(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
 	// Token exchange only echoes the granted entries and never puts them in
-	// the token it issues, except when it mints an ID-JAG. Accepting the entry
-	// on any other exchange would return a token the entry does not restrict.
+	// the token it issues. Minting an ID-JAG is meant to sign them into it,
+	// but that path does not read the parameter yet. Accepting the entry on
+	// any other exchange would return a token the entry does not restrict.
 	if req.GrantType == oauthproto.GrantTypeTokenExchange && req.RequestedTokenType != oauthproto.TokenTypeIDJAG {
 		return authorizationdetails.Result{}, authorizationdetails.Error{
 			Code:   authorizationdetails.CodeInvalidRequest,

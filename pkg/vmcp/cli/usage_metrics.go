@@ -105,6 +105,13 @@ func (u *usageMetrics) observe(agg aggregator.Aggregator) aggregator.Aggregator 
 // calls to the usage report as code_mode_tool_calls. Those calls never pass
 // through the HTTP middleware, so they are not part of count. A nil cfg (code
 // mode off) stays nil.
+//
+// The script call itself is counted when the request arrives, but its tool
+// calls only land when the script returns. A script still running at shutdown
+// can outlast the server's HTTP drain (defaultShutdownTimeout in
+// pkg/vmcp/server, shorter than codemode's script timeout), so the final report
+// may miss that script's tool calls. We accept that window rather than holding
+// shutdown for in-flight scripts.
 func (u *usageMetrics) codeModeConfig(cfg *codemode.Config) *codemode.Config {
 	if cfg == nil {
 		return nil
@@ -116,7 +123,8 @@ func (u *usageMetrics) codeModeConfig(cfg *codemode.Config) *codemode.Config {
 	return &out
 }
 
-// shutdown stops the collector, sending a final report if any tool calls were counted.
+// shutdown stops the collector, sending a final report if any tool calls,
+// including code mode script tool calls, were counted.
 func (u *usageMetrics) shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), usageMetricsShutdownTimeout)
 	defer cancel()

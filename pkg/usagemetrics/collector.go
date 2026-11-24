@@ -167,7 +167,7 @@ func (c *Collector) Flush() error {
 		// together, so the split always adds up to the count.
 		prev := c.resetCounts()
 
-		if prev.total > 0 {
+		if prev.hasCalls() {
 			// Create fake timestamp for end of previous day
 			previousDayTimestamp := c.currentDate + "T23:59:00Z"
 
@@ -213,7 +213,7 @@ func (c *Collector) Flush() error {
 }
 
 // Shutdown stops background goroutines and sends a final report if any tool
-// calls were counted. With nothing to report it sends nothing: an idle process
+// calls, including code mode script tool calls, were counted. With nothing to report it sends nothing: an idle process
 // already announced itself through the periodic flush, and a process that is
 // restarted repeatedly would otherwise add one empty report per restart.
 func (c *Collector) Shutdown(ctx context.Context) {
@@ -230,7 +230,7 @@ func (c *Collector) Shutdown(ctx context.Context) {
 	}
 
 	// Perform final flush, unless there is nothing to report
-	if c.GetCurrentCount() > 0 {
+	if c.snapshotCounts().hasCalls() {
 		if err := c.Flush(); err != nil {
 			slog.Warn("failed to flush metrics on shutdown", "error", err)
 		}

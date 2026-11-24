@@ -71,8 +71,9 @@ type Config struct {
 	ToolCallTimeout time.Duration
 
 	// OnScript, when non-nil, is called once per execute_tool_script call with
-	// the number of tool calls the script made. Nil (the default) leaves behavior
-	// unchanged. See [ScriptObserver] for the contract.
+	// the number of tool calls the script started, including failed and denied
+	// ones (zero when the call fails before the script runs). Nil (the default)
+	// leaves behavior unchanged. See [ScriptObserver] for the contract.
 	OnScript ScriptObserver
 }
 

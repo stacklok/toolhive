@@ -3442,6 +3442,38 @@ type storedProviderIdentity struct {
 	LastUsedAt      int64  `json:"last_used_at"`
 }
 
+// createProviderIdentityScript writes the provider identity link and adds it
+// to the user's reverse-lookup set as one atomic step, so a failed set write
+// cannot leave a link behind that points at a user the caller then rolls back.
+// A script is not transactional, so if the set write fails the script deletes
+// the link it just wrote and returns the error.
+// The script first checks that the user exists, so a concurrent DeleteUser
+// cannot leave a link to a missing user. The link is written only if absent
+// (set-if-absent), which is what keeps one (provider, subject) pair linked to
+// one user. It returns 1 when the link was created, 0 when it already existed
+// and -1 when the user does not exist.
+//
+// Provider identities don't expire (no TTL). The reverse-lookup set may contain
+// stale references if identities are deleted independently; stale entries are
+// cleaned up lazily during GetUserProviderIdentities reads.
+//
+// Cluster slot invariant: KEYS[1] to KEYS[3] are all built from s.keyPrefix,
+// whose `{ns:name}` hash tag puts them on the same slot.
+var createProviderIdentityScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[3]) == 0 then
+    return -1
+end
+if redis.call('SET', KEYS[1], ARGV[1], 'NX') == false then
+    return 0
+end
+local added = redis.pcall('SADD', KEYS[2], KEYS[1])
+if type(added) == 'table' and added.err then
+    redis.call('DEL', KEYS[1])
+    return redis.error_reply(added.err)
+end
+return 1
+`)
+
 // CreateProviderIdentity links a provider identity to a user.
 func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *ProviderIdentity) error {
 	if identity == nil {
@@ -3457,16 +3489,7 @@ func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *Pro
 		return fosite.ErrInvalidRequest.WithHint("provider subject cannot be empty")
 	}
 
-	// Verify user exists
 	userKey := redisKey(s.keyPrefix, KeyTypeUser, identity.UserID)
-	exists, err := s.client.Exists(ctx, userKey).Result()
-	if err != nil {
-		return fmt.Errorf("failed to check user existence: %w", err)
-	}
-	if exists == 0 {
-		return fmt.Errorf("%w: user not found", ErrNotFound)
-	}
-
 	key := redisProviderKey(s.keyPrefix, identity.ProviderID, identity.ProviderSubject)
 
 	stored := storedProviderIdentity{
@@ -3482,22 +3505,19 @@ func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *Pro
 		return fmt.Errorf("failed to marshal identity: %w", err)
 	}
 
-	// Use SetNX for atomic check-and-set to prevent race conditions.
-	// Provider identities don't expire (TTL=0).
-	result, err := s.client.SetNX(ctx, key, data, 0).Result()
+	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, identity.UserID)
+	created, err := createProviderIdentityScript.Run(ctx, s.client,
+		[]string{key, userProviderSetKey, userKey}, data).Int()
 	if err != nil {
 		return fmt.Errorf("failed to store identity: %w", err)
 	}
-	if !result {
+	if created < 0 {
+		return fmt.Errorf("%w: user not found", ErrNotFound)
+	}
+	if created == 0 {
 		return fmt.Errorf("%w: provider identity already linked", ErrAlreadyExists)
 	}
-
-	// Add to user's provider identity set for reverse lookup.
-	// Note: This set may contain stale references if identities are deleted independently.
-	// Stale entries are cleaned up lazily during GetUserProviderIdentities reads.
-	// A future DeleteProviderIdentity method should also clean up this set.
-	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, identity.UserID)
-	return s.client.SAdd(ctx, userProviderSetKey, key).Err()
+	return nil
 }
 
 // GetProviderIdentity retrieves a provider identity by provider ID and subject.

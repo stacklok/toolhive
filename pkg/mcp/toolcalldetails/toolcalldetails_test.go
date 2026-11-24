@@ -197,7 +197,7 @@ func TestParseEntry(t *testing.T) {
 		},
 		{
 			name: "escaped member name",
-			raw:  replace(listCall, `"server"`, `"ser\u0076er"`),
+			raw:  replace(listCall, `"server"`, `"\u0073erver"`),
 			want: Entry{Server: "github", Method: "tools/list"},
 		},
 		{
@@ -227,7 +227,7 @@ func TestParseEntry(t *testing.T) {
 		{name: "long hash", raw: replace(toolCall, argsHash, argsHash+"0"), reason: ReasonInvalidArgs},
 		{name: "list call without server", raw: replace(listCall, `"server":"github",`, ""), reason: ReasonMalformedEntry},
 		{name: "tool call without server", raw: replace(toolCall, `"server":"github",`, ""), reason: ReasonMalformedEntry},
-		{name: "escaped repeated member", raw: replace(listCall, "}", `,"ser\u0076er":"x"}`), reason: ReasonMalformedEntry},
+		{name: "escaped repeated member", raw: replace(listCall, "}", `,"\u0073erver":"x"}`), reason: ReasonMalformedEntry},
 		{name: "unpaired surrogate escape", raw: replace(listCall, "github", `git\ud800hub`), reason: ReasonMalformedEntry},
 		{name: "literal replacement character", raw: replace(listCall, "github", "git\uFFFDhub"), reason: ReasonMalformedEntry},
 		{name: "number member", raw: replace(listCall, `"github"`, "1"), reason: ReasonMalformedEntry},
@@ -240,6 +240,9 @@ func TestParseEntry(t *testing.T) {
 		{name: "trailing data", raw: listCall + `{}`, reason: ReasonMalformedEntry},
 		{name: "not an object", raw: `["tools/list"]`, reason: ReasonMalformedEntry},
 		{name: "invalid JSON", raw: `{"type":`, reason: ReasonMalformedEntry},
+		{name: "member name not a string", raw: `{1:"x"}`, reason: ReasonMalformedEntry},
+		{name: "object without closing brace", raw: strings.TrimSuffix(listCall, "}"), reason: ReasonMalformedEntry},
+		{name: "object closed by a bracket", raw: strings.TrimSuffix(listCall, "}") + "]", reason: ReasonMalformedEntry},
 		{name: "invalid UTF-8", raw: replace(listCall, "github", "git\xffhub"), reason: ReasonMalformedEntry},
 		{name: "empty input", raw: ``, reason: ReasonMalformedEntry},
 	}

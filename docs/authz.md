@@ -702,10 +702,14 @@ The ToolHive-issued token is never read on this path.
   `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
   `sid`, `client_id`, `typ`, `token_use`, `uti`, `rh`, `cnf`), the delegated
   grant (`scope`, `scp`, `act`, `may_act`), and `sub`.
-- **Default group selection**: if the access token asserts any of `groups`,
-  `roles` or `cognito:groups`, the id_token does not fill the others. A name set
-  as `group_claim_name` (`groupClaimName` on the operator CRDs) is still filled;
-  a `role_claim_name` (`roleClaimName`) that is one of those three names is not.
+- **Default group selection**: without a configured group claim, groups come
+  from the first of `groups`, `roles` and `cognito:groups` that holds a list.
+  When the access token carries a list under one of them, the id_token does not
+  fill the names ordered before it, so the access token's list is still the one
+  selected; a null or non-list value does not count. A name set as
+  `group_claim_name` (`groupClaimName` on the operator CRDs) is still filled; a
+  `role_claim_name` (`roleClaimName`) ordered before the selected name is not.
+  A name that is not filled is also absent as a `claim_<name>` attribute.
 - **Empty audience filters are not preserved**: a provider that omits the group
   claim from the access token because a per-audience filter matched nothing will
   have the id_token's groups filled in. Emit an empty claim instead, or keep
@@ -713,9 +717,9 @@ The ToolHive-issued token is never read on this path.
 - **App roles belong to the token's audience app**: in Entra ID, the id_token's
   `roles` are the user's roles on ToolHive's auth-server client, not on the
   resource API, and Entra omits `roles` from the access token when the user has
-  none on the resource. If the two are separate app registrations, use one
-  registration for both, emit `roles` in the access token, or assign no roles on
-  the client app.
+  none on the resource. The id_token's `roles` are then filled in, also when the
+  access token carries `groups`. If the two are separate app registrations, use
+  one registration for both, or assign no roles on the client app.
 - **Login-time facts**: the id_token is used even after it expires and is
   replaced only when a refresh rotates one, so a group revoked upstream can keep
   granting until the ToolHive session ends. Shorten the session, or have the

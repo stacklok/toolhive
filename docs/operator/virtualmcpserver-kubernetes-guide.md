@@ -685,13 +685,13 @@ token carries:
   different token.
 * **`scope` and `scp`**, the delegated grant, along with the RFC 8693
   delegation claims `act` and `may_act`. A group is a fact about the *user*,
-  which either token can usually report; a scope is the authority *a particular token*
-  carries, and the only authority at issue is the access token's. Where a provider
-  emits `scope` in an `id_token` at all (it is not a standard `id_token` claim) it
-  may echo what the client *requested* rather than what the user *granted* — and
-  granular or incremental consent makes those differ routinely. So a
-  `claimset_scp` or `claim_scope` gate only ever matches what the access token
-  asserts. Put scopes policies depend on in the access token.
+  which either token can usually report; a scope is the authority *a particular
+  token* carries, and the only authority at issue is the access token's. Where a
+  provider emits `scope` in an `id_token` at all (it is not a standard `id_token`
+  claim) it may echo what the client *requested* rather than what the user
+  *granted* — and granular or incremental consent makes those differ routinely.
+  So a `claimset_scp` or `claim_scope` gate only ever matches what the access
+  token asserts. Put scopes policies depend on in the access token.
 * `sub`, the principal. A rule keyed on `Client::"<upstream-subject>"` keeps
   matching the upstream identity, and an access token with no `sub` is rejected
   outright rather than having a principal chosen for it.
@@ -710,11 +710,13 @@ Fill-only has three consequences worth knowing:
 
 * **Default group selection stays with the access token.** Without
   `groupClaimName`, ToolHive uses the first of `groups`, `roles` and
-  `cognito:groups` present. If the access token asserts any of those, the
-  `id_token` does not fill the others, so an `id_token`-only `groups` cannot hide
-  the access token's `roles`. A claim you name in `groupClaimName` is still filled
-  from the `id_token`. A `roleClaimName` that is itself one of those three names
-  is not, once the access token asserts another of them.
+  `cognito:groups` that holds a list. When the access token carries a list under
+  one of them, the `id_token` does not fill the names ordered before it, so an
+  `id_token`-only `groups` cannot hide the access token's `roles`; a null or
+  non-list value does not count. A claim you name in `groupClaimName` is still
+  filled from the `id_token`. A `roleClaimName` that is one of those three names
+  and ordered before the access token's list is not. A name that is not filled is
+  also absent as a `claim_<name>` attribute.
 * **An empty per-audience filter is not preserved.** When a group filter matches
   none of the user's groups, providers typically omit the claim from the access
   token rather than emit an empty list, and the `id_token`'s list is then filled
@@ -726,9 +728,9 @@ Fill-only has three consequences worth knowing:
   the resource API in the access token, ToolHive's auth-server client in the
   `id_token`. Entra omits `roles` when the user has no assignment on the
   resource, so the `id_token`'s roles, which are the *client* app's, are filled
-  in. If the resource API and the auth-server client are separate registrations,
-  use one registration for both, have Entra emit `roles` in the access token, or
-  assign no roles on the client app.
+  in, also when the access token carries `groups`. If the resource API and the
+  auth-server client are separate registrations, use one registration for both,
+  or assign no roles on the client app.
 
 > **Warning**: group revocation latency is session-scoped for `id_token`-sourced
 > claims.
@@ -766,11 +768,12 @@ What the `id_token` contributes depends on where your provider puts claims:
 
 > **Migration: claims from the `id_token`**
 >
-> Releases before the `id_token` supplement read group, role and most other
-> claims from the access token only. Deployments whose provider puts those
-> claims in the `id_token` only saw them as absent. After upgrading they are
-> present, so `forbid` rules keyed on them can start matching as well as
-> `permit` rules. Review `forbid` rules before upgrading.
+> Releases v0.41.0 through v0.68.0 fill only `name` and `email` from the
+> `id_token`, and read group, role and every other claim from the access token
+> only. Deployments whose provider puts those claims in the `id_token` only saw
+> them as absent. Later releases fill every claim not listed above, so `forbid`
+> rules keyed on them can start matching as well as `permit` rules. Review
+> `forbid` rules before upgrading.
 
 The token the client presented — the one ToolHive's auth server issued — is not
 a claim source here, even though it mirrors a `name` and `email`, so on this path a

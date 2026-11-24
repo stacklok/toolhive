@@ -2989,6 +2989,24 @@ func TestAuthorizeWithJWTClaims_DefaultGroupClaimSelection(t *testing.T) {
 			idToken:       jwt.MapClaims{"sub": "upstream-user", "groups": []interface{}{"eng"}},
 			wantAuthorize: true,
 		},
+		{
+			// `roles` is ordered after the access token's `groups`, so filling it
+			// cannot change the default selection; it reaches the groups only
+			// through the configured role claim.
+			name:          "role_claim_ordered_after_selected_default_fills",
+			roleClaimName: "roles",
+			accessToken:   jwt.MapClaims{"sub": "upstream-user", "groups": []interface{}{"eng"}},
+			idToken:       jwt.MapClaims{"sub": "upstream-user", "roles": []interface{}{"admin"}},
+			wantAuthorize: true,
+		},
+		{
+			// Extraction skips a scalar default, so it selects nothing and the
+			// id_token's list is filled and selected.
+			name:          "scalar_access_token_default_does_not_block_id_token_groups",
+			accessToken:   jwt.MapClaims{"sub": "upstream-user", "roles": "viewer"},
+			idToken:       jwt.MapClaims{"sub": "upstream-user", "groups": []interface{}{"admin"}},
+			wantAuthorize: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3039,25 +3057,44 @@ func TestDefaultGroupClaimsToWithhold(t *testing.T) {
 			want:        nil,
 		},
 		{
-			name:        "access_token_roles_withholds_every_default",
-			accessToken: jwt.MapClaims{"roles": []interface{}{"admin"}},
-			want:        []string{"groups", "roles", "cognito:groups"},
+			// `groups` is ordered first, so nothing can displace it.
+			name:        "access_token_groups_withholds_nothing",
+			accessToken: jwt.MapClaims{"groups": []interface{}{"eng"}},
+			want:        nil,
 		},
 		{
-			name:        "access_token_cognito_groups_withholds_every_default",
+			name:        "access_token_roles_withholds_names_before_it",
+			accessToken: jwt.MapClaims{"roles": []interface{}{"admin"}},
+			want:        []string{"groups"},
+		},
+		{
+			name:        "access_token_cognito_groups_withholds_names_before_it",
 			accessToken: jwt.MapClaims{"cognito:groups": []interface{}{"admins"}},
-			want:        []string{"groups", "roles", "cognito:groups"},
+			want:        []string{"groups", "roles"},
+		},
+		{
+			// The first selected default decides, not the last.
+			name:        "first_selected_default_decides",
+			accessToken: jwt.MapClaims{"roles": []interface{}{"a"}, "cognito:groups": []interface{}{"b"}},
+			want:        []string{"groups"},
 		},
 		{
 			// An empty list is still selected by extraction (it suppresses the
 			// fallback), so it is an assertion that must not be displaced.
 			name:        "empty_list_withholds",
 			accessToken: jwt.MapClaims{"roles": []interface{}{}},
-			want:        []string{"groups", "roles", "cognito:groups"},
+			want:        []string{"groups"},
 		},
 		{
-			// Extraction skips null and scalar values, so nothing is selected and
-			// nothing can be displaced.
+			// A list with no string elements decodes to an empty, non-nil slice,
+			// which extraction selects just like an empty list.
+			name:        "non_string_list_withholds",
+			accessToken: jwt.MapClaims{"roles": []interface{}{1}},
+			want:        []string{"groups"},
+		},
+		{
+			// Extraction skips null, scalar and object values, so nothing is
+			// selected and nothing can be displaced.
 			name:        "null_default_withholds_nothing",
 			accessToken: jwt.MapClaims{"roles": nil},
 			want:        nil,
@@ -3068,23 +3105,36 @@ func TestDefaultGroupClaimsToWithhold(t *testing.T) {
 			want:        nil,
 		},
 		{
-			name:           "default_named_group_claim_is_exempt",
-			groupClaimName: "groups",
-			accessToken:    jwt.MapClaims{"roles": []interface{}{"admin"}},
-			want:           []string{"roles", "cognito:groups"},
+			name:        "object_default_withholds_nothing",
+			accessToken: jwt.MapClaims{"roles": map[string]interface{}{}},
+			want:        nil,
 		},
 		{
-			name:          "default_named_role_claim_is_not_exempt",
+			name:           "default_named_group_claim_is_exempt",
+			groupClaimName: "groups",
+			accessToken:    jwt.MapClaims{"cognito:groups": []interface{}{"admins"}},
+			want:           []string{"roles"},
+		},
+		{
+			name:          "default_named_role_claim_before_selected_default_is_not_exempt",
 			roleClaimName: "groups",
 			accessToken:   jwt.MapClaims{"roles": []interface{}{"admin"}},
-			want:          []string{"groups", "roles", "cognito:groups"},
+			want:          []string{"groups"},
+		},
+		{
+			// `roles` is ordered after the selected `groups`, so it cannot win the
+			// loop and may be filled.
+			name:          "default_named_role_claim_after_selected_default_is_not_withheld",
+			roleClaimName: "roles",
+			accessToken:   jwt.MapClaims{"groups": []interface{}{"eng"}},
+			want:          nil,
 		},
 		{
 			// A custom name is never a default, so it is never withheld.
 			name:           "custom_group_claim_leaves_defaults_withheld",
 			groupClaimName: "https://example.com/groups",
-			accessToken:    jwt.MapClaims{"groups": []interface{}{"eng"}},
-			want:           []string{"groups", "roles", "cognito:groups"},
+			accessToken:    jwt.MapClaims{"cognito:groups": []interface{}{"admins"}},
+			want:           []string{"groups", "roles"},
 		},
 	}
 

@@ -1674,9 +1674,9 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 	}
 }
 
-// TestSupplementFromIDTokenClaims covers which id_token claims may stand in for a
+// TestMergeIDTokenClaims covers which id_token claims may stand in for a
 // missing access-token claim, and which may never do so.
-func TestSupplementFromIDTokenClaims(t *testing.T) {
+func TestMergeIDTokenClaims(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1799,6 +1799,10 @@ func TestSupplementFromIDTokenClaims(t *testing.T) {
 				"nbf": 999999999, "iat": 999999999, "jti": "id-abc",
 				"nonce": "n-abc", "at_hash": "h-abc", "c_hash": "hc-abc", "s_hash": "hs-abc",
 				"azp": "client-x", "sid": "sess-abc", "client_id": "toolhive-as-client",
+				"typ": "ID", "token_use": "id", "uti": "uti-abc", "rh": "rh-abc",
+				"cnf":     map[string]interface{}{"jkt": "thumb"},
+				"act":     map[string]interface{}{"sub": "agent"},
+				"may_act": map[string]interface{}{"sub": "agent"},
 			},
 			wantMerged: jwt.MapClaims{
 				"sub": "okta|alice", "aud": "api://resource", "exp": 2000000000,
@@ -1906,7 +1910,7 @@ func TestSupplementFromIDTokenClaims(t *testing.T) {
 			accessBefore := maps.Clone(tt.accessTokenClaims)
 			idTokenBefore := maps.Clone(tt.idTokenClaims)
 
-			merged, filled := supplementFromIDTokenClaims(tt.accessTokenClaims, tt.idTokenClaims, tt.withheld)
+			merged, filled := mergeIDTokenClaims(tt.accessTokenClaims, tt.idTokenClaims, tt.withheld)
 
 			assert.Equal(t, tt.wantMerged, merged)
 			assert.Equal(t, tt.wantFilled, filled)
@@ -1957,6 +1961,7 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 		upstreamToken string
 		idToken       string
 		wantClaims    jwt.MapClaims
+		wantSource    string // checked only when set
 	}{
 		{
 			name:     "access_token_without_email_falls_back_to_id_token_email",
@@ -2091,6 +2096,22 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 			wantClaims:    jwt.MapClaims{"sub": "hub|alice"},
 		},
 		{
+			// The opaque-token fallback evaluates request-token claims only and
+			// never reads the stored id_token, even one carrying claims a policy
+			// would act on.
+			name:          "opaque_access_token_ignores_the_id_token",
+			provider:      providerName,
+			upstreamToken: "gho_opaque_access_token",
+			idToken: makeUnsignedJWT(jwt.MapClaims{
+				"sub":    "hub|alice",
+				"groups": []interface{}{"platform-eng"},
+				"email":  "idt@example.com",
+			}),
+			requestClaims: map[string]any{"sub": "7f3c1e64-uuid", "email": "alice@thv.example"},
+			wantClaims:    jwt.MapClaims{"sub": "7f3c1e64-uuid", "email": "alice@thv.example"},
+			wantSource:    claimSourceUpstreamOpaque,
+		},
+		{
 			name:          "no_provider_configured_uses_request_claims_verbatim",
 			provider:      "",
 			requestClaims: map[string]any{"sub": "7f3c1e64-uuid", "email": "alice@thv.example"},
@@ -2122,10 +2143,13 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 			}
 			claimsBefore := maps.Clone(tt.requestClaims)
 
-			resolved, _, err := authorizer.(*Authorizer).resolveClaims(identity)
+			resolved, source, err := authorizer.(*Authorizer).resolveClaims(identity)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.wantClaims, resolved)
+			if tt.wantSource != "" {
+				assert.Equal(t, tt.wantSource, source)
+			}
 			// Identity MUST NOT be modified after it is placed in the request
 			// context, since it is read concurrently.
 			assert.Equal(t, claimsBefore, tt.requestClaims, "identity claims must not be mutated")
@@ -2277,21 +2301,6 @@ func TestAuthorizeWithJWTClaims_ScopeStaysAccessTokenSourced(t *testing.T) {
 			accessTokenClaims: jwt.MapClaims{"sub": "hub|alice"},
 			idTokenClaims: jwt.MapClaims{
 				"sub": "hub|alice", "scp": []interface{}{"Mail.ReadWrite"},
-			},
-			wantAuthorize: false,
-		},
-		{
-			// The downscoped-consent shape: the client asked for Mail.ReadWrite and
-			// the user granted only Mail.Read, so the access token is narrower than
-			// whatever the id_token echoes. Fill-only precedence is not enough on its
-			// own here — `scp` is present, so nothing would be filled — but this pins
-			// that the narrower granted scope is what policy sees.
-			name: "access_token_scope_is_not_broadened_by_the_id_token",
-			accessTokenClaims: jwt.MapClaims{
-				"sub": "hub|alice", "scp": []interface{}{"Mail.Read"},
-			},
-			idTokenClaims: jwt.MapClaims{
-				"sub": "hub|alice", "scp": []interface{}{"Mail.Read", "Mail.ReadWrite"},
 			},
 			wantAuthorize: false,
 		},

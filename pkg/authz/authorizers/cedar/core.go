@@ -222,7 +222,7 @@ type Authorizer struct {
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
-	// supplementLog rate-limits the warning that the upstream access token omitted
+	// supplementLog rate-limits the debug line that the upstream access token omitted
 	// claims its id_token asserts. It is deliberately separate from claimKeyLog: a shared
 	// timer would let whichever fires first suppress the other for the rest of
 	// the window, hiding the claim-key dump on exactly the deployments that need it.
@@ -831,17 +831,19 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 		return upstreamClaims
 	}
 
-	merged, filled := supplementFromIDTokenClaims(upstreamClaims, idTokenClaims,
+	merged, filled := mergeIDTokenClaims(upstreamClaims, idTokenClaims,
 		a.defaultGroupClaimsToWithhold(upstreamClaims))
 	if len(filled) > 0 {
+		// DEBUG, not WARN: filling from the id_token is the designed path, and
+		// nearly every OIDC id_token carries profile claims the access token omits.
 		// Rate-limited on its own timer, not claimKeyLog: sharing one would let
-		// this Warn consume the window and permanently starve the claim-key dump
+		// this line consume the window and permanently starve the claim-key dump
 		// in resolveClaims, which is what you want when debugging a denying policy.
 		//
 		// Claim keys only — never claim values, which hold user PII (and, for a
 		// group claim, the user's organizational placement).
 		a.supplementLog.Do(func() {
-			slog.Warn("upstream access token omits claims the upstream ID token asserts; using the "+
+			slog.Debug("upstream access token omits claims the upstream ID token asserts; using the "+
 				"ID token's values for Cedar evaluation",
 				"provider", a.primaryUpstreamProvider,
 				"claims", filled)
@@ -897,8 +899,11 @@ func (a *Authorizer) defaultGroupClaimsToWithhold(accessTokenClaims jwt.MapClaim
 //     token. `aud` and `exp` are the sharp cases — a gate on the resource-server
 //     audience, or on token lifetime, would silently read the id_token's — and
 //     `client_id`/`azp` the subtle ones, since they would report ToolHive's own
-//     client rather than the one that made the request.
-//   - The delegated grant: `scope` and `scp`. These are the one place where the
+//     client rather than the one that made the request. Token-type and
+//     token-binding claims (`typ`, `token_use`, `uti`, `rh`, `cnf`) belong here
+//     for the same reason.
+//   - The delegated grant: `scope` and `scp`, plus RFC 8693's `act`/`may_act`,
+//     which describe delegation the token carries. These are the one place where the
 //     deny-list is doing real work rather than avoiding confusion, so the
 //     distinction from a group claim matters. A group is a fact about the USER,
 //     which either token can report equally well. A scope is the AUTHORITY THIS
@@ -931,6 +936,12 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 	// `client_id` and OIDC front/back-channel logout's `sid`.
 	"nonce": {}, "at_hash": {}, "c_hash": {}, "s_hash": {}, "azp": {},
 	"sid": {}, "client_id": {},
+	// Token-type and token-binding claims: JWT `typ`, Cognito `token_use`, Entra
+	// `uti`/`rh`, and RFC 7800 `cnf`.
+	"typ": {}, "token_use": {}, "uti": {}, "rh": {}, "cnf": {},
+	// RFC 8693 delegation: who the token acts for, or may act for. Like a scope,
+	// this is authority carried by a token, so only the presented one's counts.
+	"act": {}, "may_act": {},
 	// The delegated grant, which belongs to the presented access token alone.
 	// RFC 8693/9068 spell it `scope`; Entra ID spells it `scp`.
 	"scope": {}, "scp": {},
@@ -938,7 +949,7 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 	"sub": {},
 }
 
-// supplementFromIDTokenClaims returns a fresh claim set holding every access-token
+// mergeIDTokenClaims returns a fresh claim set holding every access-token
 // claim plus, for each id_token claim that the access token does not carry and that
 // is in neither idTokenClaimsNeverSupplemented nor withheld, the id_token's value.
 // It also returns the sorted list of names actually supplied by the id_token, for
@@ -952,7 +963,7 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 //
 // Neither input is mutated and the result aliases neither, so the caller may hand
 // it to code that adds synthetic keys.
-func supplementFromIDTokenClaims(
+func mergeIDTokenClaims(
 	accessTokenClaims, idTokenClaims jwt.MapClaims, withheld []string,
 ) (merged jwt.MapClaims, filled []string) {
 	merged = make(jwt.MapClaims, len(accessTokenClaims)+len(idTokenClaims))

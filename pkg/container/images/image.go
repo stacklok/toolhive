@@ -7,6 +7,8 @@ package images
 import (
 	"context"
 	"log/slog"
+	"os"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -28,15 +30,32 @@ type ImageManager interface {
 }
 
 // NewImageManager creates an instance of ImageManager appropriate
-// for the current environment, or returns an error if it is not supported.
+// for the current environment, aligned with TOOLHIVE_RUNTIME and
+// priority-ordered runtime auto-detection.
 func NewImageManager(ctx context.Context) ImageManager {
-	// Check if we are running in a Kubernetes environment
+	runtimeName := strings.TrimSpace(os.Getenv("TOOLHIVE_RUNTIME"))
+	return NewImageManagerFromRegistry(ctx, DefaultManagerRegistry, runtimeName)
+}
+
+// NewImageManagerFromRegistry resolves an ImageManager from the supplied registry.
+// When runtimeName is non-empty, only that runtime is considered (preventing
+// split-brain between runtimes when multiple are installed). When the registry
+// has no entries (for example in isolated tests that do not import pkg/container),
+// it falls back to direct Kubernetes / Docker detection.
+func NewImageManagerFromRegistry(ctx context.Context, reg *ManagerRegistry, runtimeName string) ImageManager {
+	if reg != nil {
+		registered := reg.ByPriority()
+		if len(registered) > 0 {
+			return resolveFromRegistry(ctx, reg, registered, runtimeName)
+		}
+	}
+
+	// Fallback when no runtime packages have registered (e.g. isolated package tests).
 	if runtime.IsKubernetesRuntime() {
 		slog.Debug("running in Kubernetes environment, using no-op image manager")
 		return &NoopImageManager{}
 	}
 
-	// Check if we are running in a Docker or compatible environment
 	dockerClient, _, _, err := sdk.NewDockerClient(ctx)
 	if err != nil {
 		slog.Debug("no docker runtime found, using no-op image manager")
@@ -44,6 +63,60 @@ func NewImageManager(ctx context.Context) ImageManager {
 	}
 
 	return NewRegistryImageManager(dockerClient)
+}
+
+func resolveFromRegistry(
+	ctx context.Context,
+	reg *ManagerRegistry,
+	ordered []*ManagerInfo,
+	runtimeName string,
+) ImageManager {
+	if runtimeName != "" {
+		info := reg.Get(runtimeName)
+		if info == nil {
+			//nolint:gosec // G706: runtime name from TOOLHIVE_RUNTIME env var
+			slog.Debug("requested image manager runtime not registered, using no-op image manager", "runtime", runtimeName)
+			return &NoopImageManager{}
+		}
+		if info.AutoDetector != nil && !info.AutoDetector() {
+			//nolint:gosec // G706: runtime name from TOOLHIVE_RUNTIME env var
+			slog.Debug("requested image manager runtime not available, using no-op image manager", "runtime", runtimeName)
+			return &NoopImageManager{}
+		}
+		mgr, err := info.Initializer(ctx)
+		if err != nil {
+			//nolint:gosec // G706: runtime name from TOOLHIVE_RUNTIME env var
+			slog.Debug("failed to initialize requested image manager, using no-op image manager",
+				"runtime", runtimeName, "error", err)
+			return &NoopImageManager{}
+		}
+		return mgr
+	}
+
+	if runtime.IsKubernetesRuntime() {
+		if info := reg.Get(string(runtime.TypeKubernetes)); info != nil {
+			if mgr, err := info.Initializer(ctx); err == nil {
+				return mgr
+			}
+		}
+		slog.Debug("running in Kubernetes environment, using no-op image manager")
+		return &NoopImageManager{}
+	}
+
+	for _, info := range ordered {
+		if info.AutoDetector != nil && !info.AutoDetector() {
+			continue
+		}
+		mgr, err := info.Initializer(ctx)
+		if err != nil {
+			slog.Debug("failed to initialize image manager candidate", "runtime", info.Name, "error", err)
+			continue
+		}
+		return mgr
+	}
+
+	slog.Debug("no available image manager found, using no-op image manager")
+	return &NoopImageManager{}
 }
 
 // NoopImageManager is a no-op implementation of ImageManager.

@@ -29,6 +29,13 @@ var (
 
 	// ErrContainerRemoved is returned when a container has been removed
 	ErrContainerRemoved = httperr.WithCode(fmt.Errorf("container removed"), http.StatusBadRequest)
+
+	// ErrReattachNotSupported is returned by runtimes that cannot re-attach stdio
+	// streams to an already-running container after the initial stream closes.
+	ErrReattachNotSupported = httperr.WithCode(
+		fmt.Errorf("re-attaching to a running container is not supported by this runtime"),
+		http.StatusNotImplemented,
+	)
 )
 
 // ContainerError represents an error related to container operations

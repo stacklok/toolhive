@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -107,7 +108,7 @@ func (m *WorkloadMonitor) monitor(ctx context.Context) {
 			cancel() // Always cancel the context to avoid leaks
 			if err != nil {
 				// If the container is not found, it has been removed
-				if IsContainerNotFound(err) {
+				if IsContainerNotFound(err) || errors.Is(err, ErrWorkloadNotFound) {
 					removeErr := NewContainerError(
 						ErrContainerRemoved,
 						m.containerName,

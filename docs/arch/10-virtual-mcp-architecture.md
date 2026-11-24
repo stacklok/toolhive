@@ -832,9 +832,13 @@ idle, so an idle session holds no goroutine.
 
 Each worker's resync body (`runListChangedResync`), off the receive loop:
 
-1. **Liveness guard** — looks the session up via `GetMultiSession` and returns
-   immediately if it was terminated/expired, so a storm of notifications for a
-   dead session drives no work.
+1. **Liveness guard** — reads the session's metadata via `LookupOwner` and
+   returns immediately if it was terminated/expired, so a storm of
+   notifications for a dead session drives no work. The read neither refreshes
+   the session TTL nor restores the session on this pod (`GetMultiSession`
+   would do both), so backend health flaps and `list_changed` notifications
+   cannot keep a client-abandoned session alive. A storage error skips the run
+   without pruning the session's health-resync registration.
 2. **Reconstructs the request context** — starts from a server-lifetime base
    context (`Server.resyncBaseCtx`, cancelled on `Stop` so in-flight backend
    sweeps never outlive the server) and layers on the captured identity

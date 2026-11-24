@@ -5,12 +5,14 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
@@ -191,6 +193,7 @@ func (s *Server) buildListChangedSink(
 // loop). Order matters:
 //  1. Liveness guard — skip (and do no work) if the session was terminated, so
 //     a storm of notifications for a dead session cannot drive re-aggregation.
+//     The check must neither refresh the session TTL nor restore the session.
 //  2. Reconstruct the registration-time request context (identity + forwarded
 //     headers) atop the server-lifetime base context, so the cache key and
 //     backend auth match a real request from this principal.
@@ -216,9 +219,25 @@ func (s *Server) runListChangedResync(
 	// Also prune the session's health-driven fan-out registration (#5786):
 	// TTL expiry and SDK-initiated termination end sessions without server
 	// involvement, so this lazy prune is what keeps the registry bounded.
-	if _, ok := s.vmcpSessionMgr.GetMultiSession(baseCtx, sessionID); !ok {
-		s.healthResync.remove(sessionID)
-		slog.Debug("skipping list_changed resync for terminated session", "session_id", sessionID, "kind", kind)
+	//
+	// LookupOwner reads metadata only. GetMultiSession would refresh the
+	// session TTL (cache hit) or restore the session (cache miss), so backend
+	// health flaps and list_changed notifications would keep abandoned
+	// sessions alive forever. Those sessions must be left to expire. A
+	// placeholder yields an empty owner and no error; it is treated as live.
+	if _, err := s.vmcpSessionMgr.LookupOwner(baseCtx, sessionID); err != nil {
+		switch {
+		case errors.Is(err, transportsession.ErrSessionNotFound):
+			s.healthResync.remove(sessionID)
+			slog.Debug("skipping list_changed resync for terminated session", "session_id", sessionID, "kind", kind)
+		case baseCtx.Err() != nil:
+			slog.Debug("skipping list_changed resync: server stopping", "session_id", sessionID, "kind", kind)
+		default:
+			// A storage failure says nothing about liveness, so keep the
+			// registration; the next trigger retries.
+			slog.Warn("skipping list_changed resync: session liveness check failed",
+				"session_id", sessionID, "kind", kind, "error", err)
+		}
 		return
 	}
 

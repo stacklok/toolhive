@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -42,19 +43,35 @@ func NewSharedTrustedIssuerValidator(
 	return NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), trustedIssuers, config.AllowedAudiences)
 }
 
-// FactoryOption configures Factory and FactoryWithSharedTrustedIssuerValidator.
-// RefreshTokenFactory takes RefreshTokenOption instead.
+// FactoryOption configures Factory, FactoryWithSharedTrustedIssuerValidator and
+// IDJAGIssuanceFactory. Each factory refuses, with an error, an option it does
+// not apply, so an option is never silently ignored. RefreshTokenFactory takes
+// RefreshTokenOption instead.
 type FactoryOption func(*factoryOptions)
 
 type factoryOptions struct {
 	authorizationDetailsRegistry *authorizationdetails.Registry
+	clientAccessTokenLifespans   map[string]time.Duration
 }
 
 // WithAuthorizationDetailsRegistry configures the factory to pass the registry
 // through to the token-exchange Handler. With no registry (or a nil one) the
-// authorization_details parameter is ignored.
+// authorization_details parameter is ignored. Only the token-exchange
+// factories apply it.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) FactoryOption {
 	return func(o *factoryOptions) { o.authorizationDetailsRegistry = registry }
+}
+
+// WithClientAccessTokenLifespans gives the ID-JAG handler a per-client
+// access-token lifespan, keyed by client ID. A redeeming client with an entry
+// gets that lifespan in place of the server's; one without an entry keeps the
+// server's. Either way the token still never outlives its ID-JAG, and a marked
+// token stays under the delegated-access marker cap. Every value must be in
+// (0, server.MaxAccessTokenLifespan]. Only IDJAGIssuanceFactory applies it.
+// The map is copied.
+func WithClientAccessTokenLifespans(lifespans map[string]time.Duration) FactoryOption {
+	cloned := maps.Clone(lifespans)
+	return func(o *factoryOptions) { o.clientAccessTokenLifespans = cloned }
 }
 
 // Factory returns a server.Factory that creates a token exchange Handler.
@@ -137,6 +154,9 @@ func FactoryWithSharedTrustedIssuerValidator(
 			"NewSharedTrustedIssuerValidator so its JWKS refresh workers can be released on shutdown")
 	}
 	resolved := resolveFactoryOptions(options)
+	if len(resolved.clientAccessTokenLifespans) > 0 {
+		return nil, fmt.Errorf("tokenexchange: per-client access token lifespans apply to ID-JAG redemption only")
+	}
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
 		selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
 		if err != nil {

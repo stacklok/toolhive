@@ -406,6 +406,62 @@ type DelegateClientRunConfig struct {
 	// and may exchange any self-issued token. A client that sets GrantTypes or
 	// uses private_key_jwt must declare the block.
 	TokenExchange *DelegateClientTokenExchange `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+
+	// AccessTokenLifespan is the lifetime of the access tokens this client
+	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+	// server's access_token_lifespan applies. When set it must be greater than
+	// zero and at most 24h. It is an upper bound: a token never outlives the
+	// assertion it was redeemed from, and a token that carries the
+	// delegated-access marker is capped further. Other grants ignore it.
+	AccessTokenLifespan string `json:"access_token_lifespan,omitempty" yaml:"access_token_lifespan,omitempty"`
+}
+
+// AccessTokenLifespanDuration parses AccessTokenLifespan. An omitted value
+// gives zero, which means the server lifespan applies; any set value must be in
+// (0, oauthserver.MaxAccessTokenLifespan].
+func (c DelegateClientRunConfig) AccessTokenLifespanDuration() (time.Duration, error) {
+	if c.AccessTokenLifespan == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.AccessTokenLifespan)
+	if err != nil {
+		return 0, fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan %q: %w",
+			c.ClientID, c.AccessTokenLifespan, err)
+	}
+	if err := checkDelegateAccessTokenLifespan(c.ClientID, d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
+
+// validateDelegateAccessTokenLifespanGrant refuses an access_token_lifespan
+// that could never apply: the lifespan is used only by ID-JAG redemption, so
+// the server must enable the JWT-bearer grant, and a client that sets
+// grant_types must list it. It runs on the resolved Config because whether the
+// grant is enabled is decided from the resolved trusted issuers.
+func validateDelegateAccessTokenLifespanGrant(clients []DelegateClient, jwtBearerEnabled bool) error {
+	for _, client := range clients {
+		if client.AccessTokenLifespan == 0 {
+			continue
+		}
+		if !jwtBearerEnabled {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, errAccessTokenLifespanNeedsJWTBearer)
+		}
+		if len(client.GrantTypes) > 0 && !slices.Contains(client.GrantTypes, oauthproto.GrantTypeJWTBearer) {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, errAccessTokenLifespanNeedsClientGrant)
+		}
+	}
+	return nil
+}
+
+// checkDelegateAccessTokenLifespan enforces (0, MaxAccessTokenLifespan] on a
+// set lifespan.
+func checkDelegateAccessTokenLifespan(clientID string, d time.Duration) error {
+	if d <= 0 || d > oauthserver.MaxAccessTokenLifespan {
+		return fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan must be greater than 0 and at most %v, got %v",
+			clientID, oauthserver.MaxAccessTokenLifespan, d)
+	}
+	return nil
 }
 
 // SelfIssuedSubjectTokens selects which self-issued subject tokens a delegate
@@ -879,6 +935,9 @@ func validateDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if _, err := client.AccessTokenLifespanDuration(); err != nil {
+			return err
+		}
 		views[i] = delegateClientView{
 			ClientID:      client.ClientID,
 			Scopes:        client.Scopes,
@@ -1168,6 +1227,11 @@ func validateResolvedDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if client.AccessTokenLifespan != 0 {
+			if err := checkDelegateAccessTokenLifespan(client.ClientID, client.AccessTokenLifespan); err != nil {
+				return err
+			}
+		}
 		if client.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			if client.ClientSecret == "" {
 				return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
@@ -2130,6 +2194,11 @@ type DelegateClient struct {
 
 	// TokenExchange carries the matching DelegateClientRunConfig field.
 	TokenExchange *DelegateClientTokenExchange
+
+	// AccessTokenLifespan is the parsed DelegateClientRunConfig field. Zero
+	// means unset: the server's access-token lifespan applies. Negative, or
+	// above server.MaxAccessTokenLifespan, is refused.
+	AccessTokenLifespan time.Duration
 }
 
 // Validate checks that the Config is valid.
@@ -2422,6 +2491,9 @@ func (c *Config) validateDelegationConfig() error {
 		return err
 	}
 	if err := ValidateIDJAGSubjectClaimAudiences(c.DelegateClients, c.SubjectIdentifierAudiences); err != nil {
+		return err
+	}
+	if err := validateDelegateAccessTokenLifespanGrant(c.DelegateClients, JWTBearerGrantEnabled(c.TrustedIssuers)); err != nil {
 		return err
 	}
 	spiffeIDs := make([]string, 0, len(c.SPIFFETrust.Associations()))
@@ -3256,6 +3328,13 @@ const (
 
 var (
 	errIDJAGRequiresTokenExchange = errors.New("token_exchange.id_jag requires token exchange to be enabled")
+	// errAccessTokenLifespanNeedsJWTBearer and
+	// errAccessTokenLifespanNeedsClientGrant refuse a per-client lifespan that
+	// ID-JAG redemption could never apply.
+	errAccessTokenLifespanNeedsJWTBearer = errors.New(
+		"access_token_lifespan applies to ID-JAG redemption, which requires the JWT-bearer grant to be enabled")
+	errAccessTokenLifespanNeedsClientGrant = errors.New(
+		"access_token_lifespan applies to ID-JAG redemption, so grant_types must include the JWT-bearer grant")
 	errIDJAGRequiresRestricted    = errors.New(`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`)
 	errIDJAGRequiresSubjectSource = errors.New("token_exchange.id_jag requires a subject source: " +
 		"set token_exchange.exchange_refresh_tokens.id_jag_max_lifetime")

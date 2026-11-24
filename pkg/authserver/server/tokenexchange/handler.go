@@ -372,11 +372,13 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	return nil
 }
 
-// issueBoundedAccessToken issues an access token whose lifetime is the
-// session's access-token expiry (set during HandleTokenEndpointRequest) when
-// that is sooner than lifespan, and lifespan otherwise. The session expiry is
-// the authoritative bound, so it respects limits computed earlier such as
-// min(subject_remaining, delegation).
+// issueBoundedAccessToken issues an access token that expires at the session's
+// access-token expiry (set during HandleTokenEndpointRequest). The session
+// expiry is the authoritative bound, so it respects limits computed earlier
+// such as min(subject_remaining, delegation) or a redeeming client's own
+// lifespan, even one longer than lifespan: fosite takes both exp and
+// expires_in from the session expiry whenever it is set. lifespan applies only
+// to a session with no expiry.
 //
 // If the session's bound has already elapsed since HandleTokenEndpointRequest
 // computed it, the call fails closed with the error elapsed returns

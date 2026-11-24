@@ -367,6 +367,15 @@ components:
       type: object
     authserver.DelegateClientRunConfig:
       properties:
+        access_token_lifespan:
+          description: |-
+            AccessTokenLifespan is the lifetime of the access tokens this client
+            obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+            server's access_token_lifespan applies. When set it must be greater than
+            zero and at most 24h. It is an upper bound: a token never outlives the
+            assertion it was redeemed from, and a token that carries the
+            delegated-access marker is capped further. Other grants ignore it.
+          type: string
         audiences:
           description: |-
             Audiences are output only: the upper bound on the audiences of the

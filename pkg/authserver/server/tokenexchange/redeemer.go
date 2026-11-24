@@ -49,6 +49,13 @@ type redemption struct {
 	// When empty the request's own client is kept and its ID is the token's
 	// client_id.
 	syntheticClientID string
+	// clientLifespan, when non-zero, replaces the server's access-token
+	// lifespan as the lifetime step's base. Only ID-JAG redemption sets it,
+	// from the redeeming client's configured lifespan; plain JWT-bearer has no
+	// authenticated client and leaves it zero. IDJAGIssuanceFactory refuses a
+	// negative value; one that got here anyway would issue an expired token,
+	// not fall back to the server lifespan.
+	clientLifespan time.Duration
 }
 
 // delegatedAccessMarkerCap is the longest lifetime of a token that carries the
@@ -133,17 +140,22 @@ func (r *redeemer) consumeAssertion(
 	return nil
 }
 
-// assertionBoundedLifetime returns the issued token's lifetime: the
-// configured access-token lifespan, capped by the assertion's remaining
-// validity so a token derived from an assertion can never outlive it, and, for
-// a token that carries the delegated-access marker, by
+// assertionBoundedLifetime returns the issued token's lifetime. The base is
+// the redeeming client's own lifespan when it has one, else the configured
+// access-token lifespan. The base is capped by the assertion's remaining
+// validity, so a token derived from an assertion can never outlive it, and
+// then, for a token that carries the delegated-access marker, by
 // delegatedAccessMarkerCap.
 func (r *redeemer) assertionBoundedLifetime(ctx context.Context, d redemption) (time.Duration, error) {
 	remaining := time.Until(d.claims.Expiry)
 	if remaining <= 0 {
 		return 0, invalidAssertion("The JWT bearer assertion has expired.")
 	}
-	lifetime := min(r.config.GetAccessTokenLifespan(ctx), remaining)
+	base := d.clientLifespan
+	if base == 0 {
+		base = r.config.GetAccessTokenLifespan(ctx)
+	}
+	lifetime := min(base, remaining)
 	// Last, so the cap wins over every earlier bound.
 	if d.delegatedAccess {
 		lifetime = min(lifetime, delegatedAccessMarkerCap)

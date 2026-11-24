@@ -1327,12 +1327,22 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		Scopes:             []string{"openid"},
 		Audiences:          []string{"https://mcp.example.com"},
 	}
+	withLifespan := func(c DelegateClientRunConfig, lifespan string) DelegateClientRunConfig {
+		c.AccessTokenLifespan = lifespan
+		return c
+	}
 	tests := []struct {
 		name    string
 		clients []DelegateClientRunConfig
 		wantErr string
 	}{
 		{name: "secret client without grant types or block keeps legacy trust", clients: []DelegateClientRunConfig{validClient}},
+		{name: "valid access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "30s")}},
+		{name: "access token lifespan at the maximum", clients: []DelegateClientRunConfig{withLifespan(validClient, "24h")}},
+		{name: "zero access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "0s")}, wantErr: "access_token_lifespan must be greater than 0"},
+		{name: "negative access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "-5s")}, wantErr: "access_token_lifespan must be greater than 0"},
+		{name: "access token lifespan one second above the maximum", clients: []DelegateClientRunConfig{withLifespan(validClient, "24h1s")}, wantErr: "at most 24h0m0s"},
+		{name: "unparsable access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "soon")}, wantErr: `access_token_lifespan "soon"`},
 		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
 		{name: "duplicate ID", clients: []DelegateClientRunConfig{validClient, validClient}, wantErr: "duplicate client_id"},
 		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "secret is required"},
@@ -1653,6 +1663,73 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 			}}
 			assertError(t, validateResolvedDelegateClients(resolvedClients, supported, allowed, "https://auth.example.com", true),
 				tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+// TestValidateResolvedDelegateClients_AccessTokenLifespan pins the bounds on
+// a resolved client's lifespan, for a Config built without a RunConfig.
+func TestValidateResolvedDelegateClients_AccessTokenLifespan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		lifespan time.Duration
+		wantErr  string
+	}{
+		{name: "unset", lifespan: 0},
+		{name: "within bounds", lifespan: 30 * time.Second},
+		{name: "exactly the maximum", lifespan: 24 * time.Hour},
+		{name: "negative", lifespan: -time.Second, wantErr: "access_token_lifespan must be greater than 0"},
+		{name: "one second above the maximum", lifespan: 24*time.Hour + time.Second, wantErr: "at most 24h0m0s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			clients := []DelegateClient{{
+				ClientID: "delegate", ClientSecret: strings.Repeat("s", minDelegateClientSecretLength),
+				Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+				AccessTokenLifespan: tt.lifespan,
+			}}
+			err := validateResolvedDelegateClients(clients, []string{"openid"}, []string{"https://mcp.example.com"},
+				"https://auth.example.com", true)
+			assertError(t, err, tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+func TestValidateDelegateAccessTokenLifespanGrant(t *testing.T) {
+	t.Parallel()
+
+	bothGrants := []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}
+	tests := []struct {
+		name             string
+		lifespan         time.Duration
+		grantTypes       []string
+		jwtBearerEnabled bool
+		wantErr          error
+	}{
+		{name: "no lifespan needs nothing", grantTypes: []string{oauthproto.GrantTypeTokenExchange}},
+		{name: "lifespan with the grant enabled and listed", lifespan: time.Minute, grantTypes: bothGrants, jwtBearerEnabled: true},
+		{name: "lifespan on a client without grant_types", lifespan: time.Minute, jwtBearerEnabled: true},
+		{name: "lifespan with the grant disabled", lifespan: time.Minute, grantTypes: bothGrants,
+			wantErr: errAccessTokenLifespanNeedsJWTBearer},
+		{name: "lifespan on a client whose grant_types omit the grant", lifespan: time.Minute,
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange}, jwtBearerEnabled: true,
+			wantErr: errAccessTokenLifespanNeedsClientGrant},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDelegateAccessTokenLifespanGrant([]DelegateClient{{
+				ClientID: "delegate", GrantTypes: tt.grantTypes, AccessTokenLifespan: tt.lifespan,
+			}}, tt.jwtBearerEnabled)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.Contains(t, err.Error(), `client_id "delegate"`)
 		})
 	}
 }

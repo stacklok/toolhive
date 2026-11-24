@@ -2166,6 +2166,35 @@ func TestSessionManager_EvictStaleSessions_NoStale(t *testing.T) {
 	assert.Equal(t, 2, sm.sessions.Len())
 }
 
+func TestSessionManager_SweepExpiredSessions(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	factory := newMockFactory(t, ctrl, nil)
+	sm, storage := newTestSessionManager(t, factory, newFakeRegistry())
+
+	// Live: a storage record exists and is not terminated -> kept.
+	sm.sessions.Set("s-live", newEvictionTestSession(t, ctrl, "", 0))
+	_, err := storage.Create(context.Background(), "s-live", map[string]string{
+		vmcpsession.MetadataKeyIdentityBinding: "unauthenticated",
+	})
+	require.NoError(t, err)
+
+	// Terminated: the storage record is marked terminated -> evicted.
+	sm.sessions.Set("s-terminated", newEvictionTestSession(t, ctrl, "", 1))
+	_, err = storage.Create(context.Background(), "s-terminated", map[string]string{
+		MetadataKeyTerminated: MetadataValTrue,
+	})
+	require.NoError(t, err)
+
+	// Gone: cached but no storage record (deleted by a DELETE on another
+	// replica) -> evicted.
+	sm.sessions.Set("s-gone", newEvictionTestSession(t, ctrl, "", 1))
+
+	assert.Equal(t, 2, sm.sweepExpiredSessions())
+	assert.Equal(t, 1, sm.sessions.Len())
+}
+
 // loadFailDataStorage is a DataStorage whose metadata reads always fail with a
 // storage error, as an unreachable Redis does.
 type loadFailDataStorage struct{ alwaysFailDataStorage }

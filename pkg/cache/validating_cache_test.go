@@ -910,3 +910,53 @@ func TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys(t *testing.T) {
 		t.Fatal("timeout waiting for RemoveMatching to finish")
 	}
 }
+
+func TestValidatingCache_Sweep_EvictsMatchingEntries(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+		alwaysAliveCheck,
+		func(k, _ string) { evicted = append(evicted, k) },
+	)
+
+	c.Set("a", "v-a")
+	c.Set("b", "v-b")
+	c.Set("c", "v-c")
+
+	removed := c.Sweep(t.Context(), func(_ context.Context, k string, _ string) bool {
+		return k == "b"
+	})
+
+	assert.Equal(t, 1, removed)
+	assert.ElementsMatch(t, []string{"b"}, evicted)
+	assert.Equal(t, 2, c.Len())
+
+	// The swept entry is gone; a later Get reloads it via the load callback.
+	v, ok := c.Get(t.Context(), "b")
+	require.True(t, ok)
+	assert.Equal(t, "v-b", v)
+}
+
+func TestValidatingCache_Sweep_NoMatch_NoEviction(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+		alwaysAliveCheck,
+		func(k, _ string) { evicted = append(evicted, k) },
+	)
+
+	c.Set("a", "v-a")
+	c.Set("b", "v-b")
+
+	removed := c.Sweep(t.Context(), func(_ context.Context, _ string, _ string) bool {
+		return false
+	})
+
+	assert.Zero(t, removed)
+	assert.Empty(t, evicted)
+	assert.Equal(t, 2, c.Len())
+}

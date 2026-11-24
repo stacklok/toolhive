@@ -16,47 +16,64 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
 // The argument hash is computed by the client that asks for a call-bound
 // token and by the vMCP that checks it, so both sides test against one set of
-// vectors.
+// vectors. testdata/argumenthash/vectors.json is the canonical copy; the
+// client's test compares its copy with this one.
 //
-// testdata/argumenthash/vectors.json is a verbatim copy of Mecatl's
+// The file started as a verbatim copy of Mecatl's
 // internal/adapter/mcpbroker/testdata/argumenthash/vectors.json at commit
 // 4c8816d1ba9fc804fa45336593cb25dd9a07d1fb, "feat(mcpbroker): authorize
 // gateway calls with the identity broker and send them with a per-call token"
 // (stacklok/mecatl#2818), unchanged on Mecatl main as of
-// e9226ba8c9a078713ff7a2424a7ed65043d4fee6. Its expected canonical strings
-// come from RFC 8785 and hand-checked cases; sha256 is computed over the
-// expected string, not by this package.
+// e9226ba8c9a078713ff7a2424a7ed65043d4fee6. Since then it differs from that
+// copy: it marks vectors with gateway_refuses, and it holds the refusal cases
+// that were inline in Mecatl's argumenthash_test.go at the same commit. Mecatl
+// switches to this copy in "Bind each gateway token to its call"
+// (stacklok/mecatl#2727).
 //
-// testdata/argumenthash/refusals.json holds the arguments both sides must
-// refuse. It starts from the refusal cases inline in Mecatl's
-// argumenthash_test.go at the same commit.
+// Expected canonical strings come from RFC 8785 and hand-checked cases; sha256
+// is computed over the expected string, not by this package.
 
 type hashVector struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
-	Canonical string          `json:"canonical"`
-	SHA256    string          `json:"sha256"`
+	Name           string          `json:"name"`
+	Arguments      json.RawMessage `json:"arguments"`
+	Canonical      string          `json:"canonical"`
+	SHA256         string          `json:"sha256"`
+	GatewayRefuses bool            `json:"gateway_refuses"`
 }
 
-func loadVectors(t *testing.T) []hashVector {
+type hashRefusal struct {
+	Name   string  `json:"name"`
+	Text   *string `json:"arguments_text"`
+	Base64 *string `json:"arguments_base64"`
+}
+
+type vectorsFile struct {
+	Vectors  []hashVector  `json:"vectors"`
+	Refusals []hashRefusal `json:"refusals"`
+}
+
+func loadVectors(t *testing.T) vectorsFile {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "argumenthash", "vectors.json"))
 	require.NoError(t, err)
-	var file struct {
-		Vectors []hashVector `json:"vectors"`
-	}
+	var file vectorsFile
 	require.NoError(t, json.Unmarshal(raw, &file))
 	require.NotEmpty(t, file.Vectors)
-	return file.Vectors
+	require.NotEmpty(t, file.Refusals)
+	return file
 }
 
+// TestArgumentsSHA256Vectors runs every vector, including those marked
+// gateway_refuses: the hash must agree with the other side on them too.
 func TestArgumentsSHA256Vectors(t *testing.T) {
 	t.Parallel()
-	for _, v := range loadVectors(t) {
+	for _, v := range loadVectors(t).Vectors {
 		t.Run(v.Name, func(t *testing.T) {
 			t.Parallel()
 			sum := sha256.Sum256([]byte(v.Canonical))
@@ -75,48 +92,51 @@ func TestArgumentsSHA256Vectors(t *testing.T) {
 	}
 }
 
-// TestArgumentsSHA256CaseFoldVector pins that the shared vectors keep a case
-// that differs only in letter case ("A" and "a") and that it hashes. The vMCP
-// never reaches the hash for such a tools/call: its message decoder refuses
-// member names that collide after case folding, at any depth, with -32600
-// Invalid Request (pkg/mcp/json_ambiguity.go). An end-to-end test therefore
-// cannot use this vector, but the hash function must still agree with the
-// other side on it.
-func TestArgumentsSHA256CaseFoldVector(t *testing.T) {
+// TestVectorsGatewayRefuses keeps each vector's gateway_refuses flag true to
+// the vMCP: the flag must be set exactly when ToolHive's message decoder
+// refuses a tools/call carrying the vector's arguments with -32600 Invalid
+// Request before the hash runs. The decoder refuses member names that collide
+// after case folding, at any depth (pkg/mcp/json_ambiguity.go), so a client
+// that sends such arguments gets a request error, not a hash mismatch. This
+// checks the shared file against the decoder rather than restating its rule,
+// so a change to either fails here.
+func TestVectorsGatewayRefuses(t *testing.T) {
 	t.Parallel()
-	const name = "ASCII key order"
-	for _, v := range loadVectors(t) {
-		if v.Name != name {
-			continue
+	vectors := loadVectors(t).Vectors
+	flagged := map[string]bool{}
+	for _, v := range vectors {
+		if v.GatewayRefuses {
+			flagged[v.Name] = true
 		}
-		var members map[string]json.RawMessage
-		require.NoError(t, json.Unmarshal(v.Arguments, &members))
-		require.Contains(t, members, "A")
-		require.Contains(t, members, "a")
-
-		got, err := ArgumentsSHA256(v.Arguments)
-		require.NoError(t, err)
-		assert.Equal(t, v.SHA256, got)
-		return
 	}
-	t.Fatalf("vector %q not found", name)
+	// "ASCII key order" has both "A" and "a"; pin it so the flag cannot be
+	// dropped from the file together with a decoder change.
+	require.True(t, flagged["ASCII key order"], `"ASCII key order" must be marked gateway_refuses`)
+
+	for _, v := range vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			t.Parallel()
+			params := `{"name":"t"}`
+			if v.Arguments != nil {
+				params = `{"name":"t","arguments":` + string(v.Arguments) + `}`
+			}
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + params + `}`)
+
+			_, err := mcp.DecodeMessage(body)
+			if !v.GatewayRefuses {
+				require.NoError(t, err)
+				return
+			}
+			var coded mcp.CodedError
+			require.ErrorAs(t, err, &coded)
+			assert.Equal(t, mcp.CodeInvalidRequest, coded.Code())
+		})
+	}
 }
 
 func TestArgumentsSHA256Refusals(t *testing.T) {
 	t.Parallel()
-	raw, err := os.ReadFile(filepath.Join("testdata", "argumenthash", "refusals.json"))
-	require.NoError(t, err)
-	var file struct {
-		Refusals []struct {
-			Name   string  `json:"name"`
-			Text   *string `json:"arguments_text"`
-			Base64 *string `json:"arguments_base64"`
-		} `json:"refusals"`
-	}
-	require.NoError(t, json.Unmarshal(raw, &file))
-	require.NotEmpty(t, file.Refusals)
-
-	for _, r := range file.Refusals {
+	for _, r := range loadVectors(t).Refusals {
 		t.Run(r.Name, func(t *testing.T) {
 			t.Parallel()
 			require.True(t, (r.Text == nil) != (r.Base64 == nil), "want exactly one of arguments_text and arguments_base64")

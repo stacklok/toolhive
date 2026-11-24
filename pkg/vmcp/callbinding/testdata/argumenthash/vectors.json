@@ -1,5 +1,5 @@
 {
-  "description": "Argument hash vectors: arguments is the params.arguments value exactly as sent (absent when the member is missing), canonical is its RFC 8785 serialization, and sha256 is the lowercase hex SHA-256 of canonical's UTF-8 bytes. See docs/drafts/agent-identity/credentials-and-lifecycle.md, step (8).",
+  "description": "Argument hash vectors, the canonical copy shared by the client that asks for a call-bound token and the vMCP that checks it. In vectors, arguments is the params.arguments value exactly as sent (absent when the member is missing), canonical is its RFC 8785 serialization, and sha256 is the lowercase hex SHA-256 of canonical's UTF-8 bytes. gateway_refuses is true when the vMCP refuses a tools/call carrying these arguments with -32600 Invalid Request before it computes the hash, because member names collide after case folding; the hash must still match, but an end-to-end tools/call cannot use the vector. Each entry in refusals is a params.arguments value exactly as sent that the argument hash must refuse, because it is not exactly one JSON object or is not I-JSON (RFC 7493). arguments_text holds the raw bytes as a JSON string; arguments_base64 holds them as standard base64 and is used only when the raw bytes are not valid UTF-8. Exactly one of the two is present. A refusal yields no hash. See \"vMCP: accept an access token for the one call its authorization_details names, once\" (stacklok/toolhive#7062).",
   "vectors": [
     {
       "name": "absent arguments",
@@ -50,6 +50,7 @@
     },
     {
       "name": "ASCII key order",
+      "gateway_refuses": true,
       "arguments": {"b": 1, "a": 2, "aa": 3, "A": 4, "": 5, "ab": 6},
       "canonical": "{\"\":5,\"A\":4,\"a\":2,\"aa\":3,\"ab\":6,\"b\":1}",
       "sha256": "a9607e3eb4c35ccd262f5fc0d7ed6d9051dc7ce6b1db35c6608ad4b669bdbe0b"
@@ -110,5 +111,45 @@
       "canonical": "{\"n\":[4500000000000000,1000000000000000,9007199254740992,9007199254740992,9007199254740991,-9007199254740991,-42,9007199254740992]}",
       "sha256": "f7a00a0dae139c506035aa4c7c62a4026c8d4f1ab6804ebf530b6bbb86cfb349"
     }
+  ],
+  "refusals": [
+    {"name": "2^53+1", "arguments_text": "{\"n\":9007199254740993}"},
+    {"name": "-(2^53+1)", "arguments_text": "{\"n\":-9007199254740993}"},
+    {"name": "2^53+1 in exponent form", "arguments_text": "{\"n\":9.007199254740993e15}"},
+    {"name": "2^53+0.5 rounding to 2^53", "arguments_text": "{\"n\":9007199254740992.5}"},
+    {"name": "2^53+2", "arguments_text": "{\"n\":9007199254740994}"},
+    {"name": "1e21 (RFC 8785 Appendix B)", "arguments_text": "{\"n\":1e+21}"},
+    {"name": "1e23 (RFC 8785 Appendix B)", "arguments_text": "{\"n\":1e+23}"},
+    {"name": "295147905179352830000 (RFC 8785 Appendix B)", "arguments_text": "{\"n\":295147905179352830000}"},
+    {"name": "largest double (RFC 8785 Appendix B)", "arguments_text": "{\"n\":1.7976931348623157e+308}"},
+    {"name": "nested beyond 2^53", "arguments_text": "{\"a\":[{\"n\":-1e300}]}"},
+    {"name": "1e400", "arguments_text": "{\"n\":1e400}"},
+    {"name": "-1e400", "arguments_text": "{\"n\":-1e400}"},
+    {"name": "RFC 8785 section 3.2.4 example with 1E30", "arguments_text": "{\"numbers\":[333333333.33333329,1E30,4.50,2e-3,0.000000000000000000000000001],\"literals\":[null,true,false]}"},
+    {"name": "invalid UTF-8 in value", "arguments_base64": "eyJzIjoi/yJ9"},
+    {"name": "invalid UTF-8 in key", "arguments_base64": "eyLDKCI6MX0="},
+    {"name": "truncated UTF-8", "arguments_base64": "eyJzIjoi4oIifQ=="},
+    {"name": "UTF-8 encoded surrogate", "arguments_base64": "eyJzIjoi7aCAIn0="},
+    {"name": "lone \\ud800", "arguments_text": "{\"s\":\"\\ud800\"}"},
+    {"name": "lone \\udc00", "arguments_text": "{\"s\":\"\\udc00\"}"},
+    {"name": "lone \\ud800 in key", "arguments_text": "{\"\\ud800\":1}"},
+    {"name": "\\ud800 then a letter", "arguments_text": "{\"s\":\"\\ud800A\"}"},
+    {"name": "\\ud800 then \\u0041", "arguments_text": "{\"s\":\"\\ud800\\u0041\"}"},
+    {"name": "two high surrogates", "arguments_text": "{\"s\":\"\\ud800\\ud800\"}"},
+    {"name": "reversed pair", "arguments_text": "{\"s\":\"\\ude00\\ud83d\"}"},
+    {"name": "\\ud800 after escaped backslash", "arguments_text": "{\"s\":\"\\\\\\ud800\"}"},
+    {"name": "duplicate keys", "arguments_text": "{\"a\":1,\"a\":2}"},
+    {"name": "duplicate keys by escape", "arguments_text": "{\"a\":1,\"\\u0061\":2}"},
+    {"name": "nested duplicate keys", "arguments_text": "{\"o\":{\"k\":1,\"k\":1}}"},
+    {"name": "top-level array", "arguments_text": "[1,2]"},
+    {"name": "top-level string", "arguments_text": "\"x\""},
+    {"name": "top-level number", "arguments_text": "1"},
+    {"name": "top-level true", "arguments_text": "true"},
+    {"name": "malformed", "arguments_text": "{\"a\":1"},
+    {"name": "trailing value", "arguments_text": "{}{}"},
+    {"name": "trailing garbage", "arguments_text": "{} x"},
+    {"name": "byte order mark before the object", "arguments_text": "\ufeff{}"},
+    {"name": "no-break space before null", "arguments_text": "\u00a0null"},
+    {"name": "vertical tab only", "arguments_text": "\u000b"}
   ]
 }

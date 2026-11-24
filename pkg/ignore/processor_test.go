@@ -653,3 +653,43 @@ func TestGetOverlayMountsConcurrentCleanup(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestGetMatchingPathsWildcardDirectoryPattern(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	for _, name := range []string{"secrets-prod", "secrets-dev"} {
+		if err := os.Mkdir(filepath.Join(tmpDir, name), 0o755); err != nil {
+			t.Fatalf("Failed to create directory %s: %v", name, err)
+		}
+	}
+	// A same-prefix file must NOT match a directory-only pattern (trailing
+	// slash), so this also pins the directory-only filtering.
+	if err := os.WriteFile(filepath.Join(tmpDir, "secrets.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("Failed to create secrets.txt: %v", err)
+	}
+
+	processor := NewProcessor(&Config{LoadGlobal: false})
+
+	got := processor.getMatchingPaths(tmpDir, "secrets-*/")
+	want := []string{
+		filepath.Join(tmpDir, "secrets-prod"),
+		filepath.Join(tmpDir, "secrets-dev"),
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("getMatchingPaths(%q) returned %d paths, want %d: %v", "secrets-*/", len(got), len(want), got)
+	}
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			if g == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("getMatchingPaths(%q) missing %q; got %v", "secrets-*/", w, got)
+		}
+	}
+}

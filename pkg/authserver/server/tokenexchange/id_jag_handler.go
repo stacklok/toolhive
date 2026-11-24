@@ -241,9 +241,9 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
-	policy, ok := h.policies[claims.Issuer]
-	if !ok {
-		return invalidAssertion("The ID-JAG assertion issuer is not enabled for this grant.")
+	policy, err := h.enabledPolicy(ctx, claims)
+	if err != nil {
+		return err
 	}
 	// Unlike a plain RFC 7523 assertion (where many IdPs omit jti and the
 	// replay key falls back to an assertion hash), the ID-JAG draft requires
@@ -469,7 +469,7 @@ func (h *IDJAGHandler) validateAssertion(ctx context.Context, assertion string) 
 	// verify proof of possession yet, so accepting the ID-JAG would silently
 	// drop the key binding the IdP asked for. The refusal stays until proof of
 	// possession (DPoP or mTLS) is verified.
-	if hasConfirmationClaim(claims) {
+	if restrictionsOf(claims).Confirmation {
 		return nil, invalidAssertion("The ID-JAG assertion must not carry a 'cnf' claim.")
 	}
 	return claims, nil
@@ -553,3 +553,19 @@ func IDJAGIssuanceFactory(
 }
 
 var _ fosite.TokenEndpointHandler = (*IDJAGHandler)(nil)
+
+// enabledPolicy returns the issuer's policy for this grant. It refuses an
+// issuer that is not enabled for the grant first, so an issuer the validator
+// trusts for another grant gets that refusal, and only then an assertion that
+// carries authorization_details: the details refusal and its log line name only
+// issuers this grant accepts. It runs before the assertion is consumed.
+func (h *IDJAGHandler) enabledPolicy(ctx context.Context, claims *ValidatedClaims) (*JWTBearerGrantPolicy, error) {
+	policy, ok := h.policies[claims.Issuer]
+	if !ok {
+		return nil, invalidAssertion("The ID-JAG assertion issuer is not enabled for this grant.")
+	}
+	if err := h.redeemer.refuseSignedDetails(ctx, claims); err != nil {
+		return nil, err
+	}
+	return policy, nil
+}

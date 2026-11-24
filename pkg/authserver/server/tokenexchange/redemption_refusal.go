@@ -6,6 +6,7 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/ory/fosite"
@@ -36,6 +37,11 @@ const (
 	reasonClientAuthRequired = "client_authentication_required"
 )
 
+// reasonAuthorizationDetailsAssertion is the logged reason where an assertion
+// that carries authorization_details is refused at redemption. It is not sent
+// to the client, which sees invalid_assertion.
+const reasonAuthorizationDetailsAssertion = "authorization_details_assertion"
+
 const hintAssertionValidationFailed = "The assertion could not be validated."
 
 // redemptionRefusal builds a JWT-bearer or ID-JAG redemption refusal whose
@@ -57,6 +63,33 @@ func redemptionRefusal(code, reason, hint string) *fosite.RFC6749Error {
 // rule: invalid_grant with the invalid_assertion reason.
 func invalidAssertion(hint string) error {
 	return errorsx.WithStack(redemptionRefusal(fosite.ErrInvalidGrant.ErrorField, reasonInvalidAssertion, hint))
+}
+
+// refuseSignedDetails refuses an assertion that carries an
+// authorization_details claim, on both the plain RFC 7523 and the ID-JAG
+// grant. The ID-JAG draft (section 4.4.1) asks a redeeming server to process
+// the claim, but this server cannot carry a signed restriction into the token,
+// so it refuses instead of issuing a token without it. Only the details claim
+// is read: redemption does not refuse the delegated-access marker, so an
+// assertion that carries both is refused for its details.
+//
+// Both handlers call it after the issuer's policy lookup and before the
+// assertion is consumed, so it runs only for issuers enabled for the grant.
+// The refusal can newly break such an issuer's redemptions, so the operator
+// gets a Warn line naming the issuer. The plain grant needs no client
+// authentication and a refused assertion is not consumed, so one assertion can
+// be resent until it expires: only the first refusal per issuer is logged at
+// Warn and later ones at Debug.
+func (r *redeemer) refuseSignedDetails(ctx context.Context, claims *ValidatedClaims) error {
+	if !restrictionsOf(claims).AuthorizationDetails {
+		return nil
+	}
+	level := slog.LevelDebug
+	if _, seen := r.detailsWarned.LoadOrStore(claims.Issuer, struct{}{}); !seen {
+		level = slog.LevelWarn
+	}
+	slog.Log(ctx, level, "Assertion refused", "reason", reasonAuthorizationDetailsAssertion, "issuer", claims.Issuer)
+	return invalidAssertion("The assertion must not carry an 'authorization_details' claim.")
 }
 
 // clientAuthRequired is the refusal for an ID-JAG redemption by a client that

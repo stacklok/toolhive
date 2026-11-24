@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"sync"
 	"time"
 
 	"github.com/ory/fosite"
@@ -26,6 +27,11 @@ type redeemer struct {
 	consumer storage.AssertionJWTConsumer
 	config   *fosite.Config
 	helper   *oauth2.HandleHelper
+
+	// detailsWarned records the assertion issuers whose authorization_details
+	// refusal was already logged at Warn. Only validated assertions reach it,
+	// so its size is bounded by the trusted issuers.
+	detailsWarned sync.Map
 }
 
 // redemption is what a handler's front half decided about a validated

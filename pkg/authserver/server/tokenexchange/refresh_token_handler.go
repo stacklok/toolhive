@@ -86,6 +86,17 @@ const (
 	// reasonActorDelegatedAccess is sent when a delegated-access token is
 	// presented as the actor token for an ID-JAG.
 	reasonActorDelegatedAccess = "actor_token_delegated_access" //nolint:gosec // G101: not a credential
+	// reasonSubjectAuthorizationDetails is sent for a subject token that
+	// carries authorization_details: the exchange grant would not carry them.
+	// Like reasonSubjectDelegatedAccess, a retry cannot fix it.
+	reasonSubjectAuthorizationDetails = "subject_token_authorization_details"
+	// reasonActorAuthorizationDetails is sent when a token that carries
+	// authorization_details is presented as the actor token for an ID-JAG.
+	reasonActorAuthorizationDetails = "actor_token_authorization_details"
+	// reasonAuthorizationDetailsToken is the logged reason where a token that
+	// carries authorization_details is refused as a subject or actor token of
+	// the RFC 8693 token-exchange handler.
+	reasonAuthorizationDetailsToken = "authorization_details_token"
 )
 
 // isRefreshTokenExchange reports whether a token-exchange request involves the
@@ -459,11 +470,11 @@ func (h *RefreshTokenHandler) decideTopLevel(
 		return nil, refuse(ctx, log, refuseSubjectToken,
 			errorsx.WithStack(exactReason(fosite.ErrInvalidRequest.ErrorField, reasonSubjectInvalid)))
 	}
-	// A delegated-access token is refused before any other claim is read, the
-	// log fields included.
-	if hasDelegatedAccessMarker(claims) {
-		return nil, refuse(ctx, log, reasonSubjectDelegatedAccess,
-			errorsx.WithStack(loginSubjectError(reasonSubjectDelegatedAccess)))
+	// A terminal token is refused before any other claim is read, the log
+	// fields included. The marker is checked first, so a token that carries
+	// both keeps the marker's reason.
+	if reason := terminalSubjectReason(restrictionsOf(claims)); reason != "" {
+		return nil, refuse(ctx, log, reason, errorsx.WithStack(loginSubjectError(reason)))
 	}
 	log = log.With("sub", claims.Subject, "source_jti", claims.JWTID)
 	refusal := checkLoginToken(claims)
@@ -847,15 +858,29 @@ func checkRefreshTokenParams(requester fosite.AccessRequester, form url.Values) 
 // handler.go). The difference is deliberate.
 func loginSubjectError(reason string) error {
 	switch reason {
-	case reasonSubjectAudience, reasonSubjectSourceClient, reasonSubjectOfflineAccess, reasonSubjectDelegatedAccess:
+	case reasonSubjectAudience, reasonSubjectSourceClient, reasonSubjectOfflineAccess, reasonSubjectDelegatedAccess,
+		reasonSubjectAuthorizationDetails:
 		return exactReason(fosite.ErrInvalidRequest.ErrorField, reason)
 	}
 	return exactReason(fosite.ErrInvalidRequest.ErrorField, reasonSubjectInvalid)
 }
 
+// terminalSubjectReason returns the reason a subject token that opens an
+// exchange grant is refused as terminal, or "" if it is not terminal. The
+// delegated-access marker is checked first.
+func terminalSubjectReason(r restrictions) string {
+	switch {
+	case r.DelegatedAccess:
+		return reasonSubjectDelegatedAccess
+	case r.AuthorizationDetails:
+		return reasonSubjectAuthorizationDetails
+	}
+	return ""
+}
+
 // checkLoginToken reports why a validated subject token is not a user login
-// access token, or "" if it is. The caller has already refused delegated-access
-// tokens. A refresh token needs a real login. A token minted by token exchange
+// access token, or "" if it is. The caller has already refused terminal tokens
+// (terminalSubjectReason). A refresh token needs a real login. A token minted by token exchange
 // (act), by the JWT-bearer or ID-JAG grant (external subject or no upstream
 // session), or by client_credentials (no upstream session) is refused because
 // its subject did not log in here.

@@ -1389,6 +1389,14 @@ spec:
   `"cnf": null` and `"cnf": {}` are refused too. The check runs before the
   assertion is consumed. It stays until proof of possession (DPoP or mTLS) is
   verified. The grant still does not require client authentication.
+- **No `authorization_details`.** An assertion that carries an
+  `authorization_details` claim is refused with `invalid_grant`, whatever the
+  value, on this grant and on ID-JAG redemption alike. The issued token would
+  not carry the claim, so redeeming the assertion would silently drop the
+  restriction its issuer signed. Only presence counts. The check runs after
+  the issuer's policy lookup, so an issuer that is not enabled for the grant
+  gets that refusal instead, and before the assertion is consumed. See
+  [Terminal tokens](#terminal-tokens).
 - **Synthetic subject and client identity.** The issued token's `sub` is
   `<assertion issuer>#<assertion subject>` (`session.New`'s first argument,
   matching the delegated-token subject qualification pattern in [Accepted
@@ -1644,6 +1652,7 @@ its own default text before the reason.
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | Assertion that carries a `cnf` claim, with any value including `null`, for any issuer | 400 `invalid_grant`, `invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.` | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` Both checks run before the assertion is consumed |
+| Assertion that carries an `authorization_details` claim, with any value including `null`, from an issuer enabled for the grant, that passes the checks above (no `cnf` claim; for an ID-JAG, a single `aud`) | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` | same. Both checks run before the assertion is consumed |
 | Subject not listed in `subject_bindings` (namespaced issuers) | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
@@ -1889,6 +1898,13 @@ presence of the claim counts: `"cnf": null` and `"cnf": {}` are refused too, and
 the value is never read. The refusal stays until proof of possession (DPoP or
 mTLS) is verified.
 
+**ID-JAGs that carry `authorization_details` are refused.** Draft §4.4.1 asks
+the server to process the claim, but the issued token cannot carry it yet, so
+the handler refuses the ID-JAG with `invalid_grant` instead of issuing a token
+without the restriction. The check runs after the `cnf` check and the
+issuer's policy lookup, for every issuer enabled for the grant, and before the
+ID-JAG is consumed (see [Terminal tokens](#terminal-tokens)).
+
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
 also lets AS-2's plain handler (`typ` `JWT`, empty or absent) accept AS-1's
 access tokens. That handler needs no client authentication, applies none of the
@@ -1998,7 +2014,8 @@ Go-only. It is not part of `RunConfig`, YAML, or CRDs. It maps exact,
 case-sensitive `type` names to a `Type`, which lists the grant types it applies
 to (`GrantTypes`) and a `Grant` hook. Only token exchange uses the registry
 today; other grants, including JWT-bearer ID-JAG redemption, ignore the
-parameter. Nothing is advertised in discovery.
+parameter. A JWT-bearer or ID-JAG assertion that carries the claim is refused
+(see [Terminal tokens](#terminal-tokens)). Nothing is advertised in discovery.
 
 A request value must follow RFC 9396 section 2: one JSON array of objects, each
 with a non-empty string `type` registered for the grant type. `[]` is valid. An
@@ -2222,7 +2239,8 @@ client receives them.
 | `expires_at` in the past, fractional, or not a number | `invalid_authorization_details` | `invalid_expires_at` |
 | Kind of token not enabled for the client | `invalid_authorization_details` | `token_type_not_permitted` |
 | Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
-| Subject token carries the delegated-access marker (see [Delegated-access marker](#delegated-access-marker)) | `invalid_request` | `subject_token_delegated_access` |
+| Subject token carries the delegated-access marker (see [Terminal tokens](#terminal-tokens)) | `invalid_request` | `subject_token_delegated_access` |
+| Subject token carries `authorization_details` and no marker (see [Terminal tokens](#terminal-tokens)) | `invalid_request` | `subject_token_authorization_details` |
 | Subject token's `aud` has none of the client's `subject_token_audiences`, or it was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
 | Subject token's scope has neither `offline_access` nor `offline` | `invalid_request` | `subject_token_offline_access` |
 | Subject token already used | `invalid_request` | `token_used` |
@@ -2233,7 +2251,7 @@ client receives them.
 
 Checks run in this order, after the public-client, grant, subject-type and feature
 checks: request parameters, then `authorization_details` presence and parsing,
-then the subject token (validation, then the delegated-access marker refusal, then
+then the subject token (validation, then the terminal-token refusal, then
 the login-subject checks), then the entry content. A request with an expired
 subject token and a bad entry therefore gets the subject-token error.
 
@@ -2248,10 +2266,10 @@ refreshed access token keeps its original scopes. The user must sign in again,
 and the source client must request `offline_access` or `offline` at sign-in. A
 source client that is not registered for the scope cannot request it: sign-in
 fails with `invalid_scope`.
-`subject_token_delegated_access` is not a retry either: the token is a
-delegated-access token (see [Delegated-access marker](#delegated-access-marker)),
-and refreshing it only yields another one. The client must present a user's login
-access token instead.
+`subject_token_delegated_access` and `subject_token_authorization_details` are
+not a retry either: the token is terminal (see [Terminal tokens](#terminal-tokens)),
+and refreshing it only yields another one like it. The client must present a
+user's login access token instead.
 
 This path uses `invalid_request` for an expired subject token and for a disallowed
 source client, as RFC 8693 section 2.2.2 requires. The access-token handler uses
@@ -2529,8 +2547,8 @@ The server stops at the first check that fails:
 6. For a client with an actor profile: the actor validator, called once, after
    every check above (see [Why the validator is last](#why-the-validator-is-last)).
    Its answer sets `act` and `iat` and caps `exp`. The bounds check and signing
-   follow. Just before the call, an actor token that is a delegated-access token
-   is refused (see [Delegated-access marker](#delegated-access-marker)).
+   follow. Just before the call, an actor token this server signed that is
+   terminal is refused (see [Terminal tokens](#terminal-tokens)).
 
 An `error_description` is either a *stable reason*, the whole text, which is
 safe to match on, or a *hint* that can change (match on `error`). Grant problems
@@ -2911,7 +2929,8 @@ The last column is the reason on the Warn line of the log.
 | --- | --- | --- |
 | Refusal `actor_token_expired`, `approval_required` or `denied` | 400 `invalid_request`, with the reason | The same reason |
 | `ExpiresAt` at or before the check, less than 60 seconds earlier | 400 `invalid_request`, `actor_token_expired` | `actor_token_expired` |
-| Actor token is a delegated-access token this server issued (see [Delegated-access marker](#delegated-access-marker)) | 400 `invalid_request`, `actor_token_delegated_access` | `actor_token_delegated_access` |
+| Actor token is a delegated-access token this server issued (see [Terminal tokens](#terminal-tokens)) | 400 `invalid_request`, `actor_token_delegated_access` | `actor_token_delegated_access` |
+| Actor token this server issued carries `authorization_details` and no marker (see [Terminal tokens](#terminal-tokens)) | 400 `invalid_request`, `actor_token_authorization_details` | `actor_token_authorization_details` |
 | Missing or wrong actor parameters (see [Required actor parameters](#required-actor-parameters)) | 400 `invalid_request`, with the hint | `request_parameter_refused` |
 | Plain error, or a refusal ToolHive cannot read | 500 `server_error`, hint "The actor token could not be validated." | `actor_validator_error` |
 | AgentID in neither form, or `ExpiresAt` zero or 60 seconds or more earlier | 500 `server_error`, the same hint | `actor_result_invalid` |
@@ -2972,46 +2991,80 @@ on a token from any other issuer means nothing to a consumer. Middleware sees
 the claim in the validated raw claims, but it is left out of `Identity.Claims`,
 and so out of webhook payloads and audit output, like `tsid`.
 
-**A marked token is terminal.** A marked token is never exchanged into another
-token, so the marker cannot become a token that lives longer or names another
-party. Each refusal runs after signature validation and before any other claim
-of the token is used:
+A marked token is terminal; see [Terminal tokens](#terminal-tokens).
 
-| Where | Client sees |
-| --- | --- |
-| RFC 8693 exchange, as `subject_token` | 400 `invalid_request`, hint "The subject token is a delegated-access token and cannot be exchanged." |
-| RFC 8693 exchange, as `actor_token` | 400 `invalid_request`, hint "The actor token is a delegated-access token and cannot be exchanged." |
-| Opening an exchange grant, as `subject_token` | 400 `invalid_request`, `subject_token_delegated_access` |
-| ID-JAG issuance, as `actor_token`, before the actor validator is called | 400 `invalid_request`, `actor_token_delegated_access` |
+The authorization server issues the marker only on a token for a resolved
+`resolve` redemption, and caps that token's lifetime at five minutes. While the
+gate is closed it issues none. The terminal-token refusals are in place so that
+no marked token can ever be exchanged.
+
+### Terminal tokens
+
+A token that carries the delegated-access marker or an `authorization_details`
+claim is terminal: it is never exchanged into another token. The marker cannot
+become a token that lives longer or names another party, and a token narrowed
+with `authorization_details` cannot become one without the restriction, since
+no exchange copies the claim into the token it mints. Only the presence of a
+claim counts; its value is never read. Each exchange-site refusal runs after
+signature validation and before any other claim of the token is used. At
+redemption the refusal runs after signature validation, the ID-JAG single-`aud`
+check and the `cnf` check, and before the assertion is consumed.
+
+| Where | Marker | `authorization_details` | Issuers checked |
+| --- | --- | --- | --- |
+| RFC 8693 exchange, as `subject_token` | 400 `invalid_request`, hint "The subject token is a delegated-access token and cannot be exchanged." | 400 `invalid_request`, hint "The subject token carries authorization_details and cannot be exchanged." | This server and every trusted external issuer |
+| RFC 8693 exchange, as `actor_token` | 400 `invalid_request`, hint "The actor token is a delegated-access token and cannot be exchanged." | 400 `invalid_request`, hint "The actor token carries authorization_details and cannot be exchanged." | This server only |
+| Opening an exchange grant, as `subject_token` | 400 `invalid_request`, `subject_token_delegated_access` | 400 `invalid_request`, `subject_token_authorization_details` | This server only |
+| ID-JAG issuance, as `actor_token`, before the actor validator is called | 400 `invalid_request`, `actor_token_delegated_access` | 400 `invalid_request`, `actor_token_authorization_details` | Tokens this server signed; others go to the validator |
+| JWT-bearer or ID-JAG redemption, as `assertion` | not refused | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` | Every issuer the grant accepts |
+
+At the four exchange sites a token that carries both claims gets the marker's
+response, so the wire text for a marked token is the same whether or not it
+also carries `authorization_details`. The RFC 8693 refusals log
+`Subject token refused` or `Actor token refused` at WARN with the reason
+`delegated_access_token` or `authorization_details_token`. Redemption does not
+refuse the marker, so an assertion that carries both is refused for its
+`authorization_details`, while one with the marker alone is redeemed. A `cnf`
+claim, and on an ID-JAG an `aud` with more than one value, is refused first. The
+redemption refusal logs `Assertion refused` with the reason
+`authorization_details_assertion` and the assertion's issuer, at WARN the first
+time for each issuer and at DEBUG after that, since a refused assertion is not
+consumed and can be resent.
 
 The grant-opening refusal runs right after validation, before any other claim is
 read, so it does not depend on the `act` and no-upstream-session claims a
 redeemed token also carries.
 
-On the RFC 8693 `subject_token` path, whose validator also accepts trusted external
-issuers, a token with the claim from such an issuer is refused the same way as a
-self-issued one, since no issuer may pass the marker on. The RFC 8693
-`actor_token` and grant-opening paths validate against this server's own keys
-only, so a token from another issuer fails there as an invalid token before the
-marker is read.
+On the RFC 8693 `subject_token` path, whose validator also accepts trusted
+external issuers, a token with either claim from such an issuer is refused the
+same way as a self-issued one. No issuer may pass the marker on, and a trusted
+IdP's RFC 9396 token is refused rather than exchanged without its details. This
+is also what keeps a narrowed token narrow across servers: if
+another authorization server trusts this one as an external issuer and applies
+the same rule, a token this server narrowed cannot be exchanged there for an
+unrestricted one. The RFC 8693 `actor_token` and grant-opening paths validate
+against this server's own keys only, so a token from another issuer fails there
+as an invalid token before either claim is read.
 
 At ID-JAG issuance the actor token is opaque to ToolHive, because the client's
 validator decides on it. ToolHive checks only the signature against its own keys
-and the issuer: a marked token it signed is refused even when it has expired or
+and the issuer: a terminal token it signed is refused even when it has expired or
 names another audience, because a verified signature is enough to refuse a token,
-though not to accept one. A token it did not sign goes to the validator unchanged.
-This costs one signature check per ID-JAG request with an actor token.
+though not to accept one. A token it did not sign goes to the validator unchanged:
+an external actor's `authorization_details` would describe the agent's own
+limits, not the subject's grant. This costs one signature check per ID-JAG
+request with an actor token.
 
-The authorization server issues the marker only on a token for a resolved
-`resolve` redemption, and caps that token's lifetime at five minutes. While the
-gate is closed it issues none. The refusals above are in place so that no marked
-token can ever be exchanged.
+At redemption the ID-JAG draft (section 4.4.1) asks the server to process the
+claim. ToolHive cannot carry a signed restriction into the issued token yet, so
+it refuses the assertion instead of issuing an unrestricted token.
 
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/actor_validator.go` — `ActorTokenValidator` and its contract, `ActorValidatorRegistration`, `ActIssuerProblem`, `ActorProfile`
 - `pkg/authserver/server/tokenexchange/handler.go` — `checkSourcePolicy`, `ConfiguredClientPolicy`, `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`, `externalOrigin`, `IDJAGTarget`, `ConfiguredClientPolicy.IDJAGTargets`, `ConfiguredClientPolicy.ActorProfile`
 - `pkg/authserver/server/tokenexchange/refresh_token_handler.go` — `RefreshTokenHandler`, `isRefreshTokenExchange`, `checkLoginToken`, `checkExchangeGrantSubject`
+- `pkg/authserver/server/tokenexchange/restriction.go` — `restrictions` and `restrictionsOf`: which of the marker, `authorization_details` and `cnf` a validated token carries, for each terminal-token and redemption site to refuse in its own order
 - `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
 - `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the required actor parameters for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
 - `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`, `idJAGGrantOwner`, `grantUpstreamIdentity`, `validateIDJAGActor`, `idJAGMintWithActor`: the grant checks, the actor validator call and the Debug line for an ID-JAG

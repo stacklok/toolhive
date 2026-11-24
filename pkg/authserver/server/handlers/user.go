@@ -30,9 +30,9 @@ func NewUserResolver(stor storage.UserStorage) *UserResolver {
 // Returns the user whose ID will be the "sub" claim in our JWTs.
 //
 // The resolution process:
-// 1. Look up existing identity by (providerID, providerSubject)
-// 2. If found, return the linked user
-// 3. If not found, create a new user and link the identity
+//  1. Look up existing identity by (providerID, providerSubject)
+//  2. If found, return the linked user
+//  3. If not found, create a new user and link the identity
 func (r *UserResolver) ResolveUser(
 	ctx context.Context,
 	providerID string,
@@ -91,11 +91,7 @@ func (r *UserResolver) createUserWithIdentity(
 	}
 
 	if err := r.storage.CreateProviderIdentity(ctx, identity); err != nil {
-		// Rollback user creation on identity link failure
-		if deleteErr := r.storage.DeleteUser(ctx, user.ID); deleteErr != nil {
-			slog.Warn("failed to rollback user creation", "error", deleteErr)
-		}
-		return nil, fmt.Errorf("failed to link provider identity: %w", err)
+		return r.resolveLinkFailure(ctx, user, providerID, providerSubject, err)
 	}
 
 	slog.Debug("created new user with provider identity",
@@ -104,6 +100,53 @@ func (r *UserResolver) createUserWithIdentity(
 	)
 
 	return user, nil
+}
+
+// resolveLinkFailure settles a failed CreateProviderIdentity. The identity link is
+// the single source of truth for which user owns an upstream identity, so for every
+// failure the link is read before anything is deleted. A failed call does not mean
+// the write failed: the write can commit and its reply be lost, and a retried
+// command then sees its own earlier write as "already exists".
+//
+// If the link points at our own candidate, the write committed and the candidate
+// is the owner: it must not be rolled back, whatever error came back. If the link
+// points at another user, a concurrent first login won and we adopt its user.
+// Otherwise nothing is deleted and the original error is returned. No link does
+// not prove our write failed: a write whose reply timed out can still commit after
+// the read. If the link cannot be read, ownership is unknown. An unlinked
+// candidate row is harmless, deleting the owner is not.
+func (r *UserResolver) resolveLinkFailure(
+	ctx context.Context,
+	candidate *storage.User,
+	providerID string,
+	providerSubject string,
+	linkErr error,
+) (*storage.User, error) {
+	identity, err := r.storage.GetProviderIdentity(ctx, providerID, providerSubject)
+	switch {
+	case err == nil && identity.UserID == candidate.ID:
+		return candidate, nil
+	case err == nil:
+		r.rollbackUser(ctx, candidate.ID)
+		user, getErr := r.storage.GetUser(ctx, identity.UserID)
+		if getErr != nil {
+			return nil, fmt.Errorf("failed to re-read winner of identity link race: %w", getErr)
+		}
+		return user, nil
+	case errors.Is(err, storage.ErrNotFound):
+		return nil, fmt.Errorf("failed to link provider identity: %w", linkErr)
+	default:
+		return nil, fmt.Errorf("failed to link provider identity: %w (re-reading the link also failed: %w)", linkErr, err)
+	}
+}
+
+// rollbackUser deletes a user this call created after another user won the
+// identity link. If the delete fails, or the request is cancelled first, the
+// user row is left without a link, which is harmless: nothing resolves to it.
+func (r *UserResolver) rollbackUser(ctx context.Context, userID string) {
+	if err := r.storage.DeleteUser(ctx, userID); err != nil {
+		slog.Warn("failed to rollback user creation", "error", err)
+	}
 }
 
 // UpdateLastAuthenticated updates the last authentication timestamp for a provider identity.

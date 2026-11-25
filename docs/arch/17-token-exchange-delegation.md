@@ -2265,8 +2265,9 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 
 **Boundary.** Details a token exchange grants are not put in its token, not
 persisted, and not conveyed to resource servers. Details an ID-JAG redemption
-grants are in the issued token; enforcing them is the resource server's job
-(for the vMCP, see [#7062](https://github.com/stacklok/toolhive/issues/7062)).
+grants are in the issued token; enforcing them is the resource server's job.
+The vMCP enforces the `mcp_tool_call` type; see
+[Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 Register only types the deployment enforces. Conveying exchanged details to
 resource servers is tracked in
 [#6909](https://github.com/stacklok/toolhive/issues/6909), and grant storage in

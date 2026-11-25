@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -140,6 +141,15 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err != nil {
 		return err
 	}
+	// The synthetic client is minted from the validated assertion, so the
+	// parameter refusal's log line names a server-minted client_id. The grant
+	// needs no client authentication and a refused assertion is not consumed,
+	// so the line is at Warn only the first time per (issuer, reason).
+	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
+	level := func(reason string) slog.Level { return h.redeemer.firstRefusalLevel(claims.Issuer, reason) }
+	if err := refuseDetailsParameter(ctx, requester.GetRequestForm(), clientID, level); err != nil {
+		return err
+	}
 	if err := checkAssertionMaxAge(claims, policy); err != nil {
 		return err
 	}
@@ -150,7 +160,6 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err := checkSubjectBinding(claims, policy, resource); err != nil {
 		return plainBindingRefusal(err)
 	}
-	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
 	purpose := jwtBearerReplayPurpose
 	if claims.JWTID == "" {
 		purpose = jwtBearerNoJTIReplayPurpose

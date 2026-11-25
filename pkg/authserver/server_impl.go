@@ -1006,7 +1006,7 @@ func refreshGrantValidatorChain(
 
 // buildJWTBearerFactoriesForConfig builds the JWT-bearer and ID-JAG factories
 // for cfg, giving the ID-JAG factory the subject resolver when a trusted
-// issuer has subject_mode resolve.
+// issuer has subject_mode resolve, and the authorization details registry.
 func buildJWTBearerFactoriesForConfig(
 	cfg Config, shared *tokenexchange.MultiIssuerTokenValidator, stor storage.Storage,
 ) ([]oauthserver.Factory, error) {
@@ -1015,7 +1015,8 @@ func buildJWTBearerFactoriesForConfig(
 		return nil, err
 	}
 	return buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg), resolver,
-		tokenexchange.WithClientAccessTokenLifespans(delegateAccessTokenLifespans(cfg.DelegateClients)))
+		tokenexchange.WithClientAccessTokenLifespans(delegateAccessTokenLifespans(cfg.DelegateClients)),
+		tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry))
 }
 
 // buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together

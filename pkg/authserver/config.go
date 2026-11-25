@@ -2112,7 +2112,9 @@ type Config struct {
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
 	// AuthorizationDetailsRegistry validates RFC 9396 authorization_details on
-	// RFC 8693 token-exchange requests. It is Go-only and is not part of RunConfig.
+	// RFC 8693 token-exchange requests, and decides which entries of an
+	// ID-JAG's signed authorization_details claim a redemption grants into the
+	// issued token. It is Go-only and is not part of RunConfig.
 	AuthorizationDetailsRegistry *authorizationdetails.Registry
 
 	// AllowConfidentialClientRegistration permits DCR of confidential clients
@@ -2627,19 +2629,25 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 // ErrAuthorizationDetailsRegistryUnreachable is returned when an authorization
 // details registry is configured but no grant that handles it is enabled.
 var ErrAuthorizationDetailsRegistryUnreachable = errors.New(
-	"authorization details registry requires token exchange to be enabled")
+	"authorization details registry requires token exchange or ID-JAG redemption to be enabled")
 
 // AuthorizationDetailsRegistryReachable reports whether an authorization
-// details registry can be reached: authorization_details is only handled on
-// token exchange, so the registry is reachable only when that grant is enabled.
-func AuthorizationDetailsRegistryReachable(tokenExchangeEnabled bool) bool {
-	return tokenExchangeEnabled
+// details registry can be reached: token exchange reads the
+// authorization_details parameter, and ID-JAG redemption reads the claim of
+// the same name. The registry is reachable when token exchange is enabled or
+// a trusted issuer accepts ID-JAG assertions. A plain RFC 7523 assertion never
+// reaches it: that grant refuses an assertion that carries the claim.
+func AuthorizationDetailsRegistryReachable(
+	tokenExchangeEnabled bool, trustedIssuers []tokenexchange.TrustedIssuer,
+) bool {
+	return tokenExchangeEnabled || idJAGRedeemable(trustedIssuers)
 }
 
 // validateAuthorizationDetailsRegistryReachable rejects a registry that no
 // enabled grant could ever reach.
 func (c *Config) validateAuthorizationDetailsRegistryReachable() error {
-	if c.AuthorizationDetailsRegistry != nil && !AuthorizationDetailsRegistryReachable(!c.DisableTokenExchange) {
+	if c.AuthorizationDetailsRegistry != nil &&
+		!AuthorizationDetailsRegistryReachable(!c.DisableTokenExchange, c.TrustedIssuers) {
 		return ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil

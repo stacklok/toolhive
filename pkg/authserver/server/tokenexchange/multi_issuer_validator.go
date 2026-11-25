@@ -750,12 +750,12 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 		return nil, fmt.Errorf("assertion issuer is not enabled for the JWT-bearer grant: %q", issuer)
 	}
 
-	_, standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	_, verified, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := rejectIDTokenClaims(extraClaims); err != nil {
+	if err := rejectIDTokenClaims(verified.extra); err != nil {
 		return nil, err
 	}
 
@@ -763,10 +763,10 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 	if issuerConfig.JWTBearerGrant != nil && len(issuerConfig.JWTBearerGrant.AcceptedAudiences) > 0 {
 		acceptedAudiences = issuerConfig.JWTBearerGrant.AcceptedAudiences
 	}
-	if err := validateJWTBearerAssertionClaims(standardClaims, issuerConfig.IssuerURL, acceptedAudiences); err != nil {
+	if err := validateJWTBearerAssertionClaims(verified.standard, issuerConfig.IssuerURL, acceptedAudiences); err != nil {
 		return nil, err
 	}
-	return buildValidatedClaims(standardClaims, extraClaims), nil
+	return buildValidatedClaims(verified), nil
 }
 
 // errDefaultAudiencesEmpty is the precondition failure of
@@ -786,10 +786,10 @@ var errIssuerKeysUnavailable = errors.New("issuer signing keys unavailable")
 // callers can inspect the protected header without parsing it again.
 func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 	ctx context.Context, rawToken string, issuerConfig *externalIssuerConfig,
-) (*jwt.JSONWebToken, jwt.Claims, map[string]any, error) {
+) (*jwt.JSONWebToken, verifiedClaims, error) {
 	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
 	if err != nil {
-		return nil, jwt.Claims{}, nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
+		return nil, verifiedClaims{}, fmt.Errorf("subject token is not a valid JWT: %w", err)
 	}
 
 	jwks, err := v.lookupJWKS(ctx, issuerConfig)
@@ -798,14 +798,14 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 			// The request ended; this says nothing about the issuer's keys.
 			// Checking ctx.Err() keeps the registration's own timeout, which
 			// is also a DeadlineExceeded, counted as an unreachable issuer.
-			return nil, jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w",
+			return nil, verifiedClaims{}, fmt.Errorf("failed to fetch JWKS for issuer %s: %w",
 				issuerConfig.IssuerURL, err)
 		}
-		return nil, jwt.Claims{}, nil, fmt.Errorf("%w: failed to fetch JWKS for issuer %s: %w",
+		return nil, verifiedClaims{}, fmt.Errorf("%w: failed to fetch JWKS for issuer %s: %w",
 			errIssuerKeysUnavailable, issuerConfig.IssuerURL, err)
 	}
 
-	standardClaims, extraClaims, kidMatched, err := verifySignature(parsedToken, jwks)
+	verified, kidMatched, err := verifySignature(parsedToken, jwks)
 	if err != nil && !kidMatched {
 		// The token's kid isn't among the keys we have cached — possibly a
 		// legitimate rotation the issuer's five-minute refresh hasn't caught
@@ -820,13 +820,13 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 		// errIssuerKeysUnavailable, until the keys are reachable again.
 		v.refreshOnUnknownKid(ctx, issuerConfig)
 		if refreshedJWKS, lookupErr := v.lookupJWKS(ctx, issuerConfig); lookupErr == nil {
-			standardClaims, extraClaims, _, err = verifySignature(parsedToken, refreshedJWKS)
+			verified, _, err = verifySignature(parsedToken, refreshedJWKS)
 		}
 	}
 	if err != nil {
-		return nil, jwt.Claims{}, nil, err
+		return nil, verifiedClaims{}, err
 	}
-	return parsedToken, standardClaims, extraClaims, nil
+	return parsedToken, verified, nil
 }
 
 // validateExternalToken verifies a JWT from a trusted external issuer by
@@ -836,10 +836,11 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	rawToken string,
 	issuerConfig *externalIssuerConfig,
 ) (*ValidatedClaims, error) {
-	parsedToken, standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	parsedToken, verified, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
 		return nil, err
 	}
+	standardClaims, extraClaims := verified.standard, verified.extra
 
 	// The signature has verified, so the protected header is trustworthy.
 	// RFC 8725 Section 3.12: an ID-JAG must not be accepted as an RFC 8693
@@ -888,7 +889,7 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 		return nil, err
 	}
 
-	claims := buildValidatedClaims(standardClaims, extraClaims)
+	claims := buildValidatedClaims(verified)
 
 	// Recorded for every external token, even a may_act-bearing one that
 	// leaves ExternalActor unset — without this, a may_act-authorized

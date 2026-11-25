@@ -48,9 +48,14 @@ func readDetailsParam(form url.Values) (raw string, present bool, err error) {
 	return values[0], true, nil
 }
 
-// detailsSubject builds the hook Subject from validated claims. Audience and
-// Claims are copied, so a hook cannot change the validated claims.
+// detailsSubject builds the hook Subject from validated claims. Subject is
+// always the token's sub. Audience and Claims are copied, so a hook cannot
+// change the validated claims. The authorization_details claim is
+// left out of Claims: its decoded copy has lost number precision, and a hook
+// reads the entries from Request.Entries.
 func detailsSubject(claims *ValidatedClaims) authorizationdetails.Subject {
+	copied := deepCopyClaims(claims.Claims)
+	delete(copied, authorizationDetailsParam)
 	return authorizationdetails.Subject{
 		Issuer:   claims.Issuer,
 		Subject:  claims.Subject,
@@ -60,7 +65,7 @@ func detailsSubject(claims *ValidatedClaims) authorizationdetails.Subject {
 		IssuedAt: claims.IssuedAt,
 		Expiry:   claims.Expiry,
 		External: claims.ExternalIssuer != "",
-		Claims:   deepCopyClaims(claims.Claims),
+		Claims:   copied,
 	}
 }
 
@@ -102,13 +107,15 @@ func (*Handler) grantAuthorizationDetails(
 	clientID := requester.GetClient().GetID()
 
 	granted, err := pending.Grant(ctx, authorizationdetails.Request{
-		ClientID:           clientID,
-		Actor:              actorSub,
-		ActorTokenPresent:  params.actorToken != "",
-		RequestedTokenType: form.Get("requested_token_type"),
-		RequestedScopes:    slices.Clone([]string(requester.GetRequestedScopes())),
-		GrantedAudience:    slices.Clone([]string(requester.GetGrantedAudience())),
-		Subject:            detailsSubject(claims),
+		ClientID:        clientID,
+		GrantedAudience: slices.Clone([]string(requester.GetGrantedAudience())),
+		Subject:         detailsSubject(claims),
+		Exchange: &authorizationdetails.ExchangeContext{
+			Actor:              actorSub,
+			ActorTokenPresent:  params.actorToken != "",
+			RequestedTokenType: form.Get("requested_token_type"),
+			RequestedScopes:    slices.Clone([]string(requester.GetRequestedScopes())),
+		},
 	})
 	if err != nil {
 		return authorizationDetailsGrantError(clientID, err)
@@ -135,10 +142,15 @@ func (h *Handler) echoAuthorizationDetails(requester fosite.AccessRequester, res
 // authorizationDetailsGrantError maps a Grant failure to an OAuth error and
 // logs the rejection once at WARN.
 func authorizationDetailsGrantError(clientID string, err error) error {
+	return grantFailure(context.Background(), clientID, err, func(string) slog.Level { return slog.LevelWarn })
+}
+
+// grantFailure maps a Grant or GrantSubset failure to an OAuth error and logs
+// the rejection once, at the level that level returns for the logged reason.
+func grantFailure(ctx context.Context, clientID string, err error, level func(reason string) slog.Level) error {
 	var typed authorizationdetails.Error
-	switch {
-	case errors.As(err, &typed):
-		slog.Warn("authorization_details rejected",
+	if errors.As(err, &typed) {
+		slog.Log(ctx, level(rejectHookRejected), "authorization_details rejected",
 			"client_id", clientID, "reason", rejectHookRejected,
 			"code", string(typed.Code), "hook_reason", typed.Reason)
 		return &fosite.RFC6749Error{
@@ -146,12 +158,12 @@ func authorizationDetailsGrantError(clientID string, err error) error {
 			DescriptionField: typed.Reason,
 			CodeField:        http.StatusBadRequest,
 		}
-	default:
-		warnAuthorizationDetailsRejected(clientID, rejectHookFailed)
-		// The error text may hold internal data, so it is never logged or
-		// returned to the client.
-		return errorsx.WithStack(fosite.ErrServerError.WithDescription("The authorization_details could not be processed."))
 	}
+	slog.Log(ctx, level(rejectHookFailed), "authorization_details rejected",
+		"client_id", clientID, "reason", rejectHookFailed)
+	// The error text may hold internal data, so it is never logged or
+	// returned to the client.
+	return errorsx.WithStack(fosite.ErrServerError.WithDescription("The authorization_details could not be processed."))
 }
 
 func warnAuthorizationDetailsRejected(clientID, reason string) {

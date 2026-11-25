@@ -1912,7 +1912,7 @@ func (h *httpBackendClient) modernCallTool(
 	); err != nil {
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
-	return toolResultFromMCP(&result, toolName, target.WorkloadID), nil
+	return toolResultFromMCP(slog.Default(), &result, toolName, target.WorkloadID), nil
 }
 
 // legacyCallTool is the initialize + SDK CallTool path (unchanged behavior).
@@ -1981,18 +1981,28 @@ func (h *httpBackendClient) legacyCallTool(
 	// dropped. See drainServerToClientNotifications for the lost-notification race.
 	h.drainServerToClientNotifications(ctx, c)
 
-	return toolResultFromMCP(result, toolName, target.WorkloadID), nil
+	return toolResultFromMCP(slog.Default(), result, toolName, target.WorkloadID), nil
 }
 
 // toolResultFromMCP converts an mcp.CallToolResult into the vmcp domain result,
 // shared by the Legacy and Modern tools/call paths so both handle IsError
 // logging, structuredContent, and _meta forwarding identically.
-func toolResultFromMCP(result *mcp.CallToolResult, toolName, backendID string) *vmcp.ToolCallResult {
+//
+// logger receives the IsError line. Callers pass slog.Default(); tests pass
+// their own logger, so they assert on that line without swapping the
+// process-global slog default.
+func toolResultFromMCP(
+	logger *slog.Logger, result *mcp.CallToolResult, toolName, backendID string,
+) *vmcp.ToolCallResult {
 	// Extract _meta field from backend response
 	responseMeta := conversion.FromMCPMeta(result.Meta)
 
-	// Log if tool returned IsError=true (MCP protocol-level error, not a transport error)
-	// We still return the full result to preserve metadata and error details for the client
+	// Log if tool returned IsError=true (MCP protocol-level error, not a transport error).
+	// The full result, error text included, still goes back to the client below.
+	// A caller can trigger this on every call, and the error text often repeats the
+	// call's arguments (a query the backend could not parse, an identifier, a file
+	// name), so the line is Debug only. Operators count these results with
+	// toolhive_vmcp_backend_tool_errors, recorded by the backend telemetry decorator.
 	if result.IsError {
 		var errorMsg string
 		if len(result.Content) > 0 {
@@ -2006,10 +2016,10 @@ func toolResultFromMCP(result *mcp.CallToolResult, toolName, backendID string) *
 
 		// Log with metadata for distributed tracing
 		if responseMeta != nil {
-			slog.Warn("tool returned IsError=true",
+			logger.Debug("tool returned IsError=true",
 				"tool", toolName, "backend", backendID, "error", errorMsg, "meta", responseMeta)
 		} else {
-			slog.Warn("tool returned IsError=true",
+			logger.Debug("tool returned IsError=true",
 				"tool", toolName, "backend", backendID, "error", errorMsg)
 		}
 		// Continue processing - we return the result with IsError flag and metadata preserved

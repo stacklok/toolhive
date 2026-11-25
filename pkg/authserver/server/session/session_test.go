@@ -485,3 +485,45 @@ func TestSession_VerifiedUpstreamJSON(t *testing.T) {
 		assert.NotContains(t, raw, "verified_upstream")
 	})
 }
+
+// TestSession_UnmarshalJSONKeepsAuthorizationDetailsRaw pins that a session
+// read back from JSON holds the authorization_details claim as the raw bytes
+// it was stored with, so an integer above 2^53 keeps every digit, and that
+// the other claims and fields decode as before.
+func TestSession_UnmarshalJSONKeepsAuthorizationDetailsRaw(t *testing.T) {
+	t.Parallel()
+
+	const details = `[{"type":"call","limit":9007199254740993}]`
+	stored := New("user", "idp-session", "client", UserClaims{})
+	stored.JWTClaims.Extra[claimnames.AuthorizationDetailsKey] = json.RawMessage(details)
+	stored.VerifiedUpstream = testVerifiedUpstream
+	data, err := json.Marshal(stored)
+	require.NoError(t, err)
+
+	back := New("", "", "", UserClaims{})
+	require.NoError(t, json.Unmarshal(data, back))
+
+	got, ok := back.JWTClaims.Extra[claimnames.AuthorizationDetailsKey].(json.RawMessage)
+	require.True(t, ok)
+	assert.Equal(t, details, string(got))
+	assert.Equal(t, "client", back.JWTClaims.Extra[ClientIDClaimKey])
+	assert.Equal(t, "idp-session", back.UpstreamSessionID)
+	assert.Equal(t, "user", back.JWTClaims.Subject)
+	assert.Equal(t, testVerifiedUpstream, back.VerifiedUpstream)
+
+	t.Run("a session without the claim does not gain it", func(t *testing.T) {
+		t.Parallel()
+		data, err := json.Marshal(New("user", "", "client", UserClaims{}))
+		require.NoError(t, err)
+		var back Session
+		require.NoError(t, json.Unmarshal(data, &back))
+		assert.NotContains(t, back.JWTClaims.Extra, claimnames.AuthorizationDetailsKey)
+	})
+
+	t.Run("a session without JWT claims decodes", func(t *testing.T) {
+		t.Parallel()
+		var back Session
+		require.NoError(t, json.Unmarshal([]byte(`{"UpstreamSessionID":"s"}`), &back))
+		assert.Equal(t, "s", back.UpstreamSessionID)
+	})
+}

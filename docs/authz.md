@@ -79,8 +79,46 @@ is a JSON-RPC error, not an HTTP 403.
 One ordering differs from the direct `thv run` proxies, where authorization runs
 first: vMCP checks session ownership before the authorization gate. A request that
 carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
-**HTTP 404** before any 403. A denied call on the caller's own session still gets
-403.
+**HTTP 404** before any Cedar 403. A denied call on the caller's own session still gets
+403. Two checks run before session ownership: the loopback `Host` guard, and call
+binding. A request with an access token bound to one MCP call that the token does not
+permit gets its 401 or 403 from call binding whatever session it names.
+
+Call binding is not a Cedar policy and runs whether or not Cedar is configured. An
+access token that carries an `authorization_details` entry of type
+`https://toolhive.dev/mcp_tool_call` may start only the one `tools/call` its entry
+names, once. A retried call, such as the retry after a URL elicitation, is a second
+call and needs a fresh token. Before its `exp`, such a token may also send, to the
+MCP endpoint:
+
+- the handshake (`initialize`, `notifications/initialized`), the Modern
+  `server/discover` probe and `ping`; `initialize` only until the token has started
+  its call;
+- `tools/list`, filtered by Cedar as usual; it does not use up the token;
+- GET and DELETE on sessions its principal owns, and once the token has started its
+  call, only on that call's session;
+- on the Legacy session of its call, while the call's request is open: a
+  `notifications/cancelled` for the call and any JSON-RPC response, such as an
+  elicitation answer.
+
+Call binding refuses everything else on the MCP endpoint. A refusal that describes the
+token gets **HTTP 401** with `WWW-Authenticate: Bearer error="invalid_token"` (with the
+same `realm` and `resource_metadata` as the token validator's challenges) and an RFC
+6750 error body: the token has expired (`token_expired`), has already started its call
+(`token_reused`), or its `authorization_details` or claims are unusable
+(`malformed_entry`, `single_entry_required`, `claims_required`). The client needs a
+new token. Any other refusal is about the request and gets **HTTP 403** with a JSON-RPC
+error and no `WWW-Authenticate`, like a Cedar denial. In both cases the message ends
+with the reason, and the request is audited as `denied` with
+`metadata.extra.denial_reason`.
+
+Two consequences are easy to miss. A token whose `authorization_details` claim is
+malformed is refused on every request, whatever its client, even one that never
+asked for call binding. And messages for a call are accepted only until the earlier of
+the token's `exp` and the end of the call's request: an elicitation answer or
+cancellation sent after `exp` gets 401, even while the call is still open, and a fresh
+token does not help because it has no call of its own. See
+[Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.
@@ -740,6 +778,11 @@ has been validated for the configured embedded authorization-server issuer.
 A session-less token carries at most `sub`, `act`, `client_id` and `scope`, plus
 `name` and `email` when the grant supplies them (RFC 8693 delegation copies them
 from the subject token; RFC 7523 JWT-bearer has no end user and carries neither).
+A token redeemed from an ID-JAG that carries `authorization_details` also
+carries the entries the authorization server granted: whole entries the
+ID-JAG's issuer signed, possibly fewer of them. An ID-JAG whose types are not
+registered is refused rather than redeemed (see
+[Authorization details](arch/17-token-exchange-delegation.md#on-id-jag-redemption)).
 Nothing else crosses. In particular **no upstream attribute is carried** — no
 `groups`, no `roles`, no `department`, nothing the pinned IdP asserted about the
 subject.

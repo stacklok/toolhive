@@ -5,12 +5,26 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
 )
+
+// ErrStepLimitExceeded marks an execution that stopped because a thread ran
+// out of its step budget. The returned error matches it with errors.Is; its
+// message is unchanged from the interpreter's own.
+var ErrStepLimitExceeded = errors.New("step limit exceeded")
+
+// stepLimitError keeps the interpreter's message while matching
+// ErrStepLimitExceeded.
+type stepLimitError struct{ err error }
+
+func (e *stepLimitError) Error() string   { return e.err.Error() }
+func (e *stepLimitError) Unwrap() []error { return []error{e.err, ErrStepLimitExceeded} }
 
 // ExecuteResult holds the raw Starlark result of a script execution.
 type ExecuteResult struct {
@@ -26,6 +40,15 @@ type ExecuteResult struct {
 // work naturally. A step limit of 0 disables the execution step cap (not
 // recommended for untrusted scripts).
 func Execute(script string, globals starlark.StringDict, stepLimit uint64) (*ExecuteResult, error) {
+	return ExecuteWithStats(script, globals, stepLimit, nil)
+}
+
+// ExecuteWithStats is [Execute] that also counts, on stats, the execution steps
+// and parallel() fan-out of the run. stats may be nil. It is filled in whether
+// or not the script succeeds.
+func ExecuteWithStats(
+	script string, globals starlark.StringDict, stepLimit uint64, stats *Stats,
+) (*ExecuteResult, error) {
 	wrapped := wrapScript(script)
 
 	var logs []string
@@ -39,6 +62,17 @@ func Execute(script string, globals starlark.StringDict, stepLimit uint64) (*Exe
 		},
 	}
 
+	SetStats(thread, stats)
+
+	// OnMaxSteps does what the interpreter does by default (cancel with "too
+	// many steps") and also records that the step limit was the cause. Child
+	// threads started by parallel() inherit this callback, so a child that
+	// runs out of steps is recorded too.
+	var stepLimitHit atomic.Bool
+	thread.OnMaxSteps = func(t *starlark.Thread) {
+		stepLimitHit.Store(true)
+		t.Cancel("too many steps")
+	}
 	if stepLimit > 0 {
 		thread.SetMaxExecutionSteps(stepLimit)
 	}
@@ -55,8 +89,15 @@ func Execute(script string, globals starlark.StringDict, stepLimit uint64) (*Exe
 		wrapped,
 		predeclared,
 	)
+	// Child threads add their own steps in parallel(); this thread's count
+	// covers only the script body.
+	stats.AddSteps(thread.ExecutionSteps())
 	if err != nil {
-		return nil, fmt.Errorf("script execution failed: %w", err)
+		err = fmt.Errorf("script execution failed: %w", err)
+		if stepLimitHit.Load() {
+			err = &stepLimitError{err: err}
+		}
+		return nil, err
 	}
 
 	result, ok := resultGlobals["__result__"]

@@ -154,7 +154,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "discovery_url": {
-                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
+                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config, except that an origin-only issuer may differ by a\ntrailing \"/\" (for example https://idp.example.com and\nhttps://idp.example.com/ are treated as equal). Scheme, host, port\nand any path must still match exactly.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
                         "type": "string"
                     },
                     "initial_access_token_env_var": {
@@ -247,6 +247,10 @@ const docTemplate = `{
             },
             "authserver.DelegateClientRunConfig": {
                 "properties": {
+                    "access_token_lifespan": {
+                        "description": "AccessTokenLifespan is the lifetime of the access tokens this client\nobtains by redeeming an ID-JAG, as a Go duration string. If omitted, the\nserver's access_token_lifespan applies. When set it must be at least 2s\nand at most 24h. It is an upper bound: a token never outlives the\nassertion it was redeemed from, and a token that carries the\ndelegated-access marker is capped further. Other grants ignore it.",
+                        "type": "string"
+                    },
                     "audiences": {
                         "description": "Audiences are output only: the upper bound on the audiences of the\naccess tokens this client can obtain through any grant. They must be a\nsubset of RunConfig.AllowedAudiences: a declared client must not receive\nevery allowed audience just because this was left empty. Required, unless\ntoken_exchange.exchange_refresh_tokens is set and token exchange is the\nclient's only grant (grant_types omitted, or just the token-exchange\ngrant), in which case it may be empty.",
                         "items": {

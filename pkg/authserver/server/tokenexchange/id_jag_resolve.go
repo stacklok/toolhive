@@ -47,6 +47,8 @@ func (h *IDJAGHandler) idJAGRedemption(
 		replayPurpose: idJAGReplayPurpose,
 		replayKey:     claims.JWTID,
 		carryAct:      true,
+		// Zero when the client sets no lifespan of its own.
+		clientLifespan: h.clientLifespans[client.GetID()],
 	}
 	if policy.SubjectMode != SubjectModeResolve {
 		return d, nil
@@ -66,6 +68,7 @@ func (h *IDJAGHandler) idJAGRedemption(
 		return redemption{}, err
 	}
 	d.subject = user
+	d.resolvedUser = user
 	d.delegatedAccess = true
 	return d, nil
 }

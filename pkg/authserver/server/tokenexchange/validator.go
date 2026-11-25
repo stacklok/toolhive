@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -107,6 +108,11 @@ type ValidatedClaims struct {
 	// It is shared with the validator's decode result: treat it as read-only
 	// and deep-copy before handing it to code that may modify it.
 	Claims map[string]any
+	// AuthorizationDetails holds the verified authorization_details member
+	// exactly as signed, nil when the token has no such member. Numbers keep
+	// every digit, unlike the decoded copy in Claims. A member that is present
+	// with the value null is the bytes "null", not nil.
+	AuthorizationDetails json.RawMessage
 }
 
 // MayActClaim represents the RFC 8693 §4.4 may_act claim from a subject token.
@@ -186,10 +192,11 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 	// unknown kid is worth an on-demand JWKS refresh. This validator's JWKS
 	// never comes over HTTP — it's this authorization server's own
 	// PublicJWKS() — so there is nothing to refresh.
-	standardClaims, extraClaims, _, err := verifySignature(parsedToken, v.publicJWKS)
+	verified, _, err := verifySignature(parsedToken, v.publicJWKS)
 	if err != nil {
 		return nil, err
 	}
+	standardClaims, extraClaims := verified.standard, verified.extra
 
 	if err := rejectIDJAGType(parsedToken); err != nil {
 		return nil, err
@@ -237,7 +244,7 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 		return nil, err
 	}
 
-	return buildValidatedClaims(standardClaims, extraClaims), nil
+	return buildValidatedClaims(verified), nil
 }
 
 // signedByThisServer parses rawToken and returns its claims when the signature
@@ -250,14 +257,14 @@ func (v *SelfIssuedTokenValidator) signedByThisServer(rawToken string) (*Validat
 	if err != nil {
 		return nil, fmt.Errorf("token is not a valid JWT: %w", err)
 	}
-	standardClaims, extraClaims, _, err := verifySignature(parsedToken, v.publicJWKS)
+	verified, _, err := verifySignature(parsedToken, v.publicJWKS)
 	if err != nil {
 		return nil, err
 	}
-	if standardClaims.Issuer != v.issuer {
+	if verified.standard.Issuer != v.issuer {
 		return nil, fmt.Errorf("token was not issued by this server")
 	}
-	return buildValidatedClaims(standardClaims, extraClaims), nil
+	return buildValidatedClaims(verified), nil
 }
 
 // rejectIDJAGType refuses a token whose JOSE typ header is the ID-JAG type. It
@@ -312,7 +319,7 @@ func rejectIDJAGType(token *jwt.JSONWebToken) error {
 func verifySignature(
 	token *jwt.JSONWebToken,
 	publicJWKS *jose.JSONWebKeySet,
-) (jwt.Claims, map[string]any, bool, error) {
+) (verifiedClaims, bool, error) {
 	candidates := publicJWKS.Keys
 	var kidMatched bool
 	if len(token.Headers) > 0 && token.Headers[0].KeyID != "" {
@@ -340,22 +347,37 @@ func verifySignature(
 		}
 		var claims jwt.Claims
 		extra := map[string]any{}
-		err := token.Claims(key, &claims, &extra)
+		// A map, not a struct field: encoding/json matches struct tags without
+		// regard to letter case, so a struct would read "AUTHORIZATION_DETAILS".
+		members := map[string]json.RawMessage{}
+		err := token.Claims(key, &claims, &extra, &members)
 		if err == nil {
-			return claims, extra, kidMatched, nil
+			return verifiedClaims{
+				standard: claims, extra: extra, authorizationDetails: members[authorizationDetailsParam],
+			}, kidMatched, nil
 		}
 		lastErr = err
 	}
 	if lastErr != nil {
-		return jwt.Claims{}, nil, kidMatched, fmt.Errorf("subject token signature verification failed: %w", lastErr)
+		return verifiedClaims{}, kidMatched, fmt.Errorf("subject token signature verification failed: %w", lastErr)
 	}
 	if filtered > 0 {
-		return jwt.Claims{}, nil, kidMatched, fmt.Errorf(
+		return verifiedClaims{}, kidMatched, fmt.Errorf(
 			"subject token signature verification failed: no compatible keys in JWKS "+
 				"(%d key(s) present but all skipped by use/alg filter)",
 			len(candidates))
 	}
-	return jwt.Claims{}, nil, kidMatched, fmt.Errorf("subject token signature verification failed: no keys in JWKS")
+	return verifiedClaims{}, kidMatched, fmt.Errorf("subject token signature verification failed: no keys in JWKS")
+}
+
+// verifiedClaims is the payload of a token whose signature verified, decoded
+// three ways from the same bytes.
+type verifiedClaims struct {
+	standard jwt.Claims
+	extra    map[string]any
+	// authorizationDetails is the raw authorization_details member, nil when
+	// absent.
+	authorizationDetails json.RawMessage
 }
 
 // validateAudience checks that tokenAudience intersects allowedAudiences.
@@ -374,18 +396,17 @@ func validateAudience(tokenAudience jwt.Audience, allowedAudiences []string) err
 	return fmt.Errorf("token audience %v does not match any allowed audience", []string(tokenAudience))
 }
 
-// buildValidatedClaims constructs a ValidatedClaims from standard and extra claims.
-func buildValidatedClaims(
-	standard jwt.Claims,
-	extra map[string]any,
-) *ValidatedClaims {
+// buildValidatedClaims constructs a ValidatedClaims from a verified payload.
+func buildValidatedClaims(verified verifiedClaims) *ValidatedClaims {
+	standard, extra := verified.standard, verified.extra
 	vc := &ValidatedClaims{
-		Subject:  standard.Subject,
-		Issuer:   standard.Issuer,
-		Audience: []string(standard.Audience),
-		JWTID:    standard.ID,
-		Extra:    make(map[string]any),
-		Claims:   extra,
+		Subject:              standard.Subject,
+		Issuer:               standard.Issuer,
+		Audience:             []string(standard.Audience),
+		JWTID:                standard.ID,
+		Extra:                make(map[string]any),
+		Claims:               extra,
+		AuthorizationDetails: verified.authorizationDetails,
 	}
 
 	if standard.Expiry != nil {

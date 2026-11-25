@@ -262,9 +262,7 @@ regardless of `useLegacyAttributes` since they serve different purposes:
 | `resource_uri` | `mcp.resource.uri` | Resource URI (for `read_resource`) |
 | `prompt_name` | `gen_ai.prompt.name` | Prompt name (for `get_prompt`) |
 
-The `mcp.client.operation.duration` metric uses only `mcp.method.name` and
-`network.transport` as labels (plus `error.type` on error), following the OTEL
-MCP semantic conventions.
+Following the OTEL MCP semantic conventions, the `mcp.client.operation.duration` metric uses only `mcp.method.name` and `network.transport` as labels (plus `error.type` on error). The backend client sets no `error.type` for a tool call the backend answers with an `isError` result.
 
 ---
 

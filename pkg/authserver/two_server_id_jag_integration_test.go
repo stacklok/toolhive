@@ -240,6 +240,37 @@ func TestIDJAGRedemptionCarriesActorAcrossTwoServers(t *testing.T) {
 	assert.Equal(t, map[string]any{"iss": actorTestActIssuer, "sub": agentID}, access["act"])
 }
 
+// TestIDJAGRedemptionUsesClientAccessTokenLifespan proves a delegate client's
+// access_token_lifespan in AS-2's RunConfig reaches ID-JAG redemption: the
+// token's exp and the response's expires_in both follow it. AS-1's default
+// ID-JAG lifetime is 60 seconds, longer than the client's 20.
+func TestIDJAGRedemptionUsesClientAccessTokenLifespan(t *testing.T) {
+	t.Parallel()
+	const lifespan = 20 * time.Second
+	h := startTwoServerIDJAGConfigured(t, []string{xrtIDJAGResource}, nil,
+		func(cfg *authserver.RunConfig, _ string) {
+			clients := cfg.InboundGrants.TokenExchange.DelegateClients
+			for i := range clients {
+				if clients[i].ClientID == xrtTargetClientID {
+					clients[i].AccessTokenLifespan = lifespan.String()
+				}
+			}
+		})
+
+	res := h.as2.redeem(t, h.as2.client, h.mintIDJAG(t))
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	assert.InDelta(t, lifespan.Seconds(), res.body["expires_in"], 3)
+	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
+	exp, ok := access["exp"].(float64)
+	require.True(t, ok, "exp must be a number")
+	iat, ok := access["iat"].(float64)
+	require.True(t, ok, "iat must be a number")
+	// exp - iat takes the runner's speed out of it: both are signed in whole
+	// seconds from the same session, so they differ by the lifespan, give or
+	// take the second boundary between them.
+	assert.InDelta(t, lifespan.Seconds(), exp-iat, 1)
+}
+
 // TestIDJAGRedemptionRefusesResourceTheClaimDoesNotCover proves AS-2 refuses an
 // ID-JAG for a resource its resource claim does not name, and issues no token.
 // AS-2 governs both resources, the client may have both and the subject is

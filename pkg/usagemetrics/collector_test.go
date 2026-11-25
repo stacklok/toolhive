@@ -144,6 +144,20 @@ func TestCollector_ShutdownWithoutCallsSendsNoReport(t *testing.T) {
 	assert.Empty(t, rs.received(), "shutdown with no tool calls sends nothing")
 }
 
+func TestCollector_ShutdownReportsPendingCodeModeToolCalls(t *testing.T) {
+	t.Parallel()
+
+	// A script that returned after the last flush, with no client calls since.
+	collector, rs := newTestCollector(t)
+	collector.AddCodeModeToolCalls(3)
+	collector.Shutdown(context.Background())
+
+	reports := rs.received()
+	require.Len(t, reports, 1, "shutdown reports pending code mode tool calls")
+	assert.Equal(t, float64(0), reports[0].body["count"], "code mode tool calls are not folded into count")
+	assert.Equal(t, float64(3), reports[0].body["code_mode_tool_calls"])
+}
+
 func TestCollector_Start_PreventsDuplicateGoroutines(t *testing.T) {
 	t.Parallel()
 
@@ -321,10 +335,63 @@ func TestCollector_FlushAtMidnightResetsCounts(t *testing.T) {
 	assert.Equal(t, yesterday+"T23:59:00Z", reports[0].body["timestamp"])
 	assert.Equal(t, map[string]any{"cursor": float64(2), "zed": float64(1)}, reports[0].body["calls_by_client"])
 
-	count, byClient := collector.snapshotCounts()
-	assert.Zero(t, count)
-	assert.Empty(t, byClient)
+	snap := collector.snapshotCounts()
+	assert.Zero(t, snap.total)
+	assert.Empty(t, snap.byClient)
 	assert.Equal(t, getCurrentDateUTC(), collector.currentDate)
+}
+
+func TestCollector_ReportsCodeModeCounts(t *testing.T) {
+	t.Parallel()
+
+	collector, rs := newTestCollector(t)
+	collector.IncrementToolCallFrom("cursor")
+	collector.IncrementToolCallFrom("cursor")
+	collector.IncrementCodeModeCall()
+	collector.AddCodeModeToolCalls(5)
+	collector.AddCodeModeToolCalls(0)  // ignored
+	collector.AddCodeModeToolCalls(-3) // ignored
+	require.NoError(t, collector.Flush())
+
+	reports := rs.received()
+	require.Len(t, reports, 1)
+	body := reports[0].body
+	assert.Equal(t, float64(2), body["count"], "count is unchanged by code mode tallies")
+	assert.Equal(t, float64(1), body["code_mode_calls"])
+	assert.Equal(t, float64(5), body["code_mode_tool_calls"])
+}
+
+func TestCollector_OmitsZeroCodeModeCounts(t *testing.T) {
+	t.Parallel()
+
+	collector, rs := newTestCollector(t)
+	collector.IncrementToolCallFrom("cursor")
+	require.NoError(t, collector.Flush())
+
+	reports := rs.received()
+	require.Len(t, reports, 1)
+	assert.NotContains(t, reports[0].body, "code_mode_calls")
+	assert.NotContains(t, reports[0].body, "code_mode_tool_calls")
+}
+
+func TestCollector_FlushAtMidnightResetsCodeModeCounts(t *testing.T) {
+	t.Parallel()
+
+	collector, rs := newTestCollector(t)
+	collector.currentDate = time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	collector.IncrementToolCallFrom("cursor")
+	collector.IncrementCodeModeCall()
+	collector.AddCodeModeToolCalls(4)
+	require.NoError(t, collector.Flush())
+
+	reports := rs.received()
+	require.Len(t, reports, 1)
+	assert.Equal(t, float64(1), reports[0].body["code_mode_calls"])
+	assert.Equal(t, float64(4), reports[0].body["code_mode_tool_calls"])
+
+	snap := collector.snapshotCounts()
+	assert.Zero(t, snap.codeModeCalls)
+	assert.Zero(t, snap.codeModeToolCalls)
 }
 
 func TestCollector_WithComponentSetsUserAgent(t *testing.T) {
@@ -338,4 +405,23 @@ func TestCollector_WithComponentSetsUserAgent(t *testing.T) {
 	userAgent := reports[0].header.Get(userAgentHeader)
 	assert.True(t, strings.HasPrefix(userAgent, "toolhive/vmcp "), "User-Agent: %s", userAgent)
 	assert.Equal(t, "test-anon-id", reports[0].header.Get(anonymousIDHeader))
+}
+
+func TestCollector_FlushAtMidnightReportsCodeModeToolCallsWithoutCount(t *testing.T) {
+	t.Parallel()
+
+	// A script that straddled midnight: its outer call was flushed with the
+	// previous day, and only its inner tool calls are pending.
+	collector, rs := newTestCollector(t)
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	collector.currentDate = yesterday
+	collector.AddCodeModeToolCalls(2)
+	require.NoError(t, collector.Flush())
+
+	reports := rs.received()
+	require.Len(t, reports, 1, "midnight flush reports pending code mode tool calls")
+	assert.Equal(t, yesterday+"T23:59:00Z", reports[0].body["timestamp"])
+	assert.Equal(t, float64(0), reports[0].body["count"], "code mode tool calls are not folded into count")
+	assert.Equal(t, float64(2), reports[0].body["code_mode_tool_calls"])
+	assert.Zero(t, collector.snapshotCounts().codeModeToolCalls)
 }

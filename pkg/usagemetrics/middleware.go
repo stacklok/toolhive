@@ -19,6 +19,11 @@ const (
 
 	// shutdownTimeout is the maximum time to wait for collector shutdown
 	shutdownTimeout = 10 * time.Second
+
+	// codeModeToolName is the vMCP code mode virtual tool. It mirrors
+	// script.ExecuteToolScriptName (a test pins the two together) so this
+	// package, which every proxy links, does not pull in the script engine.
+	codeModeToolName = "execute_tool_script"
 )
 
 // MiddlewareParams represents the parameters for usage metrics middleware
@@ -30,13 +35,33 @@ type MiddlewareParams struct {
 type Middleware struct {
 	collector *Collector
 	sessions  *sessionClients
+	// isCodeModeCall, when set, reports whether a tools/call that does not name
+	// the code mode tool still runs a code mode script.
+	isCodeModeCall func(*mcp.ParsedMCPRequest) bool
+}
+
+// MiddlewareOption configures a Middleware.
+type MiddlewareOption func(*Middleware)
+
+// WithCodeModeCall also counts a tools/call as a code mode call when match
+// returns true for it. vMCP uses it for scripts run through the optimizer's
+// call_tool. Plain proxies leave it unset: there, a tool named call_tool
+// belongs to the backend and says nothing about code mode.
+func WithCodeModeCall(match func(*mcp.ParsedMCPRequest) bool) MiddlewareOption {
+	return func(m *Middleware) {
+		m.isCodeModeCall = match
+	}
 }
 
 // NewMiddleware returns usage metrics middleware that reports to the given
 // collector. It must run after the MCP parsing middleware. A nil collector
 // yields a pass-through middleware.
-func NewMiddleware(collector *Collector) *Middleware {
-	return &Middleware{collector: collector, sessions: newSessionClients()}
+func NewMiddleware(collector *Collector, opts ...MiddlewareOption) *Middleware {
+	m := &Middleware{collector: collector, sessions: newSessionClients()}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Handler returns the middleware function
@@ -63,11 +88,23 @@ func (m *Middleware) Handler() types.MiddlewareFunction {
 				return
 			case "tools/call":
 				m.collector.IncrementToolCallFrom(m.toolCallClient(r, parsed))
+				if m.codeModeCall(parsed) {
+					m.collector.IncrementCodeModeCall()
+				}
 			}
 
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// codeModeCall reports whether a tools/call runs a code mode script: it names
+// the code mode tool, or the WithCodeModeCall matcher accepts it.
+func (m *Middleware) codeModeCall(parsed *mcp.ParsedMCPRequest) bool {
+	if parsed.ResourceID == codeModeToolName {
+		return true
+	}
+	return m.isCodeModeCall != nil && m.isCodeModeCall(parsed)
 }
 
 // toolCallClient returns the client a tool call is attributed to, in order of

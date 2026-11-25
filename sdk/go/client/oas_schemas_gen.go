@@ -639,7 +639,10 @@ type AuthenticationDCRUpstreamConfig struct {
 	// token_endpoint_auth_methods_supported, and scopes_supported from the
 	// response. Per RFC 8414 §3.3, the document's "issuer" field must
 	// exactly match the upstream issuer configured on the parent
-	// run-config.
+	// run-config, except that an origin-only issuer may differ by a
+	// trailing "/" (for example https://idp.example.com and
+	// https://idp.example.com/ are treated as equal). Scheme, host, port
+	// and any path must still match exactly.
 	// Use this field when the upstream publishes discovery metadata at a
 	// path that differs from the issuer-derived well-known paths — for
 	// example a multi-tenant IdP whose metadata lives at
@@ -941,6 +944,13 @@ func (s *AuthenticationDelegateClientIDJAGTarget) SetResources(val []string) {
 
 // Ref: #/components/schemas/AuthenticationDelegateClientRunConfig
 type AuthenticationDelegateClientRunConfig struct {
+	// AccessTokenLifespan is the lifetime of the access tokens this client
+	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+	// server's access_token_lifespan applies. When set it must be at least 2s
+	// and at most 24h. It is an upper bound: a token never outlives the
+	// assertion it was redeemed from, and a token that carries the
+	// delegated-access marker is capped further. Other grants ignore it.
+	AccessTokenLifespan OptString `json:"access_token_lifespan"`
 	// Audiences are output only: the upper bound on the audiences of the
 	// access tokens this client can obtain through any grant. They must be a
 	// subset of RunConfig.AllowedAudiences: a declared client must not receive
@@ -990,6 +1000,11 @@ type AuthenticationDelegateClientRunConfig struct {
 	// that disagree must set it.
 	TokenEndpointAuthSigningAlg OptString                                    `json:"token_endpoint_auth_signing_alg"`
 	TokenExchange               OptAuthenticationDelegateClientTokenExchange `json:"token_exchange"`
+}
+
+// GetAccessTokenLifespan returns the value of AccessTokenLifespan.
+func (s *AuthenticationDelegateClientRunConfig) GetAccessTokenLifespan() OptString {
+	return s.AccessTokenLifespan
 }
 
 // GetAudiences returns the value of Audiences.
@@ -1045,6 +1060,11 @@ func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthSigningAlg()
 // GetTokenExchange returns the value of TokenExchange.
 func (s *AuthenticationDelegateClientRunConfig) GetTokenExchange() OptAuthenticationDelegateClientTokenExchange {
 	return s.TokenExchange
+}
+
+// SetAccessTokenLifespan sets the value of AccessTokenLifespan.
+func (s *AuthenticationDelegateClientRunConfig) SetAccessTokenLifespan(val OptString) {
+	s.AccessTokenLifespan = val
 }
 
 // SetAudiences sets the value of Audiences.

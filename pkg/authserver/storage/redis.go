@@ -1948,8 +1948,66 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	return nil
 }
 
+// deleteUpstreamTokensForProviderScript atomically removes one provider's row
+// and its members in the session index and user reverse-index sets, so a
+// concurrent write to the same row cannot leave a live row missing from them.
+//
+// KEYS[1] = per-provider token key
+// KEYS[2] = session index set key
+// ARGV[1] = user upstream set key prefix (e.g. "thv:auth:{ns:name}:user:upstream:")
+//
+// The user-set key is built as `ARGV[1] .. userID` from the stored row, with
+// the same cluster slot invariant as storeUpstreamTokensScript (see the
+// comment there): ARGV[1] must come from s.keyPrefix so it carries the
+// `{ns:name}` hash tag.
+//
+// Placeholder, undecodable, or user-less rows are still deleted and removed
+// from KEYS[2]; only the user-set removal is skipped.
+//
+// KEYS[2] and the user set are type-checked before anything is changed. If
+// either holds a non-set value the script returns a WRONGTYPE error with the
+// row and both sets untouched. Checking first matters because Redis does not
+// roll back a script that fails partway: a failed SREM after the DEL would
+// lose the row, the only record of which user set to clean up.
+//
+// The return value is unused but must be non-nil, since go-redis maps a nil
+// reply to redis.Nil.
+var deleteUpstreamTokensForProviderScript = redis.NewScript(`
+local userID = ""
+local existing = redis.call('GET', KEYS[1])
+if existing and existing ~= "null" then
+    local ok, decoded = pcall(cjson.decode, existing)
+    if ok and type(decoded) == "table" and type(decoded.user_id) == "string" and decoded.user_id ~= "" then
+        userID = decoded.user_id
+    end
+end
+local function isSetOrNone(k)
+    -- TYPE returns a status reply, which Lua sees as a table with an ok field.
+    local t = redis.call('TYPE', k).ok
+    return t == 'set' or t == 'none'
+end
+if not isSetOrNone(KEYS[2]) then
+    return redis.error_reply('WRONGTYPE upstream session index key is not a set')
+end
+if userID ~= "" and not isSetOrNone(ARGV[1] .. userID) then
+    return redis.error_reply('WRONGTYPE upstream user set key is not a set')
+end
+redis.call('DEL', KEYS[1])
+redis.call('SREM', KEYS[2], KEYS[1])
+if userID ~= "" then
+    redis.call('SREM', ARGV[1] .. userID, KEYS[1])
+end
+return 1
+`)
+
 // DeleteUpstreamTokensForProvider removes tokens for a single (sessionID, providerName),
 // leaving sibling providers' rows intact. Absent row returns nil.
+//
+// The row and its index members are removed by one Lua script, and any Redis
+// error is returned. A session index key or user set holding a non-set value
+// fails the call with WRONGTYPE before anything is changed: the row, the
+// session index and the user set are all left untouched. The session index
+// key itself is not deleted; Redis drops a set when its last member is removed.
 func (s *RedisStorage) DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error {
 	if sessionID == "" {
 		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
@@ -1960,33 +2018,13 @@ func (s *RedisStorage) DeleteUpstreamTokensForProvider(ctx context.Context, sess
 
 	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
 	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
+	userSetKeyPrefix := s.keyPrefix + KeyTypeUserUpstream + ":"
 
-	// Best-effort: read UserID for reverse-index cleanup before deleting.
-	var userID string
-	data, err := s.client.Get(ctx, key).Bytes()
-	if err == nil && string(data) != nullMarker {
-		var stored storedUpstreamTokens
-		if unmarshalErr := json.Unmarshal(data, &stored); unmarshalErr == nil {
-			userID = stored.UserID
-		}
+	if err := deleteUpstreamTokensForProviderScript.Run(ctx, s.client,
+		[]string{key, idxKey}, userSetKeyPrefix,
+	).Err(); err != nil {
+		return fmt.Errorf("failed to delete upstream tokens for provider: %w", err)
 	}
-	// redis.Nil (key absent) or any error on GET: skip user-index cleanup gracefully.
-
-	// Del returns count 0 on absent key — treat as nil (not ErrNotFound).
-	if delErr := s.client.Del(ctx, key).Err(); delErr != nil {
-		return fmt.Errorf("failed to delete upstream tokens for provider: %w", delErr)
-	}
-
-	// Best-effort secondary index cleanup — leave sibling members in idxKey intact.
-	// If this was the last provider for the session, the set becomes empty and
-	// expires by its own TTL; we do not delete the set key itself (intentional,
-	// matching the best-effort cleanup posture of DeleteUpstreamTokens).
-	warnOnCleanupErr(s.client.SRem(ctx, idxKey, key).Err(), "SRem", idxKey)
-	if userID != "" {
-		userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, userID)
-		warnOnCleanupErr(s.client.SRem(ctx, userUpstreamSetKey, key).Err(), "SRem", userUpstreamSetKey)
-	}
-
 	return nil
 }
 
@@ -3442,6 +3480,38 @@ type storedProviderIdentity struct {
 	LastUsedAt      int64  `json:"last_used_at"`
 }
 
+// createProviderIdentityScript writes the provider identity link and adds it
+// to the user's reverse-lookup set as one atomic step, so a failed set write
+// cannot leave a link behind that points at a user the caller then rolls back.
+// A script is not transactional, so if the set write fails the script deletes
+// the link it just wrote and returns the error.
+// The script first checks that the user exists, so a concurrent DeleteUser
+// cannot leave a link to a missing user. The link is written only if absent
+// (set-if-absent), which is what keeps one (provider, subject) pair linked to
+// one user. It returns 1 when the link was created, 0 when it already existed
+// and -1 when the user does not exist.
+//
+// Provider identities don't expire (no TTL). The reverse-lookup set may contain
+// stale references if identities are deleted independently; stale entries are
+// cleaned up lazily during GetUserProviderIdentities reads.
+//
+// Cluster slot invariant: KEYS[1] to KEYS[3] are all built from s.keyPrefix,
+// whose `{ns:name}` hash tag puts them on the same slot.
+var createProviderIdentityScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[3]) == 0 then
+    return -1
+end
+if redis.call('SET', KEYS[1], ARGV[1], 'NX') == false then
+    return 0
+end
+local added = redis.pcall('SADD', KEYS[2], KEYS[1])
+if type(added) == 'table' and added.err then
+    redis.call('DEL', KEYS[1])
+    return redis.error_reply(added.err)
+end
+return 1
+`)
+
 // CreateProviderIdentity links a provider identity to a user.
 func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *ProviderIdentity) error {
 	if identity == nil {
@@ -3457,16 +3527,7 @@ func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *Pro
 		return fosite.ErrInvalidRequest.WithHint("provider subject cannot be empty")
 	}
 
-	// Verify user exists
 	userKey := redisKey(s.keyPrefix, KeyTypeUser, identity.UserID)
-	exists, err := s.client.Exists(ctx, userKey).Result()
-	if err != nil {
-		return fmt.Errorf("failed to check user existence: %w", err)
-	}
-	if exists == 0 {
-		return fmt.Errorf("%w: user not found", ErrNotFound)
-	}
-
 	key := redisProviderKey(s.keyPrefix, identity.ProviderID, identity.ProviderSubject)
 
 	stored := storedProviderIdentity{
@@ -3482,22 +3543,19 @@ func (s *RedisStorage) CreateProviderIdentity(ctx context.Context, identity *Pro
 		return fmt.Errorf("failed to marshal identity: %w", err)
 	}
 
-	// Use SetNX for atomic check-and-set to prevent race conditions.
-	// Provider identities don't expire (TTL=0).
-	result, err := s.client.SetNX(ctx, key, data, 0).Result()
+	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, identity.UserID)
+	created, err := createProviderIdentityScript.Run(ctx, s.client,
+		[]string{key, userProviderSetKey, userKey}, data).Int()
 	if err != nil {
 		return fmt.Errorf("failed to store identity: %w", err)
 	}
-	if !result {
+	if created < 0 {
+		return fmt.Errorf("%w: user not found", ErrNotFound)
+	}
+	if created == 0 {
 		return fmt.Errorf("%w: provider identity already linked", ErrAlreadyExists)
 	}
-
-	// Add to user's provider identity set for reverse lookup.
-	// Note: This set may contain stale references if identities are deleted independently.
-	// Stale entries are cleaned up lazily during GetUserProviderIdentities reads.
-	// A future DeleteProviderIdentity method should also clean up this set.
-	userProviderSetKey := redisSetKey(s.keyPrefix, KeyTypeUserProviders, identity.UserID)
-	return s.client.SAdd(ctx, userProviderSetKey, key).Err()
+	return nil
 }
 
 // GetProviderIdentity retrieves a provider identity by provider ID and subject.

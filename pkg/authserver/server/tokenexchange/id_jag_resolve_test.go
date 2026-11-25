@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
@@ -253,6 +254,30 @@ func TestIDJAGResolve_Found(t *testing.T) {
 	assert.Equal(t, resolveTestUser, sess.GetSubject())
 	assert.Equal(t, true, sess.JWTClaims.Extra[claimnames.DelegatedAccessKey])
 	assert.Equal(t, fosite.Arguments{idJAGTestResource}, f.req.GetGrantedAudience())
+}
+
+// TestIDJAGResolve_FillsClientLifespan is a wiring test: the resolve path
+// copies the client's lifespan into the redemption. The clientLifespan check
+// is the assertion that depends on it; the expiry check only confirms the
+// session is still capped, and would pass without the lifespan. The lifetime
+// order is covered by TestRedeemer_DelegatedAccessLifetime.
+func TestIDJAGResolve_FillsClientLifespan(t *testing.T) {
+	t.Parallel()
+
+	mock := mocks.NewMockResolver(gomock.NewController(t))
+	mock.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(resolveTestUser, nil).Times(1)
+	f := newResolveFixture(t, mock)
+	f.h.clientLifespans = map[string]time.Duration{idJAGTestClientID: 20 * time.Minute}
+	claims := resolveClaims(validUpstreamSubject())
+	claims.Expiry = time.Now().Add(time.Hour)
+
+	d, err := f.redeem(t, claims)
+
+	require.NoError(t, err)
+	assert.True(t, d.delegatedAccess)
+	assert.Equal(t, 20*time.Minute, d.clientLifespan)
+	assert.WithinDuration(t, time.Now().Add(delegatedAccessMarkerCap), f.req.GetSession().GetExpiresAt(fosite.AccessToken),
+		5*time.Second)
 }
 
 func TestIDJAGIssuanceFactory_SubjectResolution(t *testing.T) {

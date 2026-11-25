@@ -14,7 +14,12 @@
 # limitations under the License.
 #
 # This workflow builds distributable Claude Code Agent Skills from skills/
-# and publishes them as signed OCI artifacts to GHCR.
+# and publishes them as signed OCI artifacts to GHCR, through
+# StacklokLabs/toolhive-actions' skills-publish action.
+#
+# Keep this file's name and path. Keyless signatures carry this reusable
+# workflow's path as the signer identity (job_workflow_ref), and consumers pin
+# it in toolhive.lock.yaml; renaming or moving the file changes the signer.
 #
 # Deliberately separate from skills-build.yml, which performs the same build
 # for verification on pull requests and main. This one holds id-token: write
@@ -41,9 +46,6 @@ jobs:
       # the calling job needs this too (releaser.yml's skills-publish).
       id-token: write
 
-    env:
-      BASE_REPO: "ghcr.io/stacklok/toolhive/skills"
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -59,8 +61,18 @@ jobs:
         id: version-string
         uses: $/.github/actions/compute-version
 
+      # The action refuses to push unless `thv version` reports v0.48.0 or
+      # later, the first release that signs every push. A plain build reports
+      # a development version, so stamp the release tag the same way the
+      # Taskfile and goreleaser do.
       - name: Build thv binary
-        run: go build -o ./thv ./cmd/thv
+        env:
+          TAG: ${{ steps.version-string.outputs.tag }}
+        run: |
+          go build \
+            -ldflags "-X github.com/stacklok/toolhive/pkg/versions.Version=${TAG}" \
+            -o "${RUNNER_TEMP}/thv-bin/thv" ./cmd/thv
+          echo "${RUNNER_TEMP}/thv-bin" >> "$GITHUB_PATH"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -69,64 +81,42 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Start thv serve
-        run: |
-          ./thv serve --host 127.0.0.1 --port 8080 > /tmp/thv-serve.log 2>&1 &
-          echo "THV_PID=$!" >> "$GITHUB_ENV"
+      # OCI repository paths must be lowercase. On stacklok/toolhive this is
+      # ghcr.io/stacklok/toolhive/skills.
+      - name: Compute registry prefix
+        id: prefix
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "prefix=ghcr.io/${REPOSITORY,,}/skills" >> "$GITHUB_OUTPUT"
 
-          # Wait for the server to be ready
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8080/health > /dev/null 2>&1; then
-              echo "thv serve is ready (PID: $!)"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "thv serve failed to start after 30s; logs:"
-              cat /tmp/thv-serve.log
-              exit 1
-            fi
-            sleep 1
-          done
-
-          # Verify process is still alive after health check
-          kill -0 "$!" 2>/dev/null || { echo "thv serve exited unexpectedly; logs:"; cat /tmp/thv-serve.log; exit 1; }
-
-      - name: Build and publish skills
+      # The action pushes one tag at a time across every skill, in the order
+      # listed, so latest must come last: it moves only after the release tag
+      # is published everywhere.
+      - name: Compute tags
+        id: tags
         env:
           TAG: ${{ steps.version-string.outputs.tag }}
           GH_REF: ${{ github.ref }}
         run: |
-          set -euo pipefail
-
-          for skill_dir in skills/*/; do
-            # Skip if no skills exist
-            [ -d "$skill_dir" ] || continue
-
-            skill_name=$(basename "$skill_dir")
-            ref="${BASE_REPO}/${skill_name}:${TAG}"
-
-            echo "Building skill: ${skill_name} -> ${ref}"
-            built_ref=$(./thv skill build "$skill_dir" --tag "$ref")
-            echo "Built: ${built_ref}"
-
-            echo "Pushing skill: ${built_ref}"
-            # No signing flags: with id-token:write granted, the push acquires
-            # the job's ambient OIDC token and signs keylessly against Fulcio
-            # and Rekor. Absent that token the push fails rather than
-            # publishing unsigned.
-            ./thv skill push "$built_ref"
-
-            # Also tag as latest when building from a release tag
+          {
+            echo "tags<<EOF"
+            echo "${TAG}"
+            # Also tag as latest when publishing from a release tag
             if [[ "$GH_REF" == refs/tags/* ]]; then
-              latest_ref="${BASE_REPO}/${skill_name}:latest"
-              echo "Tagging as latest: ${latest_ref}"
-              built_latest=$(./thv skill build "$skill_dir" --tag "$latest_ref")
-              ./thv skill push "$built_latest"
+              echo "latest"
             fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-            echo "Published: ${ref}"
-          done
-
-      - name: Stop thv serve
-        if: always()
-        run: kill "$THV_PID" 2>/dev/null || true
+      # Validates every skill, builds each once per tag, then pushes and signs.
+      # No signing flags: with id-token: write granted, each push acquires the
+      # job's ambient OIDC token and signs keylessly against Fulcio and Rekor.
+      # Absent that token the action fails before building rather than
+      # publishing unsigned.
+      - name: Validate, build and publish skills
+        uses: StacklokLabs/toolhive-actions/skills-publish@2a20e956503d8878c219b2d2b7d91bdf89d731b4 # v0.0.9
+        with:
+          root: skills
+          registry-prefix: ${{ steps.prefix.outputs.prefix }}
+          tags: ${{ steps.tags.outputs.tags }}
+          push: 'true'

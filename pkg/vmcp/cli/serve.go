@@ -39,6 +39,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -433,10 +434,12 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		features: vmcpFeatures(optCfg != nil, vmcpCfg.CodeMode, len(vmcpCfg.CompositeTools), vmcpCfg.OutgoingAuth),
 	})
 	var usageMiddleware func(http.Handler) http.Handler
+	codeModeCfg := codemode.FromConfig(vmcpCfg.CodeMode)
 	if usage != nil {
 		defer usage.shutdown()
 		agg = usage.observe(agg)
-		usageMiddleware = usage.middleware()
+		usageMiddleware = usage.middleware(optCfg != nil)
+		codeModeCfg = usage.codeModeConfig(codeModeCfg)
 	}
 
 	// Resolve transport defaults once here at the composition root: the
@@ -466,9 +469,12 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		Watcher:                 nil, // set below if backendWatcher is non-nil
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
-		CodeModeConfig:          codemode.FromConfig(vmcpCfg.CodeMode),
+		CodeModeConfig:          codeModeCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		// Call binding answers a refused call-bound token with the same
+		// challenge parameters as the token validator.
+		CallBinding: callbinding.Config{Challenge: authfactory.IncomingBearerChallenge(vmcpCfg.IncomingAuth)},
 		// Core collaborators: server.New routes through core.New + Serve, so the core
 		// is the single aggregator and authorizer. The aggregator is the same instance
 		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).

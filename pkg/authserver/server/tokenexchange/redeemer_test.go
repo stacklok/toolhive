@@ -328,16 +328,100 @@ func TestRedeemer_Populate(t *testing.T) {
 	}
 }
 
+// TestRedeemer_ClientAccessTokenLifespan covers the per-client lifespan end to
+// end: the token's exp and the response's expires_in both come from it.
+func TestRedeemer_ClientAccessTokenLifespan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		plain           bool          // redeem a plain assertion instead of an ID-JAG
+		assertionLeft   time.Duration // the assertion's remaining validity
+		serverLifespan  time.Duration // 0 means one hour
+		clientLifespans map[string]time.Duration
+		want            time.Duration
+	}{
+		{
+			name:            "client lifespan shorter than the assertion",
+			assertionLeft:   5 * time.Minute,
+			clientLifespans: map[string]time.Duration{idJAGTestClientID: 30 * time.Second},
+			want:            30 * time.Second,
+		},
+		{
+			name:            "client lifespan longer than the assertion is shortened",
+			assertionLeft:   20 * time.Second,
+			clientLifespans: map[string]time.Duration{idJAGTestClientID: time.Minute},
+			want:            20 * time.Second,
+		},
+		{
+			name:            "client lifespan longer than the server lifespan",
+			assertionLeft:   5 * time.Minute,
+			serverLifespan:  time.Minute,
+			clientLifespans: map[string]time.Duration{idJAGTestClientID: 4 * time.Minute},
+			want:            4 * time.Minute,
+		},
+		{
+			name:            "a client without a lifespan gets the server lifespan",
+			assertionLeft:   5 * time.Minute,
+			serverLifespan:  2 * time.Minute,
+			clientLifespans: map[string]time.Duration{"other-client": 10 * time.Second},
+			want:            2 * time.Minute,
+		},
+		{
+			// A pin, not a probe: the plain handler has no client lifespans to
+			// consult, so its redemption leaves clientLifespan zero and keeps
+			// the server lifespan.
+			name:           "plain grant ignores it",
+			plain:          true,
+			assertionLeft:  5 * time.Minute,
+			serverLifespan: 2 * time.Minute,
+			clientLifespans: map[string]time.Duration{
+				jwtBearerClientID(idJAGTestIssuer, idJAGTestSubject): 10 * time.Second,
+			},
+			want: 2 * time.Minute,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			claims := validIDJAGClaims()
+			claims.Expiry = time.Now().Add(tt.assertionLeft)
+			deps := testIssuanceDeps(&testJWTBearerAssertionValidator{claims: claims}, redemptionIssuers(t))
+			if tt.serverLifespan != 0 {
+				deps.config.AccessTokenLifespan = tt.serverLifespan
+			}
+			idJAGHandler := newTestIDJAGHandler(t, deps)
+			idJAGHandler.clientLifespans = tt.clientLifespans
+			handler, req := fosite.TokenEndpointHandler(idJAGHandler), newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+			if tt.plain {
+				handler = newTestJWTBearerHandler(t, deps)
+				req = newJWTBearerRequest(url.Values{
+					"assertion": {signAssertionWithType(t, newTestJWKS(t), nil)},
+					"resource":  {idJAGTestResource},
+				})
+			}
+
+			require.NoError(t, handler.HandleTokenEndpointRequest(context.Background(), req))
+			resp := fosite.NewAccessResponse()
+			require.NoError(t, handler.PopulateTokenEndpointResponse(context.Background(), req, resp))
+
+			assert.WithinDuration(t, time.Now().Add(tt.want), req.GetSession().GetExpiresAt(fosite.AccessToken), 5*time.Second)
+			assert.InDelta(t, int64(tt.want.Seconds()), resp.GetExtra("expires_in"), 5, "expires_in must match exp")
+		})
+	}
+}
+
 func TestRedeemer_DelegatedAccessLifetime(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		lifespan  time.Duration
-		remaining time.Duration
-		marked    bool
-		want      time.Duration
-		wantErr   bool
+		name           string
+		lifespan       time.Duration
+		clientLifespan time.Duration
+		remaining      time.Duration
+		marked         bool
+		want           time.Duration
+		wantErr        bool
 	}{
 		{name: "marked, longer lifespan, longer validity", lifespan: time.Hour, remaining: 10 * time.Minute,
 			marked: true, want: 5 * time.Minute},
@@ -346,6 +430,12 @@ func TestRedeemer_DelegatedAccessLifetime(t *testing.T) {
 		{name: "marked, short validity", lifespan: time.Hour, remaining: time.Minute, marked: true, want: time.Minute},
 		{name: "not marked is not capped", lifespan: time.Hour, remaining: 10 * time.Minute, want: 10 * time.Minute},
 		{name: "marked and expired", lifespan: time.Hour, remaining: -time.Minute, marked: true, wantErr: true},
+		{name: "marked, client lifespan above the cap", lifespan: time.Minute, clientLifespan: 10 * time.Minute,
+			remaining: 10 * time.Minute, marked: true, want: 5 * time.Minute},
+		{name: "marked, client lifespan below the cap", lifespan: time.Hour, clientLifespan: 30 * time.Second,
+			remaining: 10 * time.Minute, marked: true, want: 30 * time.Second},
+		{name: "marked, validity shorter than the client lifespan", lifespan: time.Hour, clientLifespan: 4 * time.Minute,
+			remaining: time.Minute, marked: true, want: time.Minute},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -356,16 +446,18 @@ func TestRedeemer_DelegatedAccessLifetime(t *testing.T) {
 			d := redemption{
 				claims:          &ValidatedClaims{Expiry: time.Now().Add(tt.remaining)},
 				delegatedAccess: tt.marked,
+				clientLifespan:  tt.clientLifespan,
 			}
 
-			got, err := r.assertionBoundedLifetime(context.Background(), d)
+			got, err := r.assertionBoundedExpiry(context.Background(), d)
 
 			if tt.wantErr {
 				requireRefusal(t, err, "invalid_grant", "invalid_assertion: The JWT bearer assertion has expired.")
 				return
 			}
 			require.NoError(t, err)
-			assert.InDelta(t, tt.want.Seconds(), got.Seconds(), 5)
+			assert.InDelta(t, tt.want.Seconds(), time.Until(got).Seconds(), 5)
+			assert.False(t, got.After(d.claims.Expiry), "the token must not outlive the assertion")
 		})
 	}
 }
@@ -396,10 +488,31 @@ func TestNewRedemptionSession_ActIssuer(t *testing.T) {
 			before := maps.Clone(tt.act.(map[string]any))
 
 			sess := newRedemptionSession(
-				redemption{claims: claims, carryAct: true, delegatedAccess: tt.delegatedAccess}, idJAGTestClientID, time.Minute)
+				redemption{claims: claims, carryAct: true, delegatedAccess: tt.delegatedAccess}, idJAGTestClientID,
+				time.Now().Add(time.Minute))
 
 			assert.Equal(t, tt.want, sess.JWTClaims.Extra["act"])
 			assert.Equal(t, before, claims.Extra["act"], "the assertion's claims must not change")
 		})
+	}
+}
+
+// TestRedeemer_ExpiryIsTheAssertionExpiry pins that when the assertion is the
+// tightest bound, the issued expiry is the assertion's exp itself, not a
+// remaining duration re-added to a later clock reading.
+func TestRedeemer_ExpiryIsTheAssertionExpiry(t *testing.T) {
+	t.Parallel()
+
+	deps := testIssuanceDeps(&testJWTBearerAssertionValidator{}, redemptionIssuers(t))
+	deps.config.AccessTokenLifespan = time.Hour
+	r := newRedeemer(deps)
+	expiry := time.Now().Add(30 * time.Second).Truncate(time.Second)
+	for _, marked := range []bool{false, true} {
+		d := redemption{claims: &ValidatedClaims{Expiry: expiry}, delegatedAccess: marked, clientLifespan: time.Minute}
+
+		got, err := r.assertionBoundedExpiry(context.Background(), d)
+
+		require.NoError(t, err)
+		assert.True(t, got.Equal(expiry), "marked=%v: got %v, want the assertion exp %v", marked, got, expiry)
 	}
 }

@@ -6,15 +6,18 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/x/errorsx"
 
 	"github.com/stacklok/toolhive/pkg/authserver/actor"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/subject"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -78,6 +81,12 @@ type IDJAGHandler struct {
 	// jwt-bearer grant in their registered grant types.
 	explicitGrantClients map[string]struct{}
 
+	// clientLifespans holds the access-token lifespan of the clients that set
+	// their own, keyed by client ID. A client without an entry gets the server
+	// lifespan. Only IDJAGIssuanceFactory sets it; it is read-only after
+	// construction.
+	clientLifespans map[string]time.Duration
+
 	// issuer supplies this authorization server's issuer identifier, the same
 	// value the server's own token validator uses (fosite.Config
 	// AccessTokenIssuer).
@@ -106,6 +115,11 @@ type IDJAGHandler struct {
 	// IDJAGIssuanceFactory sets it; it is nil for a handler built directly with
 	// newIDJAGIssuanceHandler.
 	resolver subject.Resolver
+
+	// detailsRegistry holds the authorization_details types this server
+	// processes in an ID-JAG's claim. Only IDJAGIssuanceFactory sets it. When
+	// nil, an ID-JAG that carries the claim is refused with unknown_type.
+	detailsRegistry *authorizationdetails.Registry
 
 	// logger receives the draft-departure lines; nil means slog.Default().
 	logger *slog.Logger
@@ -227,10 +241,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	// First, so a caller that did not authenticate learns nothing about the
 	// assertion: no validation and no consumption. Only the unverified JOSE
 	// typ header was read, for routing.
-	if err := checkClientAuthenticated(requester.GetClient()); err != nil {
-		return err
-	}
-	if err := h.checkClientGrant(requester); err != nil {
+	if err := h.checkRequestClient(ctx, requester); err != nil {
 		return err
 	}
 	assertion, err := validateJWTBearerAssertionForm(requester.GetRequestForm())
@@ -241,9 +252,9 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
-	policy, ok := h.policies[claims.Issuer]
-	if !ok {
-		return invalidAssertion("The ID-JAG assertion issuer is not enabled for this grant.")
+	policy, err := h.enabledPolicy(claims)
+	if err != nil {
+		return err
 	}
 	// Unlike a plain RFC 7523 assertion (where many IdPs omit jti and the
 	// replay key falls back to an assertion hash), the ID-JAG draft requires
@@ -272,16 +283,49 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err := checkSubjectModeGate(policy); err != nil {
 		return err
 	}
+	if err := h.completeRedemption(ctx, requester, claims, policy, resource); err != nil {
+		return err
+	}
+	h.logDraftDepartures(ctx, claims, policy, requester.GetClient().GetID())
+	return nil
+}
+
+// checkRequestClient refuses, in order, a client that did not authenticate,
+// an explicit grant client not registered for the grant, and a request that
+// sends the authorization_details parameter. The parameter refusal's log line
+// names the authenticated client. With confidential dynamic client
+// registration any client can register itself and resend the parameter, so
+// the line is at Warn the first time per (client, reason) and at Debug after.
+func (h *IDJAGHandler) checkRequestClient(ctx context.Context, requester fosite.AccessRequester) error {
+	if err := checkClientAuthenticated(requester.GetClient()); err != nil {
+		return err
+	}
+	if err := h.checkClientGrant(requester); err != nil {
+		return err
+	}
+	clientID := requester.GetClient().GetID()
+	return refuseDetailsParameter(ctx, requester.GetRequestForm(), clientID,
+		func(reason string) slog.Level { return h.redeemer.firstRefusalLevel(clientID, reason) })
+}
+
+// completeRedemption decides the subject, then processes the ID-JAG's
+// authorization_details claim, then consumes the assertion and installs the
+// session. The claim is processed after subject resolution, so its hooks see
+// the resolved user, and before consumption, so a refusal leaves the ID-JAG
+// unconsumed.
+func (h *IDJAGHandler) completeRedemption(
+	ctx context.Context, requester fosite.AccessRequester, claims *ValidatedClaims,
+	policy *JWTBearerGrantPolicy, resource string,
+) error {
 	clientID := requester.GetClient().GetID()
 	d, err := h.idJAGRedemption(ctx, claims, policy, requester.GetClient(), resource)
 	if err != nil {
 		return err
 	}
-	if err := h.redeemer.complete(ctx, requester, d); err != nil {
+	if d.authorizationDetails, err = h.grantSignedDetails(ctx, claims, clientID, resource, d.resolvedUser); err != nil {
 		return err
 	}
-	h.logDraftDepartures(ctx, claims, policy, clientID)
-	return nil
+	return h.redeemer.complete(ctx, requester, d)
 }
 
 // PopulateTokenEndpointResponse issues only an access token, through the
@@ -469,7 +513,7 @@ func (h *IDJAGHandler) validateAssertion(ctx context.Context, assertion string) 
 	// verify proof of possession yet, so accepting the ID-JAG would silently
 	// drop the key binding the IdP asked for. The refusal stays until proof of
 	// possession (DPoP or mTLS) is verified.
-	if hasConfirmationClaim(claims) {
+	if restrictionsOf(claims).Confirmation {
 		return nil, invalidAssertion("The ID-JAG assertion must not carry a 'cnf' claim.")
 	}
 	return claims, nil
@@ -532,14 +576,21 @@ func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims
 // grant in their registered grant types. subjects is required when a trusted
 // issuer has subject_mode resolve: the factory then returns an error if it is
 // nil. The resolver alone decides which upstream_subject issuers and claims
-// resolve, reporting the others with subject.ErrNotConfigured. See
+// resolve, reporting the others with subject.ErrNotConfigured. It applies
+// WithAuthorizationDetailsRegistry (the registry's types registered for the
+// jwt-bearer grant are the ones an ID-JAG's authorization_details claim may
+// carry) and WithClientAccessTokenLifespans, and refuses any other option. See
 // JWTBearerIssuanceFactory for the shared validator's ownership contract.
 func IDJAGIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
-	resolver subject.Resolver,
+	resolver subject.Resolver, options ...FactoryOption,
 ) (server.Factory, error) {
 	if resolver == nil && HasResolveIssuer(trustedIssuers) {
 		return nil, errors.New("a subject resolver is required when a trusted issuer has subject_mode resolve")
+	}
+	resolved := resolveFactoryOptions(options)
+	if err := checkClientAccessTokenLifespans(resolved.clientAccessTokenLifespans); err != nil {
+		return nil, err
 	}
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(deps issuanceDeps) (any, error) {
@@ -548,8 +599,37 @@ func IDJAGIssuanceFactory(
 				return nil, err
 			}
 			h.resolver = resolver
+			h.clientLifespans = resolved.clientAccessTokenLifespans
+			h.detailsRegistry = resolved.authorizationDetailsRegistry
 			return h, nil
 		})
 }
 
+// checkClientAccessTokenLifespans refuses an empty client ID and a lifespan
+// outside [server.MinClientAccessTokenLifespan, server.MaxAccessTokenLifespan],
+// so a zero never means unlimited and a token is never dead on arrival.
+func checkClientAccessTokenLifespans(lifespans map[string]time.Duration) error {
+	for id, lifespan := range lifespans {
+		if id == "" {
+			return errors.New("client access token lifespans must not contain an empty client ID")
+		}
+		if lifespan < server.MinClientAccessTokenLifespan || lifespan > server.MaxAccessTokenLifespan {
+			return fmt.Errorf("client %q: access token lifespan must be at least %v and at most %v, got %v",
+				id, server.MinClientAccessTokenLifespan, server.MaxAccessTokenLifespan, lifespan)
+		}
+	}
+	return nil
+}
+
 var _ fosite.TokenEndpointHandler = (*IDJAGHandler)(nil)
+
+// enabledPolicy returns the issuer's policy for this grant, refusing an issuer
+// that is not enabled for it. Unlike the plain grant, it does not refuse an
+// authorization_details claim: completeRedemption processes it.
+func (h *IDJAGHandler) enabledPolicy(claims *ValidatedClaims) (*JWTBearerGrantPolicy, error) {
+	policy, ok := h.policies[claims.Issuer]
+	if !ok {
+		return nil, invalidAssertion("The ID-JAG assertion issuer is not enabled for this grant.")
+	}
+	return policy, nil
+}

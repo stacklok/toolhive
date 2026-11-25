@@ -406,6 +406,64 @@ type DelegateClientRunConfig struct {
 	// and may exchange any self-issued token. A client that sets GrantTypes or
 	// uses private_key_jwt must declare the block.
 	TokenExchange *DelegateClientTokenExchange `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+
+	// AccessTokenLifespan is the lifetime of the access tokens this client
+	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+	// server's access_token_lifespan applies. When set it must be at least 2s
+	// and at most 24h. It is an upper bound: a token never outlives the
+	// assertion it was redeemed from, and a token that carries the
+	// delegated-access marker is capped further. Other grants ignore it.
+	AccessTokenLifespan string `json:"access_token_lifespan,omitempty" yaml:"access_token_lifespan,omitempty"`
+}
+
+// AccessTokenLifespanDuration parses AccessTokenLifespan. An omitted value
+// gives zero, which means the server lifespan applies; any set value must be in
+// [oauthserver.MinClientAccessTokenLifespan, oauthserver.MaxAccessTokenLifespan].
+func (c DelegateClientRunConfig) AccessTokenLifespanDuration() (time.Duration, error) {
+	if c.AccessTokenLifespan == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.AccessTokenLifespan)
+	if err != nil {
+		return 0, fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan %q: %w",
+			c.ClientID, c.AccessTokenLifespan, err)
+	}
+	if err := checkDelegateAccessTokenLifespan(c.ClientID, d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
+
+// validateDelegateAccessTokenLifespanGrant refuses an access_token_lifespan
+// that could never apply: the lifespan is used only by ID-JAG redemption, so
+// a trusted issuer must accept ID-JAG assertions (an enabled JWT-bearer grant
+// whose issuers all accept plain assertions only is not enough), and a client
+// that sets grant_types must list the JWT-bearer grant. It runs on the
+// resolved Config because both are decided from the resolved trusted issuers.
+func validateDelegateAccessTokenLifespanGrant(clients []DelegateClient, idJAGRedeemable bool) error {
+	for _, client := range clients {
+		if client.AccessTokenLifespan == 0 {
+			continue
+		}
+		if !idJAGRedeemable {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, errAccessTokenLifespanNeedsIDJAGIssuer)
+		}
+		if len(client.GrantTypes) > 0 && !slices.Contains(client.GrantTypes, oauthproto.GrantTypeJWTBearer) {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, errAccessTokenLifespanNeedsClientGrant)
+		}
+	}
+	return nil
+}
+
+// checkDelegateAccessTokenLifespan enforces
+// [MinClientAccessTokenLifespan, MaxAccessTokenLifespan] on a
+// set lifespan.
+func checkDelegateAccessTokenLifespan(clientID string, d time.Duration) error {
+	if d < oauthserver.MinClientAccessTokenLifespan || d > oauthserver.MaxAccessTokenLifespan {
+		return fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan must be at least %v and at most %v, got %v",
+			clientID, oauthserver.MinClientAccessTokenLifespan, oauthserver.MaxAccessTokenLifespan, d)
+	}
+	return nil
 }
 
 // SelfIssuedSubjectTokens selects which self-issued subject tokens a delegate
@@ -879,6 +937,9 @@ func validateDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if _, err := client.AccessTokenLifespanDuration(); err != nil {
+			return err
+		}
 		views[i] = delegateClientView{
 			ClientID:      client.ClientID,
 			Scopes:        client.Scopes,
@@ -1168,6 +1229,11 @@ func validateResolvedDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if client.AccessTokenLifespan != 0 {
+			if err := checkDelegateAccessTokenLifespan(client.ClientID, client.AccessTokenLifespan); err != nil {
+				return err
+			}
+		}
 		if client.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			if client.ClientSecret == "" {
 				return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
@@ -1576,7 +1642,10 @@ type DCRUpstreamConfig struct {
 	// token_endpoint_auth_methods_supported, and scopes_supported from the
 	// response. Per RFC 8414 §3.3, the document's "issuer" field must
 	// exactly match the upstream issuer configured on the parent
-	// run-config.
+	// run-config, except that an origin-only issuer may differ by a
+	// trailing "/" (for example https://idp.example.com and
+	// https://idp.example.com/ are treated as equal). Scheme, host, port
+	// and any path must still match exactly.
 	//
 	// Use this field when the upstream publishes discovery metadata at a
 	// path that differs from the issuer-derived well-known paths — for
@@ -2043,7 +2112,9 @@ type Config struct {
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
 	// AuthorizationDetailsRegistry validates RFC 9396 authorization_details on
-	// RFC 8693 token-exchange requests. It is Go-only and is not part of RunConfig.
+	// RFC 8693 token-exchange requests, and decides which entries of an
+	// ID-JAG's signed authorization_details claim a redemption grants into the
+	// issued token. It is Go-only and is not part of RunConfig.
 	AuthorizationDetailsRegistry *authorizationdetails.Registry
 
 	// AllowConfidentialClientRegistration permits DCR of confidential clients
@@ -2130,6 +2201,12 @@ type DelegateClient struct {
 
 	// TokenExchange carries the matching DelegateClientRunConfig field.
 	TokenExchange *DelegateClientTokenExchange
+
+	// AccessTokenLifespan is the parsed DelegateClientRunConfig field. Zero
+	// means unset: the server's access-token lifespan applies. A value below
+	// server.MinClientAccessTokenLifespan, or above
+	// server.MaxAccessTokenLifespan, is refused.
+	AccessTokenLifespan time.Duration
 }
 
 // Validate checks that the Config is valid.
@@ -2324,7 +2401,7 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
 		return err
 	}
-	if err := c.validateAuthorizationDetailsRequiresTokenExchange(); err != nil {
+	if err := c.validateAuthorizationDetailsRegistryReachable(); err != nil {
 		return err
 	}
 	if err := c.validateSPIFFEAssociationsRequireTokenExchange(); err != nil {
@@ -2422,6 +2499,9 @@ func (c *Config) validateDelegationConfig() error {
 		return err
 	}
 	if err := ValidateIDJAGSubjectClaimAudiences(c.DelegateClients, c.SubjectIdentifierAudiences); err != nil {
+		return err
+	}
+	if err := validateDelegateAccessTokenLifespanGrant(c.DelegateClients, idJAGRedeemable(c.TrustedIssuers)); err != nil {
 		return err
 	}
 	spiffeIDs := make([]string, 0, len(c.SPIFFETrust.Associations()))
@@ -2546,12 +2626,29 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 	return nil
 }
 
-// validateAuthorizationDetailsRequiresTokenExchange rejects a registry combined
-// with a disabled token-exchange grant: authorization_details is only handled
-// on token exchange, so the registry could never be reached.
-func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
-	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+// ErrAuthorizationDetailsRegistryUnreachable is returned when an authorization
+// details registry is configured but no grant that handles it is enabled.
+var ErrAuthorizationDetailsRegistryUnreachable = errors.New(
+	"authorization details registry requires token exchange or ID-JAG redemption to be enabled")
+
+// AuthorizationDetailsRegistryReachable reports whether an authorization
+// details registry can be reached: token exchange reads the
+// authorization_details parameter, and ID-JAG redemption reads the claim of
+// the same name. The registry is reachable when token exchange is enabled or
+// a trusted issuer accepts ID-JAG assertions. A plain RFC 7523 assertion never
+// reaches it: that grant refuses an assertion that carries the claim.
+func AuthorizationDetailsRegistryReachable(
+	tokenExchangeEnabled bool, trustedIssuers []tokenexchange.TrustedIssuer,
+) bool {
+	return tokenExchangeEnabled || idJAGRedeemable(trustedIssuers)
+}
+
+// validateAuthorizationDetailsRegistryReachable rejects a registry that no
+// enabled grant could ever reach.
+func (c *Config) validateAuthorizationDetailsRegistryReachable() error {
+	if c.AuthorizationDetailsRegistry != nil &&
+		!AuthorizationDetailsRegistryReachable(!c.DisableTokenExchange, c.TrustedIssuers) {
+		return ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
 }
@@ -3256,6 +3353,13 @@ const (
 
 var (
 	errIDJAGRequiresTokenExchange = errors.New("token_exchange.id_jag requires token exchange to be enabled")
+	// errAccessTokenLifespanNeedsIDJAGIssuer and
+	// errAccessTokenLifespanNeedsClientGrant refuse a per-client lifespan that
+	// ID-JAG redemption could never apply.
+	errAccessTokenLifespanNeedsIDJAGIssuer = errors.New(
+		"access_token_lifespan applies to ID-JAG redemption, which requires a trusted issuer that accepts ID-JAG assertions")
+	errAccessTokenLifespanNeedsClientGrant = errors.New(
+		"access_token_lifespan applies to ID-JAG redemption, so grant_types must include the JWT-bearer grant")
 	errIDJAGRequiresRestricted    = errors.New(`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`)
 	errIDJAGRequiresSubjectSource = errors.New("token_exchange.id_jag requires a subject source: " +
 		"set token_exchange.exchange_refresh_tokens.id_jag_max_lifetime")

@@ -437,6 +437,22 @@ func explicitGrantClientIDs(clients []DelegateClient) []string {
 	return ids
 }
 
+// delegateAccessTokenLifespans maps each delegate client that sets its own
+// access-token lifespan to that lifespan. It is nil when none does.
+func delegateAccessTokenLifespans(clients []DelegateClient) map[string]time.Duration {
+	var lifespans map[string]time.Duration
+	for _, c := range clients {
+		if c.AccessTokenLifespan == 0 {
+			continue
+		}
+		if lifespans == nil {
+			lifespans = make(map[string]time.Duration)
+		}
+		lifespans[c.ClientID] = c.AccessTokenLifespan
+	}
+	return lifespans
+}
+
 // idJAGExplicitGrantClientIDs lists the clients whose registered grant_types
 // the ID-JAG handler enforces: delegate clients that set grant_types
 // explicitly, and every configured SPIFFE association client. SPIFFE
@@ -990,7 +1006,7 @@ func refreshGrantValidatorChain(
 
 // buildJWTBearerFactoriesForConfig builds the JWT-bearer and ID-JAG factories
 // for cfg, giving the ID-JAG factory the subject resolver when a trusted
-// issuer has subject_mode resolve.
+// issuer has subject_mode resolve, and the authorization details registry.
 func buildJWTBearerFactoriesForConfig(
 	cfg Config, shared *tokenexchange.MultiIssuerTokenValidator, stor storage.Storage,
 ) ([]oauthserver.Factory, error) {
@@ -998,7 +1014,9 @@ func buildJWTBearerFactoriesForConfig(
 	if err != nil {
 		return nil, err
 	}
-	return buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg), resolver)
+	return buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg), resolver,
+		tokenexchange.WithClientAccessTokenLifespans(delegateAccessTokenLifespans(cfg.DelegateClients)),
+		tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry))
 }
 
 // buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together
@@ -1009,17 +1027,18 @@ func buildJWTBearerFactoriesForConfig(
 // generic invalid_request. Both ride the same per-issuer JWT-bearer policy,
 // split by JOSE typ (plain assertions to JWTBearerHandler, oauth-id-jag+jwt to
 // IDJAGHandler). explicitGrantClientIDs names the clients whose registered
-// grant_types the ID-JAG handler enforces. resolver goes to the ID-JAG factory
-// only.
+// grant_types the ID-JAG handler enforces. resolver and idJAGOptions go to the
+// ID-JAG factory only.
 func buildJWTBearerFactories(
 	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
-	explicitGrantClientIDs []string, resolver subject.Resolver,
+	explicitGrantClientIDs []string, resolver subject.Resolver, idJAGOptions ...tokenexchange.FactoryOption,
 ) ([]oauthserver.Factory, error) {
 	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 	}
-	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs, resolver)
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs, resolver,
+		idJAGOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
 	}

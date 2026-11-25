@@ -68,6 +68,11 @@ const SubjectIdentifierKey = "sub_id"
 // sub_id claim (SubjectIdentifierKey) and under the same disclosure policy.
 const UpstreamSubjectKey = "https://toolhive.dev/upstream_subject"
 
+// AuthorizationDetailsKey is the JWT claim key of the RFC 9396
+// authorization_details claim. A session holds its value as json.RawMessage,
+// so every digit of a number survives into the token and through storage.
+const AuthorizationDetailsKey = "authorization_details"
+
 // QualifySubject returns the "sub" value for a subject asserted by an external
 // issuer: "<issuer>#<subject>".
 //

@@ -195,15 +195,7 @@ func TestConfigValidate(t *testing.T) {
 		TokenEndpoint:         "https://idp.example.com/token",
 	}
 	validUpstreams := []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}
-	detailsRegistry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
-		"example": {
-			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
-				return authorizationdetails.Result{Entries: req.Entries}, nil
-			},
-		},
-	})
-	require.NoError(t, err)
+	detailsRegistry := newTokenExchangeDetailsRegistry(t)
 	validOIDCUpstream := &upstream.OIDCConfig{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
 		Issuer:            "https://accounts.google.com",
@@ -221,6 +213,8 @@ func TestConfigValidate(t *testing.T) {
 		{name: "HMAC too short", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: shortHMAC, Upstreams: validUpstreams}, wantErr: true, errMsg: "HMAC secret must be at least 32 bytes"},
 		{name: "no upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC}, wantErr: true, errMsg: "at least one upstream is required"},
 		{name: "SPIFFE-only config without an upstream passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t)}},
+		{name: "delegate access_token_lifespan with only a plain JWT-bearer issuer rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, TrustedIssuers: []tokenexchange.TrustedIssuer{{IssuerURL: "https://idp.example.com", JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{MaxAssertionAge: "1m", SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{Subject: "workload", AllowedResources: []string{"https://mcp.example.com"}}}, AcceptedAudiences: []string{"https://example.com/oauth/token"}, AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeJWTBearer}}}}, DelegateClients: []DelegateClient{{ClientID: "delegate", ClientSecret: strings.Repeat("s", minDelegateClientSecretLength), Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"}, AccessTokenLifespan: time.Minute}}}, wantErr: true, errMsg: errAccessTokenLifespanNeedsIDJAGIssuer.Error()},
+		{name: "delegate access_token_lifespan without the JWT-bearer grant rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, DelegateClients: []DelegateClient{{ClientID: "delegate", ClientSecret: strings.Repeat("s", minDelegateClientSecretLength), Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"}, AccessTokenLifespan: time.Minute}}}, wantErr: true, errMsg: errAccessTokenLifespanNeedsIDJAGIssuer.Error()},
 		{name: "SPIFFE client_id equal to a delegate client_id rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DelegateClients: []DelegateClient{{ClientID: "agent-client", ClientSecret: "delegate-secret-0123456789-abcdefghij", Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"}}}}, wantErr: true, errMsg: `client_id "agent-client" is configured both as a SPIFFE client association and as a delegate client`},
 		{name: "nil upstream config", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2}}}, wantErr: true, errMsg: "oauth2_config is required"},
 		{name: "multiple upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -284,7 +278,7 @@ func TestConfigValidate(t *testing.T) {
 		{name: "typed-nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{(*recordingRefreshHandler)(nil)}}, wantErr: true, errMsg: "refresh grant handler 0 is nil"},
 		{name: "refresh grant handler accepted", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}}}},
 
-		{name: "authorization details registry combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry, DisableTokenExchange: true}, wantErr: true, errMsg: "authorization details registry requires token exchange"},
+		{name: "authorization details registry combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry, DisableTokenExchange: true}, wantErr: true, errMsg: "authorization details registry requires token exchange or ID-JAG redemption to be enabled"},
 		{name: "authorization details registry with token exchange enabled passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry}},
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -344,6 +338,91 @@ func minimalValidConfig(t *testing.T) Config {
 		}},
 		AllowedAudiences: []string{"https://resource.example.com"},
 	}
+}
+
+// newTokenExchangeDetailsRegistry returns a registry with one type accepted on
+// token exchange, whose hook grants the entries unchanged.
+func newTokenExchangeDetailsRegistry(t *testing.T) *authorizationdetails.Registry {
+	t.Helper()
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		"example": {
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
+	return registry
+}
+
+func TestAuthorizationDetailsRegistryReachable(t *testing.T) {
+	t.Parallel()
+
+	jwtBearerIssuer := []tokenexchange.TrustedIssuer{{
+		IssuerURL:      "https://idp.example.com",
+		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{},
+	}}
+	idJAGOnlyIssuer := []tokenexchange.TrustedIssuer{{
+		IssuerURL: "https://idp.example.com",
+		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+			AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+		},
+	}}
+	plainOnlyIssuer := []tokenexchange.TrustedIssuer{{
+		IssuerURL: "https://idp.example.com",
+		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+			AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeJWTBearer},
+		},
+	}}
+	exchangeOnlyIssuer := []tokenexchange.TrustedIssuer{{IssuerURL: "https://idp.example.com"}}
+
+	tests := []struct {
+		name                 string
+		tokenExchangeEnabled bool
+		trustedIssuers       []tokenexchange.TrustedIssuer
+		want                 bool
+	}{
+		{name: "token exchange enabled", tokenExchangeEnabled: true, want: true},
+		{name: "token exchange disabled", tokenExchangeEnabled: false, want: false},
+		{name: "token exchange disabled, JWT-bearer grant enabled for both assertion types", trustedIssuers: jwtBearerIssuer, want: true},
+		{name: "token exchange disabled, issuer accepting ID-JAG only", trustedIssuers: idJAGOnlyIssuer, want: true},
+		{name: "token exchange disabled, issuer accepting plain assertions only", trustedIssuers: plainOnlyIssuer, want: false},
+		{name: "token exchange disabled, issuer without the JWT-bearer grant", trustedIssuers: exchangeOnlyIssuer, want: false},
+		{name: "both enabled", tokenExchangeEnabled: true, trustedIssuers: jwtBearerIssuer, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, AuthorizationDetailsRegistryReachable(tt.tokenExchangeEnabled, tt.trustedIssuers))
+		})
+	}
+
+	t.Run("config validation returns the sentinel", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{AuthorizationDetailsRegistry: newTokenExchangeDetailsRegistry(t), DisableTokenExchange: true}
+		require.ErrorIs(t, cfg.validateAuthorizationDetailsRegistryReachable(), ErrAuthorizationDetailsRegistryUnreachable)
+	})
+
+	t.Run("config validation accepts ID-JAG redemption without token exchange", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{
+			AuthorizationDetailsRegistry: newTokenExchangeDetailsRegistry(t),
+			DisableTokenExchange:         true,
+			TrustedIssuers:               idJAGOnlyIssuer,
+		}
+		require.NoError(t, cfg.validateAuthorizationDetailsRegistryReachable())
+	})
+
+	t.Run("config validation refuses plain JWT-bearer issuers without token exchange", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{
+			AuthorizationDetailsRegistry: newTokenExchangeDetailsRegistry(t),
+			DisableTokenExchange:         true,
+			TrustedIssuers:               plainOnlyIssuer,
+		}
+		require.ErrorIs(t, cfg.validateAuthorizationDetailsRegistryReachable(), ErrAuthorizationDetailsRegistryUnreachable)
+	})
 }
 
 func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
@@ -1327,12 +1406,25 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		Scopes:             []string{"openid"},
 		Audiences:          []string{"https://mcp.example.com"},
 	}
+	withLifespan := func(c DelegateClientRunConfig, lifespan string) DelegateClientRunConfig {
+		c.AccessTokenLifespan = lifespan
+		return c
+	}
 	tests := []struct {
 		name    string
 		clients []DelegateClientRunConfig
 		wantErr string
 	}{
 		{name: "secret client without grant types or block keeps legacy trust", clients: []DelegateClientRunConfig{validClient}},
+		{name: "valid access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "30s")}},
+		{name: "access token lifespan at the maximum", clients: []DelegateClientRunConfig{withLifespan(validClient, "24h")}},
+		{name: "zero access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "0s")}, wantErr: "access_token_lifespan must be at least 2s"},
+		{name: "negative access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "-5s")}, wantErr: "access_token_lifespan must be at least 2s"},
+		{name: "sub-second access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "100ms")}, wantErr: "access_token_lifespan must be at least 2s"},
+		{name: "access token lifespan just under the floor", clients: []DelegateClientRunConfig{withLifespan(validClient, "1999ms")}, wantErr: "access_token_lifespan must be at least 2s"},
+		{name: "access token lifespan at the floor", clients: []DelegateClientRunConfig{withLifespan(validClient, "2s")}},
+		{name: "access token lifespan one second above the maximum", clients: []DelegateClientRunConfig{withLifespan(validClient, "24h1s")}, wantErr: "at most 24h0m0s"},
+		{name: "unparsable access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "soon")}, wantErr: `access_token_lifespan "soon"`},
 		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
 		{name: "duplicate ID", clients: []DelegateClientRunConfig{validClient, validClient}, wantErr: "duplicate client_id"},
 		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "secret is required"},
@@ -1653,6 +1745,73 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 			}}
 			assertError(t, validateResolvedDelegateClients(resolvedClients, supported, allowed, "https://auth.example.com", true),
 				tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+// TestValidateResolvedDelegateClients_AccessTokenLifespan pins the bounds on
+// a resolved client's lifespan, for a Config built without a RunConfig.
+func TestValidateResolvedDelegateClients_AccessTokenLifespan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		lifespan time.Duration
+		wantErr  string
+	}{
+		{name: "unset", lifespan: 0},
+		{name: "within bounds", lifespan: 30 * time.Second},
+		{name: "exactly the maximum", lifespan: 24 * time.Hour},
+		{name: "negative", lifespan: -time.Second, wantErr: "access_token_lifespan must be at least 2s"},
+		{name: "one second above the maximum", lifespan: 24*time.Hour + time.Second, wantErr: "at most 24h0m0s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			clients := []DelegateClient{{
+				ClientID: "delegate", ClientSecret: strings.Repeat("s", minDelegateClientSecretLength),
+				Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+				AccessTokenLifespan: tt.lifespan,
+			}}
+			err := validateResolvedDelegateClients(clients, []string{"openid"}, []string{"https://mcp.example.com"},
+				"https://auth.example.com", true)
+			assertError(t, err, tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+func TestValidateDelegateAccessTokenLifespanGrant(t *testing.T) {
+	t.Parallel()
+
+	bothGrants := []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}
+	tests := []struct {
+		name            string
+		lifespan        time.Duration
+		grantTypes      []string
+		idJAGRedeemable bool
+		wantErr         error
+	}{
+		{name: "no lifespan needs nothing", grantTypes: []string{oauthproto.GrantTypeTokenExchange}},
+		{name: "lifespan with the grant enabled and listed", lifespan: time.Minute, grantTypes: bothGrants, idJAGRedeemable: true},
+		{name: "lifespan on a client without grant_types", lifespan: time.Minute, idJAGRedeemable: true},
+		{name: "lifespan with no issuer accepting ID-JAGs", lifespan: time.Minute, grantTypes: bothGrants,
+			wantErr: errAccessTokenLifespanNeedsIDJAGIssuer},
+		{name: "lifespan on a client whose grant_types omit the grant", lifespan: time.Minute,
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange}, idJAGRedeemable: true,
+			wantErr: errAccessTokenLifespanNeedsClientGrant},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDelegateAccessTokenLifespanGrant([]DelegateClient{{
+				ClientID: "delegate", GrantTypes: tt.grantTypes, AccessTokenLifespan: tt.lifespan,
+			}}, tt.idJAGRedeemable)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.Contains(t, err.Error(), `client_id "delegate"`)
 		})
 	}
 }

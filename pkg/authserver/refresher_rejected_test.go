@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 // countingIdP is a token endpoint that counts its calls and answers each with
@@ -28,14 +29,26 @@ type countingIdP struct {
 	calls  atomic.Int32
 	status atomic.Int32
 	body   atomic.Value
+	// lastRefreshToken is the refresh_token form value of the latest request.
+	lastRefreshToken atomic.Value
+	// entered and release, when set before the first request, make each
+	// request signal entered and then wait for release before it answers.
+	entered chan struct{}
+	release chan struct{}
 }
 
 func newCountingIdP(t *testing.T, status int, body string) *countingIdP {
 	t.Helper()
 	idp := &countingIdP{}
 	idp.set(status, body)
-	idp.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	idp.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		idp.calls.Add(1)
+		_ = r.ParseForm()
+		idp.lastRefreshToken.Store(r.PostForm.Get("refresh_token"))
+		if idp.entered != nil {
+			idp.entered <- struct{}{}
+			<-idp.release
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(int(idp.status.Load()))
 		_, _ = w.Write([]byte(idp.body.Load().(string)))
@@ -119,7 +132,7 @@ func TestUpstreamTokenRefresher_RemembersRejectedRefresh(t *testing.T) {
 	ctx := context.Background()
 	past := time.Now().Add(-time.Minute)
 
-	t.Run("second refresh does not call the IdP and keeps the original error", func(t *testing.T) {
+	t.Run("second refresh does not call the IdP and reports the remembered rejection", func(t *testing.T) {
 		t.Parallel()
 		env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
 		row := rejectedRefreshRow(past, "dead-rt")
@@ -127,13 +140,13 @@ func TestUpstreamTokenRefresher_RemembersRejectedRefresh(t *testing.T) {
 
 		_, first := env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, first, upstream.ErrGrantRejected)
-		unit := env.idp.calls.Load()
-		require.Positive(t, unit)
+		callsBefore := env.idp.calls.Load()
+		require.Positive(t, callsBefore)
 
 		_, second := env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, second, upstream.ErrGrantRejected)
-		assert.Equal(t, unit, env.idp.calls.Load(), "a remembered rejection must not reach the IdP")
-		assert.Equal(t, first.Error(), second.Error())
+		assert.Equal(t, callsBefore, env.idp.calls.Load(), "a remembered rejection must not reach the IdP")
+		assert.Contains(t, second.Error(), "remembered")
 		assertRetrieveErrorInChain(t, second, http.StatusBadRequest)
 	})
 
@@ -160,16 +173,16 @@ func TestUpstreamTokenRefresher_RemembersRejectedRefresh(t *testing.T) {
 		env.store(t, "session", row)
 		_, err := env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		unit := env.idp.calls.Load()
+		callsBefore := env.idp.calls.Load()
 
-		successor := rejectedRefreshRow(past, "successor-rt")
-		env.store(t, "session", successor)
+		env.store(t, "session", rejectedRefreshRow(past, "successor-rt"))
 		env.idp.set(http.StatusOK, refreshOKBody)
 
-		got, err := env.refresher.RefreshAndStore(ctx, "session", successor)
+		got, err := env.refresher.RefreshAndStore(ctx, "session", row)
 		require.NoError(t, err)
 		assert.Equal(t, "new-access", got.AccessToken)
-		assert.Greater(t, env.idp.calls.Load(), unit)
+		assert.Greater(t, env.idp.calls.Load(), callsBefore)
+		assert.Equal(t, "successor-rt", env.idp.lastRefreshToken.Load())
 	})
 
 	t.Run("the IdP is called again after the TTL", func(t *testing.T) {
@@ -180,16 +193,16 @@ func TestUpstreamTokenRefresher_RemembersRejectedRefresh(t *testing.T) {
 		_, err := env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
 
-		unit := env.idp.calls.Load()
+		callsBefore := env.idp.calls.Load()
 		env.clock.Advance(rejectedRefreshesTTL - time.Second)
 		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		require.Equal(t, unit, env.idp.calls.Load())
+		require.Equal(t, callsBefore, env.idp.calls.Load())
 
 		env.clock.Advance(time.Second)
 		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		assert.Greater(t, env.idp.calls.Load(), unit)
+		assert.Greater(t, env.idp.calls.Load(), callsBefore)
 		assertRetrieveErrorInChain(t, err, http.StatusBadRequest)
 	})
 
@@ -202,11 +215,11 @@ func TestUpstreamTokenRefresher_RemembersRejectedRefresh(t *testing.T) {
 
 		_, err := env.refresher.RefreshAndStore(ctx, "session-a", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		unit := env.idp.calls.Load()
+		callsBefore := env.idp.calls.Load()
 
 		_, err = env.refresher.RefreshAndStore(ctx, "session-b", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		assert.Greater(t, env.idp.calls.Load(), unit)
+		assert.Greater(t, env.idp.calls.Load(), callsBefore)
 	})
 
 	t.Run("the row-read-OK path uses the memory", func(t *testing.T) {
@@ -219,11 +232,11 @@ func TestUpstreamTokenRefresher_RemembersRejectedRefresh(t *testing.T) {
 
 		_, err := env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		unit := env.idp.calls.Load()
-		require.Positive(t, unit)
+		callsBefore := env.idp.calls.Load()
+		require.Positive(t, callsBefore)
 		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		assert.Equal(t, unit, env.idp.calls.Load())
+		assert.Equal(t, callsBefore, env.idp.calls.Load())
 	})
 
 	t.Run("the ErrExpired path uses the memory", func(t *testing.T) {
@@ -236,12 +249,135 @@ func TestUpstreamTokenRefresher_RemembersRejectedRefresh(t *testing.T) {
 
 		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		unit := env.idp.calls.Load()
-		require.Positive(t, unit)
+		callsBefore := env.idp.calls.Load()
+		require.Positive(t, callsBefore)
 		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-		assert.Equal(t, unit, env.idp.calls.Load())
+		assert.Equal(t, callsBefore, env.idp.calls.Load())
 	})
+}
+
+func TestUpstreamTokenRefresher_RememberedRejectionsEnd(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	past := time.Now().Add(-time.Minute)
+	switchTo := upstream.ClientCredentials{ClientID: "replacement"}
+
+	newSwitchEnv := func(t *testing.T) (*rejectedRefreshEnv, *server) {
+		t.Helper()
+		env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+		srv := &server{
+			upstreams:         []handlers.NamedUpstream{{Name: "idp", Provider: env.refresher.providers["idp"]}},
+			upstreamRefresher: env.refresher,
+		}
+		return env, srv
+	}
+
+	t.Run("a client registration switch through the server", func(t *testing.T) {
+		t.Parallel()
+		env, srv := newSwitchEnv(t)
+		row := rejectedRefreshRow(past, "dead-rt")
+		env.store(t, "session", row)
+		_, err := env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		callsBefore := env.idp.calls.Load()
+		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		require.Equal(t, callsBefore, env.idp.calls.Load())
+
+		require.NoError(t, srv.UpdateUpstreamClientCredentials("idp", switchTo))
+
+		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		assert.Greater(t, env.idp.calls.Load(), callsBefore)
+	})
+
+	t.Run("a failed switch keeps the memory", func(t *testing.T) {
+		t.Parallel()
+		env, srv := newSwitchEnv(t)
+		row := rejectedRefreshRow(past, "dead-rt")
+		env.store(t, "session", row)
+		_, err := env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		callsBefore := env.idp.calls.Load()
+
+		require.Error(t, srv.UpdateUpstreamClientCredentials("idp", upstream.ClientCredentials{}))
+		require.Error(t, srv.UpdateUpstreamClientCredentials("missing", switchTo))
+		assert.Zero(t, env.refresher.clientGeneration.Load())
+
+		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		assert.Equal(t, callsBefore, env.idp.calls.Load())
+	})
+
+	t.Run("a switch while the IdP call is in flight", func(t *testing.T) {
+		t.Parallel()
+		env, srv := newSwitchEnv(t)
+		env.idp.entered = make(chan struct{})
+		env.idp.release = make(chan struct{})
+		row := rejectedRefreshRow(past, "dead-rt")
+		env.store(t, "session", row)
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := env.refresher.RefreshAndStore(ctx, "session", row)
+			done <- err
+		}()
+		<-env.idp.entered
+		require.NoError(t, srv.UpdateUpstreamClientCredentials("idp", switchTo))
+		env.idp.release <- struct{}{}
+		require.ErrorIs(t, <-done, upstream.ErrGrantRejected)
+		callsBefore := env.idp.calls.Load()
+
+		// The rejection was filed under the generation read before the call.
+		env.idp.entered = nil
+		_, err := env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		assert.Greater(t, env.idp.calls.Load(), callsBefore)
+	})
+
+	t.Run("a non-rotating refresh elsewhere stores a new access token", func(t *testing.T) {
+		t.Parallel()
+		env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+		row := rejectedRefreshRow(past, "same-rt")
+		env.store(t, "session", row)
+		_, err := env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		callsBefore := env.idp.calls.Load()
+		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		require.Equal(t, callsBefore, env.idp.calls.Load())
+
+		// Another replica refreshed without rotating: same refresh token, a
+		// new access token that has already expired.
+		other := rejectedRefreshRow(past, "same-rt")
+		other.AccessToken = "other-replica-access"
+		env.store(t, "session", other)
+
+		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
+		require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		assert.Greater(t, env.idp.calls.Load(), callsBefore)
+	})
+}
+
+func TestUpstreamTokenRefresher_RememberedErrorIsFresh(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+	row := rejectedRefreshRow(time.Now().Add(-time.Minute), "dead-rt")
+	env.store(t, "session", row)
+	_, fresh := env.refresher.RefreshAndStore(ctx, "session", row)
+	require.ErrorIs(t, fresh, upstream.ErrGrantRejected)
+	assert.NotContains(t, fresh.Error(), "remembered")
+
+	_, first := env.refresher.RefreshAndStore(ctx, "session", row)
+	_, second := env.refresher.RefreshAndStore(ctx, "session", row)
+	require.ErrorIs(t, first, upstream.ErrGrantRejected)
+	assert.Contains(t, first.Error(), "remembered")
+	assert.True(t, oautherr.IsRejectedRefreshGrant(first))
+	assert.NotSame(t, first, second)
+	assert.NotContains(t, first.Error(), "refresh token revoked", "the provider's text is not kept")
 }
 
 func TestUpstreamTokenRefresher_DoesNotRememberOtherFailures(t *testing.T) {
@@ -269,10 +405,10 @@ func TestUpstreamTokenRefresher_DoesNotRememberOtherFailures(t *testing.T) {
 
 			_, err := env.refresher.RefreshAndStore(ctx, "session", row)
 			require.Error(t, err)
-			unit := env.idp.calls.Load()
+			callsBefore := env.idp.calls.Load()
 			_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 			require.Error(t, err)
-			assert.Greater(t, env.idp.calls.Load(), unit, "the IdP must be called every time")
+			assert.Greater(t, env.idp.calls.Load(), callsBefore, "the IdP must be called every time")
 		})
 	}
 }
@@ -294,7 +430,6 @@ func TestUpstreamTokenRefresher_DoesNotRememberNetworkFailure(t *testing.T) {
 	_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, upstream.ErrGrantRejected)
-	assert.Zero(t, env.refresher.rejected.cache.Len())
 }
 
 func TestUpstreamRefreshRejection_ServiceUsesMemory(t *testing.T) {
@@ -305,7 +440,7 @@ func TestUpstreamRefreshRejection_ServiceUsesMemory(t *testing.T) {
 	env.store(t, "session", rejectedRefreshRow(time.Now().Add(-time.Minute), "dead-rt"))
 	svc := upstreamtoken.NewInProcessService(env.stor, env.refresher)
 
-	var unit int32
+	var callsBefore int32
 	for i := range 2 {
 		creds, failed, err := svc.GetAllUpstreamCredentials(ctx, "session")
 		require.NoError(t, err)
@@ -313,11 +448,11 @@ func TestUpstreamRefreshRejection_ServiceUsesMemory(t *testing.T) {
 		require.Contains(t, failed, "idp", "call %d", i)
 		require.ErrorIs(t, failed["idp"], upstream.ErrGrantRejected)
 		if i == 0 {
-			unit = env.idp.calls.Load()
-			require.Positive(t, unit)
+			callsBefore = env.idp.calls.Load()
+			require.Positive(t, callsBefore)
 		}
 	}
-	assert.Equal(t, unit, env.idp.calls.Load())
+	assert.Equal(t, callsBefore, env.idp.calls.Load())
 }
 
 func TestUpstreamRefreshGuard_RefusesOnRememberedRejection(t *testing.T) {
@@ -331,8 +466,8 @@ func TestUpstreamRefreshGuard_RefusesOnRememberedRejection(t *testing.T) {
 	// A bearer request refreshes first and gets the rejection.
 	_, err := env.refresher.RefreshAndStore(ctx, guardTestTSID, row)
 	require.ErrorIs(t, err, upstream.ErrGrantRejected)
-	unit := env.idp.calls.Load()
-	require.Positive(t, unit)
+	callsBefore := env.idp.calls.Load()
+	require.Positive(t, callsBefore)
 
 	guard, err := newUpstreamRefreshGuard(env.stor, env.refresher, []string{"idp"})
 	require.NoError(t, err)
@@ -340,7 +475,7 @@ func TestUpstreamRefreshGuard_RefusesOnRememberedRejection(t *testing.T) {
 
 	err = guard.HandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token"))
 	require.ErrorIs(t, err, fosite.ErrInvalidGrant)
-	assert.Equal(t, unit, env.idp.calls.Load(), "the guard must be answered from the memory")
+	assert.Equal(t, callsBefore, env.idp.calls.Load(), "the guard must be answered from the memory")
 
 	_, err = env.stor.GetUpstreamTokens(ctx, guardTestTSID, "idp")
 	assert.ErrorIs(t, err, storage.ErrNotFound, "the confirmed rejection drops the session's rows")
@@ -360,8 +495,8 @@ func TestNewUpstreamTokenRefresher_RemembersRejections(t *testing.T) {
 		[]handlers.NamedUpstream{{Name: "idp", Provider: idp.provider(t)}}, stor, time.Hour)
 	_, err := refresher.RefreshAndStore(ctx, "session", row)
 	require.ErrorIs(t, err, upstream.ErrGrantRejected)
-	unit := idp.calls.Load()
+	callsBefore := idp.calls.Load()
 	_, err = refresher.RefreshAndStore(ctx, "session", row)
 	require.ErrorIs(t, err, upstream.ErrGrantRejected)
-	assert.Equal(t, unit, idp.calls.Load())
+	assert.Equal(t, callsBefore, idp.calls.Load())
 }

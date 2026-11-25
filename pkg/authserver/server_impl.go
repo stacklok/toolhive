@@ -1185,6 +1185,11 @@ func (s *server) CloseIdleConnections() {
 }
 
 // UpdateUpstreamClientCredentials implements UpstreamCredentialsUpdater.
+//
+// A switch must go through this method for the refresher to forget the
+// refresh rejections it remembers: calling a provider's UpdateClientCredentials
+// directly bypasses that, and a rejection received under the old client keeps
+// being replayed until it expires.
 func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.ClientCredentials) error {
 	name = ResolveUpstreamName(name)
 	for _, u := range s.upstreams {
@@ -1195,7 +1200,14 @@ func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.Cli
 		if !ok {
 			return fmt.Errorf("upstream %q cannot replace its client registration", name)
 		}
-		return updater.UpdateClientCredentials(creds)
+		if err := updater.UpdateClientCredentials(creds); err != nil {
+			return err
+		}
+		// Bump after the provider has swapped; see bumpClientGeneration.
+		if refresher, ok := s.upstreamRefresher.(*upstreamTokenRefresher); ok {
+			refresher.bumpClientGeneration()
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown upstream %q", name)
 }

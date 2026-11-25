@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -73,6 +74,24 @@ type upstreamTokenRefresher struct {
 	sfGroup              singleflight.Group
 	// rejected remembers refresh tokens the IdP rejected; see redeem. It may be nil.
 	rejected *rejectedRefreshes
+	// clientGeneration counts client registration switches; see
+	// bumpClientGeneration. The zero value is usable.
+	clientGeneration atomic.Uint64
+}
+
+// bumpClientGeneration makes every rejection remembered so far stop matching.
+// server.UpdateUpstreamClientCredentials calls it once a provider has swapped
+// its client registration, because an IdP may answer invalid_grant for a
+// refresh token issued to another client (RFC 6749 section 5.2).
+//
+// redeem reads the generation before it calls the IdP and uses that value for
+// both the lookup and the add. Bumping after the swap therefore files a call
+// that raced the swap under the old generation, which costs at most one extra
+// IdP call later, and never files a rejection from the old client under the
+// new generation. One counter serves all providers: switches are rare, and a
+// switch costs the other providers one IdP call each.
+func (r *upstreamTokenRefresher) bumpClientGeneration() {
+	r.clientGeneration.Add(1)
 }
 
 // Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
@@ -148,12 +167,16 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 }
 
 // redeem refreshes row through refreshAndStore, except that a refresh token the
-// IdP already rejected from this process is not sent again: the remembered
-// rejection is returned instead. The memory only holds ErrGrantRejected
-// results, which refreshAndStore returns after rotatedElsewhere found no
-// successor, so transient and non-invalid_grant failures are always retried.
-// It runs inside the singleflight group for rowID, so the check and the add do
-// not race within a process. The row is never written on a rejection.
+// IdP already rejected from this process is not sent again: a new error
+// describing the remembered rejection is returned instead. The memory holds
+// ErrGrantRejected results for which rotatedElsewhere did not return a
+// successor (it also returns nil on a failed re-read, ErrNotFound, or an
+// expired successor), so transient and non-invalid_grant failures are always
+// retried. An entry is keyed on the row, the client registration generation
+// read before the IdP call, and a digest of the row's refresh and access
+// tokens. It runs inside the singleflight group for rowID, so the check and
+// the add do not race within a process. The row is never written on a
+// rejection.
 func (r *upstreamTokenRefresher) redeem(
 	ctx context.Context,
 	sessionID string,
@@ -163,17 +186,18 @@ func (r *upstreamTokenRefresher) redeem(
 	if row.RefreshToken == "" {
 		return r.refreshAndStore(ctx, sessionID, row)
 	}
-	if rejection := r.rejected.lookup(rowID, row.RefreshToken); rejection != nil {
+	generation := r.clientGeneration.Load()
+	if rejection := r.rejected.lookup(generation, rowID, row.RefreshToken, row.AccessToken); rejection != nil {
+		// session_id is credential-adjacent, so it is logged at DEBUG only.
 		slog.Debug("upstream refresh token already rejected; not calling the provider again",
 			"provider_id", row.ProviderID,
+			"session_id", sessionID,
 		)
-		// Log session_id at DEBUG only; it is credential-adjacent.
-		slog.Debug("remembered upstream refresh rejection session", "session_id", sessionID)
 		return nil, rejection
 	}
 	refreshed, err := r.refreshAndStore(ctx, sessionID, row)
 	if err != nil && errors.Is(err, upstream.ErrGrantRejected) {
-		r.rejected.add(rowID, row.RefreshToken, err)
+		r.rejected.add(generation, rowID, row.RefreshToken, row.AccessToken, err)
 	}
 	return refreshed, err
 }

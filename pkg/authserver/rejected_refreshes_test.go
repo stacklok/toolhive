@@ -5,12 +5,19 @@ package authserver
 
 import (
 	"errors"
+	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 // fakeClock is a settable clock for tests that must not sleep.
@@ -35,6 +42,18 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
+// rejectionErr builds the error an upstream provider returns for a rejected
+// refresh.
+func rejectionErr(code string, status int) error {
+	return fmt.Errorf("upstream refresh failed: %w - secret provider text: %w", upstream.ErrGrantRejected,
+		&oauth2.RetrieveError{
+			Response:         &http.Response{StatusCode: status, Status: http.StatusText(status)},
+			ErrorCode:        code,
+			ErrorDescription: "secret provider text",
+			Body:             []byte("secret provider body"),
+		})
+}
+
 func TestRejectedRefreshes_NilAndZeroValuesMiss(t *testing.T) {
 	t.Parallel()
 
@@ -48,8 +67,8 @@ func TestRejectedRefreshes_NilAndZeroValuesMiss(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tt.memory.add("row", "rt", errors.New("rejected"))
-			assert.Nil(t, tt.memory.lookup("row", "rt"))
+			tt.memory.add(0, "row", "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
+			assert.Nil(t, tt.memory.lookup(0, "row", "rt", "at"))
 		})
 	}
 }
@@ -60,14 +79,66 @@ func TestRejectedRefreshes_AddAndLookup(t *testing.T) {
 	clock := newFakeClock()
 	memory, err := newRejectedRefreshes(10, time.Minute, clock.Now)
 	require.NoError(t, err)
+	memory.add(1, "row-a", "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
 
-	want := errors.New("rejected")
-	memory.add("row-a", "rt", want)
+	require.ErrorIs(t, memory.lookup(1, "row-a", "rt", "at"), upstream.ErrGrantRejected)
 
-	assert.Same(t, want, memory.lookup("row-a", "rt"))
+	assert.Nil(t, memory.lookup(1, "row-a", "other-rt", "at"), "a different refresh token must not match")
+	assert.Nil(t, memory.lookup(1, "row-a", "rt", "other-at"), "a different access token must not match")
+	assert.Nil(t, memory.lookup(1, "row-b", "rt", "at"), "a different row must not match")
+	assert.Nil(t, memory.lookup(2, "row-a", "rt", "at"), "a different generation must not match")
+}
 
-	assert.Nil(t, memory.lookup("row-a", "other-rt"), "a different refresh token must not match")
-	assert.Nil(t, memory.lookup("row-b", "rt"), "a different row must not match")
+func TestRejectedRefreshes_DigestSeparatesTokens(t *testing.T) {
+	t.Parallel()
+
+	memory, err := newRejectedRefreshes(10, time.Minute, newFakeClock().Now)
+	require.NoError(t, err)
+	memory.add(0, "row", "ab", "c", rejectionErr("invalid_grant", http.StatusBadRequest))
+
+	assert.Nil(t, memory.lookup(0, "row", "a", "bc"), "moving a byte between the tokens must not match")
+	assert.NotNil(t, memory.lookup(0, "row", "ab", "c"))
+}
+
+func TestRejectedRefreshes_LookupBuildsFreshError(t *testing.T) {
+	t.Parallel()
+
+	memory, err := newRejectedRefreshes(10, time.Minute, newFakeClock().Now)
+	require.NoError(t, err)
+	memory.add(0, "row", "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
+
+	first := memory.lookup(0, "row", "rt", "at")
+	second := memory.lookup(0, "row", "rt", "at")
+	require.Error(t, first)
+	require.Error(t, second)
+	assert.NotSame(t, first, second)
+
+	require.ErrorIs(t, first, upstream.ErrGrantRejected)
+	assert.Contains(t, first.Error(), "remembered")
+	assert.True(t, oautherr.IsRejectedRefreshGrant(first))
+
+	got, ok := errors.AsType[*oauth2.RetrieveError](first)
+	require.True(t, ok)
+	assert.Equal(t, "invalid_grant", got.ErrorCode)
+	require.NotNil(t, got.Response)
+	assert.Equal(t, http.StatusBadRequest, got.Response.StatusCode)
+	assert.Nil(t, got.Body)
+	assert.Empty(t, got.ErrorDescription)
+	assert.NotContains(t, first.Error(), "secret provider")
+}
+
+func TestRejectedRefreshes_DoesNotRememberWithoutRetrieveError(t *testing.T) {
+	t.Parallel()
+
+	memory, err := newRejectedRefreshes(10, time.Minute, newFakeClock().Now)
+	require.NoError(t, err)
+
+	memory.add(0, "row", "rt", "at", fmt.Errorf("plain: %w", upstream.ErrGrantRejected))
+	memory.add(0, "row", "rt2", "at", fmt.Errorf("no response: %w",
+		&oauth2.RetrieveError{ErrorCode: "invalid_grant"}))
+	memory.add(0, "row", "rt3", "at", nil)
+
+	assert.Zero(t, memory.cache.Len())
 }
 
 func TestRejectedRefreshes_ExpiresOnLookup(t *testing.T) {
@@ -76,13 +147,13 @@ func TestRejectedRefreshes_ExpiresOnLookup(t *testing.T) {
 	clock := newFakeClock()
 	memory, err := newRejectedRefreshes(10, time.Minute, clock.Now)
 	require.NoError(t, err)
-	memory.add("row", "rt", errors.New("rejected"))
+	memory.add(0, "row", "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
 
 	clock.Advance(time.Minute - time.Second)
-	assert.NotNil(t, memory.lookup("row", "rt"))
+	assert.NotNil(t, memory.lookup(0, "row", "rt", "at"))
 
 	clock.Advance(time.Second)
-	assert.Nil(t, memory.lookup("row", "rt"), "entry must expire once the TTL has passed")
+	assert.Nil(t, memory.lookup(0, "row", "rt", "at"), "entry must expire once the TTL has passed")
 	assert.Zero(t, memory.cache.Len(), "an expired entry is removed on lookup")
 }
 
@@ -91,12 +162,12 @@ func TestRejectedRefreshes_EvictsOldestAtCapacity(t *testing.T) {
 
 	memory, err := newRejectedRefreshes(2, time.Minute, newFakeClock().Now)
 	require.NoError(t, err)
-	memory.add("row-1", "rt", errors.New("1"))
-	memory.add("row-2", "rt", errors.New("2"))
-	memory.add("row-3", "rt", errors.New("3"))
+	for _, row := range []storage.UpstreamTokenRowID{"row-1", "row-2", "row-3"} {
+		memory.add(0, row, "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
+	}
 
-	assert.Nil(t, memory.lookup("row-1", "rt"))
-	assert.NotNil(t, memory.lookup("row-3", "rt"))
+	assert.Nil(t, memory.lookup(0, "row-1", "rt", "at"))
+	assert.NotNil(t, memory.lookup(0, "row-3", "rt", "at"))
 }
 
 func TestNewRejectedRefreshes_RejectsInvalidInput(t *testing.T) {

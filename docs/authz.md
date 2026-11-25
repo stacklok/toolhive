@@ -693,8 +693,23 @@ The attribute is written after claim prefixing and its name does not start with
 
 On the `upstream:<provider>` path, any claim the upstream's access token omits is
 filled from that same upstream's stored id_token. This includes group and role
-claims under any name, `hd`, `email_verified`, `acr`, `amr` and custom claims.
-The ToolHive-issued token is never read on this path.
+claims under any name, `email_verified`, `acr`, `amr` and custom claims. The
+ToolHive-issued token is never read on this path. This applies to every workload
+that uses the embedded authorization server (`MCPServer`, `MCPRemoteProxy` and
+`VirtualMCPServer`), and it cannot be turned off. The primary upstream is the
+first configured one; only a `VirtualMCPServer` can name another with
+`primaryUpstreamProvider`.
+
+**ToolHive's client registration is authoritative for what the access token
+omits.** Identity providers compute group and role claims per client or per
+audience: Entra ID builds each token from its app registration's group and
+app-role configuration, Okta configures group claims per authorization server
+and app, Auth0 Actions set each token's claims separately, and Keycloak resolves
+`realm_access`/`resource_access` through the requesting client's role scope
+mappings. A group or role claim filled from the id_token is therefore the answer
+for ToolHive's own client registration at the IdP, not the resource API's. When
+the access token carries no group or role claim, configure group filters, app
+roles and client scopes on that registration.
 
 - **Fill-only**: a claim the access token asserts is used as-is, never replaced
   or unioned with the id_token's value.
@@ -709,24 +724,48 @@ The ToolHive-issued token is never read on this path.
   `role_claim_name` — `groupClaimName` and `roleClaimName` on the operator CRDs
   — or one of the defaults `groups`, `roles` and `cognito:groups`), the
   id_token fills none of them; a null or non-list value does not count. One
-  decision therefore never combines the access token's `groups` with the
-  id_token's `roles`. A name that is not filled is also absent as a
+  decision therefore never combines the resource API's `groups` with the client
+  registration's `roles`. A name that is not filled is also absent as a
   `claim_<name>` attribute.
-- **Empty audience filters are not preserved**: a provider that omits the group
-  claim from the access token because a per-audience filter matched nothing will
-  have the id_token's groups filled in. Emit an empty claim instead, or keep
-  groups out of the id_token, if you rely on that filter.
-- **App roles belong to the token's audience app**: in Entra ID, the id_token's
-  `roles` are the user's roles on ToolHive's auth-server client, not on the
-  resource API, and Entra omits `roles` from the access token when the user has
-  none on the resource. When the access token then carries no group or role
-  claim at all, the id_token's `roles` are filled in. If the two are separate
-  app registrations, use one registration for both, or assign no roles on the
-  client app.
-- **Login-time facts**: the id_token is used even after it expires and is
-  replaced only when a refresh rotates one, so a group revoked upstream can keep
-  granting until the ToolHive session ends. Shorten the session, or have the
-  upstream put groups in the access token, if that window is too long.
+- **Empty audience filters**: a provider that omits the group claim from the
+  access token because a per-audience filter matched nothing will have the
+  client registration's groups filled in. Apply the same filter to ToolHive's
+  client registration, emit an empty claim, or keep groups out of the id_token.
+- **Entra ID app roles**: the id_token's `roles` are the user's roles on
+  ToolHive's auth-server client, and Entra omits `roles` from the access token
+  when the user has none on the resource API. Assign app roles on the client
+  registration accordingly, or use one registration for both.
+- **Freshness**: the id_token is used even after it expires. An expired one
+  triggers an upstream refresh, and Entra ID, Okta, Auth0 and Keycloak return a
+  new id_token on refresh when `openid` was requested, so filled groups track
+  the provider at about the id_token's lifetime. A provider that does not rotate
+  it, or a refresh that fails, leaves the old one in place for as long as the
+  session is kept alive; the refresh-token lifespan is renewed on every refresh,
+  so it bounds only idle sessions.
+- **Revoking a user's last group**: Keycloak (and apparently Entra ID) omit
+  `groups` when the user has none instead of sending an empty list, so after
+  the last group is revoked the access token carries no group claim and the
+  stored id_token's list is filled back in until that id_token is replaced. If
+  that matters, have the provider emit an empty list or keep groups out of the
+  id_token. Microsoft also advises against relying on an id_token returned by a
+  refresh for authorization, so on Entra ID prefer group and role claims in the
+  access token.
+
+> **Upgrading: claims from the id_token**
+>
+> Releases v0.41.0 through v0.68.0 fill only `name` and `email` from the
+> id_token. Later releases fill every claim not listed above, so decisions can
+> change in both directions. Review `permit` and `forbid` rules before
+> upgrading:
+>
+> - A `permit` or `forbid` keyed on a group or claim the id_token now supplies
+>   can start matching.
+> - A condition such as `!(principal has claim_X)` or an `unless` clause can
+>   stop matching.
+> - A claim that arrives with an unexpected type can make a policy error, which
+>   denies the request.
+> - With `group_claim_name` set and no group or role claim in the access token,
+>   the id_token's list becomes the group set.
 
 ##### What the fallback claims actually are
 

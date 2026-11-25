@@ -668,10 +668,21 @@ DEBUG upstream access token omits claims the upstream ID token asserts; using th
 
 Group and role claims are included, under whatever name the provider uses — the
 well-known names, `spec.incomingAuth.authzConfig.groupClaimName`/`roleClaimName`,
-and URI-style names such as `https://example.com/groups` alike. So are `hd`,
-`email_verified`, and any other claim the provider asserts about the user or their
+and URI-style names such as `https://example.com/groups` alike. So are
+`email_verified` and any other claim the provider asserts about the user or their
 login (`acr`, `amr`, `auth_time`). Read the group-revocation callout below before
 relying on this.
+
+**ToolHive's client registration is authoritative for what the access token
+omits.** Identity providers compute group and role claims per client or per
+audience: Entra ID builds each token from its app registration's group and
+app-role configuration, Okta configures group claims per authorization server and
+app, Auth0 Actions set each token's claims separately, and Keycloak resolves
+`realm_access`/`resource_access` through the requesting client's role scope
+mappings. A group or role claim filled from the `id_token` is therefore the answer
+for ToolHive's own client registration at the IdP, not the resource API's. When
+the access token carries no group or role claim, configure group filters, app
+roles and client scopes on that registration.
 
 Three categories are never taken from the `id_token`, no matter what the access
 token carries:
@@ -719,50 +730,51 @@ Fill-only has three consequences worth knowing:
   with the `id_token`'s `roles`, and an `id_token`-only `groups` cannot hide the
   access token's `roles`. A name that is not filled is also absent as a
   `claim_<name>` attribute.
-* **An empty per-audience filter is not preserved.** When a group filter matches
-  none of the user's groups, providers typically omit the claim from the access
-  token rather than emit an empty list, and the `id_token`'s list is then filled
-  in. If you rely on such a filter to withhold group membership from this
-  resource server, have the upstream emit an empty claim, or keep groups out of
-  the `id_token`.
-* **App roles belong to the token's audience app.** In Microsoft Entra ID,
-  `roles` lists the user's role assignments on the app the token was issued for:
-  the resource API in the access token, ToolHive's auth-server client in the
-  `id_token`. Entra omits `roles` when the user has no assignment on the
-  resource, so when the access token then carries no group or role claim at
-  all, the `id_token`'s roles, which are the *client* app's, are filled in. If
-  the resource API and the auth-server client are separate registrations, use
-  one registration for both, or assign no roles on the client app.
+* **Empty per-audience filters.** When a group filter matches none of the user's
+  groups, providers typically omit the claim from the access token rather than
+  emit an empty list, and the client registration's list is then filled in.
+  Apply the same filter to ToolHive's client registration, have the upstream
+  emit an empty claim, or keep groups out of the `id_token`.
+* **Entra ID app roles.** `roles` lists the user's role assignments on the app
+  the token was issued for: the resource API in the access token, ToolHive's
+  auth-server client in the `id_token`. Entra omits `roles` when the user has no
+  assignment on the resource, so with no group or role claim in the access token
+  the client app's roles are filled in. Assign app roles on the client
+  registration accordingly, or use one registration for both.
 
-> **Warning**: group revocation latency is session-scoped for `id_token`-sourced
-> claims.
+> **Warning**: how fresh `id_token`-sourced groups are depends on the provider.
 >
-> **Read this if your provider asserts groups in the `id_token` only.** Where a
-> claim comes from the `id_token`, policies evaluate it as a **login-time fact**,
-> not current state:
+> **Read this if your provider asserts groups in the `id_token`.** The stored
+> `id_token` is used even after it expires.
 >
-> * Upstream **access tokens are refreshed**, so a group revoked upstream stops
->   granting within an access-token lifetime (minutes to an hour).
-> * A stored **`id_token` is replaced only when a refresh rotates one**, and it is
->   used even after it expires. So a group revoked upstream can keep granting
->   until the ToolHive **session** ends — up to
->   `spec.authServerConfig.tokenLifespans.refreshTokenLifespan`, **7 days by
->   default**.
+> * An expired `id_token` triggers an upstream refresh even while the access
+>   token is still valid. Entra ID, Okta, Auth0 and Keycloak return a new
+>   `id_token` on refresh when `openid` was requested, so for them filled groups
+>   track the provider at about the `id_token`'s lifetime.
+> * A provider that does not rotate the `id_token` on refresh, or a refresh that
+>   fails, leaves the old one in place, and its groups keep granting for as long
+>   as the session is kept alive.
+>   `spec.authServerConfig.tokenLifespans.refreshTokenLifespan` is renewed on
+>   every refresh, so it bounds only idle sessions.
+> * Keycloak (and apparently Entra ID) omit `groups` when the user has none
+>   instead of sending an empty list. After a user's **last** group is revoked,
+>   the refreshed access token carries no group claim, and the stored
+>   `id_token`'s list is filled back in until that `id_token` is replaced.
 >
-> This is deliberate. Rejecting an expired `id_token` is not the remedy: it would
-> flip policies from permit to deny mid-session for *every* user at once, not just
-> a revoked one, with no configuration change. Sessions routinely outlive
-> `id_token`s by days.
+> Rejecting an expired `id_token` is not the remedy: it would flip policies from
+> permit to deny mid-session for *every* user at once, not just a revoked one.
 >
-> **What to do**: if your authorization model needs group revocation to propagate
-> faster than the session, either have the upstream assert groups in its **access
-> token** (which restores refresh-rate propagation), or shorten
-> `refreshTokenLifespan` to bound the window.
+> **What to do**: if revocation must propagate at the access token's refresh
+> rate, assert groups in the **access token** and either have the provider emit
+> an empty list or keep groups out of the `id_token`. On Entra ID, Microsoft
+> advises against relying on an `id_token` returned by a refresh for
+> authorization, so prefer group and role claims in the access token,
+> configured on the resource API's registration.
 
 What the `id_token` contributes depends on where your provider puts claims:
 
 * **Groups and roles in the access token**: groups come from the access token.
-  Other claims it omits (`hd`, `email_verified`, `acr`, `amr`, custom claims) are
+  Other claims it omits (`email_verified`, `acr`, `amr`, custom claims) are
   filled from the `id_token`.
 * **Groups or roles in the `id_token` only**: group claims are filled from the
   `id_token`, so `permit` and `forbid` rules keyed on `THVGroup` or on a
@@ -771,11 +783,12 @@ What the `id_token` contributes depends on where your provider puts claims:
 > **Migration: claims from the `id_token`**
 >
 > Releases v0.41.0 through v0.68.0 fill only `name` and `email` from the
-> `id_token`, and read group, role and every other claim from the access token
-> only. Deployments whose provider puts those claims in the `id_token` only saw
-> them as absent. Later releases fill every claim not listed above, so `forbid`
-> rules keyed on them can start matching as well as `permit` rules. Review
-> `forbid` rules before upgrading.
+> `id_token`. Later releases fill every claim not listed above, so decisions can
+> change in both directions. Review `permit` and `forbid` rules before
+> upgrading: a rule keyed on a group or claim the `id_token` now supplies can
+> start matching, a `!(principal has claim_X)` condition or an `unless` clause
+> can stop matching, and a claim arriving with an unexpected type can make a
+> policy error, which denies the request.
 
 The token the client presented — the one ToolHive's auth server issued — is not
 a claim source here, even though it mirrors a `name` and `email`, so on this path a

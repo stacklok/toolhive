@@ -652,11 +652,24 @@ func (a *Authorizer) IsAuthorized(
 // # Why the supplement is a deny-list, and why group and role claims are admitted
 //
 // The id_token may supply any claim except those in idTokenClaimsNeverSupplemented,
-// so `groups` and `roles` are admitted and `scope` is not. The shortest form of
-// the argument is parity: every claim of the upstream access token is admitted
-// with no allow-list at all, so an allow-list applied only to the id_token would
-// be an asymmetry between two tokens at the same trust level from the same
-// provider, not a trust boundary being held. Three further points:
+// so `groups` and `roles` are admitted and `scope` is not.
+//
+// For facts about the user (email, name, tenant, object ID) the two tokens agree,
+// but group and role claims are not facts about the user alone: every major IdP
+// computes them per client or per audience. Entra builds the access token from the
+// resource API's registration and the id_token from the client's
+// (groupMembershipClaims, app roles and optional claims are all per registration);
+// Okta configures group claims per token type, authorization server and app; Auth0
+// Actions set each token's claims separately; Keycloak resolves
+// realm_access/resource_access through the requesting client's role scope
+// mappings. So a group or role claim filled from the id_token is the answer for
+// ToolHive's own client registration, not the resource API's. That is the model:
+// when the access token carries no group or role claim, ToolHive's client
+// registration at the IdP is authoritative for them, and group filters, app roles
+// and client scopes are configured there. groupClaimsToWithhold keeps the two
+// registrations' answers from being combined in one decision.
+//
+// Three further points:
 //
 //   - Provenance does not distinguish the two tokens. They are projections of one
 //     credential bundle from one authentication event at one provider (see above),
@@ -671,11 +684,12 @@ func (a *Authorizer) IsAuthorized(
 //     "https://example.com/groups". No fixed list can enumerate names ToolHive
 //     does not choose, and every name missing from one denies silently — the
 //     defect shape of both #5916 and #6049. The rule instead names the claims
-//     that must NEVER be read (idTokenClaimsNeverSupplemented, spec-derived) and
+//     that must NEVER be read (idTokenClaimsNeverSupplemented) and
 //     admits the rest.
-//   - Parity is between the two tokens' claims ABOUT THE USER, which is why the
-//     deny-list is not empty; idTokenClaimsNeverSupplemented explains each entry,
-//     including why a scope is not symmetric between the tokens.
+//   - The deny-list is not empty because some claims describe a token or the
+//     authority it carries rather than the user; idTokenClaimsNeverSupplemented
+//     explains each entry, including why a scope is not symmetric between the
+//     tokens.
 //
 // # Precedence is fill-only, deliberately not union
 //
@@ -701,21 +715,18 @@ func (a *Authorizer) IsAuthorized(
 //     name could win the first-match default loop over the one the access
 //     token asserted.
 //   - When a per-audience filter matches none of the user's groups, providers
-//     typically omit the claim rather than emit an empty list, and the
-//     id_token's list is then filled in. Fill-only therefore does not preserve
-//     audience filtering that yields an empty set. A deployment relying on such
-//     a filter to withhold group membership from this resource server should
-//     have the upstream emit an empty claim instead, or keep groups out of the
-//     id_token.
-//   - App-role claims are scoped to the token's audience application. In Entra
-//     ID, `roles` lists the user's role assignments on the app the token was
-//     minted for: the resource API in the access token, ToolHive's auth-server
-//     client in the id_token. Entra omits `roles` when the user has no
-//     assignment on the resource, so when the access token carries no group or
-//     role claim at all, the id_token's roles — the CLIENT app's — are filled
-//     in. When the resource API and the auth-server client are different
-//     registrations, use one registration for both, or assign no roles on the
-//     client app.
+//     typically omit the claim rather than emit an empty list, and the client
+//     registration's list is then filled in. A deployment relying on such a
+//     filter to withhold group membership from this resource server should apply
+//     the same filter to ToolHive's client registration, have the upstream emit
+//     an empty claim, or keep groups out of the id_token.
+//   - App roles follow the same rule. In Entra ID, `roles` lists the user's
+//     assignments on the app the token was minted for: the resource API in the
+//     access token, ToolHive's auth-server client in the id_token. Entra omits
+//     `roles` when the user has none on the resource, so with no group or role
+//     claim in the access token the client app's roles are filled in. Assign app
+//     roles on the client registration with that in mind, or use one
+//     registration for both.
 //
 // A claim absent from both tokens stays absent, so `has`-guarded policies still
 // fail closed.
@@ -728,14 +739,28 @@ func (a *Authorizer) IsAuthorized(
 // deny mid-session. See Identity.UpstreamIDTokens for that contract and its two
 // consumers.
 //
-// For a provider that asserts groups only in its id_token, group membership is
-// therefore a login-time fact: upstream access tokens are refreshed, so groups
-// read from them track the provider, whereas a stored id_token is replaced only
-// when a refresh rotates one, so a group revoked upstream can keep granting
-// until the ToolHive session ends. Enforcing `exp` is not the remedy — it would
-// flip permit to deny mid-session for every user rather than only the revoked
-// one. Shorten the session (RefreshTokenLifespan) if login-time group
-// membership is too stale to accept.
+// Group claims filled from the id_token are therefore only as fresh as the stored
+// id_token. An expired one triggers an upstream refresh even while the access
+// token is valid (upstreamtoken.InProcessService), and Entra, Okta, Auth0 and
+// Keycloak return a new id_token on refresh when `openid` was requested, so for
+// them the filled groups track the provider at about the id_token's lifetime.
+// A provider that does not rotate the id_token on refresh, or a refresh that
+// fails, leaves the old one in place, and its groups keep granting for as long
+// as the session is kept alive: RefreshTokenLifespan is renewed on every
+// refresh, so it bounds only idle sessions. Enforcing `exp` is not the remedy —
+// it would flip permit to deny mid-session for every user rather than only the
+// revoked one.
+//
+// The window most deployments will see is narrower. Keycloak (and apparently
+// Entra) omit `groups` when the user has none instead of sending an empty list,
+// so once a user's last group is revoked the refreshed access token carries no
+// group claim, and the stored id_token's list is filled back in until that
+// id_token is replaced. Asserting groups in the access token restores
+// refresh-rate revocation only if the provider also emits an empty list, or
+// keeps groups out of the id_token. Microsoft also advises against relying on
+// an id_token returned by a refresh for authorization, so on Entra prefer group
+// and role claims in the access token, configured on the resource API's
+// registration.
 func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, string, error) {
 	requestClaims := jwt.MapClaims(identity.Claims)
 
@@ -944,23 +969,23 @@ func (a *Authorizer) groupClaimNames() []string {
 //     token-binding claims belong here for the same reason.
 //   - The delegated grant. `scope` and `scp` are the one place where the
 //     deny-list is doing real work rather than avoiding confusion, so the
-//     distinction from a group claim matters. A group is a fact about the USER,
-//     which either token can usually report equally well (app roles are the
-//     exception; see resolveClaims). A scope is the AUTHORITY THIS TOKEN
-//     CARRIES, and the only token whose authority is at issue is the access
-//     token that was presented. Providers do not emit `scope` in an id_token per
-//     spec, but where one appears it can reflect what was REQUESTED rather than
-//     what was granted — and requested-minus-granted is routine, not theoretical,
-//     since granular/incremental consent lets a user approve a subset of the
-//     scopes the client asked for. Supplementing it would then match a
-//     `claimset_scp.containsAny(...)` gate on authority the access token does not
-//     actually carry. Never infer authority from a token that is not the one
-//     bearing it. Unlike a group claim name, these two are standardized names
-//     (RFC 8693/9068 `scope`, Entra `scp`), so excluding them by name is an
-//     effective control rather than a cosmetic one — the reason an allow-list had
-//     to go for groups does not transfer here. RFC 8693's `act`/`may_act` and
-//     RFC 9396's `authorization_details` are excluded on the same grounds: they
-//     describe delegation or authority a token carries.
+//     distinction from a group claim matters. A group claim is the provider's
+//     answer about the USER for one client registration, and resolveClaims
+//     explains when ToolHive's registration is the one that answers. A scope is
+//     the AUTHORITY THIS TOKEN CARRIES, and the only token whose authority is at
+//     issue is the access token that was presented. Providers do not emit
+//     `scope` in an id_token per spec, but where one appears it can reflect what
+//     was REQUESTED rather than what was granted — and requested-minus-granted
+//     is routine, not theoretical, since granular/incremental consent lets a
+//     user approve a subset of the scopes the client asked for. Supplementing it
+//     would then match a `claimset_scp.containsAny(...)` gate on authority the
+//     access token does not actually carry. Never infer authority from a token
+//     that is not the one bearing it. Unlike a group claim name, these two are
+//     standardized names (RFC 8693/9068 `scope`, Entra `scp`), so excluding them
+//     by name is an effective control rather than a cosmetic one — the reason an
+//     allow-list had to go for groups does not transfer here. RFC 8693's
+//     `act`/`may_act` and RFC 9396's `authorization_details` are excluded on the
+//     same grounds: they describe delegation or authority a token carries.
 //   - `sub`, because it becomes the Cedar principal entity ID rather than an
 //     attribute, and Cedar has no `has`-style guard in the principal position. An
 //     access token without `sub` violates RFC 9068; failing closed with

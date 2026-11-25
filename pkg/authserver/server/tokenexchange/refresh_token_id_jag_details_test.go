@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -55,9 +56,9 @@ func mintBothPhases(t *testing.T, h *RefreshTokenHandler, req *fosite.AccessRequ
 	return resp, h.PopulateTokenEndpointResponse(t.Context(), req, resp)
 }
 
-// rawPayloadMember returns the raw bytes of a member of a JWT's payload, nil
-// when the member is absent.
-func rawPayloadMember(t *testing.T, token, name string) json.RawMessage {
+// signedDetails returns the raw bytes of a JWT's authorization_details claim,
+// nil when the claim is absent.
+func signedDetails(t *testing.T, token string) json.RawMessage {
 	t.Helper()
 	parts := strings.Split(token, ".")
 	require.Len(t, parts, 3)
@@ -65,7 +66,7 @@ func rawPayloadMember(t *testing.T, token, name string) json.RawMessage {
 	require.NoError(t, err)
 	var members map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(payload, &members))
-	return members[name]
+	return members["authorization_details"]
 }
 
 // TestIDJAGSignsGrantedDetails proves AS-1 signs the granted entries into the
@@ -94,7 +95,7 @@ func TestIDJAGSignsGrantedDetails(t *testing.T) {
 
 	// The token's JSON encoding escapes <, > and &; every digit is kept.
 	signed := `[` + bigEntry + `,{"type":"` + testOtherType + `","note":"a\u003cb\u003e\u0026c"}]`
-	assert.Equal(t, signed, string(rawPayloadMember(t, resp.GetAccessToken(), "authorization_details")),
+	assert.Equal(t, signed, string(signedDetails(t, resp.GetAccessToken())),
 		"the ID-JAG claim has the client's entries in encoding/json form")
 	assert.Equal(t, json.RawMessage(signed), resp.GetExtra("authorization_details"),
 		"the response member has the signed bytes")
@@ -177,7 +178,7 @@ func TestIDJAGWithoutDetails(t *testing.T) {
 			}
 			resp, err := mintBothPhases(t, h, req)
 			require.NoError(t, err)
-			assert.Nil(t, rawPayloadMember(t, resp.GetAccessToken(), "authorization_details"))
+			assert.Nil(t, signedDetails(t, resp.GetAccessToken()))
 			assert.Nil(t, resp.GetExtra("authorization_details"))
 		})
 	}
@@ -194,13 +195,42 @@ func TestIDJAGDropsWholeEntries(t *testing.T) {
 
 	resp, err := mintBothPhases(t, h, req)
 	require.NoError(t, err)
-	assert.Equal(t, `[`+testCallEntry+`]`, string(rawPayloadMember(t, resp.GetAccessToken(), "authorization_details")))
+	assert.Equal(t, `[`+testCallEntry+`]`, string(signedDetails(t, resp.GetAccessToken())))
 	assert.Equal(t, json.RawMessage(`[`+testCallEntry+`]`), resp.GetExtra("authorization_details"))
 }
 
+// signedSizeEntries returns a testCallType entry whose encoding/json form is
+// size bytes, mostly "<", which encoding/json writes as a six-byte escape.
+func signedSizeEntries(t *testing.T, size int) (sent, signed string) {
+	t.Helper()
+	prefix, suffix := `[{"type":"`+testCallType+`","note":"`, `"}]`
+	room := size - len(prefix) - len(suffix)
+	escaped, plain := room/6, room%6
+	sent = prefix + strings.Repeat("<", escaped) + strings.Repeat("x", plain) + suffix
+	signed = prefix + strings.Repeat(`\u003c`, escaped) + strings.Repeat("x", plain) + suffix
+	require.Len(t, signed, size)
+	return sent, signed
+}
+
+// TestIDJAGDetailsSignedSizeLimit proves entries whose signed form is exactly
+// maxSignedIDJAGDetails are minted, although the request value is far smaller.
+func TestIDJAGDetailsSignedSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	h, _ := detailsIDJAGHandler(t, newMintDetailsRegistry(t, keepAllHook, keepAllHook))
+	sent, signed := signedSizeEntries(t, maxSignedIDJAGDetails)
+	req := idJAGRequest("x.ok")
+	req.Form.Set("authorization_details", sent)
+
+	resp, err := mintBothPhases(t, h, req)
+	require.NoError(t, err)
+	assert.Equal(t, signed, string(signedDetails(t, resp.GetAccessToken())))
+	assert.Equal(t, json.RawMessage(signed), resp.GetExtra("authorization_details"))
+}
+
 // TestIDJAGDetailsRefusals proves each refusal of the authorization_details
-// parameter, in both handler phases, mints nothing, and that the shape checks
-// run before the store is read.
+// parameter, in both handler phases, has its code and HTTP status and mints
+// nothing, and that the shape checks run before the store is read.
 func TestIDJAGDetailsRefusals(t *testing.T) {
 	t.Parallel()
 
@@ -220,6 +250,7 @@ func TestIDJAGDetailsRefusals(t *testing.T) {
 		return authorizationdetails.Result{}, hookRefusal
 	}
 	one := `[` + testCallEntry + `]`
+	tooLarge, _ := signedSizeEntries(t, maxSignedIDJAGDetails+1)
 
 	tests := []struct {
 		name       string
@@ -257,6 +288,8 @@ func TestIDJAGDetailsRefusals(t *testing.T) {
 		{name: "a value over 64 KiB, no registry", noRegistry: true,
 			values: []string{`[{"type":"` + testCallType + `","note":"` + strings.Repeat("x", 64*1024) + `"}]`},
 			code:   "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
+		{name: "a value that signs to over 32 KiB", values: []string{tooLarge}, storeRead: true,
+			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
 		{name: "the empty array, no registry", noRegistry: true, values: []string{"[]"}, storeRead: true,
 			code: "invalid_authorization_details", desc: reasonDetailsEmptyGrant},
 		{name: "an object, not an array", values: []string{testCallEntry},
@@ -295,12 +328,22 @@ func TestIDJAGDetailsRefusals(t *testing.T) {
 			req := idJAGRequest("x.ok")
 			req.Form["authorization_details"] = tc.values
 
+			status := http.StatusBadRequest
+			if tc.code == "server_error" {
+				status = http.StatusInternalServerError
+			}
+			resp := fosite.NewAccessResponse()
 			for _, err := range []error{
 				h.HandleTokenEndpointRequest(t.Context(), req),
-				h.PopulateTokenEndpointResponse(t.Context(), req, fosite.NewAccessResponse()),
+				h.PopulateTokenEndpointResponse(t.Context(), req, resp),
 			} {
 				requireOAuthError(t, err, tc.code, tc.desc)
+				var oauthErr *fosite.RFC6749Error
+				require.ErrorAs(t, err, &oauthErr)
+				assert.Equal(t, status, oauthErr.CodeField)
 			}
+			assert.Empty(t, resp.GetAccessToken(), "nothing is minted")
+			assert.Nil(t, resp.GetExtra("authorization_details"))
 			if tc.storeRead {
 				assert.NotZero(t, store.reads, "the hooks run after the grant is read")
 			} else {
@@ -349,14 +392,20 @@ func TestIDJAGDetailsRefusalLogs(t *testing.T) {
 		}
 	}
 	secretEntry := `{"type":"` + testCallType + `","note":"entry-value"}`
+	tooLargeSecret := `[{"type":"` + testCallType + `","note":"entry-value` + strings.Repeat("<", 6000) + `"}]`
 	for _, tc := range []struct {
 		name     string
 		registry *authorizationdetails.Registry
 		details  string
 		want     []string
+		never    []string
 	}{
-		{name: "unknown_type names the types", details: `[{"type":"https://example.com/unknown","note":"entry-value"}]`,
-			want: []string{"reason=unknown_type", "https://example.com/unknown"}},
+		{name: "unknown_type does not name the request's types",
+			details: `[{"type":"https://example.com/unknown","note":"entry-value"}]`,
+			want:    []string{"reason=unknown_type"}, never: []string{"https://example.com/unknown"}},
+		{name: "a value that signs to over 32 KiB", details: tooLargeSecret,
+			registry: newMintDetailsRegistry(t, keepAllHook, keepAllHook),
+			want:     []string{"reason=details_too_large"}},
 		{name: "empty_grant names the dropped types", details: `[` + secretEntry + `]`,
 			registry: newMintDetailsRegistry(t, grantingHook(), keepAllHook),
 			want:     []string{"reason=empty_grant", testCallType}},
@@ -381,7 +430,7 @@ func TestIDJAGDetailsRefusalLogs(t *testing.T) {
 			for _, want := range tc.want {
 				assert.Contains(t, text, want)
 			}
-			for _, secret := range []string{"entry-value", "private hook hint"} {
+			for _, secret := range append([]string{"entry-value", "private hook hint"}, tc.never...) {
 				assert.NotContains(t, text, secret)
 			}
 		})

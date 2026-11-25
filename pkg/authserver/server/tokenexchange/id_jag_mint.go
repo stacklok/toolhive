@@ -122,8 +122,8 @@ type idJAGMint struct {
 	// NotAfter caps exp; zero values are ignored.
 	NotAfter []time.Time
 	// AuthorizationDetails is the JSON array of granted entries, nil for none,
-	// with the bytes the client sent (see grantIDJAGDetails). mintIDJAG signs
-	// its encoding/json form as the authorization_details claim.
+	// already in encoding/json form (see grantIDJAGDetails). mintIDJAG signs
+	// that form as the authorization_details claim.
 	AuthorizationDetails json.RawMessage
 }
 
@@ -373,8 +373,8 @@ func checkIDJAGBoundsOpen(m idJAGMint, now time.Time) (string, error) {
 // integers; exp is the floor of the earliest of now plus the target lifetime
 // and every non-zero NotAfter. There is no nbf, and act is present only when
 // set. authorization_details is present only when m.AuthorizationDetails is
-// set, as its encoding/json form: compacted, with <, > and & escaped, and every
-// digit of a number kept. Every error is a server_error with no detail for
+// set, as its encoding/json form: compacted, with <, >, &, U+2028 and U+2029
+// escaped, and every digit of a number kept. Every error is a server_error with no detail for
 // the client; the cause is its debug field, which the token endpoint logs.
 // It signs only the selected subject claims, never m.Subject.Claims. It checks
 // each claim's name against the allowlist and the reserved names, and its value
@@ -416,9 +416,9 @@ func mintIDJAG(
 	var details json.RawMessage
 	if m.AuthorizationDetails != nil {
 		// The signer encodes the claims with encoding/json, which compacts a
-		// json.RawMessage and escapes <, > and &. Encoding it here first gives
-		// the exact bytes the token carries, for the response to echo; numbers
-		// keep every digit.
+		// json.RawMessage and escapes <, >, &, U+2028 and U+2029. Encoding it
+		// here first gives the exact bytes the token carries, for the response
+		// to echo; numbers keep every digit.
 		if details, err = json.Marshal(m.AuthorizationDetails); err != nil {
 			return mintedIDJAG{}, serverFailure(hintMintFailed, fmt.Errorf("authorization_details: %w", err))
 		}

@@ -55,13 +55,9 @@ func (h *RefreshTokenHandler) parseIDJAGDetails(
 	pending, err := registry.ParseIDJAGIssuance(raw)
 	switch {
 	case errors.Is(err, authorizationdetails.ErrUnknownType):
-		// Parse accepted the shape, so the value is a bounded array of objects.
-		// The types tell the operator which registration is missing; the
-		// entries themselves are never logged.
-		var entries []json.RawMessage
-		_ = json.Unmarshal([]byte(raw), &entries)
-		return nil, refuse(ctx, log.With("types", entryTypes(entries)), reasonDetailsUnknownType,
-			idJAGDetailsRefusal(reasonDetailsUnknownType))
+		// The types are request text that matched no registration, so they
+		// are not logged, as on token exchange for an access token.
+		return nil, refuse(ctx, log, reasonDetailsUnknownType, idJAGDetailsRefusal(reasonDetailsUnknownType))
 	case err != nil:
 		return nil, refuse(ctx, log, reasonDetailsMalformedEntry, idJAGDetailsRefusal(reasonDetailsMalformedEntry))
 	}
@@ -73,17 +69,36 @@ func (h *RefreshTokenHandler) parseIDJAGDetails(
 // any entry. New never fails for an empty map.
 var noDetailsTypes, _ = authorizationdetails.New(nil)
 
+// maxSignedIDJAGDetails bounds the ID-JAG's authorization_details claim in
+// the form it is signed in. encoding/json writes <, >, &, U+2028 and U+2029 as
+// six-byte escapes, so a value within the parameter's 64 KiB limit can sign to
+// several times its size. The redemption request then carries the ID-JAG
+// base64url-encoded, a third larger, in a body every token endpoint caps at
+// 64 KiB (handlers.MaxDCRBodySize): 32 KiB of entries take about 43 KiB of it,
+// which leaves about 21 KiB for the ID-JAG's other claims, its header and
+// signature, and the rest of the form, a client assertion included.
+const maxSignedIDJAGDetails = 32 * 1024
+
+// reasonDetailsTooLarge is the logged reason for entries over
+// maxSignedIDJAGDetails. The client gets malformed_entry, as for a parameter
+// over 64 KiB.
+const reasonDetailsTooLarge = "details_too_large"
+
 // grantIDJAGDetails asks the registered hooks which of the requested entries
-// the ID-JAG carries. It returns the kept entries as a JSON array with the
-// bytes the client sent, or nil when pending is nil.
+// the ID-JAG carries. It returns the kept entries as the JSON array the ID-JAG
+// signs, or nil when pending is nil.
 //
 // The hooks may only keep or drop whole entries (Pending.GrantSubset), as on
-// ID-JAG redemption, so the entries AS-2 receives are the ones the client
-// asked for: mintIDJAG signs them in encoding/json form, which compacts them
-// and escapes <, > and &, and keeps every digit of a number. A type whose hook keeps none of its entries is
+// ID-JAG redemption. The result holds each kept entry's request bytes in
+// encoding/json form: compacted, with <, >, &, U+2028 and U+2029 escaped, and
+// every digit of a number kept. Kept entries are grouped by type, types in the
+// order they first appear in the request, so a request that interleaves types
+// comes back reordered. A type whose hook keeps none of its entries is
 // dropped; when no entry is left at all, the request is refused with
 // empty_grant, because an ID-JAG without the claim would yield an
-// unrestricted token. "[]" is refused the same way. A hook's
+// unrestricted token. "[]" is refused the same way. Kept entries over
+// maxSignedIDJAGDetails in that form are refused with malformed_entry, before
+// the actor validator runs and before anything is signed. A hook's
 // authorizationdetails.Error passes through with its code and reason; any
 // other hook error, a *fosite.RFC6749Error included, or a hook that changes or
 // adds an entry, is a server_error whose cause is never logged or sent, as on
@@ -146,7 +161,17 @@ func grantIDJAGDetails(
 		return nil, refuse(ctx, d.log.With("types", subset.Dropped), reasonDetailsEmptyGrant,
 			idJAGDetailsRefusal(reasonDetailsEmptyGrant))
 	}
-	return subset.Entries, nil
+	// The form mintIDJAG signs: encoding/json leaves these bytes unchanged
+	// when it encodes the claims.
+	signed, err := json.Marshal(subset.Entries)
+	if err != nil {
+		return nil, refuse(ctx, d.log, refuseInternal, serverFailure(hintMintFailed,
+			errors.New("kept authorization_details could not be encoded")))
+	}
+	if len(signed) > maxSignedIDJAGDetails {
+		return nil, refuse(ctx, d.log, reasonDetailsTooLarge, idJAGDetailsRefusal(reasonDetailsMalformedEntry))
+	}
+	return signed, nil
 }
 
 // earliest returns the earliest non-zero time, or the zero time for none.

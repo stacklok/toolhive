@@ -2187,14 +2187,23 @@ and 4.4.1; see [On ID-JAG redemption](#on-id-jag-redemption)). The steps:
    no entry is left, `[]` included, the request is refused with `empty_grant`,
    because an ID-JAG without the claim would yield an unrestricted token. A
    hook that changes or adds an entry is a `server_error`.
+4. **The signed size.** Kept entries over 32 KiB in the form they are signed
+   in are refused with `malformed_entry`, before the actor validator. The
+   escapes below can make that form several times the request's size, and the
+   redemption request carries the ID-JAG base64url-encoded in a body every token
+   endpoint caps at 64 KiB; 32 KiB leaves room there for the ID-JAG's other
+   claims and the rest of the form.
 
-**Token and response.** The ID-JAG's `authorization_details` claim holds the
-kept entries as the client sent them, in `encoding/json` form: compacted, with
-`<`, `>` and `&` escaped, and every digit of a number kept. The response
-returns the same bytes in its `authorization_details` member (draft section
-4.3.4). A ToolHive AS-2 copies the signed bytes into its access token, so the
-ID-JAG's claim, both responses and the access token's claim are byte for byte
-the same.
+**Token and response.** The ID-JAG's `authorization_details` claim holds each
+kept entry's request bytes in `encoding/json` form: compacted, with `<`, `>`,
+`&`, U+2028 and U+2029 escaped, and every digit of a number kept. Kept entries
+are grouped by type, types in the order they first appear, so a request that
+interleaves types comes back reordered. The response returns the same bytes in
+its `authorization_details` member (draft section 4.3.4). A ToolHive AS-2
+copies the signed bytes of the entries it keeps into its access token: when
+it keeps them all, the ID-JAG's claim, both responses and the access token's
+claim are the same bytes, and when its hooks drop some, the access token
+carries fewer.
 
 **Errors.** A refusal is sent in the first handler phase that reaches it, and
 nothing is minted.
@@ -2206,13 +2215,16 @@ nothing is minted.
 | A value that breaks the generic shape rules | `invalid_authorization_details`, `malformed_entry` |
 | A hook refuses with an `authorizationdetails.Error` | its code, its reason as `error_description` |
 | `[]`, or the hooks together keep none of the entries | `invalid_authorization_details`, `empty_grant` |
+| The kept entries are over 32 KiB in their signed form | `invalid_authorization_details`, `malformed_entry` |
 | A hook fails (any error but an `authorizationdetails.Error`, a fosite error included), returns invalid output, or changes or adds an entry | 500 `server_error`, "The authorization_details could not be processed." |
 
 Each refusal is logged as `Exchange grant refused` at WARN with a fixed reason:
-`repeated`, `unknown_type` (with the entry `types`, as on redemption),
-`malformed_entry`, `empty_grant` (with the dropped `types`), `hook_rejected`
-(with `code` and `hook_reason`) or `hook_failed`. The text of a failed hook's
-error and an entry's value are never logged.
+`repeated`, `unknown_type`, `malformed_entry`, `details_too_large`,
+`empty_grant` (with the dropped `types`), `hook_rejected` (with `code` and
+`hook_reason`) or `hook_failed`. The types of an `unknown_type` refusal are
+request text that matched no registration, so they are not logged, as on token
+exchange for an access token. The text of a failed hook's error and an entry's
+value are never logged.
 
 **Release order.** An AS-2 that predates claim processing ignores the claim and
 issues an access token the entry does not restrict. Send entries only to an
@@ -2388,10 +2400,12 @@ accepts exactly one entry of its type, with no other members, and grants it
 unchanged; it does not see entries of other registered types. Otherwise it
 refuses with `invalid_authorization_details` and one of
 `single_entry_required`, `malformed_entry`, `invalid_arguments_hash` or
-`invalid_method`. The authorization server checks only the entry's shape; the
-receiver of the token enforces the call, using `toolcalldetails.ParseEntry` for
-the same shape check. The vMCP enforces a tool-call entry and refuses a
-list-call entry for now; see
+`invalid_method`. On a request for an ID-JAG it also refuses a list-call entry,
+with `list_call_unsupported`, so no ID-JAG carries an entry the vMCP would
+refuse. The authorization server checks only the entry's shape; the receiver
+of the token enforces the call, using `toolcalldetails.ParseEntry` for the same
+shape check. The vMCP enforces a tool-call entry and refuses a list-call entry
+for now; see
 [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 ## Refresh tokens through token exchange
@@ -2952,7 +2966,7 @@ broker's `subject_token_audiences` is missing there, a target that requires
 | `sub_id` | object | Only if the target requires it: `{"format": "iss_sub", "iss", "sub"}` (RFC 9493) |
 | `https://toolhive.dev/upstream_subject` | object | Only if the target requires it: `{"iss", "claim", "value"}`. The config calls it `upstream_subject` |
 | `act` | object | Only for a client with an actor profile: `{"iss", "sub"}`, the issuer registered for the client's validator and the agent ID it returned |
-| `authorization_details` | array | Only if the request sent it: the entries the type hooks kept, as the client sent them in `encoding/json` form (see [On ID-JAG minting](#on-id-jag-minting)) |
+| `authorization_details` | array | Only if the request sent it: the entries the type hooks kept, their request bytes in `encoding/json` form (see [On ID-JAG minting](#on-id-jag-minting)) |
 
 There is no `nbf`, `scope` or `cnf` claim. A client without
 an actor profile sends no actor token, so the ID-JAG has no `act` and the client in

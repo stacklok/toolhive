@@ -23,13 +23,11 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
-	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -382,13 +380,12 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		res = f.as2.redeem(t, f.as2.client, f.sessionLogin)
 		requireError(t, res, "invalid_grant", "invalid_assertion: The assertion JOSE typ header is not supported.")
 
-		// The broker sends one tool-call entry on the ID-JAG request. AS-1
+		// The broker sends one call entry on the ID-JAG request. AS-1
 		// signs it into the ID-JAG and returns it; the broker redeems with no
 		// parameter, and AS-2 copies the signed entry into the access token
 		// and returns it. All four are the same bytes, and the token still
 		// lives no longer than the ID-JAG.
-		entry := `[{"type":"https://toolhive.dev/mcp_tool_call","server":"github","tool":"pull_request_read",` +
-			`"arguments_sha256":"` + strings.Repeat("ab", 32) + `","operation_id":"op-1"}]`
+		entry := `[` + e2eCall + `]`
 		mintWith := func(details string) tokenResult {
 			return f.as1Env.requestIDJAGWith(t, broker, f.session, f.as2Issuer, func(form url.Values) {
 				actorPairWith("accept")(form)
@@ -416,7 +413,7 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		mark = a.callCount()
 		twoEntries := strings.TrimSuffix(entry, "]") + "," + strings.TrimPrefix(entry, "[")
 		res = mintWith(twoEntries)
-		requireError(t, res, "invalid_authorization_details", "single_entry_required")
+		requireError(t, res, "invalid_authorization_details", e2eSingleEntry)
 		assert.Equal(t, mark, a.callCount(), "a refused entry never reaches the validator")
 
 		// A redemption that still sends the parameter is refused.
@@ -581,12 +578,9 @@ func startFlow(t *testing.T, backend string) *flow {
 	// Each login consumes one queued user.
 	f.oidc.QueueUser(&mockoidc.MockUser{Subject: realLoginUpstreamSubject, Email: realLoginUpstreamEmail})
 
-	// The MCP call type is registered on both servers: AS-1 signs the entry
-	// into the ID-JAG, and AS-2 copies it into the access token.
-	callTypes := map[string]authorizationdetails.Type{}
-	toolcalldetails.Register(callTypes)
-	callRegistry, err := authorizationdetails.New(callTypes)
-	require.NoError(t, err)
+	// A call type is registered on both servers: AS-1 signs the entry into
+	// the ID-JAG, and AS-2 copies it into the access token.
+	callRegistry := e2eDetailsRegistry(t)
 
 	f.as1Env = startXRTServerOn(t, backend, l1, func(cfg *authserver.RunConfig, issuer string) {
 		cfg.Upstreams = []authserver.UpstreamRunConfig{realLoginUpstream(t, f.oidc, issuer)}

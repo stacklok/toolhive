@@ -35,11 +35,6 @@ type idJAGDecision struct {
 	// log carries what a refusal may log; nothing above Debug carries sub_id or
 	// the upstream identity.
 	log *slog.Logger
-	// now is the instant that checked the grant. For a client without an actor
-	// profile the mint reuses it, so exp and expires_in agree with that check.
-	// For a client with a profile the mint is at the later instant at which the
-	// validator's answer was checked (see issueIDJAG).
-	now time.Time
 }
 
 // decideIDJAG decides a request that exchanges an exchange grant's refresh
@@ -125,7 +120,6 @@ func (h *RefreshTokenHandler) decideIDJAG(
 		actor:      policy.ActorProfile,
 		actorToken: shape.ActorToken,
 		log:        log,
-		now:        now,
 	}
 	if decided.mint.AuthorizationDetails, err = grantIDJAGDetails(
 		ctx, pending, decided, requester.GetClient(), grant); err != nil {
@@ -142,14 +136,15 @@ func (h *RefreshTokenHandler) decideIDJAG(
 // request and never in HandleTokenEndpointRequest, as the last check before the
 // mint. The ID-JAG then names the agent in act, is minted at the instant the
 // validator's answer was checked (iat), and ends no later than the credential
-// does. For other clients it is minted at d.now. The grant is not read again
-// after the validator: a revoke that commits while the validator runs does not
-// stop this ID-JAG, which ends at its own short expiry, but a grant that
-// expires meanwhile is refused as invalid_grant by the mint's bounds check.
+// does. For other clients the clock is read again here, after the decision's
+// hooks ran, and the ID-JAG is minted at that instant. The grant is not read
+// again: a revoke that commits after the decision does not stop this ID-JAG,
+// which ends at its own short expiry, but a grant that expires meanwhile is
+// refused as invalid_grant by the mint's bounds check, on either path.
 func (h *RefreshTokenHandler) issueIDJAG(
 	ctx context.Context, d *idJAGDecision, responder fosite.AccessResponder,
 ) error {
-	mint, now := d.mint, d.now
+	mint, now := d.mint, h.clock()
 	var res ActorResult
 	if d.actor != nil {
 		if err := h.refuseTerminalActor(ctx, d); err != nil {

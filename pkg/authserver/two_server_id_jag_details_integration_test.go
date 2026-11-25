@@ -19,44 +19,54 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
-	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
+// The authorization server knows no type of its own, so these tests register
+// test types. The MCP call type's registration is tested with the type, in
+// pkg/mcp/toolcalldetails.
 const (
-	// e2eNumberType is a test type whose entries carry a number, which the
-	// MCP call type does not allow.
+	// e2eCallType is a test type whose hook keeps exactly one entry, like a
+	// call-bound type.
+	e2eCallType = "https://example.com/e2e-call"
+	// e2eSingleEntry is the reason e2eCallType's hook refuses more than one
+	// entry with.
+	e2eSingleEntry = "single_entry_required"
+	// e2eNumberType is a test type whose hook keeps every entry.
 	e2eNumberType = "https://example.com/e2e-number"
 	// e2eExchangeOnlyType is registered for token exchange and the JWT-bearer
 	// grant but not opted into ID-JAG issuance.
 	e2eExchangeOnlyType = "https://example.com/e2e-exchange-only"
-	// e2eToolCall is one MCP tool-call entry.
-	e2eToolCall = `{"type":"` + toolcalldetails.Type + `","server":"github","tool":"github_pull_request_read",` +
-		`"arguments_sha256":"` + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" + `",` +
+	// e2eCall is one e2eCallType entry.
+	e2eCall = `{"type":"` + e2eCallType + `","server":"github","tool":"github_pull_request_read",` +
 		`"operation_id":"op-1"}`
 )
 
-// e2eDetailsRegistry registers the MCP call type and e2eNumberType, both opted
-// into ID-JAG issuance and registered for the JWT-bearer grant, and
-// e2eExchangeOnlyType without the opt-in. The test types' hooks keep every
-// entry.
+// e2eDetailsRegistry registers e2eCallType and e2eNumberType, both opted into
+// ID-JAG issuance and registered for the JWT-bearer grant, and
+// e2eExchangeOnlyType without the opt-in.
 func e2eDetailsRegistry(t *testing.T) *authorizationdetails.Registry {
 	t.Helper()
 	keep := func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
 		return authorizationdetails.Result{Entries: req.Entries}, nil
 	}
-	types := map[string]authorizationdetails.Type{
-		e2eNumberType: {
-			GrantTypes: []string{authorizationdetails.IDJAGIssuance, oauthproto.GrantTypeJWTBearer},
-			Grant:      keep,
-		},
+	single := func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+		if len(req.Entries) != 1 {
+			return authorizationdetails.Result{}, authorizationdetails.Error{
+				Code: authorizationdetails.CodeInvalidAuthorizationDetails, Reason: e2eSingleEntry,
+			}
+		}
+		return authorizationdetails.Result{Entries: req.Entries}, nil
+	}
+	idJAG := []string{authorizationdetails.IDJAGIssuance, oauthproto.GrantTypeJWTBearer}
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		e2eCallType:   {GrantTypes: idJAG, Grant: single},
+		e2eNumberType: {GrantTypes: idJAG, Grant: keep},
 		e2eExchangeOnlyType: {
 			GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
 			Grant:      keep,
 		},
-	}
-	toolcalldetails.Register(types)
-	registry, err := authorizationdetails.New(types)
+	})
 	require.NoError(t, err)
 	return registry
 }
@@ -81,11 +91,11 @@ func withDetails(values ...string) func(url.Values) {
 
 // TestIDJAGDetailsAcrossTwoServers proves the end-to-end path: AS-1 mints an
 // ID-JAG with the requested entries signed into its authorization_details
-// claim, AS-2 redeems it with no parameter, and the access token carries the
-// same entries byte for byte. One entry holds an integer above 2^53, which a
-// float64 would round, and characters encoding/json escapes. The four copies
-// (AS-1's response member, the ID-JAG claim, AS-2's response member and the
-// access token's claim) are all the same bytes.
+// claim, AS-2 redeems it with no parameter and keeps every entry, and the
+// access token carries the signed bytes. One entry holds an integer above
+// 2^53, which a float64 would round, and characters encoding/json escapes.
+// The four copies (AS-1's response member, the ID-JAG claim, AS-2's response
+// member and the access token's claim) are all the same bytes.
 func TestIDJAGDetailsAcrossTwoServers(t *testing.T) {
 	t.Parallel()
 	h := startTwoServerIDJAGConfigured(t, []string{xrtIDJAGResource}, nil, nil,
@@ -93,9 +103,10 @@ func TestIDJAGDetailsAcrossTwoServers(t *testing.T) {
 		authserverrunner.WithAuthorizationDetailsRegistry(e2eDetailsRegistry(t)))
 
 	// Sent with whitespace, which the signed form compacts.
-	sent := `[ ` + e2eToolCall + `, {"type":"` + e2eNumberType + `", "n": 12345678901234567890123, "note":"a<b>&c"} ]`
-	signed := `[` + e2eToolCall + `,{"type":"` + e2eNumberType + `","n":12345678901234567890123,` +
-		`"note":"a` + "\\u003cb\\u003e\\u0026" + `c"}]`
+	sent := `[ ` + e2eCall + `, {"type":"` + e2eNumberType + `", "n": 12345678901234567890123, ` +
+		`"note":"a<b>&c` + "\u2028\u2029" + `"} ]`
+	signed := `[` + e2eCall + `,{"type":"` + e2eNumberType + `","n":12345678901234567890123,` +
+		`"note":"a` + "\\u003cb\\u003e\\u0026c\\u2028\\u2029" + `"}]`
 
 	before := time.Now()
 	grant := h.as1.idJAGGrant(t, h.as1.broker)
@@ -130,8 +141,8 @@ func TestIDJAGDetailsAcrossTwoServers(t *testing.T) {
 }
 
 // TestIDJAGDetailsRefusalsAcrossTwoServers proves where each refusal of the
-// end-to-end path happens: entries the MCP call type refuses are refused at
-// AS-1, which mints nothing; a type AS-1 has no hook for is refused at AS-1;
+// end-to-end path happens: entries a hook refuses are refused at AS-1, which
+// mints nothing; a type AS-1 has no hook for is refused at AS-1;
 // a redemption that still sends the parameter is refused at AS-2; and an AS-2
 // without the type refuses the ID-JAG AS-1 signed instead of issuing an
 // unrestricted token.
@@ -142,15 +153,14 @@ func TestIDJAGDetailsRefusalsAcrossTwoServers(t *testing.T) {
 	}
 	h := startTwoServerIDJAGConfigured(t, []string{xrtIDJAGResource}, nil, nil, withRegistry, withRegistry...)
 	bare := startTwoServerIDJAGConfigured(t, []string{xrtIDJAGResource}, nil, nil, nil, withRegistry...)
-	one := `[` + e2eToolCall + `]`
+	one := `[` + e2eCall + `]`
 
 	// The steps share the servers and run in order: postToken derives the
 	// client assertion's jti from the clock.
 	for _, tc := range []struct{ name, details, code, desc string }{
-		{"two call entries", `[` + e2eToolCall + `,` + e2eToolCall + `]`,
-			"invalid_authorization_details", toolcalldetails.ReasonSingleEntry},
-		{"an unknown member", `[{"type":"` + toolcalldetails.Type + `","server":"github","method":"tools/list","x":"y"}]`,
-			"invalid_authorization_details", toolcalldetails.ReasonMalformedEntry},
+		{"two call entries", `[` + e2eCall + `,` + e2eCall + `]`,
+			"invalid_authorization_details", e2eSingleEntry},
+		{"not a JSON array of objects", `[1]`, "invalid_authorization_details", "malformed_entry"},
 		{"an unregistered type", `[{"type":"https://example.com/unknown"}]`,
 			"invalid_authorization_details", "unknown_type"},
 		{"a type not opted into ID-JAG issuance", `[{"type":"` + e2eExchangeOnlyType + `"}]`,
@@ -181,4 +191,46 @@ func TestIDJAGDetailsRefusalsAcrossTwoServers(t *testing.T) {
 	require.Equal(t, http.StatusOK, minted.status, minted.body)
 	res = bare.as2.redeem(t, bare.as2.client, minted.str(t, "access_token"))
 	requireError(t, res, "invalid_authorization_details", "unknown_type")
+}
+
+// TestIDJAGDetailsSizeAcrossTwoServers proves the size limit on the signed
+// claim. encoding/json writes "<" as a six-byte escape, so entries of about
+// 5.5 KiB in the request sign to the 32 KiB limit: AS-1 mints them and AS-2
+// redeems the ID-JAG within its 64 KiB request body. One byte more and AS-1
+// refuses with malformed_entry before minting.
+func TestIDJAGDetailsSizeAcrossTwoServers(t *testing.T) {
+	t.Parallel()
+	withRegistry := []authserverrunner.EmbeddedAuthServerOption{
+		authserverrunner.WithAuthorizationDetailsRegistry(e2eDetailsRegistry(t)),
+	}
+	h := startTwoServerIDJAGConfigured(t, []string{xrtIDJAGResource}, nil, nil, withRegistry, withRegistry...)
+
+	const limit = 32 * 1024
+	// entries returns an e2eNumberType entry whose signed form is size bytes,
+	// mostly "<", and the request value, which is far smaller.
+	entries := func(size int) (sent, signed string) {
+		prefix, suffix := `[{"type":"`+e2eNumberType+`","note":"`, `"}]`
+		room := size - len(prefix) - len(suffix)
+		escaped, plain := room/6, room%6
+		sent = prefix + strings.Repeat("<", escaped) + strings.Repeat("x", plain) + suffix
+		signed = prefix + strings.Repeat(`\u003c`, escaped) + strings.Repeat("x", plain) + suffix
+		require.Len(t, signed, size)
+		return sent, signed
+	}
+
+	sent, signed := entries(limit)
+	require.Less(t, len(sent), limit/5, "the request value is well within the parameter's 64 KiB")
+	grant := h.as1.idJAGGrant(t, h.as1.broker)
+	minted := h.as1.requestIDJAGWith(t, h.as1.broker, grant, h.as2.issuer, withDetails(sent))
+	require.Equal(t, http.StatusOK, minted.status, minted.body)
+	assert.Equal(t, signed, string(jwtDetailsClaim(t, minted.str(t, "access_token"))))
+	redeemed := h.as2.redeem(t, h.as2.client, minted.str(t, "access_token"))
+	require.Equal(t, http.StatusOK, redeemed.status, redeemed.body)
+	assert.Equal(t, signed, string(jwtDetailsClaim(t, redeemed.str(t, "access_token"))))
+
+	sent, _ = entries(limit + 1)
+	grant = h.as1.idJAGGrant(t, h.as1.broker)
+	res := h.as1.requestIDJAGWith(t, h.as1.broker, grant, h.as2.issuer, withDetails(sent))
+	requireError(t, res, "invalid_authorization_details", "malformed_entry")
+	assert.NotContains(t, res.body, "access_token")
 }

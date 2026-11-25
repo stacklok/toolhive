@@ -585,6 +585,19 @@ configuration, or bridge networks. Restarting an existing container alone does
 not refresh policy. Docker retains its bridge-discovery path without the hosts
 archive read; Kubernetes uses its separate network policy path.
 
+##### Apple container runtime isolation boundary (macOS 26+)
+
+On macOS 26+ with the Apple native `container` runtime, `--isolate-network`
+creates a per-workload `--internal` network backed by macOS `vmnet` `hostOnly`
+mode and routes outbound HTTP/HTTPS traffic through Squid or Envoy sidecars
+that deny all discovered vmnet gateway IPs (unless `--allow-docker-gateway` is
+set). Direct outbound internet egress, the `default` vmnet gateway, and host
+loopback (`127.0.0.1`) listeners are unreachable from the isolated container.
+However, because `vmnet` `hostOnly` networks permit VM-to-host traffic on the
+network's own gateway IP, macOS host services bound to wildcard addresses
+(`0.0.0.0` / `::`) remain directly reachable on the internal network's gateway
+IP without traversing the proxy. Keep local host services bound to `127.0.0.1`.
+
 ##### Network isolation requires bridge networking
 
 Network isolation is a bridge-topology construct: it builds a per-workload

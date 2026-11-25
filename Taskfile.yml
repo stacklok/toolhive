@@ -289,6 +289,12 @@ tasks:
       - task: test-integration-windows
         platforms: [windows]
 
+  test-integration-apple-container:
+    desc: Run Apple native container integration tests on Apple Silicon macOS (requires `container system start`)
+    platforms: [darwin]
+    cmds:
+      - go test -ldflags=-extldflags=-Wl,-w -v -race -tags apple_container_integration -run TestAppleContainerIntegration ./pkg/container/apple
+
   conformance:
     desc: Run the MCP conformance suite against a `thv run` deployment (requires Docker + Node)
     deps: [build]

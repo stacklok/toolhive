@@ -9,6 +9,8 @@ package container
 // When adding a new runtime implementation, add a blank import here.
 
 import (
+	// Import Apple macOS native container runtime to register it on darwin
+	_ "github.com/stacklok/toolhive/pkg/container/apple"
 	// Import Docker runtime to register it
 	_ "github.com/stacklok/toolhive/pkg/container/docker"
 	// Import Kubernetes runtime to register it

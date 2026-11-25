@@ -306,9 +306,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", true,
 		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
-			"Not enforced with --network host or --network none (isolation requires bridge networking).")
+			"Not enforced with --network host or --network none (isolation requires bridge networking). "+
+			"On Apple container (macOS 26+), internal vmnet networks use hostOnly mode: direct internet egress "+
+			"and host loopback (127.0.0.1) listeners are blocked, but host services bound to 0.0.0.0 remain "+
+			"directly reachable on the internal network gateway IP.")
 	cmd.Flags().BoolVar(&config.ReadOnlyRootfs, "read-only-rootfs", false,
-		"Mount the MCP server container's root filesystem as read-only (Docker/Podman only). "+
+		"Mount the MCP server container's root filesystem as read-only (Docker/Podman/Apple container). "+
 			"/tmp, /var/tmp and /run get a 64 MiB noexec tmpfs unless a volume already targets them; "+
 			"servers that write anywhere else outside their mounted volumes will fail.")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,

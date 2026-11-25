@@ -2132,8 +2132,9 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 to one MCP call: a tool call (`server`, `tool`, `arguments_sha256`,
 `operation_id`) or a list call (`server`, `method`). `server` is the ID of the
 vMCP backend the call is routed to; `tool` is the request's `params.name`
-exactly as sent, including any backend prefix; for a list call, the vMCP
-answers with that backend's items only. `arguments_sha256` is the lowercase hex
+exactly as sent, including any backend prefix; a list call is meant to be
+answered with that backend's items only, which the vMCP does not implement
+yet. `arguments_sha256` is the lowercase hex
 SHA-256 of the RFC 8785 serialization of `params.arguments`, or of `{}` when
 the arguments are absent or `null`. Nothing registers it by default; an embedder
 adds it with `toolcalldetails.Register` to the types passed to

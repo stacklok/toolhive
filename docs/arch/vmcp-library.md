@@ -114,11 +114,16 @@ ToolHive under opt-outs that product's users have not been told about.
 The vMCP always enforces an access token that carries an `authorization_details`
 entry of type `https://toolhive.dev/mcp_tool_call`: such a token may start only the
 one `tools/call` its entry names, once; a retried call needs a fresh token.
-`Config.CallBinding` (a
-`callbinding.Config`) adds the clients whose tokens must carry an entry, the maximum
-call duration, and the single-use record. The default record is in memory and covers
-one replica. List a client only once the authorization servers in front of the vMCP
-put the entry into that client's access tokens; otherwise every call from it is
+`server.Config.CallBinding` (a `callbinding.Config`) adds the clients whose tokens
+must carry an entry (matched on `client_id`, or `azp` when `client_id` is absent),
+the maximum call duration, the single-use record, and the `realm`,
+`resource_metadata` and `scope` of the 401 challenge. Set `Challenge` to what the
+token validator in front of the vMCP sends, so a refused token gets the same
+challenge from both: call binding answers a refusal that describes the token with
+401 and `invalid_token`, and a refusal of the request with 403 and no challenge. The
+default record is in memory and covers one replica; with sessions in Redis, supply a
+shared `Record`. List a client only once the authorization servers in front of the
+vMCP put the entry into that client's access tokens; otherwise every call from it is
 refused. See
 [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 

@@ -46,8 +46,18 @@ func newCountingIdP(t *testing.T, status int, body string) *countingIdP {
 		_ = r.ParseForm()
 		idp.lastRefreshToken.Store(r.PostForm.Get("refresh_token"))
 		if idp.entered != nil {
-			idp.entered <- struct{}{}
-			<-idp.release
+			select {
+			case idp.entered <- struct{}{}:
+			case <-time.After(5 * time.Second):
+				http.Error(w, "test timeout signalling entered", http.StatusInternalServerError)
+				return
+			}
+			select {
+			case <-idp.release:
+			case <-time.After(5 * time.Second):
+				http.Error(w, "test timeout waiting for release", http.StatusInternalServerError)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(int(idp.status.Load()))
@@ -267,8 +277,9 @@ func TestUpstreamTokenRefresher_RememberedRejectionsEnd(t *testing.T) {
 		t.Helper()
 		env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
 		srv := &server{
-			upstreams:         []handlers.NamedUpstream{{Name: "idp", Provider: env.refresher.providers["idp"]}},
-			upstreamRefresher: env.refresher,
+			upstreams:             []handlers.NamedUpstream{{Name: "idp", Provider: env.refresher.providers["idp"]}},
+			upstreamRefresher:     env.refresher,
+			upstreamRefresherImpl: env.refresher,
 		}
 		return env, srv
 	}
@@ -323,10 +334,23 @@ func TestUpstreamTokenRefresher_RememberedRejectionsEnd(t *testing.T) {
 			_, err := env.refresher.RefreshAndStore(ctx, "session", row)
 			done <- err
 		}()
-		<-env.idp.entered
+		select {
+		case <-env.idp.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for the IdP call to start")
+		}
 		require.NoError(t, srv.UpdateUpstreamClientCredentials("idp", switchTo))
-		env.idp.release <- struct{}{}
-		require.ErrorIs(t, <-done, upstream.ErrGrantRejected)
+		select {
+		case env.idp.release <- struct{}{}:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout releasing the IdP call")
+		}
+		select {
+		case err := <-done:
+			require.ErrorIs(t, err, upstream.ErrGrantRejected)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for the refresh to finish")
+		}
 		callsBefore := env.idp.calls.Load()
 
 		// The rejection was filed under the generation read before the call.

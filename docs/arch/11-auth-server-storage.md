@@ -654,7 +654,9 @@ A kept token can be retried, and public clients (`token_endpoint_auth_method`
 `none`, the DCR default) need nothing but the token to do so. A retry of the
 cheap causes repeats a storage read. For an IdP rejection, a retry would
 repeat the 500ms recheck and, once the remembered rejection has expired or
-stopped matching, an upstream refresh call, so once the rejection
+stopped matching, an upstream refresh call. A retry that reaches another
+replica calls the IdP straight away, because the memory is per process. So
+once the rejection
 is confirmed the guard deletes all of the session's upstream rows. The client
 is sent to a new `tsid`, so nothing reads them again, and a retry is refused
 as having no rows, on any replica. Every row goes, not only the rejected

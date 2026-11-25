@@ -62,7 +62,11 @@ type server struct {
 	// the nil-return contract: newUpstreamTokenRefresher returns a true nil
 	// interface when there are no upstreams, so callers can check == nil safely.
 	upstreamRefresher storage.UpstreamTokenRefresher
-	upstreams         []handlers.NamedUpstream
+	// upstreamRefresherImpl is the same instance as upstreamRefresher, typed
+	// concretely so a client registration switch can bump its generation even
+	// if the interface value were ever wrapped. Nil when upstreamRefresher is.
+	upstreamRefresherImpl *upstreamTokenRefresher
+	upstreams             []handlers.NamedUpstream
 	// trustedIssuerValidator is the single MultiIssuerTokenValidator shared by
 	// the token-exchange and JWT-bearer handlers, built in buildProvider when
 	// TrustedIssuers are configured (nil otherwise). Held here so Close can shut
@@ -345,6 +349,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		"consent_exempt_client_count", len(cfg.ConsentExemptClientIDs),
 	)
 
+	// A nil interface asserts to a nil pointer here, so the field is nil
+	// exactly when there is no refresher.
+	refresherImpl, _ := refresher.(*upstreamTokenRefresher)
+
 	return &server{
 		handler:                router,
 		oauthHandler:           handlerInstance,
@@ -352,6 +360,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		dcrStore:               dcrStore,
 		upstreams:              upstreams,
 		upstreamRefresher:      refresher,
+		upstreamRefresherImpl:  refresherImpl,
 		trustedIssuerValidator: trustedIssuerValidator,
 		spiffeBundleSource:     bundleSource,
 	}, nil
@@ -1204,8 +1213,8 @@ func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.Cli
 			return err
 		}
 		// Bump after the provider has swapped; see bumpClientGeneration.
-		if refresher, ok := s.upstreamRefresher.(*upstreamTokenRefresher); ok {
-			refresher.bumpClientGeneration()
+		if s.upstreamRefresherImpl != nil {
+			s.upstreamRefresherImpl.bumpClientGeneration()
 		}
 		return nil
 	}

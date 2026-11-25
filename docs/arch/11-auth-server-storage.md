@@ -514,7 +514,9 @@ resurrect the deleted row.
 
 An upstream refresh fails in one of three ways. In a definitive rejection, the
 IdP answers with the OAuth `invalid_grant` code on anything but a 5xx or 429,
-and that upstream refresh token will never work again. In another structured
+and ToolHive treats that upstream refresh token as dead. Some IdPs also use
+the code for account or policy state that can clear without a new sign-in; see
+the [trade-offs](#remembered-rejections) below. In another structured
 verdict, the IdP answers with a different OAuth error code (for example
 `invalid_client`) on a 4xx: retrying will not help, but the refresh token is
 not what was rejected. Any other failure (a network error, a 5xx, a 429, a 4xx
@@ -537,23 +539,39 @@ map.
 
 Each auth server process remembers the refresh tokens its IdP rejected with a
 definitive `invalid_grant` for 10 minutes (at most 10,000 entries). While an
-entry exists, the refresher answers a refresh of that token with the original
-error and does not call the IdP. Without it, a row that holds an expired access
-token and a dead refresh token would cost one IdP call on every request that
-reads it. After the first rejection, the refresh failures behind the repeated
-WARN lines are answered from this memory and do not reach the IdP; a DEBUG
-line says so.
+entry exists, the refresher answers a refresh of that token without calling
+the IdP. Without it, a row that holds an expired access token and a dead
+refresh token would cost one IdP call on every request that reads it. After
+the first rejection, the refresh failures behind the repeated WARN lines are
+answered from this memory and do not reach the IdP; a DEBUG line says so.
 
-An entry is keyed on the storage row and a SHA-256 digest of the refresh
-token, so it stops matching as soon as another replica or a new sign-in stores
-a different refresh token in the row. Nothing removes entries by hand. The
-memory never writes to storage, so a replica that wins a refresh race after
-this one's rejection can still store its rotated token. Only definitive
-rejections are remembered: a 5xx, a 429, a network error, a storage error, or
-any other OAuth error code is retried on every request. The remembered error
-is the one the refresher returned, so it still matches `upstream.ErrGrantRejected`
-and still carries the `*oauth2.RetrieveError` without its response body.
-Callers must not modify it.
+An entry is keyed on the storage row, a client registration generation, and a
+SHA-256 digest of the row's refresh token and access token. It stops matching
+when:
+
+- another replica or a new sign-in stores a different refresh token in the row;
+- another replica refreshes successfully without rotating the refresh token,
+  which stores a new access token next to the same refresh token;
+- the upstream's client registration is replaced through the server
+  (`UpdateUpstreamClientCredentials`, used by the DCR recheck), because an IdP
+  may answer `invalid_grant` for a refresh token issued to another client.
+  Replacing a registration directly on a provider does not do this.
+
+The generation is one counter for all providers, so a switch costs the other
+providers one IdP call each. Nothing removes entries by hand. The memory never
+writes to storage, so a replica that wins a refresh race after this one's
+rejection can still store its rotated token. Only definitive rejections are
+remembered: a 5xx, a 429, a network error, a storage error, or any other OAuth
+error code is not remembered and is retried on every request (the ID-token
+path has its own backoff). A rejection is also not remembered when the
+provider's error carries no `*oauth2.RetrieveError` with a response, which a
+third-party provider implementation may return.
+
+An entry keeps only the OAuth error code and the HTTP status, never the
+provider's error text or body. Each hit builds a new error that still matches
+`upstream.ErrGrantRejected` and carries a `*oauth2.RetrieveError` with that
+code and status, and its message says the rejection was remembered and the
+provider was not called, so logs tell it from a fresh rejection.
 
 Trade-offs:
 
@@ -564,10 +582,12 @@ Trade-offs:
   where before they recovered on the next request.
 - Losing an entry (eviction, restart, another replica) costs one more IdP
   call, which remembers the rejection again.
-- Each bearer request in this state still logs two WARN lines for the failed
-  refresh, both from the token service (one where it refreshes, one where it
-  collects credentials), because a remembered
-  rejection looks the same as a new one at that level.
+- Each bearer request in this state still logs three WARN lines for the failed
+  refresh: two from the token service (`upstream token refresh failed` where
+  it refreshes, and `upstream token refresh failed; provider will require
+  re-authentication` where it collects credentials) and one from the auth
+  middleware (`upstream token refresh failed; returning 401`). The error text
+  in the first two says the rejection was remembered.
 - GitHub answers a dead refresh token with HTTP 200 and `bad_refresh_token`,
   which is not a definitive rejection, so nothing is remembered there.
 
@@ -633,7 +653,8 @@ it is refused again.
 A kept token can be retried, and public clients (`token_endpoint_auth_method`
 `none`, the DCR default) need nothing but the token to do so. A retry of the
 cheap causes repeats a storage read. For an IdP rejection, a retry would
-repeat an upstream refresh call and the 500ms recheck, so once the rejection
+repeat the 500ms recheck and, once the remembered rejection has expired or
+stopped matching, an upstream refresh call, so once the rejection
 is confirmed the guard deletes all of the session's upstream rows. The client
 is sent to a new `tsid`, so nothing reads them again, and a retry is refused
 as having no rows, on any replica. Every row goes, not only the rejected
@@ -647,15 +668,6 @@ A refusal is logged at WARN when it revokes or follows a confirmed IdP
 rejection, which the row deletion limits to once per session. The other
 refusals repeat on every retry of a kept token (for example after logout), so
 they are logged at DEBUG.
-
-Because the guard refreshes through the shared refresher, it is answered from
-the [remembered rejections](#remembered-rejections) too. After a rejection on
-the bearer path, the guard gets the remembered error without an IdP call, still
-runs its recheck, and refuses and drops the session's rows if the row still
-holds the same refresh token. The guard can therefore act on a rejection up to
-10 minutes old. If the IdP used `invalid_grant` for an account or policy state
-that an administrator fixed in that time, the client has to sign in again where
-it would otherwise have been granted. This is accepted.
 
 The guard refreshes an expired row through the shared refresher before
 deciding, one provider at a time. Upstream refresh is otherwise lazy, so an
@@ -678,6 +690,15 @@ refused and its rows deleted, so the winner's write fails, but it keeps its
 refresh token. A recheck that cannot
 complete (the request is cancelled, or the read fails) is uncertain too. A
 session without a `tsid` (a session-less grant) is not checked.
+
+Because the guard refreshes through the shared refresher, it is answered from
+the [remembered rejections](#remembered-rejections) too. After a rejection on
+the bearer path, the guard gets the remembered error without an IdP call, still
+runs its recheck, and refuses and drops the session's rows if the row still
+holds the same refresh token. The guard can therefore act on a rejection up to
+10 minutes old. If the IdP used `invalid_grant` for an account or policy state
+that an administrator fixed in that time, the client has to sign in again where
+it would otherwise have been granted. This is accepted.
 
 **Upgrade impact.** The guard is on by default. After an upgrade, a session
 whose upstream credential is already dead is refused on its first refresh

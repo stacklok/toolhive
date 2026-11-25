@@ -1,20 +1,14 @@
 # ToolHive Auth Server (`pkg/authserver`)
 
-`pkg/authserver` is an embeddable Go OAuth 2.0 authorization server library
-built on [Ory Fosite](https://github.com/ory/fosite). It provides a ready-to-use
-server (the same one ToolHive's MCP proxy and vMCP run in production) alongside
-the handlers, grant factories, upstream clients, and storage backends to
-compose your own.
-
-While any Go service that needs to issue OAuth 2.0 tokens, federate sign-in, or
-broker delegated tokens can embed it, it is built specifically for services
-that sit between AI agents (or MCP clients) and the systems they act on.
-Workload identity systems such as SPIFFE answer *who is this agent?*;
-`pkg/authserver` answers *what may it do, and for whom?*—accepting workload
-identities or signed client assertions, issuing short-lived, resource-bound
-tokens that name both the user and the acting agent, keeping upstream
-credentials on the server side, and bridging trust domains with Cross-App
-Access (ID-JAG).
+`pkg/authserver` is an embeddable Go OAuth 2.0 authorization server built for
+services that sit between AI agents (or MCP clients) and the systems they act
+on. Workload identity systems such as SPIFFE answer *who is this agent?*;
+`pkg/authserver` answers *what may it do, and for whom?* Based on
+[Ory Fosite](https://github.com/ory/fosite), it provides the ready-to-use
+server that ToolHive's MCP proxy and vMCP run in production, along with the
+handlers, grant factories, upstream clients, and storage backends to compose
+your own. It also works as a general-purpose embedded OAuth 2.0 server for any
+Go service that needs upstream federation or token delegation.
 
 Although it lives in the ToolHive repository, it has no code dependency on MCP
 or ToolHive's proxy runtime. Today it still imports several shared utility
@@ -190,96 +184,42 @@ Two entry points assemble a complete server:
   secrets are referenced by file path or environment variable, resolves them at
   startup, and exposes route registration and an optional TLS listener.
 
-If you prefer to assemble the HTTP surface yourself, construct a
-`handlers.Handler` (`pkg/authserver/server/handlers`) and register its
-`OAuthRoutes` and `WellKnownRoutes` directly on a `chi.Router`.
+To assemble the HTTP surface yourself, construct a `handlers.Handler`
+(`pkg/authserver/server/handlers`) and register its `OAuthRoutes` and
+`WellKnownRoutes` on a `chi.Router`.
 
 ### Storage and upstream credential custody
 
-All protocol state lives behind `storage.Storage`: authorization codes, access
-and refresh token sessions, PKCE challenges, client registrations, pending
-authorizations, internal users, remembered consent, exchange grants, and
-upstream IdP credentials.
+All protocol state lives behind `storage.Storage`, with two built-in backends:
+**Memory** (`storage.NewMemoryStorage`) for development and single-instance
+processes, and **Redis** (`storage.NewRedisStorage`) supporting **standalone**,
+**Cluster**, and **Sentinel** topologies. Your host process reads and refreshes
+stored upstream credentials via `Server.IDPTokenStorage()` and
+`Server.UpstreamTokenRefresher()`.
 
-Two backends are included:
-
-- **Memory** (`storage.NewMemoryStorage`): zero-dependency in-process store for
-  local development, tests, and single-instance processes.
-- **Redis** (`storage.NewRedisStorage`): distributed store for multi-replica
-  deployments and restart continuity, supporting **standalone**, **Cluster**,
-  and **Sentinel** topologies.
-
-Downstream clients only hold JWTs minted by your authorization server; the host
-process retrieves and refreshes the corresponding upstream credentials through
-`Server.IDPTokenStorage()` and `Server.UpstreamTokenRefresher()`.
-
-Because `storage.Storage` is an interface, embedders commonly wrap
-`MemoryStorage` or `RedisStorage` with decorators for encryption at rest, tenant
-scoping, or external directory resolution; decorators must expose
-`Unwrap() storage.Storage`, and custom backends must implement the optional
-capability interfaces (such as `DCRCredentialStore`) for the features they
-enable. See the [storage architecture](../../docs/arch/11-auth-server-storage.md)
-for backend and lifecycle details.
+Decorators wrapping a built-in store must expose `Unwrap() storage.Storage`,
+and custom backends must implement the optional capability interfaces (such as
+`DCRCredentialStore`) for the features they enable. See the
+[storage architecture](../../docs/arch/11-auth-server-storage.md) for backend
+and lifecycle details.
 
 ### Upstream identity providers
 
-For interactive flows, the server acts as an OAuth 2.0 or OIDC client of one or
-more upstream providers:
-
-- Supports both **OIDC** (discovery, ID token and nonce validation) and plain
-  **OAuth 2.0** (explicit endpoints, userinfo or token-response identity
-  extraction), plus optional upstream Dynamic Client Registration.
-- Supports **multi-upstream chains**, walking configured providers in order and
-  storing each provider's tokens under the same user session.
-- Accepts an optional `UpstreamFilter` so the host application can narrow which
-  secondary upstreams a user authorizes once the first login resolves.
-- Includes a built-in consent page, with optional remembered consent and
-  pre-authorized consent-exempt clients (for pre-registered clients, not
-  dynamically registered ones).
+Interactive flows support both **OIDC** (discovery, ID token and nonce
+validation) and plain **OAuth 2.0** (explicit endpoints, userinfo or
+token-response identity extraction), plus optional upstream Dynamic Client
+Registration. Multiple upstreams can be chained in order under one user
+session, narrowed per user with an optional `UpstreamFilter`. A built-in
+consent page supports remembered consent and pre-authorized consent-exempt
+clients (pre-registered clients only, not dynamically registered ones).
 
 ### Keys and tokens
 
-Access tokens are asymmetrically signed JWTs whose public keys are published at
-`/.well-known/jwks.json`, so resource servers can validate them offline.
-Authorization codes and refresh tokens are opaque HMAC-signed tokens.
-
-Ephemeral signing keys and HMAC secrets are generated automatically for local
-development. Persistent signing keys and HMAC secrets both support key rotation
-so restarts and horizontal scaling do not invalidate issued tokens.
-
-### Delegation and Cross-App Access (ID-JAG)
-
-`pkg/authserver` supports RFC 8693 token exchange, RFC 7523 JWT-bearer grants,
-and both sides of **ID-JAG**
-([`draft-ietf-oauth-identity-assertion-authz-grant`](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/))
-as independent opt-in roles:
-
-- **Issuing:** Configured delegate clients exchange a login access token for an
-  exchange grant, then mint short-lived `oauth-id-jag+jwt` assertions for
-  allowlisted target issuers and resources. Go embedders can opt into verified
-  upstream subject claims (`sub_id`) and register an `ActorTokenValidator` hook
-  to validate an `actor_token` and populate `act`.
-- **Redeeming:** Trusted issuers' `oauth-id-jag+jwt` assertions are redeemed at
-  `/oauth/token` via RFC 7523 JWT-bearer into local resource-scoped access
-  tokens (with per-client lifespans down to 2s and optional registered
-  `authorization_details`), enforcing `client_id` matching, single-use `jti`,
-  `resource` coverage, and configured subject bindings while preserving `act`.
-
-ID-JAG support is a partial draft implementation: sender-constrained ID-JAGs
-(DPoP/`cnf`) are not supported and are rejected at both issuance and redemption.
-See [external subject-token exchange & delegation](../../docs/arch/17-token-exchange-delegation.md)
-for details.
-
-### SPIFFE workload authentication
-
-Workloads can authenticate without static OAuth secrets using **JWT-SVIDs**
-(`spiffe_jwt`) or mTLS **X.509-SVIDs** (`spiffe_x509`) verified against a
-supplied trust bundle. Trust-domain associations map exact SPIFFE IDs or `/*`
-descendant patterns to explicit OAuth client IDs with per-association scopes,
-RFC 8707 resources, and grant types (`client_credentials`, RFC 8693 token
-exchange, or both). See
-[SPIFFE association declarations](../../docs/arch/18-spiffe-association-declarations.md)
-for details.
+Access tokens are asymmetrically signed JWTs verified offline via
+`/.well-known/jwks.json`; authorization codes and refresh tokens are opaque
+HMAC-signed tokens. Ephemeral keys and HMAC secrets are auto-generated for
+local development, while persistent signing keys and HMAC secrets both support
+rotation.
 
 ### Package layout
 
@@ -317,20 +257,20 @@ framework-agnostic standalone handlers.
 ## Supported flows and standards
 
 The tables below summarize what the ready-to-use server (`authserver.New`)
-implements. References identify the implemented features rather than claiming
-full conformance with each specification.
+implements. References identify implemented features rather than claiming full
+spec conformance.
 
 ### OAuth 2.0 grants and flows
 
 | Flow | Spec | Status in `pkg/authserver` |
 | --- | --- | --- |
-| Authorization Code + PKCE (S256) | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636.html) | Enabled in interactive mode (public and confidential clients; PKCE S256 enforced). |
-| Refresh Token | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html) | Enabled in interactive mode; login refresh tokens rotate. |
-| Device Authorization | [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628.html) | Opt-in; requires a single upstream (multi-upstream deployments fail at verification). |
-| Client Credentials | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html) | Opt-in for SPIFFE-authenticated workloads only (bound to the workload's SPIFFE ID and SVID lifetime). |
-| Token Exchange | [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html) | Delegation for authenticated clients (delegate clients, opt-in `private_key_jwt` DCR clients, or SPIFFE workloads), using self-issued or trusted external subject tokens, plus opt-in non-rotating exchange-grant refresh tokens. |
-| JWT-Bearer Authorization Grant | [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523.html) | Opt-in per trusted issuer; supports plain assertions and bound ID-JAG redemption. |
-| Identity Assertion JWT Authorization Grant (ID-JAG / Cross-App Access) | [Internet-Draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/) | Opt-in, partial draft implementation: issuing from exchange grants and redeeming via JWT-bearer. Sender-constrained ID-JAGs (`cnf`/DPoP) are not supported; see [delegation docs](../../docs/arch/17-token-exchange-delegation.md#bound-id-jag-assertions). |
+| Authorization Code + PKCE (S256) | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636.html) | Interactive mode (public and confidential clients; S256 enforced). |
+| Refresh Token | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html) | Interactive mode; login refresh tokens rotate. |
+| Device Authorization | [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628.html) | Opt-in; single upstream (multi-upstream fails at verification). |
+| Client Credentials | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html) | Opt-in for SPIFFE workloads only (capped at SVID lifetime). |
+| Token Exchange | [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html) | Authenticated clients (delegate, `private_key_jwt` DCR, SPIFFE); self-issued or trusted external subjects; opt-in non-rotating exchange grants. |
+| JWT-Bearer Authorization Grant | [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523.html) | Opt-in per trusted issuer; plain assertions and bound ID-JAG redemption. |
+| ID-JAG / Cross-App Access | [Internet-Draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/) | Opt-in, partial draft: issuing from exchange grants and redeeming via JWT-bearer (`cnf`/DPoP rejected; see [delegation docs](../../docs/arch/17-token-exchange-delegation.md#bound-id-jag-assertions)). |
 
 Implicit and Resource Owner Password grants are not registered by the
 ready-to-use server. Public token introspection, revocation, and userinfo HTTP
@@ -341,14 +281,14 @@ endpoints are not exposed.
 | Capability | Spec | Notes |
 | --- | --- | --- |
 | Client ID Metadata Documents (CIMD) | [Internet-Draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/) | Opt-in, partial draft support for URL-based public clients (favored by MCP). |
-| Dynamic Client Registration (DCR) | [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591.html) | Public clients by default; confidential and `private_key_jwt` opt-in. Unauthenticated and rate-limited. |
-| Authorization Server Metadata & JWKS | [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414.html), [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517.html) | Also serves `/.well-known/openid-configuration` for client compatibility; does not issue OIDC ID tokens. |
-| Resource Indicators | [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html) | Audience binding against configured `AllowedAudiences` (or ID-JAG target allowlists). |
-| JWT Access Tokens | [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519.html) ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html) `at+jwt` opt-in) | Asymmetric JWTs (`typ: JWT` by default; Go embedders may opt into `typ: at+jwt`). |
-| Rich Authorization Requests (RAR) | [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396.html) | Go policy hooks for `authorization_details` on token exchange, carrying registered details from ID-JAGs into redeemed access tokens, plus built-in exchange-grant details. |
-| Subject Identifiers | [RFC 9493](https://www.rfc-editor.org/rfc/rfc9493.html) | Opt-in `sub_id` claim carrying verified upstream OIDC identity on login-derived tokens. |
-| `private_key_jwt` Client Auth | [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523.html) | Supported for configured delegate clients and opt-in token-exchange DCR clients. |
-| SPIFFE Workload Client Auth | [Internet-Draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-spiffe-client-auth/) (JWT-SVID / X.509-SVID) | Opt-in `spiffe_jwt` and `spiffe_x509` methods (with documented differences) for `client_credentials` and token exchange. |
+| Dynamic Client Registration (DCR) | [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591.html) | Public by default; confidential and `private_key_jwt` opt-in; unauthenticated and rate-limited. |
+| AS Metadata & JWKS | [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414.html), [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517.html) | Also serves `/.well-known/openid-configuration` for compatibility (no OIDC ID tokens). |
+| Resource Indicators | [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html) | Audience binding against `AllowedAudiences` (or ID-JAG target allowlists). |
+| JWT Access Tokens | [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519.html), [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html) | Asymmetric JWTs (`typ: JWT` default; Go opt-in to `typ: at+jwt`). |
+| Rich Authorization Requests (RAR) | [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396.html) | Go policy hooks on token exchange, ID-JAG carry-through to access tokens, and built-in exchange-grant details. |
+| Subject Identifiers | [RFC 9493](https://www.rfc-editor.org/rfc/rfc9493.html) | Opt-in `sub_id` claim carrying verified upstream OIDC identity on login tokens. |
+| `private_key_jwt` Client Auth | [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523.html) | Configured delegate clients and opt-in token-exchange DCR clients. |
+| SPIFFE Workload Client Auth | [Internet-Draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-spiffe-client-auth/) | Opt-in `spiffe_jwt` and `spiffe_x509` (with documented differences) for `client_credentials` and token exchange. |
 | Upstream OAuth 2.0 / OIDC Client | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html), [OIDC Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html) | Server acts as the OAuth/OIDC client when federating login to upstream IdPs. |
 
 The optional ID-JAG actor validation hook is inspired by the individual draft

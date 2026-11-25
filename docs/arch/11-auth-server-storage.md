@@ -533,6 +533,42 @@ lost race rather than a dead credential. The refresher and
 per-provider errors that `GetAllUpstreamCredentials` returns in its `failed`
 map.
 
+#### Remembered rejections
+
+Each auth server process remembers the refresh tokens its IdP rejected with a
+definitive `invalid_grant` for 10 minutes (at most 10,000 entries). While an
+entry exists, the refresher answers a refresh of that token with the original
+error and does not call the IdP. Without it, a row that holds an expired access
+token and a dead refresh token would cost one IdP call on every request that
+reads it. After the first rejection, the repeated refresh-failure WARN lines
+are answered from this memory and do not reach the IdP; a DEBUG line says so.
+
+An entry is keyed on the storage row and a SHA-256 digest of the refresh
+token, so it stops matching as soon as another replica or a new sign-in stores
+a different refresh token in the row. Nothing removes entries by hand. The
+memory never writes to storage, so a replica that wins a refresh race after
+this one's rejection can still store its rotated token. Only definitive
+rejections are remembered: a 5xx, a 429, a network error, a storage error, or
+any other OAuth error code is retried on every request. The remembered error
+is the one the refresher returned, so it still matches `upstream.ErrGrantRejected`
+and still carries the `*oauth2.RetrieveError` without its response body.
+Callers must not modify it.
+
+Trade-offs:
+
+- Some IdPs answer `invalid_grant` for account or policy state, for example a
+  disabled account, a lockout, a Conditional Access block or missing consent
+  on Microsoft Entra. This can clear without a new sign-in. After an
+  administrator fixes it, bearer requests keep failing for up to 10 minutes,
+  where before they recovered on the next request.
+- Losing an entry (eviction, restart, another replica) costs one more IdP
+  call, which remembers the rejection again.
+- Each bearer request in this state still logs two WARN lines for the failed
+  refresh, one in the token service and one in the caller, because a remembered
+  rejection looks the same as a new one at that level.
+- GitHub answers a dead refresh token with HTTP 200 and `bad_refresh_token`,
+  which is not a definitive rejection, so nothing is remembered there.
+
 Every answer from the token endpoint, on refresh and on the authorization code
 exchange alike, also keeps its `*oauth2.RetrieveError` in the same chain,
 behind an error whose message is the provider's sanitized text. The chained
@@ -609,6 +645,15 @@ A refusal is logged at WARN when it revokes or follows a confirmed IdP
 rejection, which the row deletion limits to once per session. The other
 refusals repeat on every retry of a kept token (for example after logout), so
 they are logged at DEBUG.
+
+Because the guard refreshes through the shared refresher, it is answered from
+the [remembered rejections](#remembered-rejections) too. After a rejection on
+the bearer path, the guard gets the remembered error without an IdP call, still
+runs its recheck, and refuses and drops the session's rows if the row still
+holds the same refresh token. The guard can therefore act on a rejection up to
+10 minutes old. If the IdP used `invalid_grant` for an account or policy state
+that an administrator fixed in that time, the client has to sign in again where
+it would otherwise have been granted. This is accepted.
 
 The guard refreshes an expired row through the shared refresher before
 deciding, one provider at a time. Upstream refresh is otherwise lazy, so an

@@ -76,6 +76,13 @@ const guardRevokeTimeout = 5 * time.Second
 // them again, and a replay of the kept refresh token is then refused as having
 // no rows, without another IdP call or recheck, on every replica.
 //
+// The guard refreshes through the shared refresher, which remembers an IdP
+// rejection for a short time (see rejectedRefreshes). The guard can therefore
+// refuse on a rejection up to that long old, and without a fresh IdP call. If
+// the IdP used invalid_grant for an account or policy state an administrator
+// has since fixed, the client is sent to sign in again where it would
+// otherwise have been granted. This is accepted.
+//
 // A refusal is logged at WARN only when it revokes or follows a confirmed IdP
 // rejection; the row deletion makes the latter happen once per session. The
 // other refusals repeat on every replay of a kept refresh token, so they are

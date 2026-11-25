@@ -238,7 +238,7 @@ framework-agnostic standalone handlers.
 | --- | --- |
 | `pkg/authserver` | Ready-to-use server (`authserver.New`), `Config`, and `RunConfig`. |
 | `pkg/authserver/runner` | File/env-driven `EmbeddedAuthServer`, secret resolution, and optional TLS listener. |
-| `pkg/authserver/storage` | `Storage` interface, `MemoryStorage`, `RedisStorage`, and built-in decorators (CIMD, SPIFFE, client admission). |
+| `pkg/authserver/storage` | `Storage` interface, `MemoryStorage`, `RedisStorage`, and built-in decorators (CIMD, SPIFFE, client admission, user-keyed upstream tokens). |
 | `pkg/authserver/upstream` | OIDC and OAuth 2.0 upstream provider clients and token refresh. |
 | `pkg/authserver/upstreamfilter` | `UpstreamFilter` interface and group-based multi-upstream chain filter. |
 | `pkg/authserver/authorizationdetails` | RFC 9396 `authorization_details` parser and policy hook registry. |

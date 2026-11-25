@@ -68,6 +68,12 @@ var (
 	// (e.g., subject or client ID mismatch).
 	ErrInvalidBinding = errors.New("storage: token binding validation failed")
 
+	// ErrNoCanonicalUser is returned by user-keyed upstream token storage when
+	// the context carries no canonical user (see identity.CanonicalUserFromContext).
+	// The storage never falls back to another key: without a user there is no
+	// row to address.
+	ErrNoCanonicalUser = errors.New("storage: no canonical user in context")
+
 	// ErrClientCapacity is returned by RegisterClient when the number of live
 	// clients counted against the DCR cap has reached it. Nothing is written.
 	// The returned error is a *ClientCapacityError, which matches this
@@ -167,6 +173,9 @@ type UpstreamTokens struct {
 
 	// ClientID is the OAuth client that initiated the authorization.
 	// Tokens should only be accessible to the same client that obtained them.
+	// Under UserKeyedUpstreamStorage every client of a user shares one row per
+	// provider, ClientID records the client that last wrote it, and reads do not
+	// check it.
 	ClientID string
 }
 
@@ -1264,6 +1273,14 @@ func upstreamTokenRowID(components ...string) UpstreamTokenRowID {
 // providers per session. Each provider's tokens are stored and retrieved independently.
 // A secondary lookup by (userID, providerID) is exposed via GetLatestUpstreamTokensForUser;
 // see that method for usage and security contract.
+//
+// UserKeyedUpstreamStorage changes the keying: rows are addressed by the canonical user
+// in the context and the sessionID argument is ignored. Every keyed method returns
+// ErrNoCanonicalUser when the context carries no user; writes also refuse a
+// tokens.UserID that differs from it. For a row whose UserID is not that user,
+// GetUpstreamTokens returns ErrInvalidBinding and GetAllUpstreamTokens skips the
+// row and logs it at ERROR. DeleteUpstreamTokens returns an error matching
+// errors.ErrUnsupported.
 type UpstreamTokenStorage interface {
 	// ResolveUpstreamTokenRowID returns an opaque non-empty identity for the
 	// (sessionID, providerName) row. Equal physical rows must resolve to equal

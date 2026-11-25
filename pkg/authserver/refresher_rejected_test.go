@@ -280,8 +280,7 @@ func TestUpstreamTokenRefresher_RememberedRejectionsEnd(t *testing.T) {
 		env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
 		srv := &server{
 			upstreams:             []handlers.NamedUpstream{{Name: "idp", Provider: env.refresher.providers["idp"]}},
-			upstreamRefresher:     env.refresher,
-			upstreamRefresherImpl: env.refresher,
+			upstreamRefresher: env.refresher,
 		}
 		return env, srv
 	}

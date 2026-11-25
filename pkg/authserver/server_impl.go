@@ -58,15 +58,12 @@ type server struct {
 	// is rejected at boot rather than at first DCR resolve.
 	dcrStore storage.DCRCredentialStore
 	// upstreamRefresher is the single shared refresher instance constructed in
-	// newServer. Storing the interface type (not *upstreamTokenRefresher) keeps
-	// the nil-return contract: newUpstreamTokenRefresher returns a true nil
-	// interface when there are no upstreams, so callers can check == nil safely.
-	upstreamRefresher storage.UpstreamTokenRefresher
-	// upstreamRefresherImpl is the same instance as upstreamRefresher, typed
-	// concretely so a client registration switch can bump its generation even
-	// if the interface value were ever wrapped. Nil when upstreamRefresher is.
-	upstreamRefresherImpl *upstreamTokenRefresher
-	upstreams             []handlers.NamedUpstream
+	// newServer, nil when there are no upstreams. It is kept as the concrete
+	// type so a client registration switch can bump its generation; consumers
+	// of the storage.UpstreamTokenRefresher interface get it through
+	// refresherInterface.
+	upstreamRefresher *upstreamTokenRefresher
+	upstreams         []handlers.NamedUpstream
 	// trustedIssuerValidator is the single MultiIssuerTokenValidator shared by
 	// the token-exchange and JWT-bearer handlers, built in buildProvider when
 	// TrustedIssuers are configured (nil otherwise). Held here so Close can shut
@@ -326,16 +323,17 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// and handed to the upstream refresh guard, ensuring every path shares one
 	// process-local singleflight.Group keyed by opaque storage-row identity.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
+	refresherIface := refresherInterface(refresher)
 
 	// Create fosite provider with the configured storage decorators.
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor, refresher, upstreams)
+	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor, refresherIface, upstreams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fosite OAuth2 provider: %w", err)
 	}
 
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		buildHandlerOptions(refresher, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs)...)
+		buildHandlerOptions(refresherIface, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -349,10 +347,6 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		"consent_exempt_client_count", len(cfg.ConsentExemptClientIDs),
 	)
 
-	// A nil interface asserts to a nil pointer here, so the field is nil
-	// exactly when there is no refresher.
-	refresherImpl, _ := refresher.(*upstreamTokenRefresher)
-
 	return &server{
 		handler:                router,
 		oauthHandler:           handlerInstance,
@@ -360,7 +354,6 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		dcrStore:               dcrStore,
 		upstreams:              upstreams,
 		upstreamRefresher:      refresher,
-		upstreamRefresherImpl:  refresherImpl,
 		trustedIssuerValidator: trustedIssuerValidator,
 		spiffeBundleSource:     bundleSource,
 	}, nil
@@ -1141,7 +1134,17 @@ func (s *server) DCRStore() storage.DCRCredentialStore {
 // path use this instance, ensuring concurrent refreshes for the same logical
 // upstream-token row are deduplicated by one process-local singleflight.Group.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
-	return s.upstreamRefresher
+	return refresherInterface(s.upstreamRefresher)
+}
+
+// refresherInterface returns r as the storage.UpstreamTokenRefresher interface,
+// or a nil interface when r is nil. A plain conversion would wrap a nil
+// pointer in a non-nil interface and defeat the `== nil` checks of consumers.
+func refresherInterface(r *upstreamTokenRefresher) storage.UpstreamTokenRefresher {
+	if r == nil {
+		return nil
+	}
+	return r
 }
 
 // newUpstreamTokenRefresher builds a refresher over the given upstreams, or nil
@@ -1151,7 +1154,7 @@ func newUpstreamTokenRefresher(
 	upstreams []handlers.NamedUpstream,
 	stor storage.UpstreamTokenStorage,
 	refreshTokenLifespan time.Duration,
-) storage.UpstreamTokenRefresher {
+) *upstreamTokenRefresher {
 	if len(upstreams) == 0 {
 		return nil
 	}
@@ -1213,8 +1216,8 @@ func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.Cli
 			return err
 		}
 		// Bump after the provider has swapped; see bumpClientGeneration.
-		if s.upstreamRefresherImpl != nil {
-			s.upstreamRefresherImpl.bumpClientGeneration()
+		if s.upstreamRefresher != nil {
+			s.upstreamRefresher.bumpClientGeneration()
 		}
 		return nil
 	}

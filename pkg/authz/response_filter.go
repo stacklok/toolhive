@@ -47,6 +47,19 @@ type ResponseFilteringWriter struct {
 	// GET event-stream writer sets it: a stream error is caused by upstream
 	// content, not by a server fault, and the POST path keeps its ERROR level.
 	streamWarn bool
+	// selectMethod, set only by the event-stream writer, names the list filter for a
+	// clean response from its result shape when method is "". Nil on the POST path.
+	selectMethod func(result json.RawMessage) (string, error)
+}
+
+// responseMethod returns the list filter for a clean response. A writer with a fixed
+// method answers that method. A writer without one asks selectMethod, so the shape
+// rules are supplied by the caller that set it and applied in one place.
+func (rfw *ResponseFilteringWriter) responseMethod(response *jsonrpc2.Response) (string, error) {
+	if rfw.method != "" || rfw.selectMethod == nil {
+		return rfw.method, nil
+	}
+	return rfw.selectMethod(response.Result)
 }
 
 // NewResponseFilteringWriter creates a new response filtering writer.

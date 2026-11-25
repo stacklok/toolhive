@@ -341,7 +341,7 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 		}
 		return
 	}
-	method, err := resultMethod(response.Result)
+	method, err := w.newFilter("").responseMethod(response)
 	if err != nil {
 		slog.Warn("rejected a 2xx JSON-RPC response whose result names lists in conflict", "error", err)
 		// Answer with an error that carries the request id, so the client does not wait for a timeout.
@@ -484,7 +484,8 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 		return w.newFilter("").resolveAssembled(event, dataValues, payload)
 	}
 
-	method, err := resultMethod(response.Result)
+	shaped := w.newFilter("")
+	method, err := shaped.responseMethod(response)
 	if err != nil {
 		return failClosed(event, response.ID, err.Error())
 	}
@@ -500,6 +501,9 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 func (w *sseStreamFilterWriter) newFilter(method string) *ResponseFilteringWriter {
 	f := NewResponseFilteringWriter(nil, w.authorizer, w.request, method, w.annotationCache, w.passThroughTools)
 	f.streamWarn = true
+	if method == "" {
+		f.selectMethod = resultMethod
+	}
 	return f
 }
 

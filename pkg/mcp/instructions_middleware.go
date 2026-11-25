@@ -6,12 +6,15 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/exp/jsonrpc2"
 
@@ -24,11 +27,30 @@ import (
 const InstructionsMiddlewareType = "instructions"
 
 // defaultMaxInstructionsHeldBytes bounds what the instructions middleware
-// holds of a response it cannot read yet: a JSON body that is not complete,
-// or an event that has not ended. An initialize or server/discover result is
-// far smaller, and a response that would make the middleware hold more is
-// withheld.
+// holds of the response to a POST it cannot read yet: a JSON body that is not
+// complete, or an event that has not ended. An initialize or server/discover
+// result is far smaller, and a response that would make the middleware hold
+// more is withheld.
 const defaultMaxInstructionsHeldBytes = 1 << 20
+
+// defaultMaxInstructionsStreamEventBytes bounds the size of an event the
+// middleware reads on a stream a GET opened, which carries every response of
+// a session, not only the one to initialize. It is the size the go-sdk lets
+// one event reach by default, as the tool filter's bound is (see
+// defaultMaxHeldEventBytes). An event over it is withheld alone.
+const defaultMaxInstructionsStreamEventBytes = defaultMaxHeldEventBytes
+
+// rawStreamTailBytes is how much of what a stream that is no longer read
+// event by event has carried is kept, so that a member name split across
+// writes is still found (see mayNameResultMember). It is longer than the
+// longest such name written with a JSON escape for every character.
+const rawStreamTailBytes = 128
+
+// errInstructionsWithheld is what Write returns once a response is withheld
+// whose wrapped handler may go on writing, such as an event stream, so that
+// the handler stops and the request ends instead of leaving the client
+// waiting on a connection that delivers nothing more.
+var errInstructionsWithheld = errors.New("the response is withheld: its instructions cannot be set")
 
 // instructionsMember is the name of the result member that carries the
 // instructions, in both InitializeResult and DiscoverResult.
@@ -43,8 +65,9 @@ type InstructionsMiddlewareParams struct {
 	// transport, which answers a POSTed request on the event stream a GET
 	// opened. The middleware then reads those streams and leaves POST
 	// responses alone. Otherwise it reads the responses to POSTed initialize
-	// and server/discover requests and leaves GET streams alone, since a
-	// Streamable HTTP GET stream carries no response to either.
+	// and server/discover requests, and the streams a GET with Last-Event-ID
+	// resumes, which may replay them. It leaves any other GET stream alone,
+	// since a Streamable HTTP server sends no response on it.
 	LegacySSE bool `json:"legacy_sse,omitempty"`
 }
 
@@ -83,21 +106,24 @@ func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.M
 // wrapped handler returns. It must run inside ParsingMiddleware, whose parse
 // of a POST names the request a response answers.
 //
-// Unless params.LegacySSE is set, only the response to a POSTed initialize or
-// server/discover request is read, as a JSON body or an event stream, and only
-// the result whose id is the request's is rewritten. The response to any other
-// request passes through unread. With params.LegacySSE set, the response to a
-// POSTed initialize arrives on the event stream a GET opened instead, so on
-// such a stream a result shaped like an InitializeResult (it has
-// protocolVersion, capabilities and serverInfo) is rewritten, and every POST
-// passes through unread.
+// Unless params.LegacySSE is set, the response to a POSTed initialize or
+// server/discover request is read, as a JSON body or an event stream, and the
+// result whose id is the request's is rewritten. On that stream every event
+// is read whatever its event type, since some clients dispatch every type as
+// a message, but only an event without a type, or of type message, which
+// every client dispatches, ends the search; the rest of the stream then
+// passes through unread. The response to any other POST passes through
+// unread.
 //
-// On an event stream, every event is read whatever its event type, since some
-// clients dispatch every type as a message (the go-sdk legacy SSE client
-// does), and its result is rewritten. Only an event without a type, or of
-// type message, which every client dispatches, ends the search, so a result
-// in an event of another type cannot let a later one through unread. After
-// that event the rest of the stream passes through unread.
+// A stream a GET opened answers no single request: on the legacy SSE
+// transport (params.LegacySSE) it carries every response of the session, and
+// on Streamable HTTP a GET with Last-Event-ID resumes a stream that may
+// replay the result. Such a stream is read for as long as it lasts, and every
+// result that has protocolVersion, serverInfo or supportedVersions, under any
+// spelling a decoder binds, is rewritten, whatever its id or event type, so a
+// decoy result cannot let the real one through. An event that names none of
+// those members, as its bytes show (see mayNameResultMember), passes without
+// being decoded. Any other GET passes through unread.
 //
 // A rewrite sets the instructions member of the result and keeps every other
 // member as the server sent it. Error responses and responses with a non-2xx
@@ -112,26 +138,34 @@ func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.M
 // carries the result, a body or an event larger than the bound on what the
 // middleware holds, an event stream whose lines clients split differently,
 // and a result that does not decode as one unambiguous JSON-RPC message. A
-// JSON body is answered under HTTP 500 in place of the server's status. On an
-// event stream the error takes the place of the event, or, when the stream
-// cannot be read, is written in place of the rest of it. An event whose
-// request cannot be named, or whose type some clients skip, is dropped
-// instead, since those clients would read an error in its place as the
-// answer.
+// whole body is answered with the error under HTTP 500, with its own
+// Content-Length. On an event stream the error takes the place of the event.
+// An event whose request cannot be named, or whose type some clients skip, is
+// dropped instead, since those clients would read an error in its place as
+// the answer. A stream that cannot be read further, and a GET answered with
+// the error, end: Write returns errInstructionsWithheld so that the wrapped
+// handler stops.
 func NewInstructionsMiddleware(params InstructionsMiddlewareParams) (types.MiddlewareFunction, error) {
-	return newInstructionsMiddleware(params, defaultMaxInstructionsHeldBytes)
+	return newInstructionsMiddleware(params, defaultMaxInstructionsHeldBytes, defaultMaxInstructionsStreamEventBytes)
 }
 
-// newInstructionsMiddleware is NewInstructionsMiddleware with the bound on
-// what the middleware holds of a response.
-func newInstructionsMiddleware(params InstructionsMiddlewareParams, maxHeldBytes int) (types.MiddlewareFunction, error) {
+// newInstructionsMiddleware is NewInstructionsMiddleware with the bounds on
+// what the middleware holds of the response to a POST and of an event on a
+// stream a GET opened.
+func newInstructionsMiddleware(
+	params InstructionsMiddlewareParams, maxHeldBytes, maxStreamEventBytes int,
+) (types.MiddlewareFunction, error) {
 	if err := params.Instructions.Validate(); err != nil {
 		return nil, err
 	}
-	if maxHeldBytes < 1 {
-		return nil, fmt.Errorf("the bound on a held response must be positive")
+	if maxHeldBytes < 1 || maxStreamEventBytes < 1 {
+		return nil, fmt.Errorf("the bounds on a held response must be positive")
 	}
-	config := &instructionsMiddlewareConfig{instructions: params.Instructions, maxHeldBytes: maxHeldBytes}
+	config := &instructionsMiddlewareConfig{
+		instructions:        params.Instructions,
+		maxHeldBytes:        maxHeldBytes,
+		maxStreamEventBytes: maxStreamEventBytes,
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			target, ok := instructionsTargetOf(r, params.LegacySSE)
@@ -154,9 +188,12 @@ func newInstructionsMiddleware(params InstructionsMiddlewareParams, maxHeldBytes
 // instructionsMiddlewareConfig is what an instructions middleware applies.
 type instructionsMiddlewareConfig struct {
 	instructions instructions.Config
-	// maxHeldBytes bounds what the middleware holds of a response it cannot
-	// read yet (see defaultMaxInstructionsHeldBytes).
+	// maxHeldBytes bounds what the middleware holds of the response to a POST
+	// it cannot read yet (see defaultMaxInstructionsHeldBytes).
 	maxHeldBytes int
+	// maxStreamEventBytes bounds an event on a stream a GET opened (see
+	// defaultMaxInstructionsStreamEventBytes).
+	maxStreamEventBytes int
 }
 
 // instructionsTarget names the response of a request whose instructions the
@@ -167,21 +204,28 @@ type instructionsTarget struct {
 	id jsonrpc2.ID
 	// method is the method of that request, or empty for a GET.
 	method string
+	// streamKind names the stream a GET opened, for the log, and is empty
+	// for a POST.
+	streamKind string
 }
 
-// stream reports whether the target is the legacy SSE event stream a GET
-// opened, rather than the response to a POST.
+// stream reports whether the target is a stream a GET opened, which answers
+// no single request, rather than the response to a POST.
 func (t instructionsTarget) stream() bool {
-	return t.method == ""
+	return t.streamKind != ""
 }
 
 // instructionsTargetOf reports which response of r the middleware rewrites,
 // and whether r has one: on the legacy SSE transport a GET, which opens its
 // event stream, and otherwise a POST that carries an initialize or
-// server/discover request.
+// server/discover request, or a GET with Last-Event-ID, which resumes a
+// stream that may replay its result.
 func instructionsTargetOf(r *http.Request, legacySSE bool) (instructionsTarget, bool) {
 	if legacySSE {
-		return instructionsTarget{}, r.Method == http.MethodGet
+		return instructionsTarget{streamKind: "legacy SSE stream"}, r.Method == http.MethodGet
+	}
+	if r.Method == http.MethodGet && r.Header.Get("Last-Event-ID") != "" {
+		return instructionsTarget{streamKind: "resumed stream"}, true
 	}
 	if r.Method != http.MethodPost {
 		return instructionsTarget{}, false
@@ -271,6 +315,18 @@ type instructionsWriter struct {
 	scanned int
 	// jsonScan reads a JSON body for the end of its value as it arrives.
 	jsonScan jsonBodyScan
+	// skipping is set while the writer drops the rest of an event over the
+	// bound on a stream a GET opened, up to the blank line that ends it (see
+	// skip), and skipLine holds the start of the line the dropped bytes end
+	// in (see lineStart).
+	skipping bool
+	skipLine []byte
+	// raw is set once a stream a GET opened has a line that clients split
+	// differently, so it can no longer be read event by event. Its bytes are
+	// then forwarded as they arrive while their member names are checked
+	// (see mayNameResultMember), and rawTail holds the last of them.
+	raw     bool
+	rawTail []byte
 }
 
 // WriteHeader decides how the body is read from the final status and the
@@ -314,18 +370,20 @@ func (rw *instructionsWriter) Write(data []byte) (int, error) {
 	}
 	switch {
 	case rw.discard:
-		return len(data), nil
+		return len(data), rw.ended(nil)
 	case rw.mode == instructionsPassThrough:
 		return rw.ResponseWriter.Write(data)
 	case len(data) == 0:
 		return 0, nil
 	case rw.mode == instructionsUnreadable:
 		rw.warn("the response body cannot be read", "reason", rw.reason)
-		return len(data), rw.withholdRest()
+		return len(data), rw.ended(rw.withholdRest())
+	case rw.mode == instructionsEventStream && rw.target.stream():
+		return len(data), rw.ended(rw.writeStream(data))
 	case len(rw.buffer)+len(data) > rw.config.maxHeldBytes:
 		rw.warn("the response would make the middleware hold more than it may",
 			"max_held_bytes", rw.config.maxHeldBytes)
-		return len(data), rw.withholdRest()
+		return len(data), rw.ended(rw.withholdRest())
 	}
 	rw.buffer = append(rw.buffer, data...)
 	if rw.mode == instructionsJSON {
@@ -334,7 +392,22 @@ func (rw *instructionsWriter) Write(data []byte) (int, error) {
 		}
 		return len(data), rw.answerJSON()
 	}
-	return len(data), rw.readEvents(false)
+	return len(data), rw.ended(rw.readEvents(false))
+}
+
+// ended returns err, the error a write met, or, once the rest of a response
+// whose wrapped handler may go on writing is withheld, errInstructionsWithheld,
+// so that the handler stops. That is an event stream, or the answer to a GET.
+// A whole body withheld in answer to a POST is the error the middleware wrote
+// in full, and the handler, which finishes its body, is left to do so.
+func (rw *instructionsWriter) ended(err error) error {
+	if err != nil {
+		return err
+	}
+	if rw.discard && (rw.mode == instructionsEventStream || rw.target.stream()) {
+		return errInstructionsWithheld
+	}
+	return nil
 }
 
 // Flush forwards a flush to the wrapped ResponseWriter. What is held stays
@@ -364,19 +437,18 @@ func (rw *instructionsWriter) finish() {
 		return
 	}
 	var err error
-	switch rw.mode {
-	case instructionsJSON:
+	switch {
+	case rw.mode == instructionsJSON:
 		err = rw.answerJSON()
-	case instructionsEventStream:
-		if len(rw.buffer) > 0 {
-			err = rw.readEvents(true)
-		}
-	case instructionsUnreadable, instructionsPassThrough:
+	case rw.mode == instructionsEventStream && rw.target.stream():
+		err = rw.finishStream()
+	case rw.mode == instructionsEventStream && len(rw.buffer) > 0:
+		err = rw.readEvents(true)
 	}
 	if err == nil && !rw.done && !rw.discard && rw.mode != instructionsPassThrough {
 		if rw.target.stream() {
-			// A stream that carried no initialize result, or the empty
-			// body of a GET the middleware could not have read.
+			// A stream a GET opened, or the empty body of a GET the
+			// middleware could not have read.
 			err = rw.forwardHeld(nil)
 		} else {
 			rw.warn("the response carries no result whose instructions the middleware could set")
@@ -475,7 +547,7 @@ func (rw *instructionsWriter) readEvents(terminal bool) error {
 // writeEvents writes the first end bytes the writer holds, which end with a
 // complete event, with the instructions of the result an event carries set,
 // and keeps the rest. Once the response the target names has been found, the
-// rest passes through unread.
+// rest passes through unread; on a stream a GET opened it never is.
 func (rw *instructionsWriter) writeEvents(end int) error {
 	events := rw.rewriteEvents(rw.buffer[:end])
 	rw.buffer = rw.buffer[end:]
@@ -523,7 +595,7 @@ func (rw *instructionsWriter) readEvent(event []sseLine, end ...sseLine) []byte 
 		return encodeSSELines(lines)
 	}
 	message := dispatchedAsMessage(event)
-	rewritten, action, id := rw.readMessage(data, message)
+	rewritten, action, id := rw.readEventMessage(event, data, message)
 	switch action {
 	case messageRewrite:
 		return encodeSSELines(slices.Concat(replaceSSEData(event, rewritten), end))
@@ -535,6 +607,61 @@ func (rw *instructionsWriter) readEvent(event []sseLine, end ...sseLine) []byte 
 	case messagePass:
 	}
 	return encodeSSELines(lines)
+}
+
+// readEventMessage decides on data, the data of event, as readMessage does
+// for the response to a POST and readStreamMessage for a stream a GET opened.
+// On such a stream an event over the bound is withheld unread, whether it
+// arrived in one write or in many (see skipHeld), with the id the start of its
+// data names, if any.
+func (rw *instructionsWriter) readEventMessage(
+	event []sseLine, data []byte, message bool,
+) ([]byte, messageAction, jsonrpc2.ID) {
+	if !rw.target.stream() {
+		return rw.readMessage(data, message)
+	}
+	size := 0
+	for _, line := range event {
+		size += len(line.text) + len(line.term)
+	}
+	if size > rw.config.maxStreamEventBytes {
+		rw.warn("an event is larger than the middleware reads",
+			"max_event_bytes", rw.config.maxStreamEventBytes)
+		return nil, messageWithhold, heldDataID(data)
+	}
+	return rw.readStreamMessage(data)
+}
+
+// readStreamMessage decides on data, one message on a stream a GET opened: it
+// returns data with the instructions of its result set when the result has a
+// member a decoder binds to protocolVersion, serverInfo or supportedVersions,
+// whatever its id, or says to pass or withhold it, and the id of the request
+// it answers. Data whose bytes name none of those members passes undecoded.
+// Data that does not decode as one unambiguous message is withheld when a
+// client could still read it as such a result, or when it is not valid JSON,
+// which lenient clients may still parse.
+func (rw *instructionsWriter) readStreamMessage(data []byte) ([]byte, messageAction, jsonrpc2.ID) {
+	if !mayNameResultMember(data) {
+		return nil, messagePass, jsonrpc2.ID{}
+	}
+	message, err := decodeMessage(data)
+	if err != nil {
+		if !startsLikeJSON(data) || (json.Valid(data) && !mayCarryResult(data)) {
+			return nil, messagePass, jsonrpc2.ID{}
+		}
+		rw.warn("a message that may carry the result does not decode as one unambiguous JSON-RPC message")
+		return nil, messageWithhold, heldDataID(data)
+	}
+	response, ok := message.(*jsonrpc2.Response)
+	if !ok || response.Error != nil || !resultMayCarry(response.Result) {
+		return nil, messagePass, jsonrpc2.ID{}
+	}
+	rewritten, err := rewriteInstructions(&rw.config.instructions, data, response.Result)
+	if err != nil {
+		rw.warn("the result cannot be rewritten", "error", err)
+		return nil, messageWithhold, response.ID
+	}
+	return rewritten, messageRewrite, response.ID
 }
 
 // readMessage decides on data, one message: it returns data with the
@@ -552,12 +679,7 @@ func (rw *instructionsWriter) readMessage(data []byte, ends bool) ([]byte, messa
 	if !ok {
 		return nil, messagePass, jsonrpc2.ID{}
 	}
-	if rw.target.stream() {
-		// The response on the legacy SSE stream that answers initialize.
-		if response.Error != nil || !initializeResultShape(response.Result) {
-			return nil, messagePass, jsonrpc2.ID{}
-		}
-	} else if response.ID != rw.target.id {
+	if response.ID != rw.target.id {
 		return nil, messagePass, jsonrpc2.ID{}
 	}
 	rw.done = ends
@@ -572,57 +694,179 @@ func (rw *instructionsWriter) readMessage(data []byte, ends bool) ([]byte, messa
 	return rewritten, messageRewrite, response.ID
 }
 
-// readUndecodable decides on data that does not decode as one unambiguous
-// message, such as data with duplicate or case-variant member names, which
-// clients read differently. Data that does not start like a JSON value is
-// read by no client as a message and passes. Otherwise, in the response to a
-// POST, data passes only when it names the id of another request (see
-// heldDataID); any other data may be the result the request asked for and is
-// withheld in its place. On the legacy SSE stream, data that a client could
-// read as an InitializeResult, or that is not valid JSON, which lenient
-// clients may still parse, is withheld, with the id it names if it names one.
-// Only when ends is set (see readMessage) does withholding the result end the
-// search for it.
+// readUndecodable decides on data, in the response to a POST, that does not
+// decode as one unambiguous message, such as data with duplicate or
+// case-variant member names, which clients read differently. Data that does
+// not start like a JSON value is read by no client as a message and passes,
+// and so does data that names the id of another request (see heldDataID). Any
+// other data may be the result the request asked for and is withheld in its
+// place. Only when ends is set (see readMessage) does that end the search.
 func (rw *instructionsWriter) readUndecodable(data []byte, ends bool) ([]byte, messageAction, jsonrpc2.ID) {
 	if !startsLikeJSON(data) {
 		return nil, messagePass, jsonrpc2.ID{}
 	}
-	id := heldDataID(data)
-	if rw.target.stream() {
-		identified := mayCarryInitializeResult(data)
-		if !identified && json.Valid(data) {
-			return nil, messagePass, jsonrpc2.ID{}
-		}
-		rw.done = identified && ends
-	} else {
-		if id.IsValid() && id != rw.target.id {
-			return nil, messagePass, jsonrpc2.ID{}
-		}
-		id = rw.target.id
-		rw.done = ends
+	if id := heldDataID(data); id.IsValid() && id != rw.target.id {
+		return nil, messagePass, jsonrpc2.ID{}
 	}
+	rw.done = ends
 	rw.warn("a message does not decode as one unambiguous JSON-RPC message")
-	return nil, messageWithhold, id
+	return nil, messageWithhold, rw.target.id
+}
+
+// writeStream reads data, the next bytes of a stream a GET opened, which is
+// read for as long as it lasts. Complete events are written as readEvent
+// returns them, and an event that has not ended is held up to the bound on an
+// event, past which it is withheld and the rest of it skipped (see skipHeld).
+// A line that clients split differently stops the reading of events: the
+// stream is forwarded as it arrives from then on, unless what it carries
+// names a member of the result, which ends the stream (see enterRaw).
+func (rw *instructionsWriter) writeStream(data []byte) error {
+	if rw.raw {
+		return rw.writeRaw(data)
+	}
+	if rw.skipping {
+		if data = rw.skip(data); rw.discard || len(data) == 0 {
+			return nil
+		}
+	}
+	rw.buffer = append(rw.buffer, data...)
+	// A CR at the end of what is held may start a CRLF that has not arrived.
+	if split := lineSplitIndex(bytes.TrimSuffix(rw.buffer, sseCR)); split >= 0 {
+		return rw.enterRaw(split)
+	}
+	if end := completeSSEEvents(rw.buffer, rw.scanned); end > 0 {
+		if err := rw.writeEvents(end); err != nil {
+			return err
+		}
+	}
+	rw.scanned = len(rw.buffer)
+	if len(rw.buffer) > rw.config.maxStreamEventBytes {
+		return rw.skipHeld()
+	}
+	return nil
+}
+
+// finishStream reads what is held of a stream a GET opened once the wrapped
+// handler has returned, its last event as it stands.
+func (rw *instructionsWriter) finishStream() error {
+	if rw.raw || rw.skipping || len(rw.buffer) == 0 {
+		return nil
+	}
+	if split := lineSplitIndex(rw.buffer); split >= 0 {
+		return rw.enterRaw(split)
+	}
+	return rw.writeEvents(len(rw.buffer))
+}
+
+// enterRaw stops reading a stream a GET opened event by event, once what the
+// writer holds has a line, at split, that clients split differently. The
+// events that end before it are read as usual. The rest is forwarded as it
+// is, and the stream from then on as it arrives (see writeRaw), unless it
+// names a member of the result: no reading of it can then be rewritten, and
+// the stream ends.
+func (rw *instructionsWriter) enterRaw(split int) error {
+	if end := completeSSEEvents(rw.buffer[:split], 0); end > 0 {
+		if err := rw.writeEvents(end); err != nil {
+			return err
+		}
+	}
+	held := rw.buffer
+	rw.buffer = nil
+	if mayNameResultMember(held) {
+		rw.warn("the event stream has a line ending that clients split differently")
+		return rw.withholdRest()
+	}
+	rw.raw = true
+	rw.rawTail = lastBytes(held, rawStreamTailBytes)
+	_, err := rw.ResponseWriter.Write(held)
+	return err
+}
+
+// writeRaw forwards data, the next bytes of a stream that is no longer read
+// event by event, unless they name a member of the result together with the
+// bytes before them, which ends the stream.
+func (rw *instructionsWriter) writeRaw(data []byte) error {
+	window := slices.Concat(rw.rawTail, data)
+	if mayNameResultMember(window) {
+		rw.warn("the event stream has a line ending that clients split differently")
+		return rw.withholdRest()
+	}
+	rw.rawTail = lastBytes(window, rawStreamTailBytes)
+	_, err := rw.ResponseWriter.Write(data)
+	return err
+}
+
+// skipHeld withholds the event the writer holds, which is over the bound on
+// an event, and skips the rest of it as it arrives (see skip): an error event
+// takes its place when its start names the request it answers and clients
+// dispatch it as a message, and it is dropped otherwise. The stream goes on
+// after it, as the tool filter's does.
+func (rw *instructionsWriter) skipHeld() error {
+	rw.warn("an event is larger than the middleware reads", "max_event_bytes", rw.config.maxStreamEventBytes)
+	id := heldEventID(rw.buffer)
+	message := dispatchedAsMessage(splitSSELines(rw.buffer))
+	rw.skipping = true
+	rw.skipLine = lineStart(rw.buffer[bytes.LastIndexByte(rw.buffer, '\n')+1:])
+	rw.buffer = nil
+	rw.scanned = 0
+	if !id.IsValid() || !message {
+		return nil
+	}
+	_, err := rw.ResponseWriter.Write(sseErrorEvent(withheldResponse(id)))
+	rw.flush()
+	return err
+}
+
+// skip drops data, bytes of the event the writer skips (see skipHeld), up to
+// the blank line that ends it, and returns the bytes after that line, which
+// start the next event; it returns nothing while the event has not ended. A
+// line that clients split differently would let the event end where this
+// does not look, so it ends the stream.
+func (rw *instructionsWriter) skip(data []byte) []byte {
+	if lineSplitIndex(bytes.TrimSuffix(data, sseCR)) >= 0 {
+		rw.warn("the event stream has a line ending that clients split differently")
+		_ = rw.withholdRest()
+		return nil
+	}
+	prefix := len(rw.skipLine)
+	end := 0
+	for _, line := range splitSSELines(slices.Concat(rw.skipLine, data)) {
+		end += len(line.text) + len(line.term)
+		if line.term == nil {
+			rw.skipLine = lineStart(line.text)
+			return nil
+		}
+		if isBlankSSELine(line.text) {
+			rw.skipping = false
+			rw.skipLine = nil
+			return data[end-prefix:]
+		}
+	}
+	rw.skipLine = nil
+	return nil
 }
 
 // withholdRest withholds the rest of the response, and returns the error
 // writing the JSON-RPC error in its place met. While the status is held, the
-// error is the whole answer, under HTTP 500 and without the server's status,
-// Content-Encoding or Content-Length. On an event stream it is an event that
-// follows the ones already written, when the stream answers a POST; a legacy
-// SSE stream names no request to answer, so nothing more is written to it.
+// error is the whole answer, under HTTP 500 with its own Content-Length and
+// without the server's status or Content-Encoding, and is flushed, so that a
+// client can read all of it however long the wrapped handler goes on. On an
+// event stream it is an event that follows the ones already written, when
+// the stream answers a POST; a stream a GET opened names no request to
+// answer, so nothing more is written to it.
 func (rw *instructionsWriter) withholdRest() error {
 	rw.discard = true
 	rw.done = true
 	rw.buffer = nil
 	response := withheldResponse(rw.target.id)
 	if rw.headerPending {
+		body := EncodeJSONRPCError(response)
 		rw.header.Del("Content-Encoding")
-		rw.header.Del("Content-Length")
-		var err error
-		rw.commitHeader(func() {
-			err = WriteJSONRPCError(rw.ResponseWriter, http.StatusInternalServerError, response)
-		})
+		rw.header.Set("Content-Type", "application/json")
+		rw.header.Set("Content-Length", strconv.Itoa(len(body)))
+		rw.commitHeader(func() { rw.ResponseWriter.WriteHeader(http.StatusInternalServerError) })
+		_, err := rw.ResponseWriter.Write(body)
+		rw.flush()
 		return err
 	}
 	if rw.mode != instructionsEventStream || rw.target.stream() {
@@ -677,7 +921,7 @@ func (rw *instructionsWriter) warn(msg string, args ...any) {
 	rw.warned = true
 	target := rw.target.method
 	if rw.target.stream() {
-		target = "legacy SSE stream"
+		target = rw.target.streamKind
 	}
 	args = append([]any{"target", target}, args...)
 	slog.Warn("withholding a response whose instructions cannot be set: "+msg, args...)
@@ -732,29 +976,32 @@ func startsLikeJSON(data []byte) bool {
 	return len(data) > 0 && (data[0] == '{' || data[0] == '[')
 }
 
-// initializeResultShape reports whether result is an object with the members
-// every InitializeResult has.
-func initializeResultShape(result json.RawMessage) bool {
+// resultMemberNames are the members, lower-cased, that make a result on a
+// stream a GET opened one whose instructions the middleware sets: an
+// InitializeResult has protocolVersion and serverInfo, and a DiscoverResult
+// has supportedVersions.
+var resultMemberNames = []string{"protocolversion", "serverinfo", "supportedversions"}
+
+// resultMayCarry reports whether result is an object with a member a decoder
+// could bind to one of resultMemberNames, under any spelling it folds to one
+// of them.
+func resultMayCarry(result json.RawMessage) bool {
 	members, err := DecodeJSONObjectMembers(result)
 	if err != nil {
 		return false
 	}
-	found := 0
-	for _, member := range members {
-		switch member.Name {
-		case "protocolVersion", "capabilities", "serverInfo":
-			found++
-		}
-	}
-	return found == 3
+	return slices.ContainsFunc(members, func(member JSONObjectMember) bool {
+		return slices.ContainsFunc(resultMemberNames, func(name string) bool {
+			return strings.EqualFold(member.Name, name)
+		})
+	})
 }
 
-// mayCarryInitializeResult reports whether some client could read data, one
-// JSON value that may spell a member twice or in another case, as an
-// InitializeResult: a message, or a message in a batch, with a member a
-// decoder could bind to result whose value has a member it could bind to
-// protocolVersion or serverInfo.
-func mayCarryInitializeResult(data []byte) bool {
+// mayCarryResult reports whether some client could read data, one JSON value
+// that may spell a member twice or in another case, as a result that
+// resultMayCarry reports: a message, or a message in a batch, with a member a
+// decoder could bind to result whose value resultMayCarry reports.
+func mayCarryResult(data []byte) bool {
 	data = bytes.TrimLeft(bytes.TrimPrefix(data, UTF8BOM), " \t\r\n")
 	if len(data) > 0 && data[0] == '[' {
 		var batch []json.RawMessage
@@ -762,33 +1009,61 @@ func mayCarryInitializeResult(data []byte) bool {
 			return false
 		}
 		return slices.ContainsFunc(batch, func(message json.RawMessage) bool {
-			return messageMayCarryInitializeResult(message)
+			return messageMayCarryResult(message)
 		})
 	}
-	return messageMayCarryInitializeResult(data)
+	return messageMayCarryResult(data)
 }
 
-func messageMayCarryInitializeResult(message []byte) bool {
+func messageMayCarryResult(message []byte) bool {
 	members, err := DecodeJSONObjectMembers(message)
 	if err != nil {
 		return false
 	}
-	for _, member := range members {
-		if !strings.EqualFold(member.Name, "result") {
-			continue
-		}
-		resultMembers, err := DecodeJSONObjectMembers(member.Value)
-		if err != nil {
-			continue
-		}
-		for _, resultMember := range resultMembers {
-			if strings.EqualFold(resultMember.Name, "protocolVersion") ||
-				strings.EqualFold(resultMember.Name, "serverInfo") {
-				return true
+	return slices.ContainsFunc(members, func(member JSONObjectMember) bool {
+		return strings.EqualFold(member.Name, "result") && resultMayCarry(member.Value)
+	})
+}
+
+// mayNameResultMember reports whether data, part of an event stream, could
+// spell one of resultMemberNames for some decoder: whether it holds one once
+// its JSON \u escapes are read and it is folded as decoders fold member names
+// (Unicode case, and the long s and Kelvin sign that fold to s and k). Data
+// for which it reports false names none of them, however it is decoded, so
+// it carries no result whose instructions the middleware sets.
+func mayNameResultMember(data []byte) bool {
+	folded := bytes.ReplaceAll(bytes.ToLower(unescapeJSONUnicode(data)), []byte("\u017f"), []byte("s"))
+	return slices.ContainsFunc(resultMemberNames, func(name string) bool {
+		return bytes.Contains(folded, []byte(name))
+	})
+}
+
+// unescapeJSONUnicode returns data with every \uXXXX escape replaced by the
+// character it names. An escaped backslash before a u is read as an escape
+// too, which can only make mayNameResultMember report a name that is not
+// there.
+func unescapeJSONUnicode(data []byte) []byte {
+	if !bytes.Contains(data, []byte(`\u`)) {
+		return data
+	}
+	out := make([]byte, 0, len(data))
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\\' && i+5 < len(data) && data[i+1] == 'u' {
+			// Four hex digits fit in 16 bits, so the conversion cannot overflow.
+			if r, err := strconv.ParseUint(string(data[i+2:i+6]), 16, 16); err == nil {
+				out = utf8.AppendRune(out, rune(uint16(r)))
+				i += 5
+				continue
 			}
 		}
+		out = append(out, data[i])
 	}
-	return false
+	return out
+}
+
+// lastBytes returns a copy of the last n bytes of data, or of all of it.
+func lastBytes(data []byte, n int) []byte {
+	return slices.Clone(data[max(0, len(data)-n):])
 }
 
 // rewriteInstructions returns message, a JSON-RPC response whose result is

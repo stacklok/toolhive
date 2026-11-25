@@ -41,14 +41,15 @@ func rewrittenInitialize(text string) string {
 		`"instructions":` + string(encoded) + `,"capabilities":{"tools":{}},"serverInfo":{"name":"s","version":"1"}}}`
 }
 
-// serveInstructions sends a request with body (a GET when body is empty)
-// through the MCP parser and an instructions middleware for cfg to handler,
-// and returns what the client receives.
+// serveInstructions sends a request with body through the MCP parser and an
+// instructions middleware for cfg to handler, and returns what the client
+// receives. An empty body sends the GET that opens a legacy SSE stream, to a
+// middleware for that transport.
 func serveInstructions(
 	t *testing.T, cfg instructions.Config, body string, handler http.Handler,
 ) *httptest.ResponseRecorder {
 	t.Helper()
-	middleware, err := NewInstructionsMiddleware(cfg)
+	middleware, err := NewInstructionsMiddleware(InstructionsMiddlewareParams{Instructions: cfg, LegacySSE: body == ""})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
@@ -322,7 +323,9 @@ func TestInstructionsMiddleware_EventStream(t *testing.T) {
 func TestInstructionsMiddleware_HoldsOnlyIncompleteEvents(t *testing.T) {
 	t.Parallel()
 
-	middleware, err := NewInstructionsMiddleware(instructions.Config{Value: "policy"})
+	middleware, err := NewInstructionsMiddleware(InstructionsMiddlewareParams{
+		Instructions: instructions.Config{Value: "policy"}, LegacySSE: true,
+	})
 	require.NoError(t, err)
 
 	rec := httptest.NewRecorder()
@@ -348,7 +351,7 @@ func TestInstructionsMiddleware_ForwardsRequestWithoutAcceptEncoding(t *testing.
 		acceptEncoding = append(acceptEncoding, r.Header.Get("Accept-Encoding"))
 		w.WriteHeader(http.StatusAccepted)
 	})
-	middleware, err := NewInstructionsMiddleware(instructions.Config{Value: "policy"})
+	middleware, err := NewInstructionsMiddleware(InstructionsMiddlewareParams{Instructions: instructions.Config{Value: "policy"}})
 	require.NoError(t, err)
 
 	for _, body := range []string{initializeRequest, toolsListRequest} {
@@ -363,9 +366,9 @@ func TestInstructionsMiddleware_ForwardsRequestWithoutAcceptEncoding(t *testing.
 func TestNewInstructionsMiddleware_RejectsInvalidConfig(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewInstructionsMiddleware(instructions.Config{Mode: "after", Value: "policy"})
+	_, err := NewInstructionsMiddleware(InstructionsMiddlewareParams{Instructions: instructions.Config{Mode: "after", Value: "policy"}})
 	require.ErrorContains(t, err, "invalid instructions mode")
-	_, err = NewInstructionsMiddleware(instructions.Config{})
+	_, err = NewInstructionsMiddleware(InstructionsMiddlewareParams{})
 	require.ErrorContains(t, err, "must not be empty")
 }
 
@@ -377,9 +380,9 @@ func TestCreateInstructionsMiddleware(t *testing.T) {
 		params  string
 		wantErr string
 	}{
-		{name: "valid", params: `{"mode":"prepend","value":"policy"}`},
+		{name: "valid", params: `{"instructions":{"mode":"prepend","value":"policy"},"legacy_sse":true}`},
 		{name: "invalid parameters", params: `[]`, wantErr: "failed to unmarshal instructions middleware parameters"},
-		{name: "invalid config", params: `{"mode":"after","value":"policy"}`, wantErr: "failed to create instructions middleware"},
+		{name: "invalid config", params: `{"instructions":{"mode":"after","value":"policy"}}`, wantErr: "failed to create instructions middleware"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -403,6 +406,44 @@ func TestCreateInstructionsMiddleware(t *testing.T) {
 				return
 			}
 			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+// TestInstructionsMiddleware_TransportScope pins which requests the
+// middleware reads for each transport: GET streams only on legacy SSE, and
+// POST responses only otherwise.
+func TestInstructionsMiddleware_TransportScope(t *testing.T) {
+	t.Parallel()
+
+	stream := "data: " + initializeWithInstructions + "\n\n"
+	tests := []struct {
+		name      string
+		legacySSE bool
+		method    string
+		want      string
+	}{
+		{name: "legacy SSE reads a GET stream", legacySSE: true, method: http.MethodGet,
+			want: "data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n"},
+		{name: "legacy SSE leaves a POST alone", legacySSE: true, method: http.MethodPost, want: stream},
+		{name: "Streamable HTTP reads a POST", method: http.MethodPost,
+			want: "data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n"},
+		{name: "Streamable HTTP leaves a GET stream alone", method: http.MethodGet, want: stream},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			middleware, err := NewInstructionsMiddleware(InstructionsMiddlewareParams{
+				Instructions: instructions.Config{Value: "policy"}, LegacySSE: tt.legacySSE,
+			})
+			require.NoError(t, err)
+			req := httptest.NewRequest(tt.method, "/mcp", nil)
+			if tt.method == http.MethodPost {
+				req = httptest.NewRequest(tt.method, "/mcp", strings.NewReader(initializeRequest))
+			}
+			rec := httptest.NewRecorder()
+			ParsingMiddleware(middleware(replyWith(http.StatusOK, "text/event-stream", stream))).ServeHTTP(rec, req)
+			assert.Equal(t, tt.want, rec.Body.String())
 		})
 	}
 }

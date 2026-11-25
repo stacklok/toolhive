@@ -1373,7 +1373,9 @@ func TestIntegrationInstructionsWithAuthz(t *testing.T) {
 		EntitiesJSON: `[]`,
 	}, "")
 	require.NoError(t, err)
-	instructionsMiddleware, err := mcpparser.NewInstructionsMiddleware(instructions.Config{Value: "policy"})
+	instructionsMiddleware, err := mcpparser.NewInstructionsMiddleware(mcpparser.InstructionsMiddlewareParams{
+		Instructions: instructions.Config{Value: "policy"},
+	})
 	require.NoError(t, err)
 
 	results := map[string]any{

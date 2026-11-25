@@ -800,9 +800,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// outside classification, so it reads the SDK's initialize and
 	// server/discover results and the Modern dispatcher's server/discover
 	// result alike, and inside the MCP-parsing middleware, whose parse names
-	// the request a response answers.
+	// the request a response answers. vMCP serves Streamable HTTP only, so
+	// the middleware leaves GET streams alone.
 	if s.config.Instructions != nil {
-		instructionsMiddleware, err := mcpparser.NewInstructionsMiddleware(*s.config.Instructions)
+		instructionsMiddleware, err := mcpparser.NewInstructionsMiddleware(
+			mcpparser.InstructionsMiddlewareParams{Instructions: *s.config.Instructions})
 		if err != nil {
 			return nil, fmt.Errorf("invalid instructions configuration: %w", err)
 		}

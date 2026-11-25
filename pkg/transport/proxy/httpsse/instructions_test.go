@@ -30,7 +30,10 @@ import (
 func TestHTTPSSEProxy_InstructionsOnTheEventStream(t *testing.T) {
 	t.Parallel()
 
-	middleware, err := mcp.NewInstructionsMiddleware(instructions.Config{Mode: instructions.ModePrepend, Value: "policy"})
+	middleware, err := mcp.NewInstructionsMiddleware(mcp.InstructionsMiddlewareParams{
+		Instructions: instructions.Config{Mode: instructions.ModePrepend, Value: "policy"},
+		LegacySSE:    true,
+	})
 	require.NoError(t, err)
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, []types.NamedMiddleware{
 		{Name: mcp.ParserMiddlewareType, Function: mcp.ParsingMiddleware},

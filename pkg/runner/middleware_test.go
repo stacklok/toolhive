@@ -2168,51 +2168,66 @@ func TestPopulateMiddlewareConfigs_StripAuthConflicts(t *testing.T) {
 }
 
 // TestInstructionsMiddlewareWiring pins where both middleware paths put the
-// instructions middleware: inside the MCP parser, whose parse names
-// the initialize and server/discover requests it rewrites the responses of,
-// and only when instructions are configured.
+// instructions middleware: inside the MCP parser, whose parse names the
+// initialize and server/discover requests it rewrites the responses of, only
+// when instructions are configured, and reading the legacy SSE stream only
+// when clients speak that transport.
 func TestInstructionsMiddlewareWiring(t *testing.T) {
 	t.Parallel()
 
 	cfg := &instructions.Config{Mode: instructions.ModePrepend, Value: "policy"}
-	fromFlags := func(t *testing.T, cfg *instructions.Config) []types.MiddlewareConfig {
+	fromFlags := func(t *testing.T, cfg *instructions.Config, transport types.TransportType, proxyMode types.ProxyMode) []types.MiddlewareConfig {
 		t.Helper()
 		built, err := NewRunConfigBuilder(t.Context(), nil, nil, nil,
 			WithName("test"),
+			WithProxyMode(proxyMode),
 			WithInstructions(cfg),
-			WithMiddlewareFromFlags(nil, nil, nil, nil, nil, "", false, "", "", "", false),
+			WithMiddlewareFromFlags(nil, nil, nil, nil, nil, "", false, "", "", transport.String(), false),
 		)
 		require.NoError(t, err)
 		return built.MiddlewareConfigs
 	}
-	populated := func(t *testing.T, cfg *instructions.Config) []types.MiddlewareConfig {
+	populated := func(t *testing.T, cfg *instructions.Config, transport types.TransportType, proxyMode types.ProxyMode) []types.MiddlewareConfig {
 		t.Helper()
-		config := &RunConfig{Instructions: cfg, AuthzConfig: &authz.Config{}}
+		config := &RunConfig{Instructions: cfg, AuthzConfig: &authz.Config{}, Transport: transport, ProxyMode: proxyMode}
 		require.NoError(t, PopulateMiddlewareConfigs(config))
 		return config.MiddlewareConfigs
 	}
 
-	for name, build := range map[string]func(*testing.T, *instructions.Config) []types.MiddlewareConfig{
+	transports := []struct {
+		name      string
+		transport types.TransportType
+		proxyMode types.ProxyMode
+		legacySSE bool
+	}{
+		{name: "streamable-http", transport: types.TransportTypeStreamableHTTP},
+		{name: "stdio behind streamable-http", transport: types.TransportTypeStdio, proxyMode: types.ProxyModeStreamableHTTP},
+		{name: "sse", transport: types.TransportTypeSSE, legacySSE: true},
+		{name: "stdio behind sse", transport: types.TransportTypeStdio, proxyMode: types.ProxyModeSSE, legacySSE: true},
+	}
+	for path, build := range map[string]func(*testing.T, *instructions.Config, types.TransportType, types.ProxyMode) []types.MiddlewareConfig{
 		"PopulateMiddlewareConfigs": populated,
 		"WithMiddlewareFromFlags":   fromFlags,
 	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+		for _, tt := range transports {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
 
-			mws := build(t, cfg)
-			parserIdx := indexOfMiddleware(t, mws, mcp.ParserMiddlewareType)
-			instructionsIdx := indexOfMiddleware(t, mws, mcp.InstructionsMiddlewareType)
-			assert.Less(t, parserIdx, instructionsIdx,
-				"the instructions middleware goes inside the MCP parser")
-			var params instructions.Config
-			require.NoError(t, json.Unmarshal(mws[instructionsIdx].Parameters, &params))
-			assert.Equal(t, *cfg, params)
+				mws := build(t, cfg, tt.transport, tt.proxyMode)
+				parserIdx := indexOfMiddleware(t, mws, mcp.ParserMiddlewareType)
+				instructionsIdx := indexOfMiddleware(t, mws, mcp.InstructionsMiddlewareType)
+				assert.Less(t, parserIdx, instructionsIdx,
+					"the instructions middleware goes inside the MCP parser")
+				var params mcp.InstructionsMiddlewareParams
+				require.NoError(t, json.Unmarshal(mws[instructionsIdx].Parameters, &params))
+				assert.Equal(t, mcp.InstructionsMiddlewareParams{Instructions: *cfg, LegacySSE: tt.legacySSE}, params)
 
-			for _, mw := range build(t, nil) {
-				assert.NotEqual(t, mcp.InstructionsMiddlewareType, mw.Type,
-					"no instructions middleware without instructions")
-			}
-		})
+				for _, mw := range build(t, nil, tt.transport, tt.proxyMode) {
+					assert.NotEqual(t, mcp.InstructionsMiddlewareType, mw.Type,
+						"no instructions middleware without instructions")
+				}
+			})
+		}
 	}
 }
 

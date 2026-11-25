@@ -810,9 +810,11 @@ func WithMiddlewareFromFlags(
 
 		// Add the instructions middleware inside the MCP parser that
 		// addCoreMiddlewares added, as PopulateMiddlewareConfigs does. It reads
-		// the RunConfig's Instructions, so WithInstructions must come first.
+		// the RunConfig's Instructions and ProxyMode, so WithInstructions and
+		// WithProxyMode must come first.
 		var err error
-		middlewareConfigs, err = addInstructionsMiddleware(middlewareConfigs, b.config.Instructions)
+		middlewareConfigs, err = addInstructionsMiddleware(middlewareConfigs, b.config.Instructions,
+			types.EffectiveProxyMode(types.TransportType(transportType), b.config.ProxyMode))
 		if err != nil {
 			return err
 		}

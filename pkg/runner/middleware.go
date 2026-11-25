@@ -177,7 +177,8 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
 
 	// Instructions middleware (if configured). See addInstructionsMiddleware.
-	middlewareConfigs, err = addInstructionsMiddleware(middlewareConfigs, config.Instructions)
+	middlewareConfigs, err = addInstructionsMiddleware(
+		middlewareConfigs, config.Instructions, types.EffectiveProxyMode(config.Transport, config.ProxyMode))
 	if err != nil {
 		return err
 	}
@@ -315,15 +316,23 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 // addInstructionsMiddleware appends the instructions middleware when
 // configured is set. It reads the parsed request to find initialize and
 // server/discover requests, so it goes inside the MCP parser. Middleware
-// outside it (audit, the tool filter) sees the rewritten result.
+// outside it (audit, the tool filter) sees the rewritten result. proxyMode is
+// the transport clients speak, which decides whether the middleware reads
+// the legacy SSE event stream or POST responses (see
+// mcp.InstructionsMiddlewareParams).
 func addInstructionsMiddleware(
 	middlewareConfigs []types.MiddlewareConfig,
 	configured *instructions.Config,
+	proxyMode types.ProxyMode,
 ) ([]types.MiddlewareConfig, error) {
 	if configured == nil {
 		return middlewareConfigs, nil
 	}
-	instructionsConfig, err := types.NewMiddlewareConfig(mcp.InstructionsMiddlewareType, configured)
+	params := mcp.InstructionsMiddlewareParams{
+		Instructions: *configured,
+		LegacySSE:    proxyMode == types.ProxyModeSSE,
+	}
+	instructionsConfig, err := types.NewMiddlewareConfig(mcp.InstructionsMiddlewareType, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create instructions middleware config: %w", err)
 	}

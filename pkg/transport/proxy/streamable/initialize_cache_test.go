@@ -193,7 +193,9 @@ func TestEveryClientHandshakeSucceedsAgainstStrictBackend(t *testing.T) {
 func TestInitializeCacheKeepsTheBackendResultUnderInstructions(t *testing.T) {
 	t.Parallel()
 
-	middleware, err := mcp.NewInstructionsMiddleware(instructions.Config{Value: "policy"})
+	middleware, err := mcp.NewInstructionsMiddleware(mcp.InstructionsMiddlewareParams{
+		Instructions: instructions.Config{Value: "policy"},
+	})
 	require.NoError(t, err)
 	proxy, url := startInitTestProxy(t,
 		types.NamedMiddleware{Name: mcp.ParserMiddlewareType, Function: mcp.ParsingMiddleware},

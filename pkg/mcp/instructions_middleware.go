@@ -31,6 +31,20 @@ const maxInstructionsHeldBytes = 16 << 20
 // instructions, in both InitializeResult and DiscoverResult.
 const instructionsMember = "instructions"
 
+// InstructionsMiddlewareParams are the parameters of the instructions
+// middleware.
+type InstructionsMiddlewareParams struct {
+	// Instructions is what the middleware sets.
+	Instructions instructions.Config `json:"instructions"`
+	// LegacySSE is set when the endpoint serves the 2024-11-05 HTTP+SSE
+	// transport, which answers a POSTed request on the event stream a GET
+	// opened. The middleware then reads those streams and leaves POST
+	// responses alone. Otherwise it reads the responses to POSTed initialize
+	// and server/discover requests and leaves GET streams alone, since a
+	// Streamable HTTP GET stream carries no response to either.
+	LegacySSE bool `json:"legacy_sse,omitempty"`
+}
+
 // InstructionsMiddleware wraps the instructions middleware function.
 type InstructionsMiddleware struct {
 	middleware types.MiddlewareFunction
@@ -47,9 +61,9 @@ func (*InstructionsMiddleware) Close() error {
 }
 
 // CreateInstructionsMiddleware is the factory for the instructions middleware.
-// Its parameters are an instructions.Config.
+// Its parameters are an InstructionsMiddlewareParams.
 func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
-	var params instructions.Config
+	var params InstructionsMiddlewareParams
 	if err := json.Unmarshal(config.Parameters, &params); err != nil {
 		return fmt.Errorf("failed to unmarshal instructions middleware parameters: %w", err)
 	}
@@ -61,19 +75,19 @@ func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.M
 	return nil
 }
 
-// NewInstructionsMiddleware returns a middleware that applies cfg to the
-// instructions of the successful initialize and server/discover results the
+// NewInstructionsMiddleware returns a middleware that applies the configured
+// instructions to the successful initialize and server/discover results the
 // wrapped handler returns. It must run inside ParsingMiddleware, whose parse
 // of a POST names the request a response answers.
 //
-// On a POST, only the response to an initialize or server/discover request is
-// read, as a JSON body or an event stream, and only the result whose id is the
-// request's is rewritten. The response to any other request passes through
-// unread. On the legacy SSE transport, the response to a POSTed initialize
-// arrives on the event stream a GET opened instead, so on an event stream that
-// answers a GET the first result shaped like an InitializeResult (it has
-// protocolVersion, capabilities and serverInfo) is rewritten, and the rest of
-// the stream passes through unread.
+// Unless params.LegacySSE is set, only the response to a POSTed initialize or
+// server/discover request is read, as a JSON body or an event stream, and only
+// the result whose id is the request's is rewritten. The response to any other
+// request passes through unread. With params.LegacySSE set, the response to a
+// POSTed initialize arrives on the event stream a GET opened instead, so on
+// such a stream the first result shaped like an InitializeResult (it has
+// protocolVersion, capabilities and serverInfo) is rewritten, the rest of the
+// stream passes through unread, and every POST passes through unread.
 //
 // A rewrite sets the instructions member of the result and keeps every other
 // member as the server sent it. Error responses, responses with a non-2xx
@@ -83,13 +97,14 @@ func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.M
 // hold more than maxInstructionsHeldBytes, or one that does not decode as one
 // unambiguous JSON-RPC message, such as one with duplicate or case-variant
 // member names) is forwarded unchanged and logged as a warning.
-func NewInstructionsMiddleware(cfg instructions.Config) (types.MiddlewareFunction, error) {
+func NewInstructionsMiddleware(params InstructionsMiddlewareParams) (types.MiddlewareFunction, error) {
+	cfg := params.Instructions
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			target, ok := instructionsTargetOf(r)
+			target, ok := instructionsTargetOf(r, params.LegacySSE)
 			if !ok {
 				next.ServeHTTP(w, r)
 				return
@@ -117,27 +132,28 @@ type instructionsTarget struct {
 }
 
 // instructionsTargetOf reports which response of r the middleware rewrites,
-// and whether r has one: a POST that carries an initialize or server/discover
-// request, or a GET, which may open the event stream of the legacy SSE
-// transport.
-func instructionsTargetOf(r *http.Request) (instructionsTarget, bool) {
-	switch r.Method {
-	case http.MethodGet:
-		return instructionsTarget{}, true
-	case http.MethodPost:
-		parsed := GetParsedMCPRequest(r.Context())
-		if parsed == nil || !parsed.IsRequest {
-			return instructionsTarget{}, false
-		}
-		if parsed.Method != "initialize" && parsed.Method != "server/discover" {
-			return instructionsTarget{}, false
-		}
-		switch id := parsed.ID.(type) {
-		case int64:
-			return instructionsTarget{id: jsonrpc2.Int64ID(id), method: parsed.Method}, true
-		case string:
-			return instructionsTarget{id: jsonrpc2.StringID(id), method: parsed.Method}, true
-		}
+// and whether r has one: on the legacy SSE transport a GET, which opens its
+// event stream, and otherwise a POST that carries an initialize or
+// server/discover request.
+func instructionsTargetOf(r *http.Request, legacySSE bool) (instructionsTarget, bool) {
+	if legacySSE {
+		return instructionsTarget{}, r.Method == http.MethodGet
+	}
+	if r.Method != http.MethodPost {
+		return instructionsTarget{}, false
+	}
+	parsed := GetParsedMCPRequest(r.Context())
+	if parsed == nil || !parsed.IsRequest {
+		return instructionsTarget{}, false
+	}
+	if parsed.Method != "initialize" && parsed.Method != "server/discover" {
+		return instructionsTarget{}, false
+	}
+	switch id := parsed.ID.(type) {
+	case int64:
+		return instructionsTarget{id: jsonrpc2.Int64ID(id), method: parsed.Method}, true
+	case string:
+		return instructionsTarget{id: jsonrpc2.StringID(id), method: parsed.Method}, true
 	}
 	return instructionsTarget{}, false
 }

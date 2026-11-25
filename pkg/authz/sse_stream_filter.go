@@ -17,7 +17,6 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
@@ -57,13 +56,14 @@ var errSSEUnrecognizedMediaType = errors.New(
 	"successful response has a Content-Type other than text/event-stream and no readable JSON-RPC result")
 
 // listMembers maps each list member of a result to the method whose filter applies.
-var listMembers = map[string]string{
-	"tools":             string(mcp.MethodToolsList),
-	"prompts":           string(mcp.MethodPromptsList),
-	"resources":         string(mcp.MethodResourcesList),
-	"resourceTemplates": string(mcp.MethodResourcesTemplatesList),
-	"skills":            "skills/list",
-}
+// It is derived from listKinds, so a new list kind is added in one place.
+var listMembers = func() map[string]string {
+	m := make(map[string]string, len(listKinds))
+	for _, lk := range listKinds {
+		m[lk.member] = lk.method
+	}
+	return m
+}()
 
 // sseStreamFilterWriter filters a long-lived GET text/event-stream. Unlike
 // ResponseFilteringWriter, which buffers the whole response until the handler

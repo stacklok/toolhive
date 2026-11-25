@@ -713,23 +713,33 @@ const (
 // its response filter. Keeping eligibility and dispatch behind this one mapping
 // prevents a protected list method from being intercepted but passed through
 // because it was added to only one of two method lists.
+// listKind is one list result: the member that names it in a result, the method
+// whose response it answers, and the filter that scrubs it. listKinds is the only
+// table that lists them; the GET stream's member map is derived from it.
+type listKind struct {
+	member string
+	method string
+	kind   responseFilterKind
+}
+
+var listKinds = []listKind{
+	{member: "tools", method: string(mcp.MethodToolsList), kind: responseFilterTools},
+	{member: "prompts", method: string(mcp.MethodPromptsList), kind: responseFilterPrompts},
+	{member: "resources", method: string(mcp.MethodResourcesList), kind: responseFilterResources},
+	{member: "resourceTemplates", method: string(mcp.MethodResourcesTemplatesList), kind: responseFilterResourceTemplates},
+	{member: "skills", method: "skills/list", kind: responseFilterSkills},
+}
+
 func responseFilterForMethod(method string) responseFilterKind {
-	switch method {
-	case string(mcp.MethodToolsList):
-		return responseFilterTools
-	case string(mcp.MethodPromptsList):
-		return responseFilterPrompts
-	case string(mcp.MethodResourcesList):
-		return responseFilterResources
-	case string(mcp.MethodResourcesTemplatesList):
-		return responseFilterResourceTemplates
-	case "skills/list":
-		return responseFilterSkills
-	case optimizerdec.FindToolName:
-		return responseFilterFindTool
-	default:
-		return responseFilterNone
+	for _, lk := range listKinds {
+		if lk.method == method {
+			return lk.kind
+		}
 	}
+	if method == optimizerdec.FindToolName {
+		return responseFilterFindTool
+	}
+	return responseFilterNone
 }
 
 // requiresResponseFiltering reports whether the method needs response filtering.

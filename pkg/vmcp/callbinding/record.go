@@ -5,6 +5,7 @@ package callbinding
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"time"
 )
@@ -19,13 +20,20 @@ type Call struct {
 	RequestID string
 	// Started is when the vMCP admitted the call.
 	Started time.Time
+	// Ended reports that the request that started the call has returned.
+	Ended bool
 }
 
 // Record is the single-use record of call-bound tokens. A key names one token
-// (the vMCP uses its issuer and jti). Each key can start one call; the record
-// remembers the key until the expiry given to Start, whether or not the call
-// has ended, so the token cannot start a second call while it could still be
-// accepted.
+// (Token.Key: its issuer and jti, joined by a NUL). The key is opaque and may
+// hold any bytes; an implementation in a shared store must namespace it.
+//
+// Each key can start one call. The record remembers the key until the expiry
+// given to Start, whether or not the call has ended, so the token cannot
+// start a second call while it could still be accepted. The vMCP pads that
+// expiry beyond the last moment it accepts the token, so an implementation
+// may forget a key exactly at its expiry, even on a clock slightly ahead of
+// the vMCP's.
 //
 // Implementations must be safe for concurrent use. NewMemoryRecord keeps the
 // record in this process only, so a replay to another replica is not seen.
@@ -38,9 +46,9 @@ type Record interface {
 	// End marks the call recorded under key as ended. The key stays used until
 	// its expiry. Ending an unknown or already ended key is not an error.
 	End(ctx context.Context, key string) error
-	// OpenCall returns the call recorded under key while it has not ended or
-	// expired.
-	OpenCall(ctx context.Context, key string) (Call, bool, error)
+	// Lookup returns the call recorded under key, with Ended set once End has
+	// been called, until the key expires.
+	Lookup(ctx context.Context, key string) (Call, bool, error)
 }
 
 // MemoryRecord is a Record held in this process's memory.
@@ -54,7 +62,6 @@ type MemoryRecord struct {
 
 type memoryEntry struct {
 	call      Call
-	ended     bool
 	expiresAt time.Time
 }
 
@@ -88,17 +95,17 @@ func (m *MemoryRecord) End(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if e, ok := m.entries[key]; ok {
-		e.ended = true
+		e.call.Ended = true
 	}
 	return nil
 }
 
-// OpenCall implements Record.
-func (m *MemoryRecord) OpenCall(_ context.Context, key string) (Call, bool, error) {
+// Lookup implements Record.
+func (m *MemoryRecord) Lookup(_ context.Context, key string) (Call, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.entries[key]
-	if !ok || e.ended || !m.now().Before(e.expiresAt) {
+	if !ok || !m.now().Before(e.expiresAt) {
 		return Call{}, false, nil
 	}
 	return e.call, true, nil
@@ -109,10 +116,8 @@ func (m *MemoryRecord) sweepLocked(now time.Time) {
 	if now.Before(m.nextSweep) {
 		return
 	}
-	for key, e := range m.entries {
-		if !now.Before(e.expiresAt) {
-			delete(m.entries, key)
-		}
-	}
+	maps.DeleteFunc(m.entries, func(_ string, e *memoryEntry) bool {
+		return !now.Before(e.expiresAt)
+	})
 	m.nextSweep = now.Add(memorySweepInterval)
 }

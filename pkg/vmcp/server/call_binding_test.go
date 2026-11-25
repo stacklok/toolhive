@@ -6,6 +6,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -78,20 +81,64 @@ func (c *cbTokens) middleware(next http.Handler) http.Handler {
 	})
 }
 
+// cbClock is a settable clock for callBinding.now.
+type cbClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *cbClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *cbClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
 // blockingCore holds each CallTool until the test releases it, so a test can
-// act while a call is open.
+// act while a call is open. Register unblock with t.Cleanup after the test
+// server, so it runs before the server waits for open requests.
 type blockingCore struct {
 	*fakeCore
 	started chan struct{}
 	release chan struct{}
+	once    sync.Once
 }
+
+func newBlockingCore() *blockingCore {
+	return &blockingCore{started: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+func (b *blockingCore) unblock() { b.once.Do(func() { close(b.release) }) }
 
 func (b *blockingCore) CallTool(
 	ctx context.Context, identity *auth.Identity, name string, args map[string]any, meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	b.started <- struct{}{}
-	<-b.release
+	select {
+	case b.started <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return b.fakeCore.CallTool(ctx, identity, name, args, meta)
+}
+
+// waitStarted waits until the blocked core has started a call.
+func (b *blockingCore) waitStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-b.started:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the call did not start")
+	}
 }
 
 // lookupErrCore fails LookupTool with an infrastructure error until cleared.
@@ -121,6 +168,7 @@ type cbTestServer struct {
 	url    string
 	fc     *fakeCore
 	tokens *cbTokens
+	srv    *Server
 }
 
 func newCallBindingTestServer(t *testing.T, opts cbServerOptions) *cbTestServer {
@@ -158,7 +206,7 @@ func newCallBindingTestServer(t *testing.T, opts cbServerOptions) *cbTestServer 
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
-	return &cbTestServer{url: ts.URL, fc: fc, tokens: tokens}
+	return &cbTestServer{url: ts.URL, fc: fc, tokens: tokens, srv: srv}
 }
 
 func argsHash(t *testing.T, args string) string {
@@ -274,13 +322,18 @@ func cbJSON(v any) string {
 	return string(raw)
 }
 
-// requireRefused checks the refusal shape: 403, an insufficient_scope
-// challenge with no scope, and a JSON-RPC 403 error naming reason and
-// echoing id.
+// requireRefused checks the refusal shape: 403 with an insufficient_scope
+// challenge and no scope (401 with an invalid_token challenge for an expired
+// token), and a JSON-RPC 403 error naming reason and echoing id.
 func requireRefused(t *testing.T, resp cbResponse, reason string, id any) {
 	t.Helper()
-	require.Equal(t, http.StatusForbidden, resp.status, "body: %s", resp.body)
-	assert.Equal(t, `Bearer error="insufficient_scope"`, resp.header.Get("WWW-Authenticate"))
+	if reason == callbinding.ReasonTokenExpired {
+		require.Equal(t, http.StatusUnauthorized, resp.status, "body: %s", resp.body)
+		assert.Equal(t, `Bearer error="invalid_token"`, resp.header.Get("WWW-Authenticate"))
+	} else {
+		require.Equal(t, http.StatusForbidden, resp.status, "body: %s", resp.body)
+		assert.Equal(t, `Bearer error="insufficient_scope"`, resp.header.Get("WWW-Authenticate"))
+	}
 	var body struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
@@ -355,10 +408,10 @@ func TestCallBinding_Mismatches(t *testing.T) {
 			body: toolCallBody(9, cbTool, `[1]`), reason: callbinding.ReasonInvalidArguments},
 		{name: "arguments smuggled under a case variant", entry: callEntry(cbServer, cbTool, argsHash(t, `{}`)),
 			body:   `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"github_read","Arguments":{"a":1}}}`,
-			reason: callbinding.ReasonAmbiguousParams},
+			reason: callbinding.ReasonInvalidParams},
 		{name: "arguments smuggled under a long s", entry: callEntry(cbServer, cbTool, argsHash(t, `{}`)),
 			body:   `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"github_read","argumentſ":{"a":1}}}`,
-			reason: callbinding.ReasonAmbiguousParams},
+			reason: callbinding.ReasonInvalidParams},
 		{name: "unknown tool", entry: callEntry(cbServer, "nope", argsHash(t, args)),
 			body: toolCallBody(9, "nope", args), reason: callbinding.ReasonToolNotFound},
 		{name: "composite tool", entry: callEntry(cbServer, cbComposite, argsHash(t, args)),
@@ -567,95 +620,236 @@ func TestCallBinding_OtherMethodsRefused(t *testing.T) {
 	assert.Zero(t, s.fc.callToolCalls.Load())
 }
 
+// modernCall is a Modern (2026-07-28) tools/call for cbTool.
+func cbModernCall(id int, args string) string {
+	return `{"jsonrpc":"2.0","id":` + cbJSON(id) + `,"method":"tools/call","params":{"name":"github_read",` +
+		`"arguments":` + args + `,"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
+		`"io.modelcontextprotocol/clientCapabilities":{}}}}`
+}
+
+func cbModernHeaders() http.Header {
+	return http.Header{
+		"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/call"}, "Mcp-Name": {cbTool},
+	}
+}
+
 func TestCallBinding_ModernToolCall(t *testing.T) {
 	t.Parallel()
 	s := newCallBindingTestServer(t, cbServerOptions{})
 	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{"a":1}`))}))
-	modern := func(id int, args string) string {
-		return `{"jsonrpc":"2.0","id":` + cbJSON(id) + `,"method":"tools/call","params":{"name":"github_read",` +
-			`"arguments":` + args + `,"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
-			`"io.modelcontextprotocol/clientCapabilities":{}}}}`
-	}
-	headers := http.Header{
-		"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/call"}, "Mcp-Name": {cbTool},
-	}
 
-	requireRefused(t, s.send(t, http.MethodPost, token, "", modern(1, `{"a":2}`), headers),
+	requireRefused(t, s.send(t, http.MethodPost, token, "", cbModernCall(1, `{"a":2}`), cbModernHeaders()),
 		callbinding.ReasonArgumentsMismatch, 1)
-	ok := s.send(t, http.MethodPost, token, "", modern(2, `{"a":1}`), headers)
+	ok := s.send(t, http.MethodPost, token, "", cbModernCall(2, `{"a":1}`), cbModernHeaders())
 	require.Equal(t, http.StatusOK, ok.status, "body: %s", ok.body)
 	assert.Equal(t, int32(1), s.fc.callToolCalls.Load())
-	requireRefused(t, s.send(t, http.MethodPost, token, "", modern(3, `{"a":1}`), headers),
+	requireRefused(t, s.send(t, http.MethodPost, token, "", cbModernCall(3, `{"a":1}`), cbModernHeaders()),
 		callbinding.ReasonTokenReused, 3)
 }
 
+// postAsync sends a POST off the test goroutine and reports its status, or
+// 0 when the request failed. It must not use require.
+func (s *cbTestServer) postAsync(ctx context.Context, token, sessionID, body string) <-chan int {
+	done := make(chan int, 1)
+	go func() {
+		status := 0
+		defer func() { done <- status }()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/mcp", strings.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Mcp-Session-Id", sessionID)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		status = resp.StatusCode
+	}()
+	return done
+}
+
+func awaitStatus(t *testing.T, done <-chan int) int {
+	t.Helper()
+	select {
+	case status := <-done:
+		return status
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the request did not return")
+		return 0
+	}
+}
+
+func cancelBody(requestID string) string {
+	return `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":` + requestID + `}}`
+}
+
+const elicitationReply = `{"jsonrpc":"2.0","id":100,"result":{"action":"accept"}}`
+
 func TestCallBinding_OpenCallMessages(t *testing.T) {
 	t.Parallel()
-	bc := &blockingCore{started: make(chan struct{}, 1), release: make(chan struct{})}
+	bc := newBlockingCore()
 	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
 		bc.fakeCore = fc
 		return bc
 	}})
+	t.Cleanup(bc.unblock)
 	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
 	session := s.session(t, token)
 	otherSession := s.session(t, token)
 
 	// Before the call starts, nothing belongs to it.
-	requireRefused(t, s.send(t, http.MethodPost, token, session,
-		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`, nil),
-		callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil), callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil), callbinding.ReasonNoOpenCall, nil)
 
-	done := make(chan cbResponse, 1)
-	go func() {
-		done <- s.send(t, http.MethodPost, token, session, toolCallBody(7, cbTool, "{}"), nil)
-	}()
-	select {
-	case <-bc.started:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the call did not start")
-	}
+	done := s.postAsync(t.Context(), token, session, toolCallBody(7, cbTool, "{}"))
+	bc.waitStarted(t)
 
 	// While the call is open: the same token cannot start another call.
 	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(8, cbTool, "{}"), nil),
 		callbinding.ReasonTokenReused, 8)
-
-	// A cancellation for another ID, or on another session, is refused.
-	requireRefused(t, s.send(t, http.MethodPost, token, session,
-		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":8}}`, nil),
+	// A cancellation for another ID (7 and "7" differ), or on another
+	// session, is refused, and so is a response on another session.
+	for _, id := range []string{"8", `"7"`} {
+		requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody(id), nil), callbinding.ReasonNoOpenCall, nil)
+	}
+	requireRefused(t, s.send(t, http.MethodPost, token, otherSession, cancelBody("7"), nil),
 		callbinding.ReasonNoOpenCall, nil)
-	requireRefused(t, s.send(t, http.MethodPost, token, session,
-		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"7"}}`, nil),
+	requireRefused(t, s.send(t, http.MethodPost, token, otherSession, elicitationReply, nil),
 		callbinding.ReasonNoOpenCall, nil)
-	requireRefused(t, s.send(t, http.MethodPost, token, otherSession,
-		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`, nil),
-		callbinding.ReasonNoOpenCall, nil)
-	// A response on another session is refused.
-	requireRefused(t, s.send(t, http.MethodPost, token, otherSession,
-		`{"jsonrpc":"2.0","id":100,"result":{"action":"accept"}}`, nil), callbinding.ReasonNoOpenCall, nil)
 
 	// A response on the call's session passes the check; the transport
-	// accepts it.
-	resp := s.send(t, http.MethodPost, token, session, `{"jsonrpc":"2.0","id":100,"result":{"action":"accept"}}`, nil)
+	// answers it.
+	resp := s.send(t, http.MethodPost, token, session, elicitationReply, nil)
 	assert.NotEqual(t, http.StatusForbidden, resp.status, "body: %s", resp.body)
-	// The cancellation for the call passes the check.
-	cancel := s.send(t, http.MethodPost, token, session,
-		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"test"}}`, nil)
+
+	bc.unblock()
+	assert.Equal(t, http.StatusOK, awaitStatus(t, done))
+
+	// Once the call's request has returned, a response is refused, but a
+	// cancellation for the call still passes: a Legacy client may close the
+	// POST before it cancels, and the SDK ignores a cancellation for a
+	// finished request.
+	requireRefused(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil), callbinding.ReasonNoOpenCall, nil)
+	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
 	assert.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
-
-	close(bc.release)
-	select {
-	case resp := <-done:
-		assert.Equal(t, http.StatusOK, resp.status)
-	case <-time.After(10 * time.Second):
-		t.Fatal("the call did not return")
-	}
-
-	// Once the call has ended, nothing belongs to it.
-	requireRefused(t, s.send(t, http.MethodPost, token, session,
-		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`, nil),
-		callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("8"), nil), callbinding.ReasonNoOpenCall, nil)
 	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(9, cbTool, "{}"), nil),
 		callbinding.ReasonTokenReused, 9)
+}
+
+// TestCallBinding_CancelAfterDroppedPost checks the Legacy client order: the
+// client closes the call's POST, then sends notifications/cancelled. The
+// cancellation must still reach the transport.
+func TestCallBinding_CancelAfterDroppedPost(t *testing.T) {
+	t.Parallel()
+	bc := newBlockingCore()
+	record := callbinding.NewMemoryRecord()
+	s := newCallBindingTestServer(t, cbServerOptions{
+		binding: callbinding.Config{Record: record},
+		wrap: func(fc *fakeCore) core.VMCP {
+			bc.fakeCore = fc
+			return bc
+		},
+	})
+	t.Cleanup(bc.unblock)
+	claims := claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))})
+	token := s.tokens.add("bound", claims)
+	session := s.session(t, token)
+
+	ctx, cancelPost := context.WithCancel(t.Context())
+	done := s.postAsync(ctx, token, session, toolCallBody(7, cbTool, "{}"))
+	bc.waitStarted(t)
+	cancelPost()
+	awaitStatus(t, done)
+
+	key := cbIssuer + "\x00jti-1"
+	require.Eventually(t, func() bool {
+		call, found, err := record.Lookup(context.Background(), key)
+		return err == nil && found && call.Ended
+	}, 10*time.Second, 10*time.Millisecond, "the dropped POST must end the call's request")
+
+	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
+	assert.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
+}
+
+// TestCallBinding_ResponseAfterMaxCallDuration checks that a response is
+// refused once the call has run for the maximum call duration, even while
+// its request is still open.
+func TestCallBinding_ResponseAfterMaxCallDuration(t *testing.T) {
+	t.Parallel()
+	bc := newBlockingCore()
+	s := newCallBindingTestServer(t, cbServerOptions{
+		binding: callbinding.Config{MaxCallDuration: 10 * time.Minute},
+		wrap: func(fc *fakeCore) core.VMCP {
+			bc.fakeCore = fc
+			return bc
+		},
+	})
+	t.Cleanup(bc.unblock)
+	clock := &cbClock{now: time.Now()}
+	s.srv.callBinding.now = clock.Now
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	done := s.postAsync(t.Context(), token, session, toolCallBody(7, cbTool, "{}"))
+	bc.waitStarted(t)
+
+	clock.Advance(10*time.Minute - time.Second)
+	resp := s.send(t, http.MethodPost, token, session, elicitationReply, nil)
+	assert.NotEqual(t, http.StatusForbidden, resp.status, "within the maximum call duration: %s", resp.body)
+
+	clock.Advance(time.Second)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil), callbinding.ReasonNoOpenCall, nil)
+
+	bc.unblock()
+	awaitStatus(t, done)
+}
+
+// TestCallBinding_ModernCallHasNoMessages checks that a sessionless (Modern)
+// call admits no cancellation or response: Modern clients cancel by closing
+// the request.
+func TestCallBinding_ModernCallHasNoMessages(t *testing.T) {
+	t.Parallel()
+	bc := newBlockingCore()
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+		bc.fakeCore = fc
+		return bc
+	}})
+	t.Cleanup(bc.unblock)
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+
+	done := make(chan int, 1)
+	go func() {
+		status := 0
+		defer func() { done <- status }()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.url+"/mcp", strings.NewReader(cbModernCall(7, `{}`)))
+		if err != nil {
+			return
+		}
+		for k, v := range cbModernHeaders() {
+			req.Header[k] = v
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+token)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			status = resp.StatusCode
+		}
+	}()
+	bc.waitStarted(t)
+
+	requireRefused(t, s.send(t, http.MethodPost, token, "", cancelBody("7"), nil), callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, "", elicitationReply, nil), callbinding.ReasonNoOpenCall, nil)
+
+	bc.unblock()
+	assert.Equal(t, http.StatusOK, awaitStatus(t, done))
 }
 
 // TestCallBinding_LookupFailureKeepsToken checks that a route lookup that
@@ -744,4 +938,191 @@ func TestNewCallBindingValidates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, callbinding.DefaultMaxCallDuration, cb.maxCallDuration)
 	assert.NotNil(t, cb.record)
+}
+
+// spyRecord records the expiry of each Start and can fail on demand.
+type spyRecord struct {
+	callbinding.Record
+	mu        sync.Mutex
+	expiries  []time.Time
+	failStart bool
+	failRead  bool
+}
+
+func (r *spyRecord) Start(ctx context.Context, key string, call callbinding.Call, expiresAt time.Time) (bool, error) {
+	r.mu.Lock()
+	r.expiries = append(r.expiries, expiresAt)
+	fail := r.failStart
+	r.mu.Unlock()
+	if fail {
+		return false, errors.New("record unavailable")
+	}
+	return r.Record.Start(ctx, key, call, expiresAt)
+}
+
+func (r *spyRecord) Lookup(ctx context.Context, key string) (callbinding.Call, bool, error) {
+	r.mu.Lock()
+	fail := r.failRead
+	r.mu.Unlock()
+	if fail {
+		return callbinding.Call{}, false, errors.New("record unavailable")
+	}
+	return r.Record.Lookup(ctx, key)
+}
+
+func (r *spyRecord) set(failStart, failRead bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failStart, r.failRead = failStart, failRead
+}
+
+func (r *spyRecord) lastExpiry() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.expiries[len(r.expiries)-1]
+}
+
+// TestCallBinding_RecordExpiry checks the record lifetime: the later of the
+// token's exp and the end of the maximum call duration, plus the retention
+// margin.
+func TestCallBinding_RecordExpiry(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1_900_000_000, 0)
+	tests := []struct {
+		name   string
+		expIn  time.Duration
+		maxDur time.Duration
+		want   time.Time
+	}{
+		{name: "exp is later", expIn: time.Hour, maxDur: time.Minute,
+			want: start.Add(time.Hour + callBindingRetentionMargin)},
+		{name: "maximum call duration is later", expIn: 10 * time.Second, maxDur: 10 * time.Minute,
+			want: start.Add(10*time.Minute + callBindingRetentionMargin)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := &spyRecord{Record: callbinding.NewMemoryRecord()}
+			s := newCallBindingTestServer(t, cbServerOptions{
+				binding: callbinding.Config{MaxCallDuration: tc.maxDur, Record: record},
+			})
+			s.srv.callBinding.now = func() time.Time { return start }
+			claims := claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))})
+			claims["exp"] = float64(start.Add(tc.expIn).Unix())
+			token := s.tokens.add("bound", claims)
+
+			requireCallRan(t, s.send(t, http.MethodPost, token, s.session(t, token), toolCallBody(2, cbTool, "{}"), nil))
+			assert.Equal(t, tc.want, record.lastExpiry())
+		})
+	}
+}
+
+// TestCallBinding_RecordFailureKeepsToken checks that a record that fails
+// answers 503, runs nothing, and leaves the token usable.
+func TestCallBinding_RecordFailureKeepsToken(t *testing.T) {
+	t.Parallel()
+	record := &spyRecord{Record: callbinding.NewMemoryRecord()}
+	s := newCallBindingTestServer(t, cbServerOptions{binding: callbinding.Config{Record: record}})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	record.set(true, true)
+	for name, body := range map[string]string{
+		"tools/call":   toolCallBody(2, cbTool, "{}"),
+		"cancellation": cancelBody("2"),
+		"response":     elicitationReply,
+	} {
+		resp := s.send(t, http.MethodPost, token, session, body, nil)
+		assert.Equal(t, http.StatusServiceUnavailable, resp.status, "%s: %s", name, resp.body)
+		assert.Empty(t, resp.header.Get("WWW-Authenticate"), name)
+	}
+	assert.Zero(t, s.fc.callToolCalls.Load())
+
+	record.set(false, false)
+	requireCallRan(t, s.send(t, http.MethodPost, token, session, toolCallBody(3, cbTool, "{}"), nil))
+}
+
+// TestCallBinding_CodeModeIsNotBindable routes through the real code mode
+// decorator, whose execute_tool_script has no backend.
+func TestCallBinding_CodeModeIsNotBindable(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+		return codemode.NewDecorator(fc, &codemode.Config{})
+	}})
+	args := `{"script":"return 1"}`
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1",
+		[]any{callEntry(cbServer, "execute_tool_script", argsHash(t, args))}))
+	requireRefused(t, s.send(t, http.MethodPost, token, s.session(t, token),
+		toolCallBody(2, "execute_tool_script", args), nil), callbinding.ReasonToolNotBindable, 2)
+	assert.Zero(t, s.fc.callToolCalls.Load())
+}
+
+// TestCallBinding_ExpBoundary checks that a token is accepted until just
+// before exp and refused at exp, with the validator's zero leeway.
+func TestCallBinding_ExpBoundary(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	exp := time.Unix(1_900_000_000, 0)
+	claims := claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))})
+	claims["exp"] = float64(exp.Unix())
+	token := s.tokens.add("bound", claims)
+
+	s.srv.callBinding.now = func() time.Time { return exp.Add(-time.Nanosecond) }
+	require.Equal(t, http.StatusOK, s.initialize(t, token).status)
+	s.srv.callBinding.now = func() time.Time { return exp }
+	requireRefused(t, s.initialize(t, token), callbinding.ReasonTokenExpired, 1)
+}
+
+// TestCallBinding_RefusalVectors sends each shared refusal vector as a real
+// tools/call: the parser or the binding must refuse it, and the core must not
+// run.
+func TestCallBinding_RefusalVectors(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("..", "callbinding", "testdata", "argumenthash", "vectors.json"))
+	require.NoError(t, err)
+	var file struct {
+		Refusals []struct {
+			Name   string  `json:"name"`
+			Text   *string `json:"arguments_text"`
+			Base64 *string `json:"arguments_base64"`
+		} `json:"refusals"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &file))
+	require.NotEmpty(t, file.Refusals)
+
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	for i, refusal := range file.Refusals {
+		var args []byte
+		switch {
+		case refusal.Text != nil:
+			args = []byte(*refusal.Text)
+		case refusal.Base64 != nil:
+			args, err = base64.StdEncoding.DecodeString(*refusal.Base64)
+			require.NoError(t, err, refusal.Name)
+		}
+		jti := "r" + strconv.Itoa(i)
+		token := s.tokens.add(jti, claimsFor(cbClient, jti, []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+		session := s.session(t, token)
+		body := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"github_read","arguments":` +
+			string(args) + `}}`
+		resp := s.send(t, http.MethodPost, token, session, body, nil)
+		assert.Contains(t, []int{http.StatusBadRequest, http.StatusForbidden}, resp.status,
+			"refusal %q must fail closed: %s", refusal.Name, resp.body)
+	}
+	assert.Zero(t, s.fc.callToolCalls.Load())
+}
+
+// TestCallBinding_OnlyAtEndpoint checks that a call-bound token is refused off
+// the MCP endpoint, so a stray path cannot use it up.
+func TestCallBinding_OnlyAtEndpoint(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	stray := *s
+	stray.url = s.url + "/other"
+	requireRefused(t, stray.send(t, http.MethodPost, token, session, toolCallBody(2, cbTool, "{}"), nil),
+		callbinding.ReasonMethodNotAllowed, 2)
+	requireCallRan(t, s.send(t, http.MethodPost, token, session, toolCallBody(3, cbTool, "{}"), nil))
 }

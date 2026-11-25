@@ -51,17 +51,17 @@ func TestMemoryRecordStartsEachKeyOnce(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, started)
 
-	open, ok, err := record.OpenCall(ctx, "k")
+	got, ok, err := record.Lookup(ctx, "k")
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, call, open)
+	assert.Equal(t, call, got)
 
 	started, err = record.Start(ctx, "k", Call{SessionID: "other"}, expiry.Add(time.Hour))
 	require.NoError(t, err)
 	assert.False(t, started, "a key starts one call")
-	open, _, err = record.OpenCall(ctx, "k")
+	got, _, err = record.Lookup(ctx, "k")
 	require.NoError(t, err)
-	assert.Equal(t, call, open, "a refused Start changes nothing")
+	assert.Equal(t, call, got, "a refused Start changes nothing")
 
 	started, err = record.Start(ctx, "other-key", call, expiry)
 	require.NoError(t, err)
@@ -81,9 +81,11 @@ func TestMemoryRecordEndKeepsKeyUsed(t *testing.T) {
 	require.NoError(t, record.End(ctx, "k"), "ending twice is not an error")
 	require.NoError(t, record.End(ctx, "unknown"), "ending an unknown key is not an error")
 
-	_, ok, err := record.OpenCall(ctx, "k")
+	got, ok, err := record.Lookup(ctx, "k")
 	require.NoError(t, err)
-	assert.False(t, ok, "an ended call is not open")
+	require.True(t, ok, "an ended call stays recorded until expiry")
+	assert.True(t, got.Ended)
+	assert.Equal(t, "1", got.RequestID)
 
 	started, err = record.Start(ctx, "k", Call{RequestID: "2"}, expiry)
 	require.NoError(t, err)
@@ -100,14 +102,14 @@ func TestMemoryRecordExpiry(t *testing.T) {
 	require.True(t, started)
 
 	clock.Advance(time.Minute - time.Nanosecond)
-	_, ok, err := record.OpenCall(ctx, "k")
+	_, ok, err := record.Lookup(ctx, "k")
 	require.NoError(t, err)
-	assert.True(t, ok, "open until the expiry")
+	assert.True(t, ok, "recorded until the expiry")
 
 	clock.Advance(time.Nanosecond)
-	_, ok, err = record.OpenCall(ctx, "k")
+	_, ok, err = record.Lookup(ctx, "k")
 	require.NoError(t, err)
-	assert.False(t, ok, "not open at the expiry")
+	assert.False(t, ok, "forgotten at the expiry")
 
 	started, err = record.Start(ctx, "k", Call{RequestID: "2"}, clock.Now().Add(time.Minute))
 	require.NoError(t, err)
@@ -154,12 +156,21 @@ func TestMemoryRecordConcurrentStart(t *testing.T) {
 			if started {
 				wins.Add(1)
 			}
-			_, _, err = record.OpenCall(ctx, "k")
+			_, _, err = record.Lookup(ctx, "k")
 			assert.NoError(t, err)
 			assert.NoError(t, record.End(ctx, "other"))
 		}()
 	}
 	close(start)
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "concurrent Starts did not finish")
+	}
 	assert.Equal(t, int32(1), wins.Load())
 }

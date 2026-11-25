@@ -79,8 +79,19 @@ is a JSON-RPC error, not an HTTP 403.
 One ordering differs from the direct `thv run` proxies, where authorization runs
 first: vMCP checks session ownership before the authorization gate. A request that
 carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
-**HTTP 404** before any 403. A denied call on the caller's own session still gets
-403.
+**HTTP 404** before any Cedar 403. A denied call on the caller's own session still gets
+403. The one check that runs before session ownership is call binding: a request
+with an access token bound to one MCP call that the token does not permit gets its
+403 (or 401 once the token has expired) whatever session it names.
+
+Call binding is not a Cedar policy and runs whether or not Cedar is configured. An
+access token that carries an `authorization_details` entry of type
+`https://toolhive.dev/mcp_tool_call` may start only the one `tools/call` its entry
+names, once. Any other request is refused with **HTTP 403**,
+`WWW-Authenticate: Bearer error="insufficient_scope"` (no `scope`) and a JSON-RPC
+error whose message ends with the reason, and is audited as `denied` with
+`metadata.extra.denial_reason`. See
+[Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.

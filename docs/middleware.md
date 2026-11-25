@@ -751,6 +751,7 @@ Audit events are logged as structured JSON objects:
   - `transport`: Transport type (`sse`, `streamable-http`, `http`)
   - `response_size_bytes`: Response body size (when capturing response data)
   - `trace_id`, `span_id`: W3C trace and span IDs of the request (present only when the request carries a valid span context, such as an inbound `traceparent` with tracing enabled)
+  - `denial_reason`: Why an inner check refused the request, when it names a reason (for example a vMCP call-binding refusal such as `arguments_mismatch` or `token_reused`). A fixed string that never carries request data. Present only on denied events
 - `data`: Captured request/response data (only present if enabled)
   - `request`: Request body (parsed as JSON if possible, otherwise string)
   - `response`: Response body (parsed as JSON if possible, otherwise string)

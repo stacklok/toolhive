@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -235,6 +236,19 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// mirrors the hooks' close-over-srv pattern. Setting the handler makes the shim
 	// auto-advertise the completions capability at initialize.
 	var srv *Server
+
+	// Validate call binding before anything that needs releasing is built. Its
+	// route closes over the late-assigned srv like the completion handler
+	// below, and runs only at request time.
+	callBinding, err := newCallBinding(cfg.CallBinding, func(
+		ctx context.Context, identity *auth.Identity, name string,
+	) (string, error) {
+		return srv.callBindingRoute(ctx, identity, name)
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	completionHandler := func(ctx context.Context, req mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 		return srv.coreCompletionHandler(ctx, req)
 	}
@@ -343,6 +357,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		sessionDataStorage: sessionDataStorage,
 		ready:              make(chan struct{}),
 		statusReporter:     cfg.StatusReporter,
+		callBinding:        callBinding,
 	}
 
 	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(
@@ -358,13 +373,6 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// Nil when the optimizer is disabled; the store/cleanup stay owned by the
 	// session manager (optimizerCleanup, appended to shutdownFuncs below).
 	srv.optimizerFactory = vmcpSessMgr.OptimizerFactory()
-
-	// Call binding reads the optimizer factory set just above when it routes
-	// a tools/call (callBindingRoute).
-	srv.callBinding, err = newCallBinding(cfg.CallBinding, srv.callBindingRoute)
-	if err != nil {
-		return nil, err
-	}
 
 	// Built last — after the fallible calls above — because NewManager starts a cleanup
 	// goroutine on construction (released only by Stop), so an early error return cannot

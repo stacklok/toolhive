@@ -109,6 +109,18 @@ what they send. `server.New` and `server.Serve` start no collector, and
 Embedders should leave it unset: reports from an embedding product would reach
 ToolHive under opt-outs that product's users have not been told about.
 
+### Call-bound access tokens
+
+The vMCP always enforces an access token that carries an `authorization_details`
+entry of type `https://toolhive.dev/mcp_tool_call`: such a token may start only the
+one `tools/call` its entry names, once. `Config.CallBinding` (a
+`callbinding.Config`) adds the clients whose tokens must carry an entry, the maximum
+call duration, and the single-use record. The default record is in memory and covers
+one replica. List a client only once the authorization servers in front of the vMCP
+put the entry into that client's access tokens; otherwise every call from it is
+refused. See
+[Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
+
 ## `pkg/vmcp/` Stability Table
 
 The table below maps every sub-package to its stability level per RFC THV-0059. Verify against the merged RFC if there is a discrepancy.
@@ -127,6 +139,7 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/status` | Stable | `StatusReporter` interface; CLI and K8s reporter implementations |
 | `pkg/vmcp/optimizer` | Experimental | Optimizer interface and TEI integration; tier API may evolve |
 | `pkg/vmcp/cli` | Experimental | New in Phase 4; `Serve`, `Init`, `Validate` entry points may change before stabilisation |
+| `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, the `Record` interface and its in-memory version, the argument hash |
 | `pkg/vmcp/composer` | Experimental | Composite tool DAG executor; workflow API not yet stable |
 | `pkg/vmcp/cache` | Internal | Token cache; not intended for external use |
 | `pkg/vmcp/conversion` | Internal | CRD-to-config conversion; K8s-specific, not for local embedding |

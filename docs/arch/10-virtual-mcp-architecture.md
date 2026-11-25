@@ -1232,10 +1232,11 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 10 | MCP Parsing | Always | Validates every MCP POST regardless of `Content-Type`, including when auth is nil; publishes calls and notifications for downstream controls. A second application skips already-parsed requests. |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Loopback Host guard | Always | DNS-rebinding protection: on a connection that arrived over loopback, rejects a non-loopback `Host` header with 403 before classification, so Legacy and Modern requests are held to the same rule. Mirrors go-sdk's localhost protection, which covers only Legacy requests that reach `StreamableHTTPHandler`; Modern requests (`dispatchModern`) and cross-replica Legacy sessions rehydrated by toolhive-core's `mcpcompat` did not pass through it, and the guard covers all of them. mcpcompat also runs session cleanup for a Legacy DELETE around go-sdk's Host check, so without the guard a DELETE with a forged `Host` and a known session ID could end that session even though go-sdk answered 403; the guard runs first and stops this. Only the MCP route is guarded: `/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`, `/.well-known/` and the embedded auth server routes are deliberately left unguarded because they are unauthenticated by design and expose only operational metadata. Connections on a non-loopback local address (e.g. a pod IP) are unaffected; a loopback hop that preserves a non-loopback `Host` must rewrite it. See `pkg/vmcp/server/loopback_host_guard.go`. |
-| 13 | Session ownership | Always | After Modern/Legacy classification (Legacy only), rejects any request carrying the `Mcp-Session-Id` of a session the authenticated caller does not own with a non-disclosing plain-text 404, before the Streamable HTTP transport routes it. See "Session Ownership" below. |
-| 14 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport after the session-ownership check (row 13) and before the transport's session-existence validation and SDK dispatch, so a foreign or unknown session gets 404 before any 403. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
+| 13 | Call binding | Always | Before Modern/Legacy classification, so it covers both. Refuses a request whose access token carries an `authorization_details` entry of type `https://toolhive.dev/mcp_tool_call` unless the request is the one `tools/call` the entry names, once, or a message the token may send without starting a call. Runs whether or not Authorization is configured and can only refuse. See "Call-bound access tokens" below. |
+| 14 | Session ownership | Always | After Modern/Legacy classification (Legacy only), rejects any request carrying the `Mcp-Session-Id` of a session the authenticated caller does not own with a non-disclosing plain-text 404, before the Streamable HTTP transport routes it. See "Session Ownership" below. |
+| 15 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport after the session-ownership check (row 14) and before the transport's session-existence validation and SDK dispatch, so a foreign or unknown session gets 404 before any 403. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
-> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 14 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
+> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 15 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
 
 Every MCP POST passes shared envelope validation before Modern dispatch or the
 Legacy SDK, with or without authentication. Malformed, ambiguous, mixed
@@ -1405,6 +1406,77 @@ embedders and misconfigured gates.
 
 **Implementation**: `pkg/vmcp/core/core_checks.go`, `pkg/vmcp/server/call_gate.go`,
 `pkg/vmcp/server/serve_handlers.go`, `pkg/vmcp/codemode/decorator.go`, `pkg/mcp/errors.go`
+
+### Call-bound access tokens
+
+An authorization server can narrow an access token to one MCP call with an RFC 9396
+`authorization_details` entry of type `https://toolhive.dev/mcp_tool_call`
+(`pkg/mcp/toolcalldetails`). A tool-call entry names the backend (`server`), the
+tool as the client sends it in `params.name` (`tool`), the argument hash
+(`arguments_sha256`) and the operation (`operation_id`). The vMCP enforces such a
+token in an HTTP middleware (`pkg/vmcp/server/call_binding.go`) that runs after
+authentication and parsing and before classification, so it covers Legacy and Modern
+requests and runs before session ownership, the pre-dispatch gate and Cedar. It runs
+whether or not Authorization is configured, and it can only refuse.
+
+Which tokens it checks:
+
+- A token that carries an `mcp_tool_call` entry is enforced, whatever its client.
+  Entries of other types are ignored. Two or more `mcp_tool_call` entries are refused
+  (`single_entry_required`), and so is a malformed entry or an `authorization_details`
+  claim that is not an array of typed objects (`malformed_entry`). The token must
+  also carry `jti` and `exp` (`claims_required`).
+- The embedder can list clients (`CallBinding.Clients`, matched on the `client_id`
+  claim) whose tokens must carry an entry. A listed client's token without one is
+  refused (`entry_required`). The list is empty by default; a token without an entry
+  from an unlisted client is unaffected.
+
+What a call-bound token may send while it is valid:
+
+- One `tools/call` that matches its entry: `params.name` equals `tool`; the backend the
+  vMCP routes the call to equals `server`; and the argument hash of `params.arguments`
+  as received, before any routing or rewrite, equals `arguments_sha256` (absent and
+  `null` arguments hash as `{}`; arguments that are not I-JSON are refused). A
+  `params` member that a case-insensitive decoder would read as `name`, `arguments` or
+  `_meta` without being spelled exactly so is refused (`ambiguous_params`), because
+  dispatch decodes `params` that way. A tool whose route has no single backend is
+  refused (`tool_not_bindable`): composite tools, code mode's `execute_tool_script`,
+  and every tool on an optimizer-enabled instance, whose sessions expose only
+  `find_tool` and `call_tool`. The decision follows the route, not a list of names.
+- The handshake (`initialize`, `notifications/initialized`), the Modern
+  `server/discover` probe and `ping`.
+- GET and DELETE. The session-ownership check then limits them to sessions the
+  token's principal owns. Neither uses up the token.
+- While its call is open: a `notifications/cancelled` for the call's JSON-RPC ID, and
+  any JSON-RPC response (for example an elicitation reply), on the call's session.
+  The vMCP does not see which server-to-client requests the SDK is waiting on, so any
+  response on that session is accepted.
+
+Everything else is refused, including list methods and a `tools/call` for a list-call
+entry (`list_call_unsupported`). So is every request after the token's `exp`
+(`token_expired`): the middleware applies the token validator's leeway, which is zero.
+A stream opened before `exp` keeps running.
+
+**Single use.** The `jti` (keyed with the issuer) is recorded when the call starts, in
+a `callbinding.Record`, and stays recorded until `exp` or until the call has run for
+the maximum call duration (`CallBinding.MaxCallDuration`, 30 minutes by default),
+whichever is later. A second `tools/call` with the same token is refused
+(`token_reused`). The call is marked ended when the request returns. A refusal by
+this middleware does not use up the token; a later refusal, such as the
+session-ownership 404 or a Cedar 403, does. The default record is in memory, so it
+covers one replica: a replay to another replica is accepted. An embedder may supply
+another `Record`.
+
+**Refusal.** HTTP 403 with `WWW-Authenticate: Bearer error="insufficient_scope"` and
+no `scope` parameter (no scope would make the token acceptable, and clients read a
+scope as a step-up hint), and a JSON-RPC error with code 403 whose message ends with
+the reason. The refusal is audited like a Cedar denial (outcome `denied`), with the
+reason in `metadata.extra.denial_reason`. Logs carry the `jti`, `client_id`, the
+entry's server, tool and operation ID, and the reason; never the token or the
+arguments. When the record or the route lookup fails for a reason other than
+authorization, the vMCP answers 503 and the token stays unused.
+
+**Implementation**: `pkg/vmcp/server/call_binding.go`, `pkg/vmcp/callbinding`
 
 ### Incoming scope authorization in the core
 

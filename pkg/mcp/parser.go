@@ -252,6 +252,10 @@ type authzDenialMarkerContextKey struct{}
 // request goroutine, so no synchronization is needed.
 type AuthzDenialMarker struct {
 	Denied bool
+	// Reason optionally names why the request was refused, as a fixed string
+	// that carries no request data. The audit middleware records it as
+	// denial_reason.
+	Reason string
 }
 
 // WithAuthzDenialMarker returns a new context carrying the given marker.

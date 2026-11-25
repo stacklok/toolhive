@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
@@ -152,6 +153,15 @@ type ServerConfig struct {
 	// core.Config.AuditSubjectEnricher so composite-tool workflow events carry
 	// them too. It has no effect when AuditConfig is nil.
 	AuditSubjectEnricher audit.SubjectEnricher
+
+	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// The vMCP always enforces a token that carries an authorization_details
+	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
+	// only the one tools/call its entry names, once. CallBinding adds the
+	// clients whose tokens must carry one, the maximum call duration, and the
+	// single-use record. The zero value lists no client and keeps the record in
+	// memory, on this replica only. See callbinding.Config.
+	CallBinding callbinding.Config
 }
 
 // Serve is the transport-side entry point of the New/Serve split: it wraps an
@@ -349,6 +359,13 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// session manager (optimizerCleanup, appended to shutdownFuncs below).
 	srv.optimizerFactory = vmcpSessMgr.OptimizerFactory()
 
+	// Call binding reads the optimizer factory set just above when it routes
+	// a tools/call (callBindingRoute).
+	srv.callBinding, err = newCallBinding(cfg.CallBinding, srv.callBindingRoute)
+	if err != nil {
+		return nil, err
+	}
+
 	// Built last — after the fallible calls above — because NewManager starts a cleanup
 	// goroutine on construction (released only by Stop), so an early error return cannot
 	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
@@ -461,5 +478,6 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		StatusReportingInterval: cfg.StatusReportingInterval,
 		Watcher:                 cfg.Watcher,
 		SessionStorage:          cfg.SessionStorage,
+		CallBinding:             cfg.CallBinding,
 	}
 }

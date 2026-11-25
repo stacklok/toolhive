@@ -303,8 +303,10 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	// could run (e.g. a client response or missing parsing middleware)
 	// writes a 400, which determineOutcome maps to a generic failure. The
 	// marker reclassifies it as a denial so blocked sweeps are alertable.
+	var denialReason string
 	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {
 		outcome = OutcomeDenied
+		denialReason = marker.Reason
 	}
 
 	// When HTTP status indicates success, check for JSON-RPC errors
@@ -345,6 +347,9 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 
 	// Add metadata
 	a.addMetadata(event, r, duration, rw)
+	if denialReason != "" {
+		event.Metadata.Extra[MetadataExtraKeyDenialReason] = denialReason
+	}
 
 	// Attach JSON-RPC error details so operators can see the error code
 	// and message without enabling full response data capture.

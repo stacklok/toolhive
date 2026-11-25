@@ -1,0 +1,747 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
+	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
+	"github.com/stacklok/toolhive/pkg/vmcp/core"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+)
+
+const (
+	cbIssuer    = "https://as.example.com"
+	cbClient    = "mecatl"
+	cbServer    = "github"
+	cbTool      = "github_read"
+	cbOtherTool = "other_read"
+	cbComposite = "composite_flow"
+)
+
+// cbTokens is the token registry of one test server: a bearer token string
+// authenticates as the claims stored under it. The stand-in validator checks
+// nothing else, exp included, as a validator with leeway would not.
+type cbTokens struct {
+	mu     sync.Mutex
+	claims map[string]map[string]any
+}
+
+func (c *cbTokens) add(token string, claims map[string]any) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.claims[token] = claims
+	return token
+}
+
+func (c *cbTokens) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		c.mu.Lock()
+		claims, ok := c.claims[token]
+		c.mu.Unlock()
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		sub, _ := claims["sub"].(string)
+		identity := &auth.Identity{
+			PrincipalInfo: auth.PrincipalInfo{Subject: sub, Claims: claims},
+			Token:         token,
+			TokenType:     "Bearer",
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), identity)))
+	})
+}
+
+// blockingCore holds each CallTool until the test releases it, so a test can
+// act while a call is open.
+type blockingCore struct {
+	*fakeCore
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingCore) CallTool(
+	ctx context.Context, identity *auth.Identity, name string, args map[string]any, meta map[string]any,
+) (*vmcp.ToolCallResult, error) {
+	b.started <- struct{}{}
+	<-b.release
+	return b.fakeCore.CallTool(ctx, identity, name, args, meta)
+}
+
+// lookupErrCore fails LookupTool with an infrastructure error until cleared.
+type lookupErrCore struct {
+	*fakeCore
+	mu  sync.Mutex
+	err error
+}
+
+func (l *lookupErrCore) LookupTool(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Tool, error) {
+	l.mu.Lock()
+	err := l.err
+	l.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return l.fakeCore.LookupTool(ctx, identity, name)
+}
+
+type cbServerOptions struct {
+	binding   callbinding.Config
+	auditFile string
+	wrap      func(*fakeCore) core.VMCP
+}
+
+type cbTestServer struct {
+	url    string
+	fc     *fakeCore
+	tokens *cbTokens
+}
+
+func newCallBindingTestServer(t *testing.T, opts cbServerOptions) *cbTestServer {
+	t.Helper()
+
+	authReg := vmcpauth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, authReg.RegisterStrategy(
+		authtypes.StrategyTypeUnauthenticated,
+		strategies.NewUnauthenticatedStrategy(),
+	))
+	tokens := &cbTokens{claims: map[string]map[string]any{}}
+	cfg := &ServerConfig{
+		SessionTTL:           time.Minute,
+		AuthMiddleware:       tokens.middleware,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: vmcpsession.NewSessionFactory(authReg)},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+		CallBinding:          opts.binding,
+	}
+	if opts.auditFile != "" {
+		cfg.AuditConfig = &audit.Config{LogFile: opts.auditFile}
+	}
+	fc := &fakeCore{tools: []vmcp.Tool{
+		{Name: cbTool, Description: "bound", BackendID: cbServer},
+		{Name: cbOtherTool, Description: "other backend", BackendID: "other"},
+		{Name: cbComposite, Description: "composite, no backend"},
+	}}
+	var v core.VMCP = fc
+	if opts.wrap != nil {
+		v = opts.wrap(fc)
+	}
+	srv, err := Serve(context.Background(), v, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	handler, err := srv.Handler(context.Background())
+	require.NoError(t, err)
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	return &cbTestServer{url: ts.URL, fc: fc, tokens: tokens}
+}
+
+func argsHash(t *testing.T, args string) string {
+	t.Helper()
+	hash, err := callbinding.ArgumentsSHA256(json.RawMessage(args))
+	require.NoError(t, err)
+	return hash
+}
+
+func callEntry(server, tool, hash string) map[string]any {
+	return map[string]any{
+		"type":             toolcalldetails.Type,
+		"server":           server,
+		"tool":             tool,
+		"arguments_sha256": hash,
+		"operation_id":     "op-1",
+	}
+}
+
+// claimsFor returns the claims of a token for clientID with the given
+// authorization_details (none when nil) that expires in an hour.
+func claimsFor(clientID, jti string, details []any) map[string]any {
+	claims := map[string]any{
+		"iss": cbIssuer, "sub": "user-1", "client_id": clientID, "jti": jti,
+		"exp": float64(time.Now().Add(time.Hour).Unix()),
+	}
+	if details != nil {
+		claims["authorization_details"] = details
+	}
+	return claims
+}
+
+type cbResponse struct {
+	status    int
+	header    http.Header
+	body      string
+	sessionID string
+}
+
+// send posts a raw JSON body (or sends method with no body when body is
+// empty) as the holder of token.
+func (s *cbTestServer) send(
+	t *testing.T, method, token, sessionID, body string, extra http.Header,
+) cbResponse {
+	t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, method, s.url+"/mcp", reader)
+	require.NoError(t, err)
+	switch method {
+	case http.MethodGet:
+		req.Header.Set("Accept", "text/event-stream")
+	case http.MethodPost:
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	for k, vs := range extra {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	out := cbResponse{status: resp.StatusCode, header: resp.Header, sessionID: resp.Header.Get("Mcp-Session-Id")}
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") && method == http.MethodGet {
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		return out
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out.body = string(raw)
+	return out
+}
+
+func (s *cbTestServer) initialize(t *testing.T, token string) cbResponse {
+	t.Helper()
+	return s.send(t, http.MethodPost, token, "",
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25",`+
+			`"capabilities":{"elicitation":{}},"clientInfo":{"name":"cb-test","version":"1.0"}}}`, nil)
+}
+
+func (s *cbTestServer) session(t *testing.T, token string) string {
+	t.Helper()
+	resp := s.initialize(t, token)
+	require.Equal(t, http.StatusOK, resp.status, "initialize: %s", resp.body)
+	require.NotEmpty(t, resp.sessionID)
+	return resp.sessionID
+}
+
+func toolCallBody(id int, name, rawArgs string) string {
+	params := `{"name":` + cbJSON(name)
+	if rawArgs != "" {
+		params += `,"arguments":` + rawArgs
+	}
+	params += "}"
+	return `{"jsonrpc":"2.0","id":` + cbJSON(id) + `,"method":"tools/call","params":` + params + `}`
+}
+
+func cbJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+// requireRefused checks the refusal shape: 403, an insufficient_scope
+// challenge with no scope, and a JSON-RPC 403 error naming reason and
+// echoing id.
+func requireRefused(t *testing.T, resp cbResponse, reason string, id any) {
+	t.Helper()
+	require.Equal(t, http.StatusForbidden, resp.status, "body: %s", resp.body)
+	assert.Equal(t, `Bearer error="insufficient_scope"`, resp.header.Get("WWW-Authenticate"))
+	var body struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.body), &body), "body: %s", resp.body)
+	assert.Equal(t, "2.0", body.JSONRPC)
+	assert.Equal(t, 403, body.Error.Code)
+	assert.Contains(t, body.Error.Message, "("+reason+")")
+	if id == nil {
+		assert.Empty(t, body.ID)
+	} else {
+		assert.JSONEq(t, cbJSON(id), string(body.ID))
+	}
+}
+
+func requireCallRan(t *testing.T, resp cbResponse) {
+	t.Helper()
+	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+	assert.NotContains(t, resp.body, `"error"`)
+	assert.Contains(t, resp.body, `"ok"`)
+}
+
+func TestCallBinding_MatchingCallRunsOnce(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	args := `{"repo":"stacklok/toolhive","n":1}`
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1",
+		[]any{callEntry(cbServer, cbTool, argsHash(t, args))}))
+
+	session := s.session(t, token)
+	ping := s.send(t, http.MethodPost, token, session, `{"jsonrpc":"2.0","id":2,"method":"ping"}`, nil)
+	require.Equal(t, http.StatusOK, ping.status, "ping passes and does not use the token up: %s", ping.body)
+
+	// Member order and whitespace do not change the hash.
+	requireCallRan(t, s.send(t, http.MethodPost, token, session,
+		toolCallBody(3, cbTool, `{ "n": 1, "repo": "stacklok/toolhive" }`), nil))
+	assert.Equal(t, int32(1), s.fc.callToolCalls.Load())
+
+	again := s.send(t, http.MethodPost, token, session, toolCallBody(4, cbTool, args), nil)
+	requireRefused(t, again, callbinding.ReasonTokenReused, 4)
+	assert.Equal(t, int32(1), s.fc.callToolCalls.Load(), "the second call must not reach the core")
+
+	// The record is per token: a fresh token for the same call runs.
+	fresh := s.tokens.add("bound-2", claimsFor(cbClient, "jti-2",
+		[]any{callEntry(cbServer, cbTool, argsHash(t, args))}))
+	requireCallRan(t, s.send(t, http.MethodPost, fresh, s.session(t, fresh), toolCallBody(5, cbTool, args), nil))
+}
+
+func TestCallBinding_Mismatches(t *testing.T) {
+	t.Parallel()
+
+	args := `{"a":1}`
+	tests := []struct {
+		name   string
+		entry  map[string]any
+		body   string
+		reason string
+	}{
+		{name: "other tool", entry: callEntry(cbServer, cbTool, argsHash(t, args)),
+			body: toolCallBody(9, cbOtherTool, args), reason: callbinding.ReasonToolMismatch},
+		{name: "entry names a tool on another server", entry: callEntry(cbServer, cbOtherTool, argsHash(t, args)),
+			body: toolCallBody(9, cbOtherTool, args), reason: callbinding.ReasonServerMismatch},
+		{name: "other arguments", entry: callEntry(cbServer, cbTool, argsHash(t, args)),
+			body: toolCallBody(9, cbTool, `{"a":2}`), reason: callbinding.ReasonArgumentsMismatch},
+		{name: "number beyond 2^53", entry: callEntry(cbServer, cbTool, argsHash(t, args)),
+			body: toolCallBody(9, cbTool, `{"a":9007199254740993}`), reason: callbinding.ReasonInvalidArguments},
+		{name: "non-object arguments", entry: callEntry(cbServer, cbTool, argsHash(t, args)),
+			body: toolCallBody(9, cbTool, `[1]`), reason: callbinding.ReasonInvalidArguments},
+		{name: "arguments smuggled under a case variant", entry: callEntry(cbServer, cbTool, argsHash(t, `{}`)),
+			body:   `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"github_read","Arguments":{"a":1}}}`,
+			reason: callbinding.ReasonAmbiguousParams},
+		{name: "arguments smuggled under a long s", entry: callEntry(cbServer, cbTool, argsHash(t, `{}`)),
+			body:   `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"github_read","argumentſ":{"a":1}}}`,
+			reason: callbinding.ReasonAmbiguousParams},
+		{name: "unknown tool", entry: callEntry(cbServer, "nope", argsHash(t, args)),
+			body: toolCallBody(9, "nope", args), reason: callbinding.ReasonToolNotFound},
+		{name: "composite tool", entry: callEntry(cbServer, cbComposite, argsHash(t, args)),
+			body: toolCallBody(9, cbComposite, args), reason: callbinding.ReasonToolNotBindable},
+		{name: "composite tool named by an empty server", entry: callEntry("", cbComposite, argsHash(t, args)),
+			body: toolCallBody(9, cbComposite, args), reason: callbinding.ReasonMalformedEntry},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCallBindingTestServer(t, cbServerOptions{})
+			token := s.tokens.add("bound", claimsFor("other-client", "jti-1", []any{tc.entry}))
+			// An unbound token of the same principal opens the session, so a
+			// malformed entry is checked on the call too.
+			session := s.session(t, s.tokens.add("session", claimsFor("other-client", "session", nil)))
+			requireRefused(t, s.send(t, http.MethodPost, token, session, tc.body, nil), tc.reason, 9)
+			assert.Zero(t, s.fc.callToolCalls.Load())
+		})
+	}
+}
+
+// TestCallBinding_RefusalDoesNotUseUpToken checks that a refused call leaves
+// the token able to start the call it names.
+func TestCallBinding_RefusalDoesNotUseUpToken(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(2, cbTool, `{"x":1}`), nil),
+		callbinding.ReasonArgumentsMismatch, 2)
+	requireRefused(t, s.send(t, http.MethodPost, token, session,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`, nil), callbinding.ReasonMethodNotAllowed, 3)
+	requireCallRan(t, s.send(t, http.MethodPost, token, session, toolCallBody(4, cbTool, ""), nil))
+}
+
+// TestCallBinding_AbsentAndNullArguments checks that absent and null
+// arguments both hash as {}.
+func TestCallBinding_AbsentAndNullArguments(t *testing.T) {
+	t.Parallel()
+	for name, rawArgs := range map[string]string{"absent": "", "null": "null", "empty": "{}"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := newCallBindingTestServer(t, cbServerOptions{})
+			token := s.tokens.add("bound", claimsFor(cbClient, "jti-1",
+				[]any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+			requireCallRan(t, s.send(t, http.MethodPost, token, s.session(t, token), toolCallBody(2, cbTool, rawArgs), nil))
+		})
+	}
+}
+
+// TestCallBinding_SharedVectors sends each shared vector the gateway accepts
+// as a real tools/call, so the middleware hashes params.arguments as received
+// with the same result as the client.
+func TestCallBinding_SharedVectors(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("..", "callbinding", "testdata", "argumenthash", "vectors.json"))
+	require.NoError(t, err)
+	var file struct {
+		Vectors []struct {
+			Name           string          `json:"name"`
+			Arguments      json.RawMessage `json:"arguments"`
+			SHA256         string          `json:"sha256"`
+			GatewayRefuses bool            `json:"gateway_refuses"`
+		} `json:"vectors"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &file))
+	require.NotEmpty(t, file.Vectors)
+
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	ran := 0
+	for i, vector := range file.Vectors {
+		if vector.GatewayRefuses {
+			continue
+		}
+		token := s.tokens.add("v"+cbJSON(i), claimsFor(cbClient, "jti-v"+cbJSON(i),
+			[]any{callEntry(cbServer, cbTool, vector.SHA256)}))
+		resp := s.send(t, http.MethodPost, token, s.session(t, token),
+			toolCallBody(2, cbTool, string(vector.Arguments)), nil)
+		require.Equal(t, http.StatusOK, resp.status, "vector %q: %s", vector.Name, resp.body)
+		ran++
+	}
+	assert.Equal(t, int32(ran), s.fc.callToolCalls.Load())
+}
+
+func TestCallBinding_TokenRules(t *testing.T) {
+	t.Parallel()
+
+	otherType := map[string]any{"type": "https://example.com/other", "x": "y"}
+	entry := callEntry(cbServer, cbTool, "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a")
+	malformed := callEntry(cbServer, cbTool, "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a")
+	malformed["extra"] = "x"
+	listEntry := map[string]any{"type": toolcalldetails.Type, "server": cbServer, "method": "tools/list"}
+	expired := claimsFor(cbClient, "jti-1", []any{entry})
+	expired["exp"] = float64(time.Now().Add(-time.Second).Unix())
+
+	binding := callbinding.Config{Clients: []string{cbClient}}
+	tests := []struct {
+		name   string
+		claims map[string]any
+		// reason is the refusal of initialize; empty when it passes.
+		initReason string
+		// callReason is the refusal of a tools/call with {} arguments; empty
+		// when the call runs.
+		callReason string
+	}{
+		{name: "unlisted client without entry is unchanged", claims: claimsFor("other", "j", nil)},
+		{name: "unlisted client with another type is unchanged", claims: claimsFor("other", "j", []any{otherType})},
+		{name: "unlisted client with a matching entry", claims: claimsFor("other", "j", []any{entry})},
+		{name: "listed client with a matching entry", claims: claimsFor(cbClient, "j", []any{otherType, entry})},
+		{name: "listed client without entry", claims: claimsFor(cbClient, "j", nil),
+			initReason: callbinding.ReasonEntryRequired, callReason: callbinding.ReasonEntryRequired},
+		{name: "listed client with another type only", claims: claimsFor(cbClient, "j", []any{otherType}),
+			initReason: callbinding.ReasonEntryRequired, callReason: callbinding.ReasonEntryRequired},
+		{name: "two entries", claims: claimsFor("other", "j", []any{entry, entry}),
+			initReason: callbinding.ReasonSingleEntry, callReason: callbinding.ReasonSingleEntry},
+		{name: "malformed entry", claims: claimsFor("other", "j", []any{malformed}),
+			initReason: callbinding.ReasonMalformedEntry, callReason: callbinding.ReasonMalformedEntry},
+		{name: "list-call entry cannot start a tools/call", claims: claimsFor("other", "j", []any{listEntry}),
+			callReason: callbinding.ReasonListCallUnsupported},
+		{name: "expired token", claims: expired,
+			initReason: callbinding.ReasonTokenExpired, callReason: callbinding.ReasonTokenExpired},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCallBindingTestServer(t, cbServerOptions{binding: binding})
+			token := s.tokens.add("tok", tc.claims)
+			// A session for the call, opened with an unbound token of the same
+			// principal, so the call can be checked even when initialize is
+			// refused for the token under test.
+			sessionToken := s.tokens.add("session", claimsFor("other", "session", nil))
+			session := s.session(t, sessionToken)
+
+			init := s.initialize(t, token)
+			if tc.initReason != "" {
+				requireRefused(t, init, tc.initReason, 1)
+			} else {
+				require.Equal(t, http.StatusOK, init.status, "initialize: %s", init.body)
+			}
+
+			call := s.send(t, http.MethodPost, token, session, toolCallBody(2, cbTool, "{}"), nil)
+			if tc.callReason != "" {
+				requireRefused(t, call, tc.callReason, 2)
+				assert.Zero(t, s.fc.callToolCalls.Load())
+			} else {
+				requireCallRan(t, call)
+			}
+		})
+	}
+}
+
+func TestCallBinding_GetAndDelete(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	stream := s.send(t, http.MethodGet, token, session, "", nil)
+	assert.Equal(t, http.StatusOK, stream.status, "GET on the token's session passes")
+
+	// GET on a session another principal owns is answered by the ownership check.
+	foreign := s.tokens.add("foreign", map[string]any{
+		"iss": cbIssuer, "sub": "user-2", "client_id": cbClient, "jti": "jti-f",
+		"exp":                   float64(time.Now().Add(time.Hour).Unix()),
+		"authorization_details": []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))},
+	})
+	assert.Equal(t, http.StatusNotFound, s.send(t, http.MethodGet, foreign, session, "", nil).status)
+	assert.Equal(t, http.StatusNotFound, s.send(t, http.MethodDelete, foreign, session, "", nil).status)
+
+	// Neither uses the token up.
+	requireCallRan(t, s.send(t, http.MethodPost, token, session, toolCallBody(2, cbTool, "{}"), nil))
+
+	del := s.send(t, http.MethodDelete, token, session, "", nil)
+	assert.Equal(t, http.StatusOK, del.status, "DELETE on the token's session passes: %s", del.body)
+}
+
+func TestCallBinding_ExpiredTokenGetRefused(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	claims := claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))})
+	claims["exp"] = float64(time.Now().Add(-time.Second).Unix())
+	token := s.tokens.add("expired", claims)
+	requireRefused(t, s.send(t, http.MethodGet, token, "s", "", nil), callbinding.ReasonTokenExpired, nil)
+	requireRefused(t, s.send(t, http.MethodDelete, token, "s", "", nil), callbinding.ReasonTokenExpired, nil)
+}
+
+func TestCallBinding_OtherMethodsRefused(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	for _, method := range []string{"tools/list", "resources/read", "prompts/get", "resources/list", "completion/complete"} {
+		requireRefused(t, s.send(t, http.MethodPost, token, session,
+			`{"jsonrpc":"2.0","id":5,"method":"`+method+`","params":{}}`, nil), callbinding.ReasonMethodNotAllowed, 5)
+	}
+	requireRefused(t, s.send(t, http.MethodPost, token, session,
+		`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"github_read"}}`, nil),
+		callbinding.ReasonMethodNotAllowed, nil)
+	requireRefused(t, s.send(t, http.MethodPut, token, session, "", nil), callbinding.ReasonMethodNotAllowed, nil)
+
+	// A batch is refused by the parser for every caller, before the check.
+	batch := s.send(t, http.MethodPost, token, session, "["+toolCallBody(6, cbTool, "{}")+"]", nil)
+	assert.Equal(t, http.StatusBadRequest, batch.status, "body: %s", batch.body)
+	assert.Zero(t, s.fc.callToolCalls.Load())
+}
+
+func TestCallBinding_ModernToolCall(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{"a":1}`))}))
+	modern := func(id int, args string) string {
+		return `{"jsonrpc":"2.0","id":` + cbJSON(id) + `,"method":"tools/call","params":{"name":"github_read",` +
+			`"arguments":` + args + `,"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
+			`"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	}
+	headers := http.Header{
+		"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/call"}, "Mcp-Name": {cbTool},
+	}
+
+	requireRefused(t, s.send(t, http.MethodPost, token, "", modern(1, `{"a":2}`), headers),
+		callbinding.ReasonArgumentsMismatch, 1)
+	ok := s.send(t, http.MethodPost, token, "", modern(2, `{"a":1}`), headers)
+	require.Equal(t, http.StatusOK, ok.status, "body: %s", ok.body)
+	assert.Equal(t, int32(1), s.fc.callToolCalls.Load())
+	requireRefused(t, s.send(t, http.MethodPost, token, "", modern(3, `{"a":1}`), headers),
+		callbinding.ReasonTokenReused, 3)
+}
+
+func TestCallBinding_OpenCallMessages(t *testing.T) {
+	t.Parallel()
+	bc := &blockingCore{started: make(chan struct{}, 1), release: make(chan struct{})}
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+		bc.fakeCore = fc
+		return bc
+	}})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+	otherSession := s.session(t, token)
+
+	// Before the call starts, nothing belongs to it.
+	requireRefused(t, s.send(t, http.MethodPost, token, session,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`, nil),
+		callbinding.ReasonNoOpenCall, nil)
+
+	done := make(chan cbResponse, 1)
+	go func() {
+		done <- s.send(t, http.MethodPost, token, session, toolCallBody(7, cbTool, "{}"), nil)
+	}()
+	select {
+	case <-bc.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the call did not start")
+	}
+
+	// While the call is open: the same token cannot start another call.
+	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(8, cbTool, "{}"), nil),
+		callbinding.ReasonTokenReused, 8)
+
+	// A cancellation for another ID, or on another session, is refused.
+	requireRefused(t, s.send(t, http.MethodPost, token, session,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":8}}`, nil),
+		callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"7"}}`, nil),
+		callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, otherSession,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`, nil),
+		callbinding.ReasonNoOpenCall, nil)
+	// A response on another session is refused.
+	requireRefused(t, s.send(t, http.MethodPost, token, otherSession,
+		`{"jsonrpc":"2.0","id":100,"result":{"action":"accept"}}`, nil), callbinding.ReasonNoOpenCall, nil)
+
+	// A response on the call's session passes the check; the transport
+	// accepts it.
+	resp := s.send(t, http.MethodPost, token, session, `{"jsonrpc":"2.0","id":100,"result":{"action":"accept"}}`, nil)
+	assert.NotEqual(t, http.StatusForbidden, resp.status, "body: %s", resp.body)
+	// The cancellation for the call passes the check.
+	cancel := s.send(t, http.MethodPost, token, session,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"test"}}`, nil)
+	assert.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
+
+	close(bc.release)
+	select {
+	case resp := <-done:
+		assert.Equal(t, http.StatusOK, resp.status)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the call did not return")
+	}
+
+	// Once the call has ended, nothing belongs to it.
+	requireRefused(t, s.send(t, http.MethodPost, token, session,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`, nil),
+		callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(9, cbTool, "{}"), nil),
+		callbinding.ReasonTokenReused, 9)
+}
+
+// TestCallBinding_LookupFailureKeepsToken checks that a route lookup that
+// fails for a reason other than authorization answers 503 and leaves the
+// token unused.
+func TestCallBinding_LookupFailureKeepsToken(t *testing.T) {
+	t.Parallel()
+	lc := &lookupErrCore{err: errors.New("aggregation failed")}
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+		lc.fakeCore = fc
+		return lc
+	}})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	resp := s.send(t, http.MethodPost, token, session, toolCallBody(2, cbTool, "{}"), nil)
+	require.Equal(t, http.StatusServiceUnavailable, resp.status, "body: %s", resp.body)
+	assert.Empty(t, resp.header.Get("WWW-Authenticate"))
+
+	lc.mu.Lock()
+	lc.err = nil
+	lc.mu.Unlock()
+	requireCallRan(t, s.send(t, http.MethodPost, token, session, toolCallBody(3, cbTool, "{}"), nil))
+}
+
+func TestCallBinding_RefusalIsAuditedAsDenial(t *testing.T) {
+	t.Parallel()
+	auditPath := filepath.Join(t.TempDir(), "audit.log")
+	s := newCallBindingTestServer(t, cbServerOptions{auditFile: auditPath})
+	secretArgs := `{"secret":"do-not-log"}`
+	token := s.tokens.add("bound-token-value", claimsFor(cbClient, "jti-1",
+		[]any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(2, cbTool, secretArgs), nil),
+		callbinding.ReasonArgumentsMismatch, 2)
+
+	var denial map[string]any
+	require.Eventually(t, func() bool {
+		raw, err := os.ReadFile(auditPath)
+		if err != nil {
+			return false
+		}
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			var event map[string]any
+			if json.Unmarshal(line, &event) == nil && event["outcome"] == audit.OutcomeDenied {
+				denial = event
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
+
+	encoded := cbJSON(denial)
+	assert.Contains(t, encoded, `"denial_reason":"arguments_mismatch"`)
+	assert.NotContains(t, encoded, "do-not-log", "the arguments are never audited")
+	assert.NotContains(t, encoded, "bound-token-value", "the token is never audited")
+}
+
+func TestCallBinding_OptimizerToolsAreNotBindable(t *testing.T) {
+	t.Parallel()
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: cbTool, BackendID: cbServer}}}
+	s := &Server{core: fc}
+	backend, err := s.callBindingRoute(context.Background(), nil, cbTool)
+	require.NoError(t, err)
+	assert.Equal(t, cbServer, backend)
+
+	// With the optimizer, a session's tools are find_tool and call_tool,
+	// neither of which has a backend.
+	s.optimizerFactory = stubOptimizerFactory
+	for _, name := range []string{"call_tool", "find_tool", cbTool} {
+		backend, err := s.callBindingRoute(context.Background(), nil, name)
+		require.NoError(t, err)
+		assert.Empty(t, backend, name)
+	}
+}
+
+func TestNewCallBindingValidates(t *testing.T) {
+	t.Parallel()
+	_, err := newCallBinding(callbinding.Config{MaxCallDuration: -time.Second}, nil)
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	_, err = newCallBinding(callbinding.Config{Clients: []string{"a", ""}}, nil)
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+
+	cb, err := newCallBinding(callbinding.Config{}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, callbinding.DefaultMaxCallDuration, cb.maxCallDuration)
+	assert.NotNil(t, cb.record)
+}

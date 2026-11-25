@@ -37,6 +37,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -279,6 +280,15 @@ type Config struct {
 	// from the HTTP middleware. When non-nil, Name must be non-empty (the Cedar resource
 	// entity name).
 	Authz *authz.Config
+
+	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// The vMCP always enforces a token that carries an authorization_details
+	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
+	// only the one tools/call its entry names, once. CallBinding adds the
+	// clients whose tokens must carry one, the maximum call duration, and the
+	// single-use record. The zero value lists no client and keeps the record in
+	// memory, on this replica only. See callbinding.Config.
+	CallBinding callbinding.Config
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -300,6 +310,10 @@ type Server struct {
 	// cfg.Authz != nil after Serve builds the Server. It stays false for direct-Serve
 	// callers, which have no way to configure authorization and run allow-all cores.
 	authzGateEnabled bool
+
+	// callBinding enforces call-bound access tokens (call_binding.go). Serve
+	// always sets it.
+	callBinding *callBinding
 
 	// optimizerFactory builds a per-session optimizer over the core's advertised
 	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
@@ -729,8 +743,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	//   recovery → body-limit → write-timeout → header-validation →
 	//   forwarded-header capture (if PassthroughHeaders is set) →
 	//   audit (if configured) → auth (if configured) → MCP-parsing →
-	//   telemetry (if configured) → host-guard → classification →
-	//   session ownership (Legacy only) → handler
+	//   telemetry (if configured) → host-guard → call binding →
+	//   classification → session ownership (Legacy only) → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
 	//
@@ -773,6 +787,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// dispatcher 403 is still recorded by the telemetry middleware instead of
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
+
+	// Enforce access tokens bound to one MCP call. It runs before
+	// classification, so Legacy and Modern requests both pass through it, and
+	// after auth and parsing, whose identity and parsed request it reads. It
+	// is installed whether or not authorization is configured, and runs before
+	// session ownership, the CallGate and Cedar: it can only refuse more. See
+	// call_binding.go.
+	mcpHandler = s.callBindingMiddleware(mcpHandler)
 
 	// DNS-rebinding protection for both MCP revisions. go-sdk's own localhost
 	// check only sees Legacy requests that reach StreamableHTTPHandler;

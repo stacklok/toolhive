@@ -1475,6 +1475,43 @@ func TestMiddlewareAuditsInnerChainOutcomes(t *testing.T) {
 			"an authz refusal before message-level authorization must audit as denied, not a generic 400 failure")
 	})
 
+	t.Run("a denial reason from an inner middleware is recorded", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		refuse := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok {
+				marker.Denied = true
+				marker.Reason = "token_reused"
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
+		})
+		auditor.Middleware(refuse).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, OutcomeDenied, events[0]["outcome"])
+		metadata, ok := events[0]["metadata"].(map[string]any)
+		require.True(t, ok)
+		extra, ok := metadata["extra"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "token_reused", extra[MetadataExtraKeyDenialReason])
+	})
+
+	t.Run("a denial without a reason records none", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		refuse := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+		})
+		auditor.Middleware(refuse).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.NotContains(t, encodeAuditEvent(t, events[0]), MetadataExtraKeyDenialReason)
+	})
+
 	t.Run("event type comes from inner parser via holder", func(t *testing.T) {
 		t.Parallel()
 		auditor, logBuf := newBufferAuditor(t)
@@ -1824,4 +1861,11 @@ func TestStreamOpenAuditEvents(t *testing.T) {
 		assert.False(t, exists,
 			"an authenticated non-delegated identity must not produce a delegation member on the stream-open path")
 	})
+}
+
+func encodeAuditEvent(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(raw)
 }

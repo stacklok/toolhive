@@ -2148,7 +2148,9 @@ refuses with `invalid_authorization_details` and one of
 `single_entry_required`, `malformed_entry`, `invalid_arguments_hash` or
 `invalid_method`. The authorization server checks only the entry's shape; the
 receiver of the token enforces the call, using `toolcalldetails.ParseEntry` for
-the same shape check.
+the same shape check. The vMCP enforces a tool-call entry and refuses a
+list-call entry for now; see
+[Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 ## Refresh tokens through token exchange
 

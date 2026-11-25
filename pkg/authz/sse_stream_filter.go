@@ -466,7 +466,9 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 	}
 	// A duplicated or case-variant result key is rejected before decoding: the
 	// client's decoder may pick a different key than this filter would, so the
-	// body cannot be trusted to show the same list the client sees.
+	// body cannot be trusted to show the same list the client sees. The POST path has
+	// no such check: there the method is known, so a list is always re-encoded with one
+	// lowercase result. Here a non-list event passes through raw, so this path needs it.
 	if hasAmbiguousResultKey(payload) {
 		return failClosed(event, frameID(event), "result key is duplicated or differs in case")
 	}

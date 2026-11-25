@@ -601,6 +601,15 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 - Proxy automatically stopped on container exit
 - Workload status updated
 
+**Re-attach:** when stdout closes while the workload is still running, for
+example after its Kubernetes pod was replaced, the transport attaches again.
+The streamable proxy answers every client handshake after the first from a
+cached `initialize` result, so after a re-attach it replays that `initialize`
+to the backend, sends `notifications/initialized`, and caches the new result.
+A backend that rejects the replay was already initialized and the cache is
+kept; if the replay gets no answer, the cache is cleared and the next client
+handshake goes to the backend.
+
 ## Session Management
 
 ### SSE/Streamable HTTP Transports (Transparent Proxy)

@@ -60,6 +60,15 @@ func (m *MockHTTPProxy) IsRunning() (bool, error) {
 	return args.Bool(0), args.Error(1)
 }
 
+// reinitializingProxy is a MockHTTPProxy that also implements backendReinitializer.
+type reinitializingProxy struct {
+	MockHTTPProxy
+}
+
+func (m *reinitializingProxy) ReinitializeBackend(ctx context.Context) {
+	m.Called(ctx)
+}
+
 func TestSanitizeJSONString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -362,8 +371,9 @@ func TestProcessStdout_EOFWithSuccessfulReattachment(t *testing.T) {
 		Times(1)
 
 	// Create mock HTTP proxy
-	mockProxy := new(MockHTTPProxy)
+	mockProxy := new(reinitializingProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockProxy.On("ReinitializeBackend", mock.Anything).Return().Once()
 
 	// Create transport with fast retry config for testing
 	transport := &StdioTransport{
@@ -395,6 +405,7 @@ func TestProcessStdout_EOFWithSuccessfulReattachment(t *testing.T) {
 	assert.Equal(t, newStdin, transport.stdin)
 	assert.Equal(t, newStdout, transport.stdout)
 	transport.mutex.Unlock()
+	mockProxy.AssertExpectations(t)
 }
 
 func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
@@ -561,7 +572,7 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 		AnyTimes()
 
 	// Create mock HTTP proxy
-	mockProxy := new(MockHTTPProxy)
+	mockProxy := new(reinitializingProxy)
 	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	// Create transport with fast retry config for testing
@@ -599,6 +610,7 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 	transport.mutex.Lock()
 	assert.Equal(t, originalStdin, transport.stdin)
 	transport.mutex.Unlock()
+	mockProxy.AssertNotCalled(t, "ReinitializeBackend", mock.Anything)
 }
 
 func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {

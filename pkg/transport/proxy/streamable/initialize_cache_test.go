@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,10 +82,15 @@ const testProtocolVersion = "2025-11-25"
 
 // initializeResultFor builds a realistic InitializeResult response for req.
 func initializeResultFor(req *jsonrpc2.Request) jsonrpc2.Message {
+	return initializeResultWithVersion(req, "1.0.0")
+}
+
+// initializeResultWithVersion is initializeResultFor with the given version.
+func initializeResultWithVersion(req *jsonrpc2.Request, version string) jsonrpc2.Message {
 	resp, _ := jsonrpc2.NewResponse(req.ID, map[string]any{
 		"protocolVersion": testProtocolVersion,
 		"capabilities":    map[string]any{"tools": map[string]any{}},
-		"serverInfo":      map[string]any{"name": "fake-stdio-server", "version": "1.0.0"},
+		"serverInfo":      map[string]any{"name": "fake-stdio-server", "version": version},
 	}, nil)
 	return resp
 }
@@ -101,6 +107,12 @@ func initializeResultFor(req *jsonrpc2.Request) jsonrpc2.Message {
 // counting how many messages reached the backend. A duplicate that escapes the
 // cache fails the handshake here exactly as it does against a real server.
 func strictInitializeResponder() func(*jsonrpc2.Request) jsonrpc2.Message {
+	return strictInitializeResponderWithVersion("1.0.0")
+}
+
+// strictInitializeResponderWithVersion is strictInitializeResponder whose
+// InitializeResult carries the given serverInfo version.
+func strictInitializeResponderWithVersion(version string) func(*jsonrpc2.Request) jsonrpc2.Message {
 	var mu sync.Mutex
 	var handshakeDone bool
 	return func(req *jsonrpc2.Request) jsonrpc2.Message {
@@ -116,7 +128,7 @@ func strictInitializeResponder() func(*jsonrpc2.Request) jsonrpc2.Message {
 			return resp
 		}
 		handshakeDone = true
-		return initializeResultFor(req)
+		return initializeResultWithVersion(req, version)
 	}
 }
 
@@ -152,6 +164,24 @@ func postInitialize(t *testing.T, url string, id string) map[string]any {
 	var decoded map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&decoded))
 	return decoded
+}
+
+// postInitializedNotification sends notifications/initialized from a new
+// session and requires it to be acknowledged.
+func postInitializedNotification(t *testing.T, proxy *HTTPProxy, url string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url,
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)))
+	require.NoError(t, err)
+	sid := uuid.NewString()
+	require.NoError(t, proxy.ensureSession(req, sid))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", sid)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test-local URL
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode,
+		"every client's initialized notification must still be acknowledged")
+	_ = resp.Body.Close()
 }
 
 // TestEveryClientHandshakeSucceedsAgainstStrictBackend verifies the behaviour
@@ -267,18 +297,7 @@ func TestDuplicateInitializedNotificationIsNotForwarded(t *testing.T) {
 	backend := startFakeStdioBackend(t.Context(), proxy, strictInitializeResponder())
 
 	for range 3 {
-		req, err := http.NewRequest(http.MethodPost, url,
-			bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)))
-		require.NoError(t, err)
-		sid := uuid.NewString()
-		require.NoError(t, proxy.ensureSession(req, sid))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Mcp-Session-Id", sid)
-		resp, err := http.DefaultClient.Do(req) //nolint:gosec // test-local URL
-		require.NoError(t, err)
-		require.Equal(t, http.StatusAccepted, resp.StatusCode,
-			"every client's initialized notification must still be acknowledged")
-		_ = resp.Body.Close()
+		postInitializedNotification(t, proxy, url)
 	}
 
 	// The backend goroutine records asynchronously; give it a moment to drain.
@@ -350,6 +369,89 @@ func TestInitializeSurvivesFirstCallerDisconnect(t *testing.T) {
 
 	assert.Equal(t, 1, backend.count("initialize"),
 		"the disconnect must not cause a second upstream handshake")
+}
+
+// TestReinitializeBackend verifies each outcome of the replay after a
+// re-attach, and that the next client's handshake still succeeds.
+func TestReinitializeBackend(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		priorHandshake  bool // a client completes a handshake before the re-attach
+		replaced        bool // the re-attach reached a new backend process
+		dropReplay      bool // the backend never answers the replayed initialize
+		wantVersion     string
+		wantInitialize  int // initialize requests the backend saw, the next client's included
+		wantInitialized int
+	}{
+		{
+			name: "replaced backend is initialized again", priorHandshake: true, replaced: true,
+			wantVersion: "2.0.0", wantInitialize: 2, wantInitialized: 1,
+		},
+		{
+			name: "backend that kept running keeps the cache", priorHandshake: true,
+			wantVersion: "1.0.0", wantInitialize: 2, wantInitialized: 0,
+		},
+		{
+			name:        "nothing to replay before the first handshake",
+			wantVersion: "1.0.0", wantInitialize: 1, wantInitialized: 0,
+		},
+		{
+			// The next client's notifications/initialized is forwarded again.
+			name: "unanswered replay sends the next handshake upstream", priorHandshake: true, replaced: true,
+			dropReplay: true, wantVersion: "2.0.0", wantInitialize: 3, wantInitialized: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proxy, url := startInitTestProxy(t)
+			var process atomic.Pointer[func(*jsonrpc2.Request) jsonrpc2.Message]
+			first := strictInitializeResponder()
+			process.Store(&first)
+			var dropNext atomic.Bool
+			backend := startFakeStdioBackend(t.Context(), proxy, func(req *jsonrpc2.Request) jsonrpc2.Message {
+				if dropNext.CompareAndSwap(true, false) {
+					return nil
+				}
+				return (*process.Load())(req)
+			})
+
+			if tt.priorHandshake {
+				require.NotNil(t, postInitialize(t, url, "client-0")["result"])
+			}
+			if tt.replaced {
+				next := strictInitializeResponderWithVersion("2.0.0")
+				process.Store(&next)
+			}
+			dropNext.Store(tt.dropReplay)
+
+			timeout := 5 * time.Second
+			if tt.dropReplay {
+				timeout = 300 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), timeout)
+			defer cancel()
+			proxy.ReinitializeBackend(ctx)
+
+			decoded := postInitialize(t, url, "client-1")
+			assert.Nil(t, decoded["error"], "the handshake after the re-attach must succeed")
+			result, ok := decoded["result"].(map[string]any)
+			require.True(t, ok, "handshake should return a result")
+			assert.Equal(t, tt.wantVersion, result["serverInfo"].(map[string]any)["version"],
+				"the result must come from the backend process now attached")
+			if tt.dropReplay {
+				postInitializedNotification(t, proxy, url)
+			}
+
+			assert.EventuallyWithT(t, func(c *assert.CollectT) {
+				assert.Equal(c, tt.wantInitialize, backend.count("initialize"))
+				assert.Equal(c, tt.wantInitialized, backend.count("notifications/initialized"))
+			}, 2*time.Second, 20*time.Millisecond)
+		})
+	}
 }
 
 // TestMalformedInitializeReplyBecomesInternalError pins an intentional

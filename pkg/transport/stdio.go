@@ -575,8 +575,19 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		return false
 	}
 
+	if r, ok := t.httpProxy.(backendReinitializer); ok {
+		r.ReinitializeBackend(ctx)
+	}
 	return true
 }
+
+// backendReinitializer is implemented by a proxy that caches the initialize
+// handshake and must replay it after a re-attach.
+type backendReinitializer interface {
+	ReinitializeBackend(ctx context.Context)
+}
+
+var _ backendReinitializer = (*streamable.HTTPProxy)(nil)
 
 // processStdout reads from the container's stdout and processes JSON-RPC messages.
 func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser) {

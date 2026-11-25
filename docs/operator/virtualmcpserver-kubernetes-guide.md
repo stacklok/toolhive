@@ -678,13 +678,16 @@ token carries:
 
 * Claims that describe the `id_token` itself rather than the user — `iss`, `aud`,
   `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
-  `sid`, `client_id`, and the token-type and token-binding claims `typ`,
-  `token_use`, `uti`, `rh`, `cnf`. That `id_token`'s audience is ToolHive's own
+  `sid`, `client_id`; the token-type, version and binding claims `typ`,
+  `token_use`, `uti`, `rh`, `idtyp`, `ver`, `cnf`; the requesting client's
+  `appid`, `appidacr`, `azpacr`, `cid`, `gty`, `allowed-origins`; and
+  `session_state`, `xms_cc`, `acrs`. That `id_token`'s audience is ToolHive's own
   auth-server client, so a policy gating on the resource-server `aud`, on token
   lifetime, or on the requesting `client_id` would otherwise read a fact about a
   different token.
 * **`scope` and `scp`**, the delegated grant, along with the RFC 8693
-  delegation claims `act` and `may_act`. A group is a fact about the *user*,
+  delegation claims `act` and `may_act` and RFC 9396 `authorization_details`. A
+  group is a fact about the *user*,
   which either token can usually report; a scope is the authority *a particular
   token* carries, and the only authority at issue is the access token's. Where a
   provider emits `scope` in an `id_token` at all (it is not a standard `id_token`

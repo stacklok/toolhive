@@ -700,8 +700,10 @@ The ToolHive-issued token is never read on this path.
   or unioned with the id_token's value.
 - **Never filled**: claims that describe the id_token itself (`iss`, `aud`,
   `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
-  `sid`, `client_id`, `typ`, `token_use`, `uti`, `rh`, `cnf`), the delegated
-  grant (`scope`, `scp`, `act`, `may_act`), and `sub`.
+  `sid`, `client_id`, `typ`, `token_use`, `uti`, `rh`, `idtyp`, `ver`, `cnf`,
+  `appid`, `appidacr`, `azpacr`, `cid`, `gty`, `allowed-origins`,
+  `session_state`, `xms_cc`, `acrs`), the delegated grant (`scope`, `scp`,
+  `act`, `may_act`, `authorization_details`), and `sub`.
 - **Group and role claims come from one token**: if the access token carries
   a list under any claim group extraction reads (`group_claim_name`,
   `role_claim_name` — `groupClaimName` and `roleClaimName` on the operator CRDs

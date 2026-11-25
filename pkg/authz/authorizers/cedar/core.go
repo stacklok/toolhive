@@ -922,11 +922,14 @@ func (a *Authorizer) groupClaimNames() []string {
 // primary provider's id_token, whatever the access token does or does not carry.
 // Everything else that id_token asserts is admitted — resolveClaims explains why
 // the rule is a deny-list rather than an allow-list, and why that admits
-// group/role claims. These are wire names fixed by RFC 7519 §4.1 and OIDC Core
-// 1.0, not names ToolHive chooses, so they are spelled literally here rather than
-// borrowed from an authorization-server constant: anchoring them to a ToolHive
-// constant would let renaming it silently change which claim Cedar reads out of a
-// third party's token.
+// group/role claims. These are wire names fixed by the RFCs, OIDC Core 1.0 and
+// the providers that emit them, not names ToolHive chooses, so they are spelled
+// literally here rather than borrowed from an authorization-server constant:
+// anchoring them to a ToolHive constant would let renaming it silently change
+// which claim Cedar reads out of a third party's token. Because the list is a
+// deny-list, a token-describing claim missing from it is filled silently, so it
+// covers the provider-specific ones Entra ID, Okta, Auth0 and Keycloak emit, not
+// only the standardized names.
 //
 // Exactly three categories belong here, and the list is meant to stay closed:
 //
@@ -955,8 +958,9 @@ func (a *Authorizer) groupClaimNames() []string {
 //     bearing it. Unlike a group claim name, these two are standardized names
 //     (RFC 8693/9068 `scope`, Entra `scp`), so excluding them by name is an
 //     effective control rather than a cosmetic one — the reason an allow-list had
-//     to go for groups does not transfer here. RFC 8693's `act`/`may_act` are
-//     excluded on the same grounds: they describe delegation a token carries.
+//     to go for groups does not transfer here. RFC 8693's `act`/`may_act` and
+//     RFC 9396's `authorization_details` are excluded on the same grounds: they
+//     describe delegation or authority a token carries.
 //   - `sub`, because it becomes the Cedar principal entity ID rather than an
 //     attribute, and Cedar has no `has`-style guard in the principal position. An
 //     access token without `sub` violates RFC 9068; failing closed with
@@ -974,12 +978,22 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 	// `client_id` and OIDC front/back-channel logout's `sid`.
 	"nonce": {}, "at_hash": {}, "c_hash": {}, "s_hash": {}, "azp": {},
 	"sid": {}, "client_id": {},
-	// Token-type and token-binding claims: JWT `typ`, Cognito `token_use`, Entra
-	// `uti`/`rh`, and RFC 7800 `cnf`.
-	"typ": {}, "token_use": {}, "uti": {}, "rh": {}, "cnf": {},
-	// The delegated grant: RFC 8693/9068 `scope`, Entra `scp`, and RFC 8693
-	// `act`/`may_act`.
-	"scope": {}, "scp": {}, "act": {}, "may_act": {},
+	// Token-type, token-version and token-binding claims: JWT `typ`, Cognito
+	// `token_use`, Entra `uti`/`rh`/`idtyp`, Entra and Okta `ver`, and RFC 7800
+	// `cnf`.
+	"typ": {}, "token_use": {}, "uti": {}, "rh": {}, "idtyp": {}, "ver": {}, "cnf": {},
+	// The requesting client and how it authenticated, relatives of `azp` and
+	// `client_id`: Entra v1 `appid`/`appidacr` and v2 `azpacr`, Okta `cid`, Auth0
+	// `gty`, and Keycloak `allowed-origins` (client configuration).
+	"appid": {}, "appidacr": {}, "azpacr": {}, "cid": {}, "gty": {}, "allowed-origins": {},
+	// Session and capability claims about the token: Keycloak `session_state` (the
+	// same value as `sid`), and Entra `xms_cc`/`acrs`, whose presence the
+	// resource server controls.
+	"session_state": {}, "xms_cc": {}, "acrs": {},
+	// The delegated grant: RFC 8693/9068 `scope`, Entra `scp`, RFC 8693
+	// `act`/`may_act`, and RFC 9396 `authorization_details`, which has the same
+	// requested-versus-granted problem as `scope`.
+	"scope": {}, "scp": {}, "act": {}, "may_act": {}, "authorization_details": {},
 	// The Cedar principal, not an attribute.
 	"sub": {},
 }

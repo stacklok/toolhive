@@ -1786,10 +1786,11 @@ func TestMergeIDTokenClaims(t *testing.T) {
 			wantFilled: []string{"cognito:groups", "https://example.com/groups"},
 		},
 		{
-			// An id_token's registered claims describe that token. Merging them would
-			// overwrite the access token's own aud/exp with different-meaning values,
-			// or report ToolHive's own auth-server client as the requesting client.
-			name: "id_token_registered_claims_are_never_filled_or_overwritten",
+			// An id_token's registered and provider-specific token-describing claims
+			// describe that token. Merging them would overwrite the access token's own
+			// aud/exp with different-meaning values, or report ToolHive's own
+			// auth-server client as the requesting client.
+			name: "id_token_token_describing_claims_are_never_filled_or_overwritten",
 			accessTokenClaims: jwt.MapClaims{
 				"sub": "okta|alice", "aud": "api://resource", "exp": 2000000000,
 			},
@@ -1799,9 +1800,14 @@ func TestMergeIDTokenClaims(t *testing.T) {
 				"nonce": "n-abc", "at_hash": "h-abc", "c_hash": "hc-abc", "s_hash": "hs-abc",
 				"azp": "client-x", "sid": "sess-abc", "client_id": "toolhive-as-client",
 				"typ": "ID", "token_use": "id", "uti": "uti-abc", "rh": "rh-abc",
-				"cnf":     map[string]interface{}{"jkt": "thumb"},
-				"act":     map[string]interface{}{"sub": "agent"},
-				"may_act": map[string]interface{}{"sub": "agent"},
+				"idtyp": "user", "ver": "2.0",
+				"appid": "client-x", "appidacr": "1", "azpacr": "1", "cid": "client-x",
+				"gty": "client-credentials", "allowed-origins": []interface{}{"https://app.example.com"},
+				"session_state": "sess-abc", "xms_cc": []interface{}{"cp1"}, "acrs": []interface{}{"c1"},
+				"cnf":                   map[string]interface{}{"jkt": "thumb"},
+				"act":                   map[string]interface{}{"sub": "agent"},
+				"may_act":               map[string]interface{}{"sub": "agent"},
+				"authorization_details": []interface{}{map[string]interface{}{"type": "payment"}},
 			},
 			wantMerged: jwt.MapClaims{
 				"sub": "okta|alice", "aud": "api://resource", "exp": 2000000000,

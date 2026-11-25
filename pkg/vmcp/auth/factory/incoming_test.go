@@ -232,3 +232,18 @@ func TestNewCedarAuthzMiddleware_PropagatesPrimaryUpstreamProvider(t *testing.T)
 	assert.Equal(t, providerName, extracted.Options.PrimaryUpstreamProvider,
 		"PrimaryUpstreamProvider must be preserved through authorizers.NewConfig round-trip")
 }
+
+func TestIncomingBearerChallenge(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, pkgauth.BearerChallenge{}, IncomingBearerChallenge(nil))
+	assert.Equal(t, pkgauth.BearerChallenge{}, IncomingBearerChallenge(&config.IncomingAuthConfig{Type: "anonymous"}))
+	scopes := []string{"mcp"}
+	got := IncomingBearerChallenge(&config.IncomingAuthConfig{Type: config.IncomingAuthTypeOIDC, OIDC: &config.OIDCConfig{
+		Issuer: "https://as.example.com", Resource: "https://vmcp.example.com/mcp", Scopes: scopes,
+	}})
+	assert.Equal(t, pkgauth.BearerChallenge{
+		Realm: "https://as.example.com", ResourceURL: "https://vmcp.example.com/mcp", Scopes: []string{"mcp"},
+	}, got)
+	got.Scopes[0] = "changed"
+	assert.Equal(t, "mcp", scopes[0], "the config's scopes are copied")
+}

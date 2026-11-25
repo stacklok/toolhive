@@ -146,4 +146,7 @@ const (
 	MetadataExtraKeyTraceID = "trace_id"
 	// MetadataExtraKeySpanID is the key for the ID of the span active when the event was recorded
 	MetadataExtraKeySpanID = "span_id"
+	// MetadataExtraKeyDenialReason is the key for the reason an inner
+	// middleware gave for a denial, when it gave one
+	MetadataExtraKeyDenialReason = "denial_reason"
 )

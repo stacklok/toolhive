@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggmocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -50,6 +51,7 @@ func populatedLegacyConfig() *Config {
 		UsageMetricsMiddleware:  passthrough,
 		AuditConfig:             &audit.Config{},
 		AuditSubjectEnricher:    stubSubjectEnricher,
+		CallBinding:             callbinding.Config{Clients: []string{"c"}},
 		StatusReportingInterval: 11 * time.Second,
 		Watcher:                 stubWatcher{},
 		StatusReporter:          stubServeReporter{},

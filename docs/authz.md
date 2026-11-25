@@ -745,15 +745,16 @@ roles and client scopes on that registration.
 - **Revoking a user's last group**: Keycloak (and apparently Entra ID) omit
   `groups` when the user has none instead of sending an empty list, so after
   the last group is revoked the access token carries no group claim and the
-  stored id_token's list is filled back in until that id_token is replaced. If
-  that matters, have the provider emit an empty list or keep groups out of the
-  id_token. Microsoft also advises against relying on an id_token returned by a
+  id_token's list is consulted. Both return a new id_token on the same refresh,
+  which omits `groups` too, so no stale list is filled. A stale list survives
+  only when such a provider does not rotate the id_token or the refresh fails;
+  keeping groups out of the id_token closes that case. Microsoft also advises against relying on an id_token returned by a
   refresh for authorization, so on Entra ID prefer group and role claims in the
   access token.
 
 > **Upgrading: claims from the id_token**
 >
-> Releases v0.41.0 through v0.68.0 fill only `name` and `email` from the
+> Releases v0.41.0 through v0.69.1 fill only `name` and `email` from the
 > id_token. Later releases fill every claim not listed above, so decisions can
 > change in both directions. Review `permit` and `forbid` rules before
 > upgrading:

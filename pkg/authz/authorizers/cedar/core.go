@@ -751,16 +751,16 @@ func (a *Authorizer) IsAuthorized(
 // it would flip permit to deny mid-session for every user rather than only the
 // revoked one.
 //
-// The window most deployments will see is narrower. Keycloak (and apparently
+// Revoking a user's last group interacts with this. Keycloak (and apparently
 // Entra) omit `groups` when the user has none instead of sending an empty list,
-// so once a user's last group is revoked the refreshed access token carries no
-// group claim, and the stored id_token's list is filled back in until that
-// id_token is replaced. Asserting groups in the access token restores
-// refresh-rate revocation only if the provider also emits an empty list, or
-// keeps groups out of the id_token. Microsoft also advises against relying on
-// an id_token returned by a refresh for authorization, so on Entra prefer group
-// and role claims in the access token, configured on the resource API's
-// registration.
+// so the refreshed access token then carries no group claim and the id_token is
+// consulted. Both providers return a new id_token on that same refresh, and it
+// omits `groups` too, so nothing stale is filled. A stale list survives only
+// where such a provider does not rotate the id_token or the refresh fails;
+// keeping groups out of the id_token closes that case. Microsoft also advises
+// against relying on an id_token returned by a refresh for authorization, so on
+// Entra prefer group and role claims in the access token, configured on the
+// resource API's registration.
 func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, string, error) {
 	requestClaims := jwt.MapClaims(identity.Claims)
 

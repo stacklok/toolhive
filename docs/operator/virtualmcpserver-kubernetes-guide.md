@@ -758,15 +758,17 @@ Fill-only has three consequences worth knowing:
 >   every refresh, so it bounds only idle sessions.
 > * Keycloak (and apparently Entra ID) omit `groups` when the user has none
 >   instead of sending an empty list. After a user's **last** group is revoked,
->   the refreshed access token carries no group claim, and the stored
->   `id_token`'s list is filled back in until that `id_token` is replaced.
+>   the refreshed access token carries no group claim and the `id_token` is
+>   consulted. Both return a new `id_token` on the same refresh, which omits
+>   `groups` too, so no stale list is filled. A stale list survives only when
+>   such a provider does not rotate the `id_token` or the refresh fails.
 >
 > Rejecting an expired `id_token` is not the remedy: it would flip policies from
 > permit to deny mid-session for *every* user at once, not just a revoked one.
 >
 > **What to do**: if revocation must propagate at the access token's refresh
-> rate, assert groups in the **access token** and either have the provider emit
-> an empty list or keep groups out of the `id_token`. On Entra ID, Microsoft
+> rate even when the `id_token` is not rotated, assert groups in the **access
+> token** and keep groups out of the `id_token`. On Entra ID, Microsoft
 > advises against relying on an `id_token` returned by a refresh for
 > authorization, so prefer group and role claims in the access token,
 > configured on the resource API's registration.
@@ -782,7 +784,7 @@ What the `id_token` contributes depends on where your provider puts claims:
 
 > **Migration: claims from the `id_token`**
 >
-> Releases v0.41.0 through v0.68.0 fill only `name` and `email` from the
+> Releases v0.41.0 through v0.69.1 fill only `name` and `email` from the
 > `id_token`. Later releases fill every claim not listed above, so decisions can
 > change in both directions. Review `permit` and `forbid` rules before
 > upgrading: a rule keyed on a group or claim the `id_token` now supplies can

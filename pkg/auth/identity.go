@@ -79,11 +79,12 @@ type AdmissionRoute string
 
 const (
 	// AdmissionRouteUnspecified is the zero value: the token is neither
-	// interactive nor delegated, so nothing is read for it.
+	// interactive nor delegated, so it carries no route.
 	AdmissionRouteUnspecified AdmissionRoute = ""
 	// AdmissionRouteInteractive is a token minted from an interactive login
 	// session: it carries a token session ID and neither the delegated-access
-	// marker nor proof of a session-less mint.
+	// marker nor proof of a session-less mint, and it was validated with a
+	// configured audience (so its "aud" was checked).
 	AdmissionRouteInteractive AdmissionRoute = "interactive"
 	// AdmissionRouteDelegated is a token carrying the delegated-access marker and
 	// no usable tsid, validated with a configured audience (so its "aud" was
@@ -138,7 +139,7 @@ type Identity struct {
 	// in-process key provider (WithKeyProvider). A key found only through the
 	// HTTP JWKS fallback, or an introspection response, gets no route, so a
 	// validator bound without WithKeyProvider never assigns one.
-	// The delegated route also requires a configured audience. It is internal
+	// Both routes also require a configured audience. It is internal
 	// provenance and is intentionally not included in PrincipalInfo,
 	// SafeIdentity, or MarshalJSON. Consumers that grant anything must compare
 	// for equality with AdmissionRouteDelegated (or AdmissionRouteInteractive),

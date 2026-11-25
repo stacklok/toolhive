@@ -3017,7 +3017,7 @@ identity.
 | `delegated` | The token carries the delegated-access marker (any value) and has no usable `tsid`: the claim is absent, empty or not a string. |
 | (empty) | Every other token. This is the zero value, `AdmissionRouteUnspecified`. |
 
-The validator classifies a route only when both conditions hold:
+The validator classifies a route only when all of these hold:
 
 - It is bound to the embedded authorization server, meaning its own issuer is
   the embedded server's issuer.
@@ -3025,16 +3025,20 @@ The validator classifies a route only when both conditions hold:
   key found only through the HTTP JWKS fallback, or an introspection response,
   gets no route. A validator bound to the embedded server but given no
   in-process key provider never assigns a route.
+- The validator has an audience configured, so the token's `aud` was checked.
+  Without an audience the validator does not check `aud`, and a token minted
+  for another resource on the same authorization server would otherwise be
+  given a route.
 
 `SessionlessGrant` is looser on one point: any verified JWT signature counts,
 but claims from an introspection response never do, because they are the
 introspection endpoint's word, not a signature this validator checked.
 
-The `delegated` route also needs the validator to have an audience configured,
-so that the token's `aud` was checked. A marked token validated without an
-audience gets no route.
+A token validated without an audience gets no route, whether it is interactive
+or delegated. It is still served exactly as before, including loading its upstream
+tokens.
 
-A token that fits neither route gets no route and nothing is read for it. This
+A token that fits neither route gets no route. This
 includes a token that carries both a `tsid` and the delegated-access marker:
 the authorization server never issues one, and it is neither interactive nor
 delegated, so it is treated like any other unclassified token.

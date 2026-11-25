@@ -2993,6 +2993,14 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				wantRoute: AdmissionRouteUnspecified,
 			},
 			{
+				name:               "tsid token without audience is served with no route and the reader called",
+				embeddedIssuer:     "test-issuer",
+				loadUpstreamTokens: true,
+				claims:             jwt.MapClaims{},
+				noAudience:         true,
+				wantRoute:          AdmissionRouteUnspecified,
+			},
+			{
 				name:           "marked token with audience is delegated",
 				embeddedIssuer: "test-issuer",
 				claims: jwt.MapClaims{
@@ -4262,8 +4270,10 @@ func TestClassifyRoute(t *testing.T) {
 		provenance *tokenProvenance // nil means provenanceSignedEmbeddedKey
 	}{
 		{name: "tsid only", validator: bound("aud"), claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteInteractive},
-		{name: "tsid without audience is still interactive", validator: bound(""),
-			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteInteractive},
+		{name: "tsid without audience is unspecified", validator: bound(""),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
+		{name: "tsid with whitespace audience is unspecified", validator: bound("  "),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
 		{name: "tsid and marker is unspecified", validator: bound("aud"),
 			claims: jwt.MapClaims{tsid: "s1", marker: true}, want: AdmissionRouteUnspecified},
 		{name: "tsid with no_upstream_session is unspecified", validator: bound("aud"),

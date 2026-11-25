@@ -1487,11 +1487,16 @@ func sessionlessProof(identity *Identity, claims jwt.MapClaims) bool {
 // provider (provenanceSignedEmbeddedKey). Introspected claims, and a JWT whose
 // key came only from the HTTP JWKS fallback, are not proof this server minted
 // the token. A validator bound without WithKeyProvider therefore never assigns
-// a route. Every token that is neither interactive nor delegated, including one
-// carrying both a tsid and the delegated-access marker, is left unspecified and
-// reads nothing.
+// a route. Both routes also require a configured audience: validateClaims checks
+// "aud" only when one is set, so without it a token minted for another resource
+// on the same authorization server would be admitted. Every token that is neither
+// interactive nor delegated, including one carrying both a tsid and the
+// delegated-access marker, is left unspecified.
 func (v *TokenValidator) classifyRoute(identity *Identity, claims jwt.MapClaims, provenance tokenProvenance) AdmissionRoute {
 	if provenance != provenanceSignedEmbeddedKey || !v.boundToEmbeddedIssuer() {
+		return AdmissionRouteUnspecified
+	}
+	if strings.TrimSpace(v.audience) == "" {
 		return AdmissionRouteUnspecified
 	}
 	_, markerPresent := claims[claimnames.DelegatedAccessKey]
@@ -1500,9 +1505,7 @@ func (v *TokenValidator) classifyRoute(identity *Identity, claims jwt.MapClaims,
 	if isInteractiveToken(identity, claims, hasTSID, markerPresent) {
 		return AdmissionRouteInteractive
 	}
-	// validateClaims checks "aud" only when an audience is configured, so the
-	// delegated route is granted only when that check actually ran.
-	if markerPresent && !hasTSID && strings.TrimSpace(v.audience) != "" {
+	if markerPresent && !hasTSID {
 		return AdmissionRouteDelegated
 	}
 	return AdmissionRouteUnspecified
@@ -1515,9 +1518,10 @@ func hasUsableTSID(claims jwt.MapClaims) bool {
 	return ok && tsid != ""
 }
 
-// isInteractiveToken reports whether a token from a bound validator with
-// verified claims came from an interactive login: it has a usable tsid, no
-// delegated-access marker, and no proof of a session-less mint.
+// isInteractiveToken reports whether a token that classifyRoute has already
+// gated (bound validator, configured audience, verified claims) came from an
+// interactive login: it has a usable tsid, no delegated-access marker, and no
+// proof of a session-less mint.
 func isInteractiveToken(identity *Identity, claims jwt.MapClaims, hasTSID, markerPresent bool) bool {
 	return hasTSID && !markerPresent && !sessionlessProof(identity, claims)
 }

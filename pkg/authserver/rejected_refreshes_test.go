@@ -44,11 +44,11 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 // rejectionErr builds the error an upstream provider returns for a rejected
 // refresh.
-func rejectionErr(code string, status int) error {
+func rejectionErr() error {
 	return fmt.Errorf("upstream refresh failed: %w - secret provider text: %w", upstream.ErrGrantRejected,
 		&oauth2.RetrieveError{
-			Response:         &http.Response{StatusCode: status, Status: http.StatusText(status)},
-			ErrorCode:        code,
+			Response:         &http.Response{StatusCode: http.StatusBadRequest, Status: http.StatusText(http.StatusBadRequest)},
+			ErrorCode:        "invalid_grant",
 			ErrorDescription: "secret provider text",
 			Body:             []byte("secret provider body"),
 		})
@@ -73,7 +73,7 @@ func TestRejectedRefreshes_NilAndZeroValuesMiss(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tt.memory.add(0, "row", tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
+			tt.memory.add(0, "row", tok("rt", "at"), rejectionErr())
 			assert.Nil(t, tt.memory.lookup(0, "row", tok("rt", "at")))
 		})
 	}
@@ -85,7 +85,7 @@ func TestRejectedRefreshes_AddAndLookup(t *testing.T) {
 	clock := newFakeClock()
 	memory, err := newRejectedRefreshes(10, time.Minute, clock.Now)
 	require.NoError(t, err)
-	memory.add(1, "row-a", tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
+	memory.add(1, "row-a", tok("rt", "at"), rejectionErr())
 
 	require.ErrorIs(t, memory.lookup(1, "row-a", tok("rt", "at")), upstream.ErrGrantRejected)
 
@@ -103,7 +103,7 @@ func TestRejectedRefreshes_DigestSeparatesTokens(t *testing.T) {
 
 	memory, err := newRejectedRefreshes(10, time.Minute, newFakeClock().Now)
 	require.NoError(t, err)
-	memory.add(0, "row", tok("ab", "c"), rejectionErr("invalid_grant", http.StatusBadRequest))
+	memory.add(0, "row", tok("ab", "c"), rejectionErr())
 
 	assert.Nil(t, memory.lookup(0, "row", tok("a", "bc")), "moving a byte between the tokens must not match")
 	assert.NotNil(t, memory.lookup(0, "row", tok("ab", "c")))
@@ -114,7 +114,7 @@ func TestRejectedRefreshes_LookupBuildsFreshError(t *testing.T) {
 
 	memory, err := newRejectedRefreshes(10, time.Minute, newFakeClock().Now)
 	require.NoError(t, err)
-	memory.add(0, "row", tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
+	memory.add(0, "row", tok("rt", "at"), rejectionErr())
 
 	first := memory.lookup(0, "row", tok("rt", "at"))
 	second := memory.lookup(0, "row", tok("rt", "at"))
@@ -156,7 +156,7 @@ func TestRejectedRefreshes_ExpiresOnLookup(t *testing.T) {
 	clock := newFakeClock()
 	memory, err := newRejectedRefreshes(10, time.Minute, clock.Now)
 	require.NoError(t, err)
-	memory.add(0, "row", tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
+	memory.add(0, "row", tok("rt", "at"), rejectionErr())
 
 	clock.Advance(time.Minute - time.Second)
 	assert.NotNil(t, memory.lookup(0, "row", tok("rt", "at")))
@@ -172,7 +172,7 @@ func TestRejectedRefreshes_EvictsOldestAtCapacity(t *testing.T) {
 	memory, err := newRejectedRefreshes(2, time.Minute, newFakeClock().Now)
 	require.NoError(t, err)
 	for _, row := range []storage.UpstreamTokenRowID{"row-1", "row-2", "row-3"} {
-		memory.add(0, row, tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
+		memory.add(0, row, tok("rt", "at"), rejectionErr())
 	}
 
 	assert.Nil(t, memory.lookup(0, "row-1", tok("rt", "at")))

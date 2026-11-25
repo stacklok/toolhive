@@ -70,8 +70,9 @@ const guardRevokeTimeout = 5 * time.Second
 // Before refusing on an IdP rejection, the guard re-reads the row once more
 // after rejectionRecheckDelay and treats a row that has changed as live. A
 // recheck that cannot complete (the check is cancelled or times out, or the
-// read fails) leaves the outcome uncertain, so the grant goes through. Once the rejection is confirmed, the guard deletes all of the
-// session's upstream rows: the client is sent to a new tsid, so nothing reads
+// read fails) leaves the outcome uncertain, so the grant goes through. Once
+// the rejection is confirmed, the guard deletes all of the session's upstream
+// rows: the client is sent to a new tsid, so nothing reads
 // them again, and a replay of the kept refresh token is then refused as having
 // no rows, without another IdP call or recheck, on every replica.
 //

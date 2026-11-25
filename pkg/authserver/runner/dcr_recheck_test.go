@@ -90,6 +90,8 @@ func TestEmbeddedAuthServer_DCRRecheckRecoversWithoutRestart(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = as.Close() })
 		require.Len(t, as.dcrRechecks, 1)
+		// The test drives re-checks by hand; the loop would race its ticks.
+		as.stopDCRRechecks()
 		return as
 	}
 	authorizeOn := func(as *EmbeddedAuthServer) string {
@@ -413,6 +415,8 @@ func TestEmbeddedAuthServer_DCRRecheckFollowsMovedTokenEndpoint(t *testing.T) {
 	t.Cleanup(func() { _ = as.Close() })
 	downstream.set(as.Handler())
 	require.Len(t, as.dcrRechecks, 1)
+	// The test drives re-checks by hand; the loop would race its ticks.
+	as.stopDCRRechecks()
 
 	// signIn runs a whole authorization through the downstream, upstream
 	// code redemption included, and requires a code for the session client.

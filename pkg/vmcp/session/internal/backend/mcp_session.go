@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/useragent"
 )
 
 const (
@@ -622,7 +623,7 @@ func createMCPClient(
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
 	// Build shared transport chain (innermost first → outermost):
-	//   backendBaseTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	//   backendBaseTransport → authRoundTripper → identityRoundTripper → User-Agent → headerForwardRoundTripper
 	// The innermost stage is http.DefaultTransport unless a dial-control hook was
 	// resolved for this backend (see WithDialControlResolver), in which case it is
 	// a cloned transport carrying that hook on its dialer.
@@ -647,6 +648,9 @@ func createMCPClient(
 	// refreshed identity placed on the request context by
 	// auth.TokenValidator.Middleware (see issue #5323).
 	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
+	// Identify vMCP to the backend unless header-forward (outer) already set a
+	// User-Agent, so an operator-forwarded User-Agent wins over the default.
+	base = useragent.NewRoundTripper(base)
 	// Forwarded headers ride the request context (set by headerforward.CaptureMiddleware
 	// at the vMCP server's incoming edge) and are merged into the per-session backend
 	// header-forward config here. This connection is built once, from the request

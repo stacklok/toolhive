@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 // MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
@@ -149,7 +150,7 @@ func (r *MCPRemoteProxyReconciler) handleInvalidCABundle(
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: remoteProxy.Generation,
 			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-			Message:            fmt.Sprintf("invalid CA bundle: %v", err),
+			Message:            ctrlutil.InvalidCABundleMessage(err),
 		})
 	})
 }
@@ -182,8 +183,12 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			}
 			return ctrl.Result{}, nil
 		}
+		// A spec defect the user must fix (e.g. obo without incoming OIDC) has
+		// already been recorded on status; do not requeue.
+		var validationErr *obo.ValidationError
 		if stderrors.Is(err, errInvalidMCPRemoteProxyPodTemplateSpec) ||
-			stderrors.Is(err, errTerminalCABundleHandled) {
+			stderrors.Is(err, errTerminalCABundleHandled) ||
+			stderrors.As(err, &validationErr) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -273,11 +278,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 
 	// Handle MCPExternalAuthConfig
 	if err := r.handleExternalAuthConfig(ctx, proxy); err != nil {
-		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
-		if statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPExternalAuthConfig", err); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
-		}
-		return err
+		return r.markExternalAuthConfigFailed(ctx, proxy, err)
 	}
 
 	// Handle authServerRef config hash tracking
@@ -338,6 +339,30 @@ func (r *MCPRemoteProxyReconciler) markConfigHandlerFailed(
 	})
 
 	return r.Status().Update(ctx, proxy)
+}
+
+// markExternalAuthConfigFailed records a handleExternalAuthConfig failure on
+// status and returns the error validateAndHandleConfigs should propagate:
+// normally err itself, but the status write error when err is a terminal
+// *obo.ValidationError whose rejection could not be persisted. Reconcile does
+// not requeue a ValidationError, so returning it then would drop the rejection.
+func (r *MCPRemoteProxyReconciler) markExternalAuthConfigFailed(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	err error,
+) error {
+	ctxLogger := log.FromContext(ctx)
+	ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
+	statusErr := r.markConfigHandlerFailed(ctx, proxy, "MCPExternalAuthConfig", err)
+	if statusErr == nil {
+		return err
+	}
+	ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
+	var validationErr *obo.ValidationError
+	if stderrors.As(err, &validationErr) {
+		return statusErr
+	}
+	return err
 }
 
 func (r *MCPRemoteProxyReconciler) validateSpecAndPodTemplate(
@@ -595,12 +620,19 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	serviceName := createProxyServiceName(proxy.Name)
 	service := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: proxy.Namespace}, service)
+	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: proxy.Namespace}, service)
 
 	if errors.IsNotFound(err) {
-		svc := r.serviceForMCPRemoteProxy(ctx, proxy)
+		svc := r.serviceForMCPRemoteProxy(ctx, proxy, tlsListener)
 		if svc == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create Service object")
 		}
@@ -616,8 +648,8 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 	}
 
 	// Service exists - check if it needs to be updated
-	if r.serviceNeedsUpdate(service, proxy) {
-		newService := r.serviceForMCPRemoteProxy(ctx, proxy)
+	if r.serviceNeedsUpdate(service, proxy, tlsListener) {
+		newService := r.serviceForMCPRemoteProxy(ctx, proxy, tlsListener)
 		if newService == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Service object")
 		}
@@ -1007,10 +1039,22 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	}
 
 	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
-	// the MCPRemoteProxy so the failure is visible on the consumer CR (e.g.
-	// obo-typed configs surface Valid=False/EnterpriseRequired here without the
-	// user having to inspect the referenced MCPExternalAuthConfig).
+	// the MCPRemoteProxy so the failure is visible on the consumer CR without
+	// the user having to inspect the referenced MCPExternalAuthConfig.
 	if mirrored, err := mirrorInvalidOnRemoteProxy(proxy, externalAuthConfig); mirrored {
+		return err
+	}
+
+	// OBO exchanges the authenticated user's token, so it needs incoming OIDC
+	// authentication. Terminal: Reconcile records it without requeueing.
+	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, proxy.Spec.OIDCConfigRef != nil); err != nil {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            err.Error(),
+			ObservedGeneration: proxy.Generation,
+		})
 		return err
 	}
 
@@ -1025,7 +1069,7 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 			}
 			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 				Type: mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated, Status: metav1.ConditionFalse,
-				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid CA bundle: %v", err),
+				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: ctrlutil.InvalidCABundleMessage(err),
 				ObservedGeneration: proxy.Generation,
 			})
 			return err
@@ -1068,7 +1112,14 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 }
 
 // setMCPRemoteProxyExternalAuthConfigValidCondition preserves a terminal RunConfig validation failure
-// until its referenced configuration or this resource generation changes.
+// until its referenced configuration or this resource generation changes. An
+// InvalidConfig mirrored from the referenced MCPExternalAuthConfig is not held
+// (see isLocalValidationFailure): the source can heal back to an unchanged
+// ConfigHash, and holding it would make the failure permanent. Nor is the obo
+// incoming-auth rejection (ctrlutil.MsgOBORequiresIncomingAuth): it re-runs
+// earlier in handleExternalAuthConfig and returns before the stored hash
+// advances, so a source that reverts from obo to its earlier spec matches the
+// stored hash, and holding it would keep a stale False.
 func setMCPRemoteProxyExternalAuthConfigValidCondition(
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	configName, configHash string,
@@ -1076,9 +1127,9 @@ func setMCPRemoteProxyExternalAuthConfigValidCondition(
 	previousCondition := meta.FindStatusCondition(
 		proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 	)
-	if previousCondition != nil &&
-		previousCondition.Status == metav1.ConditionFalse &&
+	if isLocalValidationFailure(previousCondition) &&
 		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
+		previousCondition.Message != ctrlutil.MsgOBORequiresIncomingAuth &&
 		previousCondition.ObservedGeneration == proxy.Generation &&
 		proxy.Status.ExternalAuthConfigHash == configHash {
 		return
@@ -1194,7 +1245,7 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 				Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 				Status:             metav1.ConditionFalse,
 				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
-				Message:            fmt.Sprintf("invalid CA bundle: %v", err),
+				Message:            ctrlutil.InvalidCABundleMessage(err),
 				ObservedGeneration: proxy.Generation,
 			})
 			return err
@@ -1861,13 +1912,24 @@ func (r *MCPRemoteProxyReconciler) generatedContainerNeedsUpdate(
 ) bool {
 	container := deployment.Spec.Template.Spec.Containers[0]
 
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	)
+	if err != nil {
+		return true
+	}
+
 	// Check if runner image has changed
 	if container.Image != getToolhiveRunnerImage() {
 		return true
 	}
 
-	// Check if port has changed
-	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != int32(proxy.GetProxyPort()) {
+	// Check if the operator-owned ports have changed
+	if ctrlutil.ContainerPortsDrifted(
+		container.Ports,
+		ctrlutil.ProxyContainerPorts(int32(proxy.GetProxyPort()), tlsListener),
+		ctrlutil.ProxyContainerPorts(int32(proxy.GetProxyPort()), true),
+	) {
 		return true
 	}
 
@@ -1889,9 +1951,13 @@ func (r *MCPRemoteProxyReconciler) generatedContainerNeedsUpdate(
 		return true
 	}
 
-	// Check if resources have changed
-	expectedResources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
-	if !reflect.DeepEqual(container.Resources, expectedResources) {
+	// Check if resources have changed. Use the same default+override merge as
+	// deployment generation so drift detection stays consistent.
+	expectedResources, err := resourceRequirementsForRemoteProxy(proxy)
+	if err != nil {
+		return true
+	}
+	if !equality.Semantic.DeepEqual(container.Resources, expectedResources) {
 		return true
 	}
 
@@ -2052,8 +2118,9 @@ func (*MCPRemoteProxyReconciler) podTemplateSpecNeedsUpdate(
 // defaults with spec.resourceOverrides.proxyDeployment.imagePullSecrets. Uses
 // equality.Semantic.DeepEqual so nil and empty slices are treated as equal,
 // which matches Kubernetes' own serialization semantics. Also compares the
-// session storage Redis CA volume, whose Secret is not covered by the RunConfig
-// checksum.
+// session storage Redis CA volume and the auth server volumes (TLS listener,
+// signing keys, HMAC secrets, SPIFFE bundles), whose references are not covered
+// by the RunConfig checksum.
 func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
@@ -2065,31 +2132,7 @@ func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 		if expectedDeployment == nil {
 			return true
 		}
-		return deployment.Spec.Template.Spec.ServiceAccountName != expectedDeployment.Spec.Template.Spec.ServiceAccountName ||
-			!equality.Semantic.DeepEqual(
-				deployment.Spec.Template.Spec.ImagePullSecrets,
-				expectedDeployment.Spec.Template.Spec.ImagePullSecrets,
-			) ||
-			// Scheduling can come from podTemplateSpec as well as from
-			// resourceOverrides, so compare against the rebuilt Deployment rather
-			// than the overrides alone.
-			!equality.Semantic.DeepEqual(
-				deployment.Spec.Template.Spec.NodeSelector,
-				expectedDeployment.Spec.Template.Spec.NodeSelector,
-			) ||
-			!equality.Semantic.DeepEqual(
-				deployment.Spec.Template.Spec.Tolerations,
-				expectedDeployment.Spec.Template.Spec.Tolerations,
-			) ||
-			!equality.Semantic.DeepEqual(
-				deployment.Spec.Template.Spec.Affinity,
-				expectedDeployment.Spec.Template.Spec.Affinity,
-			) ||
-			// podTemplateSpec may also patch the session storage CA volume.
-			ctrlutil.SessionRedisTLSVolumeNeedsUpdate(
-				deployment.Spec.Template.Spec.Volumes,
-				expectedDeployment.Spec.Template.Spec.Volumes,
-			)
+		return patchedPodSpecNeedsUpdate(deployment.Spec.Template.Spec, expectedDeployment.Spec.Template.Spec)
 	}
 
 	if deployment.Spec.Template.Spec.ServiceAccountName != serviceAccountNameForRemoteProxy(proxy) {
@@ -2109,14 +2152,61 @@ func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 		return true
 	}
 
+	if r.authServerVolumesNeedUpdate(ctx, deployment, proxy) {
+		return true
+	}
+
 	expected := r.imagePullSecretsForRemoteProxy(proxy)
 	return !equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.ImagePullSecrets, expected)
 }
 
+// patchedPodSpecNeedsUpdate compares the live pod spec with the one rebuilt
+// from a podTemplateSpec patch.
+func patchedPodSpecNeedsUpdate(live, expected corev1.PodSpec) bool {
+	return live.ServiceAccountName != expected.ServiceAccountName ||
+		!equality.Semantic.DeepEqual(live.ImagePullSecrets, expected.ImagePullSecrets) ||
+		// Scheduling can come from podTemplateSpec as well as from
+		// resourceOverrides, so compare against the rebuilt Deployment rather
+		// than the overrides alone.
+		!equality.Semantic.DeepEqual(live.NodeSelector, expected.NodeSelector) ||
+		!equality.Semantic.DeepEqual(live.Tolerations, expected.Tolerations) ||
+		!equality.Semantic.DeepEqual(live.Affinity, expected.Affinity) ||
+		// podTemplateSpec may also patch the session storage CA volume.
+		ctrlutil.SessionRedisTLSVolumeNeedsUpdate(live.Volumes, expected.Volumes) ||
+		ctrlutil.AuthServerVolumesNeedUpdate(live.Volumes, expected.Volumes)
+}
+
+// authServerVolumesNeedUpdate compares the live auth server volumes with the
+// ones generated from the referenced embedded auth server config. A failure to
+// generate them is reported as drift so the next reconcile retries.
+func (r *MCPRemoteProxyReconciler) authServerVolumesNeedUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) bool {
+	var wantAuthServerVolumes []corev1.Volume
+	if configName := ctrlutil.EmbeddedAuthServerConfigName(
+		proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	); configName != "" {
+		authServerVolumes, _, _, err := ctrlutil.GenerateAuthServerConfigByName(ctx, r.Client, proxy.Namespace, configName)
+		if err != nil {
+			return true
+		}
+		wantAuthServerVolumes = authServerVolumes
+	}
+	return ctrlutil.AuthServerVolumesNeedUpdate(deployment.Spec.Template.Spec.Volumes, wantAuthServerVolumes)
+}
+
 // serviceNeedsUpdate checks if the service needs to be updated
-func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1beta1.MCPRemoteProxy) bool {
-	// Check if port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != int32(proxy.GetProxyPort()) {
+func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(
+	service *corev1.Service, proxy *mcpv1beta1.MCPRemoteProxy, tlsListener bool,
+) bool {
+	// Check if the operator-owned ports have changed
+	if ctrlutil.ServicePortsDrifted(
+		service.Spec.Ports,
+		ctrlutil.ProxyServicePorts(int32(proxy.GetProxyPort()), tlsListener),
+		ctrlutil.ProxyOwnedPortNames(),
+	) {
 		return true
 	}
 

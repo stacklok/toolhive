@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/redis/go-redis/v9"
@@ -82,13 +81,27 @@ func newAssertionKey(t *testing.T, keyID string) assertionKey {
 	return assertionKey{private: private, keyID: keyID}
 }
 
-// writeJWKS writes the public half of keys to path as a JWKS document.
+// writeJWKS writes the public half of keys to path as a JWKS document, each
+// key carrying alg ES256.
 func writeJWKS(t *testing.T, path string, keys ...assertionKey) {
 	t.Helper()
-	set := josev3.JSONWebKeySet{}
+	writeJWKSWithAlg(t, path, "ES256", keys...)
+}
+
+// writeJWKSWithoutAlg is writeJWKS with no alg member on the keys.
+func writeJWKSWithoutAlg(t *testing.T, path string, keys ...assertionKey) {
+	t.Helper()
+	writeJWKSWithAlg(t, path, "", keys...)
+}
+
+// writeJWKSWithAlg writes the public half of keys to path, setting alg on each
+// key, or omitting it when alg is empty.
+func writeJWKSWithAlg(t *testing.T, path, alg string, keys ...assertionKey) {
+	t.Helper()
+	set := jose.JSONWebKeySet{}
 	for _, k := range keys {
-		set.Keys = append(set.Keys, josev3.JSONWebKey{
-			Key: &k.private.PublicKey, KeyID: k.keyID, Use: "sig", Algorithm: "ES256",
+		set.Keys = append(set.Keys, jose.JSONWebKey{
+			Key: &k.private.PublicKey, KeyID: k.keyID, Use: "sig", Algorithm: alg,
 		})
 	}
 	data, err := json.Marshal(set)
@@ -115,6 +128,7 @@ type clientAuth struct {
 
 type tokenResult struct {
 	status int
+	header http.Header
 	body   map[string]any
 }
 
@@ -126,6 +140,12 @@ func (r tokenResult) str(t *testing.T, key string) string {
 }
 
 func postToken(t *testing.T, serverURL string, auth clientAuth, values url.Values) tokenResult {
+	t.Helper()
+	return postTokenWithHeader(t, serverURL, auth, values, nil)
+}
+
+// postTokenWithHeader is postToken with extra request headers.
+func postTokenWithHeader(t *testing.T, serverURL string, auth clientAuth, values url.Values, header http.Header) tokenResult {
 	t.Helper()
 	form := url.Values{}
 	for k, v := range values {
@@ -149,6 +169,11 @@ func postToken(t *testing.T, serverURL string, auth clientAuth, values url.Value
 	request, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/token", strings.NewReader(form.Encode()))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for name, values := range header {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
 	if auth.secret != "" || auth.emptyBasic {
 		request.SetBasicAuth(auth.clientID, auth.secret)
 	}
@@ -160,7 +185,7 @@ func postToken(t *testing.T, serverURL string, auth clientAuth, values url.Value
 	}()
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
-	return tokenResult{status: response.StatusCode, body: body}
+	return tokenResult{status: response.StatusCode, header: response.Header, body: body}
 }
 
 // authorizeProbe sends an authorization request without following redirects and
@@ -195,16 +220,21 @@ func authorizeProbe(t *testing.T, serverURL, clientID string) (int, string) {
 	return response.StatusCode, ""
 }
 
-func newRedisStorage(mr *miniredis.Miniredis) storage.Storage {
-	return storage.NewRedisStorageWithClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), "cfgclient:{test}:")
+func newRedisStorage(t *testing.T, mr *miniredis.Miniredis) storage.Storage {
+	t.Helper()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	return storage.NewRedisStorageWithClient(client, "cfgclient:{test}:")
 }
 
 func newStorageForBackend(t *testing.T, backend string) storage.Storage {
 	t.Helper()
 	if backend == "redis" {
-		return newRedisStorage(miniredis.RunT(t))
+		return newRedisStorage(t, miniredis.RunT(t))
 	}
-	return storage.NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	return stor
 }
 
 // configuredClients configures the scopes, the one allowed audience and the
@@ -256,10 +286,10 @@ func anySelfIssuedSubjectTokens() *authserver.DelegateClientTokenExchange {
 	}
 }
 
-// login logs the configured broker client in.
-func login(t *testing.T, serverURL string) (string, string) {
+// login logs clientID in with the broker's redirect URI, audience and scopes.
+func login(t *testing.T, serverURL, clientID string) (string, string) {
 	t.Helper()
-	return loginWith(t, serverURL, cfgBrokerID, cfgRedirectURI, cfgAudienceA, "openid profile offline_access")
+	return loginWith(t, serverURL, clientID, cfgRedirectURI, cfgAudienceA, "openid profile offline_access")
 }
 
 // loginWith drives authorize, consent and the upstream callback for the given
@@ -409,7 +439,7 @@ func runConfiguredClientFlows(t *testing.T, backend string) {
 	})
 
 	t.Run("private_key_jwt client logs in and refreshes", func(t *testing.T) {
-		code, verifier := login(t, srv.URL)
+		code, verifier := login(t, srv.URL, cfgBrokerID)
 		auth := clientAuth{clientID: cfgBrokerID, key: &brokerKey}
 		tokens := postToken(t, srv.URL, auth, url.Values{
 			"grant_type": {oauthproto.GrantTypeAuthorizationCode}, "code": {code},
@@ -488,7 +518,9 @@ func TestConfiguredLoginClientConsentExemptStartsOnBothBackends(t *testing.T) {
 }
 
 // TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation covers rotating the
-// JWKS file between restarts over shared storage.
+// JWKS file between restarts over shared storage: old key only, then the
+// overlap where both keys are accepted, then new key only, where the old key is
+// refused.
 func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 	t.Parallel()
 
@@ -508,7 +540,7 @@ func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 		srv, issuer, embedded, stop := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 			clients(cfg)
 			pin(cfg)
-		}, newRedisStorage(mr))
+		}, newRedisStorage(t, mr))
 		return running{url: srv.URL, issuer: issuer, embedded: embedded, stop: stop}
 	}
 	exchange := func(srv running, key assertionKey) tokenResult {
@@ -525,12 +557,45 @@ func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 	require.Equal(t, http.StatusOK, exchange(srv, oldKey).status)
 	srv.stop()
 
+	writeJWKS(t, jwksFile, oldKey, newKey)
+	srv = start()
+	assert.Equal(t, http.StatusOK, exchange(srv, oldKey).status, "old key is accepted during the overlap")
+	assert.Equal(t, http.StatusOK, exchange(srv, newKey).status, "new key is accepted during the overlap")
+	srv.stop()
+
 	writeJWKS(t, jwksFile, newKey)
 	srv = start()
 	assert.Equal(t, http.StatusOK, exchange(srv, newKey).status, "new key is accepted under the same client_id")
 	refused := exchange(srv, oldKey)
-	assert.Equal(t, http.StatusBadRequest, refused.status, refused.body)
+	assert.Equal(t, http.StatusUnauthorized, refused.status, refused.body)
+	assert.Equal(t, "invalid_client", refused.body["error"])
 	assert.Contains(t, refused.body["error_description"], "old-key", "the refused key is reported by its kid")
+}
+
+// TestConfiguredPrivateKeyJWTClientDerivesAlgorithmFromKey pins that a
+// private_key_jwt client with no token_endpoint_auth_signing_alg, whose JWKS
+// key carries no alg, authenticates with ES256, the algorithm its P-256 key
+// implies.
+func TestConfiguredPrivateKeyJWTClientDerivesAlgorithmFromKey(t *testing.T) {
+	t.Parallel()
+
+	brokerKey := newAssertionKey(t, "broker-key")
+	jwksFile := filepath.Join(t.TempDir(), "broker.jwks")
+	writeJWKSWithoutAlg(t, jwksFile, brokerKey)
+
+	client := brokerClient(jwksFile)
+	client.TokenEndpointAuthSigningAlg = ""
+	srv, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
+		configuredClients(client)(cfg)
+	}, newStorageForBackend(t, "memory"))
+
+	result := postToken(t, srv.URL, clientAuth{clientID: cfgBrokerID, key: &brokerKey}, url.Values{
+		"grant_type":         {oauthproto.GrantTypeTokenExchange},
+		"subject_token":      {signedSubjectTokenWithScopes(t, embedded, issuer, cfgBrokerID, "openid profile")},
+		"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		"scope":              {"openid profile"}, "audience": {cfgAudienceA},
+	})
+	require.Equal(t, http.StatusOK, result.status, result.body)
 }
 
 // TestConfiguredLoginClientRefreshTokenSurvivesRemovalAndReAdd pins that a
@@ -552,7 +617,7 @@ func TestConfiguredLoginClientRefreshTokenSurvivesRemovalAndReAdd(t *testing.T) 
 		srv, _, _, stop := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 			configure(cfg)
 			pin(cfg)
-		}, newRedisStorage(mr))
+		}, newRedisStorage(t, mr))
 		return srv.URL, stop
 	}
 	refresh := func(serverURL, token string) tokenResult {
@@ -562,7 +627,7 @@ func TestConfiguredLoginClientRefreshTokenSurvivesRemovalAndReAdd(t *testing.T) 
 	}
 
 	serverURL, stop := start(brokerClient(jwksFile))
-	code, verifier := login(t, serverURL)
+	code, verifier := login(t, serverURL, cfgBrokerID)
 	tokens := postToken(t, serverURL, auth, url.Values{
 		"grant_type": {oauthproto.GrantTypeAuthorizationCode}, "code": {code},
 		"redirect_uri": {cfgRedirectURI}, "code_verifier": {verifier},
@@ -595,8 +660,15 @@ func accessTokenClaims(t *testing.T, embedded *authserverrunner.EmbeddedAuthServ
 
 func signIDJAGAssertion(t *testing.T, key *rsa.PrivateKey, issuer, clientID, jti string) string {
 	t.Helper()
+	return signAssertionOfType(t, key, oauthproto.JWTTypeIDJAG, issuer, clientID, jti)
+}
+
+// signAssertionOfType signs a trusted-issuer assertion with the given JOSE typ:
+// oauth-id-jag+jwt for an ID-JAG, JWT for a plain RFC 7523 assertion.
+func signAssertionOfType(t *testing.T, key *rsa.PrivateKey, typ, issuer, clientID, jti string) string {
+	t.Helper()
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key},
-		(&jose.SignerOptions{}).WithType("oauth-id-jag+jwt").WithHeader("kid", "idp-key"))
+		(&jose.SignerOptions{}).WithType(jose.ContentType(typ)).WithHeader("kid", "idp-key"))
 	require.NoError(t, err)
 	now := time.Now()
 	assertion, err := jwt.Signed(signer).Claims(jwt.Claims{

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -36,6 +37,31 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 		expectError        bool
 		validate           func(*testing.T, *authtypes.BackendAuthStrategy)
 	}{
+		{
+			name: "obo uses a per-config client secret env var",
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-backend-a", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO: &mcpv1beta1.OBOConfig{
+						TenantID:        "contoso.onmicrosoft.com",
+						ClientID:        "client-id",
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "obo-secret", Key: "client-secret"},
+						Scopes:          []string{"api://backend/.default"},
+					},
+				},
+			},
+			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
+				t.Helper()
+				require.NotNil(t, strategy.OBO)
+				assert.Equal(t, authtypes.StrategyTypeOBO, strategy.Type)
+				assert.Equal(t, "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token",
+					strategy.OBO.TokenURL)
+				assert.Equal(t, ctrlutil.GenerateUniqueOBOSecretEnvVarName("obo-backend-a"), strategy.OBO.ClientSecretEnv,
+					"must match the env var getExternalAuthConfigSecretEnvVars mounts")
+				assert.Empty(t, strategy.OBO.ClientSecret, "the secret value must not be inlined in inline mode")
+			},
+		},
 		{
 			name: "token exchange with all fields",
 			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
@@ -836,8 +862,8 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 
 // TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig verifies
 // the mirror added for #5347: when the referenced MCPExternalAuthConfig has
-// Status.Conditions[Valid]=False (e.g. obo-typed configs in upstream-only
-// builds), the conversion must short-circuit before reaching the converter and
+// Status.Conditions[Valid]=False (e.g. a malformed obo-typed config),
+// the conversion must short-circuit before reaching the converter and
 // return a typed error that carries the source's reason+message so callers
 // (buildOutgoingAuthConfig) can propagate the reason onto the per-backend
 // AuthConfigError.
@@ -856,8 +882,8 @@ func TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig(t *test
 			Conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeValid,
 				Status:  metav1.ConditionFalse,
-				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-				Message: "obo enterprise required",
+				Reason:  testSourceInvalidReason,
+				Message: testSourceInvalidMessage,
 			}},
 		},
 	}
@@ -880,16 +906,16 @@ func TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig(t *test
 
 	require.Error(t, err, "must short-circuit when source Valid=False")
 	require.Nil(t, strategy)
-	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, mirroredReasonFromError(err),
+	assert.Equal(t, testSourceInvalidReason, mirroredReasonFromError(err),
 		"buildOutgoingAuthConfig depends on this reason flowing through mirroredReasonFromError")
 
 	// Wrap the error exactly as buildOutgoingAuthConfig does in production
 	// (fmt.Errorf("...: %w", err)) and assert the reason still survives the
 	// errors.As walk. A future refactor that drops %w in favour of %v or
 	// errors.New(fmt.Sprintf(...)) would silently break per-backend reason
-	// propagation and surface ConversionFailed instead of EnterpriseRequired.
+	// propagation and surface ConversionFailed instead of the source reason.
 	wrapped := fmt.Errorf("failed to convert backend auth config: %w", err)
-	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, mirroredReasonFromError(wrapped),
+	assert.Equal(t, testSourceInvalidReason, mirroredReasonFromError(wrapped),
 		"buildOutgoingAuthConfig wraps the err once before extracting the reason; "+
 			"the contract must survive that wrap")
 }
@@ -910,15 +936,15 @@ func TestMirroredExternalAuthConfigInvalid(t *testing.T) {
 		wantMessage string
 	}{
 		{
-			name: "Valid=False/EnterpriseRequired returns mirrored pointer",
+			name: "Valid=False/SourceRejected returns mirrored pointer",
 			conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeValid,
 				Status:  metav1.ConditionFalse,
-				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-				Message: "obo enterprise required",
+				Reason:  testSourceInvalidReason,
+				Message: testSourceInvalidMessage,
 			}},
-			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-			wantMessage: "obo enterprise required",
+			wantReason:  testSourceInvalidReason,
+			wantMessage: testSourceInvalidMessage,
 		},
 		{
 			name: "Valid=True returns nil",
@@ -995,8 +1021,8 @@ func TestAuthConfigErrorReason(t *testing.T) {
 		},
 		{
 			name: "non-empty Reason is propagated verbatim",
-			in:   &AuthConfigError{Reason: mcpv1beta1.ConditionReasonEnterpriseRequired},
-			want: mcpv1beta1.ConditionReasonEnterpriseRequired,
+			in:   &AuthConfigError{Reason: testSourceInvalidReason},
+			want: testSourceInvalidReason,
 		},
 	}
 
@@ -1646,6 +1672,119 @@ func TestDiscoverInlineExternalAuthConfigSecrets_DeterministicOrdering(t *testin
 		"env vars must be sorted alphabetically by Name to ensure deterministic reconcile behaviour")
 }
 
+// TestDiscoverExternalAuthConfigSecrets_TwoOBOBackends verifies, for both
+// discovered and inline outgoing auth, that two OBO backends put two distinct
+// client secret env vars on the vMCP pod, and that each name is exactly the
+// ClientSecretEnv convertExternalAuthConfigToStrategy writes into the vMCP
+// config, so the runtime reads the env var the pod actually carries. The two
+// config names sanitize to the same string ("obo.a" and "obo-a" both become
+// OBO_A), so this also covers the hash suffix keeping them apart.
+func TestDiscoverExternalAuthConfigSecrets_TwoOBOBackends(t *testing.T) {
+	t.Parallel()
+
+	newOBOConfig := func(name, secretName string) *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeOBO,
+				OBO: &mcpv1beta1.OBOConfig{
+					TenantID:        "contoso.onmicrosoft.com",
+					ClientID:        "client-id",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: secretName, Key: "client-secret"},
+					Audience:        "api://backend/.default",
+				},
+			},
+		}
+	}
+	configs := []*mcpv1beta1.MCPExternalAuthConfig{
+		newOBOConfig("obo-a", "secret-dash"),
+		newOBOConfig("obo.a", "secret-dot"),
+	}
+	inlineRef := func(name string) mcpv1beta1.BackendAuthConfig {
+		return mcpv1beta1.BackendAuthConfig{
+			Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: name},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		vmcp     *mcpv1beta1.VirtualMCPServer
+		extra    []client.Object
+		discover func(ctx context.Context, r *VirtualMCPServerReconciler, vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar
+	}{
+		{
+			name: "discovered",
+			vmcp: v1beta1test.NewVirtualMCPServer("vmcp", "default",
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{Source: "discovered"})),
+			extra: []client.Object{
+				v1beta1test.NewMCPServer("server-dash", "default", v1beta1test.WithExternalAuthConfigRef("obo-a")),
+				v1beta1test.NewMCPServer("server-dot", "default", v1beta1test.WithExternalAuthConfigRef("obo.a")),
+			},
+			discover: func(ctx context.Context, r *VirtualMCPServerReconciler, vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+				return r.discoverExternalAuthConfigSecrets(ctx, vmcp, []workloads.TypedWorkload{
+					{Name: "server-dash", Type: workloads.WorkloadTypeMCPServer},
+					{Name: "server-dot", Type: workloads.WorkloadTypeMCPServer},
+				})
+			},
+		},
+		{
+			name: "inline",
+			vmcp: v1beta1test.NewVirtualMCPServer("vmcp", "default",
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "inline",
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"backend-dash": inlineRef("obo-a"),
+						"backend-dot":  inlineRef("obo.a"),
+					},
+				})),
+			discover: func(ctx context.Context, r *VirtualMCPServerReconciler, vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+				return r.discoverInlineExternalAuthConfigSecrets(ctx, vmcp)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := testutil.NewScheme(t)
+			objects := []client.Object{tt.vmcp}
+			objects = append(objects, tt.extra...)
+			for _, cfg := range configs {
+				objects = append(objects, cfg.DeepCopy())
+			}
+			r := &VirtualMCPServerReconciler{
+				Client:           fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(),
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			envVars := tt.discover(t.Context(), r, tt.vmcp)
+			require.Len(t, envVars, 2, "each OBO backend must contribute its own env var")
+			assert.NotEqual(t, envVars[0].Name, envVars[1].Name)
+
+			byName := make(map[string]corev1.EnvVar, len(envVars))
+			for _, ev := range envVars {
+				byName[ev.Name] = ev
+			}
+			for _, cfg := range configs {
+				strategy, err := r.convertExternalAuthConfigToStrategy(cfg)
+				require.NoError(t, err)
+				require.NotNil(t, strategy.OBO)
+
+				ev, ok := byName[strategy.OBO.ClientSecretEnv]
+				require.True(t, ok, "the pod must carry %q, the env var the vMCP config for %q names",
+					strategy.OBO.ClientSecretEnv, cfg.Name)
+				require.NotNil(t, ev.ValueFrom)
+				require.NotNil(t, ev.ValueFrom.SecretKeyRef)
+				assert.Equal(t, cfg.Spec.OBO.ClientSecretRef.Name, ev.ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, cfg.Spec.OBO.ClientSecretRef.Key, ev.ValueFrom.SecretKeyRef.Key)
+			}
+		})
+	}
+}
+
 // TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection verifies that
 // SubjectProviderName is auto-populated for the inline Spec.OutgoingAuth.Backends path
 // (virtualmcpserver_controller.go:2007) when AuthServerConfig is set.
@@ -1971,49 +2110,63 @@ func TestGetExternalAuthConfigSecretEnvVars_XAA(t *testing.T) {
 }
 
 // TestGetExternalAuthConfigSecretEnvVars_OBO proves the obo arm of the
-// getExternalAuthConfigSecretEnvVars switch dispatches through the registered
-// OBO handler. With the default handler the method must return an error
-// wrapping obo.ErrEnterpriseRequired AND must not silently fall through to
-// nil, nil — that would mask the wired-but-disabled state behind a no-op. This
-// propagate-on-disabled contract is why vMCP calls OBOSecretEnvVars directly
-// rather than the swallowing ctrlutil.AddOBOSecretEnvVars wrapper.
+// getExternalAuthConfigSecretEnvVars switch mounts each OBO backend's client
+// secret under a per-config env var name, so two OBO backends in one vMCP pod
+// never collide, and that a config without a secret reference is an error
+// rather than a silent no-op.
 func TestGetExternalAuthConfigSecretEnvVars_OBO(t *testing.T) {
 	t.Parallel()
 
 	scheme := testutil.NewScheme(t)
 
-	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "obo-config",
-			Namespace: "default",
-		},
+	newOBOConfig := func(name, secretName string) *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeOBO,
+				OBO: &mcpv1beta1.OBOConfig{
+					TenantID:        "contoso.onmicrosoft.com",
+					ClientID:        "client-id",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: secretName, Key: "client-secret"},
+					Audience:        "api://backend/.default",
+				},
+			},
+		}
+	}
+	backendA := newOBOConfig("obo-a", "secret-a")
+	backendB := newOBOConfig("obo-b", "secret-b")
+	noSecret := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-no-secret", Namespace: "default"},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
 			OBO:  &mcpv1beta1.OBOConfig{},
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(authCfg).
-		Build()
-
 	r := &VirtualMCPServerReconciler{
-		Client:           fakeClient,
+		Client:           fake.NewClientBuilder().WithScheme(scheme).WithObjects(backendA, backendB, noSecret).Build(),
 		Scheme:           scheme,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	envVars, err := r.getExternalAuthConfigSecretEnvVars(t.Context(), "default", authCfg.Name)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired,
-		"the default OBO handler returns obo.ErrEnterpriseRequired; the dispatch arm must propagate it")
-	assert.Empty(t, envVars, "no env var should be returned on the error path")
+	envA, err := r.getExternalAuthConfigSecretEnvVars(t.Context(), "default", backendA.Name)
+	require.NoError(t, err)
+	envB, err := r.getExternalAuthConfigSecretEnvVars(t.Context(), "default", backendB.Name)
+	require.NoError(t, err)
 
-	// Generic-error guard: per issue #5328 AC, neither generic substring may
-	// leak from any of the three consumer dispatch paths.
-	assert.NotContains(t, err.Error(), "unsupported external auth type")
-	assert.NotContains(t, err.Error(), "unknown middleware type")
+	require.Len(t, envA, 1)
+	require.Len(t, envB, 1)
+	assert.Equal(t, ctrlutil.GenerateUniqueOBOSecretEnvVarName(backendA.Name), envA[0].Name)
+	assert.Equal(t, ctrlutil.GenerateUniqueOBOSecretEnvVarName(backendB.Name), envB[0].Name)
+	assert.NotEqual(t, envA[0].Name, envB[0].Name, "two OBO backends must get distinct env vars")
+	assert.Equal(t, "secret-a", envA[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "secret-b", envB[0].ValueFrom.SecretKeyRef.Name)
+
+	envVars, err := r.getExternalAuthConfigSecretEnvVars(t.Context(), "default", noSecret.Name)
+	require.Error(t, err)
+	var vErr *obo.ValidationError
+	assert.ErrorAs(t, err, &vErr)
+	assert.Empty(t, envVars)
 }
 
 // headerInjectionAuthConfig builds an MCPExternalAuthConfig of type headerInjection

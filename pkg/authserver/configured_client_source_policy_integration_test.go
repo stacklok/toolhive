@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/test/integration/authserver/helpers"
 )
@@ -61,7 +60,7 @@ func TestTokenExchangeSourcePolicyWithRealClientLogins(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	bootstrap, _, _, stopBootstrap := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 		configuredClients()(cfg)
-	}, newRedisStorage(redisServer))
+	}, newRedisStorage(t, redisServer))
 	tuiID := registerPublicClientViaDCR(t, bootstrap.URL, "tui")
 	otherID := registerPublicClientViaDCR(t, bootstrap.URL, "other")
 	stopBootstrap()
@@ -70,13 +69,13 @@ func TestTokenExchangeSourcePolicyWithRealClientLogins(t *testing.T) {
 	broker.Audiences = []string{cfgAudienceA, cfgAudienceB}
 	broker.TokenExchange = &authserver.DelegateClientTokenExchange{
 		SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
-		AllowedSourceClients:    []string{tuiID}, APIAudience: cfgAudienceB,
+		AllowedSourceClients:    []string{tuiID},
 	}
 	clients := configuredClients(broker)
-	srv, _, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
+	srv, _, _, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 		clients(cfg)
 		cfg.AllowedAudiences = []string{cfgAudienceA, cfgAudienceB}
-	}, newRedisStorage(redisServer))
+	}, newRedisStorage(t, redisServer))
 
 	auth := clientAuth{clientID: cfgBrokerID, secret: cfgClientSecret}
 	exchange := func(subjectToken, resource string) tokenResult {
@@ -95,8 +94,14 @@ func TestTokenExchangeSourcePolicyWithRealClientLogins(t *testing.T) {
 	require.Equal(t, http.StatusOK, listed.status, listed.body)
 
 	apiAudience := exchange(tuiToken, cfgAudienceB)
-	require.Equal(t, http.StatusOK, apiAudience.status, "api_audience needs no subject coverage: %v", apiAudience.body)
-	assert.Equal(t, []any{cfgAudienceB}, accessTokenClaims(t, embedded, apiAudience.str(t, "access_token"))["aud"])
+	assert.Equal(t, http.StatusBadRequest, apiAudience.status, apiAudience.body)
+	assert.Equal(t, "invalid_target", apiAudience.body["error"])
+	assert.Contains(t, apiAudience.body["error_description"], "not covered by the subject token")
+
+	reExchanged := exchange(listed.str(t, "access_token"), cfgAudienceB)
+	assert.Equal(t, http.StatusBadRequest, reExchanged.status, reExchanged.body)
+	assert.Equal(t, "invalid_target", reExchanged.body["error"])
+	assert.Contains(t, reExchanged.body["error_description"], "not covered by the subject token")
 
 	unlisted := exchange(otherToken, cfgAudienceA)
 	assert.Equal(t, http.StatusBadRequest, unlisted.status, unlisted.body)
@@ -130,7 +135,7 @@ func TestTokenExchangeSelfIssuedSubjectTokensModes(t *testing.T) {
 			clients := configuredClients(broker)
 			srv, _, _, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 				clients(cfg)
-			}, storage.NewMemoryStorage())
+			}, newStorageForBackend(t, "memory"))
 
 			otherID := registerPublicClientViaDCR(t, srv.URL, "other")
 			otherToken := publicClientAccessToken(t, srv.URL, otherID)

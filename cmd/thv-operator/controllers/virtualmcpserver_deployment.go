@@ -20,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -195,7 +194,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 						Args:            args,
 						Env:             env,
 						VolumeMounts:    volumeMounts,
-						Ports:           r.buildContainerPortsForVmcp(vmcp),
+						Ports:           ctrlutil.ProxyContainerPorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
 						LivenessProbe: ctrlutil.BuildHealthProbe(
 							"/health", "http",
 							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
@@ -877,15 +876,10 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 }
 
 // getExternalAuthConfigSecretEnvVars returns the environment variables for
-// secrets from an ExternalAuthConfig (token exchange client secrets, header
-// injection values, or — for obo — whatever the registered OBO handler asks
-// for). Generates unique env var names per ExternalAuthConfig to avoid conflicts
-// when multiple configs of the same type reference different secrets.
-//
-// The obo arm forwards every env var the handler returns (matching MCPServer and
-// MCPRemoteProxy) and propagates obo.ErrEnterpriseRequired so the wired-but-
-// disabled state is not masked as a no-op (see #5328); callers log-and-continue
-// on error.
+// secrets from an ExternalAuthConfig (token exchange, OBO, and XAA client
+// secrets, or header injection values). Generates unique env var names per
+// ExternalAuthConfig to avoid conflicts when multiple configs of the same type
+// reference different secrets; callers log-and-continue on error.
 func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 	ctx context.Context,
 	namespace string,
@@ -947,13 +941,12 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 		return nil, nil
 
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// Dispatch through the registered OBO handler, forwarding every env var
-		// it returns. OBOSecretEnvVars propagates obo.ErrEnterpriseRequired in
-		// upstream-only builds (unlike ctrlutil.AddOBOSecretEnvVars, which
-		// swallows it for MCPServer/MCPRemoteProxy builder/drift symmetry); vMCP
-		// must propagate it per #5328 so the wired-but-disabled state is not
-		// masked as a no-op.
-		return ctrlutil.OBOSecretEnvVars(externalAuthConfig)
+		// Per-config name (unlike the proxyrunner pod's fixed
+		// obo.ClientSecretEnvVar): one vMCP can front several OBO backends.
+		// Deliberately bypasses a handler registered through the deprecated
+		// ctrlutil.RegisterOBOHandler: its SecretEnvVars yields one fixed name,
+		// which would collide across OBO backends in this pod.
+		return ctrlutil.OBOVMCPSecretEnvVars(externalAuthConfig)
 
 	case mcpv1beta1.ExternalAuthTypeXAA:
 		return xaaSecretEnvVars(externalAuthConfig, externalAuthConfigName), nil
@@ -1103,17 +1096,6 @@ func (r *VirtualMCPServerReconciler) buildSecurityContextsForVmcp(
 	return securityBuilder.BuildPodSecurityContext(), securityBuilder.BuildContainerSecurityContext()
 }
 
-// buildContainerPortsForVmcp builds container port configuration
-func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
-	_ *mcpv1beta1.VirtualMCPServer,
-) []corev1.ContainerPort {
-	return []corev1.ContainerPort{{
-		ContainerPort: vmcpDefaultPort,
-		Name:          "http",
-		Protocol:      corev1.ProtocolTCP,
-	}}
-}
-
 // serviceForVirtualMCPServer returns a VirtualMCPServer Service object
 func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 	ctx context.Context,
@@ -1149,12 +1131,7 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 			Type:            serviceType,
 			Selector:        ls,
 			SessionAffinity: sessionAffinity,
-			Ports: []corev1.ServicePort{{
-				Port:       vmcpDefaultPort,
-				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
+			Ports:           ctrlutil.ProxyServicePorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
 		},
 	}
 

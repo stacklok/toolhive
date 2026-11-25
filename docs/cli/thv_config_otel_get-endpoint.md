@@ -24,13 +24,13 @@ thv config otel get-endpoint [flags]
 ### Options
 
 ```
-  -h, --help   help for get-endpoint
+  -h, --help[=true|false]   help for get-endpoint
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -65,6 +65,19 @@ func (e *InvalidResponseError) Error() string {
 	return fmt.Sprintf("webhook %q: invalid response: %v", e.WebhookName, e.Err)
 }
 
+// LocalError indicates that ToolHive failed before sending anything to the
+// webhook, for example while encoding the payload, building the HTTP request or
+// resolving the HMAC secret. It is ToolHive's own failure, not the webhook's,
+// so the failure policy does not apply to it: the request is always denied.
+type LocalError struct {
+	WebhookError
+}
+
+// Error implements the error interface.
+func (e *LocalError) Error() string {
+	return fmt.Sprintf("webhook %q: local error: %v", e.WebhookName, e.Err)
+}
+
 // NewTimeoutError creates a new TimeoutError.
 func NewTimeoutError(webhookName string, err error) *TimeoutError {
 	return &TimeoutError{
@@ -95,6 +108,24 @@ func NewInvalidResponseError(webhookName string, err error, statusCode int) *Inv
 		},
 		StatusCode: statusCode,
 	}
+}
+
+// NewLocalError creates a new LocalError.
+func NewLocalError(webhookName string, err error) *LocalError {
+	return &LocalError{
+		WebhookError: WebhookError{
+			WebhookName: webhookName,
+			Err:         err,
+		},
+	}
+}
+
+// IsLocalError reports whether err is a LocalError. Callers must deny the
+// request for a local error even when the failure policy is "ignore", because
+// the webhook was never consulted.
+func IsLocalError(err error) bool {
+	var localErr *LocalError
+	return errors.As(err, &localErr)
 }
 
 // IsAlwaysDenyError reports whether the webhook error should deny the request

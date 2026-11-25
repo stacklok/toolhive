@@ -322,7 +322,7 @@ func TestRevertLLMGateway_RemovesConnectorsWithConfig(t *testing.T) {
 	require.NoError(t, cm.AddConnector(ClientApp(ClaudeDesktop), "stacklok", testConnectorURL))
 	assert.Equal(t, []string{"stacklok"}, connectorNamesInDoc(configPath))
 
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), configPath))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), configPath, true))
 
 	assert.NoFileExists(t, configPath)
 	_, err := cm.ListConnectors(ClientApp(ClaudeDesktop))

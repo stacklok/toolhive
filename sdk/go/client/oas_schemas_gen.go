@@ -365,6 +365,14 @@ type AuthTokenValidatorConfig struct {
 	Issuer OptString `json:"issuer"`
 	// JWKSURL is the URL to fetch the JWKS from.
 	Jwksurl OptString `json:"jwksurl"`
+	// RequiredSubject, when non-empty, requires the token's "sub" claim to equal
+	// this value exactly. Tokens with a missing or empty "sub" are rejected.
+	// If RequiredSubjectPrefix is also set, both checks must pass.
+	RequiredSubject OptString `json:"requiredSubject"`
+	// RequiredSubjectPrefix, when non-empty, requires the token's "sub" claim to
+	// start with this value. Tokens with a missing or empty "sub" are rejected.
+	// If RequiredSubject is also set, both checks must pass.
+	RequiredSubjectPrefix OptString `json:"requiredSubjectPrefix"`
 	// ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728).
 	ResourceURL OptString `json:"resourceURL"`
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
@@ -420,6 +428,16 @@ func (s *AuthTokenValidatorConfig) GetIssuer() OptString {
 // GetJwksurl returns the value of Jwksurl.
 func (s *AuthTokenValidatorConfig) GetJwksurl() OptString {
 	return s.Jwksurl
+}
+
+// GetRequiredSubject returns the value of RequiredSubject.
+func (s *AuthTokenValidatorConfig) GetRequiredSubject() OptString {
+	return s.RequiredSubject
+}
+
+// GetRequiredSubjectPrefix returns the value of RequiredSubjectPrefix.
+func (s *AuthTokenValidatorConfig) GetRequiredSubjectPrefix() OptString {
+	return s.RequiredSubjectPrefix
 }
 
 // GetResourceURL returns the value of ResourceURL.
@@ -480,6 +498,16 @@ func (s *AuthTokenValidatorConfig) SetIssuer(val OptString) {
 // SetJwksurl sets the value of Jwksurl.
 func (s *AuthTokenValidatorConfig) SetJwksurl(val OptString) {
 	s.Jwksurl = val
+}
+
+// SetRequiredSubject sets the value of RequiredSubject.
+func (s *AuthTokenValidatorConfig) SetRequiredSubject(val OptString) {
+	s.RequiredSubject = val
+}
+
+// SetRequiredSubjectPrefix sets the value of RequiredSubjectPrefix.
+func (s *AuthTokenValidatorConfig) SetRequiredSubjectPrefix(val OptString) {
+	s.RequiredSubjectPrefix = val
 }
 
 // SetResourceURL sets the value of ResourceURL.
@@ -590,6 +618,20 @@ func (s *AuthenticationCIMDRunConfig) SetEnabled(val OptBool) {
 // Mutually exclusive with ClientID.
 // Ref: #/components/schemas/AuthenticationDCRUpstreamConfig
 type AuthenticationDCRUpstreamConfig struct {
+	// ClientName is the optional RFC 7591 "client_name" registration metadata
+	// sent when ToolHive registers with the upstream. When empty, ToolHive
+	// registers as "ToolHive MCP Client". It is display-only metadata: the
+	// upstream shows it on its authorization screen, and it is never used as
+	// a key. It is capped at 256 characters, matching the client_name bound
+	// the authserver enforces on inbound registrations. Names with leading
+	// or trailing whitespace, or containing control or format characters,
+	// are rejected.
+	// Changing it does not rename an already-registered client: the cached
+	// registration is keyed without the client name, so the new value applies
+	// only the next time ToolHive registers a fresh client — for example
+	// after rotating via RotationKey, or when the upstream rejects the cached
+	// registration.
+	ClientName OptString `json:"client_name"`
 	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
 	// fetch at runtime. The resolver issues a single GET against this URL
 	// (no well-known-path fallback) and reads registration_endpoint,
@@ -597,7 +639,10 @@ type AuthenticationDCRUpstreamConfig struct {
 	// token_endpoint_auth_methods_supported, and scopes_supported from the
 	// response. Per RFC 8414 §3.3, the document's "issuer" field must
 	// exactly match the upstream issuer configured on the parent
-	// run-config.
+	// run-config, except that an origin-only issuer may differ by a
+	// trailing "/" (for example https://idp.example.com and
+	// https://idp.example.com/ are treated as equal). Scheme, host, port
+	// and any path must still match exactly.
 	// Use this field when the upstream publishes discovery metadata at a
 	// path that differs from the issuer-derived well-known paths — for
 	// example a multi-tenant IdP whose metadata lives at
@@ -634,7 +679,9 @@ type AuthenticationDCRUpstreamConfig struct {
 	// for upstreams whose token endpoint answers invalid_grant for any
 	// client_id; an HTML page or a bare gateway status is not a verdict. A
 	// false rejection re-registers at every start and, when registration also
-	// fails, fails startup. "none" skips the check; the registration is then
+	// fails, fails startup. "none" skips the check: the upstream is not
+	// contacted, but a registration made with another method than a configured
+	// TokenEndpointAuthMethod is still replaced. Otherwise the registration is
 	// retired only through RotationKey.
 	RegistrationProbe OptString `json:"registration_probe"`
 	// RegistrationProbeInterval, when set, repeats the start-time resolution
@@ -669,6 +716,11 @@ type AuthenticationDCRUpstreamConfig struct {
 	// metadata about the client software, signed by a party the authorization
 	// server trusts.
 	SoftwareStatement OptString `json:"software_statement"`
+}
+
+// GetClientName returns the value of ClientName.
+func (s *AuthenticationDCRUpstreamConfig) GetClientName() OptString {
+	return s.ClientName
 }
 
 // GetDiscoveryURL returns the value of DiscoveryURL.
@@ -714,6 +766,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetSoftwareID() OptString {
 // GetSoftwareStatement returns the value of SoftwareStatement.
 func (s *AuthenticationDCRUpstreamConfig) GetSoftwareStatement() OptString {
 	return s.SoftwareStatement
+}
+
+// SetClientName sets the value of ClientName.
+func (s *AuthenticationDCRUpstreamConfig) SetClientName(val OptString) {
+	s.ClientName = val
 }
 
 // SetDiscoveryURL sets the value of DiscoveryURL.
@@ -764,14 +821,16 @@ func (s *AuthenticationDCRUpstreamConfig) SetSoftwareStatement(val OptString) {
 // ExchangeRefreshTokens enables refresh-token issuance through token
 // exchange for this client. Presence of the block enables it; a nil block
 // refuses both grant kinds. Valid only with restricted, and requires
-// APIAudience.
+// SubjectTokenAudiences and offline_access or offline in scopes_supported.
 // Ref: #/components/schemas/AuthenticationDelegateClientExchangeRefreshTokens
 type AuthenticationDelegateClientExchangeRefreshTokens struct {
 	// IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
 	// ID-JAGs. Empty refuses those grants.
 	IDJagMaxLifetime OptString `json:"id_jag_max_lifetime"`
 	// RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
-	// for child refresh tokens. Empty refuses those grants.
+	// for child refresh tokens. Empty refuses those grants. Setting it also needs
+	// id_jag_max_lifetime, because a child allows ID-JAGs and is capped by that
+	// value; validation rejects refresh_token_max_lifetime without it.
 	RefreshTokenMaxLifetime OptString `json:"refresh_token_max_lifetime"`
 }
 
@@ -795,12 +854,110 @@ func (s *AuthenticationDelegateClientExchangeRefreshTokens) SetRefreshTokenMaxLi
 	s.RefreshTokenMaxLifetime = val
 }
 
+// IDJAG lists the authorization servers this client may ask for an
+// Identity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with
+// restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
+// token exchange enabled.
+// Ref: #/components/schemas/AuthenticationDelegateClientIDJAG
+type AuthenticationDelegateClientIDJAG struct {
+	// Targets are the authorization servers the client may ask for an ID-JAG
+	// for. At least one is required.
+	Targets []AuthenticationDelegateClientIDJAGTarget `json:"targets"`
+}
+
+// GetTargets returns the value of Targets.
+func (s *AuthenticationDelegateClientIDJAG) GetTargets() []AuthenticationDelegateClientIDJAGTarget {
+	return s.Targets
+}
+
+// SetTargets sets the value of Targets.
+func (s *AuthenticationDelegateClientIDJAG) SetTargets(val []AuthenticationDelegateClientIDJAGTarget) {
+	s.Targets = val
+}
+
+// Ref: #/components/schemas/AuthenticationDelegateClientIDJAGTarget
+type AuthenticationDelegateClientIDJAGTarget struct {
+	// ClientID is this client's client_id at the other authorization server.
+	ClientID OptString `json:"client_id"`
+	// Issuer is the issuer of the other authorization server. The client sends
+	// it as the request's audience, and it becomes the ID-JAG's aud exactly as
+	// written here. It must be an absolute https URL, or http on a loopback
+	// host, with no query, fragment or userinfo. It must be well-formed: lower-case
+	// scheme and host, no default port (":443" for https, ":80" for http), no dot
+	// segments, empty path segments, unneeded percent-encoding or leading zeros
+	// in the port. One trailing slash is allowed and is kept as written. It must
+	// be unique within the client, and the (issuer, client_id) pair must be
+	// unique across delegate clients; both comparisons ignore one trailing
+	// slash. It must not be this server's issuer, token endpoint or one of its
+	// allowed_audiences; that comparison ignores case in the scheme and host, a
+	// default port and one trailing slash.
+	Issuer OptString `json:"issuer"`
+	// Lifetime is how long each ID-JAG lives, as a Go duration string in whole
+	// seconds (e.g. "60s"). Defaults to 60s; at most 300s.
+	Lifetime OptString `json:"lifetime"`
+	// Resources are the resources behind the other authorization server, such
+	// as an MCP endpoint, that the client may name as the request's resource.
+	// At least one is required. Each must be a valid RFC 8707 resource URI,
+	// listed once.
+	Resources []string `json:"resources"`
+}
+
+// GetClientID returns the value of ClientID.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetClientID() OptString {
+	return s.ClientID
+}
+
+// GetIssuer returns the value of Issuer.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetIssuer() OptString {
+	return s.Issuer
+}
+
+// GetLifetime returns the value of Lifetime.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetLifetime() OptString {
+	return s.Lifetime
+}
+
+// GetResources returns the value of Resources.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetResources() []string {
+	return s.Resources
+}
+
+// SetClientID sets the value of ClientID.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetClientID(val OptString) {
+	s.ClientID = val
+}
+
+// SetIssuer sets the value of Issuer.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetIssuer(val OptString) {
+	s.Issuer = val
+}
+
+// SetLifetime sets the value of Lifetime.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetLifetime(val OptString) {
+	s.Lifetime = val
+}
+
+// SetResources sets the value of Resources.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetResources(val []string) {
+	s.Resources = val
+}
+
 // Ref: #/components/schemas/AuthenticationDelegateClientRunConfig
 type AuthenticationDelegateClientRunConfig struct {
-	// Audiences are the RFC 8707 resource values this client may request a
-	// token for. Required, and must be a subset of RunConfig.AllowedAudiences:
-	// a declared client must not receive every allowed audience just because
-	// this was left empty.
+	// AccessTokenLifespan is the lifetime of the access tokens this client
+	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+	// server's access_token_lifespan applies. When set it must be at least 2s
+	// and at most 24h. It is an upper bound: a token never outlives the
+	// assertion it was redeemed from, and a token that carries the
+	// delegated-access marker is capped further. Other grants ignore it.
+	AccessTokenLifespan OptString `json:"access_token_lifespan"`
+	// Audiences are output only: the upper bound on the audiences of the
+	// access tokens this client can obtain through any grant. They must be a
+	// subset of RunConfig.AllowedAudiences: a declared client must not receive
+	// every allowed audience just because this was left empty. Required, unless
+	// token_exchange.exchange_refresh_tokens is set and token exchange is the
+	// client's only grant (grant_types omitted, or just the token-exchange
+	// grant), in which case it may be empty.
 	Audiences []string `json:"audiences"`
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID OptString `json:"client_id"`
@@ -838,9 +995,16 @@ type AuthenticationDelegateClientRunConfig struct {
 	// Basic or form body.
 	TokenEndpointAuthMethod OptString `json:"token_endpoint_auth_method"`
 	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
-	// Defaults to RS256.
+	// If omitted, it is derived from the keys: each key's alg, or ES256, ES384
+	// or ES512 from an EC key's curve. RSA keys without alg use RS256. Keys
+	// that disagree must set it.
 	TokenEndpointAuthSigningAlg OptString                                    `json:"token_endpoint_auth_signing_alg"`
 	TokenExchange               OptAuthenticationDelegateClientTokenExchange `json:"token_exchange"`
+}
+
+// GetAccessTokenLifespan returns the value of AccessTokenLifespan.
+func (s *AuthenticationDelegateClientRunConfig) GetAccessTokenLifespan() OptString {
+	return s.AccessTokenLifespan
 }
 
 // GetAudiences returns the value of Audiences.
@@ -896,6 +1060,11 @@ func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthSigningAlg()
 // GetTokenExchange returns the value of TokenExchange.
 func (s *AuthenticationDelegateClientRunConfig) GetTokenExchange() OptAuthenticationDelegateClientTokenExchange {
 	return s.TokenExchange
+}
+
+// SetAccessTokenLifespan sets the value of AccessTokenLifespan.
+func (s *AuthenticationDelegateClientRunConfig) SetAccessTokenLifespan(val OptString) {
+	s.AccessTokenLifespan = val
 }
 
 // SetAudiences sets the value of Audiences.
@@ -956,9 +1125,10 @@ func (s *AuthenticationDelegateClientRunConfig) SetTokenExchange(val OptAuthenti
 // TokenExchange is the client's token-exchange policy. Its
 // SelfIssuedSubjectTokens field selects which self-issued subject tokens
 // the client may exchange and is required whenever the block is present.
-// The block may be omitted only when GrantTypes is omitted or empty; such
-// a client keeps the legacy rule (any) and may exchange any self-issued
-// token. A client that sets GrantTypes must declare the block.
+// The block may be omitted only by a secret-authenticated client whose
+// GrantTypes is omitted or empty; such a client keeps the legacy rule (any)
+// and may exchange any self-issued token. A client that sets GrantTypes or
+// uses private_key_jwt must declare the block.
 // Ref: #/components/schemas/AuthenticationDelegateClientTokenExchange
 type AuthenticationDelegateClientTokenExchange struct {
 	// AllowedSourceClients are client_id values, as they appear in the subject
@@ -967,19 +1137,29 @@ type AuthenticationDelegateClientTokenExchange struct {
 	// register at runtime (DCR or CIMD), so startup cannot check that they
 	// exist. A configured delegate client cannot be listed: its tokens carry
 	// its own client_id, so listing it would trust everything it accepts.
-	// Valid only with restricted; empty means the client's own tokens only.
-	AllowedSourceClients []string `json:"allowed_source_clients"`
-	// APIAudience is the client's own API audience. The client may request it
-	// even when the subject token does not cover it. It must be one of the
-	// client's Audiences. Valid only with restricted.
-	APIAudience           OptString                                            `json:"api_audience"`
+	// Valid only with restricted. On plain token exchange, empty means the
+	// client's own tokens only. The exchange-grant path (exchange_refresh_tokens)
+	// accepts only the listed source clients, never the client's own tokens, so
+	// the list must be non-empty there.
+	AllowedSourceClients  []string                                             `json:"allowed_source_clients"`
 	ExchangeRefreshTokens OptAuthenticationDelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens"`
+	IDJag                 OptAuthenticationDelegateClientIDJAG                 `json:"id_jag"`
 	// SelfIssuedSubjectTokens is any or restricted, and is required. With
 	// restricted, a self-issued subject token must carry the client's own
 	// client_id or one of AllowedSourceClients, and a may_act claim naming
 	// this client does not lift that restriction. With any, the client may
 	// exchange any self-issued token.
 	SelfIssuedSubjectTokens string `json:"self_issued_subject_tokens"`
+	// SubjectTokenAudiences are the audiences a self-issued subject token must
+	// carry, matched exactly: the token must contain at least one of them. The
+	// check applies on every exchange path, including the client's own tokens.
+	// Listing a value grants nothing: the client can receive that audience only
+	// if its audiences also cover it, and startup refuses that while
+	// exchange_refresh_tokens is set. Each entry must be one of the server's
+	// allowed_audiences. Valid only with restricted, and required with
+	// exchange_refresh_tokens. An empty list is the same as an omitted one:
+	// no requirement.
+	SubjectTokenAudiences []string `json:"subject_token_audiences"`
 }
 
 // GetAllowedSourceClients returns the value of AllowedSourceClients.
@@ -987,14 +1167,14 @@ func (s *AuthenticationDelegateClientTokenExchange) GetAllowedSourceClients() []
 	return s.AllowedSourceClients
 }
 
-// GetAPIAudience returns the value of APIAudience.
-func (s *AuthenticationDelegateClientTokenExchange) GetAPIAudience() OptString {
-	return s.APIAudience
-}
-
 // GetExchangeRefreshTokens returns the value of ExchangeRefreshTokens.
 func (s *AuthenticationDelegateClientTokenExchange) GetExchangeRefreshTokens() OptAuthenticationDelegateClientExchangeRefreshTokens {
 	return s.ExchangeRefreshTokens
+}
+
+// GetIDJag returns the value of IDJag.
+func (s *AuthenticationDelegateClientTokenExchange) GetIDJag() OptAuthenticationDelegateClientIDJAG {
+	return s.IDJag
 }
 
 // GetSelfIssuedSubjectTokens returns the value of SelfIssuedSubjectTokens.
@@ -1002,14 +1182,14 @@ func (s *AuthenticationDelegateClientTokenExchange) GetSelfIssuedSubjectTokens()
 	return s.SelfIssuedSubjectTokens
 }
 
+// GetSubjectTokenAudiences returns the value of SubjectTokenAudiences.
+func (s *AuthenticationDelegateClientTokenExchange) GetSubjectTokenAudiences() []string {
+	return s.SubjectTokenAudiences
+}
+
 // SetAllowedSourceClients sets the value of AllowedSourceClients.
 func (s *AuthenticationDelegateClientTokenExchange) SetAllowedSourceClients(val []string) {
 	s.AllowedSourceClients = val
-}
-
-// SetAPIAudience sets the value of APIAudience.
-func (s *AuthenticationDelegateClientTokenExchange) SetAPIAudience(val OptString) {
-	s.APIAudience = val
 }
 
 // SetExchangeRefreshTokens sets the value of ExchangeRefreshTokens.
@@ -1017,9 +1197,19 @@ func (s *AuthenticationDelegateClientTokenExchange) SetExchangeRefreshTokens(val
 	s.ExchangeRefreshTokens = val
 }
 
+// SetIDJag sets the value of IDJag.
+func (s *AuthenticationDelegateClientTokenExchange) SetIDJag(val OptAuthenticationDelegateClientIDJAG) {
+	s.IDJag = val
+}
+
 // SetSelfIssuedSubjectTokens sets the value of SelfIssuedSubjectTokens.
 func (s *AuthenticationDelegateClientTokenExchange) SetSelfIssuedSubjectTokens(val string) {
 	s.SelfIssuedSubjectTokens = val
+}
+
+// SetSubjectTokenAudiences sets the value of SubjectTokenAudiences.
+func (s *AuthenticationDelegateClientTokenExchange) SetSubjectTokenAudiences(val []string) {
+	s.SubjectTokenAudiences = val
 }
 
 // IdentityFromToken extracts user identity (subject, name, email) directly from the
@@ -1128,10 +1318,18 @@ func (s *AuthenticationJWTBearerInboundGrantRunConfig) SetIssuerPolicies(val []A
 
 // Ref: #/components/schemas/AuthenticationJWTBearerIssuerPolicyRunConfig
 type AuthenticationJWTBearerIssuerPolicyRunConfig struct {
-	AcceptedAudiences []string                                                   `json:"accepted_audiences"`
-	IssuerRef         OptString                                                  `json:"issuer_ref"`
-	MaxAssertionAge   OptString                                                  `json:"max_assertion_age"`
-	SubjectBindings   []AuthenticationServerTokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+	// AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes
+	// for the canonical config path; unset accepts both jwt_bearer and id_jag.
+	AcceptedAssertionTypes []AuthenticationServerTokenExchangeJWTBearerAssertionType  `json:"accepted_assertion_types"`
+	AcceptedAudiences      []string                                                   `json:"accepted_audiences"`
+	IssuerRef              OptString                                                  `json:"issuer_ref"`
+	MaxAssertionAge        OptString                                                  `json:"max_assertion_age"`
+	SubjectBindings        []AuthenticationServerTokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+}
+
+// GetAcceptedAssertionTypes returns the value of AcceptedAssertionTypes.
+func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetAcceptedAssertionTypes() []AuthenticationServerTokenExchangeJWTBearerAssertionType {
+	return s.AcceptedAssertionTypes
 }
 
 // GetAcceptedAudiences returns the value of AcceptedAudiences.
@@ -1152,6 +1350,11 @@ func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetMaxAssertionAge() OptS
 // GetSubjectBindings returns the value of SubjectBindings.
 func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetSubjectBindings() []AuthenticationServerTokenExchangeJWTBearerSubjectBinding {
 	return s.SubjectBindings
+}
+
+// SetAcceptedAssertionTypes sets the value of AcceptedAssertionTypes.
+func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) SetAcceptedAssertionTypes(val []AuthenticationServerTokenExchangeJWTBearerAssertionType) {
+	s.AcceptedAssertionTypes = val
 }
 
 // SetAcceptedAudiences sets the value of AcceptedAudiences.
@@ -1239,6 +1442,11 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
 	// for providers that require HTTP Basic auth. Public clients without a secret use
 	// the "none" method.
+	// With DCRConfig, it is the method the client registers with, in place of the one
+	// ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). Set it for an upstream whose token endpoint does
+	// not accept the method ToolHive picks. A cached registration made with another
+	// method is replaced with a new one at the next start.
 	TokenEndpointAuthMethod OptString                                      `json:"token_endpoint_auth_method"`
 	TokenResponseMapping    OptAuthenticationTokenResponseMappingRunConfig `json:"token_response_mapping"`
 	Userinfo                OptAuthenticationUserInfoRunConfig             `json:"userinfo"`
@@ -1811,8 +2019,8 @@ type AuthenticationRunConfig struct {
 	// When true, the embedded auth server handles OAuth flows for clients, but instead of
 	// injecting upstream IdP tokens the proxy strips the client's credential headers
 	// (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
-	// backend receives an unauthenticated request. Incompatible with token exchange
-	// and AWS STS, which would re-add credentials after the strip.
+	// backend receives an unauthenticated request. Incompatible with token exchange,
+	// AWS STS and OBO, which would re-add credentials after the strip.
 	DisableUpstreamTokenInjection OptBool `json:"disable_upstream_token_injection"`
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the
@@ -1896,8 +2104,10 @@ type AuthenticationRunConfig struct {
 	TrustedIssuers []TokenExchangeTrustedIssuer            `json:"trusted_issuers"`
 	UpstreamFilter OptUpstreamfilterGroupBasedFilterConfig `json:"upstream_filter"`
 	// Upstreams configures connections to upstream Identity Providers for
-	// interactive authorization. It may be empty only when DelegateClients or a
-	// TrustedIssuer with JWTBearerGrant enables token-only operation.
+	// interactive authorization. It may be empty only when token-only operation
+	// is enabled by DelegateClients (also under InboundGrants.TokenExchange),
+	// InboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant
+	// (also under InboundGrants.JWTBearer).
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []AuthenticationUpstreamRunConfig `json:"upstreams"`
 }
@@ -2204,8 +2414,8 @@ func (s *AuthenticationSPIFFEBundleEndpointSourceRunConfig) SetURL(val OptString
 }
 
 // BundleSource declares exactly one trust-bundle source and is validated for
-// shape here. The standalone file loader exists, but source initialization
-// is not wired into SPIFFE authentication.
+// shape here. Only the file source is loaded in this build; bundle_endpoint
+// and workload_api are rejected by Validate.
 // Ref: #/components/schemas/AuthenticationSPIFFEBundleSourceRunConfig
 type AuthenticationSPIFFEBundleSourceRunConfig struct {
 	Endpoint    OptAuthenticationSPIFFEBundleEndpointSourceRunConfig  `json:"endpoint"`
@@ -2256,10 +2466,9 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetWorkloadAPI(val *Authenti
 
 // Ref: #/components/schemas/AuthenticationSPIFFEClientAuthRunConfig
 type AuthenticationSPIFFEClientAuthRunConfig struct {
-	// Audiences are RFC 8693 token audiences this association may request.
-	// This is an independent request dimension from Resources: it is not
-	// bounded by allowed_audiences (which is an RFC 8707 resource-URI list)
-	// and may contain non-URI logical audience identifiers.
+	// Audiences is deprecated and ignored; use Resources. It stays in the
+	// schema because v0.65.0 required it, and a warning is logged at startup
+	// when it is set.
 	Audiences []string `json:"audiences"`
 	// ClientID is the explicit OAuth client_id. It is never derived from a
 	// SPIFFE ID.
@@ -2272,11 +2481,12 @@ type AuthenticationSPIFFEClientAuthRunConfig struct {
 	// the declared trust domain.
 	PrincipalPattern OptString `json:"principal_pattern"`
 	// Resources are RFC 8707 resource indicators this association may
-	// request. Must be a subset of the server's allowed_audiences allowlist
-	// (RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list
-	// DelegateClientRunConfig.Audiences is validated against. Distinct from
-	// Audiences: a resource permission does not imply the same value is also
-	// a permitted token audience, or vice versa.
+	// request. At least one is required for every association: both
+	// client_credentials and token exchange take exactly one resource per
+	// request and grant it as the token audience. Must be a subset of the
+	// server's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the
+	// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
+	// validated against.
 	Resources []string `json:"resources"`
 	// Scopes are OAuth scopes granted to this association. They must be a
 	// subset of the server's effective supported scopes.
@@ -2436,6 +2646,48 @@ func (s *AuthenticationSPIFFETrustDomainRunConfig) SetTrustDomain(val OptString)
 
 // Ref: #/components/schemas/AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig
 type AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig struct{}
+
+// Ref: #/components/schemas/AuthenticationServerTokenExchangeJWTBearerAssertionType
+type AuthenticationServerTokenExchangeJWTBearerAssertionType string
+
+const (
+	AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer AuthenticationServerTokenExchangeJWTBearerAssertionType = "jwt_bearer"
+	AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag     AuthenticationServerTokenExchangeJWTBearerAssertionType = "id_jag"
+)
+
+// AllValues returns all AuthenticationServerTokenExchangeJWTBearerAssertionType values.
+func (AuthenticationServerTokenExchangeJWTBearerAssertionType) AllValues() []AuthenticationServerTokenExchangeJWTBearerAssertionType {
+	return []AuthenticationServerTokenExchangeJWTBearerAssertionType{
+		AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer,
+		AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AuthenticationServerTokenExchangeJWTBearerAssertionType) MarshalText() ([]byte, error) {
+	switch s {
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer:
+		return []byte(s), nil
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AuthenticationServerTokenExchangeJWTBearerAssertionType) UnmarshalText(data []byte) error {
+	switch AuthenticationServerTokenExchangeJWTBearerAssertionType(data) {
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer
+		return nil
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/AuthenticationServerTokenExchangeJWTBearerSubjectBinding
 type AuthenticationServerTokenExchangeJWTBearerSubjectBinding struct {
@@ -3967,6 +4219,9 @@ type CreateRequest struct {
 	// Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
 	// Empty or zero uses the default timeout of 30 seconds.
 	ProxyReadTimeout OptString `json:"proxy_read_timeout"`
+	// Whether to mount the container's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool `json:"read_only_rootfs"`
 	// Registry is the optional registry name to resolve the server from (e.g. "default").
 	Registry      OptString                 `json:"registry"`
 	RuntimeConfig OptTemplatesRuntimeConfig `json:"runtime_config"`
@@ -4081,6 +4336,11 @@ func (s *CreateRequest) GetProxyPort() OptInt {
 // GetProxyReadTimeout returns the value of ProxyReadTimeout.
 func (s *CreateRequest) GetProxyReadTimeout() OptString {
 	return s.ProxyReadTimeout
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *CreateRequest) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRegistry returns the value of Registry.
@@ -4226,6 +4486,11 @@ func (s *CreateRequest) SetProxyPort(val OptInt) {
 // SetProxyReadTimeout sets the value of ProxyReadTimeout.
 func (s *CreateRequest) SetProxyReadTimeout(val OptString) {
 	s.ProxyReadTimeout = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *CreateRequest) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRegistry sets the value of Registry.
@@ -7192,6 +7457,52 @@ func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Get() (v Authentic
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Or(d AuthenticationDelegateClientExchangeRefreshTokens) AuthenticationDelegateClientExchangeRefreshTokens {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationDelegateClientIDJAG returns new OptAuthenticationDelegateClientIDJAG with value set to v.
+func NewOptAuthenticationDelegateClientIDJAG(v AuthenticationDelegateClientIDJAG) OptAuthenticationDelegateClientIDJAG {
+	return OptAuthenticationDelegateClientIDJAG{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationDelegateClientIDJAG is optional AuthenticationDelegateClientIDJAG.
+type OptAuthenticationDelegateClientIDJAG struct {
+	Value AuthenticationDelegateClientIDJAG
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationDelegateClientIDJAG was set.
+func (o OptAuthenticationDelegateClientIDJAG) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationDelegateClientIDJAG) Reset() {
+	var v AuthenticationDelegateClientIDJAG
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationDelegateClientIDJAG) SetTo(v AuthenticationDelegateClientIDJAG) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationDelegateClientIDJAG) Get() (v AuthenticationDelegateClientIDJAG, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationDelegateClientIDJAG) Or(d AuthenticationDelegateClientIDJAG) AuthenticationDelegateClientIDJAG {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -12216,6 +12527,52 @@ func (o OptSkillsScope) Or(d SkillsScope) SkillsScope {
 	return d
 }
 
+// NewOptSkillsSeverity returns new OptSkillsSeverity with value set to v.
+func NewOptSkillsSeverity(v SkillsSeverity) OptSkillsSeverity {
+	return OptSkillsSeverity{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSkillsSeverity is optional SkillsSeverity.
+type OptSkillsSeverity struct {
+	Value SkillsSeverity
+	Set   bool
+}
+
+// IsSet returns true if OptSkillsSeverity was set.
+func (o OptSkillsSeverity) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSkillsSeverity) Reset() {
+	var v SkillsSeverity
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSkillsSeverity) SetTo(v SkillsSeverity) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSkillsSeverity) Get() (v SkillsSeverity, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSkillsSeverity) Or(d SkillsSeverity) SkillsSeverity {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptSkillsSkillMetadata returns new OptSkillsSkillMetadata with value set to v.
 func NewOptSkillsSkillMetadata(v SkillsSkillMetadata) OptSkillsSkillMetadata {
 	return OptSkillsSkillMetadata{
@@ -14967,6 +15324,9 @@ func (*PluginsV01Response) listPublicRegistryPluginsRes() {}
 type PluginsValidationResult struct {
 	// Errors is a list of validation errors, if any.
 	Errors []string `json:"errors"`
+	// Findings lists every error and warning with its rule ID and location.
+	// Each Errors or Warnings entry corresponds to exactly one finding.
+	Findings []SkillsFinding `json:"findings"`
 	// Valid indicates whether the skill definition is valid.
 	Valid OptBool `json:"valid"`
 	// Warnings is a list of non-blocking validation warnings, if any.
@@ -14976,6 +15336,11 @@ type PluginsValidationResult struct {
 // GetErrors returns the value of Errors.
 func (s *PluginsValidationResult) GetErrors() []string {
 	return s.Errors
+}
+
+// GetFindings returns the value of Findings.
+func (s *PluginsValidationResult) GetFindings() []SkillsFinding {
+	return s.Findings
 }
 
 // GetValid returns the value of Valid.
@@ -14991,6 +15356,11 @@ func (s *PluginsValidationResult) GetWarnings() []string {
 // SetErrors sets the value of Errors.
 func (s *PluginsValidationResult) SetErrors(val []string) {
 	s.Errors = val
+}
+
+// SetFindings sets the value of Findings.
+func (s *PluginsValidationResult) SetFindings(val []SkillsFinding) {
+	s.Findings = val
 }
 
 // SetValid sets the value of Valid.
@@ -18110,6 +18480,11 @@ type RunnerRunConfig struct {
 	RateLimitConfig OptV1beta1RateLimitConfig `json:"rate_limit_config"`
 	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
 	RateLimitNamespace OptString `json:"rate_limit_namespace"`
+	// ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.
+	// /tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.
+	// Opt-in: servers that write anywhere else outside their mounted volumes will fail.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool `json:"read_only_rootfs"`
 	// RegistryAPIURL is the registry API URL that served this server's metadata.
 	// Empty when the server was not discovered via registry lookup.
 	RegistryAPIURL OptString `json:"registry_api_url"`
@@ -18361,6 +18736,11 @@ func (s *RunnerRunConfig) GetRateLimitConfig() OptV1beta1RateLimitConfig {
 // GetRateLimitNamespace returns the value of RateLimitNamespace.
 func (s *RunnerRunConfig) GetRateLimitNamespace() OptString {
 	return s.RateLimitNamespace
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *RunnerRunConfig) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRegistryAPIURL returns the value of RegistryAPIURL.
@@ -18671,6 +19051,11 @@ func (s *RunnerRunConfig) SetRateLimitConfig(val OptV1beta1RateLimitConfig) {
 // SetRateLimitNamespace sets the value of RateLimitNamespace.
 func (s *RunnerRunConfig) SetRateLimitNamespace(val OptString) {
 	s.RateLimitNamespace = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *RunnerRunConfig) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRegistryAPIURL sets the value of RegistryAPIURL.
@@ -19371,6 +19756,70 @@ func (s *SkillsFailureReason) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/SkillsFinding
+type SkillsFinding struct {
+	// File is the slash-separated path of the affected file, relative to the
+	// validated directory.
+	File OptString `json:"file"`
+	// Line is the 1-based line in File, or 0 when unknown.
+	Line OptInt `json:"line"`
+	// Message describes the problem.
+	Message OptString `json:"message"`
+	// Rule is the stable ID of the check that produced the finding.
+	Rule     OptString         `json:"rule"`
+	Severity OptSkillsSeverity `json:"severity"`
+}
+
+// GetFile returns the value of File.
+func (s *SkillsFinding) GetFile() OptString {
+	return s.File
+}
+
+// GetLine returns the value of Line.
+func (s *SkillsFinding) GetLine() OptInt {
+	return s.Line
+}
+
+// GetMessage returns the value of Message.
+func (s *SkillsFinding) GetMessage() OptString {
+	return s.Message
+}
+
+// GetRule returns the value of Rule.
+func (s *SkillsFinding) GetRule() OptString {
+	return s.Rule
+}
+
+// GetSeverity returns the value of Severity.
+func (s *SkillsFinding) GetSeverity() OptSkillsSeverity {
+	return s.Severity
+}
+
+// SetFile sets the value of File.
+func (s *SkillsFinding) SetFile(val OptString) {
+	s.File = val
+}
+
+// SetLine sets the value of Line.
+func (s *SkillsFinding) SetLine(val OptInt) {
+	s.Line = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SkillsFinding) SetMessage(val OptString) {
+	s.Message = val
+}
+
+// SetRule sets the value of Rule.
+func (s *SkillsFinding) SetRule(val OptString) {
+	s.Rule = val
+}
+
+// SetSeverity sets the value of Severity.
+func (s *SkillsFinding) SetSeverity(val OptSkillsSeverity) {
+	s.Severity = val
+}
+
 // Status is the current installation status.
 // Ref: #/components/schemas/SkillsInstallStatus
 type SkillsInstallStatus string
@@ -19770,6 +20219,49 @@ func (s *SkillsScope) UnmarshalText(data []byte) error {
 		return nil
 	case SkillsScopeProject:
 		*s = SkillsScopeProject
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Severity is "error" or "warning".
+// Ref: #/components/schemas/SkillsSeverity
+type SkillsSeverity string
+
+const (
+	SkillsSeverityError   SkillsSeverity = "error"
+	SkillsSeverityWarning SkillsSeverity = "warning"
+)
+
+// AllValues returns all SkillsSeverity values.
+func (SkillsSeverity) AllValues() []SkillsSeverity {
+	return []SkillsSeverity{
+		SkillsSeverityError,
+		SkillsSeverityWarning,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SkillsSeverity) MarshalText() ([]byte, error) {
+	switch s {
+	case SkillsSeverityError:
+		return []byte(s), nil
+	case SkillsSeverityWarning:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SkillsSeverity) UnmarshalText(data []byte) error {
+	switch SkillsSeverity(data) {
+	case SkillsSeverityError:
+		*s = SkillsSeverityError
+		return nil
+	case SkillsSeverityWarning:
+		*s = SkillsSeverityWarning
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -20389,6 +20881,9 @@ func (*SkillsV01Response) listPublicRegistrySkillsRes() {}
 type SkillsValidationResult struct {
 	// Errors is a list of validation errors, if any.
 	Errors []string `json:"errors"`
+	// Findings lists every error and warning with its rule ID and location.
+	// Each Errors or Warnings entry corresponds to exactly one finding.
+	Findings []SkillsFinding `json:"findings"`
 	// Valid indicates whether the skill definition is valid.
 	Valid OptBool `json:"valid"`
 	// Warnings is a list of non-blocking validation warnings, if any.
@@ -20398,6 +20893,11 @@ type SkillsValidationResult struct {
 // GetErrors returns the value of Errors.
 func (s *SkillsValidationResult) GetErrors() []string {
 	return s.Errors
+}
+
+// GetFindings returns the value of Findings.
+func (s *SkillsValidationResult) GetFindings() []SkillsFinding {
+	return s.Findings
 }
 
 // GetValid returns the value of Valid.
@@ -20413,6 +20913,11 @@ func (s *SkillsValidationResult) GetWarnings() []string {
 // SetErrors sets the value of Errors.
 func (s *SkillsValidationResult) SetErrors(val []string) {
 	s.Errors = val
+}
+
+// SetFindings sets the value of Findings.
+func (s *SkillsValidationResult) SetFindings(val []SkillsFinding) {
+	s.Findings = val
 }
 
 // SetValid sets the value of Valid.
@@ -21434,6 +21939,16 @@ func (s *TokenExchangeConfig) SetTokenURL(val OptString) {
 // inbound_grants.jwt_bearer.issuer_policies.
 // Ref: #/components/schemas/TokenExchangeJWTBearerGrantPolicy
 type TokenExchangeJWTBearerGrantPolicy struct {
+	// AcceptedAssertionTypes selects which assertion form(s) this issuer's
+	// jwt-bearer grant accepts. nil/empty accepts both jwt_bearer and id_jag
+	// (the behavior before this field existed). Set {id_jag} to restrict an IdP
+	// issuer to Cross-App-Access grants so its other signed JWTs cannot be
+	// redeemed on the credential-free plain path; set {jwt_bearer} to refuse
+	// ID-JAG. Listing id_jag explicitly requires this AS's issuer to be
+	// accepted: AcceptedAudiences, when set, must include it, and when empty
+	// the issuer must not also be an allowed audience. SubjectBindings are shared by both forms. See
+	// docs/arch/17-token-exchange-delegation.md.
+	AcceptedAssertionTypes []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem `json:"accepted_assertion_types"`
 	// AcceptedAudiences is the set of "this AS" identity strings an
 	// assertion's "aud" claim must intersect — e.g. to support migrating
 	// this server's issuer/token-endpoint URL, or exposing it under more
@@ -21441,11 +21956,21 @@ type TokenExchangeJWTBearerGrantPolicy struct {
 	// authorization server for this grant; it is NOT a resource/API
 	// identifier — a bare resource audience is deliberately not accepted
 	// here, that would let any RFC 8707 resource-scoped token satisfy the
-	// grant instead of only tokens minted for this AS. Defaults to
-	// [tokenEndpoint] when empty, preserving prior exact-match behavior.
+	// grant instead of only tokens minted for this AS. When empty, the plain
+	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
+	// the token endpoint and this server's issuer identifier, unless the issuer
+	// is also an allowed resource audience. A configured list replaces both
+	// defaults. The plain JWT-bearer grant accepts a multi-valued "aud" when
+	// one value matches; the ID-JAG grant refuses any "aud" array with more
+	// than one value.
 	AcceptedAudiences []string                               `json:"accepted_audiences"`
 	MaxAssertionAge   OptString                              `json:"max_assertion_age"`
 	SubjectBindings   []TokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+}
+
+// GetAcceptedAssertionTypes returns the value of AcceptedAssertionTypes.
+func (s *TokenExchangeJWTBearerGrantPolicy) GetAcceptedAssertionTypes() []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem {
+	return s.AcceptedAssertionTypes
 }
 
 // GetAcceptedAudiences returns the value of AcceptedAudiences.
@@ -21463,6 +21988,11 @@ func (s *TokenExchangeJWTBearerGrantPolicy) GetSubjectBindings() []TokenExchange
 	return s.SubjectBindings
 }
 
+// SetAcceptedAssertionTypes sets the value of AcceptedAssertionTypes.
+func (s *TokenExchangeJWTBearerGrantPolicy) SetAcceptedAssertionTypes(val []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) {
+	s.AcceptedAssertionTypes = val
+}
+
 // SetAcceptedAudiences sets the value of AcceptedAudiences.
 func (s *TokenExchangeJWTBearerGrantPolicy) SetAcceptedAudiences(val []string) {
 	s.AcceptedAudiences = val
@@ -21476,6 +22006,47 @@ func (s *TokenExchangeJWTBearerGrantPolicy) SetMaxAssertionAge(val OptString) {
 // SetSubjectBindings sets the value of SubjectBindings.
 func (s *TokenExchangeJWTBearerGrantPolicy) SetSubjectBindings(val []TokenExchangeJWTBearerSubjectBinding) {
 	s.SubjectBindings = val
+}
+
+type TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem string
+
+const (
+	TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem = "jwt_bearer"
+	TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag     TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem = "id_jag"
+)
+
+// AllValues returns all TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem values.
+func (TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) AllValues() []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem {
+	return []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem{
+		TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer,
+		TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) MarshalText() ([]byte, error) {
+	switch s {
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer:
+		return []byte(s), nil
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) UnmarshalText(data []byte) error {
+	switch TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem(data) {
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer:
+		*s = TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer
+		return nil
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag:
+		*s = TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/TokenExchangeJWTBearerSubjectBinding
@@ -22014,8 +22585,11 @@ type UpdateRequest struct {
 	ProxyPort OptInt `json:"proxy_port"`
 	// Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
 	// Empty or zero uses the default timeout of 30 seconds.
-	ProxyReadTimeout OptString                 `json:"proxy_read_timeout"`
-	RuntimeConfig    OptTemplatesRuntimeConfig `json:"runtime_config"`
+	ProxyReadTimeout OptString `json:"proxy_read_timeout"`
+	// Whether to mount the container's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool                   `json:"read_only_rootfs"`
+	RuntimeConfig  OptTemplatesRuntimeConfig `json:"runtime_config"`
 	// Secret parameters to inject.
 	Secrets []SecretsSecretParameter `json:"secrets"`
 	// Port to expose from the container.
@@ -22117,6 +22691,11 @@ func (s *UpdateRequest) GetProxyPort() OptInt {
 // GetProxyReadTimeout returns the value of ProxyReadTimeout.
 func (s *UpdateRequest) GetProxyReadTimeout() OptString {
 	return s.ProxyReadTimeout
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *UpdateRequest) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRuntimeConfig returns the value of RuntimeConfig.
@@ -22247,6 +22826,11 @@ func (s *UpdateRequest) SetProxyPort(val OptInt) {
 // SetProxyReadTimeout sets the value of ProxyReadTimeout.
 func (s *UpdateRequest) SetProxyReadTimeout(val OptString) {
 	s.ProxyReadTimeout = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *UpdateRequest) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRuntimeConfig sets the value of RuntimeConfig.

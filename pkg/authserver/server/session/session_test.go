@@ -23,6 +23,8 @@ import (
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 )
 
 var testVerifiedUpstream = UpstreamSubject{
@@ -190,9 +192,9 @@ func TestNew(t *testing.T) {
 			claimsMap := session.GetJWTClaims().ToMapClaims()
 
 			if tt.expectTsid {
-				assert.Equal(t, tt.idpSessionID, claimsMap[TokenSessionIDClaimKey])
+				assert.Equal(t, tt.idpSessionID, claimsMap[claimnames.TokenSessionIDKey])
 			} else {
-				_, ok := claimsMap[TokenSessionIDClaimKey]
+				_, ok := claimsMap[claimnames.TokenSessionIDKey]
 				assert.False(t, ok, "tsid claim should not be present when idpSessionID is empty")
 			}
 
@@ -295,15 +297,15 @@ func TestSession_CloneCopiesVerifiedIdentityAndIsolatesSubjectIdentifier(t *test
 	cloned, ok := original.Clone().(*Session)
 	require.True(t, ok)
 	assert.Equal(t, testVerifiedUpstream, cloned.VerifiedUpstream)
-	require.Contains(t, cloned.JWTClaims.Extra, subjectIdentifierClaimKey)
-	require.Contains(t, cloned.JWTClaims.Extra, UpstreamSubjectClaimKey)
+	require.Contains(t, cloned.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	require.Contains(t, cloned.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 
 	cloned.ClearSubjectIdentifier()
 
-	assert.NotContains(t, cloned.JWTClaims.Extra, subjectIdentifierClaimKey)
-	assert.NotContains(t, cloned.JWTClaims.Extra, UpstreamSubjectClaimKey)
-	assert.Contains(t, original.JWTClaims.Extra, subjectIdentifierClaimKey)
-	assert.Contains(t, original.JWTClaims.Extra, UpstreamSubjectClaimKey)
+	assert.NotContains(t, cloned.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	assert.NotContains(t, cloned.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
+	assert.Contains(t, original.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	assert.Contains(t, original.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 }
 
 func TestSession_UpstreamSessionID(t *testing.T) {
@@ -384,12 +386,12 @@ func TestSession_SetSubjectIdentifier_AllocatesNilExtra(t *testing.T) {
 		"format": "iss_sub",
 		"iss":    "https://idp.example.com",
 		"sub":    "upstream-sub",
-	}, s.JWTClaims.Extra["sub_id"])
+	}, s.JWTClaims.Extra[claimnames.SubjectIdentifierKey])
 	assert.Equal(t, map[string]string{
 		"iss":   "https://idp.example.com",
 		"claim": "oid",
 		"value": "upstream-oid",
-	}, s.JWTClaims.Extra[UpstreamSubjectClaimKey])
+	}, s.JWTClaims.Extra[claimnames.UpstreamSubjectKey])
 }
 
 func TestSession_SetSubjectIdentifier_RequiresCompleteIdentity(t *testing.T) {
@@ -412,12 +414,12 @@ func TestSession_SetSubjectIdentifier_RequiresCompleteIdentity(t *testing.T) {
 			s.SetSubjectIdentifier(tt.upstream)
 
 			if tt.want {
-				assert.Contains(t, s.JWTClaims.Extra, subjectIdentifierClaimKey)
-				assert.Contains(t, s.JWTClaims.Extra, UpstreamSubjectClaimKey)
+				assert.Contains(t, s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+				assert.Contains(t, s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 				return
 			}
-			assert.NotContains(t, s.JWTClaims.Extra, subjectIdentifierClaimKey)
-			assert.NotContains(t, s.JWTClaims.Extra, UpstreamSubjectClaimKey)
+			assert.NotContains(t, s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+			assert.NotContains(t, s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 		})
 	}
 }
@@ -481,5 +483,47 @@ func TestSession_VerifiedUpstreamJSON(t *testing.T) {
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 		assert.NotContains(t, raw, "verified_upstream")
+	})
+}
+
+// TestSession_UnmarshalJSONKeepsAuthorizationDetailsRaw pins that a session
+// read back from JSON holds the authorization_details claim as the raw bytes
+// it was stored with, so an integer above 2^53 keeps every digit, and that
+// the other claims and fields decode as before.
+func TestSession_UnmarshalJSONKeepsAuthorizationDetailsRaw(t *testing.T) {
+	t.Parallel()
+
+	const details = `[{"type":"call","limit":9007199254740993}]`
+	stored := New("user", "idp-session", "client", UserClaims{})
+	stored.JWTClaims.Extra[claimnames.AuthorizationDetailsKey] = json.RawMessage(details)
+	stored.VerifiedUpstream = testVerifiedUpstream
+	data, err := json.Marshal(stored)
+	require.NoError(t, err)
+
+	back := New("", "", "", UserClaims{})
+	require.NoError(t, json.Unmarshal(data, back))
+
+	got, ok := back.JWTClaims.Extra[claimnames.AuthorizationDetailsKey].(json.RawMessage)
+	require.True(t, ok)
+	assert.Equal(t, details, string(got))
+	assert.Equal(t, "client", back.JWTClaims.Extra[ClientIDClaimKey])
+	assert.Equal(t, "idp-session", back.UpstreamSessionID)
+	assert.Equal(t, "user", back.JWTClaims.Subject)
+	assert.Equal(t, testVerifiedUpstream, back.VerifiedUpstream)
+
+	t.Run("a session without the claim does not gain it", func(t *testing.T) {
+		t.Parallel()
+		data, err := json.Marshal(New("user", "", "client", UserClaims{}))
+		require.NoError(t, err)
+		var back Session
+		require.NoError(t, json.Unmarshal(data, &back))
+		assert.NotContains(t, back.JWTClaims.Extra, claimnames.AuthorizationDetailsKey)
+	})
+
+	t.Run("a session without JWT claims decodes", func(t *testing.T) {
+		t.Parallel()
+		var back Session
+		require.NoError(t, json.Unmarshal([]byte(`{"UpstreamSessionID":"s"}`), &back))
+		assert.Equal(t, "s", back.UpstreamSessionID)
 	})
 }

@@ -261,18 +261,8 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		if result.Synthetic {
 			subject = result.Subject
 		} else {
-			user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
-			if err != nil {
-				slog.Error("failed to resolve user", "error", err)
-				// A UserStorage that deliberately refuses to auto-provision this
-				// identity (e.g. SCIM-only provisioning) is a client-facing denial,
-				// not a server fault — every other resolution failure keeps the
-				// generic server_error mapping.
-				resolveErr := fosite.ErrServerError.WithHint("failed to resolve user")
-				if errors.Is(err, storage.ErrUserNotProvisioned) {
-					resolveErr = fosite.ErrAccessDenied.WithHint("user not provisioned")
-				}
-				h.provider.WriteAuthorizeError(ctx, w, ar, resolveErr)
+			user, ok := h.resolveFirstLegUser(ctx, w, ar, providerID, providerSubject)
+			if !ok {
 				return
 			}
 			subject = user.ID
@@ -462,9 +452,11 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 // upstream-error branch (handleUpstreamError) and device verification. If the
 // CIMD fetch limiter refuses the lookup (ErrCIMDRateLimited means no cached
 // entry within the decorator's MaxStale could be served, e.g. a cold cache
-// after a restart or an LRU eviction), it reads the persisted row from the
-// storage below the CIMD decorator (still behind client admission) instead:
-// the pending authorization was already consumed, so a 429 here
+// after a restart or an LRU eviction), it reads the persisted row through
+// h.continuationFallback instead. That fallback is the storage below the CIMD
+// decorator (behind client admission when the chain has it), selected once by
+// NewHandler and kept on the handler, so request handling does not walk the
+// decorators. The pending authorization was already consumed, so a 429 here
 // would make the login unrecoverable.
 //
 // This is safe because the base row was written by the same fetch that
@@ -492,9 +484,48 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client, error) {
 	client, err := h.storage.GetClient(ctx, id)
 	if errors.Is(err, storage.ErrCIMDRateLimited) {
-		return storage.ClientStoreBelowCIMD(h.storage).GetClient(ctx, id)
+		return h.continuationFallback.GetClient(ctx, id)
 	}
 	return client, err
+}
+
+// resolveFirstLegUser resolves the local user for the first-leg login through
+// providerID. On failure it writes the authorize error and returns false.
+//
+// Only the first upstream creates users and identity links (see WithCreateOnlyFor).
+// A pending authorization that reaches user resolution through any other upstream,
+// for example a SingleLeg authorization against a later upstream, still resolves
+// through an existing link. With no link it is refused, because creating one would
+// give one person a second user.
+func (h *Handler) resolveFirstLegUser(
+	ctx context.Context,
+	w http.ResponseWriter,
+	ar fosite.AuthorizeRequester,
+	providerID, providerSubject string,
+) (*storage.User, bool) {
+	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
+	if err != nil {
+		// A refused later upstream is a deliberate denial, not a server fault.
+		if errors.Is(err, ErrUpstreamCannotCreateUsers) {
+			slog.Warn("refused user creation through a later upstream", "error", err)
+		} else {
+			slog.Error("failed to resolve user", "error", err)
+		}
+		// A UserStorage that deliberately refuses to auto-provision this
+		// identity (e.g. SCIM-only provisioning), or a later upstream that may
+		// not create users, is a client-facing denial, not a server fault —
+		// every other resolution failure keeps the generic server_error mapping.
+		resolveErr := fosite.ErrServerError.WithHint("failed to resolve user")
+		switch {
+		case errors.Is(err, storage.ErrUserNotProvisioned):
+			resolveErr = fosite.ErrAccessDenied.WithHint("user not provisioned")
+		case errors.Is(err, ErrUpstreamCannotCreateUsers):
+			resolveErr = fosite.ErrAccessDenied.WithHint("this upstream cannot create users")
+		}
+		h.provider.WriteAuthorizeError(ctx, w, ar, resolveErr)
+		return nil, false
+	}
+	return user, true
 }
 
 // carryFirstUpstreamIdentity stores provenance only when this callback establishes the local user.

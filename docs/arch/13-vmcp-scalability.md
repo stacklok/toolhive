@@ -44,15 +44,24 @@ runtime objects:
 - **Local storage (single replica):** session metadata is removed from
   `LocalSessionDataStorage` after the TTL elapses with no access. The
   corresponding in-process `MultiSession` (with its live backend connections)
-  remains in the node-local LRU cache until it is evicted by cache pressure or
-  explicit termination.
+  stays in the node-local LRU cache until the background cache sweep reclaims
+  it, cache pressure evicts it, or it is explicitly terminated.
 - **Redis storage (multi-replica):** see [Redis sliding-window TTL](#redis-sliding-window-ttl) below.
 
 When metadata expires, any subsequent request that references that session ID
 will fail to restore the session (`RestoreSession()` finds no stored metadata)
 and the client must reinitialize. Backend connections held by the cached
-`MultiSession` are only released when the LRU cache evicts the entry or the
-session is explicitly terminated.
+`MultiSession` are released when the background cache sweep finds the
+metadata gone, when the LRU cache evicts the entry, or when the session is
+explicitly terminated, whichever comes first.
+
+The sweep runs every `FactoryConfig.SweepInterval` (1 minute by default; a
+negative value disables it). It reads each cached session's metadata with
+`LoadMetadata`, which does not refresh the TTL, and evicts the sessions whose
+record is gone or marked terminated. This covers sessions a client abandoned
+without sending DELETE and sessions terminated on another replica. The sweep
+also drops the session's health-resync registration, so that cleanup does not
+wait for backend activity.
 
 The Streamable HTTP transport also reaps its own pod-local copy of a session
 (the go-sdk session and its per-session server) after one TTL with no POST
@@ -94,6 +103,7 @@ answered 404 if not.
 | ------- | --------- |
 | Explicit termination (client disconnect, auth failure) | `DEL` issued immediately to Redis |
 | Inactivity beyond TTL | Redis TTL expiry (automatic, no application-side action needed) |
+| Background cache sweep (every `SweepInterval`, default 1 minute) | Closes backend connections of cached sessions whose metadata is gone or terminated, without refreshing the TTL of live ones |
 | Pod-local cache eviction (LRU) | `onEvict` callback closes backend connections only; the Redis metadata key is **not** deleted and expires via TTL |
 
 ### Identity-binding storage and Redis access control

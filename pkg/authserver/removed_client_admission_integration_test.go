@@ -356,6 +356,7 @@ func TestRemovedClientProbeCoverage(t *testing.T) {
 		}
 	}
 	cfg, stor := removedClientConfig(t)
+	t.Cleanup(func() { _ = stor.Close() })
 	srv, err := authserver.New(t.Context(), cfg, stor)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Close() })
@@ -382,8 +383,8 @@ func TestRemovedClientProbeCoverage(t *testing.T) {
 // TestRemovedClientHandlerTypes is what lets a single token-endpoint probe stand
 // for every grant. Fosite drops the client authentication error only when a
 // handler that handles the request returns true from CanSkipClientAuth, so two
-// properties are pinned: without credentials only the plain JWT-bearer handler
-// may skip, and with credentials no handler may skip. It also pins the set of
+// properties are pinned: without credentials only the two JWT-bearer handlers
+// (plain and ID-JAG) may skip, and with credentials no handler may skip. It also pins the set of
 // authorize and token handler types so a new grant has to be considered here.
 // The provider comes from the same parameter construction newServer uses.
 func TestRemovedClientHandlerTypes(t *testing.T) {
@@ -397,6 +398,7 @@ func TestRemovedClientHandlerTypes(t *testing.T) {
 	require.True(t, ok)
 
 	const jwtBearerHandler = "*tokenexchange.JWTBearerHandler"
+	const idJAGHandler = "*tokenexchange.IDJAGHandler"
 	grants := []string{
 		"authorization_code", "refresh_token", oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer,
 		"urn:ietf:params:oauth:grant-type:device_code", "client_credentials", "password",
@@ -419,7 +421,8 @@ func TestRemovedClientHandlerTypes(t *testing.T) {
 				return h.CanSkipClientAuth(context.WithValue(ctx, fosite.RequestContextKey, httpReq), req)
 			})
 		}
-		assert.Equalf(t, name == jwtBearerHandler, skips(false), "%s: only the JWT-bearer handler may skip client authentication", name)
+		assert.Equalf(t, name == jwtBearerHandler || name == idJAGHandler, skips(false),
+			"%s: only the JWT-bearer handlers may skip client authentication", name)
 		assert.Falsef(t, skips(true), "%s: no handler may skip client authentication when credentials are present", name)
 	}
 	for _, h := range provider.Config.GetAuthorizeEndpointHandlers(ctx) {
@@ -427,7 +430,7 @@ func TestRemovedClientHandlerTypes(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{
 		"*oauth2.AuthorizeExplicitGrantHandler", "*oauth2.RefreshTokenGrantHandler", "*pkce.Handler", "*tokenexchange.Handler",
-		jwtBearerHandler, "*tokenexchange.IDJAGHandler", "*deviceflow.Handler",
+		"*tokenexchange.RefreshTokenHandler", jwtBearerHandler, idJAGHandler, "*deviceflow.Handler",
 		"*authserver.refreshGrantValidators",
 	}, gotToken, "token endpoint handlers changed: decide whether the new one authenticates the client")
 	assert.ElementsMatch(t, []string{"*oauth2.AuthorizeExplicitGrantHandler", "*pkce.Handler"}, gotAuthorize,
@@ -436,7 +439,7 @@ func TestRemovedClientHandlerTypes(t *testing.T) {
 
 // removedClientConfig is an in-memory config with device flow, a trusted issuer
 // and a delegate client, so every grant handler is registered. The caller owns
-// the storage (authserver.New takes ownership of it).
+// the storage; authserver.New only borrows it.
 func removedClientConfig(t *testing.T) (authserver.Config, storage.Storage) {
 	t.Helper()
 	secret := make([]byte, 32)

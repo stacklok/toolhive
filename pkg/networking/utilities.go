@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -253,15 +254,24 @@ func IsPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// AddressReferencesPrivateIp returns an error if the address references a private IP address
+// AddressReferencesPrivateIp returns an error if the "host:port" address does
+// not name a public IP. It is meant for a dialer's Control hook, which receives
+// the resolved IP literal, so a host that is not an IP literal is rejected
+// rather than treated as public. A zone suffix (fe80::1%eth0) is dropped before
+// classifying the address, so it cannot hide a private address. The dialer
+// also passes zoned IPv4 forms such as 127.0.0.1%lo0 (from a zoned
+// IPv4-mapped literal), which netip would otherwise refuse to parse.
 func AddressReferencesPrivateIp(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
 	}
-	// Check for a private IP address or loopback
-	ip := net.ParseIP(host)
-	if IsPrivateIP(ip) {
+	host, _, _ = strings.Cut(host, "%")
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("refusing to dial %q: not an IP address", host)
+	}
+	if IsPrivateIP(net.IP(addr.AsSlice())) {
 		return errors.New(ErrPrivateIpAddress)
 	}
 

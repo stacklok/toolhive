@@ -84,7 +84,9 @@ func requireNoOpenFDForPath(t *testing.T, path string) {
 	}
 }
 
-func closeErrorPathAuditConfig(t *testing.T) (*audit.Config, string) {
+// fileAuditConfig returns an audit config that writes to a log file in a
+// per-test temp dir, along with that file's path.
+func fileAuditConfig(t *testing.T) (*audit.Config, string) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "workflow-audit.log")
@@ -152,7 +154,7 @@ func TestNew_CloseReleasesWorkflowAuditLogFile(t *testing.T) {
 		t.Parallel()
 
 		cfg, _ := baseConfig(t)
-		cfg.AuditConfig, _ = closeErrorPathAuditConfig(t)
+		cfg.AuditConfig, _ = fileAuditConfig(t)
 
 		c, err := New(cfg)
 		require.NoError(t, err)
@@ -165,7 +167,7 @@ func TestNew_CloseReleasesWorkflowAuditLogFile(t *testing.T) {
 		t.Parallel()
 
 		cfg, _ := baseConfig(t)
-		cfg.AuditConfig, _ = closeErrorPathAuditConfig(t)
+		cfg.AuditConfig, _ = fileAuditConfig(t)
 
 		c, err := New(cfg)
 		require.NoError(t, err)
@@ -214,7 +216,7 @@ func TestNew_ErrorPathsCloseWorkflowAuditLogFile(t *testing.T) {
 			t.Parallel()
 			cfg, mocks := baseConfig(t)
 			var auditLogPath string
-			cfg.AuditConfig, auditLogPath = closeErrorPathAuditConfig(t)
+			cfg.AuditConfig, auditLogPath = fileAuditConfig(t)
 			tt.mutate(t, cfg, mocks)
 
 			c, err := New(cfg)

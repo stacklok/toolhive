@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"mime/multipart"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -180,6 +182,58 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "invalid_client")
 }
 
+func TestAuthorizeHandler_RejectsUnsafeRequestObject(t *testing.T) {
+	t.Parallel()
+
+	enc := base64.RawURLEncoding
+	compact := func(header, payload string) string {
+		return enc.EncodeToString([]byte(header)) + "." + enc.EncodeToString([]byte(payload)) + ".c2ln"
+	}
+	// One level past encoding/json's limit of 10000, and far below the depth
+	// that overflows go-jose v3, so a regression fails instead of crashing.
+	nestedClaims := `{"sub":"c1","x":` + strings.Repeat("[", 10000) + strings.Repeat("]", 10000) + `}`
+	queryWith := func(requestObject string) string {
+		return url.Values{
+			"client_id":     {testAuthClientID},
+			"redirect_uri":  {testAuthRedirectURI},
+			"response_type": {oauthproto.ResponseTypeCode},
+			"scope":         {"openid"},
+			"request":       {requestObject},
+		}.Encode()
+	}
+	embeddedJWK := queryWith(compact(`{"alg":"RS256","jwk":{"kty":"RSA"}}`, `{}`))
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "embedded jwk", query: embeddedJWK},
+		// ParseForm returns an error for the bad escape but keeps the pairs
+		// that parsed, and fosite later reads them from req.Form.
+		{name: "embedded jwk with a malformed pair elsewhere in the query", query: embeddedJWK + "&x=%zz"},
+		{name: "deeply nested claims", query: queryWith(compact(`{"alg":"RS256","kid":"k1"}`, nestedClaims))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, state, _ := handlerTestSetup(t)
+			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+tt.query, nil)
+			rec := httptest.NewRecorder()
+
+			handler.AuthorizeHandler(rec, req)
+
+			// The request is answered directly rather than redirected: nothing
+			// about the client or redirect_uri has been validated yet.
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Empty(t, rec.Header().Get("Location"))
+			assert.Contains(t, rec.Body.String(), "invalid_request_object")
+			// fosite looks the client up before it parses a request object, so
+			// no lookup means fosite's go-jose v3 parser never saw the token.
+			assert.Zero(t, state.getClientCalls)
+		})
+	}
+}
+
 func TestAuthorizeRoutes_RejectsMultipartCIMDRequestBeforeLookup(t *testing.T) {
 	t.Parallel()
 
@@ -197,13 +251,7 @@ func TestAuthorizeRoutes_MultipartBackChannelOnlyAndUnknownClientsMatch(t *testi
 	t.Parallel()
 
 	handler, state, _ := handlerTestSetup(t)
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		[]string{"https://mcp.example.com"},
-		nil,
-	)
-	require.NoError(t, err)
+	client := spiffetest.Client(t)
 	state.clients[client.GetID()] = client
 
 	configured := httptest.NewRecorder()
@@ -255,14 +303,7 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			name: "SPIFFE client",
 			client: func(t *testing.T) fosite.Client {
 				t.Helper()
-				client, err := registration.NewSPIFFEClient(
-					"spiffe-client",
-					[]string{"openid"},
-					[]string{"https://mcp.example.com"},
-					nil,
-				)
-				require.NoError(t, err)
-				return client
+				return spiffetest.Client(t)
 			},
 			explicitMarker: true,
 		},
@@ -313,6 +354,19 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			assert.Equal(t, missing.Code, configured.Code)
 			assert.Equal(t, missing.Body.String(), configured.Body.String())
 			assert.Contains(t, configured.Body.String(), "invalid_client")
+
+			// A malformed request object must not distinguish the two either.
+			const badRequestObject = "&request=not-a-jws"
+			missingBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(missingBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			configuredBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(configuredBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id="+client.GetID()+"&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			assert.Equal(t, missingBadRequest.Code, configuredBadRequest.Code)
+			assert.Equal(t, missingBadRequest.Body.String(), configuredBadRequest.Body.String())
 		})
 	}
 }

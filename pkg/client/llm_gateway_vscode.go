@@ -179,10 +179,10 @@ func patchVSCodeProviderGroups(v *hujson.Value, path string, replacement json.Ra
 }
 
 func removeLegacyVSCodeSettings(path string) error {
-	legacy := &clientAppConfig{LLMGatewayKeys: []LLMGatewayKeySpec{
+	legacy := []LLMGatewayKeySpec{
 		{JSONPointer: "/github.copilot.advanced.serverUrl"},
 		{JSONPointer: "/github.copilot.advanced.apiKey"},
-	}}
+	}
 	if err := revertJSONPointerGateway(legacy, path); err != nil {
 		return fmt.Errorf("removing obsolete VS Code Copilot settings: %w", err)
 	}

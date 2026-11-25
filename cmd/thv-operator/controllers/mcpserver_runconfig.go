@@ -223,8 +223,16 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 				resolvedOIDCConfig.JWKSAllowPrivateIP,
 				resolvedOIDCConfig.InsecureAllowHTTP,
 				resolvedOIDCConfig.Scopes,
+			), runner.WithOIDCRequiredSubject(
+				resolvedOIDCConfig.RequiredSubject, resolvedOIDCConfig.RequiredSubjectPrefix,
 			))
 		}
+	}
+
+	if err := ctrlutil.ValidateEmbeddedAuthServerTLSListenerPort(
+		ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef, m.GetProxyPort(),
+	); err != nil {
+		return nil, err
 	}
 
 	// Add external auth configuration if specified (updated call)

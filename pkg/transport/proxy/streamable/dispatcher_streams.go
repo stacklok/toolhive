@@ -41,7 +41,7 @@ type serverStream struct {
 // "subscriptions/listen" method (see mcp.MCPVersionModern in
 // pkg/mcp/revision.go) is a reasonable candidate to fan out through this SAME
 // decoupled registry rather than inventing a second mechanism, but it is NOT
-// a drop-in reuse. Per the draft spec, a future Modern handler will need real
+// a drop-in reuse. Per the 2026-07-28 spec, a future Modern handler will need real
 // adaptation on top of what is here today: "subscriptions/listen" is a
 // long-lived POST (not a GET), Modern has no sessions so streams must be
 // re-keyed per-subscription-id rather than per session ID, delivery requires

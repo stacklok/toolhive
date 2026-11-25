@@ -5,11 +5,14 @@ package authserver
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
@@ -20,6 +23,10 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 	wildcard.PrincipalPattern = "spiffe://example.org/ns/workloads/*"
 	other := testSPIFFEAssociation("other-client", "profile")
 	other.PrincipalPattern = "spiffe://example.org/ns/other/agent"
+	jwtOnly := testSPIFFEAssociation("jwt-client", "profile")
+	jwtOnly.PrincipalPattern = "spiffe://example.org/ns/jwt/agent"
+	jwtOnly.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+	jwtOnly.Resources = []string{"https://resource.example.com"}
 
 	tests := []struct {
 		name         string
@@ -30,8 +37,16 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 		method       SPIFFEAuthenticationMethod
 		wantClientID string
 		wantScope    string
+		wantResource []string
 		wantErr      string
 	}{
+		{
+			name:         "JWT identity",
+			associations: []SPIFFEClientAuthRunConfig{exact, jwtOnly},
+			spiffeID:     "spiffe://example.org/ns/jwt/agent", clientID: "jwt-client",
+			method: SPIFFEAuthenticationMethodJWT, wantScope: "profile",
+			wantResource: []string{"https://resource.example.com"},
+		},
 		{
 			name:         "exact identity",
 			associations: []SPIFFEClientAuthRunConfig{exact, wildcard, other},
@@ -98,14 +113,15 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			expiry := time.Now().Add(time.Hour)
 			var registry *SPIFFEAssociationRegistry
 			if !tt.nilRegistry {
 				registry = newTestSPIFFEAssociationRegistry(t, tt.associations)
 			}
-			principal, err := registry.Resolve(tt.spiffeID, tt.clientID, tt.method)
+			client, err := registry.Resolve(tt.spiffeID, tt.clientID, tt.method, expiry)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
-				assert.Equal(t, NormalizedSPIFFEPrincipal{}, principal)
+				assert.Nil(t, client)
 				return
 			}
 			require.NoError(t, err)
@@ -113,13 +129,72 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 			if wantClientID == "" {
 				wantClientID = tt.clientID
 			}
-			assert.Equal(t, wantClientID, principal.ClientID())
-			assert.Equal(t, tt.spiffeID, principal.SPIFFEID())
-			assert.Equal(t, "example.org", principal.TrustDomain())
-			assert.Equal(t, tt.method, principal.AuthenticationMethod())
-			assert.Equal(t, []string{tt.wantScope}, principal.AuthorizationPolicy().Scopes())
+			assert.Equal(t, wantClientID, client.GetID())
+			assert.Equal(t, tt.spiffeID, client.SPIFFEID().String())
+			assert.Equal(t, "example.org", client.SPIFFEID().TrustDomain().String())
+			assert.Equal(t, tt.method, client.AuthenticationMethod())
+			assert.Equal(t, expiry, client.CredentialExpiry())
+			assert.Equal(t, []string{tt.wantScope}, []string(client.GetScopes()))
+			assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, []string(client.GetGrantTypes()))
+			wantResource := tt.wantResource
+			if wantResource == nil {
+				wantResource = []string{"https://audience.example.com"}
+			}
+			assert.Nil(t, client.GetAudience())
+			assert.Equal(t, wantResource, client.Resources())
+
+			want := spiffetest.AuthenticatedClient(t,
+				spiffetest.WithID(wantClientID),
+				spiffetest.WithGrantTypes(oauthproto.GrantTypeTokenExchange),
+				spiffetest.WithScopes(tt.wantScope),
+				spiffetest.WithResources(wantResource...),
+				spiffetest.WithSPIFFEID(tt.spiffeID),
+				spiffetest.WithAuthMethod(tt.method),
+				spiffetest.WithCredentialExpiry(expiry),
+			)
+			assert.Equal(t, want, client)
 		})
 	}
+}
+
+func TestNewSPIFFEAssociationRegistry_RejectsAssociationWithoutValidPolicy(t *testing.T) {
+	t.Parallel()
+
+	trust := &SPIFFETrustConfig{associations: []SPIFFEClientAuthConfig{{
+		trustDomainRef: "production",
+		principal:      "spiffe://example.org/ns/default/agent",
+		clientID:       "no-grants",
+		methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT},
+		authorization: SPIFFEAuthorizationPolicy{
+			scopes: []string{"openid"},
+		},
+	}}}
+
+	registry, err := NewSPIFFEAssociationRegistry(trust)
+	require.EqualError(t, err, `SPIFFE client "no-grants": SPIFFE client grant types are required`)
+	assert.Nil(t, registry)
+}
+
+func TestSPIFFEAssociationRegistryUsesX509(t *testing.T) {
+	t.Parallel()
+
+	x509Only := testSPIFFEAssociation("x509-client", "openid")
+	jwtOnly := testSPIFFEAssociation("jwt-client", "openid")
+	jwtOnly.PrincipalPattern = "spiffe://example.org/ns/jwt/agent"
+	jwtOnly.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+	both := testSPIFFEAssociation("both-client", "openid")
+	both.PrincipalPattern = "spiffe://example.org/ns/both/agent"
+	both.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT, SPIFFEAuthenticationMethodX509}
+	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{x509Only, jwtOnly, both})
+
+	matcher := newSPIFFEX509ClientMatcher(registry)
+	require.NotNil(t, matcher)
+	assert.True(t, matcher("x509-client"))
+	assert.True(t, matcher("both-client"))
+	assert.False(t, matcher("jwt-client"))
+	assert.False(t, matcher("unknown-client"))
+	assert.False(t, (*SPIFFEAssociationRegistry)(nil).usesX509("x509-client"))
+	assert.Nil(t, newSPIFFEX509ClientMatcher(nil), "no SPIFFE trust must yield a nil matcher")
 }
 
 func TestSPIFFEAssociationRegistryRebuildsChangedAndRemovedAuthority(t *testing.T) {
@@ -133,46 +208,25 @@ func TestSPIFFEAssociationRegistryRebuildsChangedAndRemovedAuthority(t *testing.
 	removed, err := NewSPIFFEAssociationRegistry(removedTrust)
 	require.NoError(t, err)
 
-	initialClients, err := initial.staticClients()
-	require.NoError(t, err)
+	initialClients := initial.staticClients()
 	initialClient, found := initialClients["client"]
 	require.True(t, found)
 	assert.Equal(t, []string{"openid"}, []string(initialClient.GetScopes()))
 
-	changedClients, err := changed.staticClients()
-	require.NoError(t, err)
+	changedClients := changed.staticClients()
 	changedClient, found := changedClients["client"]
 	require.True(t, found)
 	assert.Equal(t, []string{"profile"}, []string(changedClient.GetScopes()))
 
-	removedClients, err := removed.staticClients()
-	require.NoError(t, err)
+	removedClients := removed.staticClients()
 	assert.Empty(t, removedClients)
 }
 
-func TestSPIFFEAssociationRegistryKeepsClientAudiencesIsolated(t *testing.T) {
-	t.Parallel()
-
-	first := testSPIFFEAssociation("first-client", "openid")
-	first.Audiences = []string{"https://first-audience.example.com"}
-	second := testSPIFFEAssociation("second-client", "profile")
-	second.PrincipalPattern = "spiffe://example.org/ns/default/other-agent"
-	second.Audiences = []string{"https://second-audience.example.com"}
-
-	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{first, second})
-	clients, err := registry.staticClients()
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{"https://first-audience.example.com"}, []string(clients["first-client"].GetAudience()))
-	assert.Equal(t, []string{"https://second-audience.example.com"}, []string(clients["second-client"].GetAudience()))
-}
-
-// TestSPIFFEAssociationRegistryKeepsResourcesIndependentOfAudiences proves the
+// TestSPIFFEAssociationRegistryIgnoresDeprecatedAudiences proves the
 // association registry wires an association's RFC 8707 resources through to
-// the runtime client as a dimension independent of RFC 8693 audiences: a
-// client configured with disjoint audiences and resources must expose each
-// list separately, not have one silently discarded or aliased to the other.
-func TestSPIFFEAssociationRegistryKeepsResourcesIndependentOfAudiences(t *testing.T) {
+// the runtime client and drops the deprecated audiences field: the client has
+// no audiences even when the association sets some.
+func TestSPIFFEAssociationRegistryIgnoresDeprecatedAudiences(t *testing.T) {
 	t.Parallel()
 
 	association := testSPIFFEAssociation("client", "openid")
@@ -180,8 +234,7 @@ func TestSPIFFEAssociationRegistryKeepsResourcesIndependentOfAudiences(t *testin
 	association.Resources = []string{"https://resource.example.com"}
 
 	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{association})
-	clients, err := registry.staticClients()
-	require.NoError(t, err)
+	clients := registry.staticClients()
 
 	client, found := clients["client"]
 	require.True(t, found)
@@ -189,7 +242,7 @@ func TestSPIFFEAssociationRegistryKeepsResourcesIndependentOfAudiences(t *testin
 	resourceScoped, ok := client.(interface{ Resources() []string })
 	require.True(t, ok, "SPIFFE client must expose a Resources() accessor")
 
-	assert.Equal(t, []string{"https://audience.example.com"}, []string(client.GetAudience()))
+	assert.Empty(t, client.GetAudience())
 	assert.Equal(t, []string{"https://resource.example.com"}, resourceScoped.Resources())
 }
 
@@ -208,8 +261,7 @@ func TestSPIFFEAssociationRegistryStaticClientPreservesConcreteCapabilities(t *t
 	association.Resources = []string{"https://resource.example.com"}
 
 	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{association})
-	clients, err := registry.staticClients()
-	require.NoError(t, err)
+	clients := registry.staticClients()
 
 	client, found := clients["client"]
 	require.True(t, found)
@@ -226,8 +278,8 @@ func TestSPIFFEAssociationRegistryStaticClientPreservesConcreteCapabilities(t *t
 // are identical except for the order their configured methods are listed in
 // produce the SAME identity fingerprint. fingerprintSPIFFEAssociation sorts
 // methods before hashing specifically so config-file reordering (which
-// carries no semantic meaning) can never manifest as a false collision on
-// reconciliation.
+// carries no semantic meaning) can never produce a spurious identity_changed
+// in the replacement WARN.
 func TestSPIFFEAssociationFingerprintOrderStable(t *testing.T) {
 	t.Parallel()
 
@@ -236,10 +288,8 @@ func TestSPIFFEAssociationFingerprintOrderStable(t *testing.T) {
 	reversed := testSPIFFEAssociation("client", "openid")
 	reversed.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT, SPIFFEAuthenticationMethodX509}
 
-	forwardClients, err := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{forward}).staticClients()
-	require.NoError(t, err)
-	reversedClients, err := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{reversed}).staticClients()
-	require.NoError(t, err)
+	forwardClients := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{forward}).staticClients()
+	reversedClients := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{reversed}).staticClients()
 
 	forwardIdentity, ok := forwardClients["client"].(interface{ IdentityFingerprint() string })
 	require.True(t, ok)
@@ -263,10 +313,8 @@ func TestSPIFFEAssociationFingerprintDiffersOnMethodsOnly(t *testing.T) {
 	jwtOnly := testSPIFFEAssociation("client", "openid")
 	jwtOnly.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
 
-	x509Clients, err := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{x509Only}).staticClients()
-	require.NoError(t, err)
-	jwtClients, err := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{jwtOnly}).staticClients()
-	require.NoError(t, err)
+	x509Clients := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{x509Only}).staticClients()
+	jwtClients := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{jwtOnly}).staticClients()
 
 	x509Identity, ok := x509Clients["client"].(interface{ IdentityFingerprint() string })
 	require.True(t, ok)
@@ -282,7 +330,7 @@ func TestSPIFFEAssociationFingerprintDiffersOnMethodsOnly(t *testing.T) {
 // asserts but nothing otherwise enforces: without it, two different
 // (trustDomainRef, principal) pairs whose concatenation is byte-identical
 // -- e.g. ("12", "3") and ("1", "23") -- would hash to the same value,
-// silently reconciling two different associations as one. Calls
+// silently hiding an identity change from the replacement WARN. Calls
 // fingerprintSPIFFEAssociation directly (unexported, same-package test) since
 // the collision is a property of that function's own encoding, not of
 // anything reachable through the public registry API.
@@ -292,6 +340,60 @@ func TestSPIFFEAssociationFingerprintFieldsDoNotConcatenateAmbiguously(t *testin
 	a := fingerprintSPIFFEAssociation(SPIFFEClientAuthConfig{trustDomainRef: "12", principal: "3"})
 	b := fingerprintSPIFFEAssociation(SPIFFEClientAuthConfig{trustDomainRef: "1", principal: "23"})
 	assert.NotEqual(t, a, b, "length prefixing must keep field boundaries unambiguous")
+}
+
+func TestSPIFFEAssociationFingerprintCoversGrantTypes(t *testing.T) {
+	t.Parallel()
+
+	withGrants := func(grantTypes ...string) SPIFFEClientAuthConfig {
+		return SPIFFEClientAuthConfig{
+			trustDomainRef: "production",
+			principal:      "spiffe://example.org/ns/default/agent",
+			authorization:  SPIFFEAuthorizationPolicy{grantTypes: grantTypes},
+		}
+	}
+	methodOnly := withGrants()
+	methodOnly.methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}
+
+	tests := []struct {
+		name      string
+		a, b      SPIFFEClientAuthConfig
+		wantEqual bool
+	}{
+		{
+			name: "grant-types-only change differs",
+			a:    withGrants(oauthproto.GrantTypeTokenExchange),
+			b:    withGrants(oauthproto.GrantTypeClientCredentials),
+		},
+		{
+			name:      "grant type order is ignored",
+			a:         withGrants(oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials),
+			b:         withGrants(oauthproto.GrantTypeClientCredentials, oauthproto.GrantTypeTokenExchange),
+			wantEqual: true,
+		},
+		{
+			// Built directly because config validation admits only known grant types.
+			name: "length prefix keeps grant type boundaries unambiguous",
+			a:    withGrants("a", "bc"),
+			b:    withGrants("ab", "c"),
+		},
+		{
+			name: "grant type cannot alias a method at the list boundary",
+			a:    withGrants(string(SPIFFEAuthenticationMethodX509)),
+			b:    methodOnly,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fa, fb := fingerprintSPIFFEAssociation(tt.a), fingerprintSPIFFEAssociation(tt.b)
+			if tt.wantEqual {
+				assert.Equal(t, fa, fb)
+			} else {
+				assert.NotEqual(t, fa, fb)
+			}
+		})
+	}
 }
 
 // TestNewSPIFFEAssociationRegistryRejectsOverlappingPatterns proves
@@ -360,7 +462,9 @@ func testNormalizedSPIFFEAssociation(clientID, principal string) SPIFFEClientAut
 		principal:      principal,
 		clientID:       clientID,
 		methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-		authorization:  SPIFFEAuthorizationPolicy{scopes: []string{"openid"}},
+		authorization: SPIFFEAuthorizationPolicy{
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange}, scopes: []string{"openid"},
+		},
 	}
 }
 
@@ -383,6 +487,8 @@ func newTestSPIFFEAssociationRegistry(t *testing.T, associations []SPIFFEClientA
 	return registry
 }
 
+// testSPIFFEAssociation returns a valid token-exchange association; callers
+// override only the fields their case cares about.
 func testSPIFFEAssociation(clientID, scope string) SPIFFEClientAuthRunConfig {
 	return SPIFFEClientAuthRunConfig{
 		TrustDomainRef:   "production",
@@ -390,7 +496,23 @@ func testSPIFFEAssociation(clientID, scope string) SPIFFEClientAuthRunConfig {
 		ClientID:         clientID,
 		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		Scopes:           []string{scope},
-		Audiences:        []string{"https://audience.example.com"},
-		GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		Resources:        []string{"https://audience.example.com"},
+		GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
+	}
+}
+
+func TestNewSPIFFEAssociationRegistryReturnsNilWithoutAssociations(t *testing.T) {
+	t.Parallel()
+
+	empty, err := NewSPIFFETrustConfig(nil, nil, []string{"openid"}, nil)
+	require.NoError(t, err)
+	require.Empty(t, empty.Associations())
+
+	for _, trust := range []*SPIFFETrustConfig{nil, empty} {
+		registry, err := NewSPIFFEAssociationRegistry(trust)
+		require.NoError(t, err)
+		assert.Nil(t, registry)
+		assert.Nil(t, newSPIFFEClientResolver(registry))
+		assert.Nil(t, newSPIFFEX509ClientMatcher(registry))
 	}
 }

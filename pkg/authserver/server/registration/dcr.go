@@ -21,10 +21,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -84,6 +87,34 @@ const (
 	// human-oriented identifier and the same ballpark DoS concerns apply.
 	MaxSoftwareIDLength = 256
 )
+
+// ValidateClientName rejects client names longer than MaxClientNameLength
+// characters (counted in runes, matching the CRD's maxLength semantics) and
+// names that would reach an upstream authorization screen verbatim with
+// control or format runes (newlines, NUL, bidi overrides, zero-width
+// characters) or with leading or trailing whitespace, including
+// whitespace-only names that would display blank.
+// It mirrors the consent page's displayClientName stripping
+// (pkg/authserver/server/handlers) as a rejection instead of a silent
+// strip, so a bad value fails fast at admission, reconcile, and run-config
+// time. An empty name is valid: it selects the default client name.
+func ValidateClientName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if l := utf8.RuneCountInString(name); l > MaxClientNameLength {
+		return fmt.Errorf("must be at most %d characters", MaxClientNameLength)
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("must not have leading or trailing whitespace")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return fmt.Errorf("must not contain control or format characters")
+		}
+	}
+	return nil
+}
 
 // DCRError represents an OAuth 2.0 Dynamic Client Registration error
 // response per RFC 7591 Section 3.2.2.
@@ -360,7 +391,7 @@ func ValidatePrivateKeyJWTClientKeys(client fosite.Client) *DCRError {
 		return nil
 	}
 	return validatePrivateKeyJWTMetadata(&oauthproto.DynamicClientRegistrationRequest{
-		JWKS:                        c.GetJSONWebKeys(),
+		JWKS:                        fositejose.FromFositeKeySet(c.GetJSONWebKeys()),
 		TokenEndpointAuthSigningAlg: c.GetTokenEndpointAuthSigningAlgorithm(),
 	}, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
 }

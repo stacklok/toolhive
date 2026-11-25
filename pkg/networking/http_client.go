@@ -387,7 +387,10 @@ func (b *HttpClientBuilder) WithSystemRootsPlusCABundle(path string) *HttpClient
 	return b
 }
 
-// WithTokenFromFile sets the auth token file path
+// WithTokenFromFile sets the auth token file path. The built client sends the
+// token as a bearer token on every request and follows only same-host
+// redirects (SameHostRedirectPolicy), so the token is never sent to a host
+// other than the one each request was made to.
 func (b *HttpClientBuilder) WithTokenFromFile(path string) *HttpClientBuilder {
 	b.authTokenFile = path
 	return b
@@ -501,6 +504,14 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 	client := &http.Client{
 		Transport: clientTransport,
 		Timeout:   b.clientTimeout,
+	}
+
+	// oauth2.Transport attaches the bearer token on every round trip, including
+	// each redirect hop, so the stdlib's strip-Authorization-on-cross-domain
+	// redirect does not protect it. Keep redirects on the configured host so the
+	// token never reaches another one.
+	if b.authTokenFile != "" {
+		client.CheckRedirect = SameHostRedirectPolicy()
 	}
 
 	return client, nil

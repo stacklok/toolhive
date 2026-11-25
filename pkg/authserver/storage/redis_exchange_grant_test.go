@@ -248,3 +248,26 @@ func TestRedisStorage_ExchangeGrantSignatureComesFromLookup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "sig-1", got.Signature)
 }
+
+func TestRedisStorage_ExchangeGrantRecordWithoutUpstreamSubjectLoads(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr, _ := newClockedExchangeGrantRedis(t)
+
+	old := `{"signature":"sig-1","client_id":"client-a","subject":"user-1",` +
+		`"subject_identifier":"{\"sub\":\"user-1\"}","source_expires_at":"0001-01-01T00:00:00Z",` +
+		`"issuable_token_types":["urn:ietf:params:oauth:token-type:refresh_token"],` +
+		`"expires_at":"` + contractEpoch.Add(time.Hour).Format(time.RFC3339) + `",` +
+		`"created_at":"` + contractEpoch.Format(time.RFC3339) + `"}`
+	key := redisKey(s.keyPrefix, KeyTypeExchangeGrant, "sig-1")
+	mr.HSet(key, "data", old)
+	mr.SetTTL(key, time.Hour)
+
+	got, err := s.GetExchangeGrant(ctx, "sig-1")
+	require.NoError(t, err)
+	assert.Equal(t, "client-a", got.ClientID)
+	assert.Equal(t, "user-1", got.Subject)
+	assert.Equal(t, `{"sub":"user-1"}`, got.SubjectIdentifier)
+	assert.Empty(t, got.UpstreamSubject)
+	assert.True(t, got.ExpiresAt.Equal(contractEpoch.Add(time.Hour)))
+}

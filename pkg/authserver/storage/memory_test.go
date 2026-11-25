@@ -32,11 +32,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	authsession "github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -281,7 +284,7 @@ func storedPrivateKeyJWTClient(id string, keys []jose.JSONWebKey) *fosite.Defaul
 		DefaultClient:                     &fosite.DefaultClient{ID: id},
 		TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		TokenEndpointAuthSigningAlgorithm: "RS256",
-		JSONWebKeys:                       &jose.JSONWebKeySet{Keys: keys},
+		JSONWebKeys:                       fositejose.ToFositeKeySet(&jose.JSONWebKeySet{Keys: keys}),
 	}
 }
 
@@ -965,8 +968,21 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 		{"known JTI is invalid", func(ctx context.Context, s *MemoryStorage) {
 			_ = s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute))
 		}, "test-jti", fosite.ErrJTIKnown},
-		{"expired JTI is valid", func(ctx context.Context, s *MemoryStorage) {
-			_ = s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour))
+		{"refused past deadline leaves jti reserved", func(ctx context.Context, s *MemoryStorage) {
+			_ = s.ClientAssertionJWTValid(ctx, "past-jti")
+			_ = s.SetClientAssertionJWT(ctx, "past-jti", time.Now().Add(-time.Hour)) // refused
+		}, "past-jti", fosite.ErrJTIKnown},
+		{"deadline just in the past is refused and leaves jti reserved", func(ctx context.Context, s *MemoryStorage) {
+			_ = s.ClientAssertionJWTValid(ctx, "edge-jti")
+			_ = s.SetClientAssertionJWT(ctx, "edge-jti", time.Now().Add(-time.Second)) // refused
+		}, "edge-jti", fosite.ErrJTIKnown},
+		{"JTI stays known until a deadline that is about to pass", func(ctx context.Context, s *MemoryStorage) {
+			_ = s.SetClientAssertionJWT(ctx, "grace-jti", time.Now().Add(5*time.Second))
+		}, "grace-jti", fosite.ErrJTIKnown},
+		{"expired marker is valid", func(_ context.Context, s *MemoryStorage) {
+			s.mu.Lock()
+			s.clientAssertionJWTs["expired-jti"] = time.Now().Add(-time.Hour)
+			s.mu.Unlock()
 		}, "expired-jti", nil},
 	}
 
@@ -985,6 +1001,57 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("excessive lifetime is invalid_client", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+		})
+	})
+
+	t.Run("deadline in the past is invalid_client and writes no marker", func(t *testing.T) {
+		withStorage(t, func(_ context.Context, s *MemoryStorage) {
+			err := s.SetClientAssertionJWT(context.Background(), "bad-jti", time.Now().Add(-time.Hour))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.HintField, "has expired or has no 'exp'")
+			s.mu.RLock()
+			_, exists := s.clientAssertionJWTs["bad-jti"]
+			s.mu.RUnlock()
+			assert.False(t, exists)
+		})
+	})
+
+	t.Run("the deadline it is given is stored exactly", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			deadline := time.Now().Add(2 * time.Minute)
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "exact-jti", deadline))
+
+			s.mu.RLock()
+			stored := s.clientAssertionJWTs["exact-jti"]
+			s.mu.RUnlock()
+			assert.True(t, deadline.Equal(stored), "the backend must not add retention of its own")
+		})
+	})
+
+	t.Run("deadline cap allows the retention extra", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			maxDeadline := server.ClientAssertionMaxMarkerAhead
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "cap-ok-jti", time.Now().Add(maxDeadline-5*time.Second)))
+
+			err := s.SetClientAssertionJWT(ctx, "cap-over-jti", time.Now().Add(maxDeadline+5*time.Second))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.HintField, "must be at most")
+		})
+	})
 
 	t.Run("cleanup expired JTIs on valid check", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
@@ -1252,7 +1319,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 					assert.Equal(t, expires, storedSession.ExpiresAt[tc.tokenType])
 					assert.Equal(t, "upstream-1", storedSession.GetIDPSessionID())
 					assert.Equal(t, testVerifiedUpstream, storedSession.VerifiedUpstream)
-					assert.Equal(t, "upstream-1", storedSession.JWTClaims.Extra[authsession.TokenSessionIDClaimKey])
+					assert.Equal(t, "upstream-1", storedSession.JWTClaims.Extra[claimnames.TokenSessionIDKey])
 					assert.Equal(t, map[string]any{"roles": []string{"reader"}}, storedSession.JWTClaims.Extra["profile"])
 					assert.Equal(t, map[string]any{"tags": []string{"original"}}, storedSession.GetJWTHeader().Extra["metadata"])
 				}
@@ -4099,6 +4166,16 @@ func TestMemoryStorage_ExchangeGrantContract(t *testing.T) {
 		s := NewMemoryStorage(withClientClock(clock.Now))
 		t.Cleanup(func() { _ = s.Close() })
 		return s, clock.Advance
+	})
+}
+
+func TestMemoryStorage_UserIdentityContract(t *testing.T) {
+	t.Parallel()
+	runUserIdentityStorageContract(t, func(t *testing.T) UserStorage {
+		t.Helper()
+		s := NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		return s
 	})
 }
 

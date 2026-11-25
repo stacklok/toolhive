@@ -42,6 +42,13 @@ const (
 	MinAccessTokenLifespan = 1 * time.Minute
 	// MaxAccessTokenLifespan is the maximum allowed access token lifetime.
 	MaxAccessTokenLifespan = 24 * time.Hour
+	// MinClientAccessTokenLifespan is the minimum per-client access token
+	// lifetime for ID-JAG redemption. exp is signed in whole seconds, rounded
+	// down, and expires_in is truncated when the response is written, so a
+	// lifetime under about two seconds can produce a token that is already
+	// expired, or reports expires_in 0, after its single-use ID-JAG has been
+	// consumed.
+	MinClientAccessTokenLifespan = 2 * time.Second
 	// MinRefreshTokenLifespan is the minimum allowed refresh token lifetime.
 	MinRefreshTokenLifespan = 1 * time.Hour
 	// MaxRefreshTokenLifespan is the maximum allowed refresh token lifetime (30 days).
@@ -50,21 +57,80 @@ const (
 	MinAuthCodeLifespan = 30 * time.Second
 	// MaxAuthCodeLifespan is the maximum allowed authorization code lifetime (RFC 6749 recommends 10 min max).
 	MaxAuthCodeLifespan = 10 * time.Minute
-	// MaxAssertionLifespan is the maximum allowed exp-now duration for a
-	// private_key_jwt client_assertion. fosite persists the replay marker
-	// (Storage.SetClientAssertionJWT/ConsumeAssertionJWT) with a TTL derived
-	// from the assertion's own exp claim, and neither fosite nor RFC 7523
-	// bounds that value — a client could otherwise set exp decades out and
-	// grow replay-tracking storage indefinitely. A client assertion
-	// authenticates a single token request, so it has no legitimate reason
-	// to outlive that request by more than a small clock-skew margin.
+	// MaxAssertionLifespan is how far ahead of now a private_key_jwt
+	// client_assertion's exp may be. fosite persists the replay marker
+	// (Storage.SetClientAssertionJWT) until a deadline derived from the
+	// assertion's own exp claim, and neither fosite nor RFC 7523 bounds that
+	// value — a client could otherwise set exp decades out and grow
+	// replay-tracking storage indefinitely. A client assertion authenticates a
+	// single token request, so it has no legitimate reason to expire later. The
+	// bound is applied to exp - now, with clientAssertionClockSkew added for a
+	// client whose clock runs fast (see ClientAssertionMaxExpiryAhead and
+	// ValidateClientAssertionExp). Nothing caps exp - iat.
 	MaxAssertionLifespan = 5 * time.Minute
+	// clientAssertionClockSkew is how far a private_key_jwt client assertion's
+	// exp, iat and nbf may be off from this server's clock.
+	clientAssertionClockSkew = 60 * time.Second
+	// clientAssertionReplayGrace is extra retention for a client assertion's
+	// replay marker past exp + clientAssertionClockSkew. The fallback judges the
+	// time claims one last time right after it reserves the jti, so the grace
+	// only has to cover the time from that read to the write of the marker. It
+	// does not bound the latency of the client lookup or of the jti check, and
+	// it does not cover clock differences of more than the grace between
+	// replicas sharing Redis, because Redis counts the lifetime from the writing
+	// replica's clock.
+	clientAssertionReplayGrace = 5 * time.Second
+	// ClientAssertionMaxExpiryAhead is how far ahead of now a storage backend
+	// accepts a client assertion's exp: MaxAssertionLifespan plus the skew for a
+	// client whose clock runs fast.
+	ClientAssertionMaxExpiryAhead = MaxAssertionLifespan + clientAssertionClockSkew
+	// ClientAssertionMaxMarkerAhead is how far ahead of now a storage backend
+	// accepts the replay marker deadline of a client assertion: the deadline of
+	// an exp that is ClientAssertionMaxExpiryAhead ahead.
+	ClientAssertionMaxMarkerAhead = ClientAssertionMaxExpiryAhead + clientAssertionClockSkew + clientAssertionReplayGrace
 	// MaxAssertionJTILength bounds the byte length of a private_key_jwt
 	// client_assertion's jti before it's persisted as a replay marker.
 	// Comfortably fits UUIDs/ULIDs and typical nonce formats with headroom
 	// while capping per-entry storage cost.
 	MaxAssertionJTILength = 256
 )
+
+// ClientAssertionRetainUntil returns the replay marker deadline of a client
+// assertion with the given exp: the time until which a storage backend must
+// keep the marker. The server hands this deadline to the backend, which stores
+// it as given. An assertion is still accepted for clientAssertionClockSkew after
+// its exp, and the grace covers the gap between the last time check and the
+// write of the marker.
+func ClientAssertionRetainUntil(exp time.Time) time.Time {
+	return exp.Add(clientAssertionClockSkew + clientAssertionReplayGrace)
+}
+
+// AudienceMatchingStrategy is the single audience-matching rule shared by the
+// token endpoint and startup validation: every needle must be covered by a
+// haystack entry, by path-prefix matching on parsed URLs. Both use this
+// function, so the startup checks and the token endpoint cannot disagree about
+// what one audience covers.
+func AudienceMatchingStrategy(haystack, needle []string) error {
+	return fosite.DefaultAudienceMatchingStrategy(haystack, needle)
+}
+
+// RefreshTokenScopes returns the scopes that grant offline access. It is the
+// one definition shared by fosite's gating of refresh tokens (the
+// authorization_code and resource-owner flows, and the refresh_token grant),
+// the exchange-grant rule and startup validation. It equals fosite's default,
+// so fosite's behavior does not change. It returns a new slice on every call,
+// so a caller cannot change what the next caller sees.
+//
+// The basis is OIDC Core section 11: offline_access asks for a refresh token
+// that stays usable while the user is absent. An exchange grant outlives the
+// sign-in session, so opening one needs offline_access granted at sign-in. The
+// scope set and the empty-list semantics (an empty list means no gate) are
+// those of fosite's canIssueRefreshToken. Where fosite silently omits the
+// refresh token from the authorization_code response, the exchange-grant path
+// refuses the request, because the refresh token is its only output.
+func RefreshTokenScopes() []string {
+	return []string{"offline", "offline_access"}
+}
 
 // DefaultDeviceCodeInterval is RFC 8628's suggested default minimum interval
 // between device-flow polls of the token endpoint, applied whenever
@@ -132,23 +198,34 @@ type AuthorizationServerConfig struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned delegate
-	// client is registered at startup. Every such client counts as confidential
-	// for the cleartext-transport check, whatever its auth method. It does not
-	// drive discovery; see HasStaticSecretClients and
-	// HasStaticPrivateKeyJWTClients.
-	HasStaticDelegateClients bool
+	// HasStaticConfidentialClients indicates whether any pre-provisioned
+	// confidential client exists at startup: a delegate client of any auth
+	// method, or a SPIFFE association that allows the JWT-SVID method (a bearer
+	// credential) and grants client_credentials. It counts for the
+	// cleartext-transport check. It does not drive discovery; see
+	// HasStaticSecretClients and HasStaticPrivateKeyJWTClients.
+	HasStaticConfidentialClients bool
 	// HasStaticSecretClients indicates whether any pre-provisioned delegate
 	// client authenticates with a client secret (an empty, client_secret_basic
 	// or client_secret_post token endpoint auth method). Discovery advertises
 	// the client_secret_* methods when this is true. It is deliberately separate
-	// from HasStaticDelegateClients, which counts private_key_jwt delegates too
+	// from HasStaticConfidentialClients, which counts private_key_jwt delegates too
 	// because the cleartext-transport check does.
 	HasStaticSecretClients bool
 	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
 	// delegate client authenticates with private_key_jwt. Discovery advertises
 	// that method and its signing algorithms when this is true.
 	HasStaticPrivateKeyJWTClients bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether some SPIFFE
+	// association enables the spiffe_x509 client authentication method.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether some SPIFFE
+	// association enables the spiffe_jwt client authentication method.
+	SupportsSPIFFEJWTClientAuthentication bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether some SPIFFE
+	// association grants client_credentials. It decides both whether the grant
+	// handler is registered and whether discovery advertises the grant.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -182,15 +259,17 @@ type AuthorizationServerConfig struct {
 	// SPIFFEClientResolver resolves a verified SPIFFE identity to its
 	// configured OAuth client for the SPIFFE client-authentication strategy.
 	// Nil when no SPIFFE trust is configured; package server cannot import
-	// the concrete association registry and storage that back this resolver
+	// the concrete association registry that backs this resolver
 	// (authserver imports server), so the caller supplies it as a closure.
 	SPIFFEClientResolver SPIFFEClientResolver
 	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
-	// X.509-SVID client certificates. Not yet read by this package: carried
-	// here, copied through from AuthorizationServerParams, so the X.509 and
-	// JWT SPIFFE client-authentication arms land on a shared field instead of
-	// each independently extending this struct.
+	// X.509-SVID client certificates, read by
+	// newSPIFFEClientAuthenticationStrategy.
 	SPIFFEX509BundleSource x509bundle.Source
+	// SPIFFEX509ClientMatcher reports whether a client_id names an association
+	// enabled for spiffe_x509. Nil when no SPIFFE trust is configured;
+	// required alongside SPIFFEClientResolver and SPIFFEX509BundleSource.
+	SPIFFEX509ClientMatcher SPIFFEX509ClientMatcher
 	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
 	// JWT-SVID client assertions, read by newSPIFFEClientAuthenticationStrategy.
 	SPIFFEJWTBundleSource jwtbundle.Source
@@ -255,23 +334,34 @@ type AuthorizationServerParams struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned delegate
-	// client is registered at startup. Every such client counts as confidential
-	// for the cleartext-transport check, whatever its auth method. It does not
-	// drive discovery; see HasStaticSecretClients and
-	// HasStaticPrivateKeyJWTClients.
-	HasStaticDelegateClients bool
+	// HasStaticConfidentialClients indicates whether any pre-provisioned
+	// confidential client exists at startup: a delegate client of any auth
+	// method, or a SPIFFE association that allows the JWT-SVID method (a bearer
+	// credential) and grants client_credentials. It counts for the
+	// cleartext-transport check. It does not drive discovery; see
+	// HasStaticSecretClients and HasStaticPrivateKeyJWTClients.
+	HasStaticConfidentialClients bool
 	// HasStaticSecretClients indicates whether any pre-provisioned delegate
 	// client authenticates with a client secret (an empty, client_secret_basic
 	// or client_secret_post token endpoint auth method). Discovery advertises
 	// the client_secret_* methods when this is true. It is deliberately separate
-	// from HasStaticDelegateClients, which counts private_key_jwt delegates too
+	// from HasStaticConfidentialClients, which counts private_key_jwt delegates too
 	// because the cleartext-transport check does.
 	HasStaticSecretClients bool
 	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
 	// delegate client authenticates with private_key_jwt. Discovery advertises
 	// that method and its signing algorithms when this is true.
 	HasStaticPrivateKeyJWTClients bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether some SPIFFE
+	// association enables the spiffe_x509 client authentication method.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether some SPIFFE
+	// association enables the spiffe_jwt client authentication method.
+	SupportsSPIFFEJWTClientAuthentication bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether some SPIFFE
+	// association grants client_credentials. It decides both whether the grant
+	// handler is registered and whether discovery advertises the grant.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -303,11 +393,11 @@ type AuthorizationServerParams struct {
 	// See the identically named field on AuthorizationServerConfig.
 	SPIFFEClientResolver SPIFFEClientResolver
 	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
-	// X.509-SVID client certificates. Not yet read by this package: threaded
-	// through here so the X.509 and JWT SPIFFE client-authentication arms
-	// land on a shared field instead of each independently extending this
-	// struct.
+	// X.509-SVID client certificates, copied through to
+	// AuthorizationServerConfig.
 	SPIFFEX509BundleSource x509bundle.Source
+	// SPIFFEX509ClientMatcher: see AuthorizationServerConfig.
+	SPIFFEX509ClientMatcher SPIFFEX509ClientMatcher
 	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
 	// JWT-SVID client assertions, copied through to AuthorizationServerConfig.
 	SPIFFEJWTBundleSource jwtbundle.Source
@@ -383,7 +473,8 @@ func validateTokenLifespans(cfg *AuthorizationServerParams) error {
 // ValidateConfidentialClientTransport rejects cleartext HTTP configurations
 // when any confidential client is enabled, whether it is admitted through DCR
 // or statically declared. Statically declared delegate clients always count,
-// regardless of their authentication method.
+// regardless of their authentication method, as do SPIFFE associations that
+// allow the JWT-SVID method and grant client_credentials.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -392,7 +483,9 @@ func ValidateConfidentialClientTransport(
 		return nil
 	}
 	if insecureAllowHTTP {
-		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
+			"delegate clients or JWT-SVID SPIFFE associations " +
+			"that grant client_credentials) " +
 			"cannot be combined with insecure_allow_http: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
@@ -412,18 +505,24 @@ func ValidateConfidentialClientTransport(
 		return fmt.Errorf("confidential clients require a valid issuer URL")
 	}
 	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
+			"delegate clients or JWT-SVID SPIFFE associations " +
+			"that grant client_credentials) " +
 			"cannot use the loopback HTTP opt-in with a non-loopback issuer: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
+			"delegate clients or JWT-SVID SPIFFE associations " +
+			"that grant client_credentials) " +
 			"cannot be combined with a plain-HTTP loopback issuer unless " +
 			"insecure_allow_confidential_over_loopback_http is set: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	if !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
+			"delegate clients or JWT-SVID SPIFFE associations " +
+			"that grant client_credentials) " +
 			"cannot use a plain-HTTP non-loopback issuer: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
@@ -468,7 +567,7 @@ func validateParams(cfg *AuthorizationServerParams) error {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(
-		cfg.AllowConfidentialClientRegistration || cfg.HasStaticDelegateClients,
+		cfg.AllowConfidentialClientRegistration || cfg.HasStaticConfidentialClients,
 		cfg.InsecureAllowHTTP, cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 	); err != nil {
 		return err
@@ -528,7 +627,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AuthorizeCodeLifespan:          cfg.AuthCodeLifespan,
 		GlobalSecret:                   cfg.HMACSecrets.Current,
 		RotatedGlobalSecrets:           cfg.HMACSecrets.Rotated,
-		TokenURL:                       cfg.Issuer + "/oauth/token",
+		TokenURL:                       cfg.Issuer + TokenEndpointPath,
 		EnforcePKCE:                    true,
 		EnablePKCEPlainChallengeMethod: false, // Only allow S256 per MCP specification
 		// ScopeStrategy validates requested scopes against client's registered scopes.
@@ -538,8 +637,12 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		// AudienceMatchingStrategy and JWKSFetcherStrategy are set explicitly
 		// because fosite's getters lazily assign their defaults on first use,
 		// an unsynchronized write that races between concurrent requests.
-		AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+		AudienceMatchingStrategy: AudienceMatchingStrategy,
 		JWKSFetcherStrategy:      unsupportedJWKSFetcher{},
+		// RefreshTokenScopes is set explicitly so fosite's refresh-token gating
+		// (authorization_code, resource-owner and refresh_token grants), the
+		// exchange-grant rule and startup validation share one definition.
+		RefreshTokenScopes: RefreshTokenScopes(),
 		// ClientSecretsHasher compares client secrets at the token endpoint.
 		// Plain SHA-256 is correct here: the secrets are 256 bits of CSPRNG
 		// output, never client-chosen, so a password-stretching KDF protects
@@ -569,9 +672,12 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		CIMDEnabled:                               cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
+		HasStaticConfidentialClients:              cfg.HasStaticConfidentialClients,
 		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
 		HasStaticPrivateKeyJWTClients:             cfg.HasStaticPrivateKeyJWTClients,
+		SupportsSPIFFEX509ClientAuthentication:    cfg.SupportsSPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:     cfg.SupportsSPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:      cfg.SupportsSPIFFEClientCredentialsGrant,
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
@@ -581,8 +687,20 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      cfg.SPIFFEClientResolver,
 		SPIFFEX509BundleSource:                    cfg.SPIFFEX509BundleSource,
+		SPIFFEX509ClientMatcher:                   cfg.SPIFFEX509ClientMatcher,
 		SPIFFEJWTBundleSource:                     cfg.SPIFFEJWTBundleSource,
 	}, nil
+}
+
+// validateSPIFFEX509Wiring rejects a resolver and X.509 bundle source without a
+// matcher. The strategy routes to the X.509 arm only through the matcher, so
+// that combination would leave X.509-SVID authentication silently unreachable.
+func validateSPIFFEX509Wiring(config *AuthorizationServerConfig) error {
+	if config.SPIFFEClientResolver != nil && config.SPIFFEX509BundleSource != nil &&
+		config.SPIFFEX509ClientMatcher == nil {
+		return fmt.Errorf("SPIFFE X.509 bundle source requires an X.509 client matcher")
+	}
+	return nil
 }
 
 // unsupportedJWKSFetcher is the fosite JWKS fetcher for this server. Client
@@ -607,11 +725,14 @@ func NewAuthorizationServer(
 	factories ...Factory,
 ) (fosite.OAuth2Provider, error) {
 	if err := ValidateConfidentialClientTransport(
-		config.AllowConfidentialClientRegistration || config.HasStaticDelegateClients,
+		config.AllowConfidentialClientRegistration || config.HasStaticConfidentialClients,
 		config.InsecureAllowHTTP,
 		config.AccessTokenIssuer,
 		config.InsecureAllowConfidentialOverLoopbackHTTP,
 	); err != nil {
+		return nil, err
+	}
+	if err := validateSPIFFEX509Wiring(config); err != nil {
 		return nil, err
 	}
 	providerConfig := *config
@@ -622,19 +743,32 @@ func NewAuthorizationServer(
 	fositeConfig.RevocationHandlers = slices.Clone(fositeConfig.RevocationHandlers)
 	fositeConfig.PushedAuthorizeEndpointHandlers = slices.Clone(fositeConfig.PushedAuthorizeEndpointHandlers)
 	providerConfig.Config = &fositeConfig
-	provider := fosite.NewOAuth2Provider(storage, newClientAssertionAudienceConfig(&fositeConfig))
+	assertionStore := newClientAssertionExpiryStore(storage, time.Now)
+	provider := fosite.NewOAuth2Provider(assertionStore, newClientAssertionAudienceConfig(&fositeConfig))
 	// Select the fallback after constructing the provider because fosite's
 	// built-in strategy is a provider method. Preserve a caller-supplied strategy
 	// when present, then install the SPIFFE dispatcher on the provider-local copy.
-	defaultStrategy := func() fosite.ClientAuthenticationStrategy {
-		if fositeConfig.ClientAuthenticationStrategy != nil {
-			return fositeConfig.ClientAuthenticationStrategy
-		}
-		return provider.DefaultClientAuthenticationStrategy
-	}()
-	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(
-		defaultStrategy, config.GetAccessTokenIssuer(),
-		config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
+	// The clock skew recovery relies on fosite verifying the signature before it
+	// validates the claims, so it is enabled for fosite's own strategy only.
+	defaultStrategy := fositeConfig.ClientAuthenticationStrategy
+	recoverTimeErrors := false
+	if defaultStrategy == nil {
+		defaultStrategy = provider.DefaultClientAuthenticationStrategy
+		recoverTimeErrors = true
+	}
+	// The JWS guard is outermost so it runs before any strategy parses
+	// a client assertion (see fositejose.IsUnsafeJWS). The audience strategy
+	// applies to the caller-supplied strategy too, like the JWS guard, and must
+	// stay above the clock skew strategy, whose recovery does not check aud.
+	fositeConfig.ClientAuthenticationStrategy = newUnsafeJWSGuardClientAuthenticationStrategy(
+		newSPIFFEClientAuthenticationStrategy(
+			newClientAssertionErrorStrategy(newClientAssertionAudienceStrategy(
+				newClientAssertionClockSkewStrategy(defaultStrategy, assertionStore, time.Now, recoverTimeErrors),
+				fositeConfig.AccessTokenIssuer,
+			)), config.GetAccessTokenIssuer(),
+			config.SPIFFEJWTBundleSource, config.SPIFFEX509BundleSource, providerConfig.SPIFFEClientResolver,
+			providerConfig.SPIFFEX509ClientMatcher,
+		),
 	)
 
 	for _, factory := range factories {

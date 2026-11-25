@@ -48,15 +48,15 @@ thv config set-build-env <KEY> [value] [flags]
 ### Options
 
 ```
-      --from-env      Read value from shell environment at build time
-      --from-secret   Read value from a ToolHive secret at build time (value argument becomes secret name)
-  -h, --help          help for set-build-env
+      --from-env[=true|false]      Read value from shell environment at build time
+      --from-secret[=true|false]   Read value from a ToolHive secret at build time (value argument becomes secret name)
+  -h, --help[=true|false]          help for set-build-env
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

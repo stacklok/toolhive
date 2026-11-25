@@ -231,14 +231,18 @@ For a complete example, see [`examples/operator/external-auth/mcpexternalauthcon
 Because appending a certificate to a referenced ConfigMap makes that CA a trust anchor — for an upstream provider's login, or for a trusted issuer's subject-token validation — restrict write access to a `caBundleRef` ConfigMap with the same RBAC care as the auth server's signing-key Secret.
 
 MCPExternalAuthConfig resources can be referenced via two paths:
-- `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection). This is the original reference path.
+- `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection, Entra on-behalf-of). This is the original reference path.
 - `authServerRef` — for the embedded auth server type (`embeddedAuthServer`) only. This dedicated reference path makes it possible to configure both incoming auth (embedded auth server) and outgoing auth (e.g., AWS STS) on the same workload resource.
 
 **Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
 
+**Entra on-behalf-of (`type: obo`)**: the MCPExternalAuthConfig reconciler validates what the schema cannot (a tenant, `clientId`, `clientSecretRef`, at least one of `audience`/`scopes`, a `cacheSkew` that is non-negative and at most MaxInt32 seconds, and a usable tenant/authority) and reports a violation as `Valid=False / Reason=InvalidConfig` without requeueing. For MCPServer and MCPRemoteProxy the operator (`cmd/thv-operator/pkg/controllerutil/obo.go`) appends an `obo` middleware config to the RunConfig and mounts the client secret into the proxyrunner pod as `TOOLHIVE_OBO_CLIENT_SECRET`; a workload that references an `obo` config without `oidcConfigRef` is rejected with `ExternalAuthConfigValidated=False / Reason=InvalidConfig`, because OBO needs an authenticated user token. VirtualMCPServer mounts each OBO backend's secret under a per-config name (`TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>_<HASH8>`, where `<HASH8>` is the first 8 hex characters of the SHA-256 of the config name, so `my-cfg` and `my.cfg` stay distinct) so several OBO backends in one pod do not collide. See [Virtual MCP outgoing authentication](10-virtual-mcp-architecture.md#outgoing-authentication) and the [OBO middleware](../middleware.md#9-on-behalf-of-obo-middleware).
+
+**Referenced config failures on consumers**: when a referenced MCPExternalAuthConfig is `Valid=False`, MCPServer and MCPRemoteProxy copy its reason onto their `ExternalAuthConfigValidated` condition with the message `Referenced MCPExternalAuthConfig '<name>' is invalid: <source message>`, or without the `: <source message>` suffix when the source message is empty. The prefix tells a copied `InvalidConfig` from one the consumer set itself, such as the obo incoming-auth rejection, so the copied one clears when the source heals even if its `ConfigHash` is unchanged.
+
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
-`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. However, `RunConfig.Validate()` still rejects any non-empty SPIFFE trust configuration before the runner starts, so this wiring is not reachable for SPIFFE authentication in normal deployment. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443, but X.509-SVID verification is not implemented. Operator configuration and network exposure for this listener are not supported. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
+`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. `RunConfig.Validate()` accepts only the `file` bundle source, so a `bundle_endpoint` or `workload_api` source passes the CRD schema but is rejected by the MCPExternalAuthConfig validation and by the VirtualMCPServer inline `authServerConfig` validation (both through `EmbeddedAuthServerConfig.ValidateSPIFFEBundleSourceTypes`, which calls `authserver.ValidateRuntimeSPIFFEBundleSourceType`), and again by `BuildAuthServerRunConfig` when a referencing workload reconciles. With a `file` source, JWT-SVID and X.509-SVID client authentication are enforced. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443. The operator's `embeddedAuthServer.tlsListener` field, its validation and the pod rollout rules are described in the [Operator configuration](18-spiffe-association-declarations.md#operator-configuration) section of that document. When the listener is enabled, the operator adds an `https-auth` container port and Service port 8443 (with `appProtocol: https`) alongside the existing `http` port. X.509 client authentication needs TLS passed through to the listener, because a proxy or Ingress that terminates TLS drops the client certificate. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
 
 ### MCPOIDCConfig
 
@@ -249,8 +253,10 @@ Defines shared OIDC provider configuration that can be referenced by multiple wo
 MCPOIDCConfig eliminates OIDC configuration duplication — define an identity provider once and reference it from any number of workloads. A single issuer URL change updates all referencing workloads automatically.
 
 **Configuration source variants** (mutually exclusive, CEL enforced):
-- `kubernetesServiceAccount` — Uses Kubernetes service account tokens with auto-discovered JWKS
+- `kubernetesServiceAccount` — Uses Kubernetes service account tokens with auto-discovered JWKS. Optional `serviceAccount` and `namespace` restrict which callers are accepted by checking the token's `sub` claim: `serviceAccount` requires exactly `system:serviceaccount:<namespace>:<serviceAccount>` (namespace defaults to the referencing workload's), `namespace` alone accepts any service account in that namespace, and leaving both empty applies no subject restriction. The operator resolves these into `RequiredSubject` / `RequiredSubjectPrefix` on the token validator, which rejects mismatches with `invalid_token` (`invalid subject`) and logs the rejected subject at WARN. To fetch discovery and JWKS from the API server, the workload sends its own service account token, but by default only when the URL it fetches (`jwksUrl` if set, otherwise the issuer) is an https URL on `kubernetes.default.svc` or `kubernetes.default.svc.cluster.local`. `useClusterAuth: true` sends it unconditionally (for example on a custom cluster domain), and `false` never does.
 - `inline` — Explicit issuer, JWKS URL, client credentials (secrets via `clientSecretRef`)
+
+**Issuer authentication token**: `kubernetesServiceAccount` with `useClusterAuth` (the default) sends the pod's service-account token on OIDC discovery and JWKS requests, so it works against an API server without anonymous discovery access; `inline.jwksAuthTokenPath` does the same with any token file. MCPServer, MCPRemoteProxy, and VirtualMCPServer all honor it. For a VirtualMCPServer, the operator rejects a relative path or one containing `..` with `AuthConfigured=False` (`AuthInvalid`) and does not write the ConfigMap. vMCP refuses to start if the configured file is missing, with an error naming `jwksAuthTokenPath`. A client that sends this token follows only same-host redirects and refuses HTTPS-to-HTTP downgrades, so a discovery, JWKS, or introspection endpoint that redirects to another host fails instead of receiving the token.
 
 **Per-server overrides** live in the workload's `oidcConfigRef` field (not the shared spec):
 - `audience` (required) — Must be unique per server to prevent token replay
@@ -295,7 +301,7 @@ Defines reusable validating and mutating webhook middleware configurations that 
 MCPWebhookConfig declares one or more `validating` and/or `mutating` webhooks (URL, timeout, failure policy, optional TLS, optional HMAC signing). At least one webhook must be defined (CEL-enforced). The MCPServer references it via `spec.webhookConfigRef`, and the proxy-runner injects the corresponding middleware into the request chain.
 
 **Key features:**
-- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors
+- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors. `ignore` applies to timeouts, network errors and invalid webhook responses; a failure inside ToolHive before the call (encoding the payload, building the request, reading the HMAC secret) always denies the request
 - Optional `tlsConfig` with CA bundle, mTLS client cert, or `insecureSkipVerify`
 - Optional `hmacSecretRef` adds the `X-Toolhive-Signature` header to outgoing payloads
 
@@ -327,8 +333,11 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 - `authzConfig` - Authorization policies
 - `telemetryConfigRef` - Reference to shared MCPTelemetryConfig (replaces deprecated inline `telemetry`)
 - `toolConfigRef` - Tool filtering and renaming
+- `resources` - CPU/memory requests and limits for the proxy container
 
 OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
+
+**Default resources**: unless the user removes them, the proxy container gets default requests and limits (requests: 50m CPU / 64Mi memory; limits: 200m CPU / 256Mi memory). User values override them per field, from `resources` or from the `toolhive` container in `podTemplateSpec`, with `podTemplateSpec` taking precedence. The controller layers all three sources before it applies the `podTemplateSpec` strategic merge patch. If the user sets a limit without a request, the default request is dropped, so Kubernetes copies the limit into the request at Pod creation, as it would with no defaults. A limits-only proxy therefore keeps its QoS class and reservation. If the user sets a request without a limit and the request is above the default limit, the limit is raised to match. For example, `requests.memory: 512Mi` on its own yields a 512Mi memory limit rather than the 256Mi default. A `null` in `podTemplateSpec` removes that default instead. Proxies that predate these defaults roll once on operator upgrade to pick them up.
 
 **Combined auth pattern**: `authServerRef` and `externalAuthConfigRef` can be used together on the same MCPRemoteProxy to enable both incoming client authentication (embedded auth server) and outgoing remote service authentication (e.g., AWS STS) simultaneously. This is the primary use case for `authServerRef` on MCPRemoteProxy. If both fields point to an `embeddedAuthServer` resource, the controller produces a validation error.
 
@@ -433,9 +442,32 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Backend count
 - Detailed conditions for validation, discovery, and readiness
 
+For incoming OIDC authentication, `CABundleRefValidated` reports whether the CA
+ConfigMap and selected key referenced through `spec.incomingAuth.oidcConfigRef`
+exist. It is `True` with reason `CABundleRefValid`, or `False` with reason
+`CABundleRefNotFound` for a missing ConfigMap and `CABundleRefInvalid` for an
+invalid reference or missing key. The key defaults to `ca.crt`. Missing or invalid
+CA references produce advisory conditions that allow reconciliation to continue;
+the condition does not alter TLS configuration or add CRD spec fields. Removing
+the CA reference removes the condition. Indexed ConfigMap watches follow the
+shared OIDC configuration back to its vMCP consumers and refresh the condition
+when the ConfigMap is created, updated, or deleted.
+Transient ConfigMap read errors preserve the previous condition and return an
+error for retry before resource reconciliation and the status flush. Existing
+deployed resources remain in place, while pending resource and status updates
+are deferred until a successful retry.
+
 **References**: MCPGroup (via `spec.groupRef.name`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
+
+In static mode (`outgoingAuth.source: inline`), the operator embeds backend configuration
+in a ConfigMap and uses its checksum on the Deployment pod template to trigger rollouts.
+Generated static backends omit transient `workload_status` metadata, so a backend's
+`Ready → Pending → Ready` transition leaves the checksum unchanged when membership,
+endpoints, and other configuration remain unchanged. Runtime probes and status reporting
+continue tracking backend health. Actual configuration or membership changes still update
+the checksum and trigger the required rollout.
 
 **Key features:**
 

@@ -36,16 +36,16 @@ thv llm teardown [tool-name] [flags]
 ### Options
 
 ```
-      --client string   Remove configuration for only this AI tool by name (e.g. claude-code, cursor). Omit to revert all configured tools.
-  -h, --help            help for teardown
-      --keep-tokens     Retain cached OIDC tokens when no configured tools remain
-      --purge-tokens    Delete cached OIDC tokens even when other tools remain configured
+      --client string               Remove configuration for only this AI tool by name (e.g. claude-code, cursor). Omit to revert all configured tools.
+  -h, --help[=true|false]           help for teardown
+      --keep-tokens[=true|false]    Retain cached OIDC tokens when no configured tools remain
+      --purge-tokens[=true|false]   Delete cached OIDC tokens even when other tools remain configured
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

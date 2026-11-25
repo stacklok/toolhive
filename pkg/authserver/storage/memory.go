@@ -28,6 +28,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // defaultMaxMemoryCIMDClients caps the live CIMD rows MemoryStorage keeps.
@@ -204,10 +205,10 @@ type MemoryStorage struct {
 	// This enables O(1) lookup during authentication callbacks.
 	providerIdentities map[string]*ProviderIdentity
 
-	// dcrCredentials maps DCRKey -> DCRCredentials for RFC 7591 Dynamic Client
+	// dcrCredentials maps dcrkey.Key -> DCRCredentials for RFC 7591 Dynamic Client
 	// Registration credentials. These entries come from OUTBOUND DCR: ToolHive
 	// acting as a DCR client to register itself against a configured upstream
-	// IdP (see pkg/auth/dcr/store.go, the only caller of StoreDCRCredentialsIfAbsent).
+	// IdP (see pkg/auth/dcr/storage_store.go, the resolver persistence adapter).
 	// This is not reachable from the inbound, unauthenticated /oauth/register
 	// handler, so unlike clients (bounded by maxDCRClients and the client expiry maps because
 	// every inbound registration call mints an entry), growth here is bounded
@@ -225,7 +226,7 @@ type MemoryStorage struct {
 	// re-derived by the resolver) accumulate stale entries that survive until
 	// process restart. The Redis backend's SetEX TTL mitigates this in
 	// production deployments.
-	dcrCredentials map[DCRKey]*DCRCredentials
+	dcrCredentials map[dcrkey.Key]*DCRCredentials
 
 	// cleanupInterval is how often the background cleanup runs
 	cleanupInterval time.Duration
@@ -301,7 +302,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		exchangeGrantJTIs:          make(map[assertionJWTKey]exchangeGrantMarker),
 		users:                      make(map[string]*User),
 		providerIdentities:         make(map[string]*ProviderIdentity),
-		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
+		dcrCredentials:             make(map[dcrkey.Key]*DCRCredentials),
 		cleanupInterval:            DefaultCleanupInterval,
 		dcrClientExpiry:            make(map[string]time.Time),
 		cimdClientExpiry:           make(map[string]time.Time),
@@ -968,22 +969,25 @@ func (s *MemoryStorage) ClientAssertionJWTValid(_ context.Context, jti string) e
 	return nil
 }
 
-// SetClientAssertionJWT extends jti's replay marker to its real expiry,
-// rejecting an exp further than MaxAssertionLifespan in the future. This
-// bounds how long a replay-tracking entry survives regardless of what the
-// client's own assertion claims — otherwise a registered caller could set
-// exp decades out and grow this map indefinitely. Unconditional overwrite,
-// not a fresh atomic check: only the caller that already won
+// SetClientAssertionJWT extends jti's replay marker to deadline, which is stored
+// as given. The authorization server hands it the marker deadline
+// (server.ClientAssertionRetainUntil of the assertion's exp), so the marker
+// outlives the clock skew in which the assertion is still accepted. A deadline
+// that server.ValidateClientAssertionMarkerDeadline refuses, because it is not
+// in the future or too far ahead, is rejected with invalid_client and leaves the
+// reservation as it was. The ahead bound keeps a registered caller from setting
+// a deadline decades out and growing this map indefinitely. Unconditional
+// overwrite, not a fresh atomic check: only the caller that already won
 // ClientAssertionJWTValid's reservation reaches this call.
-func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
-	if time.Until(exp) > server.MaxAssertionLifespan {
-		return fmt.Errorf("assertion lifetime exceeds maximum of %s", server.MaxAssertionLifespan)
+func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, deadline time.Time) error {
+	if err := server.ValidateClientAssertionMarkerDeadline(deadline, time.Now()); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.clientAssertionJWTs[jti] = exp
+	s.clientAssertionJWTs[jti] = deadline
 	return nil
 }
 
@@ -2353,12 +2357,10 @@ func cloneDCRCredentials(c *DCRCredentials) *DCRCredentials {
 // calling. A defensive copy is made so subsequent caller mutations do not
 // affect persisted state.
 //
-// Create-if-absent, not overwrite: a single process's dcrFlight singleflight
-// (see pkg/auth/dcr) already prevents concurrent same-key writers within
-// this process, so the check below is not closing a live race here — it is
-// contract symmetry with RedisStorage.StoreDCRCredentialsIfAbsent, which
-// DOES need it to prevent two replicas from independently registering RFC
-// 7591 clients for the same Key and racing on which write wins.
+// Create-if-absent, not overwrite: the resolver's process-wide singleflight
+// coalesces normal same-key resolutions, but direct store callers can race.
+// This check also preserves symmetry with RedisStorage, where concurrent
+// replicas can independently register distinct RFC 7591 clients.
 //
 // The in-memory backend has no native TTL, so "absent" cannot be a plain
 // map-presence check: the Redis backend's rows self-evict via TTL derived
@@ -2471,7 +2473,7 @@ func dcrCredentialsEqual(a, b *DCRCredentials) bool {
 
 // GetDCRCredentials retrieves DCR credentials by key.
 // Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
-func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {
+func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key dcrkey.Key) (*DCRCredentials, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

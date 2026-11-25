@@ -57,6 +57,22 @@ func newRealTestHandlerWithWorkflows(
 	configure ...func(*server.Config),
 ) http.Handler {
 	t.Helper()
+	return newRealTestHandlerWithBackendClient(t, backendURL, workflowDefs, nil, configure...)
+}
+
+// newRealTestHandlerWithBackendClient is newRealTestHandlerWithWorkflows with
+// an optional decorator around the BackendClient the server routes calls
+// through, the way an embedder wraps it. A nil decorate leaves the real client
+// undecorated. Discovery keeps using the undecorated client, so a decorator
+// that refuses calls does not hide the backend's tools.
+func newRealTestHandlerWithBackendClient(
+	t *testing.T,
+	backendURL string,
+	workflowDefs map[string]*composer.WorkflowDefinition,
+	decorate func(vmcp.BackendClient) vmcp.BackendClient,
+	configure ...func(*server.Config),
+) http.Handler {
+	t.Helper()
 
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -102,11 +118,15 @@ func newRealTestHandlerWithWorkflows(
 	for _, configure := range configure {
 		configure(cfg)
 	}
+	callClient := vmcp.BackendClient(backendClient)
+	if decorate != nil {
+		callClient = decorate(callClient)
+	}
 	srv, err := server.New(
 		context.Background(),
 		cfg,
 		rt,
-		backendClient,
+		callClient,
 		mockBackendRegistry,
 		workflowDefs,
 	)

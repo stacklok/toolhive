@@ -86,7 +86,7 @@ type AuthConfigError struct {
 	Error error
 	// Reason, when non-empty, overrides the default "ConversionFailed" condition reason.
 	// Used to mirror upstream MCPExternalAuthConfig.Status.Conditions[Valid].Reason
-	// (e.g. "EnterpriseRequired") onto the per-backend auth config condition so the
+	// (e.g. "InvalidConfig") onto the per-backend auth config condition so the
 	// failure surfaces with the same taxonomy on the consumer CR.
 	Reason string
 }
@@ -428,7 +428,7 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 // runValidations runs all pre-reconciliation validations in order: schema-level
 // spec validation, PodTemplateSpec, GroupRef, CompositeToolRefs, EmbeddingServerRef,
 // auth-related checks (inline AuthServerConfig + AuthzConfig/upstream coherence,
-// delegated to runAuthValidations), and the advisory SessionStorage warning.
+// delegated to runAuthValidations), and advisory OIDC CA bundle and SessionStorage checks.
 // Returns (true, nil) to continue reconciliation.
 // Returns (false, nil) for spec validation errors that should NOT trigger requeue
 // (user must fix the spec; next reconciliation is triggered by spec changes).
@@ -490,6 +490,9 @@ func (r *VirtualMCPServerReconciler) runValidations(
 
 	// Advisory: warn when replicas > 1 but session storage is not Redis-backed.
 	r.validateSessionStorageForReplicas(vmcp, statusManager)
+	if err := r.validateCABundleRef(ctx, vmcp, statusManager); err != nil {
+		return false, err
+	}
 
 	return true, nil
 }
@@ -641,7 +644,7 @@ func (r *VirtualMCPServerReconciler) validateAuthServerConfigCABundles(
 	if !stderrors.As(err, &invalidCABundleErr) {
 		return false, err
 	}
-	message := fmt.Sprintf("invalid CA bundle: %v", err)
+	message := ctrlutil.InvalidCABundleMessage(err)
 	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 	statusManager.SetMessage(message)
 	statusManager.SetAuthServerConfigValidatedCondition(
@@ -693,72 +696,34 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	cfg := vmcp.Spec.AuthServerConfig
 
 	if cfg.Issuer == "" {
-		message := "spec.authServerConfig.issuer is required"
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
+		return failAuthServerConfig(vmcp, statusManager, "spec.authServerConfig.issuer is required")
+	}
+
+	if err := cfg.ValidateTLSListener(); err != nil {
+		return failAuthServerConfig(vmcp, statusManager, fmt.Sprintf("spec.authServerConfig: %v", err))
 	}
 
 	if err := cfg.ValidateInboundGrants(); err != nil {
-		message := fmt.Sprintf("spec.authServerConfig: %v", err)
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
+		return failAuthServerConfig(vmcp, statusManager, fmt.Sprintf("spec.authServerConfig: %v", err))
+	}
+
+	if err := cfg.ValidateSPIFFEBundleSourceTypes(); err != nil {
+		return failAuthServerConfig(vmcp, statusManager, fmt.Sprintf("spec.authServerConfig: %v", err))
 	}
 
 	// Admission-time check: http:// issuers for non-localhost hosts require
 	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
 	// will crash at startup with a validateIssuerURL failure.
-	if strings.HasPrefix(cfg.Issuer, "http://") {
-		// url.Parse succeeds for any URL that passes the CRD regex; the
-		// parsed.Host != "" guard defends against the degenerate empty-host case.
-		parsed, err := url.Parse(cfg.Issuer)
-		if err == nil && parsed.Host != "" && !networking.IsLocalhost(parsed.Host) && !cfg.InsecureAllowHTTP {
-			message := fmt.Sprintf(
-				"spec.authServerConfig.issuer %q uses http:// with a non-localhost host; "+
-					"set spec.authServerConfig.insecureAllowHTTP: true to allow this for trusted "+
-					"in-cluster deployments, or use https:// for production deployments",
-				cfg.Issuer,
-			)
-			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-			statusManager.SetMessage(message)
-			statusManager.SetAuthServerConfigValidatedCondition(
-				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-				message,
-				metav1.ConditionFalse,
-			)
-			statusManager.SetObservedGeneration(vmcp.Generation)
-			return stderrors.New(message)
-		}
+	if message := insecureHTTPIssuerMessage(cfg); message != "" {
+		return failAuthServerConfig(vmcp, statusManager, message)
 	}
 
 	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
 		!slices.ContainsFunc(cfg.TrustedIssuers, func(issuer mcpv1beta1.TrustedIssuerConfig) bool {
 			return issuer.JWTBearerGrant != nil
 		}) {
-		message := "spec.authServerConfig requires at least one upstream provider unless " +
-			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured"
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
+		return failAuthServerConfig(vmcp, statusManager, "spec.authServerConfig requires at least one upstream provider unless "+
+			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured")
 	}
 
 	// Validate additionalAuthorizationParams / additionalTokenParams on each
@@ -771,16 +736,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			err = mcpv1beta1.ValidateAdditionalTokenParams(prefix, cfg.UpstreamProviders[i].AdditionalTokenParams())
 		}
 		if err != nil {
-			message := err.Error()
-			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-			statusManager.SetMessage(message)
-			statusManager.SetAuthServerConfigValidatedCondition(
-				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-				message,
-				metav1.ConditionFalse,
-			)
-			statusManager.SetObservedGeneration(vmcp.Generation)
-			return stderrors.New(message)
+			return failAuthServerConfig(vmcp, statusManager, err.Error())
 		}
 	}
 
@@ -793,6 +749,45 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return nil
+}
+
+// failAuthServerConfig records an invalid AuthServerConfig on the status and
+// returns the message as an error.
+func failAuthServerConfig(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	message string,
+) error {
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(message)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+		message,
+		metav1.ConditionFalse,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return stderrors.New(message)
+}
+
+// insecureHTTPIssuerMessage returns the rejection message for an http://
+// issuer on a non-localhost host without insecureAllowHTTP, or "" when the
+// issuer is acceptable.
+func insecureHTTPIssuerMessage(cfg *mcpv1beta1.EmbeddedAuthServerConfig) string {
+	if !strings.HasPrefix(cfg.Issuer, "http://") {
+		return ""
+	}
+	// url.Parse succeeds for any URL that passes the CRD regex; the
+	// parsed.Host != "" guard defends against the degenerate empty-host case.
+	parsed, err := url.Parse(cfg.Issuer)
+	if err != nil || parsed.Host == "" || networking.IsLocalhost(parsed.Host) || cfg.InsecureAllowHTTP {
+		return ""
+	}
+	return fmt.Sprintf(
+		"spec.authServerConfig.issuer %q uses http:// with a non-localhost host; "+
+			"set spec.authServerConfig.insecureAllowHTTP: true to allow this for trusted "+
+			"in-cluster deployments, or use https:// for production deployments",
+		cfg.Issuer,
+	)
 }
 
 // applyAuthServerIdentitySynthesizedCondition surfaces the IdentitySynthesized
@@ -1978,8 +1973,12 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	// Check if port has changed
-	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != vmcpDefaultPort {
+	// Check if the operator-owned ports have changed
+	if ctrlutil.ContainerPortsDrifted(
+		container.Ports,
+		ctrlutil.ProxyContainerPorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
+		ctrlutil.ProxyContainerPorts(vmcpDefaultPort, true),
+	) {
 		return true
 	}
 
@@ -2282,8 +2281,12 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		return true
 	}
 
-	// Check if port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != vmcpDefaultPort {
+	// Check if the operator-owned ports have changed
+	if ctrlutil.ServicePortsDrifted(
+		service.Spec.Ports,
+		ctrlutil.ProxyServicePorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
+		ctrlutil.ProxyOwnedPortNames(),
+	) {
 		return true
 	}
 
@@ -2673,6 +2676,19 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 
 	// Set unique env var names per ExternalAuthConfig to avoid conflicts
 	// when multiple configs of the same type reference different secrets
+	setUniqueSecretEnvNames(strategy, externalAuthConfig)
+
+	return strategy, nil
+}
+
+// setUniqueSecretEnvNames points each secret-bearing strategy at the env var
+// name the deployment mounts its secret under (see
+// getExternalAuthConfigSecretEnvVars). The names incorporate the
+// ExternalAuthConfig name so several configs of one type never collide.
+func setUniqueSecretEnvNames(
+	strategy *authtypes.BackendAuthStrategy,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) {
 	if strategy.TokenExchange != nil &&
 		externalAuthConfig.Spec.TokenExchange != nil &&
 		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
@@ -2683,6 +2699,11 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
 		strategy.HeaderInjection.HeaderValueEnv = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
+	if strategy.OBO != nil &&
+		externalAuthConfig.Spec.OBO != nil &&
+		externalAuthConfig.Spec.OBO.ClientSecretRef != nil {
+		strategy.OBO.ClientSecretEnv = ctrlutil.GenerateUniqueOBOSecretEnvVarName(externalAuthConfig.Name)
+	}
 	if strategy.XAA != nil && externalAuthConfig.Spec.XAA != nil {
 		if externalAuthConfig.Spec.XAA.IDPClientSecretRef != nil {
 			strategy.XAA.IDPClientSecretEnv = ctrlutil.GenerateUniqueXAAIDPSecretEnvVarName(externalAuthConfig.Name)
@@ -2691,8 +2712,6 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 			strategy.XAA.TargetClientSecretEnv = ctrlutil.GenerateUniqueXAATargetSecretEnvVarName(externalAuthConfig.Name)
 		}
 	}
-
-	return strategy, nil
 }
 
 // convertBackendAuthConfigToVMCP converts a BackendAuthConfig from CRD to vmcp config.
@@ -2838,9 +2857,9 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			continue
 		}
 
-		// Mirror the source's Valid=False condition (e.g. EnterpriseRequired for
-		// obo-typed configs in upstream-only builds) onto the per-backend
-		// condition so the failure surfaces with the same reason taxonomy.
+		// Mirror the source's Valid=False condition (e.g. InvalidConfig for a
+		// malformed obo config) onto the per-backend condition so the failure
+		// surfaces with the same reason taxonomy.
 		if mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrored != nil {
 			authErrors = append(authErrors, AuthConfigError{
 				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
@@ -3012,10 +3031,10 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 }
 
 // injectSubjectProviderIfNeeded auto-populates the upstream provider name on
-// token_exchange, aws_sts, and xaa strategies when the field is empty and an
-// embedded auth server is configured on the VirtualMCPServer. All three
-// strategies use SubjectProviderName for the same concept: which upstream
-// provider's token to pull from Identity.UpstreamTokens.
+// token_exchange, aws_sts, xaa, and obo strategies when the field is empty and
+// an embedded auth server is configured on the VirtualMCPServer. All four
+// strategies use the field (SubjectTokenProviderName for obo) for the same
+// concept: which upstream provider's token to pull from Identity.UpstreamTokens.
 //
 // The same first-upstream-name extraction appears in pkg/runner/middleware.go
 // and pkg/vmcp/config/defaults.go, which share the authserver.UpstreamRunConfig
@@ -3026,8 +3045,8 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 // Delegates the actual defaulting to authtypes.DefaultSubjectProviderName.
 // Returns strategy unchanged when it is nil or no embedded auth server is
 // configured. Can return authtypes.ErrAmbiguousSubjectProvider when strategy
-// is xaa, SubjectProviderName is empty, and more than one upstream provider
-// is configured.
+// is xaa or obo, its subject provider name is empty, and more than one
+// upstream provider is configured.
 func injectSubjectProviderIfNeeded(
 	strategy *authtypes.BackendAuthStrategy,
 	embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig,
@@ -3058,7 +3077,7 @@ func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConf
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
-// Preserves metadata and uses transport types from workload Specs.
+// Preserves metadata except transient workload status and uses transport types from workload Specs.
 // Logs warnings when backends are skipped due to missing URL or transport information.
 // caBundlePathMap maps backend names to their CA bundle mount paths (populated for MCPServerEntry backends).
 // excludedBackends names backends whose outgoing auth strategy failed to build (see
@@ -3093,11 +3112,15 @@ func convertBackendsToStaticBackends(
 			continue
 		}
 
+		// Backend phase is runtime state and must not change the configuration checksum that triggers rollouts.
+		metadata := maps.Clone(backend.Metadata)
+		delete(metadata, "workload_status")
+
 		cfg := vmcpconfig.StaticBackendConfig{
 			Name:      backend.Name,
 			URL:       backend.BaseURL,
 			Transport: transport,
-			Metadata:  backend.Metadata,
+			Metadata:  metadata,
 		}
 
 		if caBundlePath, ok := caBundlePathMap[backend.Name]; ok {
@@ -3190,6 +3213,14 @@ func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Index the CA dependency; the mapper's vMCP -> OIDC config lookup reuses
+	// vmcpOIDCConfigRefIndexKey, registered by MCPOIDCConfigReconciler.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPOIDCConfig{},
+		oidcConfigCABundleConfigMapIndex, indexOIDCConfigByCABundleConfigMap,
+	); err != nil {
+		return fmt.Errorf("failed to set up OIDC CA bundle ConfigMap index: %w", err)
+	}
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(), &mcpv1beta1.VirtualMCPServer{},
 		virtualMCPServerConfigMapIndex, indexVirtualMCPServerConfigMaps,
@@ -3243,6 +3274,13 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigMapToVirtualMCPServer),
+			builder.WithPredicates(configMapDataChangedPredicate()),
+		).
+		// Incoming OIDC CA references live in the shared MCPOIDCConfig rather
+		// than on vMCP itself, so follow both indexed reference edges.
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapOIDCCABundleConfigMapToVirtualMCPServer),
 			builder.WithPredicates(configMapDataChangedPredicate()),
 		).
 		Complete(r)
@@ -3790,7 +3828,7 @@ func setAuthConfigConditions(
 	if defaultAuthError != nil {
 		// Default auth has error - set False condition. When the source's
 		// MCPExternalAuthConfig surfaced a Valid=False condition we propagate
-		// the source's reason (e.g. EnterpriseRequired); otherwise we report
+		// the source's reason (e.g. InvalidConfig); otherwise we report
 		// ConversionFailed.
 		statusManager.SetAuthConfigCondition(
 			"DefaultAuthConfig",

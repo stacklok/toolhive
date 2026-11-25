@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/internal/wireerr"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -103,6 +104,18 @@ type FactoryConfig struct {
 	// monitor, so in-tree compositions are covered; direct-Serve callers that want
 	// the #5861 fix must pass it explicitly.
 	BackendHealth health.StatusProvider
+
+	// SweepInterval is the period between proactive sweeps of the node-local
+	// session cache. Each sweep checks cached sessions against storage (without
+	// refreshing their TTL) and evicts any whose storage record is gone, closing
+	// their backend connections. This reclaims sessions terminated on another
+	// replica or expired after their client abandoned them, whose entry would
+	// otherwise sit in the cache until LRU eviction because no further access
+	// triggers the lazy checkSession (#6932).
+	//
+	// A value of 0 uses defaultSweepInterval. A negative value disables the
+	// sweep entirely (the pre-#6932 behaviour).
+	SweepInterval time.Duration
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry
@@ -344,7 +357,7 @@ func monitorOptimizer(
 
 	callToolErrors, err := meter.Int64Counter(
 		"toolhive_vmcp_optimizer_call_tool_errors",
-		metric.WithDescription("Total number of CallTool Go errors"),
+		metric.WithDescription("Total number of CallTool Go errors, excluding -32042 URL elicitation answers"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create call_tool errors counter: %w", err)
@@ -411,6 +424,10 @@ type telemetryOptimizer struct {
 
 var _ optimizer.Optimizer = (*telemetryOptimizer)(nil)
 
+// callToolOutcomeURLElicitationRequired is the optimizer.CallTool span's
+// "outcome" attribute when the inner tool answered with -32042.
+const callToolOutcomeURLElicitationRequired = "url_elicitation_required"
+
 func (t *telemetryOptimizer) FindTool(ctx context.Context, input optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
 	ctx, span := t.tracer.Start(ctx, "optimizer.FindTool",
 		trace.WithAttributes(attribute.String("tool_description", input.ToolDescription)),
@@ -456,6 +473,12 @@ func (t *telemetryOptimizer) CallTool(ctx context.Context, input optimizer.CallT
 	t.callToolDuration.Record(ctx, duration.Seconds(), metricAttrs)
 
 	if err != nil {
+		// A -32042 answers the call by asking the user to visit a URL; it is
+		// not a failure, so it neither counts as an error nor fails the span.
+		if wireerr.FindURLElicitationRequired(err) != nil {
+			span.SetAttributes(attribute.String("outcome", callToolOutcomeURLElicitationRequired))
+			return nil, err
+		}
 		t.callToolErrors.Add(ctx, 1, metricAttrs)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

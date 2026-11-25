@@ -24,13 +24,13 @@ thv client setup [flags]
 ### Options
 
 ```
-  -h, --help   help for setup
+  -h, --help[=true|false]   help for setup
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

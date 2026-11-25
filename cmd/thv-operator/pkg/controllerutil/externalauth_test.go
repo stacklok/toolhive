@@ -104,5 +104,40 @@ func TestGenerateUniqueHeaderInjectionEnvVarName(t *testing.T) {
 	}
 }
 
+// TestGenerateUniqueOBOSecretEnvVarName pins the OBO vMCP env var name format
+// (readable sanitized name plus a hash of the raw name) and that names which
+// sanitize identically still map to distinct env vars.
+func TestGenerateUniqueOBOSecretEnvVarName(t *testing.T) {
+	t.Parallel()
+
+	envVarPattern := regexp.MustCompile(`^[A-Z0-9_]+$`)
+
+	tests := []struct {
+		name       string
+		configName string
+		want       string
+	}{
+		// Suffixes are the first 8 hex characters of sha256(configName).
+		{name: "hyphenated name", configName: "my-auth-config", want: "TOOLHIVE_OBO_CLIENT_SECRET_MY_AUTH_CONFIG_EB7C1742"},
+		{name: "a-b", configName: "a-b", want: "TOOLHIVE_OBO_CLIENT_SECRET_A_B_D44362D6"},
+		{name: "a.b", configName: "a.b", want: "TOOLHIVE_OBO_CLIENT_SECRET_A_B_2E7336DC"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := GenerateUniqueOBOSecretEnvVarName(tt.configName)
+			assert.Equal(t, tt.want, got)
+			assert.Regexp(t, envVarPattern, got, "result must be a valid environment variable name")
+		})
+	}
+
+	t.Run("names that sanitize identically do not collide", func(t *testing.T) {
+		t.Parallel()
+		assert.NotEqual(t, GenerateUniqueOBOSecretEnvVarName("a-b"), GenerateUniqueOBOSecretEnvVarName("a.b"))
+		assert.NotEqual(t, GenerateUniqueOBOSecretEnvVarName("my-cfg"), GenerateUniqueOBOSecretEnvVarName("my.cfg"))
+	})
+}
+
 // Tests for the header-forward env var generators moved with the
 // implementation to pkg/vmcp/headerforward/wirefmt — see wirefmt_test.go.

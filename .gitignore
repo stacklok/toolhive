@@ -35,6 +35,8 @@ go.work
 .claude/settings.local.json
 .claude/worktrees/
 kconfig.yaml
+# Entra OBO live-tenant e2e credentials (test/e2e/thv-operator/entraobo)
+.env.entra-obo
 
 .DS_Store
 
@@ -51,3 +53,6 @@ cmd/vmcp/__debug_bin*
 # Superpowers planning artifacts
 docs/superpowers/
 .pr-review/
+
+# Ginkgo JUnit report written by test/e2e/run_tests.sh
+test/e2e/junit-report.xml

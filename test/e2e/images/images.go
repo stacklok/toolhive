@@ -42,7 +42,7 @@ const (
 	// in Kubernetes tests. These run Flask-based Python services for testing authentication flows.
 	PythonImage = pythonImageURL + ":" + pythonImageTag
 
-	networkFixtureImageDigest = "sha256:533b0b2f9b5d46fd097091cf826f27902f1d6c3bca714b6dc74551356aa97a51"
+	networkFixtureImageDigest = "sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928"
 	// NetworkFixtureImage is pinned because network-isolation tests use it for
 	// security-sensitive DNS and HTTP fixtures in the Docker-backed CI shard.
 	NetworkFixtureImage = pythonImageURL + ":" + pythonImageTag + "@" + networkFixtureImageDigest
@@ -159,4 +159,19 @@ const (
 	// DexImage is used as an in-cluster OIDC provider for E2E tests requiring
 	// the embedded auth server OAuth2 flow (upstreamInject authentication).
 	DexImage = dexImageURL + ":" + dexImageTag
+
+	spireServerImageURL = "ghcr.io/spiffe/spire-server"
+	spireServerImageTag = "1.15.0"
+	// SPIREServerImage is used by the SPIRE E2E harness to issue SPIFFE identities.
+	SPIREServerImage = spireServerImageURL + ":" + spireServerImageTag
+
+	spireAgentImageURL = "ghcr.io/spiffe/spire-agent"
+	spireAgentImageTag = "1.15.0"
+	// SPIREAgentImage is used by the SPIRE E2E harness to attest workloads.
+	SPIREAgentImage = spireAgentImageURL + ":" + spireAgentImageTag
+
+	// SPIFFEClientImage is the SPIFFE E2E client workload. It is built locally
+	// and loaded into kind by `task build-load-spiffe-e2e-client-image`, never
+	// pulled.
+	SPIFFEClientImage = "kind.local/toolhive-spiffe-e2e-client/spiffe-client:latest"
 )

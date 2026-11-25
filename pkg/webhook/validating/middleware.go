@@ -148,8 +148,9 @@ func createValidatingHandler(executors []clientExecutor, serverName, transport s
 						return
 					}
 
-					// Handle error based on failure policy
-					if exec.config.FailurePolicy == webhook.FailurePolicyIgnore {
+					// Handle error based on failure policy. A local error means the
+					// webhook was never consulted, so it is never ignored.
+					if exec.config.FailurePolicy == webhook.FailurePolicyIgnore && !webhook.IsLocalError(err) {
 						slog.Warn("Validating webhook error ignored due to fail-open policy",
 							"webhook", whName, "error", err)
 						continue

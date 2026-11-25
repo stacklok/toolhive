@@ -306,6 +306,7 @@ func (a *Applier) buildUpgradedConfig(
 		// on upgrade, not hard-fail. See #5775.
 		runner.WithNetworkIsolation(old.IsolateNetwork),
 		runner.WithAllowDockerGateway(old.AllowDockerGateway),
+		runner.WithReadOnlyRootfs(old.ReadOnlyRootfs),
 		runner.WithTrustProxyHeaders(old.TrustProxyHeaders),
 		runner.WithStrictProtocolValidation(old.StrictProtocolValidation),
 		runner.WithProxyMode(old.ProxyMode),

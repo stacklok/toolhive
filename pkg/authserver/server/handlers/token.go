@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -22,13 +23,16 @@ import (
 // request/response flow at a level determined by the error's HTTP status:
 // Debug for 4xx (the only class an unauthenticated caller can trigger, so
 // logging every one at Error would let a caller flood the log stream) and
-// Error for 5xx (a storage outage or signing-key failure, which must not be
-// silent at default log level). RFC6749Error.Error() returns only the error
-// code, so the diagnostic fields are read individually.
+// Error for 5xx (a storage outage or server failure, which must not be
+// silent at default log level). The exception is the 503 issuer-unavailable
+// refusal: an unauthenticated caller can trigger it on every request while an
+// issuer is down, so it logs at Debug here, and the validator logs the cause
+// once per backoff window at Error. RFC6749Error.Error() returns only the
+// error code, so the diagnostic fields are read individually.
 func logAccessError(ctx context.Context, msg string, err error) {
 	rfcErr := fosite.ErrorToRFC6749Error(err)
 	lvl := slog.LevelDebug
-	if rfcErr.CodeField >= http.StatusInternalServerError {
+	if rfcErr.CodeField >= http.StatusInternalServerError && !isIssuerUnavailable(rfcErr) {
 		lvl = slog.LevelError
 	}
 	//nolint:gosec // G706: error is request-derived (form parsing, client auth);
@@ -38,6 +42,15 @@ func logAccessError(ctx context.Context, msg string, err error) {
 		"debug", rfcErr.DebugField,
 		"status", rfcErr.CodeField,
 	)
+}
+
+// isIssuerUnavailable reports whether rfcErr is the 503 issuer-unavailable
+// refusal the redemption grants return when an issuer's signing keys cannot
+// be obtained. No other token-endpoint path returns temporarily_unavailable,
+// so matching on the code and status is enough here.
+func isIssuerUnavailable(rfcErr *fosite.RFC6749Error) bool {
+	return rfcErr.ErrorField == fosite.ErrTemporarilyUnavailable.ErrorField &&
+		rfcErr.CodeField == http.StatusServiceUnavailable
 }
 
 // TokenHandler handles POST /oauth/token requests.
@@ -75,7 +88,23 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if h.applyResourceAudience(ctx, w, accessRequest) {
+	ownsResource := server.OwnsResourceParameter(accessRequest)
+	if ownsResource {
+		// DPoP-bound ID-JAGs are unsupported: the server cannot bind a cnf claim
+		// yet, and ignoring the proof would issue an unbound token. The handler's
+		// own phase-1 refusals come first, in NewAccessRequest.
+		if len(req.Header.Values("DPoP")) > 0 {
+			slog.Warn("DPoP-bound ID-JAGs are not supported; request refused",
+				"client_id", accessRequest.GetClient().GetID(),
+			)
+			h.provider.WriteAccessError(ctx, w, accessRequest, &fosite.RFC6749Error{
+				ErrorField:       fosite.ErrInvalidRequest.ErrorField,
+				DescriptionField: server.ReasonDPoPNotSupported,
+				CodeField:        http.StatusBadRequest,
+			})
+			return
+		}
+	} else if h.applyResourceAudience(ctx, w, accessRequest) {
 		return
 	}
 	h.applySubjectIdentifier(accessRequest)
@@ -88,6 +117,20 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		// silently swallowed at Debug level.
 		logAccessError(ctx, "failed to create access response", err)
 		h.provider.WriteAccessError(ctx, w, accessRequest, err)
+		return
+	}
+
+	// Only a server defect can reach this: a handler claimed the request without
+	// owning the resource. Its side effects are not undone, but nothing is sent.
+	if ownsResource && (response.GetExtra(oauthproto.ParamIssuedTokenType) != oauthproto.TokenTypeIDJAG ||
+		len(accessRequest.GetGrantedAudience()) > 0) {
+		slog.Error("token response for an ID-JAG request is not a bare ID-JAG; request refused",
+			"client_id", accessRequest.GetClient().GetID(),
+			"issued_token_type", fmt.Sprint(response.GetExtra(oauthproto.ParamIssuedTokenType)),
+			"granted_audience_count", len(accessRequest.GetGrantedAudience()),
+		)
+		h.provider.WriteAccessError(ctx, w, accessRequest,
+			fosite.ErrServerError.WithHint("The token could not be issued."))
 		return
 	}
 

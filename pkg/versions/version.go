@@ -52,6 +52,15 @@ func GetUserAgent() string {
 	return fmt.Sprintf("ToolHive/%s (%s) go/%s", info.Version, info.Platform, info.GoVersion)
 }
 
+// GetComponentUserAgent returns the User-Agent a ToolHive component sends,
+// naming the component so receivers can tell ToolHive components apart.
+// Format: toolhive/component version build_type (platform), the format the
+// update check and usage metrics clients send.
+func GetComponentUserAgent(component string) string {
+	info := GetVersionInfo()
+	return componentUserAgent(component, info.Version, BuildType, info.Platform)
+}
+
 // getVersionInfoWithValues returns version info with provided values (for testing)
 func getVersionInfoWithValues(version, commit, buildDate string) VersionInfo {
 	ver := version
@@ -98,4 +107,13 @@ func getVersionInfoWithValues(version, commit, buildDate string) VersionInfo {
 		GoVersion: runtime.Version(),
 		Platform:  fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
 	}
+}
+
+// componentUserAgent formats a component User-Agent from explicit values (for
+// testing). A numeric version gains a "v" prefix so release builds read v1.2.3.
+func componentUserAgent(component, version, buildType, platform string) string {
+	if version != "" && version[0] >= '0' && version[0] <= '9' {
+		version = "v" + version
+	}
+	return fmt.Sprintf("toolhive/%s %s %s (%s)", component, version, buildType, platform)
 }

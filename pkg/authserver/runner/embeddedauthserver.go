@@ -8,19 +8,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
-	"net/url"
 	"os"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	josev3 "github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 
 	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
@@ -28,13 +27,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
-	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 )
@@ -56,10 +53,6 @@ const (
 	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
-
-	// maxAuthServerBodySize caps auth-server request bodies; shared with the DCR
-	// endpoint via handlers.MaxDCRBodySize so the two bounds cannot drift.
-	maxAuthServerBodySize = handlers.MaxDCRBodySize
 )
 
 // EmbeddedAuthServerOption configures an EmbeddedAuthServer.
@@ -71,12 +64,33 @@ type embeddedAuthServerOptions struct {
 	accessTokenType              string
 	listenerHost                 string
 	authorizationDetailsRegistry *authorizationdetails.Registry
+	actorTokenValidators         map[string]tokenexchange.ActorValidatorRegistration
 }
 
 // WithAuthorizationDetailsRegistry configures the embedded authorization server
-// to pass the registry to its RFC 8693 token-exchange handler.
+// to pass the registry to its RFC 8693 token-exchange handler and to its
+// ID-JAG redemption handler, which processes an ID-JAG's signed
+// authorization_details claim with it.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) EmbeddedAuthServerOption {
 	return func(options *embeddedAuthServerOptions) { options.authorizationDetailsRegistry = registry }
+}
+
+// WithActorTokenValidators registers the actor-token validators an embedder
+// supplies for ID-JAG issuance, keyed by the name a delegate client's
+// actor_profile.validator selects. Each registration pairs a validator with the
+// ActIssuer ToolHive writes as act.iss for the agents it accepts. Each validator
+// must be safe for concurrent use. The map is copied into the server's Config;
+// names that start with "toolhive." are reserved, and an ActIssuer must pass the
+// checks of authserver.Config.ActorTokenValidators. The server reads the map
+// only at startup. The input is copied when the option is created; repeated
+// options replace the map.
+func WithActorTokenValidators(
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) EmbeddedAuthServerOption {
+	copied := maps.Clone(validators)
+	return func(options *embeddedAuthServerOptions) {
+		options.actorTokenValidators = maps.Clone(copied)
+	}
 }
 
 // WithListenerHost sets the address the TLS listener binds. Callers pass the
@@ -115,7 +129,7 @@ func WithConsentExemptClientIDs(ids []string) EmbeddedAuthServerOption {
 // claims only for sessions whose login happened while the list was non-empty; other
 // users get them from their next login. Adding an audience to a non-empty list
 // applies at the next refresh. The setting never grants an audience. It is
-// deliberately not a RunConfig field yet, so config files and operator CRDs cannot
+// deliberately not a RunConfig field, so config files and operator CRDs cannot
 // set it. The input is copied when the option is created, and repeated options
 // replace the list.
 func WithSubjectIdentifierAudiences(audiences []string) EmbeddedAuthServerOption {
@@ -141,12 +155,13 @@ func WithAccessTokenType(typ string) EmbeddedAuthServerOption {
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
 //
-// The DCR credential store is owned by the underlying authserver.Server and
+// The DCR credential store is borrowed by the underlying authserver.Server and
 // reached via DCRStore(); see that accessor's doc for SECURITY and lifecycle
 // notes. Storing it twice on this struct would create a drift window with
 // the server's copy, so we delegate through e.server.DCRStore() instead.
 type EmbeddedAuthServer struct {
 	server       authserver.Server
+	ownedStorage storage.Storage
 	keyProvider  keys.KeyProvider
 	tlsListener  *tlsListener
 	listenerHost string
@@ -173,6 +188,8 @@ func resolveEmbeddedAuthServerOptions(opts []EmbeddedAuthServerOption) embeddedA
 //
 // The cfg parameter contains file paths and environment variable names that are
 // resolved at runtime to build the underlying authserver.Config.
+// This constructor owns its storage: it closes it on construction failure or
+// during Close, after runtime shutdown, even when runtime cleanup fails.
 func NewEmbeddedAuthServer(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
@@ -185,10 +202,6 @@ func NewEmbeddedAuthServer(
 	if err := validateConsentPolicyForRunConfig(cfg, options); err != nil {
 		return nil, fmt.Errorf("invalid consent policy: %w", err)
 	}
-
-	// Register gjson modifiers used by IdentityFromToken configs (e.g. @upstreamjwt).
-	// Without this, modifier-bearing paths silently fail to resolve.
-	upstream.RegisterModifiers()
 
 	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
 	// scope absent from scopes_supported) BEFORE touching storage or any
@@ -207,6 +220,9 @@ func NewEmbeddedAuthServer(
 	if err := validateAuthorizationDetailsRegistryForRunConfig(cfg, options); err != nil {
 		return nil, err
 	}
+	if err := validateActorProfilesForRunConfig(cfg, options); err != nil {
+		return nil, err
+	}
 	// Create the storage backend FIRST so the DCR resolver and the auth
 	// server share the same persistence. Both MemoryStorage and RedisStorage
 	// satisfy storage.DCRCredentialStore (verified by package-level var _
@@ -219,7 +235,19 @@ func NewEmbeddedAuthServer(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil, options)
+	return newOwnedEmbeddedAuthServer(ctx, cfg, stor, options)
+}
+
+func newOwnedEmbeddedAuthServer(
+	ctx context.Context, cfg *authserver.RunConfig, stor storage.Storage, options embeddedAuthServerOptions,
+) (_ *EmbeddedAuthServer, retErr error) {
+	defer closeStorageOnError(stor, &retErr)
+	e, err := newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil, options)
+	if err != nil {
+		return nil, err
+	}
+	e.ownedStorage = stor
+	return e, nil
 }
 
 // NewEmbeddedAuthServerWithStorage is the exported core constructor that
@@ -244,16 +272,10 @@ func NewEmbeddedAuthServer(
 // Go-only settings, such as the token-exchange authorization-details registry,
 // are supplied through EmbeddedAuthServerOption and are not part of RunConfig.
 //
-// NewEmbeddedAuthServer dispatches into this helper after running
-// createStorage; tests dispatch into it directly so they can supply a
-// closeTrackingStorage wrapper to verify the deferred-cleanup contract.
-//
-// Resource ownership: on success, the returned EmbeddedAuthServer takes
-// ownership of stor (its Close releases the backend). On any error path
-// after entry, the deferred cleanup closes stor before returning so a
-// crash-looping caller (typical when DCR's network I/O fails) does not
-// leak the Redis client connection pool / MemoryStorage cleanup goroutine
-// on every restart. The named return retErr is the gate.
+// Resource ownership: stor is borrowed on both success and failure. The caller
+// must close it after all servers and other users have stopped. Close releases
+// this instance's listener, DCR re-check loops, and underlying server resources,
+// but never the supplied storage.
 func NewEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
@@ -300,21 +322,10 @@ func prepareInboundGrantConfiguration(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build SPIFFE trust config: %w", err)
 	}
-	// SPIFFE client authentication exclusively uses the token-exchange grant
-	// (validateSPIFFEGrants enforces this), so configuring any SPIFFE
-	// association implies token-exchange capability independent of
-	// legacy/canonical token-exchange enablement.
-	normalized.Capabilities.TokenExchange = normalized.Capabilities.TokenExchange || hasSPIFFEClientAuth(cfg)
 	return normalized, delegateClients, spiffeTrust, nil
 }
 
-// hasSPIFFEClientAuth reports whether cfg declares any SPIFFE client-auth
-// association.
-func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
-	return cfg.InboundGrants != nil && len(cfg.InboundGrants.SPIFFEClientAuth) > 0
-}
-
-// buildUpstreamFilter constructs a handlers.UpstreamFilter from the RunConfig,
+// buildUpstreamFilter constructs an upstreamfilter.UpstreamFilter from the RunConfig,
 // if one is configured. It returns an untyped nil (not a typed-nil interface
 // value) when cfg.UpstreamFilter is unset so authserver.Config.UpstreamFilter
 // remains truly nil and the handler walks all configured upstreams —
@@ -325,7 +336,7 @@ func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
 // references, fewer-than-two upstreams, etc.), so a Validate-passing cfg will
 // not fail here in practice. The second construction is cheap and acts as a
 // belt-and-suspenders guard for consumers that bypassed Validate.
-func buildUpstreamFilter(cfg *authserver.RunConfig) (handlers.UpstreamFilter, error) {
+func buildUpstreamFilter(cfg *authserver.RunConfig) (upstreamfilter.UpstreamFilter, error) {
 	if cfg.UpstreamFilter == nil {
 		return nil, nil
 	}
@@ -358,28 +369,20 @@ func newEmbeddedAuthServerWithStorage(
 	stor storage.Storage,
 	delegateClients []authserver.DelegateClient,
 	options embeddedAuthServerOptions,
-) (retEAS *EmbeddedAuthServer, retErr error) {
-	// Validate required inputs before the deferred cleanup is installed: cfg is
-	// dereferenced during validation and stor is closed by that cleanup.
+) (*EmbeddedAuthServer, error) {
 	if err := validateEmbeddedAuthServerInputs(cfg, stor); err != nil {
 		return nil, err
 	}
 
-	// From here on, any error must close stor before returning.
-	defer closeStorageOnError(stor, &retErr)
-
 	// Validate consent prerequisites before upstream resolution, which may
-	// perform discovery and DCR network I/O. This remains inside the cleanup
-	// gate so caller-supplied storage is closed on constructor failure.
+	// perform discovery and DCR network I/O.
 	if err := validateConsentPolicyForRunConfig(cfg, options); err != nil {
 		return nil, fmt.Errorf("invalid consent policy: %w", err)
 	}
 
 	// Validate cfg here too. NewEmbeddedAuthServer validates before
 	// createStorage, but direct callers of this exported constructor would
-	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
-	// a validation failure still closes the caller-supplied storage per the
-	// resource-ownership contract.
+	// otherwise skip the check.
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
@@ -390,8 +393,17 @@ func newEmbeddedAuthServerWithStorage(
 	if err != nil {
 		return nil, err
 	}
-	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange {
-		return nil, fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if options.authorizationDetailsRegistry != nil &&
+		!authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
+		return nil, authserver.ErrAuthorizationDetailsRegistryUnreachable
+	}
+	// Refuse a required_subject_claims that cannot be satisfied before upstream
+	// resolution, which may register this server at an upstream via DCR.
+	if err := authserver.ValidateIDJAGSubjectClaimAudiences(delegateClients, options.subjectIdentifierAudiences); err != nil {
+		return nil, err
+	}
+	if err := validateActorProfilesForRunConfig(cfg, options); err != nil {
+		return nil, err
 	}
 
 	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, spiffeTrust); err != nil {
@@ -474,6 +486,7 @@ func newEmbeddedAuthServerWithStorage(
 		DelegationTokenLifespan:                   delegationLifespan,
 		Upstreams:                                 upstreams,
 		ConsentExemptClientIDs:                    slices.Clone(options.consentExemptClientIDs),
+		ActorTokenValidators:                      maps.Clone(options.actorTokenValidators),
 		ScopesSupported:                           slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:                      slices.Clone(cfg.BaselineClientScopes),
 		AllowedAudiences:                          slices.Clone(cfg.AllowedAudiences),
@@ -494,9 +507,8 @@ func newEmbeddedAuthServerWithStorage(
 		// authorization-critical data is protected without a deep copy here.
 		TrustedIssuers:  trustedIssuers,
 		DelegateClients: delegateClients,
-		// SPIFFE client authentication factors into Capabilities.TokenExchange
-		// already (see prepareInboundGrantConfiguration): it exclusively uses
-		// the token-exchange grant, independent of legacy/canonical enablement.
+		// Capabilities.TokenExchange already accounts for SPIFFE associations
+		// that list the token-exchange grant (see NormalizeInboundGrants).
 		DisableTokenExchange:         !normalized.Capabilities.TokenExchange,
 		AuthorizationDetailsRegistry: options.authorizationDetailsRegistry,
 		SPIFFETrust:                  spiffeTrust,
@@ -588,15 +600,11 @@ func (e *EmbeddedAuthServer) attachTLSListener(cfg *authserver.RunConfig, keyPai
 //   - /oauth/authorize, /oauth/callback, /oauth/token, /oauth/register
 //   - /.well-known/jwks.json, /.well-known/oauth-authorization-server, /.well-known/openid-configuration
 //
-// All auth-server endpoints are body-size-limited to handlers.MaxDCRBodySize
-// (64KB) and reject oversized requests with HTTP 413 Request Entity Too Large.
+// The underlying authserver.Server rejects bodies with a declared Content-Length
+// over 64 KiB early with HTTP 413. Bodies with unknown or understated lengths are
+// limited to 64 KiB when downstream handlers read them.
 func (e *EmbeddedAuthServer) Handler() http.Handler {
-	// Cap request bodies on all auth-server endpoints (e.g. POST /oauth/token,
-	// /oauth/register) so they cannot be used for memory-exhaustion DoS. These
-	// routes are mounted outside the MCP middleware chain (the proxies and vMCP
-	// mount them via Routes()/RegisterHandlers, which derive from this handler),
-	// so the cap is applied here to cover every consumer.
-	return bodylimit.Middleware(maxAuthServerBodySize)(e.server.Handler())
+	return e.server.Handler()
 }
 
 // Start binds Host:TLSListenerPort synchronously and serves in a goroutine.
@@ -613,10 +621,10 @@ func (e *EmbeddedAuthServer) Start() error {
 	return e.tlsListener.start()
 }
 
-// Close releases resources held by the EmbeddedAuthServer.
-// This method is idempotent - subsequent calls after the first will return
-// the same error (if any) without attempting to close resources again.
-// Should be called during runner shutdown.
+// Close releases instance-owned runtime resources, then storage only if it was
+// acquired by NewEmbeddedAuthServer. Caller-supplied storage is never closed.
+// Stop and drain HTTP serving outside this instance's TLS listener first.
+// Concurrent and repeated calls return the same joined shutdown errors.
 func (e *EmbeddedAuthServer) Close() error {
 	e.closeOnce.Do(func() {
 		if e.stopDCRRechecks != nil {
@@ -628,7 +636,12 @@ func (e *EmbeddedAuthServer) Close() error {
 			listenerErr = e.tlsListener.shutdown(ctx)
 			cancel()
 		}
-		e.closeErr = errors.Join(listenerErr, e.server.Close())
+		runtimeErr := errors.Join(listenerErr, e.server.Close())
+		var storageErr error
+		if e.ownedStorage != nil {
+			storageErr = e.ownedStorage.Close()
+		}
+		e.closeErr = errors.Join(runtimeErr, storageErr)
 	})
 	return e.closeErr
 }
@@ -720,22 +733,26 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 	if err != nil {
 		return fmt.Errorf("normalize inbound grants: %w", err)
 	}
-	if !normalized.Capabilities.TokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if !authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
+		return authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
+}
+
+// validateActorProfilesForRunConfig runs authserver.ValidateActorProfilesForRunConfig
+// on the registered validators. It fails before upstream work in both constructors,
+// and in NewEmbeddedAuthServer also before storage creation.
+func validateActorProfilesForRunConfig(cfg *authserver.RunConfig, options embeddedAuthServerOptions) error {
+	return authserver.ValidateActorProfilesForRunConfig(cfg, options.actorTokenValidators)
 }
 
 func validateTLSListenerIssuer(cfg *authserver.RunConfig, leaf *x509.Certificate) error {
 	if !cfg.HasSPIFFEX509ClientAuth() {
 		return nil
 	}
-	issuer, err := url.Parse(cfg.Issuer)
+	issuer, err := authserver.ValidateSPIFFEX509Issuer(cfg.Issuer)
 	if err != nil {
-		return fmt.Errorf("parse auth server issuer: %w", err)
-	}
-	if issuer.Scheme != "https" {
-		return fmt.Errorf("SPIFFE X.509 authentication requires an https issuer")
+		return err
 	}
 	port := issuer.Port()
 	if port == "" {
@@ -1240,17 +1257,17 @@ func resolveSecret(file, envVar string) (string, error) {
 
 // loadJWKSFile reads a public JWKS document. Key contents are validated later
 // by the shared configured-client validator.
-func loadJWKSFile(path string) (*josev3.JSONWebKeySet, error) {
+func loadJWKSFile(path string) (*jose.JSONWebKeySet, error) {
 	// #nosec G304 - file path is from configuration, not user input
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read jwks file %q: %w", path, err)
 	}
-	var jwks josev3.JSONWebKeySet
-	if err := json.Unmarshal(data, &jwks); err != nil {
+	jwks, err := oauthproto.UnmarshalJWKS(data)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse jwks file %q: %w", path, err)
 	}
-	return &jwks, nil
+	return jwks, nil
 }
 
 // resolveDelegateClients resolves secret and JWKS file references and copies
@@ -1259,6 +1276,10 @@ func loadJWKSFile(path string) (*josev3.JSONWebKeySet, error) {
 func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]authserver.DelegateClient, error) {
 	resolved := make([]authserver.DelegateClient, len(clients))
 	for i, client := range clients {
+		lifespan, err := client.AccessTokenLifespanDuration()
+		if err != nil {
+			return nil, err
+		}
 		resolved[i] = authserver.DelegateClient{
 			ClientID:                    client.ClientID,
 			Scopes:                      slices.Clone(client.Scopes),
@@ -1268,6 +1289,7 @@ func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]aut
 			GrantTypes:                  slices.Clone(client.GrantTypes),
 			RedirectURIs:                slices.Clone(client.RedirectURIs),
 			TokenExchange:               client.TokenExchange.Clone(),
+			AccessTokenLifespan:         lifespan,
 		}
 		if client.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			jwks, err := loadJWKSFile(client.JWKSFile)

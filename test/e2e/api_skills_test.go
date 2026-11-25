@@ -69,9 +69,18 @@ type validateSkillRequest struct {
 }
 
 type validationResultResponse struct {
-	Valid    bool     `json:"valid"`
-	Errors   []string `json:"errors,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
+	Valid    bool                `json:"valid"`
+	Errors   []string            `json:"errors,omitempty"`
+	Warnings []string            `json:"warnings,omitempty"`
+	Findings []validationFinding `json:"findings,omitempty"`
+}
+
+type validationFinding struct {
+	Severity string `json:"severity"`
+	Rule     string `json:"rule"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Message  string `json:"message"`
 }
 
 type buildSkillRequest struct {

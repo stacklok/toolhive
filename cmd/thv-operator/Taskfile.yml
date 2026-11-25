@@ -103,6 +103,13 @@ tasks:
     cmds:
       - ko build --local -B ./cmd/thv-operator
 
+  # The image name must match images.SPIFFEClientImage in test/e2e/images/images.go.
+  build-load-spiffe-e2e-client-image:
+    desc: Build and load the SPIFFE E2E client image into Kind
+    cmds:
+      - KO_DOCKER_REPO=kind.local/toolhive-spiffe-e2e-client ko build --local -B --tags latest ./test/e2e/cmd/spiffe-client
+      - kind load docker-image --name toolhive kind.local/toolhive-spiffe-e2e-client/spiffe-client:latest
+
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
     cmds:
@@ -206,7 +213,8 @@ tasks:
   operator-test-integration:
     desc: Run integration tests for the operator using envtest
     cmds:
-      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22
+      # Pinned to the release-0.22 head; branch queries for this nested module can fail on the Go proxy.
+      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20260125163108-a19ec76a3c5d
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       # Run tests in parallel using ginkgo -p flag (uses number of CPU cores by default)
       - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo --succinct -v -p ./cmd/thv-operator/test-integration/...
@@ -258,15 +266,55 @@ tasks:
       - Operator is deployed
       - kconfig.yaml exists in project root
       Use this to re-run tests without recreating the cluster.
+      It builds and loads the SPIFFE E2E client image first.
     platforms: [linux, darwin]
     cmds:
+      - task: build-load-spiffe-e2e-client-image
       - echo "Running Ginkgo E2E tests..."
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      # The last --label-filter wins, so a GINKGO_ARGS filter replaces this
+      # exclusion: write it as e.g. --label-filter='mcpserver && !entra-live'.
       - |
         KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
           --procs=8 \
+          --label-filter='!entra-live' \
           {{.GINKGO_ARGS}} \
           {{.ROOT_DIR}}/test/e2e/thv-operator/...
+
+  thv-operator-e2e-test-entra:
+    desc: |
+      Run the opt-in Entra OBO suite against a REAL Microsoft Entra tenant.
+      Needs the cluster from kind-setup-e2e, operator-install-crds, and
+      operator-deploy-local, plus the TOOLHIVE_E2E_ENTRA_* variables, read
+      from the environment or from .env.entra-obo at the repo root.
+      See test/e2e/thv-operator/entraobo/README.md.
+    platforms: [linux, darwin]
+    dotenv: ['{{.ROOT_DIR}}/.env.entra-obo']
+    cmds:
+      # Without these variables the suite skips and Ginkgo exits 0, which this
+      # opt-in entry point must not report as a pass. This names exactly the
+      # missing variables and never prints a value.
+      - cmd: |
+          missing=""
+          for v in TOOLHIVE_E2E_ENTRA_TENANT_ID TOOLHIVE_E2E_ENTRA_PROXY_CLIENT_ID \
+            TOOLHIVE_E2E_ENTRA_PROXY_CLIENT_SECRET TOOLHIVE_E2E_ENTRA_BACKEND_SCOPE \
+            TOOLHIVE_E2E_ENTRA_BACKEND_AUDIENCE; do
+            [ -n "$(printenv "$v")" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "Set$missing in the environment or in .env.entra-obo at the repo root" \
+              "(see test/e2e/thv-operator/entraobo/README.md)" >&2
+            exit 1
+          fi
+        silent: true
+      - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      - |
+        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v \
+          --procs=1 \
+          --label-filter=entra-live \
+          --fail-on-empty \
+          {{.GINKGO_ARGS}} \
+          {{.ROOT_DIR}}/test/e2e/thv-operator/entraobo
 
   operator-run:
     desc: Run the operator controller locally

@@ -30,6 +30,45 @@ const (
 	rejectHookFailed   = "hook_failed"
 )
 
+// errRepeatedDetailsParam reports that the authorization_details parameter was
+// sent more than once. Callers map it to their own error and log.
+var errRepeatedDetailsParam = errors.New("authorization_details parameter repeated")
+
+// readDetailsParam reads the shape of the authorization_details form parameter.
+// present is false when the parameter is absent or is one empty value. More
+// than one value, empty ones included, is errRepeatedDetailsParam.
+func readDetailsParam(form url.Values) (raw string, present bool, err error) {
+	values := form[authorizationDetailsParam]
+	switch {
+	case len(values) > 1:
+		return "", false, errRepeatedDetailsParam
+	case len(values) == 0, values[0] == "":
+		return "", false, nil
+	}
+	return values[0], true, nil
+}
+
+// detailsSubject builds the hook Subject from validated claims. Subject is
+// always the token's sub. Audience and Claims are copied, so a hook cannot
+// change the validated claims. The authorization_details claim is
+// left out of Claims: its decoded copy has lost number precision, and a hook
+// reads the entries from Request.Entries.
+func detailsSubject(claims *ValidatedClaims) authorizationdetails.Subject {
+	copied := deepCopyClaims(claims.Claims)
+	delete(copied, authorizationDetailsParam)
+	return authorizationdetails.Subject{
+		Issuer:   claims.Issuer,
+		Subject:  claims.Subject,
+		ClientID: claims.ClientID,
+		JWTID:    claims.JWTID,
+		Audience: slices.Clone(claims.Audience),
+		IssuedAt: claims.IssuedAt,
+		Expiry:   claims.Expiry,
+		External: claims.ExternalIssuer != "",
+		Claims:   copied,
+	}
+}
+
 // parseAuthorizationDetails runs the early, cheap shape checks. It returns a
 // nil Pending when the parameter is ignored: no registry is configured, or the
 // parameter is absent or empty.
@@ -37,15 +76,16 @@ func (h *Handler) parseAuthorizationDetails(form url.Values, clientID string) (*
 	if h.authorizationDetailsRegistry == nil {
 		return nil, nil
 	}
-	values := form[authorizationDetailsParam]
-	if len(values) == 0 || (len(values) == 1 && values[0] == "") {
-		return nil, nil
-	}
-	if len(values) > 1 {
+	raw, present, err := readDetailsParam(form)
+	// readDetailsParam's only error is errRepeatedDetailsParam.
+	if err != nil {
 		warnAuthorizationDetailsRejected(clientID, rejectRepeated)
 		return nil, repeatedAuthorizationDetailsError()
 	}
-	pending, err := h.authorizationDetailsRegistry.Parse(values[0], oauthproto.GrantTypeTokenExchange)
+	if !present {
+		return nil, nil
+	}
+	pending, err := h.authorizationDetailsRegistry.Parse(raw, oauthproto.GrantTypeTokenExchange)
 	if err != nil {
 		warnAuthorizationDetailsRejected(clientID, rejectMalformed)
 		return nil, invalidAuthorizationDetailsError()
@@ -67,22 +107,14 @@ func (*Handler) grantAuthorizationDetails(
 	clientID := requester.GetClient().GetID()
 
 	granted, err := pending.Grant(ctx, authorizationdetails.Request{
-		ClientID:           clientID,
-		Actor:              actorSub,
-		ActorTokenPresent:  params.actorToken != "",
-		RequestedTokenType: form.Get("requested_token_type"),
-		RequestedScopes:    slices.Clone([]string(requester.GetRequestedScopes())),
-		GrantedAudience:    slices.Clone([]string(requester.GetGrantedAudience())),
-		Subject: authorizationdetails.Subject{
-			Issuer:   claims.Issuer,
-			Subject:  claims.Subject,
-			ClientID: claims.ClientID,
-			JWTID:    claims.JWTID,
-			Audience: slices.Clone(claims.Audience),
-			IssuedAt: claims.IssuedAt,
-			Expiry:   claims.Expiry,
-			External: claims.ExternalIssuer != "",
-			Claims:   deepCopyClaims(claims.Claims),
+		ClientID:        clientID,
+		GrantedAudience: slices.Clone([]string(requester.GetGrantedAudience())),
+		Subject:         detailsSubject(claims),
+		Exchange: &authorizationdetails.ExchangeContext{
+			Actor:              actorSub,
+			ActorTokenPresent:  params.actorToken != "",
+			RequestedTokenType: form.Get("requested_token_type"),
+			RequestedScopes:    slices.Clone([]string(requester.GetRequestedScopes())),
 		},
 	})
 	if err != nil {
@@ -110,10 +142,15 @@ func (h *Handler) echoAuthorizationDetails(requester fosite.AccessRequester, res
 // authorizationDetailsGrantError maps a Grant failure to an OAuth error and
 // logs the rejection once at WARN.
 func authorizationDetailsGrantError(clientID string, err error) error {
+	return grantFailure(context.Background(), clientID, err, func(string) slog.Level { return slog.LevelWarn })
+}
+
+// grantFailure maps a Grant or GrantSubset failure to an OAuth error and logs
+// the rejection once, at the level that level returns for the logged reason.
+func grantFailure(ctx context.Context, clientID string, err error, level func(reason string) slog.Level) error {
 	var typed authorizationdetails.Error
-	switch {
-	case errors.As(err, &typed):
-		slog.Warn("authorization_details rejected",
+	if errors.As(err, &typed) {
+		slog.Log(ctx, level(rejectHookRejected), "authorization_details rejected",
 			"client_id", clientID, "reason", rejectHookRejected,
 			"code", string(typed.Code), "hook_reason", typed.Reason)
 		return &fosite.RFC6749Error{
@@ -121,12 +158,12 @@ func authorizationDetailsGrantError(clientID string, err error) error {
 			DescriptionField: typed.Reason,
 			CodeField:        http.StatusBadRequest,
 		}
-	default:
-		warnAuthorizationDetailsRejected(clientID, rejectHookFailed)
-		// The error text may hold internal data, so it is never logged or
-		// returned to the client.
-		return errorsx.WithStack(fosite.ErrServerError.WithDescription("The authorization_details could not be processed."))
 	}
+	slog.Log(ctx, level(rejectHookFailed), "authorization_details rejected",
+		"client_id", clientID, "reason", rejectHookFailed)
+	// The error text may hold internal data, so it is never logged or
+	// returned to the client.
+	return errorsx.WithStack(fosite.ErrServerError.WithDescription("The authorization_details could not be processed."))
 }
 
 func warnAuthorizationDetailsRejected(clientID, reason string) {

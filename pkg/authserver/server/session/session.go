@@ -18,9 +18,13 @@
 package session
 
 import (
+	"encoding/json"
+
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/token/jwt"
+
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 )
 
 // Factory is a function that creates a new session given subject, IDP session ID, and client ID.
@@ -50,31 +54,6 @@ type UpstreamSession interface {
 	GetIDPSessionID() string
 }
 
-// TokenSessionIDClaimKey is the JWT claim key for the token session ID.
-// This links JWT access tokens to stored upstream IDP tokens.
-// We use "tsid" instead of "sid" to avoid confusion with OIDC session management
-// which defines "sid" for different purposes (RFC 7519, OIDC Session Management).
-const TokenSessionIDClaimKey = "tsid"
-
-// NoUpstreamSessionClaimKey marks a token this authorization server minted
-// without any link to an upstream IdP login, so no upstream credential exists
-// for it. Today only the RFC 7523 JWT-bearer grant sets it: its subject is a
-// synthetic machine identity (issuer#subject) asserted by a separate trust
-// root, with no end user and no upstream session.
-//
-// It exists so a resource server can distinguish "this token was deliberately
-// minted without an upstream session" from "this identity was never enriched
-// with upstream credentials" — states that are otherwise indistinguishable, as
-// both leave Identity.UpstreamTokens nil. pkg/authz/authorizers/cedar reads it
-// to decide whether request-token claims may drive policy. The RFC 8693
-// delegation grant needs no marker: its "act" claim already says so.
-//
-// The name is collision-resistant per RFC 7519 Section 4.3, so a JWT from
-// another issuer the deployment trusts cannot assert it by accident. It is a
-// private claim; RFC 9068 Section 2.2.3 permits additional claims on an
-// access token.
-const NoUpstreamSessionClaimKey = "https://toolhive.dev/no_upstream_session"
-
 // ClientIDClaimKey is the JWT claim key for the OAuth client ID.
 // This identifies which client was issued the token.
 const ClientIDClaimKey = "client_id"
@@ -87,13 +66,10 @@ const NameClaimKey = "name"
 // Per OIDC Core Section 5.1.
 const EmailClaimKey = "email"
 
-const subjectIdentifierClaimKey = "sub_id"
-
-// UpstreamSubjectClaimKey is the collision-resistant claim name (RFC 7519 §4.2) of
-// the claim that carries the upstream subject a consumer can key on across upstream
-// client registrations. It is emitted together with the RFC 9493 sub_id claim and
-// under the same disclosure policy.
-const UpstreamSubjectClaimKey = "https://toolhive.dev/upstream_subject"
+// UpstreamSubjectClaimKey is the claim name of the upstream subject claim.
+//
+// Deprecated: use claimnames.UpstreamSubjectKey.
+const UpstreamSubjectClaimKey = claimnames.UpstreamSubjectKey
 
 // UpstreamSubject is the verified identity of the upstream OIDC login that
 // established the local user. Issuer and Subject are the exact iss and sub of the
@@ -175,7 +151,7 @@ func New(subject, idpSessionID, clientID string, claims UserClaims) *Session {
 
 	// Add tsid claim if idpSessionID is provided
 	if idpSessionID != "" {
-		claimsExtra[TokenSessionIDClaimKey] = idpSessionID
+		claimsExtra[claimnames.TokenSessionIDKey] = idpSessionID
 	}
 
 	// Add client_id claim for binding verification per RFC 9068
@@ -228,6 +204,40 @@ func (s *Session) Clone() fosite.Session {
 	}
 }
 
+// UnmarshalJSON decodes a session as encoding/json would, except that the
+// authorization_details claim keeps its encoded bytes as a json.RawMessage
+// instead of being decoded into []any, which would round an integer above
+// 2^53. A session read back from storage then holds the claim in the same
+// form as the session that was stored.
+func (s *Session) UnmarshalJSON(data []byte) error {
+	// plain has Session's fields but not this method, so decoding into it
+	// does not recurse.
+	type plain Session
+	if err := json.Unmarshal(data, (*plain)(s)); err != nil {
+		return err
+	}
+	if s.JWTSession == nil || s.JWTClaims == nil {
+		return nil
+	}
+	if _, present := s.JWTClaims.Extra[claimnames.AuthorizationDetailsKey]; !present {
+		return nil
+	}
+	var raw struct {
+		JWTClaims *struct {
+			Extra map[string]json.RawMessage
+		}
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.JWTClaims != nil {
+		if details, present := raw.JWTClaims.Extra[claimnames.AuthorizationDetailsKey]; present {
+			s.JWTClaims.Extra[claimnames.AuthorizationDetailsKey] = details
+		}
+	}
+	return nil
+}
+
 // ClearSubjectIdentifier removes any persisted or source-token sub_id and
 // upstream subject claim before the current grant decides whether it is
 // eligible to issue them. It mutates the receiver's claims in place; a caller
@@ -236,14 +246,24 @@ func (s *Session) ClearSubjectIdentifier() {
 	if s == nil || s.JWTSession == nil || s.JWTClaims == nil {
 		return
 	}
-	delete(s.JWTClaims.Extra, subjectIdentifierClaimKey)
-	delete(s.JWTClaims.Extra, UpstreamSubjectClaimKey)
+	delete(s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	delete(s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 }
 
 // SetSubjectIdentifier sets the RFC 9493 sub_id claim and the upstream subject
 // claim from the verified upstream identity. It does nothing unless the identity
-// is complete. It mutates the receiver's claims in place; a caller holding a
-// session loaded from storage must Clone it first.
+// is complete.
+//
+// The upstream identity is the one the first upstream verified, and that
+// upstream is the only one that creates users. The local user is found by the
+// link key (upstream name, subject_claim value). The sub_id is the raw (iss, sub)
+// and is not used to find users, so the two can drift apart: a changed link key
+// with the same (iss, sub) gives one person two users with the same sub_id, and
+// a same link key with a different issuer gives one user two sub_ids. See
+// docs/arch/11-auth-server-storage.md, "One upstream identity, one user".
+//
+// It mutates the receiver's claims in place; a caller holding a session loaded
+// from storage must Clone it first.
 func (s *Session) SetSubjectIdentifier(upstream UpstreamSubject) {
 	if s == nil || s.JWTSession == nil || s.JWTClaims == nil || !upstream.IsComplete() {
 		return
@@ -251,12 +271,12 @@ func (s *Session) SetSubjectIdentifier(upstream UpstreamSubject) {
 	if s.JWTClaims.Extra == nil {
 		s.JWTClaims.Extra = make(map[string]any)
 	}
-	s.JWTClaims.Extra[subjectIdentifierClaimKey] = map[string]string{
+	s.JWTClaims.Extra[claimnames.SubjectIdentifierKey] = map[string]string{
 		"format": "iss_sub",
 		"iss":    upstream.Issuer,
 		"sub":    upstream.Subject,
 	}
-	s.JWTClaims.Extra[UpstreamSubjectClaimKey] = map[string]string{
+	s.JWTClaims.Extra[claimnames.UpstreamSubjectKey] = map[string]string{
 		"iss":   upstream.Issuer,
 		"claim": upstream.StableClaim,
 		"value": upstream.StableValue,

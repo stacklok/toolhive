@@ -24,13 +24,13 @@ thv skill builds remove <tag> [flags]
 ### Options
 
 ```
-  -h, --help   help for remove
+  -h, --help[=true|false]   help for remove
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

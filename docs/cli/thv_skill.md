@@ -20,13 +20,13 @@ The skill command provides subcommands to manage skills.
 ### Options
 
 ```
-  -h, --help   help for skill
+  -h, --help[=true|false]   help for skill
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

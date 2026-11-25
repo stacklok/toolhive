@@ -161,11 +161,14 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 			return fmt.Errorf("backend %s: only one of clientSecret or clientSecretEnv must be set", name)
 		}
 		if obo.ClientSecretEnv != "" {
-			resolvedSecret := l.envReader.Getenv(obo.ClientSecretEnv)
-			if resolvedSecret == "" {
+			// Only check the variable is set, as for tokenExchange: the OBO
+			// strategy reads ClientSecretEnv at request time and rejects a
+			// config that sets both ClientSecret and ClientSecretEnv, so
+			// copying the value into ClientSecret here would make the
+			// operator-generated inline config fail validation.
+			if l.envReader.Getenv(obo.ClientSecretEnv) == "" {
 				return fmt.Errorf("backend %s: environment variable %s not set", name, obo.ClientSecretEnv)
 			}
-			obo.ClientSecret = resolvedSecret
 		}
 
 	default:

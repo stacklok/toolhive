@@ -388,25 +388,31 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 				}
 			})
 
-			It("should fail when trying to use stdio transport with OSV if not supported [Serial]", func() {
+			// thv run is detached, so it can either reject stdio up front or accept
+			// the start and leave a stdio workload behind. Both pass, but an
+			// accepted start must get as far as creating its container, so the
+			// removal below cannot race the detached start (#7043).
+			It("should reject stdio transport for OSV or start a stdio workload whose container exists [Serial]", func() {
 				By("Trying to run OSV with stdio transport")
-				// Note: This test assumes OSV doesn't support stdio.
-				// If it does, this test should be adjusted or removed.
 				stdout, stderr, err := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "stdio",
 					"osv").Run()
 
-				// Check if the command succeeded or failed
 				if err != nil {
-					// If it failed, that's expected for streamable-http-only servers
+					By("Verifying the rejection names the transport")
 					Expect(stderr).To(ContainSubstring("transport"), "Error should mention transport issue")
-				} else {
-					// If it succeeded, OSV supports both transports
-					GinkgoWriter.Printf("Note: OSV server supports stdio transport: %s\n", stdout)
-					// Clean up the successfully started server
-					_ = e2e.StopAndRemoveMCPServer(config, serverName)
+					return
 				}
+
+				GinkgoWriter.Printf("Note: thv accepted the OSV stdio start: %s\n", stdout)
+				// OSV does not serve stdio, so the workload restart-loops and never
+				// reaches running. Wait for its container instead, so the removal
+				// below cannot race the detached start (#7043).
+				By("Waiting for the stdio workload's container to exist")
+				Expect(e2e.WaitForWorkloadContainer(config, serverName, e2e.ServerReadyTimeout())).To(Succeed(),
+					"the stdio workload's container should exist before it is removed")
+				_ = e2e.StopAndRemoveMCPServer(config, serverName)
 			})
 		})
 	})

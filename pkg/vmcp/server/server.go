@@ -285,9 +285,10 @@ type Config struct {
 	// The vMCP always enforces a token that carries an authorization_details
 	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
 	// only the one tools/call its entry names, once. CallBinding adds the
-	// clients whose tokens must carry one, the maximum call duration, and the
-	// single-use record. The zero value lists no client and keeps the record in
-	// memory, on this replica only. See callbinding.Config.
+	// clients whose tokens must carry one, the maximum call duration, the
+	// single-use record, and the parameters of the 401 challenge. The zero
+	// value lists no client and keeps the record in memory, on this replica
+	// only. See callbinding.Config.
 	CallBinding callbinding.Config
 }
 

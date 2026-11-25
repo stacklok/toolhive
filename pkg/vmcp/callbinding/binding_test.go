@@ -94,12 +94,28 @@ func TestFromClaims(t *testing.T) {
 			reason: ReasonMalformedEntry},
 		{name: "element with a non-string type", claims: testClaims([]any{map[string]any{"type": 1.0}}),
 			reason: ReasonMalformedEntry},
+		{name: "element with an empty type", claims: testClaims([]any{map[string]any{"type": ""}}),
+			reason: ReasonMalformedEntry},
+		{name: "listed client named only by azp", required: listed, reason: ReasonEntryRequired,
+			claims: withClaim(withClaim(testClaims(nil), "client_id", nil), "azp", "mecatl")},
+		{name: "listed client named by azp behind an empty client_id", required: listed, reason: ReasonEntryRequired,
+			claims: withClaim(withClaim(testClaims(nil), "client_id", ""), "azp", "mecatl")},
+		{name: "client_id wins over azp", required: listed,
+			claims: withClaim(withClaim(testClaims(nil), "client_id", "other"), "azp", "mecatl")},
 		{name: "entry without jti", claims: withClaim(testClaims([]any{testEntry()}), "jti", nil),
 			reason: ReasonClaimsRequired},
 		{name: "entry with empty jti", claims: withClaim(testClaims([]any{testEntry()}), "jti", ""),
 			reason: ReasonClaimsRequired},
 		{name: "entry without exp", claims: withClaim(testClaims([]any{testEntry()}), "exp", nil),
 			reason: ReasonClaimsRequired},
+		{name: "entry with jti holding a NUL", claims: withClaim(testClaims([]any{testEntry()}), "jti", "a\x00b"),
+			reason: ReasonClaimsRequired},
+		{name: "entry without iss", claims: withClaim(testClaims([]any{testEntry()}), "iss", nil),
+			reason: ReasonClaimsRequired},
+		{name: "entry with empty iss", claims: withClaim(testClaims([]any{testEntry()}), "iss", ""),
+			reason: ReasonClaimsRequired},
+		{name: "entry with iss holding a NUL", claims: withClaim(testClaims([]any{testEntry()}), "iss",
+			"https://as.example.com\x00x"), reason: ReasonClaimsRequired},
 		{name: "entry with a string exp", claims: withClaim(testClaims([]any{testEntry()}), "exp", "1800000000"),
 			reason: ReasonClaimsRequired},
 		{name: "entry with json.Number exp", claims: withClaim(testClaims([]any{testEntry()}), "exp",
@@ -122,6 +138,14 @@ func TestFromClaims(t *testing.T) {
 			assert.Equal(t, time.Unix(1_800_000_000, 0), token.ExpiresAt)
 		})
 	}
+}
+
+func TestFromClaimsClientFromAzp(t *testing.T) {
+	t.Parallel()
+	token, reason := FromClaims(withClaim(withClaim(testClaims([]any{testEntry()}), "client_id", nil),
+		"azp", "from-azp"), nil)
+	require.Empty(t, reason)
+	assert.Equal(t, "from-azp", token.ClientID)
 }
 
 func TestFromClaimsEntryFields(t *testing.T) {

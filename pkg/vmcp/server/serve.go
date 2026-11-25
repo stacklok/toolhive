@@ -159,9 +159,10 @@ type ServerConfig struct {
 	// The vMCP always enforces a token that carries an authorization_details
 	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
 	// only the one tools/call its entry names, once. CallBinding adds the
-	// clients whose tokens must carry one, the maximum call duration, and the
-	// single-use record. The zero value lists no client and keeps the record in
-	// memory, on this replica only. See callbinding.Config.
+	// clients whose tokens must carry one, the maximum call duration, the
+	// single-use record, and the parameters of the 401 challenge. The zero
+	// value lists no client and keeps the record in memory, on this replica
+	// only. See callbinding.Config.
 	CallBinding callbinding.Config
 }
 
@@ -192,8 +193,9 @@ type ServerConfig struct {
 // by the core (built/started in core.New, stopped in core.Close); Serve neither constructs
 // nor starts it, and the status reporter reads it back through the core (#5443 reversal).
 //
-// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
-// nil required collaborator (SessionManagerConfig or BackendRegistry). The session
+// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, a
+// nil required collaborator (SessionManagerConfig or BackendRegistry), or an invalid
+// CallBinding (a negative MaxCallDuration or an empty client ID). The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
@@ -248,6 +250,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	if err != nil {
 		return nil, err
 	}
+	warnCallBindingRecordPerReplica(cfg)
 
 	completionHandler := func(ctx context.Context, req mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 		return srv.coreCompletionHandler(ctx, req)
@@ -486,6 +489,17 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		StatusReportingInterval: cfg.StatusReportingInterval,
 		Watcher:                 cfg.Watcher,
 		SessionStorage:          cfg.SessionStorage,
-		CallBinding:             cfg.CallBinding,
 	}
+}
+
+// warnCallBindingRecordPerReplica warns once at startup when sessions are
+// shared between replicas but call binding keeps its single-use record in
+// memory: a call-bound token can then start one call on each replica.
+func warnCallBindingRecordPerReplica(cfg *ServerConfig) {
+	if cfg.CallBinding.Record != nil || cfg.SessionStorage == nil || cfg.SessionStorage.Provider != "redis" {
+		return
+	}
+	slog.Warn("call binding: sessions are stored in Redis, but the single-use record of call-bound " +
+		"access tokens is in memory, so a call-bound token can start one call on each replica; " +
+		"set CallBinding.Record to a shared record to refuse the replay across replicas")
 }

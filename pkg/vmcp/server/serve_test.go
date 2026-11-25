@@ -404,6 +404,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		"RateLimiter":         {}, // consumed by New to wrap the core (rate-limit decorator) before Serve; not a transport field
 		"Aggregator":          {}, // core collaborator: fed to core.New via deriveCoreConfig, not the transport
 		"Authz":               {}, // core collaborator: fed to the core admission seam via deriveCoreConfig
+		"CallBinding":         {}, // Serve builds the enforcement from ServerConfig.CallBinding; Config.CallBinding is only read by New
 	}
 
 	// Every field set to a non-zero value so a dropped mapping surfaces as a zero

@@ -1267,22 +1267,45 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) 
 }
 
 // buildWWWAuthenticate builds a RFC 6750 / RFC 9728 compliant value for the
-// WWW-Authenticate header. It always includes realm and, if set, resource_metadata.
-// When errorCode is non-empty ("invalid_request", "invalid_token", or "insufficient_scope"),
-// it appends the error and optional error_description.
+// WWW-Authenticate header from the validator's issuer, resource URL and scopes.
+// See BearerChallenge.Header.
 func (v *TokenValidator) buildWWWAuthenticate(errorCode string, errDescription string) string {
+	return BearerChallenge{Realm: v.issuer, ResourceURL: v.resourceURL, Scopes: v.scopes}.
+		Header(errorCode, errDescription)
+}
+
+// BearerChallenge holds the parameters a protected resource puts on its Bearer
+// WWW-Authenticate challenges (RFC 6750 §3, RFC 9728 §5.1). The token validator
+// builds its challenges from it, and so can another component of the same
+// resource that refuses a token, so that both challenges carry the same realm,
+// resource metadata and scope.
+type BearerChallenge struct {
+	// Realm is the issuer the resource accepts tokens from. Empty omits realm.
+	Realm string
+	// ResourceURL is the protected resource's URL. When set, the challenge
+	// carries the URL of its RFC 9728 metadata.
+	ResourceURL string
+	// Scopes are the scopes the resource asks for. Empty omits scope.
+	Scopes []string
+}
+
+// Header returns the WWW-Authenticate value. It always includes realm and, if
+// set, resource_metadata. When errorCode is non-empty ("invalid_request",
+// "invalid_token", or "insufficient_scope"), it appends the error and optional
+// error_description.
+func (c BearerChallenge) Header(errorCode string, errDescription string) string {
 	var parts []string
 
 	// realm (RFC 6750)
-	if v.issuer != "" {
-		parts = append(parts, fmt.Sprintf(`realm="%s"`, EscapeQuotes(v.issuer)))
+	if c.Realm != "" {
+		parts = append(parts, fmt.Sprintf(`realm="%s"`, EscapeQuotes(c.Realm)))
 	}
 
 	// resource_metadata (RFC 9728)
 	// Per RFC 9728 Section 3.1, the well-known URI is inserted between the host and path components
 	// Example: https://resource.example.com/resource1 -> https://resource.example.com/.well-known/oauth-protected-resource/resource1
-	if v.resourceURL != "" {
-		parsedURL, err := url.Parse(v.resourceURL)
+	if c.ResourceURL != "" {
+		parsedURL, err := url.Parse(c.ResourceURL)
 		if err == nil {
 			// Per RFC 9728 Section 3.1, remove any terminating slash from path
 			path := parsedURL.Path
@@ -1300,8 +1323,8 @@ func (v *TokenValidator) buildWWWAuthenticate(errorCode string, errDescription s
 	}
 
 	// scope (RFC 6750 §3) - only when explicitly configured
-	if len(v.scopes) > 0 {
-		parts = append(parts, fmt.Sprintf(`scope="%s"`, EscapeQuotes(strings.Join(v.scopes, " "))))
+	if len(c.Scopes) > 0 {
+		parts = append(parts, fmt.Sprintf(`scope="%s"`, EscapeQuotes(strings.Join(c.Scopes, " "))))
 	}
 
 	// error fields (RFC 6750 §3)
@@ -1312,6 +1335,14 @@ func (v *TokenValidator) buildWWWAuthenticate(errorCode string, errDescription s
 		}
 	}
 	return "Bearer " + strings.Join(parts, ", ")
+}
+
+// WriteInvalidToken answers 401 with an invalid_token challenge and an RFC 6750
+// error body, the way the token validator answers a token it refuses.
+// description must not carry the token or other secrets.
+func (c BearerChallenge) WriteInvalidToken(w http.ResponseWriter, description string) {
+	w.Header().Set("WWW-Authenticate", c.Header(OAuthErrInvalidToken, description))
+	writeOAuthError(w, OAuthErrInvalidToken, description)
 }
 
 // RFC 6750 error code constants for Bearer token authentication.

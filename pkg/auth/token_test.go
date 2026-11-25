@@ -3930,3 +3930,16 @@ func TestAuthTokenFileClientsRefuseCrossHostRedirects(t *testing.T) {
 		})
 	}
 }
+
+func TestBearerChallengeWriteInvalidToken(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	BearerChallenge{Realm: "https://as.example.com", ResourceURL: "https://rs.example.com/mcp"}.
+		WriteInvalidToken(rec, "token reused")
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, `Bearer realm="https://as.example.com", `+
+		`resource_metadata="https://rs.example.com/.well-known/oauth-protected-resource/mcp", `+
+		`error="invalid_token", error_description="token reused"`, rec.Header().Get("WWW-Authenticate"))
+	require.JSONEq(t, `{"error":"invalid_token","error_description":"token reused"}`, rec.Body.String())
+}

@@ -39,6 +39,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -470,6 +471,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		CodeModeConfig:          codeModeCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		// Call binding answers a refused call-bound token with the same
+		// challenge parameters as the token validator.
+		CallBinding: callbinding.Config{Challenge: authfactory.IncomingBearerChallenge(vmcpCfg.IncomingAuth)},
 		// Core collaborators: server.New routes through core.New + Serve, so the core
 		// is the single aggregator and authorizer. The aggregator is the same instance
 		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).

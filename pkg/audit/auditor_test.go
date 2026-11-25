@@ -1498,6 +1498,32 @@ func TestMiddlewareAuditsInnerChainOutcomes(t *testing.T) {
 		assert.Equal(t, "token_reused", extra[MetadataExtraKeyDenialReason])
 	})
 
+	t.Run("a denial reason on a refused stream open is recorded", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		refuse := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok {
+				marker.Denied = true
+				marker.Reason = "token_expired"
+			}
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		})
+		req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+		req.Header.Set("Accept", "text/event-stream")
+		auditor.Middleware(refuse).ServeHTTP(httptest.NewRecorder(), req)
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
+		assert.Equal(t, OutcomeDenied, events[0]["outcome"])
+		metadata, ok := events[0]["metadata"].(map[string]any)
+		require.True(t, ok)
+		extra, ok := metadata["extra"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "token_expired", extra[MetadataExtraKeyDenialReason])
+	})
+
 	t.Run("a denial without a reason records none", func(t *testing.T) {
 		t.Parallel()
 		auditor, logBuf := newBufferAuditor(t)

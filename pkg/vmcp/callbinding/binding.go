@@ -5,10 +5,12 @@ package callbinding
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 )
 
@@ -20,9 +22,16 @@ import (
 // whatever Config says. Config only adds the clients whose tokens must carry
 // one.
 type Config struct {
-	// Clients lists the OAuth client IDs (the access token's client_id claim)
-	// whose tokens must carry an mcp_tool_call entry. A listed client's token
-	// without one is refused with ReasonEntryRequired. Empty by default.
+	// Clients lists the OAuth client IDs whose tokens must carry an
+	// mcp_tool_call entry. A listed client's token without one is refused with
+	// ReasonEntryRequired. Empty by default.
+	//
+	// A token's client is its client_id claim (RFC 9068), or its azp claim
+	// when client_id is absent or empty, as in tokens from authorization
+	// servers that name the client only in azp. Other claims, such as cid or
+	// appid, are not read: a client those tokens name is never matched. The
+	// vMCP logs one warning when Clients is set and a token names its client
+	// in neither claim.
 	//
 	// List a client only once the authorization servers in front of the vMCP
 	// put the entry into its access tokens; otherwise every call from that
@@ -38,6 +47,13 @@ type Config struct {
 	// Record is the single-use record. Nil means a MemoryRecord, which
 	// covers one replica only: a replay to another replica is not seen.
 	Record Record
+
+	// Challenge is the realm, resource metadata and scope of the token
+	// validator in front of the vMCP. A refusal that describes the token,
+	// such as ReasonTokenReused, is answered with HTTP 401 and an
+	// invalid_token challenge built from it, so the challenge matches the
+	// validator's own. The zero value sends a challenge without them.
+	Challenge auth.BearerChallenge
 }
 
 // DefaultMaxCallDuration is the MaxCallDuration used when Config leaves it
@@ -54,10 +70,12 @@ const (
 	// ReasonSingleEntry: the token carries more than one mcp_tool_call entry.
 	ReasonSingleEntry = toolcalldetails.ReasonSingleEntry
 	// ReasonMalformedEntry: the token's authorization_details claim is not an
-	// array of objects with a string type, or its mcp_tool_call entry does
-	// not have the entry shape.
+	// array of objects with a non-empty string type, or its mcp_tool_call
+	// entry does not have the entry shape.
 	ReasonMalformedEntry = toolcalldetails.ReasonMalformedEntry
-	// ReasonClaimsRequired: a call-bound token has no jti or no usable exp.
+	// ReasonClaimsRequired: a call-bound token has no usable jti, iss or exp:
+	// jti or iss is missing, empty or holds a NUL, or exp is missing or not a
+	// positive time.
 	ReasonClaimsRequired = "claims_required"
 	// ReasonListCallUnsupported: the entry names a list call, which the vMCP
 	// does not accept yet.
@@ -88,8 +106,12 @@ const (
 	// string, or a member's name would match name, arguments or _meta in a
 	// case-insensitive decoder without being spelled exactly so.
 	ReasonInvalidParams = "invalid_params"
-	// ReasonTokenReused: the token has already started a call.
+	// ReasonTokenReused: the token has already started a call, and the
+	// request would start another one or a new session.
 	ReasonTokenReused = "token_reused"
+	// ReasonSessionMismatch: the token has started a call, and a GET or
+	// DELETE names a session other than that call's.
+	ReasonSessionMismatch = "session_mismatch"
 	// ReasonNoOpenCall: a cancellation or response does not belong to the
 	// call the token started, on that call's session, or that call's request
 	// is no longer open.
@@ -106,7 +128,7 @@ type Token struct {
 	Key string
 	// JTI is the token's jti claim. It identifies the token in logs.
 	JTI string
-	// ClientID is the token's client_id claim, empty when absent.
+	// ClientID is the token's client, as ClientID reads it.
 	ClientID string
 	// ExpiresAt is the token's exp claim.
 	ExpiresAt time.Time
@@ -119,11 +141,11 @@ type Token struct {
 // must be refused, and otherwise the Token.
 //
 // Entries of other authorization_details types are ignored. A claim that is
-// not an array of objects, each with a string type, is refused whatever the
-// client: RFC 9396 requires that shape, and an element without a readable
-// type might be an mcp_tool_call entry.
+// not an array of objects, each with a non-empty string type, is refused
+// whatever the client: RFC 9396 requires that shape, and an element without a
+// readable type might be an mcp_tool_call entry.
 func FromClaims(claims map[string]any, required map[string]struct{}) (*Token, string) {
-	clientID, _ := claims["client_id"].(string)
+	clientID := ClientID(claims)
 	entries, ok := callEntries(claims)
 	if !ok {
 		return nil, ReasonMalformedEntry
@@ -146,10 +168,14 @@ func FromClaims(claims map[string]any, required map[string]struct{}) (*Token, st
 	// The token validator reads exp the same way.
 	exp, err := jwt.MapClaims(claims).GetExpirationTime()
 	jti, _ := claims["jti"].(string)
-	if err != nil || exp == nil || exp.Unix() <= 0 || jti == "" {
+	iss, _ := claims["iss"].(string)
+	// The key joins iss and jti with a NUL, as sessionbinding.Format joins
+	// iss and sub, and refuses the same values: an empty part or one holding
+	// a NUL would let two tokens share a key. A validator that checks no
+	// issuer accepts a token without iss.
+	if err != nil || exp == nil || exp.Unix() <= 0 || !keyPart(jti) || !keyPart(iss) {
 		return nil, ReasonClaimsRequired
 	}
-	iss, _ := claims["iss"].(string)
 	return &Token{
 		Entry:     entry,
 		Key:       iss + "\x00" + jti,
@@ -159,9 +185,26 @@ func FromClaims(claims map[string]any, required map[string]struct{}) (*Token, st
 	}, ""
 }
 
+// ClientID returns the OAuth client a token names: its client_id claim, or its
+// azp claim when client_id is absent or empty. It returns "" when neither
+// names one.
+func ClientID(claims map[string]any) string {
+	if clientID, _ := claims["client_id"].(string); clientID != "" {
+		return clientID
+	}
+	azp, _ := claims["azp"].(string)
+	return azp
+}
+
+// keyPart reports whether s may be one part of a Record key.
+func keyPart(s string) bool {
+	return s != "" && !strings.ContainsRune(s, '\x00')
+}
+
 // callEntries returns the mcp_tool_call entries of the claims'
 // authorization_details, re-encoded as JSON. It reports false when the claim
-// is present but is not an array of objects each with a string type.
+// is present but is not an array of objects each with a non-empty string
+// type, as the authorization server's authorizationdetails requires.
 func callEntries(claims map[string]any) ([]json.RawMessage, bool) {
 	raw, present := claims["authorization_details"]
 	if !present {
@@ -178,7 +221,7 @@ func callEntries(claims map[string]any) ([]json.RawMessage, bool) {
 			return nil, false
 		}
 		typ, isString := obj["type"].(string)
-		if !isString {
+		if !isString || typ == "" {
 			return nil, false
 		}
 		if typ != toolcalldetails.Type {

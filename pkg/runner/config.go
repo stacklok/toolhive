@@ -273,9 +273,8 @@ type RunConfig struct {
 	// ToolsOverride is a map from an actual tool to its overridden name and/or description
 	ToolsOverride map[string]ToolOverride `json:"tools_override,omitempty" yaml:"tools_override,omitempty"`
 
-	// Instructions sets the instructions the server returns in its initialize
-	// and server/discover results. PopulateMiddlewareConfigs derives the
-	// instructions middleware from it.
+	// Instructions sets the instructions clients receive in the server's
+	// initialize and server/discover results.
 	Instructions *instructions.Config `json:"instructions,omitempty" yaml:"instructions,omitempty"`
 
 	// IgnoreConfig contains configuration for ignore processing

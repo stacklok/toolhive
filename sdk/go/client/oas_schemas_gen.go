@@ -6023,9 +6023,8 @@ type InstallSkillUnauthorizedApplicationJSON string
 
 func (*InstallSkillUnauthorizedApplicationJSON) installSkillRes() {}
 
-// Instructions sets the instructions the server returns in its initialize
-// and server/discover results. PopulateMiddlewareConfigs derives the
-// instructions middleware from it.
+// Instructions sets the instructions clients receive in the server's
+// initialize and server/discover results.
 // Ref: #/components/schemas/InstructionsConfig
 type InstructionsConfig struct {
 	// Mode says how value combines with the instructions the server returns.

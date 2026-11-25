@@ -2152,9 +2152,8 @@ components:
             type: object
         InstructionsConfig:
             description: |-
-                Instructions sets the instructions the server returns in its initialize
-                and server/discover results. PopulateMiddlewareConfigs derives the
-                instructions middleware from it.
+                Instructions sets the instructions clients receive in the server's
+                initialize and server/discover results.
             properties:
                 mode:
                     description: |-

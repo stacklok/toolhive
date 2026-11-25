@@ -1340,7 +1340,7 @@ The middleware chain execution order is critical and controlled by the order in 
 - Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
-- Instructions must come after the MCP Parser, whose parse names the `initialize` and `server/discover` requests whose results it rewrites. On the CLI flag path it also follows Usage Metrics when that is enabled, since `addCoreMiddlewares` adds it right after the parser
+- Instructions must come after the MCP Parser, whose parse names the `initialize` and `server/discover` requests whose results it rewrites. On the CLI flag path, `addCoreMiddlewares` adds Usage Metrics right after the parser when it is enabled, so there Instructions follows Usage Metrics
 - Telemetry must come before Rate Limiting so the limiter can annotate the active request span; telemetry finalizes MCP names, attributes, and metrics after downstream processing from the shared parsed-request holder
 - Rate Limiting must come before webhooks so rejected traffic does not invoke outbound webhook requests
 - Mutating webhooks must come before Validating webhooks and before Authorization, so policy evaluation sees the patched request

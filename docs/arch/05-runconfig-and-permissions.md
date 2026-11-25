@@ -312,6 +312,8 @@ thv run uvx://mcp-server \
 
 `mode` is `replace`, `append` (the default) or `prepend`. See [Instructions Middleware](../middleware.md#13-instructions-middleware).
 
+A RunConfig written by `thv run` holds the setting twice: as `instructions`, and as the `instructions` entry in `middleware_configs` that the proxy builds its chain from. When that entry is present it is what takes effect, so editing or removing `instructions` alone in an exported config changes nothing. `tools_filter` and the other middleware the CLI builds behave the same way.
+
 **Implementation**: `pkg/mcp/instructions`, `pkg/mcp/instructions_middleware.go`
 
 ## RunConfig Lifecycle

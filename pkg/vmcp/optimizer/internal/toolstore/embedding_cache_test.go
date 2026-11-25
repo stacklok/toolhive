@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -246,4 +247,100 @@ func TestSQLiteToolStore_UpsertTools_FailedBuildReleasesTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	require.NoError(t, store.UpsertTools(ctx, catalog(3)), "the next build must get the turn")
+}
+
+// hungEmbeddingClient blocks its first EmbedBatch until release is closed,
+// modelling a backend that hangs on the build holding the embedding turn.
+// Later calls answer at once. entered is closed once the first call blocks.
+type hungEmbeddingClient struct {
+	*countingEmbeddingClient
+	hung    atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newHungEmbeddingClient() *hungEmbeddingClient {
+	return &hungEmbeddingClient{
+		countingEmbeddingClient: newCountingEmbeddingClient(),
+		entered:                 make(chan struct{}),
+		release:                 make(chan struct{}),
+	}
+}
+
+func (c *hungEmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if c.hung.CompareAndSwap(false, true) {
+		close(c.entered)
+		select {
+		case <-c.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return c.countingEmbeddingClient.EmbedBatch(ctx, texts)
+}
+
+// startHungHolder starts a build that takes the embedding turn and hangs in
+// the backend until client.release is closed. It returns once the build holds
+// the turn, with a channel that receives the build's result.
+func startHungHolder(t *testing.T, store sqliteToolStore, client *hungEmbeddingClient) <-chan error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- store.UpsertTools(context.Background(), catalog(3)) }()
+	select {
+	case <-client.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for the first build to reach the backend")
+	}
+	return done
+}
+
+// TestSQLiteToolStore_UpsertTools_TurnWaitIsBounded pins that the embedding
+// turn only ever saves work: a build stuck on a hung backend delays the builds
+// behind it by the turn wait, after which they embed on their own, and a
+// waiter whose caller gives up fails without waiting for the holder.
+func TestSQLiteToolStore_UpsertTools_TurnWaitIsBounded(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name          string
+		turnWait      time.Duration
+		callerTimeout time.Duration
+		wantErr       error
+		wantBatches   int
+	}{
+		{name: "a waiter that times out embeds on its own",
+			turnWait: 50 * time.Millisecond, callerTimeout: 10 * time.Second, wantBatches: 2},
+		{name: "a waiter whose caller gives up fails",
+			turnWait: time.Minute, callerTimeout: 50 * time.Millisecond, wantErr: context.DeadlineExceeded, wantBatches: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := newHungEmbeddingClient()
+			dsn := fmt.Sprintf("file:turnwait_%d?mode=memory&cache=shared", testDBCounter.Add(1))
+			store, err := newSQLiteToolStore(dsn, client, nil, withEmbedTurnWait(tc.turnWait))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+
+			holder := startHungHolder(t, store, client)
+
+			ctx, cancel := context.WithTimeout(context.Background(), tc.callerTimeout)
+			defer cancel()
+			err = store.UpsertTools(ctx, catalog(3))
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err, "the waiter must not wait for the hung holder")
+			}
+
+			close(client.release)
+			select {
+			case err := <-holder:
+				require.NoError(t, err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("timeout waiting for the holder to finish")
+			}
+			assert.Equal(t, tc.wantBatches, client.batchCalls())
+		})
+	}
 }

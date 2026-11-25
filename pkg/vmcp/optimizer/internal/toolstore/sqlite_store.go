@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
@@ -111,6 +112,10 @@ type sqliteToolStore struct {
 	// buildTurn). Held by pointer because the store is used by value.
 	embedTurn *semaphore.Weighted
 
+	// embedTurnWait bounds how long a build waits for embedTurn before it
+	// embeds without it. Immutable after construction.
+	embedTurnWait time.Duration
+
 	// sharedEmbeddings, when set, extends reuse across replicas. Nil keeps it
 	// within this process.
 	sharedEmbeddings EmbeddingCache
@@ -118,6 +123,20 @@ type sqliteToolStore struct {
 
 // Option configures a tool store.
 type Option func(*sqliteToolStore)
+
+// defaultEmbedTurnWait is how long a build waits for the embedding turn. It is
+// about as long as a cold embed of a few hundred tools takes on a CPU-backed
+// TEI, so a build that waits usually finds every vector it needs once the
+// build ahead of it commits. A shorter wait would send those builds back to
+// the backend in parallel in exactly the case the turn exists for.
+const defaultEmbedTurnWait = 30 * time.Second
+
+// withEmbedTurnWait overrides defaultEmbedTurnWait.
+func withEmbedTurnWait(wait time.Duration) Option {
+	return func(s *sqliteToolStore) {
+		s.embedTurnWait = wait
+	}
+}
 
 // WithEmbeddingCache shares the store's verified embeddings through cache, so
 // a replica reuses vectors other replicas computed. It shares vectors only:
@@ -193,6 +212,7 @@ func newSQLiteToolStore(
 		lastModelID:               &atomic.Pointer[string]{},
 		embeddingDim:              &atomic.Int64{},
 		embedTurn:                 semaphore.NewWeighted(1),
+		embedTurnWait:             defaultEmbedTurnWait,
 	}
 	for _, opt := range opts {
 		opt(&store)
@@ -220,7 +240,7 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 	//
 	// The embedding turn, if this build takes one, is held until the rows are
 	// committed or rolled back, so a build waiting for it finds them.
-	turn := &buildTurn{sem: s.embedTurn}
+	turn := &buildTurn{sem: s.embedTurn, wait: s.embedTurnWait}
 	defer turn.release()
 	embBlobs, hashes, err := s.resolveEmbeddings(ctx, tools, turn)
 	if err != nil {
@@ -270,7 +290,7 @@ const maxResolveAttempts = 2
 // initialize round-trip; reuse makes it O(tools whose text changed). See
 // stacklok/toolhive#5847. Builds that start together on a cold store, as the
 // first sessions after a deploy do, would each still miss and embed the whole
-// catalogue, so a build with misses takes the embedding turn and looks again
+// catalogue, so a build with misses waits its turn to embed and looks again
 // (see buildTurn). With a shared cache, lookups also find the vectors other
 // replicas computed.
 //
@@ -393,14 +413,31 @@ func fillMisses(
 // start together on a cold store would otherwise each embed the whole
 // catalogue; taking turns lets each re-check the store and find the rows the
 // build before it committed. Builds whose tools are all stored never wait.
+//
+// The turn only ever saves work. A build waits for it at most wait, then
+// embeds without it, as every build did before the turn existed, so a holder
+// stuck on a hung backend delays the builds behind it by that much and no
+// more. A build tries for the turn once, whether or not it gets it.
 type buildTurn struct {
-	sem  *semaphore.Weighted
-	held bool
+	sem   *semaphore.Weighted
+	wait  time.Duration
+	tried bool
+	held  bool
 }
 
+// take waits up to t.wait for the turn. It returns an error only when ctx
+// ends first. A waiter does not inherit the holder's outcome: a holder's
+// failure may be its own cancellation, or concern tools the waiter lacks.
 func (t *buildTurn) take(ctx context.Context) error {
-	if err := t.sem.Acquire(ctx, 1); err != nil {
-		return fmt.Errorf("waiting for the embedding turn: %w", err)
+	t.tried = true
+	waitCtx, cancel := context.WithTimeout(ctx, t.wait)
+	defer cancel()
+	if err := t.sem.Acquire(waitCtx, 1); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("waiting for the embedding turn: %w", ctxErr)
+		}
+		slog.Debug("embedding turn still held; embedding without it", "waited", t.wait)
+		return nil
 	}
 	t.held = true
 	return nil
@@ -414,8 +451,8 @@ func (t *buildTurn) release() {
 }
 
 // reuseEmbeddings fills blobs with the stored vectors for keys and returns the
-// texts still to embed (see partitionMisses). On misses it takes the turn,
-// unless already held, and looks again.
+// texts still to embed (see partitionMisses). On misses it tries for the turn,
+// once per build, and looks again.
 func (s sqliteToolStore) reuseEmbeddings(
 	ctx context.Context, blobs [][]byte, keys, texts []string, turn *buildTurn,
 ) (map[string]int, []string, error) {
@@ -427,7 +464,7 @@ func (s sqliteToolStore) reuseEmbeddings(
 		missIndexByKey, missTexts, reused := partitionMisses(blobs, keys, texts, stored)
 		slog.Debug("resolved tool embeddings",
 			"tools", len(keys), "reused", reused, "reused_shared", shared, "embedded", len(missTexts))
-		if len(missTexts) == 0 || turn.held {
+		if len(missTexts) == 0 || turn.tried {
 			return missIndexByKey, missTexts, nil
 		}
 		if err := turn.take(ctx); err != nil {

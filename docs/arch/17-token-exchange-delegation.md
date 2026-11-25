@@ -3320,8 +3320,32 @@ delegated, so it is treated like any other unclassified token.
 
 Consumers that grant anything must compare for one exact value, such as
 `delegated`. They must never test for a non-empty route or against the empty
-value, because new values may be added and an empty route is also what every
-unbound or introspected token gets.
+value, because new values may be added and `AdmissionRouteUnspecified` also
+covers tokens accepted by an unbound validator or through introspection.
+
+`pkg/auth/sessionbinding` consumes `AdmissionRouteDelegated` to isolate delegated
+MCP sessions from interactive sessions. This isolation requires a validator bound
+to the embedded authorization server, a configured `Audience`, and successful
+verification with the in-process signing keys supplied via `WithKeyProvider`.
+An unbound validator or a fallback to HTTP JWKS leaves the route unspecified even
+if the token carries the delegated-access marker. The token then gets the
+two-field `iss + "\x00" + sub` binding and may reuse the user's interactive session.
+
+Only delegated session bindings include the client and, if present, the actor.
+Other sessionless grants (RFC 8693 token exchange and unmarked JWT-bearer) keep
+the two-field binding. Self-issued RFC 8693 token exchanges are not marked
+delegated, so they keep the two-field binding: they can reuse the user's
+interactive session and share a binding across clients. Actor binding covers
+only the immediate actor (`act.iss`, `act.sub`); nested `act.act` is
+informational per RFC 8693 §4.1 and does not contribute to the binding. A
+malformed nested `act` prevents a delegated token from opening or reusing a
+session. Past the default maximum delegation depth, hops are counted but not
+inspected: a non-string `iss` or `sub` there does not prevent binding, but a
+nested `act` that is not an object prevents it at any depth. An explicit
+top-level `act: null` on a delegated token is refused, like a malformed `act`;
+a nested `act: null` just ends the chain. Without an actor, the binding isolates agents
+only if each uses its own `client_id`. See
+[vMCP Session Ownership](10-virtual-mcp-architecture.md#session-ownership).
 
 ## Implementation
 

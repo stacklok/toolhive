@@ -100,6 +100,75 @@ func TestValidateCedarPolicies(t *testing.T) {
 			wantErrIs:   validation.ErrPolicyTooLarge,
 			errContains: "cedar policy at index 1 rejected",
 		},
+		{
+			name: "two statements in one entry are rejected",
+			policies: []string{
+				"permit (principal, action, resource); forbid (principal, action, resource);",
+			},
+			wantErr:     true,
+			wantErrIs:   validation.ErrMultipleStatements,
+			errContains: "cedar policy at index 0 rejected: policy contains more than one statement",
+		},
+		{
+			name: "three statements in one entry are rejected",
+			policies: []string{
+				"permit (principal, action, resource); permit (principal, action, resource); forbid (principal, action, resource);",
+			},
+			wantErr:   true,
+			wantErrIs: validation.ErrMultipleStatements,
+		},
+		{
+			name: "multi-statement entry after a valid one names its index",
+			policies: []string{
+				validPolicy,
+				"permit (principal, action, resource);\nforbid (principal, action, resource);",
+			},
+			wantErr:     true,
+			wantErrIs:   validation.ErrMultipleStatements,
+			errContains: "cedar policy at index 1 rejected",
+		},
+		{
+			name: "trailing garbage after semicolon is rejected as invalid syntax",
+			policies: []string{
+				"permit (principal, action, resource); not valid cedar",
+			},
+			wantErr:     true,
+			errContains: "invalid syntax",
+		},
+		{
+			name: "extra semicolon after statement is rejected as invalid syntax",
+			policies: []string{
+				"permit (principal, action, resource);;",
+			},
+			wantErr:     true,
+			errContains: "invalid syntax",
+		},
+		{
+			name:        "empty string entry is rejected",
+			policies:    []string{""},
+			wantErr:     true,
+			errContains: "invalid syntax",
+		},
+		{
+			name:        "comment-only entry is rejected",
+			policies:    []string{"// comment without a policy\n/* block */"},
+			wantErr:     true,
+			errContains: "invalid syntax",
+		},
+		{
+			name: "single statement with leading and trailing comments containing semicolons and quotes is accepted",
+			policies: []string{
+				"// leading ; \" /*\n/* block ; \" // */\npermit (principal, action, resource); // trailing ; \"\n/* trailing ; \" */\n",
+			},
+			wantErr: false,
+		},
+		{
+			name: "single statement with semicolons, comment markers, and escaped quotes inside string literals is accepted",
+			policies: []string{
+				`permit (principal == User::"a;b", action, resource) when { context.note == "/* ; // \" ; \\" };`,
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -138,9 +207,10 @@ func TestValidateCedarPoliciesDoesNotCompile(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&before)
 	require.NoError(t, validation.ValidateCedarPolicies([]string{p}))
+	require.ErrorIs(t, validation.ValidateCedarPolicies([]string{p + " " + p}), validation.ErrMultipleStatements)
 	runtime.ReadMemStats(&after)
 
-	// Parsing allocates about 25 KB; compiling (cedar.Policy) allocates about
-	// 46 MB at this depth.
+	// Parsing allocates about 25 KB per statement; compiling (cedar.Policy)
+	// allocates about 46 MB at this depth.
 	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(4<<20))
 }

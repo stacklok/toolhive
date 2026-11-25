@@ -400,20 +400,11 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 		multiValuedClaims:       options.MultiValuedClaims,
 	}
 
-	// Load policies
-	if len(options.Policies) == 0 {
-		return nil, ErrNoPolicies
+	policySet, err := parsePolicySet(options.Policies)
+	if err != nil {
+		return nil, err
 	}
-
-	for i, policyStr := range options.Policies {
-		var policy cedar.Policy
-		if err := policy.UnmarshalCedar([]byte(policyStr)); err != nil {
-			return nil, fmt.Errorf("failed to parse policy %d: %w", i, err)
-		}
-
-		policyID := cedar.PolicyID(fmt.Sprintf("policy%d", i))
-		authorizer.policySet.Add(policyID, &policy)
-	}
+	authorizer.policySet = policySet
 
 	// Load entities if provided
 	if options.EntitiesJSON != "" {
@@ -442,25 +433,54 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 	return authorizer, nil
 }
 
+// parsePolicySet parses and compiles a slice of single-statement Cedar policy
+// entries into a PolicySet. Each entry is parsed via PolicyList.UnmarshalCedar
+// rather than Policy.UnmarshalCedar because Policy.UnmarshalCedar stops at the
+// first semicolon and ignores any trailing statements or tokens.
+func parsePolicySet(policies []string) (*cedar.PolicySet, error) {
+	if len(policies) == 0 {
+		return nil, ErrNoPolicies
+	}
+
+	policySet := cedar.NewPolicySet()
+	for i, policyStr := range policies {
+		policy, err := parseSinglePolicy(policyStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse policy %d: %w", i, err)
+		}
+
+		policyID := cedar.PolicyID(fmt.Sprintf("policy%d", i))
+		policySet.Add(policyID, policy)
+	}
+	return policySet, nil
+}
+
+func parseSinglePolicy(policyStr string) (*cedar.Policy, error) {
+	var list cedar.PolicyList
+	if err := list.UnmarshalCedar([]byte(policyStr)); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
+	}
+	switch len(list) {
+	case 0:
+		return nil, fmt.Errorf("%w: policy entry contains no statements", ErrInvalidPolicy)
+	case 1:
+		return list[0], nil
+	default:
+		return nil, fmt.Errorf(
+			"%w: policy entry contains %d statements, expected 1",
+			ErrInvalidPolicy, len(list),
+		)
+	}
+}
+
 // UpdatePolicies updates the Cedar policies.
 func (a *Authorizer) UpdatePolicies(policies []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if len(policies) == 0 {
-		return ErrNoPolicies
-	}
-
-	newPolicySet := cedar.NewPolicySet()
-
-	for i, policyStr := range policies {
-		var policy cedar.Policy
-		if err := policy.UnmarshalCedar([]byte(policyStr)); err != nil {
-			return fmt.Errorf("failed to parse policy %d: %w", i, err)
-		}
-
-		policyID := cedar.PolicyID(fmt.Sprintf("policy%d", i))
-		newPolicySet.Add(policyID, &policy)
+	newPolicySet, err := parsePolicySet(policies)
+	if err != nil {
+		return err
 	}
 
 	a.policySet = newPolicySet

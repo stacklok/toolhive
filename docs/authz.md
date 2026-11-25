@@ -203,7 +203,8 @@ cedar:
 The Cedar-specific configuration fields are:
 
 - `cedar`: The Cedar-specific configuration.
-  - `policies`: An array of Cedar policy strings.
+  - `policies`: An array of Cedar policy strings. Each entry must hold a single
+    policy statement.
   - `entities_json`: A JSON string representing Cedar entities.
 
 ### Writing Cedar policies
@@ -226,11 +227,16 @@ permit|forbid(principal, action, resource) when { conditions };
 - `conditions`: Optional conditions that must be satisfied for the policy to
   apply.
 
+Each entry in a `policies` list must hold exactly one `permit` or `forbid`
+statement. Entries that contain more than one statement are rejected; place
+each statement in its own list entry.
+
 #### Policy limits
 
 Inline policies on an `MCPRemoteProxy` are limited to 8 KiB (8192 bytes) each.
 The operator checks this limit together with the policy syntax. A policy over
-the limit is rejected the same way as one with a syntax error: the
+the limit, or an entry containing more than one statement, is rejected the same
+way as one with a syntax error: the
 `ConfigurationValid` condition is set to `False` with reason
 `AuthzPolicySyntaxInvalid`, the proxy phase is `Failed`, and the operator emits
 a Warning event that names the policy index and the limit, for example

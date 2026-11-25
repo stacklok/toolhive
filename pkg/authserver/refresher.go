@@ -71,6 +71,8 @@ type upstreamTokenRefresher struct {
 	storage              storage.UpstreamTokenStorage
 	refreshTokenLifespan time.Duration
 	sfGroup              singleflight.Group
+	// rejected remembers refresh tokens the IdP rejected; see redeem. It may be nil.
+	rejected *rejectedRefreshes
 }
 
 // Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
@@ -127,12 +129,12 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 			if !authoritative.IsExpired(time.Now()) && rowChanged(expired, authoritative) {
 				return authoritative, nil
 			}
-			return r.refreshAndStore(refreshCtx, sessionID, authoritative)
+			return r.redeem(refreshCtx, sessionID, rowID, authoritative)
 		}
 		if !errors.Is(readErr, storage.ErrExpired) || authoritative == nil {
 			return nil, readErr
 		}
-		return r.refreshAndStore(refreshCtx, sessionID, authoritative)
+		return r.redeem(refreshCtx, sessionID, rowID, authoritative)
 	})
 	if err != nil {
 		return nil, err
@@ -143,6 +145,37 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	}
 	refreshedCopy := *refreshed
 	return &refreshedCopy, nil
+}
+
+// redeem refreshes row through refreshAndStore, except that a refresh token the
+// IdP already rejected from this process is not sent again: the remembered
+// rejection is returned instead. The memory only holds ErrGrantRejected
+// results, which refreshAndStore returns after rotatedElsewhere found no
+// successor, so transient and non-invalid_grant failures are always retried.
+// It runs inside the singleflight group for rowID, so the check and the add do
+// not race within a process. The row is never written on a rejection.
+func (r *upstreamTokenRefresher) redeem(
+	ctx context.Context,
+	sessionID string,
+	rowID storage.UpstreamTokenRowID,
+	row *storage.UpstreamTokens,
+) (*storage.UpstreamTokens, error) {
+	if row.RefreshToken == "" {
+		return r.refreshAndStore(ctx, sessionID, row)
+	}
+	if rejection := r.rejected.lookup(rowID, row.RefreshToken); rejection != nil {
+		slog.Debug("upstream refresh token already rejected; not calling the provider again",
+			"provider_id", row.ProviderID,
+		)
+		// Log session_id at DEBUG only; it is credential-adjacent.
+		slog.Debug("remembered upstream refresh rejection session", "session_id", sessionID)
+		return nil, rejection
+	}
+	refreshed, err := r.refreshAndStore(ctx, sessionID, row)
+	if err != nil && errors.Is(err, upstream.ErrGrantRejected) {
+		r.rejected.add(rowID, row.RefreshToken, err)
+	}
+	return refreshed, err
 }
 
 // refreshAndStore performs the actual token refresh and storage write.

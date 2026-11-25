@@ -1150,10 +1150,16 @@ func newUpstreamTokenRefresher(
 	for _, u := range upstreams {
 		providers[u.Name] = u.Provider
 	}
+	rejected, err := newRejectedRefreshes(rejectedRefreshesMaxEntries, rejectedRefreshesTTL, time.Now)
+	if err != nil {
+		// Only reachable if the constants above are changed to invalid values.
+		panic(err)
+	}
 	return &upstreamTokenRefresher{
 		providers:            providers,
 		storage:              stor,
 		refreshTokenLifespan: refreshTokenLifespan,
+		rejected:             rejected,
 	}
 }
 

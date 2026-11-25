@@ -49,9 +49,9 @@ var errSSEBodyTooLarge = errors.New("held 2xx body exceeds the filter's size lim
 var errSSEBareCR = errors.New("event carries a bare CR line break that the filter cannot split")
 
 // errSSEUnrecognizedMediaType is logged when a successful response with a
-// Content-Type other than text/event-stream carries neither a JSON-RPC response
-// nor an SSE result. Such a body is rejected with an error carrying its id where
-// that id is readable, and dropped otherwise.
+// Content-Type other than text/event-stream is rejected: it is not a single
+// JSON-RPC response, or its result keys are ambiguous. Such a body is answered
+// with an error carrying its id where that id is readable, and dropped otherwise.
 var errSSEUnrecognizedMediaType = errors.New(
 	"successful response has a Content-Type other than text/event-stream and no readable JSON-RPC result")
 
@@ -261,8 +261,9 @@ func (w *sseStreamFilterWriter) finish() {
 // status it is answering with. An event stream is parsed and filtered as it
 // arrives. A non-2xx body (an error) is passed through unchanged. A successful
 // body with any other media type is sniffed (writeSniffed): it is held until the
-// handler returns, then read as JSON-RPC or SSE, or dropped. A client that ignores
-// Content-Type could read it as events, so it is never passed through unfiltered.
+// handler returns, then read as JSON-RPC or SSE. A body that names a result it cannot
+// read is rejected or dropped, so a client that ignores Content-Type never receives
+// it unfiltered.
 // Held bodies are buffered up to maxSniffedBodyBytes, so a long-lived mislabeled
 // stream reaches the client only when it ends or hits that cap. Filtered modes
 // carry caller-specific list answers, so they are marked uncacheable before
@@ -309,8 +310,9 @@ func (w *sseStreamFilterWriter) markFiltered() {
 // stream. The body is read as one JSON-RPC response when it parses as one, and
 // as SSE when its framing carries a result (sniffBodyShape decides). A clean
 // JSON-RPC response with a list member is filtered and sent; any other clean
-// response is sent unchanged. A body carrying no result in either shape is
-// dropped, so nothing unfiltered reaches the client.
+// response is sent unchanged. A body that names no result passes through
+// unchanged (sniffPassThrough). A body that names a result it cannot read is
+// rejected or dropped, so nothing unfiltered reaches the client.
 func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 	if hasAmbiguousResultKey(body) {
 		w.writeRejection(body, "rejected a 2xx body whose result key is duplicated or differs in case")

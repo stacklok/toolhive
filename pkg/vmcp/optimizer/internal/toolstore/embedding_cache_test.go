@@ -344,3 +344,103 @@ func TestSQLiteToolStore_UpsertTools_TurnWaitIsBounded(t *testing.T) {
 		})
 	}
 }
+
+// observedCache wraps an EmbeddingCache, counting lookups and, when stallPut
+// is set, holding the first write until release is closed, as a slow Redis
+// would. putEntered is closed once that write is held.
+type observedCache struct {
+	EmbeddingCache
+	gets       atomic.Int64
+	stallPut   bool
+	stalled    atomic.Bool
+	putEntered chan struct{}
+	release    chan struct{}
+}
+
+func newObservedCache(t *testing.T, stallPut bool) *observedCache {
+	t.Helper()
+	inner, _ := newSharedCache(t)
+	return &observedCache{
+		EmbeddingCache: inner,
+		stallPut:       stallPut,
+		putEntered:     make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+}
+
+func (c *observedCache) GetEmbeddings(ctx context.Context, keys []string) (map[string][]byte, error) {
+	c.gets.Add(1)
+	return c.EmbeddingCache.GetEmbeddings(ctx, keys)
+}
+
+func (c *observedCache) PutEmbeddings(ctx context.Context, entries map[string][]byte) error {
+	if c.stallPut && c.stalled.CompareAndSwap(false, true) {
+		close(c.putEntered)
+		<-c.release
+	}
+	return c.EmbeddingCache.PutEmbeddings(ctx, entries)
+}
+
+// TestSQLiteToolStore_SharedEmbeddings_StayOutOfTheTurn pins that no build
+// calls the shared cache while it holds the embedding turn, so a slow Redis
+// delays only the build that is calling it.
+func TestSQLiteToolStore_SharedEmbeddings_StayOutOfTheTurn(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a slow publish does not hold the turn", func(t *testing.T) {
+		t.Parallel()
+
+		cache := newObservedCache(t, true)
+		store := newReplica(t, newCountingEmbeddingClient(), cache)
+
+		first := make(chan error, 1)
+		go func() { first <- store.UpsertTools(context.Background(), catalog(3)) }()
+		select {
+		case <-cache.putEntered:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for the first build to publish")
+		}
+
+		// This build misses and so needs the turn the first one took.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		require.NoError(t, store.UpsertTools(ctx, makeTools(
+			mcp.NewTool("other_tool", mcp.WithDescription("Not in the first build")))),
+			"a build must not wait for another build's publish")
+
+		close(cache.release)
+		select {
+		case err := <-first:
+			require.NoError(t, err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for the first build to finish")
+		}
+	})
+
+	t.Run("the look after the turn reads only this store", func(t *testing.T) {
+		t.Parallel()
+
+		cache := newObservedCache(t, false)
+		client := newHungEmbeddingClient()
+		store := newReplica(t, client, cache)
+
+		holder := startHungHolder(t, store, client)
+
+		// A superset of the holder's tools: after its turn this build still
+		// misses one, which it must embed without asking the cache again.
+		waiter := make(chan error, 1)
+		go func() { waiter <- store.UpsertTools(context.Background(), catalog(4)) }()
+		close(client.release)
+		for _, done := range []<-chan error{holder, waiter} {
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("timeout waiting for the builds to finish")
+			}
+		}
+
+		assert.Equal(t, int64(2), cache.gets.Load(), "each build reads the cache once, before the turn")
+		assert.Equal(t, 4, client.textsEmbedded(), "the waiter reuses the holder's rows and embeds only its extra tool")
+	})
+}

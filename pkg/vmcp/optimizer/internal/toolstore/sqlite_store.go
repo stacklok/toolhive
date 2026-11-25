@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"sort"
 	"strings"
@@ -141,8 +142,10 @@ func withEmbedTurnWait(wait time.Duration) Option {
 // WithEmbeddingCache shares the store's verified embeddings through cache, so
 // a replica reuses vectors other replicas computed. It shares vectors only:
 // each replica keeps its own rows and index, and replicas that miss the same
-// vectors at the same moment both embed them. A cache failure costs reuse,
-// never a build. The store closes cache when it is closed.
+// vectors at the same moment both embed them. A build reads cache at most once,
+// before it waits for the embedding turn, and writes it at most once, after it
+// commits and gives the turn back, so a slow cache delays only that build. A cache failure
+// costs reuse and never fails a build. The store closes cache when it is closed.
 func WithEmbeddingCache(cache EmbeddingCache) Option {
 	return func(s *sqliteToolStore) {
 		s.sharedEmbeddings = cache
@@ -230,26 +233,42 @@ func newSQLiteToolStore(
 }
 
 // UpsertTools adds or updates tools in the store.
-func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerTool) (retErr error) {
-	// Resolve embeddings before opening the write transaction, so no SQLite lock is
-	// held across the multi-second embedding call. SQLite in shared-cache mode
-	// takes table-level locks: a read inside the transaction would pin a read
-	// lock on llm_capabilities, and concurrent builds would then fail to take
-	// the write lock with SQLITE_LOCKED, which the busy handler does not retry.
-	// See TestSQLiteToolStore_UpsertTools_ConcurrentBuilds.
-	//
-	// The embedding turn, if this build takes one, is held until the rows are
-	// committed or rolled back, so a build waiting for it finds them.
-	turn := &buildTurn{sem: s.embedTurn, wait: s.embedTurnWait}
-	defer turn.release()
-	embBlobs, hashes, err := s.resolveEmbeddings(ctx, tools, turn)
+func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerTool) error {
+	shareable, err := s.commitTools(ctx, tools)
 	if err != nil {
 		return err
+	}
+	// Published once the rows are committed and the embedding turn is given
+	// back, so a slow shared cache holds up only this build.
+	s.shareEmbeddings(ctx, shareable)
+	return nil
+}
+
+// commitTools resolves the tools' embeddings and commits their rows. It
+// returns the freshly embedded vectors that may be shared (see fillMisses).
+//
+// Embeddings are resolved before opening the write transaction, so no SQLite
+// lock is held across the multi-second embedding call. SQLite in shared-cache
+// mode takes table-level locks: a read inside the transaction would pin a read
+// lock on llm_capabilities, and concurrent builds would then fail to take the
+// write lock with SQLITE_LOCKED, which the busy handler does not retry. See
+// TestSQLiteToolStore_UpsertTools_ConcurrentBuilds.
+//
+// The embedding turn, if this build takes one, is held until the rows are
+// committed or rolled back, so a build waiting for it finds them.
+func (s sqliteToolStore) commitTools(
+	ctx context.Context, tools []server.ServerTool,
+) (_ map[string][]byte, retErr error) {
+	turn := &buildTurn{sem: s.embedTurn, wait: s.embedTurnWait}
+	defer turn.release()
+	embBlobs, hashes, shareable, err := s.resolveEmbeddings(ctx, tools, turn)
+	if err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		if retErr != nil {
@@ -260,19 +279,22 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 	stmt, err := tx.PrepareContext(ctx,
 		"INSERT OR REPLACE INTO llm_capabilities (name, description, embedding, content_hash) VALUES (?, ?, ?, ?)")
 	if err != nil {
-		return fmt.Errorf("failed to prepare statement: %w", err)
+		return nil, fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
 
 	for i, tool := range tools {
 		if _, err := stmt.ExecContext(ctx, tool.Tool.Name, tool.Tool.Description, embBlobs[i], hashes[i]); err != nil {
-			return fmt.Errorf("failed to upsert tool %s: %w", tool.Tool.Name, err)
+			return nil, fmt.Errorf("failed to upsert tool %s: %w", tool.Tool.Name, err)
 		}
 	}
 
 	slog.Debug("upserted tools into store", "count", len(tools))
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return shareable, nil
 }
 
 // maxResolveAttempts bounds how many times one build may restart because the
@@ -282,7 +304,8 @@ func (s sqliteToolStore) UpsertTools(ctx context.Context, tools []server.ServerT
 const maxResolveAttempts = 2
 
 // resolveEmbeddings returns an encoded embedding blob and a content hash for
-// each tool, embedding only the tools whose hash is not already stored.
+// each tool, embedding only the tools whose hash is not already stored, and
+// the fresh vectors that may be shared, keyed by hash.
 //
 // The Serve path rebuilds a per-session optimizer on every session registration
 // and every cross-pod rehydration, each upserting the session's whole tool set.
@@ -310,12 +333,12 @@ const maxResolveAttempts = 2
 // With no embedding client it returns nil blobs and hashes (FTS5-only mode).
 func (s sqliteToolStore) resolveEmbeddings(
 	ctx context.Context, tools []server.ServerTool, turn *buildTurn,
-) ([][]byte, []sql.NullString, error) {
+) ([][]byte, []sql.NullString, map[string][]byte, error) {
 	blobs := make([][]byte, len(tools))
 	hashes := make([]sql.NullString, len(tools))
 
 	if s.embeddingClient == nil {
-		return blobs, hashes, nil
+		return blobs, hashes, nil, nil
 	}
 
 	texts := make([]string, len(tools))
@@ -334,25 +357,25 @@ func (s sqliteToolStore) resolveEmbeddings(
 
 		missIndexByKey, missTexts, err := s.reuseEmbeddings(ctx, blobs, keys, texts, turn)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		// All cache hits: nothing was embedded, so there is no batch to have
 		// spanned a swap. The reused vectors are correct for the keys they
 		// carry by construction.
 		if len(missTexts) == 0 {
-			return blobs, hashes, nil
+			return blobs, hashes, nil, nil
 		}
 
 		embeddings, err := s.embedTexts(ctx, missTexts)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		after, afterVerified := s.embeddingIdentity(ctx)
 		if after != identity {
 			if attempt >= maxResolveAttempts {
-				return nil, nil, fmt.Errorf(
+				return nil, nil, nil, fmt.Errorf(
 					"embedding model changed during %d consecutive build attempts; giving up", attempt)
 			}
 			slog.Warn("embedding model changed during the batch; discarding it and re-embedding under the new identity")
@@ -368,11 +391,10 @@ func (s sqliteToolStore) resolveEmbeddings(
 
 		shareable, err := fillMisses(blobs, hashes, keys, tools, missIndexByKey, embeddings, verified)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		s.shareEmbeddings(ctx, shareable)
 
-		return blobs, hashes, nil
+		return blobs, hashes, shareable, nil
 	}
 }
 
@@ -450,62 +472,77 @@ func (t *buildTurn) release() {
 	}
 }
 
-// reuseEmbeddings fills blobs with the stored vectors for keys and returns the
-// texts still to embed (see partitionMisses). On misses it tries for the turn,
-// once per build, and looks again.
+// reuseEmbeddings fills blobs with the reusable vectors for keys and returns
+// the texts still to embed (see partitionMisses). It reads this store's rows,
+// then the shared cache for the rest. With misses left it tries for the turn,
+// once per build, and reads this store again, which now holds whatever the
+// build ahead of it committed.
+//
+// The shared cache is read only on the first look, which no build takes while
+// holding the turn. A slow Redis therefore delays only the build waiting on it,
+// never the builds queued behind that one for the turn.
 func (s sqliteToolStore) reuseEmbeddings(
 	ctx context.Context, blobs [][]byte, keys, texts []string, turn *buildTurn,
 ) (map[string]int, []string, error) {
-	for {
-		stored, shared, err := s.storedEmbeddings(ctx, keys)
-		if err != nil {
-			return nil, nil, err
-		}
-		missIndexByKey, missTexts, reused := partitionMisses(blobs, keys, texts, stored)
-		slog.Debug("resolved tool embeddings",
-			"tools", len(keys), "reused", reused, "reused_shared", shared, "embedded", len(missTexts))
-		if len(missTexts) == 0 || turn.tried {
-			return missIndexByKey, missTexts, nil
-		}
+	found, err := s.cachedEmbeddings(ctx, keys)
+	if err != nil {
+		return nil, nil, err
+	}
+	shared := 0
+	if !turn.tried {
+		shared = s.addSharedEmbeddings(ctx, keys, found)
+	}
+	missIndexByKey, missTexts, reused := partitionMisses(blobs, keys, texts, found)
+
+	if len(missTexts) > 0 && !turn.tried {
 		if err := turn.take(ctx); err != nil {
 			return nil, nil, err
 		}
+		committed, err := s.cachedEmbeddings(ctx, keys)
+		if err != nil {
+			return nil, nil, err
+		}
+		maps.Copy(found, committed)
+		missIndexByKey, missTexts, reused = partitionMisses(blobs, keys, texts, found)
 	}
+
+	slog.Debug("resolved tool embeddings",
+		"tools", len(keys), "reused", reused, "reused_shared", shared, "embedded", len(missTexts))
+	return missIndexByKey, missTexts, nil
 }
 
-// storedEmbeddings returns the reusable vectors among keys: this store's rows,
-// then the shared cache's for the rest, with the count the cache supplied. A
-// failed shared lookup is logged and costs only reuse.
-func (s sqliteToolStore) storedEmbeddings(ctx context.Context, keys []string) (map[string][]byte, int, error) {
-	stored, err := s.cachedEmbeddings(ctx, keys)
-	if err != nil || s.sharedEmbeddings == nil {
-		return stored, 0, err
+// addSharedEmbeddings adds to found the usable shared vectors for the keys
+// found lacks, and returns how many it added. A failed lookup is logged and
+// costs only reuse.
+func (s sqliteToolStore) addSharedEmbeddings(ctx context.Context, keys []string, found map[string][]byte) int {
+	if s.sharedEmbeddings == nil {
+		return 0
 	}
 	var missing []string
 	for _, key := range keys {
-		if _, ok := stored[key]; !ok {
+		if _, ok := found[key]; !ok {
 			missing = append(missing, key)
 		}
 	}
 	if len(missing) == 0 {
-		return stored, 0, nil
+		return 0
 	}
 	shared, err := s.sharedEmbeddings.GetEmbeddings(ctx, missing)
 	if err != nil {
 		slog.Warn("shared embedding lookup failed; embedding the missing tools here", "error", err)
-		return stored, 0, nil
+		return 0
 	}
-	found := 0
+	added := 0
 	for key, blob := range shared {
 		if s.usableEmbedding(blob) {
-			stored[key] = blob
-			found++
+			found[key] = blob
+			added++
 		}
 	}
-	if unusable := len(shared) - found; unusable > 0 {
+	if unusable := len(shared) - added; unusable > 0 {
 		slog.Warn("ignoring unusable shared embeddings, they will be recomputed", "count", unusable)
 	}
-	return stored, found, nil
+	return added
 }
 
 // shareEmbeddings publishes vectors to the shared cache. A failed write is

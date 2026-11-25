@@ -1432,7 +1432,10 @@ func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
 	}
 }
 
-// handleHealthCheckFailure handles a failed health check, including retry logic and shutdown.
+// handleHealthCheckFailure handles a failed health check, including retry logic.
+// Once failures reach the threshold it fires onHealthCheckFailed. A local proxy
+// then stops, because ToolHive owns the container lifecycle. A remote proxy keeps
+// running so monitorHealth can see the server come back.
 // Returns (updatedFailureCount, shouldContinue) - true if monitoring should continue, false if it should stop.
 func (p *TransparentProxy) handleHealthCheckFailure(
 	ctx context.Context,
@@ -1454,25 +1457,26 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 		return consecutiveFailures, true
 	}
 
-	// Threshold reached — notify the status manager.
+	if p.isRemote {
+		// ToolHive does not own a remote server's lifecycle, and it may come back
+		// (for example a scale-to-zero backend after a cold start), so keep
+		// monitoring instead of stopping.
+		//nolint:gosec // G706: logging target URI from config
+		slog.Warn("remote server failed consecutive health checks; marking unhealthy and monitoring for recovery",
+			"target", p.targetURI, "attempts", p.healthCheckFailureThreshold)
+		if p.onHealthCheckFailed != nil {
+			p.onHealthCheckFailed()
+		}
+		return consecutiveFailures, true
+	}
+
+	// All retries exhausted, initiate shutdown
 	//nolint:gosec // G706: logging target URI from config
-	slog.Error("health check failed after consecutive attempts",
+	slog.Error("health check failed after consecutive attempts; initiating proxy shutdown",
 		"target", p.targetURI, "attempts", p.healthCheckFailureThreshold)
 	if p.onHealthCheckFailed != nil {
 		p.onHealthCheckFailed()
 	}
-
-	if p.isRemote {
-		// For remote workloads ToolHive does not own the server lifecycle.
-		// Stay in degraded mode and keep monitoring so auto-recovery is possible
-		// (e.g. scale-to-zero backends that come back after a cold start).
-		// Keep the counter at threshold so that monitorHealth can detect recovery
-		// (it fires onHealthCheckRecovered when consecutiveFailures >= threshold on
-		// the next successful check), then resets to 0 for the next outage window.
-		return p.healthCheckFailureThreshold, true
-	}
-
-	// Local container: ToolHive controls the lifecycle — stop the proxy.
 	if err := p.Stop(ctx); err != nil {
 		slog.Error("failed to stop proxy",
 			"target", p.targetURI, "error", err)
@@ -1514,7 +1518,16 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 				continue
 			}
 
+			// Only a remote proxy keeps monitoring once the threshold is reached.
+			degraded := consecutiveFailures >= p.healthCheckFailureThreshold
+
 			if alive.Status != healthcheck.StatusHealthy {
+				if degraded {
+					// Already reported unhealthy; notify only on the transition.
+					//nolint:gosec // G706: logging target URI from config and health status
+					slog.Debug("remote server still unhealthy", "target", p.targetURI, "status", alive.Status)
+					continue
+				}
 				var shouldContinue bool
 				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)
 				if !shouldContinue {
@@ -1524,11 +1537,9 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			}
 
 			// Reset failure count on successful health check
-			if consecutiveFailures >= p.healthCheckFailureThreshold {
-				// Recovered from a degraded state — notify the status manager.
+			if degraded {
 				//nolint:gosec // G706: logging target URI from config
-				slog.Info("health check recovered after failures",
-					"target", p.targetURI, "previous_failures", consecutiveFailures)
+				slog.Debug("remote server passed health check again", "target", p.targetURI)
 				if p.onHealthCheckRecovered != nil {
 					p.onHealthCheckRecovered()
 				}

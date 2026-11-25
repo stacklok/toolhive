@@ -1826,18 +1826,19 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 			continue
 		}
 
-		// Apply listAll filter. AuthRetrying is intentionally surfaced
-		// alongside Running because the workload is still self-recovering
-		// without user intervention on a longer cadence. Unhealthy and
-		// Unauthenticated are also surfaced so users see remote workloads
-		// that need attention without passing -a. Every other non-Running
-		// status is terminal until external intervention, and is hidden.
-		// Mirrors the filter in file_status.go:ListWorkloads.
+		// Apply listAll filter. AuthRetrying and Unhealthy are intentionally
+		// surfaced alongside Running because the workload is still
+		// self-recovering without user intervention: an unhealthy remote
+		// proxy stays up and returns to Running when the server answers
+		// again. Every other non-Running status is terminal until external
+		// intervention, and is hidden. This deliberately surfaces more than
+		// the local filter in file_status.go:ListWorkloads, because a local
+		// workload whose health checks fail has its proxy stopped, so
+		// Unhealthy is terminal there.
 		if !listAll &&
 			workloadStatus.Status != rt.WorkloadStatusRunning &&
 			workloadStatus.Status != rt.WorkloadStatusAuthRetrying &&
-			workloadStatus.Status != rt.WorkloadStatusUnhealthy &&
-			workloadStatus.Status != rt.WorkloadStatusUnauthenticated {
+			workloadStatus.Status != rt.WorkloadStatusUnhealthy {
 			continue
 		}
 

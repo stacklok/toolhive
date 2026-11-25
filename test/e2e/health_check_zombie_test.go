@@ -93,8 +93,9 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 				Expect(proxyPort).ToNot(BeZero(), "Should be able to get proxy port")
 				GinkgoWriter.Printf("Proxy listening on port: %d\n", proxyPort)
 
-				By("Sending a request through the proxy to initialize it")
-				// This triggers serverInitialized() so health check failures count toward shutdown
+				By("Sending a request through the proxy")
+				// Remote health check failures count without initialization; this
+				// only confirms the proxy is serving.
 				proxyURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", proxyPort)
 				resp, err := http.Get(proxyURL)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to connect to proxy")
@@ -128,15 +129,24 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 					time.Sleep(1 * time.Second)
 				}
 
-				Expect(finalStatus).ToNot(Equal("running"),
-					"Server status should change from 'running' after health check failures")
+				Expect(finalStatus).To(Equal("unhealthy"),
+					"Server status should change from 'running' to 'unhealthy' after health check failures")
 
 				By("Verifying the server is still tracked (not a zombie)")
 				// The server should still be listed, indicating the runner detected
 				// the failure and is handling it (not hanging as a zombie)
-				stdout, _ := e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName),
-					"Server should still be tracked in the system")
+					"Unhealthy remote server should be listed without --all")
+
+				By("Making the mock server healthy again")
+				mockServer.SetHealthy(true)
+
+				By("Waiting for the status to return to running without a restart")
+				Eventually(func() string {
+					return getServerStatus(config, serverName)
+				}, 30*time.Second, time.Second).Should(Equal("running"),
+					"Remote server should return to 'running' once health checks pass again")
 			})
 		})
 	})

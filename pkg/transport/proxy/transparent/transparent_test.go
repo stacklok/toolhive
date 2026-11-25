@@ -1638,7 +1638,8 @@ func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 }
 
 // TestTransparentProxy_RemoteServerAutoRecovery verifies the full down→unhealthy→up→running
-// cycle for a remote workload: the proxy stays alive after health check failures and fires
+// cycle for a remote workload: the proxy stays alive after health check failures, fires
+// onHealthCheckFailed once per outage rather than on every failed check, and fires
 // onHealthCheckRecovered when the upstream comes back.
 func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	t.Parallel()
@@ -1658,8 +1659,13 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	failTracker, failCallback := newCallbackTracker()
+	failTracker, trackFailure := newCallbackTracker()
 	recoveryTracker, recoveryCallback := newCallbackTracker()
+	var failures atomic.Int32
+	failCallback := func() {
+		failures.Add(1)
+		trackFailure()
+	}
 
 	proxy := NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, server.URL,
@@ -1684,7 +1690,11 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 
 	// Phase 1: server is returning 500 — wait for the failure callback.
 	failInvoked := waitForCallback(t, failTracker)
-	assert.True(t, failInvoked, "failure callback should fire after consecutive 500s")
+	require.True(t, failInvoked, "failure callback should fire after consecutive 500s")
+
+	// Several more failed checks while degraded must not notify again.
+	time.Sleep(500 * time.Millisecond)
+	assert.Equal(t, int32(1), failures.Load(), "failure callback should fire only on the transition into unhealthy")
 
 	running, err := proxy.IsRunning()
 	require.NoError(t, err)
@@ -1696,11 +1706,19 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	mu.Unlock()
 
 	recoveryInvoked := waitForCallback(t, recoveryTracker)
-	assert.True(t, recoveryInvoked, "recovery callback should fire when server becomes healthy again")
+	require.True(t, recoveryInvoked, "recovery callback should fire when server becomes healthy again")
 
 	running, err = proxy.IsRunning()
 	require.NoError(t, err)
 	assert.True(t, running, "proxy must still be running after recovery")
+
+	// Phase 3: a second outage notifies again.
+	mu.Lock()
+	serverHealthy = false
+	mu.Unlock()
+
+	require.Eventually(t, func() bool { return failures.Load() == 2 }, 2*time.Second, 10*time.Millisecond,
+		"failure callback should fire again on a new outage after recovery")
 }
 
 // TestPrefixHandlers_MountingAndRouting tests that prefix handlers are correctly mounted

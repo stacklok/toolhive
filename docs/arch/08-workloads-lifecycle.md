@@ -18,6 +18,7 @@ stateDiagram-v2
     [*] --> Starting: Deploy
     Starting --> Running: Success
     Starting --> Error: Failed
+    Starting --> Unhealthy: Remote Health Failed
 
     Running --> Stopping: Stop
     Running --> Unhealthy: Health Failed
@@ -32,6 +33,9 @@ stateDiagram-v2
     Unauthenticated --> Starting: Re-authenticate
     Unauthenticated --> Removing: Delete
 
+    Unhealthy --> Running: Remote Health Recovered
+    Unhealthy --> Stopping: Stop
+
     AuthRetrying --> Running: Refresh Succeeds
     AuthRetrying --> Unauthenticated: Ceiling Exceeded or Permanent Error
 
@@ -44,6 +48,12 @@ stateDiagram-v2
 - `starting`, `running`, `stopping`, `stopped`
 - `removing`, `error`, `unhealthy`, `unauthenticated`, `auth_retrying`
 - `policy_stopped`, `unknown`
+
+A local workload whose health checks fail has its proxy stopped, so
+`unhealthy` is terminal until it is restarted. A remote workload's proxy keeps
+running and checking, and returns the workload to `running` when the remote
+server passes a health check again, so default `thv list` shows unhealthy
+remote workloads along with the reason.
 
 The `auth_retrying` cadence and ceiling can be tuned via environment
 variables on the proxy process:

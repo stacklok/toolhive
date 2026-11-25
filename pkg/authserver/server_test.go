@@ -967,10 +967,11 @@ func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {
 		"accessor must return the stored instance shared with the handler")
 }
 
-// TestNewUpstreamTokenRefresher_NilWhenNoUpstreams verifies the true-nil
-// interface contract: with no upstreams the constructor must return a nil
-// interface value, not a typed nil (*upstreamTokenRefresher)(nil) wrapped in an
-// interface, so that callers' `== nil` checks (runner, service, handler) work.
+// TestNewUpstreamTokenRefresher_NilWhenNoUpstreams verifies that with no
+// upstreams the constructor returns a nil pointer and refresherInterface turns
+// it into a nil interface, not a typed nil (*upstreamTokenRefresher)(nil)
+// wrapped in an interface, so that callers' `== nil` checks (runner, service,
+// handler) work.
 func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 	t.Parallel()
 
@@ -978,11 +979,53 @@ func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 	t.Cleanup(func() { _ = stor.Close() })
 
 	refresher := newUpstreamTokenRefresher(nil, stor, 24*time.Hour)
+	require.Nil(t, refresher)
 	// Direct == nil comparison, not assert.Nil: testify's Nil also passes for a
 	// typed nil pointer, which would hide exactly the bug this guards against.
-	if refresher != nil {
-		t.Fatalf("expected a true nil interface, got non-nil %T", refresher)
+	if iface := refresherInterface(refresher); iface != nil {
+		t.Fatalf("expected a true nil interface, got non-nil %T", iface)
 	}
+}
+
+// TestNewServer_UpdateUpstreamClientCredentialsBumpsRefresher builds a server
+// through newServer and checks that replacing an upstream's client
+// registration reaches the refresher the server shares with its consumers.
+func TestNewServer_UpdateUpstreamClientCredentialsBumpsRefresher(t *testing.T) {
+	t.Parallel()
+
+	provider := &credentialsUpdatingProvider{OAuth2Provider: upstreammocks.NewMockOAuth2Provider(gomock.NewController(t))}
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	cfg := Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			return provider, nil
+		},
+	}
+	srv, err := newServer(context.Background(), cfg, stor)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Close() })
+
+	refresher, ok := srv.UpstreamTokenRefresher().(*upstreamTokenRefresher)
+	require.True(t, ok, "the accessor must return the server's concrete refresher")
+	require.Zero(t, refresher.clientGeneration.Load())
+
+	require.NoError(t, srv.UpdateUpstreamClientCredentials("default", upstream.ClientCredentials{ClientID: "replacement"}))
+	assert.Equal(t, uint64(1), refresher.clientGeneration.Load())
+}
+
+// credentialsUpdatingProvider adds the client registration swap the server
+// requires to a mock provider.
+type credentialsUpdatingProvider struct {
+	upstream.OAuth2Provider
+}
+
+func (*credentialsUpdatingProvider) UpdateClientCredentials(upstream.ClientCredentials) error {
+	return nil
 }
 
 // TestNewServer_DelegateClientReconciliation covers registerDelegateClients'

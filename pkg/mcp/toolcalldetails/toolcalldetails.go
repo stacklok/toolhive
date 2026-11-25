@@ -112,13 +112,17 @@ func (e Entry) IsList() bool {
 }
 
 // Register adds the MCP call type to types, registered for RFC 8693 token
-// exchange (where the hook accepts it only when an ID-JAG is requested) and
-// for the RFC 7523 JWT-bearer grant, which processes it on ID-JAG redemption;
-// see the package doc. It overwrites an existing entry of the same name.
+// exchange (where the hook accepts it only when an ID-JAG is requested), for
+// authorizationdetails.IDJAGIssuance, which opts it into being signed into an
+// ID-JAG that this server mints, and for the RFC 7523 JWT-bearer grant, which
+// processes it on ID-JAG redemption; see the package doc. It overwrites an
+// existing entry of the same name.
 func Register(types map[string]authorizationdetails.Type) {
 	types[Type] = authorizationdetails.Type{
-		GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
-		Grant:      grant,
+		GrantTypes: []string{
+			oauthproto.GrantTypeTokenExchange, authorizationdetails.IDJAGIssuance, oauthproto.GrantTypeJWTBearer,
+		},
+		Grant: grant,
 	}
 }
 

@@ -21,13 +21,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// newMintDetailsRegistry registers testCallType for token exchange with
-// callHook and testOtherType for token exchange with otherHook.
+// newMintDetailsRegistry registers testCallType with callHook and testOtherType
+// with otherHook, each opted into ID-JAG issuance only.
 func newMintDetailsRegistry(t *testing.T, callHook, otherHook grantHook) *authorizationdetails.Registry {
 	t.Helper()
 	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
-		testCallType:  {GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, Grant: callHook},
-		testOtherType: {GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, Grant: otherHook},
+		testCallType:  {GrantTypes: []string{authorizationdetails.IDJAGIssuance}, Grant: callHook},
+		testOtherType: {GrantTypes: []string{authorizationdetails.IDJAGIssuance}, Grant: otherHook},
 	})
 	require.NoError(t, err)
 	return registry
@@ -208,6 +208,11 @@ func TestIDJAGDetailsRefusals(t *testing.T) {
 		testCallType: {GrantTypes: []string{oauthproto.GrantTypeJWTBearer}, Grant: keepAllHook},
 	})
 	require.NoError(t, err)
+	// Written for exchanged access tokens: never signed into an ID-JAG.
+	exchangeOnly, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		testCallType: {GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, Grant: keepAllHook},
+	})
+	require.NoError(t, err)
 	hookRefusal := authorizationdetails.Error{
 		Code: authorizationdetails.CodeInvalidAuthorizationDetails, Reason: "note_required",
 	}
@@ -233,6 +238,8 @@ func TestIDJAGDetailsRefusals(t *testing.T) {
 			code: "invalid_authorization_details", desc: reasonDetailsUnknownType},
 		{name: "a type registered only for the JWT-bearer grant", registry: jwtBearerOnly, values: []string{one},
 			code: "invalid_authorization_details", desc: reasonDetailsUnknownType},
+		{name: "a type registered for token exchange without the ID-JAG opt-in", registry: exchangeOnly,
+			values: []string{one}, code: "invalid_authorization_details", desc: reasonDetailsUnknownType},
 		{name: "an unregistered type", values: []string{`[{"type":"https://example.com/unknown"}]`},
 			code: "invalid_authorization_details", desc: reasonDetailsUnknownType},
 		{name: "not JSON", values: []string{"not json"},

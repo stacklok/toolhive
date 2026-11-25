@@ -30,8 +30,9 @@ import (
 // registry: without one the value is parsed by a registry that knows no type.
 // A value that breaks them gets malformed_entry. An ID-JAG carries the entries
 // it is minted with, so a type this server has no hook for is refused, never
-// ignored: with no registry, or with a type not registered for token exchange,
-// the request gets unknown_type. Both are invalid_authorization_details with
+// ignored: with no registry, or with a type that does not list
+// authorizationdetails.IDJAGIssuance (listing only the token-exchange grant
+// type is not enough), the request gets unknown_type. Both are invalid_authorization_details with
 // the reason as the whole description, the codes ID-JAG redemption uses for
 // the same causes. "[]" is left to grantIDJAGDetails, which refuses it as
 // empty_grant. A repeated parameter, empty values included, is
@@ -51,7 +52,7 @@ func (h *RefreshTokenHandler) parseIDJAGDetails(
 	if registry == nil {
 		registry = noDetailsTypes
 	}
-	pending, err := registry.Parse(raw, oauthproto.GrantTypeTokenExchange)
+	pending, err := registry.ParseIDJAGIssuance(raw)
 	switch {
 	case errors.Is(err, authorizationdetails.ErrUnknownType):
 		// Parse accepted the shape, so the value is a bounded array of objects.

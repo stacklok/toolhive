@@ -27,23 +27,32 @@ const (
 	// e2eNumberType is a test type whose entries carry a number, which the
 	// MCP call type does not allow.
 	e2eNumberType = "https://example.com/e2e-number"
+	// e2eExchangeOnlyType is registered for token exchange and the JWT-bearer
+	// grant but not opted into ID-JAG issuance.
+	e2eExchangeOnlyType = "https://example.com/e2e-exchange-only"
 	// e2eToolCall is one MCP tool-call entry.
 	e2eToolCall = `{"type":"` + toolcalldetails.Type + `","server":"github","tool":"github_pull_request_read",` +
 		`"arguments_sha256":"` + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" + `",` +
 		`"operation_id":"op-1"}`
 )
 
-// e2eDetailsRegistry registers the MCP call type and e2eNumberType, both for
-// token exchange and the JWT-bearer grant. e2eNumberType's hook keeps every
+// e2eDetailsRegistry registers the MCP call type and e2eNumberType, both opted
+// into ID-JAG issuance and registered for the JWT-bearer grant, and
+// e2eExchangeOnlyType without the opt-in. The test types' hooks keep every
 // entry.
 func e2eDetailsRegistry(t *testing.T) *authorizationdetails.Registry {
 	t.Helper()
+	keep := func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+		return authorizationdetails.Result{Entries: req.Entries}, nil
+	}
 	types := map[string]authorizationdetails.Type{
 		e2eNumberType: {
+			GrantTypes: []string{authorizationdetails.IDJAGIssuance, oauthproto.GrantTypeJWTBearer},
+			Grant:      keep,
+		},
+		e2eExchangeOnlyType: {
 			GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
-			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
-				return authorizationdetails.Result{Entries: req.Entries}, nil
-			},
+			Grant:      keep,
 		},
 	}
 	toolcalldetails.Register(types)
@@ -143,6 +152,8 @@ func TestIDJAGDetailsRefusalsAcrossTwoServers(t *testing.T) {
 		{"an unknown member", `[{"type":"` + toolcalldetails.Type + `","server":"github","method":"tools/list","x":"y"}]`,
 			"invalid_authorization_details", toolcalldetails.ReasonMalformedEntry},
 		{"an unregistered type", `[{"type":"https://example.com/unknown"}]`,
+			"invalid_authorization_details", "unknown_type"},
+		{"a type not opted into ID-JAG issuance", `[{"type":"` + e2eExchangeOnlyType + `"}]`,
 			"invalid_authorization_details", "unknown_type"},
 		{"the empty array", `[]`, "invalid_authorization_details", "empty_grant"},
 	} {

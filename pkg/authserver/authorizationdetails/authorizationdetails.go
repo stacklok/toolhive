@@ -35,11 +35,27 @@ const (
 	maxDepth = 64
 )
 
+// IDJAGIssuance is the key a Type lists in GrantTypes to be accepted on an
+// RFC 8693 token exchange that mints an ID-JAG, and so to be signed into the
+// ID-JAG's authorization_details claim. It is not a grant type: its value is
+// the ID-JAG token-type URN, the requested_token_type of such a request, which
+// no grant type can equal. Listing the token-exchange grant type alone does not
+// opt a type in, so a type written for exchanged access tokens is never signed
+// into an ID-JAG that another authorization server trusts unless its author
+// says so. Use Registry.ParseIDJAGIssuance for such a request.
+const IDJAGIssuance = "urn:ietf:params:oauth:token-type:id-jag"
+
+// grantTypeTokenExchange is the RFC 8693 grant type, which an ID-JAG issuance
+// request rides.
+//
+//nolint:gosec // G101: a grant type URN, not a credential
+const grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+
 // Type registers one authorization-details type.
 type Type struct {
-	// GrantTypes lists the grant types this type is accepted on. It is required
-	// and must be non-empty. An entry of this type on any other grant type is
-	// rejected as invalid.
+	// GrantTypes lists the grant types this type is accepted on, and may list
+	// IDJAGIssuance. It is required and must be non-empty. An entry of this
+	// type on any other grant type is rejected as invalid.
 	//
 	// On ToolHive's authorization server, listing the JWT-bearer grant type
 	// (urn:ietf:params:oauth:grant-type:jwt-bearer) opts the type into ID-JAG
@@ -47,13 +63,12 @@ type Type struct {
 	// of an ID-JAG and refuses a plain RFC 7523 assertion that carries one.
 	//
 	// Listing the token-exchange grant type
-	// (urn:ietf:params:oauth:grant-type:token-exchange) covers two uses there:
-	// a token exchange for an access token, which only echoes the granted
-	// entries, and a token exchange for an ID-JAG, which signs the entries the
-	// hook keeps into the ID-JAG, under Pending.GrantSubset's rules. The hook
-	// tells them apart by Request.Exchange.RequestedTokenType; a type whose
-	// entries must not be signed into an ID-JAG refuses when it is
-	// urn:ietf:params:oauth:token-type:id-jag.
+	// (urn:ietf:params:oauth:grant-type:token-exchange) opts the type into a
+	// token exchange for an access token, which only echoes the granted
+	// entries. Listing IDJAGIssuance opts it into a token exchange for an
+	// ID-JAG, which signs the entries the hook keeps into the ID-JAG under
+	// Pending.GrantSubset's rules; without it, an entry of the type on such a
+	// request is refused as an unknown type. The two are independent.
 	GrantTypes []string
 
 	// Grant decides what to grant for all of this type's entries in a request.
@@ -213,6 +228,20 @@ func New(types map[string]Type) (*Registry, error) {
 // a non-empty string "type" but some type is not registered for grantType, the
 // error is ErrUnknownType, which wraps ErrInvalid.
 func (r *Registry) Parse(raw, grantType string) (*Pending, error) {
+	return r.parse(raw, grantType, grantType)
+}
+
+// ParseIDJAGIssuance is Parse for an RFC 8693 token exchange that mints an
+// ID-JAG: every type must list IDJAGIssuance, and a type that lists only the
+// token-exchange grant type is ErrUnknownType. The hooks still see the
+// token-exchange grant type in Request.GrantType.
+func (r *Registry) ParseIDJAGIssuance(raw string) (*Pending, error) {
+	return r.parse(raw, IDJAGIssuance, grantTypeTokenExchange)
+}
+
+// parse checks raw against the types that list key, and records grantType for
+// the hooks' Request.GrantType.
+func (r *Registry) parse(raw, key, grantType string) (*Pending, error) {
 	data := []byte(raw)
 	if len(data) > maxSize || !utf8.Valid(data) || !validArray(data) {
 		return nil, ErrInvalid
@@ -239,7 +268,7 @@ func (r *Registry) Parse(raw, grantType string) (*Pending, error) {
 	}
 	for i, name := range names {
 		t, registered := r.types[name]
-		if !registered || !slices.Contains(t.GrantTypes, grantType) {
+		if !registered || !slices.Contains(t.GrantTypes, key) {
 			return nil, ErrUnknownType
 		}
 		if _, seen := pending.entries[name]; !seen {

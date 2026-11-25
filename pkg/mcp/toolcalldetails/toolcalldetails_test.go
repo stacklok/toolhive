@@ -193,7 +193,7 @@ func TestRegister_GrantTypes(t *testing.T) {
 	Register(types)
 	require.Contains(t, types, Type)
 	assert.ElementsMatch(t,
-		[]string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+		[]string{oauthproto.GrantTypeTokenExchange, authorizationdetails.IDJAGIssuance, oauthproto.GrantTypeJWTBearer},
 		types[Type].GrantTypes)
 }
 

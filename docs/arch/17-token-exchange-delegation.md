@@ -2076,11 +2076,14 @@ to (`GrantTypes`) and a `Grant` hook. A type applies to ID-JAG redemption when
 it lists `urn:ietf:params:oauth:grant-type:jwt-bearer`; that grant type means
 ID-JAG redemption only, because the plain RFC 7523 grant refuses an assertion
 that carries the claim. A type that lists
-`urn:ietf:params:oauth:grant-type:token-exchange` applies both to a token
-exchange for an access token, which only echoes the entries, and to one for an
-ID-JAG, which signs them into the ID-JAG. The hook tells the two apart by
-`Exchange.RequestedTokenType`, and a type whose entries must not be signed
-refuses the ID-JAG type. Nothing is advertised in discovery.
+`urn:ietf:params:oauth:grant-type:token-exchange` applies to a token exchange
+for an access token, which only echoes the entries. A type applies to a token
+exchange for an ID-JAG, which signs the entries into the ID-JAG, only when it
+lists `authorizationdetails.IDJAGIssuance`
+(`urn:ietf:params:oauth:token-type:id-jag`, the ID-JAG token-type URN, which no
+grant type can equal). The two are independent, so a type written for
+exchanged access tokens is never signed into an ID-JAG that another server
+trusts unless its author opts in. Nothing is advertised in discovery.
 
 A value must follow RFC 9396 section 2: one JSON array of objects, each with a
 non-empty string `type` registered for the grant type. On top of that, ToolHive
@@ -2160,9 +2163,11 @@ and 4.4.1; see [On ID-JAG redemption](#on-id-jag-redemption)). The steps:
    refused with `invalid_request`. A value that breaks the generic shape rules
    above is `invalid_authorization_details` and `malformed_entry`, with or
    without a registry (without one, a registry that knows no type parses it).
-   With no registry, or a type not registered for the token-exchange grant,
-   the request is refused with `unknown_type`: an ID-JAG carries what it is
-   minted with, so a type without a hook is refused, never ignored.
+   With no registry, or a type that does not list
+   `authorizationdetails.IDJAGIssuance` (listing only the token-exchange grant
+   type is not enough), the request is refused with `unknown_type`: an ID-JAG
+   carries what it is minted with, so a type that has not opted in is refused,
+   never ignored.
 2. **The hooks**, after every grant and subject-claim check and before the
    actor validator, so a refused entry never reaches the validator. The hook
    `Request` describes the grant behind the opaque refresh token:
@@ -2197,7 +2202,7 @@ nothing is minted.
 | Cause | Response |
 | --- | --- |
 | The parameter repeated | `invalid_request`, "The authorization_details parameter must not be repeated." |
-| No registry, or a type not registered for token exchange | `invalid_authorization_details`, `unknown_type` |
+| No registry, or a type that does not list `authorizationdetails.IDJAGIssuance` | `invalid_authorization_details`, `unknown_type` |
 | A value that breaks the generic shape rules | `invalid_authorization_details`, `malformed_entry` |
 | A hook refuses with an `authorizationdetails.Error` | its code, its reason as `error_description` |
 | `[]`, or the hooks together keep none of the entries | `invalid_authorization_details`, `empty_grant` |
@@ -2366,7 +2371,8 @@ answers with that backend's items only. `arguments_sha256` is the lowercase hex
 SHA-256 of the RFC 8785 serialization of `params.arguments`, or of `{}` when
 the arguments are absent or `null`. Nothing registers it by default; an embedder
 adds it with `toolcalldetails.Register` to the types passed to
-`authorizationdetails.New`. It is registered for token exchange and JWT-bearer.
+`authorizationdetails.New`. It is registered for token exchange,
+`authorizationdetails.IDJAGIssuance` and JWT-bearer.
 On token exchange its hook refuses any request whose `requested_token_type` is
 not the ID-JAG type, with `invalid_request` and `id_jag_required`; it refuses
 the same way a request that carries neither the `Exchange` nor the

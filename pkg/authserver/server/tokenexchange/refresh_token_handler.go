@@ -186,9 +186,10 @@ func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) RefreshTokenOp
 
 // WithIDJAGAuthorizationDetailsRegistry gives RefreshTokenFactory the
 // embedder's authorization_details registry. A request for an ID-JAG may then
-// send authorization_details: each entry's type must be registered for token
-// exchange, its hook keeps or drops whole entries, and the kept entries are
-// signed into the ID-JAG's authorization_details claim. With no registry (or a
+// send authorization_details: each entry's type must list
+// authorizationdetails.IDJAGIssuance, its hook keeps or drops whole entries,
+// and the kept entries are signed into the ID-JAG's authorization_details
+// claim. With no registry (or a
 // nil one), such a request is refused with unknown_type. Exchange grants keep
 // their own registry, which this option does not touch.
 func WithIDJAGAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) RefreshTokenOption {

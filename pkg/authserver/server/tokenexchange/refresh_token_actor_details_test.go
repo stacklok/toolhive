@@ -46,7 +46,7 @@ func TestIDJAGActorProfileDetails(t *testing.T) {
 			var seen []authorizationdetails.Request
 			registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 				actorDetailsType: {
-					GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+					GrantTypes: []string{authorizationdetails.IDJAGIssuance},
 					Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
 						seen = append(seen, req)
 						if tc.refuse {

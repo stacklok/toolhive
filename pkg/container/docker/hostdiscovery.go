@@ -18,10 +18,11 @@ import (
 
 	mobyclient "github.com/moby/moby/client"
 
+	"github.com/stacklok/toolhive/pkg/container/internal/netproxy"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
-var hostGatewayNames = [...]string{dockerGatewayHostname, dockerAltGatewayHostname, podmanGatewayHostname}
+var hostGatewayNames = netproxy.HostGatewayNames
 
 // dockerHostGatewayMapping asks Docker to write its host-gateway address into
 // the DNS sidecar's hosts file. On Docker Desktop and similar VM runtimes that

@@ -76,18 +76,21 @@ const guardRevokeTimeout = 5 * time.Second
 // them again, and a replay of the kept refresh token is then refused as having
 // no rows, without another IdP call or recheck, on every replica.
 //
-// The guard refreshes through the shared refresher, which remembers an IdP
-// rejection for a short time (see rejectedRefreshes). The guard can therefore
-// refuse on a rejection up to that long old, and without a fresh IdP call. If
-// the IdP used invalid_grant for an account or policy state an administrator
-// has since fixed, the client is sent to sign in again where it would
-// otherwise have been granted. This is accepted, but the recheck narrows it: if
-// another replica refreshes successfully during the recheck without rotating
-// the refresh token (for example once an administrator clears an IdP-side
-// block), the row keeps its refresh token and gets a new access token or
-// expiry. The recheck sees any change to the row, so that row is treated as
-// live and the grant goes through. Comparing the refresh token alone would
-// delete the winner's fresh row.
+// The guard refreshes through the shared refresher but skips its memory of
+// rejected refresh tokens (see rejectedRefreshes), so it always asks the IdP.
+// If the IdP used invalid_grant for an account or policy state an
+// administrator has since fixed, the client's next refresh grant picks the fix
+// up: the refresh succeeds and stores a new row, the remembered rejection
+// stops matching, and bearer requests work again. A fresh rejection is still
+// remembered, which spares bearer requests the IdP call.
+//
+// The recheck narrows the remaining race: if another replica refreshes
+// successfully while the guard waits without rotating the refresh token (for
+// example once an administrator clears an IdP-side block), the row keeps its
+// refresh token and gets a new access token or expiry. The recheck sees any
+// change to the row, so that row is treated as live and the grant goes
+// through. Comparing the refresh token alone would delete the winner's fresh
+// row.
 //
 // A refusal is logged at WARN only when it revokes or follows a confirmed IdP
 // rejection; the row deletion makes the latter happen once per session. The
@@ -301,8 +304,10 @@ func (g *upstreamRefreshGuard) refresh(
 	}
 	// Buffered so the goroutine never blocks once the guard stops waiting.
 	done := make(chan result, 1)
+	// The guard always asks the IdP; see withoutRememberedRejections.
+	refreshCtx := withoutRememberedRejections(ctx)
 	go func() {
-		tokens, err := g.refresher.RefreshAndStore(ctx, tsid, row)
+		tokens, err := g.refresher.RefreshAndStore(refreshCtx, tsid, row)
 		done <- result{tokens: tokens, err: err}
 	}()
 	select {
@@ -318,7 +323,9 @@ func (g *upstreamRefreshGuard) refresh(
 // or gone. "Unchanged" is rowChanged's comparison of refresh token, access
 // token, ID token and access token expiry. Every write to a session's row is a
 // successful IdP refresh, so any change means the IdP accepted the refresh
-// token, and granting is bounded. That covers a row holding a different
+// token, and granting is bounded. The rejection that led here is a fresh IdP
+// answer, so the comparison is about writes that land while the guard waits.
+// That covers a row holding a different
 // refresh token (another replica won a refresh race; the session may be live
 // even if that row's access token has already expired) and a row with the same
 // refresh token but a new access token or expiry (a non-rotating refresh).

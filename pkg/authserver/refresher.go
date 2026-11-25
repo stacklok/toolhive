@@ -174,9 +174,14 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 // expired successor), so transient and non-invalid_grant failures are always
 // retried. An entry is keyed on the row, the client registration generation
 // read before the IdP call, and a digest of the row's refresh token, access
-// token and access token expiry. It runs inside the singleflight group for rowID, so the check and
-// the add do not race within a process. The row is never written on a
-// rejection.
+// token and access token expiry. It runs inside the singleflight group for
+// rowID, so the check and the add do not race within a process. The row is
+// never written on a rejection.
+//
+// A ctx marked with withoutRememberedRejections skips the lookup and asks the
+// IdP, and a fresh rejection is still remembered. A marked caller that joins a
+// singleflight call already in flight for the row gets that call's result,
+// which may come from the memory; see skipRememberedRejectionsKey.
 func (r *upstreamTokenRefresher) redeem(
 	ctx context.Context,
 	sessionID string,
@@ -187,13 +192,15 @@ func (r *upstreamTokenRefresher) redeem(
 		return r.refreshAndStore(ctx, sessionID, row)
 	}
 	generation := r.clientGeneration.Load()
-	if rejection := r.rejected.lookup(generation, rowID, row); rejection != nil {
-		// session_id is credential-adjacent, so it is logged at DEBUG only.
-		slog.Debug("upstream refresh token already rejected; not calling the provider again",
-			"provider_id", row.ProviderID,
-			"session_id", sessionID,
-		)
-		return nil, rejection
+	if !skipsRememberedRejections(ctx) {
+		if rejection := r.rejected.lookup(generation, rowID, row); rejection != nil {
+			// session_id is credential-adjacent, so it is logged at DEBUG only.
+			slog.Debug("upstream refresh token already rejected; not calling the provider again",
+				"provider_id", row.ProviderID,
+				"session_id", sessionID,
+			)
+			return nil, rejection
+		}
 	}
 	refreshed, err := r.refreshAndStore(ctx, sessionID, row)
 	if err != nil && errors.Is(err, upstream.ErrGrantRejected) {

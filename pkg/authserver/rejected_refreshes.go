@@ -4,6 +4,7 @@
 package authserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -29,6 +30,31 @@ const (
 	// an administrator can fix without the user signing in again.
 	rejectedRefreshesTTL = 10 * time.Minute
 )
+
+// skipRememberedRejectionsKey is the context key withoutRememberedRejections
+// sets. RefreshAndStore detaches from the caller's cancellation and deadline
+// with context.WithoutCancel and context.WithTimeout, both of which keep
+// context values, so the marker reaches redeem.
+//
+// The marker is read inside the singleflight call for the row, so a caller
+// that joins a call already in flight for the same row gets that call's
+// result, which may have come from the memory. That window lasts as long as a
+// memory lookup, and is accepted: giving the marked caller its own
+// singleflight key would let two redemptions of the same refresh token run at
+// once.
+type skipRememberedRejectionsKey struct{}
+
+// withoutRememberedRejections returns a context that makes redeem ask the IdP
+// even when it remembers a rejection for the row. A fresh rejection is still
+// remembered.
+func withoutRememberedRejections(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipRememberedRejectionsKey{}, true)
+}
+
+func skipsRememberedRejections(ctx context.Context) bool {
+	skip, _ := ctx.Value(skipRememberedRejectionsKey{}).(bool)
+	return skip
+}
 
 // rejectedRefreshKey identifies one rejected refresh in one storage row under
 // one client registration. The tokens are kept only as a SHA-256 digest.

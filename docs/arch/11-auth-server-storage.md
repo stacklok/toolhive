@@ -540,10 +540,12 @@ map.
 Each auth server process remembers the refresh tokens its IdP rejected with a
 definitive `invalid_grant` for 10 minutes (at most 10,000 entries). While an
 entry exists, the refresher answers a refresh of that token without calling
-the IdP. Without it, a row that holds an expired access token and a dead
-refresh token would cost one IdP call on every request that reads it. After
-the first rejection, the refresh failures behind the repeated WARN lines are
-answered from this memory and do not reach the IdP; a DEBUG line says so.
+the IdP, except when the [refresh grant guard](#upstream-refresh-guard) is
+asking: it always calls the IdP, and still adds a fresh rejection to the
+memory. Without the memory, a row that holds an expired access token and a
+dead refresh token would cost one IdP call on every request that reads it.
+After the first rejection, the refresh failures behind the repeated WARN lines
+are answered from this memory and do not reach the IdP; a DEBUG line says so.
 
 An entry is keyed on the storage row, a client registration generation, and a
 SHA-256 digest of the row's refresh token, access token and access token
@@ -579,8 +581,12 @@ Trade-offs:
 - Some IdPs answer `invalid_grant` for account or policy state, for example a
   disabled account, a lockout, a Conditional Access block or missing consent
   on Microsoft Entra. This can clear without a new sign-in. After an
-  administrator fixes it, bearer requests keep failing for up to 10 minutes,
-  where before they recovered on the next request.
+  administrator fixes it, bearer requests on the same replica can keep failing
+  for up to 10 minutes, where before they recovered on the next request. The
+  client's next refresh grant asks the IdP again (see
+  [Upstream refresh guard](#upstream-refresh-guard)), so a client that answers
+  the 401 with a refresh grant recovers as soon as the IdP accepts. Only a
+  client that never sends a refresh grant waits out the 10 minutes.
 - Losing an entry (eviction, restart, another replica) costs one more IdP
   call, which remembers the rejection again.
 - Each bearer request in this state still logs three WARN lines for the failed
@@ -654,10 +660,7 @@ it is refused again.
 A kept token can be retried, and public clients (`token_endpoint_auth_method`
 `none`, the DCR default) need nothing but the token to do so. A retry of the
 cheap causes repeats a storage read. For an IdP rejection, a retry would
-repeat the 500ms recheck and, once the remembered rejection has expired or
-stopped matching, an upstream refresh call. A retry that reaches another
-replica calls the IdP straight away, because the memory is per process. So
-once the rejection
+repeat an upstream refresh call and the 500ms recheck, so once the rejection
 is confirmed the guard deletes all of the session's upstream rows. The client
 is sent to a new `tsid`, so nothing reads them again, and a retry is refused
 as having no rows, on any replica. Every row goes, not only the rejected
@@ -695,21 +698,27 @@ refresh token. A recheck that cannot complete (the request is cancelled, or
 the read fails) is uncertain too. A session without a `tsid` (a session-less
 grant) is not checked.
 
-Because the guard refreshes through the shared refresher, it is answered from
-the [remembered rejections](#remembered-rejections) too. After a rejection on
-the bearer path, the guard gets the remembered error without an IdP call and
-can therefore act on a rejection up to 10 minutes old. If the IdP used
-`invalid_grant` for an account or policy state that an administrator fixed in
-that time, the client has to sign in again where it would otherwise have been
-granted. This is accepted.
+The guard refreshes through the shared refresher but skips its
+[remembered rejections](#remembered-rejections), so it always asks the IdP.
+If the IdP used `invalid_grant` for an account or policy state that an
+administrator has since fixed, the client's next refresh grant picks the fix
+up. The refresh succeeds and stores a new row, the remembered rejection stops
+matching it, and bearer requests work again. A fresh rejection that the guard
+receives is remembered like any other, so bearer requests after it do not
+call the IdP. A guard call that joins a refresh already in flight for the
+same row gets that call's result, which may come from the memory; that window
+lasts as long as a memory lookup. Embedder handlers in
+`Config.RefreshGrantHandlers` that call the shared refresher do not skip the
+memory.
 
-The recheck narrows this. The guard still re-reads the row, and it refuses and
-drops the session's rows only if the row is unchanged. If another replica
-refreshed successfully without rotating the refresh token (for example once an
-administrator cleared an IdP-side block), the row keeps its refresh token but
-holds a new access token or expiry. Every write to a session's row is a
-successful IdP refresh, so the IdP accepted that refresh token, and the guard
-grants and keeps the row.
+The recheck covers the remaining race. After the IdP rejects the refresh, the
+guard re-reads the row and refuses and drops the session's rows only if the
+row is unchanged. If another replica refreshed successfully while the guard
+waited, without rotating the refresh token (for example once an administrator
+cleared an IdP-side block), the row keeps its refresh token but holds a new
+access token or expiry. Every write to a session's row is a successful IdP
+refresh, so the IdP accepted that refresh token, and the guard grants and
+keeps the row.
 
 **Upgrade impact.** The guard is on by default. After an upgrade, a session
 whose upstream credential is already dead is refused on its first refresh

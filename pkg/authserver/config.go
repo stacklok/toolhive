@@ -1950,7 +1950,7 @@ type Config struct {
 	// refresh race it can occasionally be reported for a live credential.
 	// The shared refresher remembers a rejection for up to 10 minutes, so a
 	// handler that decides on ErrGrantRejected may see a remembered one
-	// without an IdP call.
+	// without an IdP call. Only the built-in guard skips that memory.
 	//
 	// The seam only validates. PopulateTokenEndpointResponse and
 	// CanSkipClientAuth are never called, so client authentication still

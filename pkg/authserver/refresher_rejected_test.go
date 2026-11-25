@@ -481,7 +481,7 @@ func TestUpstreamRefreshRejection_ServiceUsesMemory(t *testing.T) {
 	assert.Equal(t, callsBefore, env.idp.calls.Load())
 }
 
-func TestUpstreamRefreshGuard_RefusesOnRememberedRejection(t *testing.T) {
+func TestUpstreamRefreshGuard_AsksIdPDespiteRememberedRejection(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -489,7 +489,7 @@ func TestUpstreamRefreshGuard_RefusesOnRememberedRejection(t *testing.T) {
 	row := guardTestRow(time.Now().Add(-time.Minute), "dead-rt")
 	require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", row))
 
-	// A bearer request refreshes first and gets the rejection.
+	// A bearer request refreshes first and gets the rejection, which is remembered.
 	_, err := env.refresher.RefreshAndStore(ctx, guardTestTSID, row)
 	require.ErrorIs(t, err, upstream.ErrGrantRejected)
 	callsBefore := env.idp.calls.Load()
@@ -501,10 +501,69 @@ func TestUpstreamRefreshGuard_RefusesOnRememberedRejection(t *testing.T) {
 
 	err = guard.HandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token"))
 	require.ErrorIs(t, err, fosite.ErrInvalidGrant)
-	assert.Equal(t, callsBefore, env.idp.calls.Load(), "the guard must be answered from the memory")
+	assert.Equal(t, callsBefore+1, env.idp.calls.Load(), "the guard must ask the IdP exactly once")
 
 	_, err = env.stor.GetUpstreamTokens(ctx, guardTestTSID, "idp")
 	assert.ErrorIs(t, err, storage.ErrNotFound, "the confirmed rejection drops the session's rows")
+}
+
+func TestUpstreamRefreshGuard_PicksUpIdPFix(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+	row := guardTestRow(time.Now().Add(-time.Minute), "blocked-rt")
+	require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", row))
+	_, err := env.refresher.RefreshAndStore(ctx, guardTestTSID, row)
+	require.ErrorIs(t, err, upstream.ErrGrantRejected)
+
+	// An administrator fixes the block at the IdP.
+	env.idp.set(http.StatusOK, refreshOKBody)
+	guard, err := newUpstreamRefreshGuard(env.stor, env.refresher, []string{"idp"})
+	require.NoError(t, err)
+	guard.recheckDelay = 0
+
+	require.NoError(t, guard.HandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token")))
+
+	got, err := env.stor.GetUpstreamTokens(ctx, guardTestTSID, "idp")
+	require.NoError(t, err)
+	assert.Equal(t, "new-access", got.AccessToken)
+	assert.Equal(t, "new-refresh", got.RefreshToken)
+
+	// The new row no longer matches the remembered rejection, so a bearer-path
+	// read neither calls the IdP nor fails.
+	callsAfterGuard := env.idp.calls.Load()
+	svc := upstreamtoken.NewInProcessService(env.stor, env.refresher)
+	creds, failed, err := svc.GetAllUpstreamCredentials(ctx, guardTestTSID)
+	require.NoError(t, err)
+	assert.Empty(t, failed)
+	assert.Contains(t, creds, "idp")
+	assert.Equal(t, callsAfterGuard, env.idp.calls.Load())
+}
+
+func TestUpstreamRefreshGuard_RecordsFreshRejection(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+	row := guardTestRow(time.Now().Add(-time.Minute), "dead-rt")
+	require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", row))
+	guard, err := newUpstreamRefreshGuard(env.stor, env.refresher, []string{"idp"})
+	require.NoError(t, err)
+	guard.recheckDelay = 0
+
+	err = guard.HandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token"))
+	require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	callsAfterGuard := env.idp.calls.Load()
+	require.Positive(t, callsAfterGuard)
+
+	// The guard dropped the session's rows; put the same row back, as another
+	// replica that had not yet seen the deletion would still hold it.
+	require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", row))
+	_, err = env.refresher.RefreshAndStore(ctx, guardTestTSID, row)
+	require.ErrorIs(t, err, upstream.ErrGrantRejected)
+	assert.Contains(t, err.Error(), "remembered")
+	assert.Equal(t, callsAfterGuard, env.idp.calls.Load(), "the guard's rejection must be remembered")
 }
 
 func TestUpstreamRefreshGuard_GrantsOnNonRotatingRefreshDuringRecheck(t *testing.T) {
@@ -512,8 +571,8 @@ func TestUpstreamRefreshGuard_GrantsOnNonRotatingRefreshDuringRecheck(t *testing
 
 	tests := []struct {
 		name string
-		// winner is what another replica's non-rotating refresh stores after
-		// the guard's refresh was answered from the memory.
+		// winner is what another replica's non-rotating refresh stores while
+		// the guard's refresh is rejected by the IdP.
 		winner func() *storage.UpstreamTokens
 	}{
 		{
@@ -539,18 +598,15 @@ func TestUpstreamRefreshGuard_GrantsOnNonRotatingRefreshDuringRecheck(t *testing
 			env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
 			row := guardTestRow(time.Now().Add(-time.Minute), "same-rt")
 			require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", row))
-			_, err := env.refresher.RefreshAndStore(ctx, guardTestTSID, row)
-			require.ErrorIs(t, err, upstream.ErrGrantRejected)
-			callsBefore := env.idp.calls.Load()
-			require.Positive(t, callsBefore)
 
-			// The winner's row lands after the refresher answered from the memory
+			// The winner's row lands after the IdP rejected the guard's refresh
 			// and before the guard's recheck read, with no timing involved.
 			refresher := mocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
 			refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).DoAndReturn(
 				func(ctx context.Context, sessionID string, expired *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
 					tokens, err := env.refresher.RefreshAndStore(ctx, sessionID, expired)
 					require.ErrorIs(t, err, upstream.ErrGrantRejected)
+					assert.True(t, skipsRememberedRejections(ctx), "the guard must mark its context")
 					require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", tt.winner()))
 					return tokens, err
 				})
@@ -561,7 +617,7 @@ func TestUpstreamRefreshGuard_GrantsOnNonRotatingRefreshDuringRecheck(t *testing
 
 			require.NoError(t, guard.HandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token")))
 
-			assert.Equal(t, callsBefore, env.idp.calls.Load(), "the guard must be answered from the memory")
+			assert.Equal(t, int32(1), env.idp.calls.Load(), "the guard must ask the IdP once")
 			got, err := env.stor.GetUpstreamTokens(ctx, guardTestTSID, "idp")
 			require.NoError(t, err, "the winner's row must not be deleted")
 			assert.Equal(t, tt.winner().AccessToken, got.AccessToken)

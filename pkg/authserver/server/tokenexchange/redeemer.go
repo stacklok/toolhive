@@ -55,6 +55,13 @@ type redemption struct {
 	// When empty the request's own client is kept and its ID is the token's
 	// client_id.
 	syntheticClientID string
+	// clientLifespan, when non-zero, replaces the server's access-token
+	// lifespan as the lifetime step's base. Only ID-JAG redemption sets it,
+	// from the redeeming client's configured lifespan; plain JWT-bearer has no
+	// authenticated client and leaves it zero. IDJAGIssuanceFactory refuses a
+	// negative value; one that got here anyway would issue an expired token,
+	// not fall back to the server lifespan.
+	clientLifespan time.Duration
 }
 
 // delegatedAccessMarkerCap is the longest lifetime of a token that carries the
@@ -85,7 +92,7 @@ func (r *redeemer) complete(ctx context.Context, req fosite.AccessRequester, d r
 	if err := r.consumeAssertion(ctx, d.replayPurpose, d.claims.Issuer, d.replayKey, d.claims.Expiry); err != nil {
 		return err
 	}
-	lifetime, err := r.assertionBoundedLifetime(ctx, d)
+	expiresAt, err := r.assertionBoundedExpiry(ctx, d)
 	if err != nil {
 		return err
 	}
@@ -108,7 +115,7 @@ func (r *redeemer) complete(ctx context.Context, req fosite.AccessRequester, d r
 		clientID = req.GetClient().GetID()
 	}
 	req.GrantAudience(d.resource)
-	req.SetSession(newRedemptionSession(d, clientID, lifetime))
+	req.SetSession(newRedemptionSession(d, clientID, expiresAt))
 	return nil
 }
 
@@ -139,22 +146,34 @@ func (r *redeemer) consumeAssertion(
 	return nil
 }
 
-// assertionBoundedLifetime returns the issued token's lifetime: the
-// configured access-token lifespan, capped by the assertion's remaining
-// validity so a token derived from an assertion can never outlive it, and, for
-// a token that carries the delegated-access marker, by
-// delegatedAccessMarkerCap.
-func (r *redeemer) assertionBoundedLifetime(ctx context.Context, d redemption) (time.Duration, error) {
-	remaining := time.Until(d.claims.Expiry)
-	if remaining <= 0 {
-		return 0, invalidAssertion("The JWT bearer assertion has expired.")
+// assertionBoundedExpiry returns the issued token's expiry. The base is the
+// redeeming client's own lifespan when it has one, else the configured
+// access-token lifespan. The expiry is the earliest of now plus the base, the
+// assertion's own exp, and, for a token that carries the delegated-access
+// marker, now plus delegatedAccessMarkerCap. Every bound is taken from one
+// reading of the clock and the assertion's exp is used as is, so a token
+// derived from an assertion never outlives it, not even by the time between
+// this call and building the session.
+func (r *redeemer) assertionBoundedExpiry(ctx context.Context, d redemption) (time.Time, error) {
+	now := time.Now().UTC()
+	if !d.claims.Expiry.After(now) {
+		return time.Time{}, invalidAssertion("The JWT bearer assertion has expired.")
 	}
-	lifetime := min(r.config.GetAccessTokenLifespan(ctx), remaining)
+	base := d.clientLifespan
+	if base == 0 {
+		base = r.config.GetAccessTokenLifespan(ctx)
+	}
+	expiresAt := now.Add(base)
+	if d.claims.Expiry.Before(expiresAt) {
+		expiresAt = d.claims.Expiry.UTC()
+	}
 	// Last, so the cap wins over every earlier bound.
 	if d.delegatedAccess {
-		lifetime = min(lifetime, delegatedAccessMarkerCap)
+		if capped := now.Add(delegatedAccessMarkerCap); capped.Before(expiresAt) {
+			expiresAt = capped
+		}
 	}
-	return lifetime, nil
+	return expiresAt, nil
 }
 
 // issuedAct returns the act claim for the issued token. For a marked token the
@@ -178,7 +197,7 @@ func issuedAct(act any, d redemption) any {
 // newRedemptionSession builds the bounded access-token session for a
 // redeemed assertion. The caller supplies the subject in d and the resolved
 // client ID.
-func newRedemptionSession(d redemption, clientID string, lifetime time.Duration) *session.Session {
+func newRedemptionSession(d redemption, clientID string, expiresAt time.Time) *session.Session {
 	issuedSession := session.New(d.subject, "", clientID, session.UserClaims{})
 	// This grant links to no upstream IdP login, so the issued token can never
 	// carry an upstream credential. Say so in the token rather than leaving a
@@ -201,6 +220,6 @@ func newRedemptionSession(d redemption, clientID string, lifetime time.Duration)
 	if d.delegatedAccess {
 		issuedSession.JWTClaims.Extra[claimnames.DelegatedAccessKey] = true
 	}
-	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
+	issuedSession.SetExpiresAt(fosite.AccessToken, expiresAt)
 	return issuedSession
 }

@@ -1242,14 +1242,14 @@ func TestIDJAGIssuanceFactory_PassesInputsToHandler(t *testing.T) {
 
 	const explicitID = "explicit-grant-client"
 	issuers := []TrustedIssuer{testRedemptionIssuer(idJAGTestIssuer, []string{"https://auth.example.com"})}
-	build := func(t *testing.T, explicitGrantClientIDs []string) *IDJAGHandler {
+	build := func(t *testing.T, explicitGrantClientIDs []string, options ...FactoryOption) *IDJAGHandler {
 		t.Helper()
 		cfg := buildTestAuthServerConfig(t)
 		shared, err := NewSharedTrustedIssuerValidator(cfg, issuers)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = shared.Close() })
 
-		f, err := IDJAGIssuanceFactory(issuers, shared, explicitGrantClientIDs, nil)
+		f, err := IDJAGIssuanceFactory(issuers, shared, explicitGrantClientIDs, nil, options...)
 		require.NoError(t, err)
 		result, err := f(cfg, &jwtBearerFactoryStorage{
 			fakeFactoryStorage:         fakeFactoryStorage{mockAccessTokenStorage: &mockAccessTokenStorage{}},
@@ -1277,6 +1277,19 @@ func TestIDJAGIssuanceFactory_PassesInputsToHandler(t *testing.T) {
 		requireRefusal(t, redeem(t, handler, explicitID), "unauthorized_client",
 			fosite.ErrUnauthorizedClient.WithHint("The client is not registered for the jwt-bearer grant.").GetDescription())
 		assert.NoError(t, redeem(t, handler, idJAGTestClientID), "a client that is not listed is unaffected")
+	})
+
+	t.Run("client access token lifespans", func(t *testing.T) {
+		t.Parallel()
+		lifespans := map[string]time.Duration{idJAGTestClientID: 30 * time.Second}
+		handler := build(t, nil, WithClientAccessTokenLifespans(lifespans))
+		// The option copies the map, so a later change does not reach the handler.
+		lifespans[idJAGTestClientID] = time.Hour
+		req := newIDJAGRequest(t, newTestJWKS(t), "")
+		req.Client = &fosite.DefaultClient{ID: idJAGTestClientID, Audience: []string{idJAGTestResource}}
+
+		require.NoError(t, handler.HandleTokenEndpointRequest(context.Background(), req))
+		assert.WithinDuration(t, time.Now().Add(30*time.Second), req.GetSession().GetExpiresAt(fosite.AccessToken), 5*time.Second)
 	})
 
 	t.Run("allowed audiences become the governed resources", func(t *testing.T) {

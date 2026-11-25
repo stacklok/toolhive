@@ -134,3 +134,30 @@ func TestAuthorizationServerParams_HasStaticConfidentialClients(t *testing.T) {
 		})
 	}
 }
+
+func TestDelegateAccessTokenLifespans(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		clients []DelegateClient
+		want    map[string]time.Duration
+	}{
+		{name: "no client sets one", clients: []DelegateClient{{ClientID: "a"}}, want: nil},
+		{
+			name: "only clients that set one",
+			clients: []DelegateClient{
+				{ClientID: "a", AccessTokenLifespan: 30 * time.Second},
+				{ClientID: "b"},
+				{ClientID: "c", AccessTokenLifespan: time.Minute},
+			},
+			want: map[string]time.Duration{"a": 30 * time.Second, "c": time.Minute},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, delegateAccessTokenLifespans(tt.clients))
+		})
+	}
+}

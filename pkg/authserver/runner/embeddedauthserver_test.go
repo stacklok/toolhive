@@ -4336,6 +4336,41 @@ func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {
 	assert.Equal(t, "720h", got[0].TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)
 }
 
+func TestResolveDelegateClients_AccessTokenLifespan(t *testing.T) {
+	t.Parallel()
+	secretFile := filepath.Join(t.TempDir(), "delegate-secret")
+	require.NoError(t, os.WriteFile(secretFile, []byte("0123456789abcdef0123456789abcdef"), 0600))
+
+	tests := []struct {
+		name     string
+		lifespan string
+		want     time.Duration
+		wantErr  string
+	}{
+		{name: "omitted keeps the server lifespan", want: 0},
+		{name: "parsed", lifespan: "30s", want: 30 * time.Second},
+		{name: "zero is refused", lifespan: "0s", wantErr: "access_token_lifespan must be at least 2s"},
+		{name: "sub-second is refused", lifespan: "100ms", wantErr: "access_token_lifespan must be at least 2s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveDelegateClients([]authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", ClientSecretFile: secretFile,
+				Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+				AccessTokenLifespan: tt.lifespan,
+			}})
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			assert.Equal(t, tt.want, got[0].AccessTokenLifespan)
+		})
+	}
+}
+
 func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	clients := []authserver.DelegateClientRunConfig{{
 		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_CLONE_SECRET",

@@ -1274,6 +1274,10 @@ func loadJWKSFile(path string) (*jose.JSONWebKeySet, error) {
 func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]authserver.DelegateClient, error) {
 	resolved := make([]authserver.DelegateClient, len(clients))
 	for i, client := range clients {
+		lifespan, err := client.AccessTokenLifespanDuration()
+		if err != nil {
+			return nil, err
+		}
 		resolved[i] = authserver.DelegateClient{
 			ClientID:                    client.ClientID,
 			Scopes:                      slices.Clone(client.Scopes),
@@ -1283,6 +1287,7 @@ func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]aut
 			GrantTypes:                  slices.Clone(client.GrantTypes),
 			RedirectURIs:                slices.Clone(client.RedirectURIs),
 			TokenExchange:               client.TokenExchange.Clone(),
+			AccessTokenLifespan:         lifespan,
 		}
 		if client.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			jwks, err := loadJWKSFile(client.JWKSFile)

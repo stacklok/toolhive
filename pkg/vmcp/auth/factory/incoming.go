@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -295,6 +296,22 @@ func oidcTokenValidatorConfig(oidcCfg *config.OIDCConfig, envReader env.Reader) 
 		AuthTokenFile:         oidcCfg.JWKSAuthTokenPath,
 		ClientSecret:          clientSecret,
 	}, nil
+}
+
+// IncomingBearerChallenge returns the parameters of the WWW-Authenticate
+// challenges the incoming token validator sends: its issuer as realm, its
+// resource URL for the RFC 9728 metadata, and its scopes. Another vMCP
+// component that refuses a token with 401, such as call binding, sends them
+// too. It returns the zero value for incoming auth without OIDC.
+func IncomingBearerChallenge(cfg *config.IncomingAuthConfig) auth.BearerChallenge {
+	if cfg == nil || cfg.Type != config.IncomingAuthTypeOIDC || cfg.OIDC == nil {
+		return auth.BearerChallenge{}
+	}
+	return auth.BearerChallenge{
+		Realm:       cfg.OIDC.Issuer,
+		ResourceURL: cfg.OIDC.Resource,
+		Scopes:      slices.Clone(cfg.OIDC.Scopes),
+	}
 }
 
 // checkJWKSAuthTokenFile fails when jwksAuthTokenPath is set but does not name

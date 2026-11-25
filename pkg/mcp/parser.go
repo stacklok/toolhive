@@ -237,14 +237,20 @@ func ParsedRequestHolderFromContext(ctx context.Context) (*ParsedRequestHolder, 
 // authzDenialMarkerContextKey is the context key for AuthzDenialMarker.
 type authzDenialMarkerContextKey struct{}
 
-// AuthzDenialMarker is a mutable carrier that lets the authorization
-// middleware (pkg/authz), which runs INSIDE the audit middleware, flag a
-// request it refused before message-level authorization could run, such as a
-// client response or a POST reaching authz without parsing middleware. It follows the same
-// propagation pattern as ParsedRequestHolder: the audit wrapper injects an
-// empty marker via WithAuthzDenialMarker, the inner middleware fills it, and
-// the wrapper reads it back after the inner chain returns so the refusal is
-// audited as a denial rather than a generic 400 failure. The type lives in
+// AuthzDenialMarker is a mutable carrier that lets a check running INSIDE the
+// audit middleware flag a request it refused, so the audit middleware records
+// it as a denial. Two checks write it:
+//   - the authorization middleware (pkg/authz), for a request it refuses with
+//     400 before message-level authorization could run, such as a client
+//     response or a POST reaching authz without parsing middleware; without
+//     the marker that 400 would be audited as a generic failure;
+//   - the vMCP's call binding (pkg/vmcp/server), for a request it refuses
+//     after parsing with 401 or 403; it also sets Reason.
+//
+// It follows the same propagation pattern as ParsedRequestHolder: the audit
+// wrapper injects an empty marker via WithAuthzDenialMarker, the inner
+// middleware fills it, and the wrapper reads it back after the inner chain
+// returns (or, for a stream open, when the response starts). The type lives in
 // this package because pkg/authz already depends on pkg/audit transitively,
 // so the carrier cannot live in either of those two packages.
 //
@@ -252,6 +258,10 @@ type authzDenialMarkerContextKey struct{}
 // request goroutine, so no synchronization is needed.
 type AuthzDenialMarker struct {
 	Denied bool
+	// Reason optionally names why the request was refused, as a fixed string
+	// that carries no request data. The audit middleware records it as
+	// denial_reason.
+	Reason string
 }
 
 // WithAuthzDenialMarker returns a new context carrying the given marker.

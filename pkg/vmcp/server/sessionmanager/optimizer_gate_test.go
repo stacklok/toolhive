@@ -12,6 +12,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 )
 
@@ -58,6 +59,39 @@ func TestOptimizerFactoryGatedOnAdvertiseFromCore(t *testing.T) {
 			t.Cleanup(func() { _ = cleanup(context.Background()) })
 			assert.NotNil(t, sm.OptimizerFactory(),
 				"the factory must be surfaced to the Serve layer when AdvertiseFromCore is set")
+		})
+	}
+}
+
+// TestNewRejectsUnusedOptimizerOptions pins that New refuses optimizer factory
+// options it would otherwise drop: with a pre-built OptimizerFactory, or with
+// no optimizer at all.
+func TestNewRejectsUnusedOptimizerOptions(t *testing.T) {
+	t.Parallel()
+
+	opts := []optimizer.FactoryOption{optimizer.WithSharedEmbeddings(redisconn.Config{}, "thv:vmcp:session:")}
+	optFactory := func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error) {
+		return nil, nil
+	}
+
+	for _, tc := range []struct {
+		name string
+		cfg  FactoryConfig
+	}{
+		{name: "with a pre-built factory", cfg: FactoryConfig{
+			OptimizerConfig: &optimizer.Config{}, OptimizerFactory: optFactory, OptimizerOptions: opts,
+		}},
+		{name: "with the optimizer disabled", cfg: FactoryConfig{OptimizerOptions: opts}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			cfg := tc.cfg
+			cfg.Base = newMockFactory(t, ctrl, newMockSession(t, ctrl, "", nil))
+			cfg.AdvertiseFromCore = true
+
+			_, _, err := New(newTestSessionDataStorage(t), &cfg, newFakeRegistry())
+			require.ErrorContains(t, err, "OptimizerOptions")
 		})
 	}
 }

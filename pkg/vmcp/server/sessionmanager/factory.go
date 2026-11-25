@@ -50,6 +50,11 @@ type FactoryConfig struct {
 	// factory from this config and returns a cleanup function.
 	OptimizerConfig *optimizer.Config
 
+	// OptimizerOptions are passed to optimizer.NewOptimizerFactory when the
+	// factory is built from OptimizerConfig. New rejects them with
+	// OptimizerFactory or without OptimizerConfig, where nothing would use them.
+	OptimizerOptions []optimizer.FactoryOption
+
 	// OptimizerFactory is an optional pre-built optimizer factory.
 	// If set, takes precedence over OptimizerConfig.
 	// If nil and OptimizerConfig is also nil, the optimizer is disabled.
@@ -114,6 +119,16 @@ type FactoryConfig struct {
 	SweepInterval time.Duration
 }
 
+// checkOptimizerOptions rejects FactoryConfig.OptimizerOptions that nothing
+// would use: they reach only an optimizer built from OptimizerConfig.
+func checkOptimizerOptions(cfg *FactoryConfig) error {
+	if len(cfg.OptimizerOptions) > 0 && (cfg.OptimizerFactory != nil || cfg.OptimizerConfig == nil) {
+		return fmt.Errorf("sessionmanager.New: FactoryConfig.OptimizerOptions apply only to " +
+			"an optimizer built from OptimizerConfig, so they need OptimizerConfig and no OptimizerFactory")
+	}
+	return nil
+}
+
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry
 // wrapping when a provider is configured. Returns the factory (may be nil if
 // optimizer is disabled) and a cleanup function.
@@ -140,7 +155,7 @@ func resolveOptimizer(cfg *FactoryConfig) (
 		return factory, noopCleanup, nil
 	case cfg.OptimizerConfig != nil:
 		var rawCleanup func(context.Context) error
-		factory, rawCleanup, err = optimizer.NewOptimizerFactory(cfg.OptimizerConfig)
+		factory, rawCleanup, err = optimizer.NewOptimizerFactory(cfg.OptimizerConfig, cfg.OptimizerOptions...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create optimizer factory: %w", err)
 		}

@@ -536,6 +536,33 @@ func TestSessionOwnership_CrossReplica(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, outage.status, "body: %s", outage.body)
 }
 
+// TestSessionOwnership_NonSessionKeyLooksMissing pins that a session ID naming
+// another feature's key under the session prefix, such as a shared optimizer
+// embedding, gets the same 404 as a missing session rather than a 503 that
+// would tell the caller the key exists. The request leaves the key alone.
+func TestSessionOwnership_NonSessionKeyLooksMissing(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	baseURL := newOwnershipTestServer(t, ownershipBearerMiddleware, mr.Addr())
+	const otherKey = "optimizer:embedding:0123abcd"
+	const vector = "\x00\x00\x80\x3f\x00\x00\x00\x40"
+	require.NoError(t, mr.Set("test:vmcp:ownership:"+otherKey, vector))
+
+	for _, method := range []string{http.MethodGet, http.MethodDelete, http.MethodPost} {
+		var body map[string]any
+		if method == http.MethodPost {
+			body = jsonRPCRequest("tools/list", nil)
+		}
+		resp := ownedRequest(t, baseURL, method, ownerToken, otherKey, body)
+		assert.Equal(t, http.StatusNotFound, resp.status, "%s naming a non-session key; body: %s", method, resp.body)
+	}
+
+	stored, err := mr.Get("test:vmcp:ownership:" + otherKey)
+	require.NoError(t, err)
+	assert.Equal(t, vector, stored, "the key must be left as it was")
+}
+
 // ownerLookupStub is a SessionManager whose LookupOwner returns a fixed result.
 type ownerLookupStub struct {
 	stubSessionManager

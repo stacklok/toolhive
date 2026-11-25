@@ -50,7 +50,7 @@ type idJAGDecision struct {
 // check. Then the grant must list the ID-JAG output. Then every subject claim
 // the grant recorded is decoded, including ones the target does not require, so
 // a stored value that is not JSON is an internal error for every target. Then
-// the claims the target requires must have been recorded on the grant. Last,
+// the claims the target requires must have been recorded on the grant. Then,
 // for a client with an actor profile, the grant's upstream identity must be
 // complete or absent (grantUpstreamIdentity). Last, the authorization_details
 // hooks decide which requested entries the ID-JAG carries (grantIDJAGDetails),
@@ -127,7 +127,8 @@ func (h *RefreshTokenHandler) decideIDJAG(
 		log:        log,
 		now:        now,
 	}
-	if decided.mint.AuthorizationDetails, err = grantIDJAGDetails(ctx, pending, decided, grant); err != nil {
+	if decided.mint.AuthorizationDetails, err = grantIDJAGDetails(
+		ctx, pending, decided, requester.GetClient(), grant); err != nil {
 		return nil, err
 	}
 	return decided, nil

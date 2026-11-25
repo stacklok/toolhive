@@ -383,8 +383,9 @@ type decision struct {
 // entry, and returns what to issue. It writes nothing to the store and consumes
 // nothing; its only effect is the refusal log line. It runs twice per request
 // (in HandleTokenEndpointRequest and again in PopulateTokenEndpointResponse), so
-// the authorization_details shape hook (pending.Grant) must be idempotent and
-// free of side effects. A request logs at most one refusal, because a refusal in
+// the authorization_details hooks it calls must be idempotent and free of side
+// effects: the exchange-grant shape hook (pending.Grant) and, on a request for
+// an ID-JAG, the embedder's type hooks (pending.GrantSubset). A request logs at most one refusal, because a refusal in
 // HandleTokenEndpointRequest ends the request. Each kind of subject has its own
 // branch (decideTopLevel for a login access token, decideChild for a refresh
 // token) that builds the same exchangeGrantDecision, which issue then writes.

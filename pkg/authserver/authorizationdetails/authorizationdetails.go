@@ -127,8 +127,9 @@ type RedemptionContext struct {
 // On a token exchange that mints an ID-JAG, the subject_token is the opaque
 // refresh token of an exchange grant, so Subject describes the grant: Issuer
 // is this server, Subject is the user the grant acts for (the ID-JAG's sub),
-// ClientID is the client that holds the grant, IssuedAt and Expiry are the
-// grant's creation and expiry, and the other fields are empty.
+// ClientID is the client that holds the grant, IssuedAt is the grant's
+// creation, Expiry is the earliest bound the grant still mints under, and the
+// other fields are empty.
 type Subject struct {
 	Issuer string
 	// Subject is the token's sub claim, on every grant. It is never replaced by

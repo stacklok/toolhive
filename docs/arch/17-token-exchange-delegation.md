@@ -2152,22 +2152,25 @@ and 4.4.1; see [On ID-JAG redemption](#on-id-jag-redemption)). The steps:
 1. **The parameter's shape**, after the request parameters and the target and
    before the grant is read. An absent parameter or a single empty value mints
    an ID-JAG with no claim. A repeated parameter, empty values included, is
-   refused with `invalid_request`. With no registry, or a type not registered
-   for the token-exchange grant, the request is refused with
-   `invalid_authorization_details` and `unknown_type`: an ID-JAG carries what it
-   is minted with, so a type without a hook is refused, never ignored. A value
-   that breaks the generic shape rules above is `malformed_entry`.
+   refused with `invalid_request`. A value that is not a JSON array of objects,
+   or that breaks the generic shape rules above, is
+   `invalid_authorization_details` and `malformed_entry`, with or without a
+   registry. With no registry, or a type not registered for the token-exchange
+   grant, the request is refused with `unknown_type`: an ID-JAG carries what it
+   is minted with, so a type without a hook is refused, never ignored.
 2. **The hooks**, after every grant and subject-claim check and before the
    actor validator, so a refused entry never reaches the validator. The hook
    `Request` describes the grant behind the opaque refresh token:
    `Subject.Issuer` is AS-1, `Subject.Subject` is the grant's user (the
-   ID-JAG's `sub`), `Subject.ClientID` is the client that holds the grant, and
-   `Subject.IssuedAt` and `Subject.Expiry` are the grant's creation and expiry.
+   ID-JAG's `sub`), `Subject.ClientID` is the client that holds the grant,
+   `Subject.IssuedAt` is the grant's creation, and `Subject.Expiry` is the
+   earlier of the grant's expiry and its `id_jag_max_lifetime` cap.
    `GrantedAudience` is the target issuer (the ID-JAG's `aud`).
    `Exchange.RequestedTokenType` is the ID-JAG type. For a client with an
    actor profile, `Exchange.Actor` is empty and `Exchange.ActorTokenPresent` is
    true, because the actor token is validated after the hooks; for any other
-   client `Exchange.Actor` is the client ID.
+   client `Exchange.Actor` is the client ID, or the verified SPIFFE ID for a
+   SPIFFE client, as on token exchange for an access token.
 3. **Whole entries only.** As on redemption, the hooks run through
    `Pending.GrantSubset`: a hook returns the entries it keeps exactly as it
    received them. A type whose hook keeps none of its entries is dropped. When
@@ -3013,8 +3016,8 @@ one Debug line, `ID-JAG minted`, with `client_id`, `sub`, `target`, `resource`,
 profile it also has `act_sub` (the AgentID) and, when the validator gives one,
 `actor_credential_subject`. ToolHive does not log the subject token,
 the actor token, the ID-JAG, any assertion, the form, the DPoP proof or
-`upstream_subject`; the one value from the form it logs is the entry `types`
-of a refused `authorization_details` (see [On ID-JAG
+`upstream_subject`. Of `authorization_details` it logs only the entry `types`
+of a refusal, never an entry's value (see [On ID-JAG
 minting](#on-id-jag-minting)). ToolHive redacts only the literal actor token, so a validator
 must keep credentials and user identifiers out of its error text (see the
 `ActorTokenValidator` contract in

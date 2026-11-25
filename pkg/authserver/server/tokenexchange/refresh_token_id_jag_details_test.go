@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -114,6 +115,39 @@ func TestIDJAGSignsGrantedDetails(t *testing.T) {
 	}, seen)
 }
 
+// TestIDJAGDetailsHookContext proves the hook sees a SPIFFE client's verified
+// SPIFFE ID as the actor, as on token exchange for an access token, and the
+// grant's effective expiry, capped by the client's current
+// id_jag_max_lifetime.
+func TestIDJAGDetailsHookContext(t *testing.T) {
+	t.Parallel()
+
+	var seen authorizationdetails.Request
+	hook := func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+		seen = req
+		return authorizationdetails.Result{Entries: req.Entries}, nil
+	}
+	h, store := detailsIDJAGHandler(t, newMintDetailsRegistry(t, hook, keepAllHook))
+	policy := h.clientPolicies[testRefreshClient]
+	policy.ExchangeRefreshTokens[oauthproto.TokenTypeIDJAG] = 30 * time.Minute
+	h.clientPolicies[testRefreshClient] = policy
+	grant := store.grants["ok"]
+
+	req := idJAGRequest("x.ok")
+	req.Client = spiffetest.AuthenticatedClient(t, spiffetest.WithID(testRefreshClient),
+		spiffetest.WithSPIFFEID("spiffe://example.org/workload/broker"))
+	req.Form.Set("authorization_details", `[`+testCallEntry+`]`)
+
+	_, err := mintBothPhases(t, h, req)
+	require.NoError(t, err)
+	require.NotNil(t, seen.Exchange)
+	assert.Equal(t, "spiffe://example.org/workload/broker", seen.Exchange.Actor)
+	assert.False(t, seen.Exchange.ActorTokenPresent)
+	assert.Equal(t, testRefreshClient, seen.ClientID)
+	assert.Equal(t, grant.CreatedAt.Add(30*time.Minute), seen.Subject.Expiry,
+		"the cap ends the grant before its stored expiry")
+}
+
 // TestIDJAGWithoutDetails proves a request without the parameter, or with one
 // empty value, mints an ID-JAG with no claim and no response member, whether
 // or not a registry is set.
@@ -203,6 +237,12 @@ func TestIDJAGDetailsRefusals(t *testing.T) {
 			code: "invalid_authorization_details", desc: reasonDetailsUnknownType},
 		{name: "not JSON", values: []string{"not json"},
 			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
+		{name: "not JSON, no registry", noRegistry: true, values: []string{"not json"},
+			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
+		{name: "an array holding a non-object, no registry", noRegistry: true, values: []string{`[1]`},
+			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
+		{name: "the empty array, no registry", noRegistry: true, values: []string{"[]"}, storeRead: true,
+			code: "invalid_authorization_details", desc: reasonDetailsEmptyGrant},
 		{name: "an object, not an array", values: []string{testCallEntry},
 			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
 		{name: "an entry without a type", values: []string{`[{"note":"x"}]`},

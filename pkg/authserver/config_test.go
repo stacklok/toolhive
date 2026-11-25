@@ -3797,3 +3797,78 @@ func TestSPIFFEBundleSourceRuntimeSupport(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateOptionalUpstreams(t *testing.T) {
+	t.Parallel()
+
+	optional := false
+	oidcUpstream := func(name string, required *bool, dcr *DCRUpstreamConfig) UpstreamRunConfig {
+		cfg := &OIDCUpstreamRunConfig{IssuerURL: "https://idp.example.com", DCRConfig: dcr}
+		if dcr == nil {
+			cfg.ClientID = "client"
+		}
+		return UpstreamRunConfig{Name: name, Type: UpstreamProviderTypeOIDC, Required: required, OIDCConfig: cfg}
+	}
+	oauth2Upstream := func(name string, required *bool) UpstreamRunConfig {
+		return UpstreamRunConfig{Name: name, Type: UpstreamProviderTypeOAuth2, Required: required,
+			OAuth2Config: &OAuth2UpstreamRunConfig{ClientID: "client"}}
+	}
+
+	tests := []struct {
+		name      string
+		upstreams []UpstreamRunConfig
+		wantErr   string
+	}{
+		{
+			name:      "required upstreams pass",
+			upstreams: []UpstreamRunConfig{oidcUpstream("first", nil, nil), oauth2Upstream("second", nil)},
+		},
+		{
+			name:      "optional oidc upstream after the first passes",
+			upstreams: []UpstreamRunConfig{oauth2Upstream("first", nil), oidcUpstream("second", &optional, nil)},
+		},
+		{
+			name:      "optional first upstream is rejected",
+			upstreams: []UpstreamRunConfig{oidcUpstream("first", &optional, nil), oidcUpstream("second", nil, nil)},
+			wantErr:   `upstream "first": required=false is not allowed on the first upstream`,
+		},
+		{
+			name:      "optional oauth2 upstream is rejected",
+			upstreams: []UpstreamRunConfig{oidcUpstream("first", nil, nil), oauth2Upstream("second", &optional)},
+			wantErr:   `upstream "second": required=false is only supported for type "oidc"`,
+		},
+		{
+			name: "optional upstream with dcr_config is rejected",
+			upstreams: []UpstreamRunConfig{
+				oidcUpstream("first", nil, nil),
+				oidcUpstream("second", &optional, &DCRUpstreamConfig{}),
+			},
+			wantErr: `upstream "second": required=false is not supported with dcr_config`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateOptionalUpstreams(tt.upstreams)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestUpstreamIsRequired(t *testing.T) {
+	t.Parallel()
+
+	yes, no := true, false
+	for _, tc := range []struct {
+		required *bool
+		want     bool
+	}{{nil, true}, {&yes, true}, {&no, false}} {
+		assert.Equal(t, tc.want, (&UpstreamConfig{Required: tc.required}).IsRequired())
+		assert.Equal(t, tc.want, (&UpstreamRunConfig{Required: tc.required}).IsRequired())
+	}
+}

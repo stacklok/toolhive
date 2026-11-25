@@ -1189,6 +1189,46 @@ authorise backends or tools — Cedar remains the authorization boundary.
 **Implementation**: `pkg/authserver/upstreamfilter/`,
 `pkg/authserver/server/handlers.UpstreamFilter`.
 
+### Optional Upstreams at Startup
+
+By default every upstream must be constructed while the vMCP starts, and an
+OIDC upstream performs discovery during construction. One unreachable issuer
+therefore fails startup for the whole vMCP, even when the upstream filter
+sends only a few users through it.
+
+An upstream can opt out with `required: false` in the auth server run config
+(`authserver-config.yaml`). Only an `oidc` upstream with a pre-provisioned
+`client_id` may do this; the first upstream, which leads every authorization
+chain, an `oauth2` upstream (which contacts nothing at construction), and an
+upstream using `dcr_config` stay required. For an optional upstream:
+
+- Startup makes one construction attempt per optional upstream, bounded to
+  10 seconds each. If it fails, the vMCP logs a warning naming the upstream
+  and starts without it.
+- The upstream keeps its place in the chain behind a placeholder that refuses
+  every call, so no authorization can complete through it. Discovery is
+  retried in the background, first after 5 seconds and then with exponential
+  backoff up to 5 minutes (with jitter), until it succeeds or the vMCP shuts
+  down; the provider is then swapped in without a restart. A failure that
+  persists is logged as a warning at most every 5 minutes, and recovery is
+  logged once at info level.
+- A user whose chain reaches the upstream while it is unavailable is
+  redirected back to the client with `error=temporarily_unavailable` and an
+  `error_description` naming the upstream. Tokens already collected for the
+  earlier upstreams of that session are kept, as on any other failure to
+  start a later leg. Users whose filter excludes the upstream are unaffected.
+- `/readyz` does not consult the auth server, so the pod stays ready.
+- The vMCP reports a runtime condition `UpstreamDiscoveryFailed`: `True` with
+  the names of the unavailable upstreams while any is being retried, `False`
+  once all optional upstreams are available. Without optional upstreams the
+  condition is not reported.
+
+What a partly completed chain means for the session is out of scope here; see
+the multi-upstream degradation work in #5162.
+
+**Implementation**: `pkg/authserver/optional_upstream.go`,
+`pkg/vmcp/server/status_reporting.go`.
+
 ## Request Flow
 
 ```mermaid

@@ -64,6 +64,9 @@ type server struct {
 	// refresherInterface.
 	upstreamRefresher *upstreamTokenRefresher
 	upstreams         []handlers.NamedUpstream
+	// optionalRetries retries the optional upstreams that were unavailable at
+	// startup; nil when there are none. Close stops it.
+	optionalRetries *optionalRetries
 	// trustedIssuerValidator is the single MultiIssuerTokenValidator shared by
 	// the token-exchange and JWT-bearer handlers, built in buildProvider when
 	// TrustedIssuers are configured (nil otherwise). Held here so Close can shut
@@ -93,9 +96,12 @@ func DefaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 
 // buildUpstreams constructs the ordered upstream provider list using
 // cfg.UpstreamFactory, or DefaultUpstreamFactory when the caller supplied none.
-// A provider that fails to construct aborts the whole list — but the providers
-// already built have live connection pools, so they are drained before the
-// error is returned.
+// A required upstream that fails to construct aborts the whole list — but the
+// providers already built have live connection pools, so they are drained
+// before the error is returned. An optional upstream (Required false) gets one
+// attempt bounded by optionalUpstreamStartupTimeout; if it fails, the upstream
+// keeps its slot as an unavailable optionalUpstream and the failure is logged
+// once. startOptionalRetries then retries it in the background.
 func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, error) {
 	factory := cfg.UpstreamFactory
 	if factory == nil {
@@ -104,18 +110,12 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
 	for i := range cfg.Upstreams {
 		upCfg := &cfg.Upstreams[i]
-		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
-		provider, err := factory(ctx, upCfg)
+		slog.Debug("creating upstream IDP provider",
+			"type", upCfg.Type, "name", upCfg.Name, "required", upCfg.IsRequired())
+		provider, err := buildOneUpstream(ctx, factory, upCfg)
 		if err != nil {
 			closeUpstreamIdleConnections(upstreams)
-			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, err)
-		}
-		// A nil provider would reach the authorization chain and panic on the
-		// first /oauth/authorize rather than failing at boot, so a custom
-		// factory cannot use one to drop an upstream.
-		if isNilProvider(provider) {
-			closeUpstreamIdleConnections(upstreams)
-			return nil, fmt.Errorf("upstream factory returned a nil provider for upstream %q", upCfg.Name)
+			return nil, err
 		}
 		upstreams = append(upstreams, handlers.NamedUpstream{
 			Name: upCfg.Name, DisplayName: upCfg.DisplayName, Provider: provider,
@@ -123,6 +123,34 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
 	return upstreams, nil
+}
+
+// buildOneUpstream constructs the provider for one upstream. A nil provider
+// would reach the authorization chain and panic on the first /oauth/authorize
+// rather than failing at boot, so a custom factory cannot use one to drop an
+// upstream; for an optional upstream it counts as a failed attempt.
+func buildOneUpstream(
+	ctx context.Context, factory UpstreamProviderFactory, upCfg *UpstreamConfig,
+) (upstream.OAuth2Provider, error) {
+	if upCfg.IsRequired() {
+		provider, err := factory(ctx, upCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, err)
+		}
+		if isNilProvider(provider) {
+			return nil, fmt.Errorf("upstream factory returned a nil provider for upstream %q", upCfg.Name)
+		}
+		return provider, nil
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, optionalUpstreamStartupTimeout)
+	defer cancel()
+	provider, err := constructProvider(attemptCtx, factory, upCfg)
+	if err != nil {
+		slog.Warn("optional upstream is unavailable at startup; starting without it and retrying in the background",
+			"upstream", upCfg.Name, "error", err)
+		return newOptionalUpstream(upCfg, factory, nil), nil
+	}
+	return newOptionalUpstream(upCfg, factory, provider), nil
 }
 
 // isNilProvider reports whether an OAuth2Provider is unusable — either a nil
@@ -348,12 +376,15 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	)
 
 	return &server{
-		handler:                router,
-		oauthHandler:           handlerInstance,
-		storage:                stor,
-		dcrStore:               dcrStore,
-		upstreams:              upstreams,
-		upstreamRefresher:      refresher,
+		handler:           router,
+		oauthHandler:      handlerInstance,
+		storage:           stor,
+		dcrStore:          dcrStore,
+		upstreams:         upstreams,
+		upstreamRefresher: refresher,
+		// Started last, once nothing below can fail, so a failed construction
+		// leaves no retry goroutine behind.
+		optionalRetries:        startOptionalRetries(upstreams),
 		trustedIssuerValidator: trustedIssuerValidator,
 		spiffeBundleSource:     bundleSource,
 	}, nil
@@ -1198,6 +1229,18 @@ func (s *server) CloseIdleConnections() {
 	closeUpstreamIdleConnections(s.upstreams)
 }
 
+// OptionalUpstreams implements the capability behind the package-level
+// OptionalUpstreams function.
+func (s *server) OptionalUpstreams() []UpstreamAvailability {
+	var out []UpstreamAvailability
+	for _, u := range s.upstreams {
+		if o, ok := u.Provider.(*optionalUpstream); ok {
+			out = append(out, UpstreamAvailability{Name: u.Name, Available: o.available()})
+		}
+	}
+	return out
+}
+
 // UpdateUpstreamClientCredentials implements UpstreamCredentialsUpdater.
 //
 // A switch must go through this method for the refresher to forget the
@@ -1231,6 +1274,9 @@ func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.Cli
 func (s *server) Close() error {
 	s.closeOnce.Do(func() {
 		slog.Debug("closing OAuth authorization server")
+		// Stop the retries first, so no optional upstream publishes a provider
+		// with a fresh connection pool after the drain below.
+		s.optionalRetries.stop()
 		s.CloseIdleConnections()
 		var errs []error
 		if s.oauthHandler != nil {

@@ -1715,6 +1715,34 @@ func TestBuildUpstreamConfigs_CopiesDisplayName(t *testing.T) {
 	}
 }
 
+func TestBuildUpstreamConfigs_CopiesRequired(t *testing.T) {
+	t.Parallel()
+
+	optional, required := false, true
+	for name, value := range map[string]*bool{"unset": nil, "true": &required, "false": &optional} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			oidc := func(name string, required *bool) authserver.UpstreamRunConfig {
+				return authserver.UpstreamRunConfig{
+					Name: name, Type: authserver.UpstreamProviderTypeOIDC, Required: required,
+					OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+						IssuerURL: "https://" + name + ".example.com", ClientID: "c",
+						RedirectURI: "http://localhost:8080/callback",
+					},
+				}
+			}
+			// A required first upstream keeps the list valid when required is false.
+			upstreams := []authserver.UpstreamRunConfig{oidc("primary", nil), oidc("okta", value)}
+			got, _, err := buildUpstreamConfigs(context.Background(), upstreams,
+				"http://localhost:8080", newMemoryDCRStore(t), false)
+			require.NoError(t, err)
+			require.Len(t, got, 2)
+			assert.Nil(t, got[0].Required)
+			assert.Equal(t, value, got[1].Required)
+		})
+	}
+}
+
 func TestBuildUpstreamConfig(t *testing.T) {
 	t.Parallel()
 

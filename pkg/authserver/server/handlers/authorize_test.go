@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -643,6 +645,68 @@ func TestNewHandler_ErrorsOnDuplicateUpstreamNames(t *testing.T) {
 	_, err := NewHandler(nil, oauth2Config, stor, upstreams)
 	require.Error(t, err, "NewHandler should reject duplicate upstream names")
 	assert.ErrorContains(t, err, "duplicate upstream name")
+}
+
+// TestAuthorizeHandler_AuthorizationURLError pins how a failure to build the
+// upstream authorization URL reaches the client: an unavailable optional
+// upstream is temporarily_unavailable naming the upstream, anything else a
+// server_error. Either way the pending authorization is removed.
+func TestAuthorizeHandler_AuthorizationURLError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		authURLErr    error
+		wantError     string
+		wantInMessage string
+	}{
+		{
+			name:       "generic failure is a server error",
+			authURLErr: errors.New("authorization URL error"),
+			wantError:  "server_error",
+		},
+		{
+			name:          "unavailable upstream is temporarily unavailable",
+			authURLErr:    fmt.Errorf("upstream %q: %w", "test-upstream", upstream.ErrUpstreamUnavailable),
+			wantError:     "temporarily_unavailable",
+			wantInMessage: "test-upstream",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, storState, mockUpstream := handlerTestSetup(t)
+			mockUpstream.authURLErr = tt.authURLErr
+
+			params := url.Values{
+				"client_id":             {testAuthClientID},
+				"redirect_uri":          {testAuthRedirectURI},
+				"response_type":         {"code"},
+				"state":                 {"client-state"},
+				"code_challenge":        {"challenge123"},
+				"code_challenge_method": {"S256"},
+				"scope":                 {"openid"},
+			}
+			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
+			rec := httptest.NewRecorder()
+
+			handler.AuthorizeHandler(rec, req)
+			rec = approveConsent(t, handler, rec)
+
+			require.Equal(t, http.StatusSeeOther, rec.Code)
+			redirect, err := url.Parse(rec.Header().Get("Location"))
+			require.NoError(t, err)
+			assert.True(t, strings.HasPrefix(redirect.String(), testAuthRedirectURI),
+				"the error goes back to the client, not to the upstream")
+			assert.Equal(t, tt.wantError, redirect.Query().Get("error"))
+			assert.Equal(t, "client-state", redirect.Query().Get("state"))
+			if tt.wantInMessage != "" {
+				assert.Contains(t, redirect.Query().Get("error_description"), tt.wantInMessage)
+			}
+			assert.Empty(t, storState.pendingAuths, "the pending authorization must be removed")
+		})
+	}
 }
 
 func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {

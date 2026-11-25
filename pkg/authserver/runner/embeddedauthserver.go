@@ -655,6 +655,12 @@ func (e *EmbeddedAuthServer) CloseIdleConnections() {
 	authserver.CloseIdleConnections(e.server)
 }
 
+// OptionalUpstreams returns the state of every optional upstream, in
+// configured order, or nil when none is configured.
+func (e *EmbeddedAuthServer) OptionalUpstreams() []authserver.UpstreamAvailability {
+	return authserver.OptionalUpstreams(e.server)
+}
+
 // IDPTokenStorage returns storage for upstream IDP tokens.
 // Returns nil if no upstream IDP is configured.
 // This is used by the upstream swap middleware to exchange ToolHive JWTs
@@ -1074,6 +1080,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP boo
 			Name:        rc.Name,
 			DisplayName: rc.DisplayName,
 			Type:        authserver.UpstreamProviderTypeOIDC,
+			Required:    rc.Required,
 			OIDCConfig:  oidcCfg,
 		}, nil
 
@@ -1086,6 +1093,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP boo
 			Name:         rc.Name,
 			DisplayName:  rc.DisplayName,
 			Type:         authserver.UpstreamProviderTypeOAuth2,
+			Required:     rc.Required,
 			OAuth2Config: oauth2Cfg,
 		}, nil
 

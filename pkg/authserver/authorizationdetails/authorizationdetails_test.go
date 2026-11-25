@@ -323,7 +323,7 @@ func TestPending_Grant(t *testing.T) {
 			raw:       `[{"type":"a"}]`,
 			hooks:     map[string]func(Request) (Result, error){"a": returns()},
 			wantCalls: map[string][]string{"a": {`{"type":"a"}`}},
-			check:     requireErrorIs(ErrNoEntries),
+			check:     requireErrorIs(errInvalidHookResult),
 		},
 		{
 			name:      "typed error is passed through and stops later hooks",

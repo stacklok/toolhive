@@ -31,12 +31,19 @@ const (
 	testOtherCallEntry = `{"type":"` + testCallType + `","note":"second","limit":1}`
 	// bigEntry holds an integer above 2^53, which a float64 would round.
 	bigEntry = `{"type":"` + testCallType + `","note":"big","limit":9007199254740993}`
+	// surrogateEntry holds a lone surrogate escape, which decodes to U+FFFD.
+	surrogateEntry = `{"type":"` + testCallType + `","note":"\ud800","limit":1}`
+
+	testOtherType  = "https://example.com/other-call"
+	testOtherEntry = `{"type":"` + testOtherType + `","note":"other"}`
 
 	hintDetailsClaimShape = "invalid_assertion: The ID-JAG assertion authorization_details claim must be a non-empty array of objects."
+	// hintDetailsParamRepeated is the description of a repeated parameter.
+	hintDetailsParamRepeated = "The authorization_details parameter must not be repeated."
 )
 
 // detailsProcessingFailed is what the client sees for a hook failure or a hook
-// that granted an entry the ID-JAG did not sign.
+// that returned an entry the ID-JAG did not sign.
 var detailsProcessingFailed = fosite.ErrServerError.
 	WithDescription("The authorization_details could not be processed.").GetDescription()
 
@@ -77,8 +84,8 @@ func singleEntryHook(seen *authorizationdetails.Request) grantHook {
 	}
 }
 
-// grantingHook is a misbehaving hook that grants the given entries whatever it
-// was asked.
+// grantingHook returns the given entries whatever it was asked. With no
+// entries it drops all of its type's entries.
 func grantingHook(entries ...string) grantHook {
 	return func(context.Context, authorizationdetails.Request) (authorizationdetails.Result, error) {
 		result := authorizationdetails.Result{}
@@ -87,6 +94,23 @@ func grantingHook(entries ...string) grantHook {
 		}
 		return result, nil
 	}
+}
+
+// keepAllHook keeps every entry it receives.
+func keepAllHook(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+	return authorizationdetails.Result{Entries: req.Entries}, nil
+}
+
+// newTwoTypeDetailsRegistry registers testCallType with callHook and
+// testOtherType with otherHook, both for the JWT-bearer grant.
+func newTwoTypeDetailsRegistry(t *testing.T, callHook, otherHook grantHook) *authorizationdetails.Registry {
+	t.Helper()
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		testCallType:  {GrantTypes: []string{oauthproto.GrantTypeJWTBearer}, Grant: callHook},
+		testOtherType: {GrantTypes: []string{oauthproto.GrantTypeJWTBearer}, Grant: otherHook},
+	})
+	require.NoError(t, err)
+	return registry
 }
 
 // failingHook fails with an internal error whose text must not reach the client.
@@ -134,7 +158,8 @@ func redeemIDJAG(
 
 // TestIDJAGRedemptionDetailsClaim covers each row of the redemption error
 // table on the ID-JAG grant. Every refusal leaves the ID-JAG unconsumed. On
-// success the token's claim and the response member hold the granted entries.
+// success the token's claim and the response member hold the kept entries
+// with the bytes the issuer signed.
 func TestIDJAGRedemptionDetailsClaim(t *testing.T) {
 	t.Parallel()
 
@@ -143,6 +168,9 @@ func TestIDJAGRedemptionDetailsClaim(t *testing.T) {
 		testCallType: {GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, Grant: accept},
 	})
 	require.NoError(t, err)
+	// The call type drops its entry and the other type keeps its own.
+	oneTypeDropped := newTwoTypeDetailsRegistry(t, grantingHook(), keepAllHook)
+	everyTypeDropped := newTwoTypeDetailsRegistry(t, grantingHook(), grantingHook())
 
 	tests := []struct {
 		name string
@@ -217,13 +245,24 @@ func TestIDJAGRedemptionDetailsClaim(t *testing.T) {
 		{name: "hook rewrites 1 as 1.0", details: "[" + testCallEntry + "]",
 			hook:     grantingHook(strings.Replace(testCallEntry, `"limit":1`, `"limit":1.0`, 1)),
 			wantCode: "server_error", wantStatus: http.StatusInternalServerError, wantDesc: detailsProcessingFailed},
+		{name: "hook rounds an integer above 2^53", details: "[" + bigEntry + "]",
+			hook:     grantingHook(strings.Replace(bigEntry, "9007199254740993", "9007199254740992", 1)),
+			wantCode: "server_error", wantStatus: http.StatusInternalServerError, wantDesc: detailsProcessingFailed},
 		{name: "hook grants none of its entries", details: "[" + testCallEntry + "]", hook: grantingHook(),
 			wantCode: "invalid_authorization_details", wantDesc: "empty_grant"},
 		{name: "hook drops one of two entries", details: "[" + testCallEntry + "," + testOtherCallEntry + "]",
 			hook: grantingHook(testOtherCallEntry), wantDetails: "[" + testOtherCallEntry + "]"},
-		{name: "hook reorders members within the signed entry", details: "[" + testCallEntry + "]",
+		{name: "hook reorders members: the token carries the signed bytes", details: "[" + testCallEntry + "]",
 			hook:        grantingHook(`{"limit":1,"note":"first","type":"` + testCallType + `"}`),
-			wantDetails: `[{"limit":1,"note":"first","type":"` + testCallType + `"}]`},
+			wantDetails: "[" + testCallEntry + "]"},
+		{name: "lone surrogate: the token carries the signed bytes, not the hook's", details: "[" + surrogateEntry + "]",
+			hook:        grantingHook(strings.Replace(surrogateEntry, `\ud800`, `\ufffd`, 1)),
+			wantDetails: "[" + surrogateEntry + "]"},
+		{name: "one type drops all its entries and the other type's entry is granted",
+			details: "[" + testCallEntry + "," + testOtherEntry + "]", registry: oneTypeDropped,
+			wantDetails: "[" + testOtherEntry + "]"},
+		{name: "every type drops all its entries", details: "[" + testCallEntry + "," + testOtherEntry + "]",
+			registry: everyTypeDropped, wantCode: "invalid_authorization_details", wantDesc: "empty_grant"},
 
 		// The redemption parameter.
 		{name: "parameter", form: url.Values{authorizationDetailsParam: {"[" + testCallEntry + "]"}}, hook: accept,
@@ -232,7 +271,9 @@ func TestIDJAGRedemptionDetailsClaim(t *testing.T) {
 			form:     url.Values{authorizationDetailsParam: {"[" + testCallEntry + "]"}},
 			wantCode: "invalid_authorization_details", wantDesc: "parameter_not_allowed"},
 		{name: "parameter repeated empty", form: url.Values{authorizationDetailsParam: {"", ""}},
-			wantCode: "invalid_authorization_details", wantDesc: "parameter_not_allowed"},
+			wantCode: "invalid_request", wantDesc: hintDetailsParamRepeated},
+		{name: "parameter repeated with values", form: url.Values{authorizationDetailsParam: {"[]", "[]"}},
+			wantCode: "invalid_request", wantDesc: hintDetailsParamRepeated},
 		{name: "parameter as one empty value is absent", form: url.Values{authorizationDetailsParam: {""}}},
 	}
 	for _, tt := range tests {
@@ -276,11 +317,8 @@ func TestIDJAGRedemptionDetailsClaim(t *testing.T) {
 			require.True(t, echoPresent)
 			grantedRaw, ok := granted.(json.RawMessage)
 			require.True(t, ok, "the token claim must be the raw granted JSON")
-			assert.JSONEq(t, tt.wantDetails, string(grantedRaw))
+			assert.Equal(t, tt.wantDetails, string(grantedRaw), "the token carries the signed bytes")
 			assert.Equal(t, string(grantedRaw), string(echoed), "the response echoes what the token carries")
-			if tt.wantDetails == "["+bigEntry+"]" {
-				assert.Contains(t, string(echoed), "9007199254740993")
-			}
 		})
 	}
 }
@@ -291,14 +329,17 @@ func TestJWTBearerRedemptionRefusesDetailsParameter(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		values      []string
-		wantRefusal bool
+		name     string
+		values   []string
+		wantCode string // empty when the redemption is not refused
+		wantDesc string
 	}{
 		{name: "absent"},
 		{name: "one empty value is absent", values: []string{""}},
-		{name: "a value", values: []string{"[" + testCallEntry + "]"}, wantRefusal: true},
-		{name: "repeated empty values", values: []string{"", ""}, wantRefusal: true},
+		{name: "a value", values: []string{"[" + testCallEntry + "]"},
+			wantCode: "invalid_authorization_details", wantDesc: "parameter_not_allowed"},
+		{name: "repeated empty values", values: []string{"", ""},
+			wantCode: "invalid_request", wantDesc: hintDetailsParamRepeated},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -316,44 +357,12 @@ func TestJWTBearerRedemptionRefusesDetailsParameter(t *testing.T) {
 
 			err := newTestJWTBearerHandler(t, deps).HandleTokenEndpointRequest(context.Background(), newJWTBearerRequest(form))
 
-			if !tt.wantRefusal {
+			if tt.wantCode == "" {
 				require.NoError(t, err)
 				return
 			}
-			requireRefusal(t, err, "invalid_authorization_details", "parameter_not_allowed")
+			requireRefusal(t, err, tt.wantCode, tt.wantDesc)
 			assert.Empty(t, consumer.key, "a refused assertion must not be consumed")
-		})
-	}
-}
-
-func TestCheckGrantedSigned(t *testing.T) {
-	t.Parallel()
-
-	signed := []json.RawMessage{json.RawMessage(testCallEntry), json.RawMessage(testOtherCallEntry)}
-	tests := []struct {
-		name    string
-		granted string
-		wantErr error
-	}{
-		{name: "every entry", granted: "[" + testCallEntry + "," + testOtherCallEntry + "]"},
-		{name: "a subset", granted: "[" + testOtherCallEntry + "]"},
-		{name: "reordered entries", granted: "[" + testOtherCallEntry + "," + testCallEntry + "]"},
-		{name: "nothing granted", granted: "[]", wantErr: errGrantEmpty},
-		{name: "an entry twice", granted: "[" + testCallEntry + "," + testCallEntry + "]", wantErr: errGrantNotSigned},
-		{name: "a changed member", granted: `[{"type":"` + testCallType + `","note":"third","limit":1}]`, wantErr: errGrantNotSigned},
-		{name: "an added member", granted: `[{"type":"` + testCallType + `","note":"first","limit":1,"x":1}]`, wantErr: errGrantNotSigned},
-		{name: "a number written differently", granted: `[{"type":"` + testCallType + `","note":"first","limit":1e0}]`, wantErr: errGrantNotSigned},
-		{name: "not an array", granted: testCallEntry, wantErr: errGrantNotSigned},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := checkGrantedSigned(signed, json.RawMessage(tt.granted))
-			if tt.wantErr == nil {
-				require.NoError(t, err)
-				return
-			}
-			require.ErrorIs(t, err, tt.wantErr)
 		})
 	}
 }
@@ -465,12 +474,14 @@ func TestIDJAGRedemptionDetailsLogs(t *testing.T) {
 			want: []string{"reason=claim_not_array_of_objects"}},
 		{name: "parameter", form: url.Values{authorizationDetailsParam: {"[" + entry + "]"}}, claims: validIDJAGClaims(),
 			want: []string{"reason=parameter_not_allowed"}},
+		{name: "parameter repeated", form: url.Values{authorizationDetailsParam: {"", ""}}, claims: validIDJAGClaims(),
+			want: []string{"reason=repeated"}},
 		{name: "hook output not signed", claims: detailsClaims(t, "["+entry+"]"),
 			registry: newCallDetailsRegistry(t, grantingHook(testCallEntry)),
-			want:     []string{"reason=grant_not_signed"}},
+			want:     []string{"reason=hook_failed"}},
 		{name: "empty grant", claims: detailsClaims(t, "["+entry+"]"),
 			registry: newCallDetailsRegistry(t, grantingHook()),
-			want:     []string{"reason=empty_grant"}},
+			want:     []string{"reason=empty_grant", "types=[" + testCallType + "]"}},
 		{name: "hook refusal", claims: detailsClaims(t, "["+entry+","+entry+"]"),
 			registry: newCallDetailsRegistry(t, singleEntryHook(nil)),
 			want:     []string{"reason=hook_rejected", "hook_reason=single_entry_required"}},
@@ -487,6 +498,43 @@ func TestIDJAGRedemptionDetailsLogs(t *testing.T) {
 			assert.Contains(t, added, want, tt.name)
 		}
 		assert.NotContains(t, added, secret, tt.name)
+	}
+}
+
+// TestIDJAGDetailsRefusalLogLevel pins that an ID-JAG redemption's
+// authorization_details refusal is logged at WARN only the first time: per
+// (client, reason) for the parameter, which is refused before the assertion
+// is validated, and per (issuer, reason) for the claim, whose refused ID-JAG
+// is not consumed and can be resent.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestIDJAGDetailsRefusalLogLevel(t *testing.T) {
+	logs := captureLogs(t)
+
+	tests := []struct {
+		name       string
+		claims     *ValidatedClaims
+		form       url.Values
+		wantReason string
+	}{
+		{name: "parameter", claims: validIDJAGClaims(),
+			form: url.Values{authorizationDetailsParam: {"[" + testCallEntry + "]"}}, wantReason: "parameter_not_allowed"},
+		{name: "parameter repeated", claims: validIDJAGClaims(),
+			form: url.Values{authorizationDetailsParam: {"", ""}}, wantReason: "repeated"},
+		{name: "claim", claims: detailsClaims(t, "["+testCallEntry+"]"), wantReason: "unknown_type"},
+	}
+	for _, tt := range tests {
+		h := newIDJAGTestHandler(t, &testJWTBearerAssertionValidator{claims: tt.claims}, &recordingAssertionConsumer{})
+		for _, wantLevel := range []string{"level=WARN", "level=DEBUG"} {
+			req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+			maps.Copy(req.Form, tt.form)
+			before := logs.String()
+			require.Error(t, h.HandleTokenEndpointRequest(context.Background(), req), tt.name)
+			added := strings.TrimPrefix(logs.String(), before)
+			require.Equal(t, 1, strings.Count(added, `msg="authorization_details rejected"`), tt.name)
+			assert.Contains(t, added, wantLevel, tt.name)
+			assert.Contains(t, added, "reason="+tt.wantReason, tt.name)
+		}
 	}
 }
 

@@ -292,8 +292,10 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 
 // checkRequestClient refuses, in order, a client that did not authenticate,
 // an explicit grant client not registered for the grant, and a request that
-// sends the authorization_details parameter. The parameter refusal's WARN line
-// names the authenticated client.
+// sends the authorization_details parameter. The parameter refusal's log line
+// names the authenticated client. With confidential dynamic client
+// registration any client can register itself and resend the parameter, so
+// the line is at Warn the first time per (client, reason) and at Debug after.
 func (h *IDJAGHandler) checkRequestClient(ctx context.Context, requester fosite.AccessRequester) error {
 	if err := checkClientAuthenticated(requester.GetClient()); err != nil {
 		return err
@@ -301,9 +303,9 @@ func (h *IDJAGHandler) checkRequestClient(ctx context.Context, requester fosite.
 	if err := h.checkClientGrant(requester); err != nil {
 		return err
 	}
-	// The client authenticated, so every refusal is logged at Warn.
-	return refuseDetailsParameter(ctx, requester.GetRequestForm(), requester.GetClient().GetID(),
-		func() slog.Level { return slog.LevelWarn })
+	clientID := requester.GetClient().GetID()
+	return refuseDetailsParameter(ctx, requester.GetRequestForm(), clientID,
+		func(reason string) slog.Level { return h.redeemer.firstRefusalLevel(clientID, reason) })
 }
 
 // completeRedemption decides the subject, then processes the ID-JAG's
@@ -320,13 +322,7 @@ func (h *IDJAGHandler) completeRedemption(
 	if err != nil {
 		return err
 	}
-	// Only a resolved redemption sets delegatedAccess, and its subject is then
-	// the resolved local user.
-	resolvedUser := ""
-	if d.delegatedAccess {
-		resolvedUser = d.subject
-	}
-	if d.authorizationDetails, err = h.grantSignedDetails(ctx, claims, clientID, resource, resolvedUser); err != nil {
+	if d.authorizationDetails, err = h.grantSignedDetails(ctx, claims, clientID, resource, d.resolvedUser); err != nil {
 		return err
 	}
 	return h.redeemer.complete(ctx, requester, d)

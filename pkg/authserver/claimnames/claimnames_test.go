@@ -53,4 +53,5 @@ func TestClaimKeyWireSpellings(t *testing.T) {
 	assert.Equal(t, "sub_id", SubjectIdentifierKey)
 	assert.Equal(t, "https://toolhive.dev/upstream_subject", UpstreamSubjectKey)
 	assert.Equal(t, "https://toolhive.dev/claims/delegated_access", DelegatedAccessKey)
+	assert.Equal(t, "authorization_details", AuthorizationDetailsKey)
 }

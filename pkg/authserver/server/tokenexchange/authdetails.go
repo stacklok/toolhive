@@ -142,10 +142,15 @@ func (h *Handler) echoAuthorizationDetails(requester fosite.AccessRequester, res
 // authorizationDetailsGrantError maps a Grant failure to an OAuth error and
 // logs the rejection once at WARN.
 func authorizationDetailsGrantError(clientID string, err error) error {
+	return grantFailure(context.Background(), clientID, err, func(string) slog.Level { return slog.LevelWarn })
+}
+
+// grantFailure maps a Grant or GrantSubset failure to an OAuth error and logs
+// the rejection once, at the level that level returns for the logged reason.
+func grantFailure(ctx context.Context, clientID string, err error, level func(reason string) slog.Level) error {
 	var typed authorizationdetails.Error
-	switch {
-	case errors.As(err, &typed):
-		slog.Warn("authorization_details rejected",
+	if errors.As(err, &typed) {
+		slog.Log(ctx, level(rejectHookRejected), "authorization_details rejected",
 			"client_id", clientID, "reason", rejectHookRejected,
 			"code", string(typed.Code), "hook_reason", typed.Reason)
 		return &fosite.RFC6749Error{
@@ -153,12 +158,12 @@ func authorizationDetailsGrantError(clientID string, err error) error {
 			DescriptionField: typed.Reason,
 			CodeField:        http.StatusBadRequest,
 		}
-	default:
-		warnAuthorizationDetailsRejected(clientID, rejectHookFailed)
-		// The error text may hold internal data, so it is never logged or
-		// returned to the client.
-		return errorsx.WithStack(fosite.ErrServerError.WithDescription("The authorization_details could not be processed."))
 	}
+	slog.Log(ctx, level(rejectHookFailed), "authorization_details rejected",
+		"client_id", clientID, "reason", rejectHookFailed)
+	// The error text may hold internal data, so it is never logged or
+	// returned to the client.
+	return errorsx.WithStack(fosite.ErrServerError.WithDescription("The authorization_details could not be processed."))
 }
 
 func warnAuthorizationDetailsRejected(clientID, reason string) {

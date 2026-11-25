@@ -1460,9 +1460,17 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.
 		},
 		{
 			// ID-JAG redemption reads the registry for the claim.
-			name:           "token exchange off, JWT-bearer grant on",
-			grants:         jwtBearerOnlyGrants(),
+			name:           "token exchange off, ID-JAG redemption on",
+			grants:         jwtBearerOnlyGrants(tokenexchange.JWTBearerAssertionTypeIDJAG),
 			trustedIssuers: jwtBearerTrustedIssuers(),
+		},
+		{
+			// The plain RFC 7523 grant refuses the claim and never reads the
+			// registry.
+			name:           "token exchange off, plain JWT-bearer grant only",
+			grants:         jwtBearerOnlyGrants(tokenexchange.JWTBearerAssertionTypeJWTBearer),
+			trustedIssuers: jwtBearerTrustedIssuers(),
+			refused:        true,
 		},
 	}
 
@@ -1517,7 +1525,7 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.
 				}
 				require.ErrorIs(t, err, authserver.ErrAuthorizationDetailsRegistryUnreachable)
 				assert.Nil(t, server)
-				assert.ErrorContains(t, err, "authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
+				assert.ErrorContains(t, err, "authorization details registry requires token exchange or ID-JAG redemption to be enabled")
 				assert.Zero(t, discoveryRequests.Load(), "the check must run before upstream discovery")
 			})
 		}
@@ -1525,13 +1533,14 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.
 }
 
 // jwtBearerOnlyGrants enables the JWT-bearer grant for the trusted issuer
-// "idp" and leaves token exchange off.
-func jwtBearerOnlyGrants() *authserver.InboundGrantsRunConfig {
+// "idp", accepting the given assertion types, and leaves token exchange off.
+func jwtBearerOnlyGrants(types ...tokenexchange.JWTBearerAssertionType) *authserver.InboundGrantsRunConfig {
 	return &authserver.InboundGrantsRunConfig{
 		JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
 			IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
-				IssuerRef:       "idp",
-				MaxAssertionAge: "5m",
+				IssuerRef:              "idp",
+				MaxAssertionAge:        "5m",
+				AcceptedAssertionTypes: types,
 				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
 					Subject:          "workload",
 					AllowedResources: []string{"https://mcp.example.com"},
@@ -1587,10 +1596,17 @@ func TestValidateAuthorizationDetailsRegistryForRunConfig(t *testing.T) {
 			},
 		},
 		{
-			name:           "registry with token exchange off and the JWT-bearer grant on passes",
+			name:           "registry with token exchange off and ID-JAG redemption on passes",
 			registry:       registry,
-			grants:         jwtBearerOnlyGrants(),
+			grants:         jwtBearerOnlyGrants(tokenexchange.JWTBearerAssertionTypeIDJAG),
 			trustedIssuers: jwtBearerTrustedIssuers(),
+		},
+		{
+			name:           "registry with token exchange off and only the plain JWT-bearer grant is refused",
+			registry:       registry,
+			grants:         jwtBearerOnlyGrants(tokenexchange.JWTBearerAssertionTypeJWTBearer),
+			trustedIssuers: jwtBearerTrustedIssuers(),
+			wantErr:        authserver.ErrAuthorizationDetailsRegistryUnreachable,
 		},
 		{
 			name:   "no registry with token exchange off passes",

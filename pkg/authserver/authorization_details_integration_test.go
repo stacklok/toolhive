@@ -57,14 +57,15 @@ func (s *accessTokenFormRecorder) CreateAccessTokenSession(
 	return nil
 }
 
-// newAuthorizationDetailsRegistry registers a "custom" type whose hook counts
-// its invocations, fails with an untyped error for an entry with "deny":true
-// and with a typed error for an entry with "reject":true.
+// newAuthorizationDetailsRegistry registers a "custom" type, for token
+// exchange and the JWT-bearer grant, whose hook counts its invocations, fails
+// with an untyped error for an entry with "deny":true and with a typed error
+// for an entry with "reject":true.
 func newAuthorizationDetailsRegistry(t *testing.T, calls *atomic.Int32) *authorizationdetails.Registry {
 	t.Helper()
 	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 		"custom": {
-			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
 			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
 				calls.Add(1)
 				for _, entry := range req.Entries {
@@ -297,20 +298,25 @@ func TestIntegration_AuthorizationDetailsParameterRefusedOnRedemption(t *testing
 }
 
 // TestIntegration_IDJAGAuthorizationDetailsClaim redeems an ID-JAG whose signed
-// authorization_details claim holds one entry. The response member and the
-// access token's claim both equal the signed entry, with an integer above 2^53
-// kept digit for digit.
+// authorization_details claim holds one entry. The hook keeps it, written with
+// its members reordered and the lone surrogate escape as U+FFFD, which equals
+// the signed entry once decoded. The response member and the access token's
+// claim both carry the signed bytes, not the hook's, with an integer above
+// 2^53 kept digit for digit.
 func TestIntegration_IDJAGAuthorizationDetailsClaim(t *testing.T) {
 	t.Parallel()
 
-	const entry = `{"type":"call","server":"github","limit":9007199254740993}`
+	const (
+		entry   = `{"type":"call","server":"github","note":"\ud800","limit":9007199254740993}`
+		hookOut = `{"limit":9007199254740993,"note":"\ufffd","server":"github","type":"call"}`
+	)
 	var seen atomic.Int32
 	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 		"call": {
 			GrantTypes: []string{oauthproto.GrantTypeJWTBearer},
-			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+			Grant: func(context.Context, authorizationdetails.Request) (authorizationdetails.Result, error) {
 				seen.Add(1)
-				return authorizationdetails.Result{Entries: req.Entries}, nil
+				return authorizationdetails.Result{Entries: []json.RawMessage{json.RawMessage(hookOut)}}, nil
 			},
 		},
 	})

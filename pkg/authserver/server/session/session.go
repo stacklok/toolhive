@@ -18,6 +18,8 @@
 package session
 
 import (
+	"encoding/json"
+
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/token/jwt"
@@ -200,6 +202,40 @@ func (s *Session) Clone() fosite.Session {
 		UpstreamSessionID: s.UpstreamSessionID,
 		VerifiedUpstream:  s.VerifiedUpstream,
 	}
+}
+
+// UnmarshalJSON decodes a session as encoding/json would, except that the
+// authorization_details claim keeps its encoded bytes as a json.RawMessage
+// instead of being decoded into []any, which would round an integer above
+// 2^53. A session read back from storage then holds the claim in the same
+// form as the session that was stored.
+func (s *Session) UnmarshalJSON(data []byte) error {
+	// plain has Session's fields but not this method, so decoding into it
+	// does not recurse.
+	type plain Session
+	if err := json.Unmarshal(data, (*plain)(s)); err != nil {
+		return err
+	}
+	if s.JWTSession == nil || s.JWTClaims == nil {
+		return nil
+	}
+	if _, present := s.JWTClaims.Extra[claimnames.AuthorizationDetailsKey]; !present {
+		return nil
+	}
+	var raw struct {
+		JWTClaims *struct {
+			Extra map[string]json.RawMessage
+		}
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.JWTClaims != nil {
+		if details, present := raw.JWTClaims.Extra[claimnames.AuthorizationDetailsKey]; present {
+			s.JWTClaims.Extra[claimnames.AuthorizationDetailsKey] = details
+		}
+	}
+	return nil
 }
 
 // ClearSubjectIdentifier removes any persisted or source-token sub_id and

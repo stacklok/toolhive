@@ -68,6 +68,7 @@ func (h *IDJAGHandler) idJAGRedemption(
 		return redemption{}, err
 	}
 	d.subject = user
+	d.resolvedUser = user
 	d.delegatedAccess = true
 	return d, nil
 }

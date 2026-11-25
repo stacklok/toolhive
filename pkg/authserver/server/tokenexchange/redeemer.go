@@ -30,20 +30,27 @@ type redeemer struct {
 	config   *fosite.Config
 	helper   *oauth2.HandleHelper
 
-	// detailsWarned records the (assertion issuer, reason) pairs whose
-	// authorization_details refusal on the plain grant was already logged at
-	// Warn. Only validated assertions from enabled issuers reach it, so its
-	// size is bounded by the trusted issuers times the fixed reasons.
+	// detailsWarned records the (key, reason) pairs whose
+	// authorization_details refusal was already logged at Warn. The key is
+	// the assertion issuer, except for the ID-JAG grant's parameter refusal,
+	// which runs before the assertion is validated and is keyed by the
+	// authenticated client. Issuer keys come only from validated assertions
+	// of enabled issuers, so they are bounded by the trusted issuers times
+	// the fixed reasons; client keys add at most one entry per registered
+	// client and parameter reason.
 	detailsWarned sync.Map
 }
 
 // firstRefusalLevel returns Warn the first time a refusal with reason is
-// logged for issuer, and Debug after that. It bounds the Warn volume of a
-// refusal on the plain grant, which needs no client authentication and does
-// not consume a refused assertion, so one assertion can be resent until it
-// expires.
-func (r *redeemer) firstRefusalLevel(issuer, reason string) slog.Level {
-	if _, seen := r.detailsWarned.LoadOrStore([2]string{issuer, reason}, struct{}{}); seen {
+// logged for key, and Debug after that. It bounds the Warn volume of a
+// refusal a caller can repeat at request rate: the plain grant needs no
+// client authentication, any client can register itself when dynamic client
+// registration is open, and neither grant consumes a refused assertion, so
+// one assertion can be resent until it expires. The reasons logged under a
+// client key never appear under an issuer key, so the two kinds of key
+// cannot collide.
+func (r *redeemer) firstRefusalLevel(key, reason string) slog.Level {
+	if _, seen := r.detailsWarned.LoadOrStore([2]string{key, reason}, struct{}{}); seen {
 		return slog.LevelDebug
 	}
 	return slog.LevelWarn
@@ -61,6 +68,10 @@ type redemption struct {
 	replayKey     string
 	// carryAct copies the assertion's act claim into the issued token.
 	carryAct bool
+	// resolvedUser is the local user a resolve issuer's subject resolved to,
+	// empty for a namespaced redemption. Grant hooks see it as
+	// Subject.ResolvedUser.
+	resolvedUser string
 	// delegatedAccess is set only for a resolved redemption from a resolve
 	// issuer. The session builder stamps the delegated-access marker and the
 	// lifetime step caps the lifetime.

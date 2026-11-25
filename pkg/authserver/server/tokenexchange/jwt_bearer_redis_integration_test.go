@@ -12,6 +12,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -99,10 +100,10 @@ func TestJWTBearerHandler_RedisBacked(t *testing.T) {
 	require.True(t, storage.IsSyntheticClientID(retrieved.GetClient().GetID()))
 }
 
-// TestIDJAGHandler_RedisBackedDetails pins the stored shape of the
-// authorization_details claim: in memory the issued token's claim is raw JSON,
-// and a session read back from Redis holds it decoded, as []any. A reader of a
-// stored session must accept both.
+// TestIDJAGHandler_RedisBackedDetails pins that the issued token's
+// authorization_details claim survives a Redis round trip unchanged: a
+// session read back holds the same raw bytes, so an integer above 2^53 keeps
+// every digit.
 func TestIDJAGHandler_RedisBackedDetails(t *testing.T) {
 	t.Parallel()
 
@@ -111,7 +112,7 @@ func TestIDJAGHandler_RedisBackedDetails(t *testing.T) {
 	stor := storage.NewRedisStorageWithClient(redisClient, "test:id-jag:")
 	t.Cleanup(func() { _ = stor.Close() })
 
-	deps := testIssuanceDeps(&testJWTBearerAssertionValidator{claims: detailsClaims(t, "["+testCallEntry+"]")},
+	deps := testIssuanceDeps(&testJWTBearerAssertionValidator{claims: detailsClaims(t, "["+bigEntry+"]")},
 		idJAGResolvedIssuers(t))
 	deps.consumer = stor
 	deps.tokenStorage = stor
@@ -128,7 +129,7 @@ func TestIDJAGHandler_RedisBackedDetails(t *testing.T) {
 	require.NoError(t, err)
 	stored, ok := retrieved.GetSession().(*session.Session)
 	require.True(t, ok)
-	var want []any
-	require.NoError(t, json.Unmarshal([]byte("["+testCallEntry+"]"), &want))
-	require.Equal(t, want, stored.JWTClaims.Extra[authorizationDetailsParam])
+	details, ok := stored.JWTClaims.Extra[authorizationDetailsParam].(json.RawMessage)
+	require.True(t, ok, "a stored session holds the claim as raw JSON")
+	assert.Equal(t, `[{"type":"`+testCallType+`","note":"big","limit":9007199254740993}]`, string(details))
 }

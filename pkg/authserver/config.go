@@ -2626,17 +2626,18 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 // ErrAuthorizationDetailsRegistryUnreachable is returned when an authorization
 // details registry is configured but no grant that handles it is enabled.
 var ErrAuthorizationDetailsRegistryUnreachable = errors.New(
-	"authorization details registry requires token exchange or the JWT-bearer grant to be enabled")
+	"authorization details registry requires token exchange or ID-JAG redemption to be enabled")
 
 // AuthorizationDetailsRegistryReachable reports whether an authorization
 // details registry can be reached: token exchange reads the
-// authorization_details parameter, and ID-JAG redemption, which rides the
-// JWT-bearer grant, reads the claim of the same name. The registry is
-// reachable when either grant is enabled.
+// authorization_details parameter, and ID-JAG redemption reads the claim of
+// the same name. The registry is reachable when token exchange is enabled or
+// a trusted issuer accepts ID-JAG assertions. A plain RFC 7523 assertion never
+// reaches it: that grant refuses an assertion that carries the claim.
 func AuthorizationDetailsRegistryReachable(
 	tokenExchangeEnabled bool, trustedIssuers []tokenexchange.TrustedIssuer,
 ) bool {
-	return tokenExchangeEnabled || JWTBearerGrantEnabled(trustedIssuers)
+	return tokenExchangeEnabled || idJAGRedeemable(trustedIssuers)
 }
 
 // validateAuthorizationDetailsRegistryReachable rejects a registry that no

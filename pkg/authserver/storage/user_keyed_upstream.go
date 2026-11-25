@@ -171,8 +171,11 @@ func (s *UserKeyedUpstreamStorage) GetAllUpstreamTokens(
 	owned := make(map[string]*UpstreamTokens, len(all))
 	for provider, row := range all {
 		if row != nil && row.UserID != userID {
+			// The context user is left out: it is the caller's own identity,
+			// already in the request logs, and logging it here trips CodeQL's
+			// clear-text-logging check.
 			s.log().ErrorContext(ctx, "skipping upstream token row owned by another user",
-				"expected_user_id", userID, "got_user_id", row.UserID, "provider", provider)
+				"got_user_id", row.UserID, "provider", provider)
 			continue
 		}
 		owned[provider] = row

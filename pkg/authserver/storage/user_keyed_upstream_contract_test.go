@@ -159,10 +159,9 @@ func runUserKeyedUpstreamContract(t *testing.T, newStore userKeyedFactory) {
 		for _, l := range logged {
 			byProvider[l["provider"].(string)] = l
 		}
-		assert.Equal(t, ukOwner, byProvider["foreign"]["expected_user_id"])
 		assert.Equal(t, ukIntruder, byProvider["foreign"]["got_user_id"])
-		assert.Equal(t, ukOwner, byProvider["ownerless"]["expected_user_id"])
 		assert.Equal(t, "", byProvider["ownerless"]["got_user_id"])
+		assert.NotContains(t, byProvider["foreign"], "expected_user_id")
 	})
 
 	t.Run("writes are refused for nil tokens, empty UserID and another user", func(t *testing.T) {

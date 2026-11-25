@@ -278,7 +278,7 @@ func TestConfigValidate(t *testing.T) {
 		{name: "typed-nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{(*recordingRefreshHandler)(nil)}}, wantErr: true, errMsg: "refresh grant handler 0 is nil"},
 		{name: "refresh grant handler accepted", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}}}},
 
-		{name: "authorization details registry combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry, DisableTokenExchange: true}, wantErr: true, errMsg: "authorization details registry requires token exchange to be enabled"},
+		{name: "authorization details registry combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry, DisableTokenExchange: true}, wantErr: true, errMsg: "authorization details registry requires token exchange or ID-JAG redemption to be enabled"},
 		{name: "authorization details registry with token exchange enabled passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry}},
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -359,24 +359,68 @@ func newTokenExchangeDetailsRegistry(t *testing.T) *authorizationdetails.Registr
 func TestAuthorizationDetailsRegistryReachable(t *testing.T) {
 	t.Parallel()
 
+	jwtBearerIssuer := []tokenexchange.TrustedIssuer{{
+		IssuerURL:      "https://idp.example.com",
+		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{},
+	}}
+	idJAGOnlyIssuer := []tokenexchange.TrustedIssuer{{
+		IssuerURL: "https://idp.example.com",
+		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+			AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+		},
+	}}
+	plainOnlyIssuer := []tokenexchange.TrustedIssuer{{
+		IssuerURL: "https://idp.example.com",
+		JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+			AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeJWTBearer},
+		},
+	}}
+	exchangeOnlyIssuer := []tokenexchange.TrustedIssuer{{IssuerURL: "https://idp.example.com"}}
+
 	tests := []struct {
 		name                 string
 		tokenExchangeEnabled bool
+		trustedIssuers       []tokenexchange.TrustedIssuer
 		want                 bool
 	}{
 		{name: "token exchange enabled", tokenExchangeEnabled: true, want: true},
 		{name: "token exchange disabled", tokenExchangeEnabled: false, want: false},
+		{name: "token exchange disabled, JWT-bearer grant enabled for both assertion types", trustedIssuers: jwtBearerIssuer, want: true},
+		{name: "token exchange disabled, issuer accepting ID-JAG only", trustedIssuers: idJAGOnlyIssuer, want: true},
+		{name: "token exchange disabled, issuer accepting plain assertions only", trustedIssuers: plainOnlyIssuer, want: false},
+		{name: "token exchange disabled, issuer without the JWT-bearer grant", trustedIssuers: exchangeOnlyIssuer, want: false},
+		{name: "both enabled", tokenExchangeEnabled: true, trustedIssuers: jwtBearerIssuer, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, AuthorizationDetailsRegistryReachable(tt.tokenExchangeEnabled))
+			assert.Equal(t, tt.want, AuthorizationDetailsRegistryReachable(tt.tokenExchangeEnabled, tt.trustedIssuers))
 		})
 	}
 
 	t.Run("config validation returns the sentinel", func(t *testing.T) {
 		t.Parallel()
 		cfg := Config{AuthorizationDetailsRegistry: newTokenExchangeDetailsRegistry(t), DisableTokenExchange: true}
+		require.ErrorIs(t, cfg.validateAuthorizationDetailsRegistryReachable(), ErrAuthorizationDetailsRegistryUnreachable)
+	})
+
+	t.Run("config validation accepts ID-JAG redemption without token exchange", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{
+			AuthorizationDetailsRegistry: newTokenExchangeDetailsRegistry(t),
+			DisableTokenExchange:         true,
+			TrustedIssuers:               idJAGOnlyIssuer,
+		}
+		require.NoError(t, cfg.validateAuthorizationDetailsRegistryReachable())
+	})
+
+	t.Run("config validation refuses plain JWT-bearer issuers without token exchange", func(t *testing.T) {
+		t.Parallel()
+		cfg := Config{
+			AuthorizationDetailsRegistry: newTokenExchangeDetailsRegistry(t),
+			DisableTokenExchange:         true,
+			TrustedIssuers:               plainOnlyIssuer,
+		}
 		require.ErrorIs(t, cfg.validateAuthorizationDetailsRegistryReachable(), ErrAuthorizationDetailsRegistryUnreachable)
 	})
 }

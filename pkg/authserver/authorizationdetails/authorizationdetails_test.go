@@ -86,6 +86,9 @@ func TestRegistry_Parse(t *testing.T) {
 		raw       string
 		grantType string
 		wantErr   bool
+		// unknownType marks a refusal that must be ErrUnknownType; every other
+		// refusal must not be.
+		unknownType bool
 	}{
 		{name: "empty array", raw: `[]`},
 		{name: "empty array with whitespace", raw: " \n[ ]\t"},
@@ -130,11 +133,12 @@ func TestRegistry_Parse(t *testing.T) {
 		{name: "empty type", raw: `[{"type":""}]`, wantErr: true},
 		{name: "non-string type", raw: `[{"type":1}]`, wantErr: true},
 		{name: "null type", raw: `[{"type":null}]`, wantErr: true},
-		{name: "unknown type", raw: `[{"type":"zzz"}]`, wantErr: true},
-		{name: "unknown type after a valid entry", raw: `[{"type":"a"},{"type":"zzz"}]`, wantErr: true},
-		{name: "type registered only for another grant type", raw: `[{"type":"other"}]`, wantErr: true},
+		{name: "unknown type", raw: `[{"type":"zzz"}]`, wantErr: true, unknownType: true},
+		{name: "unknown type after a valid entry", raw: `[{"type":"a"},{"type":"zzz"}]`, wantErr: true, unknownType: true},
+		{name: "type registered only for another grant type", raw: `[{"type":"other"}]`, wantErr: true, unknownType: true},
+		{name: "unknown type before a malformed entry", raw: `[{"type":"zzz"},{"x":1}]`, wantErr: true},
 		{name: "type registered for this and another grant type", raw: `[{"type":"b"}]`, grantType: grantTypeOther},
-		{name: "type not registered for the given grant type", raw: `[{"type":"a"}]`, grantType: grantTypeOther, wantErr: true},
+		{name: "type not registered for the given grant type", raw: `[{"type":"a"}]`, grantType: grantTypeOther, wantErr: true, unknownType: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -146,6 +150,7 @@ func TestRegistry_Parse(t *testing.T) {
 			pending, err := registry.Parse(tt.raw, grantType)
 			if tt.wantErr {
 				require.ErrorIs(t, err, ErrInvalid)
+				assert.Equal(t, tt.unknownType, errors.Is(err, ErrUnknownType))
 				require.Nil(t, pending)
 				return
 			}
@@ -392,13 +397,15 @@ func TestPending_Grant(t *testing.T) {
 	}
 
 	wantReq := Request{
-		GrantType:          grantTypeExchange,
-		ClientID:           "client",
-		Actor:              "actor",
-		ActorTokenPresent:  true,
-		RequestedTokenType: "urn:ietf:params:oauth:token-type:access_token",
-		RequestedScopes:    []string{"openid"},
-		GrantedAudience:    []string{"https://mcp.example.com"},
+		GrantType:       grantTypeExchange,
+		ClientID:        "client",
+		GrantedAudience: []string{"https://mcp.example.com"},
+		Exchange: &ExchangeContext{
+			Actor:              "actor",
+			ActorTokenPresent:  true,
+			RequestedTokenType: "urn:ietf:params:oauth:token-type:access_token",
+			RequestedScopes:    []string{"openid"},
+		},
 		Subject: Subject{
 			Issuer:   "https://issuer.example.com",
 			Subject:  "user",

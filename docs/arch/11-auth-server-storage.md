@@ -165,6 +165,32 @@ Some IdPs issue a `sub` that is unique per application. Microsoft Entra ID (work
 
 The upstream subject claim stays the same across app registrations when `subject_claim` names a cross-app claim such as Entra's `oid`. It still changes when `iss` changes, and at the user's next login after `subject_claim` is changed.
 
+### One upstream identity, one user
+
+The auth server keeps one user per identity link. Two different values describe an upstream identity, and they are not the same key:
+
+- The **link key** finds the local user. It is the upstream's `name` (the provider ID) plus the value of its `subject_claim` (`sub` when the setting is not set).
+- The **`sub_id`** records the raw `iss` and `sub` of the upstream login. It is not used to find users.
+
+Two users carry the same `sub_id` when the link key changes while the raw `iss` and `sub` stay the same. Two different `sub_id` values can also end up on one user, when the link key stays the same and the raw `iss` or `sub` changes (see the list below).
+
+Only the first configured upstream creates users. Every login chain starts there, and later upstreams in a chain carry the user already resolved by the first one. A later upstream never creates a user or a link. If a login reaches user resolution through a later upstream without a carried user (for example a `SingleLeg` authorization that sets no `ResolvedUserID`), the auth server looks the identity link up. It resolves to the linked user when a link exists. When none does, the browser callback refuses with `access_denied` and the device flow shows a 403 page. The subject resolver for ID-JAG redemption is built from the first upstream only.
+
+Today only the browser callback and the device flow create users, both through `UserResolver.ResolveUser`. Token exchange, JWT bearer, ID-JAG redemption, delegate clients and SPIFFE client credentials only look users up, and synthetic identities skip the resolver. Any future path that creates users (for example provisioning on peer-issuer ID-JAG redemption) must go through `UserResolver` so it shares the behaviour below.
+
+A login that is in flight when the upstreams are reordered is refused if it would create a user through an upstream that is no longer first, and succeeds if that upstream's identity is already linked. A login in flight when its upstream is renamed fails earlier, with `server_error`, because the old name is no longer configured. In both cases the person starts the login again.
+
+When two first logins for the same identity run at the same time, the identity link is written only if no link exists yet, on both the memory and Redis backends. The login that loses reads the link the winner wrote, rolls back the user it created, and returns the winner's user, so both logins get the same user. If reading the winner's user fails, the losing login fails with `server_error` and the person signs in again. Every failed link write is settled by reading the link before anything is deleted, because the error may not say whether the write committed (for example a lost reply from Redis). The resolver keeps its own user if the link points at it, and adopts the owner's user if the link points elsewhere. If there is no link, or the link cannot be read, it deletes nothing and returns the error: a write that timed out can still commit after the read. A user row left without a link is harmless, because nothing resolves to it.
+
+Which key a change affects decides what happens:
+
+- **Link key changes, raw `iss` and `sub` stay the same.** The next login creates a new user, so one person has two users with the same `sub_id`. This happens when:
+  - the value of `subject_claim` changes for one person (for example `subject_claim` is `email` or `preferred_username` and the user's email changes);
+  - `subject_claim` itself is changed to a claim with a different value for that person (this also gives a new ToolHive `sub`);
+  - the first upstream is renamed, because the link key uses the upstream name and existing links no longer match;
+  - the upstreams are reordered so that another upstream is first. Existing links are kept, but the new first upstream has no links of its own, so it creates new users.
+- **Link key stays the same, raw `iss` or `sub` changes.** The login finds the existing user, so one user carries two different `sub_id` values. This happens when an upstream keeps its name but points at another issuer. Subject values from different IdPs can then collide, and two different people can share one user. Binding each link to the issuer and subject claim that created it is tracked as "Bind provider-identity rows to the issuer and subject claim that created them" (#7256).
+
 ### Upstream IdP notes
 
 **Microsoft Entra ID.**

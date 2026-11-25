@@ -555,8 +555,10 @@ func TestRefreshTokenHandlerHookSubject(t *testing.T) {
 	require.Len(t, recorded, 1)
 	got := recorded[0]
 	assert.Equal(t, testRefreshClient, got.ClientID)
-	assert.Equal(t, testRefreshClient, got.Actor)
-	assert.Equal(t, oauthproto.TokenTypeRefreshToken, got.RequestedTokenType)
+	require.NotNil(t, got.Exchange)
+	assert.Nil(t, got.Redemption)
+	assert.Equal(t, testRefreshClient, got.Exchange.Actor)
+	assert.Equal(t, oauthproto.TokenTypeRefreshToken, got.Exchange.RequestedTokenType)
 
 	subject := got.Subject
 	assert.Equal(t, claims.Issuer, subject.Issuer)

@@ -575,6 +575,18 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 			},
 		},
 		{
+			name: "omits_admission_route",
+			identity: &Identity{
+				PrincipalInfo:  PrincipalInfo{Subject: "user123"},
+				AdmissionRoute: AdmissionRouteDelegated,
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+				assert.NotContains(t, string(data), "delegated", "admission route must not be serialized")
+			},
+		},
+		{
 			name: "marshals_claims_without_tsid_unchanged",
 			identity: &Identity{
 				PrincipalInfo: PrincipalInfo{

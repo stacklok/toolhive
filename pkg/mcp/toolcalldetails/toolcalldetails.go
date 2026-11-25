@@ -39,10 +39,10 @@
 // access token.
 //
 // Registering the type only makes it known to a server's registry; each
-// handler decides whether and where it reads the entry. The handlers in
-// pkg/authserver do not read it yet: the token-exchange request for an ID-JAG
-// refuses the authorization_details parameter, and JWT-bearer redemption does
-// not consult the registry. A registered type therefore narrows no token. A
+// handler decides whether and where it reads the entry. In pkg/authserver,
+// ID-JAG redemption processes the signed claim and copies a granted entry into
+// the access token, while the token-exchange request for an ID-JAG refuses the
+// authorization_details parameter, so AS-1 does not sign the entry yet. A
 // token exchange that reaches the hook without requesting an ID-JAG is
 // refused with ReasonIDJAGRequired.
 //
@@ -87,7 +87,8 @@ const (
 	// ReasonInvalidMethod: method is not one of the list methods.
 	ReasonInvalidMethod = "invalid_method"
 	// ReasonIDJAGRequired: the entry was sent on a token exchange whose
-	// requested_token_type is not the ID-JAG type.
+	// requested_token_type is not the ID-JAG type, or on a request that is
+	// neither token exchange nor ID-JAG redemption.
 	ReasonIDJAGRequired = "id_jag_required"
 )
 
@@ -112,9 +113,8 @@ func (e Entry) IsList() bool {
 
 // Register adds the MCP call type to types, registered for RFC 8693 token
 // exchange (where the hook accepts it only when an ID-JAG is requested) and
-// for the RFC 7523 JWT-bearer grant. The handlers in pkg/authserver do not
-// read the entry on either path yet; see the package doc. It overwrites an
-// existing entry of the same name.
+// for the RFC 7523 JWT-bearer grant, which processes it on ID-JAG redemption;
+// see the package doc. It overwrites an existing entry of the same name.
 func Register(types map[string]authorizationdetails.Type) {
 	types[Type] = authorizationdetails.Type{
 		GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
@@ -200,8 +200,11 @@ func grant(_ context.Context, req authorizationdetails.Request) (authorizationde
 	// Token exchange only echoes the granted entries and never puts them in
 	// the token it issues. Minting an ID-JAG is meant to sign them into it,
 	// but that path does not read the parameter yet. Accepting the entry on
-	// any other exchange would return a token the entry does not restrict.
-	if req.GrantType == oauthproto.GrantTypeTokenExchange && req.RequestedTokenType != oauthproto.TokenTypeIDJAG {
+	// any other exchange would return a token the entry does not restrict, so
+	// only ID-JAG redemption and a token exchange for an ID-JAG are accepted,
+	// and a request with neither part is refused.
+	idJAGExchange := req.Exchange != nil && req.Exchange.RequestedTokenType == oauthproto.TokenTypeIDJAG
+	if req.Redemption == nil && !idJAGExchange {
 		return authorizationdetails.Result{}, authorizationdetails.Error{
 			Code:   authorizationdetails.CodeInvalidRequest,
 			Reason: ReasonIDJAGRequired,

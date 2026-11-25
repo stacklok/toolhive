@@ -73,6 +73,25 @@ type PrincipalInfo struct {
 	DelegationChain *audit.DelegationChain `json:"delegation,omitempty"`
 }
 
+// AdmissionRoute identifies how TokenValidator admitted a token minted by the
+// embedded authorization server.
+type AdmissionRoute string
+
+const (
+	// AdmissionRouteUnspecified is the zero value: the token is neither
+	// interactive nor delegated, so it carries no route.
+	AdmissionRouteUnspecified AdmissionRoute = ""
+	// AdmissionRouteInteractive is a token minted from an interactive login
+	// session: it carries a token session ID and neither the delegated-access
+	// marker nor proof of a session-less mint, and it was validated with a
+	// configured audience (so its "aud" was checked).
+	AdmissionRouteInteractive AdmissionRoute = "interactive"
+	// AdmissionRouteDelegated is a token carrying the delegated-access marker and
+	// no usable tsid, validated with a configured audience (so its "aud" was
+	// checked).
+	AdmissionRouteDelegated AdmissionRoute = "delegated"
+)
+
 // Identity represents an authenticated user or service account.
 // This is the primary type for representing authenticated principals throughout ToolHive.
 //
@@ -106,12 +125,26 @@ type Identity struct {
 	// Metadata stores additional identity information.
 	Metadata map[string]string
 
-	// SessionlessGrant is true only when TokenValidator validated this token for
-	// the configured embedded authorization-server issuer, no upstream session
-	// credentials were loaded, and the token affirmatively proves that it was
-	// minted by a session-less grant. It is internal runtime provenance and is
-	// intentionally not included in PrincipalInfo or MarshalJSON.
+	// SessionlessGrant is true only when TokenValidator validated this token as a
+	// signed JWT (never an introspection response) for the configured embedded
+	// authorization-server issuer, no upstream session credentials were loaded,
+	// and the token affirmatively proves that it was minted by a session-less
+	// grant. It is internal runtime provenance and is intentionally not included
+	// in PrincipalInfo or MarshalJSON.
 	SessionlessGrant bool
+
+	// AdmissionRoute records how TokenValidator admitted this token. It is set
+	// only by TokenValidator, and only when the validator is bound to the
+	// embedded authorization server and the JWT was verified with the
+	// in-process key provider (WithKeyProvider). A key found only through the
+	// HTTP JWKS fallback, or an introspection response, gets no route, so a
+	// validator bound without WithKeyProvider never assigns one.
+	// Both routes also require a configured audience. It is internal
+	// provenance and is intentionally not included in PrincipalInfo,
+	// SafeIdentity, or MarshalJSON. Consumers that grant anything must compare
+	// for equality with AdmissionRouteDelegated (or AdmissionRouteInteractive),
+	// never with != AdmissionRouteUnspecified.
+	AdmissionRoute AdmissionRoute
 
 	// UpstreamTokens maps upstream provider names to their access tokens.
 	// This is populated by the auth middleware when an embedded auth server
@@ -133,9 +166,9 @@ type Identity struct {
 	//                      stored access token strings.
 	//
 	// A nil map therefore says only that no credential was loaded, never why.
-	// Authorization code must use SessionlessGrant, which TokenValidator sets
-	// only for a validated embedded-auth-server token that affirmatively proves
-	// it was minted without an upstream session.
+	// Authorization code must use SessionlessGrant or AdmissionRoute, which
+	// TokenValidator sets only for a signed embedded-auth-server token, from the
+	// claims it carries.
 	//
 	// MUST NOT be mutated after the Identity is placed in the publicly-reachable
 	// request context. It MAY be mutated while the Identity is reachable only via

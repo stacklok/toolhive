@@ -746,3 +746,25 @@ func TestDeviceVerification_ClientNoLongerServed(t *testing.T) {
 		})
 	}
 }
+
+// A device login started while one upstream was configured can complete on a
+// replica whose config now puts another upstream first. Only the first upstream
+// creates users, so completion must refuse and create no user or link.
+func TestDeviceVerification_CompletionRefusesWhenUpstreamIsNoLongerFirst(t *testing.T) {
+	t.Parallel()
+	h, up := setupDeviceVerificationHandler(t)
+	_, userCode := issueDeviceCode(t, h)
+	submitRec, state := submitDeviceUserCode(t, h, up, userCode)
+	cookie := bindingCookieFrom(t, submitRec, state)
+
+	// Simulate the config change: this replica builds its resolver from a config
+	// where "new-first" leads, while the pending login names "test-upstream".
+	h.userResolver = NewUserResolver(h.storage, WithCreateOnlyFor("new-first"))
+
+	rec := httptest.NewRecorder()
+	h.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+state, cookie))
+
+	assert.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
+	_, err := h.storage.GetProviderIdentity(context.Background(), "test-upstream", "upstream-subject-1")
+	assert.ErrorIs(t, err, storage.ErrNotFound, "no identity link may be created")
+}

@@ -1390,14 +1390,16 @@ spec:
   `"cnf": null` and `"cnf": {}` are refused too. The check runs before the
   assertion is consumed. It stays until proof of possession (DPoP or mTLS) is
   verified. The grant still does not require client authentication.
-- **No `authorization_details`.** An assertion that carries an
+- **No `authorization_details`.** A plain assertion that carries an
   `authorization_details` claim is refused with `invalid_grant`, whatever the
-  value, on this grant and on ID-JAG redemption alike. The issued token would
-  not carry the claim, so redeeming the assertion would silently drop the
-  restriction its issuer signed. Only presence counts. The check runs after
-  the issuer's policy lookup, so an issuer that is not enabled for the grant
-  gets that refusal instead, and before the assertion is consumed. See
-  [Terminal tokens](#terminal-tokens).
+  value. RFC 7523 defines no such claim, so redeeming the assertion would
+  silently drop the restriction its issuer signed. Only presence counts. The
+  check runs after the issuer's policy lookup, so an issuer that is not enabled
+  for the grant gets that refusal instead, and before the assertion is
+  consumed. See [Terminal tokens](#terminal-tokens). An ID-JAG's claim is
+  processed instead (see [On ID-JAG redemption](#on-id-jag-redemption)). Both
+  forms refuse the `authorization_details` parameter with
+  `parameter_not_allowed`, or with `invalid_request` when it is repeated.
 - **Synthetic subject and client identity.** The issued token's `sub` is
   `<assertion issuer>#<assertion subject>` (`session.New`'s first argument,
   matching the delegated-token subject qualification pattern in [Accepted
@@ -1551,8 +1553,9 @@ None of this runs while the gate is closed: resolution comes after the gate, so
 every `resolve` redemption is refused before it starts.
 
 The check order for a `resolve` issuer is: client authentication and grant,
-assertion validation, `jti`, client binding, policy (resource), client
-audience, actor issuer, gate, resolution, actor policy, consume, lifetime.
+the `authorization_details` parameter, assertion validation, `jti`, client
+binding, policy (resource), client audience, actor issuer, gate, resolution,
+actor policy, the `authorization_details` claim, consume, lifetime.
 Resolution starts with a client check: a client registered through DCR that is
 not resource-scoped is refused before the resolver is called. It then requires
 the `resource` claim. The actor policy runs once the subject has resolved, with
@@ -1637,8 +1640,8 @@ refused first. See [Lifetime of a redeemed token](#lifetime-of-a-redeemed-token)
 Both assertion forms refuse with an `error_description` that starts with a
 reason code, so a client can act on the refusal without parsing prose. This
 holds for every refusal that carries a reason; the plain grant's two
-`subject_bindings` refusals and fosite's own client-authentication errors do
-not (see the table). The description matches
+`subject_bindings` refusals, a repeated `authorization_details` parameter and
+fosite's own client-authentication errors do not (see the table). The description matches
 `^[a-z_]+(: .*)?$`: the reason, optionally followed by `: ` and a fixed hint. The hint is printable ASCII without `"` or `\` and never
 contains a claim value (`sub`, `jti`, `client_id`, issuer). The handlers build
 the error as a literal (`redemptionRefusal`) because fosite's `WithHint` puts
@@ -1653,7 +1656,14 @@ its own default text before the reason.
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | Assertion that carries a `cnf` claim, with any value including `null`, for any issuer | 400 `invalid_grant`, `invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.` | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` Both checks run before the assertion is consumed |
-| Assertion that carries an `authorization_details` claim, with any value including `null`, from an issuer enabled for the grant, that passes the checks above (no `cnf` claim; for an ID-JAG, a single `aud`) | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` | same. Both checks run before the assertion is consumed |
+| The `authorization_details` parameter with a single non-empty value | 400 `invalid_authorization_details`, `parameter_not_allowed`, from an issuer enabled for the grant, after the `cnf` check and the claim refusal below (an assertion with both gets `invalid_assertion`) | 400 `invalid_authorization_details`, `parameter_not_allowed`, after client authentication and the client's grant check, before the ID-JAG is validated |
+| The `authorization_details` parameter repeated, empty values included | 400 `invalid_request`, "The authorization_details parameter must not be repeated.", no reason, at the same point as the row above | same, at the same point as the row above |
+| Assertion that carries an `authorization_details` claim, with any value including `null`, from an issuer enabled for the grant, that passes the checks above (no `cnf` claim) | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` The assertion is not consumed | processed, after subject resolution; see the rows below and [On ID-JAG redemption](#on-id-jag-redemption) |
+| ID-JAG whose `authorization_details` claim is not a non-empty array of objects | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion authorization_details claim must be a non-empty array of objects.` The ID-JAG is not consumed |
+| ID-JAG whose claim holds a type that is not registered for the JWT-bearer grant, or any type when no registry is configured | n/a | 400 `invalid_authorization_details`, `unknown_type`. The ID-JAG is not consumed |
+| ID-JAG whose claim holds an entry that breaks the generic shape rules | n/a | 400 `invalid_authorization_details`, `malformed_entry`. The ID-JAG is not consumed |
+| ID-JAG whose claim a type's hook refuses, or of whose entries the hooks together keep none | n/a | 400 with the hook's code and reason, or `invalid_authorization_details`, `empty_grant`. The ID-JAG is not consumed |
+| ID-JAG whose claim a hook fails on, or for which a hook returns an entry the ID-JAG did not sign | n/a | 500 `server_error`, fixed text. The ID-JAG is not consumed |
 | Subject not listed in `subject_bindings` (namespaced issuers) | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
@@ -1680,7 +1690,10 @@ ID-JAG re-issued with a correct `act` can pass the actor check (while the gate
 is closed it is still refused with `subject_unknown`). A client that retries a
 reasonless `invalid_grant` once with a new ID-JAG therefore stops retrying
 `invalid_assertion` refusals and the `access_denied` refusals that a new ID-JAG
-with the same claims would not change.
+with the same claims would not change. An `invalid_authorization_details`
+refusal of the claim depends only on the signed details, so a re-issued ID-JAG
+with the same `authorization_details` gets the same answer;
+`parameter_not_allowed` goes away by dropping the parameter.
 `issuer_unavailable` is the retryable one: the assertion was never judged, because
 this server could not reach the issuer's signing keys, so the same ID-JAG may
 succeed once the issuer is reachable again. It is a 503 with no `Retry-After`
@@ -1940,12 +1953,12 @@ presence of the claim counts: `"cnf": null` and `"cnf": {}` are refused too, and
 the value is never read. The refusal stays until proof of possession (DPoP or
 mTLS) is verified.
 
-**ID-JAGs that carry `authorization_details` are refused.** Draft §4.4.1 asks
-the server to process the claim, but the issued token cannot carry it yet, so
-the handler refuses the ID-JAG with `invalid_grant` instead of issuing a token
-without the restriction. The check runs after the `cnf` check and the
-issuer's policy lookup, for every issuer enabled for the grant, and before the
-ID-JAG is consumed (see [Terminal tokens](#terminal-tokens)).
+**ID-JAGs that carry `authorization_details` are processed.** Draft §4.4.1
+asks the redeeming server to process the claim. The handler checks its shape
+and types, runs the registered hooks, and copies the entries they keep into the
+issued token and the response; any refusal comes before the ID-JAG is consumed.
+It only drops whole signed entries, and the token carries the bytes the issuer
+signed. See [On ID-JAG redemption](#on-id-jag-redemption).
 
 **Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
 also lets AS-2's plain handler (`typ` `JWT`, empty or absent) accept AS-1's
@@ -2047,44 +2060,60 @@ the plain path for it.
 
 ## Authorization details
 
-RFC 9396 `authorization_details` is handled only on the RFC 8693 token-exchange
-handler. Without a type registry the parameter is ignored: no validation, no
-echo, and repeated values are not rejected.
+RFC 9396 `authorization_details` reaches this server in two places: as the
+request parameter of an RFC 8693 token exchange, and as the signed claim of an
+ID-JAG redeemed with the RFC 7523 JWT-bearer grant. Both read one type
+registry. Without a registry, token exchange ignores the parameter, and an
+ID-JAG that carries the claim is refused with `unknown_type`.
 
-**With a registry.** The registry (`pkg/authserver/authorizationdetails`) is
+**The registry.** The registry (`pkg/authserver/authorizationdetails`) is
 Go-only. It is not part of `RunConfig`, YAML, or CRDs. It maps exact,
 case-sensitive `type` names to a `Type`, which lists the grant types it applies
-to (`GrantTypes`) and a `Grant` hook. Only token exchange uses the registry
-today; other grants, including JWT-bearer ID-JAG redemption, ignore the
-parameter. A JWT-bearer or ID-JAG assertion that carries the claim is refused
-(see [Terminal tokens](#terminal-tokens)). Nothing is advertised in discovery.
+to (`GrantTypes`) and a `Grant` hook. A type applies to ID-JAG redemption when
+it lists `urn:ietf:params:oauth:grant-type:jwt-bearer`; that grant type means
+ID-JAG redemption only, because the plain RFC 7523 grant refuses an assertion
+that carries the claim. Nothing is advertised in discovery.
 
-A request value must follow RFC 9396 section 2: one JSON array of objects, each
-with a non-empty string `type` registered for the grant type. `[]` is valid. An
-absent parameter or a single empty value (`authorization_details=`) is ignored
-and nothing is echoed, while `[]` is accepted and echoed as
-`"authorization_details":[]`. On top of that, ToolHive rejects duplicate member names after unescaping, member
-names that are equal under JSON case folding (the folding `encoding/json` uses
-to match struct fields), values over 64 KiB, and nesting deeper than 64
-containers.
+A value must follow RFC 9396 section 2: one JSON array of objects, each with a
+non-empty string `type` registered for the grant type. On top of that, ToolHive
+rejects duplicate member names after unescaping, member names that are equal
+under JSON case folding (the folding `encoding/json` uses to match struct
+fields), values over 64 KiB, and nesting deeper than 64 containers.
+
+Each type's `Grant` hook runs once per request, with all of that type's entries
+and the request context. The `Request` holds what every grant has (`Entries`,
+`GrantType`, `ClientID`, `GrantedAudience`, `Subject`) at the top level. What
+only one grant has is in its own part, nil on the other grant: `Exchange`
+(`Actor`, `ActorTokenPresent`, `RequestedTokenType`, `RequestedScopes`) on
+token exchange, and `Redemption` (`ResolvedUser`) on ID-JAG redemption. A hook
+checks that a part is not nil before reading it. Token issuance comes last, so hooks are decide-only: a
+hook may read state but must not commit it, because the request can still fail
+after a hook returns. On ID-JAG redemption the ID-JAG is consumed after the
+hooks run, so a hook can run again for the same ID-JAG when a later redemption
+of it is refused as a replay. A hook reads the entries from `Request.Entries`,
+which keep every digit of a number; `Request.Subject.Claims` leaves the
+`authorization_details` claim out.
+
+### On token exchange
+
+An absent parameter or a single empty value (`authorization_details=`) is
+ignored and nothing is echoed, while `[]` is accepted and echoed as
+`"authorization_details":[]`.
 
 **Check order.** Fosite authenticates the client. The handler then checks for a
 public client, the grant type and the required parameters. Next come the
 repeated-value rejection and shape parsing, then the `requested_token_type`,
 subject token, actor, source policy (restricted delegate clients), delegation
-consent, scope and audience checks. Then each type's `Grant` hook runs once,
-with all of that type's entries and the request context. After the hooks, the handler still builds the `act` claim and checks
-the subject token's remaining lifetime, and either can fail the request before
-the token is issued. Token issuance comes last, so hooks are decide-only: a hook
-may read state but must not commit it, because the request can still fail after
-a hook returns.
+consent, scope and audience checks. Then the hooks run. After the hooks, the
+handler still builds the `act` claim and checks the subject token's remaining
+lifetime, and either can fail the request before the token is issued.
 
 **Response.** After the token is issued, the response member
 `authorization_details` holds the entries the hooks returned, not the request.
 The echo is equal to the hook output as JSON values, but not byte-identical:
 `encoding/json` compacts it and HTML-escapes `<`, `>` and `&`. Types appear in
 the order of their first appearance in the request, and each type's entries in
-the order its hook returned them.
+the order its hook returned them. The issued token does not carry them.
 
 **Errors.**
 
@@ -2102,18 +2131,125 @@ Each rejection is logged once at WARN with `client_id` and a fixed reason code
 also carry `code` and `hook_reason`. The text of a failed hook's error is not
 logged at any level, and the submitted value is never logged.
 
-**Boundary.** Details are not put in issued tokens, not persisted, and not
-conveyed to resource servers yet. Register only types ToolHive itself enforces,
-such as a session-binding type. Conveying details to resource servers is
-tracked in [#6909](https://github.com/stacklok/toolhive/issues/6909), and grant
-storage in [#6895](https://github.com/stacklok/toolhive/issues/6895). Refresh
-tokens issued through token exchange use their own entry type and registry; see
-[Refresh tokens through token exchange](#refresh-tokens-through-token-exchange).
+A subject or actor token that carries `authorization_details` is never
+exchanged (see [Terminal tokens](#terminal-tokens)).
 
-**Wiring.** Pass `runner.WithAuthorizationDetailsRegistry` to
-`NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`, or set
-`authserver.Config.AuthorizationDetailsRegistry` before `authserver.New`.
-Setting a registry while token exchange is disabled is a startup error
+### On ID-JAG redemption
+
+ID-JAG draft section 4.4.1 requires the redeeming server to process the
+`authorization_details` claim the ID-JAG's issuer signed. The ID-JAG handler
+does so after subject resolution and before the ID-JAG is consumed, so a
+refused ID-JAG stays unconsumed and, for a `resolve` issuer, the hooks see the
+resolved user (not reachable while the gate is closed; see "The gate"). The
+steps:
+
+1. **The parameter is refused.** Redemption takes details only from the signed
+   claim. A JWT-bearer or ID-JAG redemption that sends the
+   `authorization_details` parameter is refused before the assertion is
+   consumed; the ID-JAG grant refuses it after client authentication and the
+   client's grant check, before the ID-JAG is validated. A single empty value
+   counts as absent, a single non-empty value is refused with
+   `invalid_authorization_details` and `parameter_not_allowed`, and any
+   repeat, empty values included, with `invalid_request` (RFC 6749 section
+   5.2). A plain RFC 7523 assertion that carries the claim is refused (see
+   [Terminal tokens](#terminal-tokens)); only an ID-JAG's claim is processed.
+2. **The claim must be a non-empty array of objects.** The claim is read from
+   the verified payload's raw bytes, so numbers keep every digit. Presence is
+   checked in the raw member and in both the full decoded claim set and the
+   extra claims. `null`, `[]`, a string,
+   an object, or an array that holds a non-object is refused with
+   `invalid_grant` and `invalid_assertion`. Treating `[]` as absent would issue
+   an unrestricted token.
+3. **Every type must be registered for the JWT-bearer grant.** With no
+   registry, any claim that passed step 2 is refused with
+   `invalid_authorization_details` and `unknown_type`. With a registry, a type
+   not registered for that grant is `unknown_type`, and an entry that does not
+   fit the generic shape above is `malformed_entry`.
+4. **The hooks decide.** The hook `Request` holds the authenticated client in
+   `ClientID`, the granted resource in `GrantedAudience`, and the ID-JAG in
+   `Subject`: `Subject.Subject` is the ID-JAG's `sub` and `External` is true.
+   `Redemption` is set and `Exchange` is nil. `Redemption.ResolvedUser` is the
+   local user for a `resolve` issuer (empty for a namespaced one, and not
+   reachable while the gate is closed; see "The gate"). A hook's
+   `authorizationdetails.Error` passes through with its code and reason.
+5. **Hooks keep or drop whole signed entries.** The entries come from
+   `Pending.GrantSubset`. A hook returns the entries it keeps exactly as it
+   received them: each must equal a distinct signed entry of its type as a
+   JSON value, with numbers compared as written (`1` and `1.0` differ). The
+   token carries each kept entry with the bytes the issuer signed, never the
+   hook's. A hook that changes or adds an entry has a bug: the redemption fails
+   with 500 `server_error` and no token. A type whose hook keeps none of its
+   entries is dropped, and the other types' kept entries are still granted.
+   When no entry is left at all the redemption is refused with `empty_grant`,
+   because a token without the claim would be unrestricted. (On token exchange
+   a hook that returns no entries is still a `server_error`.)
+
+The draft lets the redeeming server "modify, filter, or omit" the entries. This
+server only omits whole signed entries: it never narrows inside an entry and
+never adds one. A refused claim content (`unknown_type`, `malformed_entry`,
+`empty_grant`) uses RFC 9396's `invalid_authorization_details`, and a hook's
+refusal its own code, rather than the draft's `invalid_grant` (section 4.4.3),
+so the client gets a reason it can act on. "Authorization server: narrow a
+JWT-bearer access token to one MCP call with authorization_details"
+([#7061](https://github.com/stacklok/toolhive/issues/7061)) asks for this
+code. Per-type narrowing is tracked in "Narrow authorization_details on token
+exchange and refresh"
+([#6912](https://github.com/stacklok/toolhive/issues/6912)).
+
+**Token and response.** The issued access token carries the granted entries in
+its `authorization_details` claim, and the token response returns the same
+entries in its `authorization_details` member, which the draft requires whether
+or not the redemption asked. Both come from the bytes the issuer signed, so an
+integer above 2^53 is kept. The entries never add a resource, scope or
+audience: the token's audience is the resource the redemption granted anyway.
+The session holds the claim as raw JSON, in memory and when read back from
+storage (`session.Session.UnmarshalJSON`), so a stored session keeps every
+digit too.
+
+**Errors.**
+
+| Cause | Response |
+| --- | --- |
+| The `authorization_details` parameter with a single non-empty value, on either redemption form | 400 `invalid_authorization_details`, `parameter_not_allowed` |
+| The `authorization_details` parameter repeated, on either redemption form | 400 `invalid_request`, "The authorization_details parameter must not be repeated." |
+| The claim is not a non-empty JSON array of objects | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion authorization_details claim must be a non-empty array of objects.` |
+| A member name repeated exactly anywhere in the ID-JAG | 400 `invalid_grant`, `invalid_assertion` (the JWT decoder refuses it) |
+| No registry, or a type not registered for the JWT-bearer grant | 400 `invalid_authorization_details`, `unknown_type` |
+| An entry that breaks the generic shape rules | 400 `invalid_authorization_details`, `malformed_entry` |
+| A hook refuses with an `authorizationdetails.Error` | 400 with its code and its reason as `error_description` |
+| The hooks together keep none of the entries | 400 `invalid_authorization_details`, `empty_grant` |
+| A hook fails, returns invalid output, or returns an entry that was not signed | 500 `server_error`, "The authorization_details could not be processed." |
+
+Every refusal in the table except the repeated member name, which the JWT
+decoder refuses before this processing, is logged as `authorization_details
+rejected` with the `client_id` and a fixed `reason`: `parameter_not_allowed`,
+`repeated`, `claim_not_array_of_objects`, `unknown_type`, `malformed_entry`,
+`empty_grant`, `hook_rejected` (with `code` and `hook_reason`) or
+`hook_failed`. An `unknown_type` line also names the ID-JAG's `issuer` and the
+entry `types` (at most eight; a type that is not a short URI-like name is
+logged as `<invalid>`), so the operator can see which registration is missing.
+An `empty_grant` line names the dropped `types`, which are registered names. An
+entry's value is never logged.
+
+A caller can repeat a refusal at request rate: a refused assertion is not
+consumed, so it can be resent until it expires, the plain grant needs no client
+authentication, and with confidential dynamic client registration any client
+can register itself. So each line is at WARN the first time per key and reason
+and at DEBUG after that. On the ID-JAG grant the key is the authenticated
+client for the parameter refusals, which run before the ID-JAG is validated,
+and the ID-JAG's issuer for the claim refusals. On the plain grant the key is
+the assertion's issuer, and the line names the synthetic client ID minted from
+the assertion.
+
+### Wiring
+
+Pass `runner.WithAuthorizationDetailsRegistry` to `NewEmbeddedAuthServer` or
+`NewEmbeddedAuthServerWithStorage`, or set
+`authserver.Config.AuthorizationDetailsRegistry` before `authserver.New`. The
+registry goes to the token-exchange factory and to the ID-JAG factory
+(`tokenexchange.WithAuthorizationDetailsRegistry`). Setting a registry while
+neither token exchange nor ID-JAG redemption (a trusted issuer that accepts
+`id_jag` assertions) is enabled is a startup error
 (`authserver.ErrAuthorizationDetailsRegistryUnreachable`).
 
 ```go
@@ -2126,6 +2262,17 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 	},
 })
 ```
+
+**Boundary.** Details a token exchange grants are not put in its token, not
+persisted, and not conveyed to resource servers. Details an ID-JAG redemption
+grants are in the issued token; enforcing them is the resource server's job
+(for the vMCP, see [#7062](https://github.com/stacklok/toolhive/issues/7062)).
+Register only types the deployment enforces. Conveying exchanged details to
+resource servers is tracked in
+[#6909](https://github.com/stacklok/toolhive/issues/6909), and grant storage in
+[#6895](https://github.com/stacklok/toolhive/issues/6895). Refresh tokens issued
+through token exchange use their own entry type and registry; see
+[Refresh tokens through token exchange](#refresh-tokens-through-token-exchange).
 
 **MCP call type.** `pkg/mcp/toolcalldetails` defines
 `https://toolhive.dev/mcp_tool_call`, which is meant to narrow an access token
@@ -2140,9 +2287,13 @@ the arguments are absent or `null`. Nothing registers it by default; an embedder
 adds it with `toolcalldetails.Register` to the types passed to
 `authorizationdetails.New`. It is registered for token exchange and JWT-bearer.
 On token exchange its hook refuses any request whose `requested_token_type` is
-not the ID-JAG type, with `invalid_request` and `id_jag_required`. Requests for
-an ID-JAG still refuse the parameter, and JWT-bearer redemption still ignores
-the registry, so registering the type does not narrow any token yet. The hook
+not the ID-JAG type, with `invalid_request` and `id_jag_required`; it refuses
+the same way a request that carries neither the `Exchange` nor the
+`Redemption` part. Requests for
+an ID-JAG still refuse the parameter, so ToolHive does not yet sign the entry
+into an ID-JAG it issues. On ID-JAG redemption, an entry signed by a trusted
+issuer goes through the same hook and, once granted, is in the issued access
+token; see [On ID-JAG redemption](#on-id-jag-redemption). The hook
 accepts exactly one entry of its type, with no other members, and grants it
 unchanged; it does not see entries of other registered types. Otherwise it
 refuses with `invalid_authorization_details` and one of
@@ -3074,9 +3225,10 @@ become a token that lives longer or names another party, and a token narrowed
 with `authorization_details` cannot become one without the restriction, since
 no exchange copies the claim into the token it mints. Only the presence of a
 claim counts; its value is never read. Each exchange-site refusal runs after
-signature validation and before any other claim of the token is used. At
-redemption the refusal runs after signature validation, the ID-JAG single-`aud`
-check and the `cnf` check, and before the assertion is consumed.
+signature validation and before any other claim of the token is used. At plain
+RFC 7523 redemption the refusal runs after signature validation and the `cnf`
+check, and before the assertion is consumed. An ID-JAG's claim is not refused
+but processed (see [On ID-JAG redemption](#on-id-jag-redemption)).
 
 | Where | Marker | `authorization_details` | Issuers checked |
 | --- | --- | --- | --- |
@@ -3084,17 +3236,16 @@ check and the `cnf` check, and before the assertion is consumed.
 | RFC 8693 exchange, as `actor_token` | 400 `invalid_request`, hint "The actor token is a delegated-access token and cannot be exchanged." | 400 `invalid_request`, hint "The actor token carries authorization_details and cannot be exchanged." | This server only |
 | Opening an exchange grant, as `subject_token` | 400 `invalid_request`, `subject_token_delegated_access` | 400 `invalid_request`, `subject_token_authorization_details` | This server only |
 | ID-JAG issuance, as `actor_token`, before the actor validator is called | 400 `invalid_request`, `actor_token_delegated_access` | 400 `invalid_request`, `actor_token_authorization_details` | Tokens this server signed; others go to the validator |
-| JWT-bearer or ID-JAG redemption, as `assertion` | not refused | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` | Every issuer the grant accepts |
+| Plain RFC 7523 redemption, as `assertion` | not refused | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` | Every issuer the grant accepts |
 
 At the four exchange sites a token that carries both claims gets the marker's
 response, so the wire text for a marked token is the same whether or not it
 also carries `authorization_details`. The RFC 8693 refusals log
 `Subject token refused` or `Actor token refused` at WARN with the reason
 `delegated_access_token` or `authorization_details_token`. Redemption does not
-refuse the marker, so an assertion that carries both is refused for its
+refuse the marker, so a plain assertion that carries both is refused for its
 `authorization_details`, while one with the marker alone is redeemed. A `cnf`
-claim, and on an ID-JAG an `aud` with more than one value, is refused first. The
-redemption refusal logs `Assertion refused` with the reason
+claim is refused first. The plain redemption refusal logs `Assertion refused` with the reason
 `authorization_details_assertion` and the assertion's issuer, at WARN the first
 time for each issuer and at DEBUG after that, since a refused assertion is not
 consumed and can be resent.
@@ -3123,9 +3274,53 @@ an external actor's `authorization_details` would describe the agent's own
 limits, not the subject's grant. This costs one signature check per ID-JAG
 request with an actor token.
 
-At redemption the ID-JAG draft (section 4.4.1) asks the server to process the
-claim. ToolHive cannot carry a signed restriction into the issued token yet, so
-it refuses the assertion instead of issuing an unrestricted token.
+RFC 7523 defines no `authorization_details` claim, so the plain grant cannot
+know what the claim restricts and refuses the assertion instead of issuing an
+unrestricted token. The ID-JAG draft (section 4.4.1) defines the claim, and the
+ID-JAG handler processes it and carries the entries its hooks keep into the
+token.
+
+**Admission route.** The token validator records how it admitted a request's
+token in `Identity.AdmissionRoute`. Only the token validator sets it. It is
+internal provenance and is left out of `PrincipalInfo` and the JSON form of the
+identity.
+
+| Value | Meaning |
+| --- | --- |
+| `interactive` | The token came from an interactive login. It carries a non-empty token session ID (`tsid`), no delegated-access marker, and no proof of a session-less mint: no well-formed `act` chain and no `no_upstream_session` claim set to `true`. |
+| `delegated` | The token carries the delegated-access marker (any value) and has no usable `tsid`: the claim is absent, empty or not a string. |
+| (empty) | Every other token. This is the zero value, `AdmissionRouteUnspecified`. |
+
+The validator classifies a route only when all of these hold:
+
+- It is bound to the embedded authorization server, meaning its own issuer is
+  the embedded server's issuer.
+- The JWT was verified with the embedded server's in-process signing keys. A
+  key found only through the HTTP JWKS fallback, or an introspection response,
+  gets no route. A validator bound to the embedded server but given no
+  in-process key provider never assigns a route.
+- The validator has an audience configured, so the token's `aud` was checked.
+  Without an audience the validator does not check `aud`, and a token minted
+  for another resource on the same authorization server would otherwise be
+  given a route.
+
+`SessionlessGrant` is looser on one point: any verified JWT signature counts,
+but claims from an introspection response never do, because they are the
+introspection endpoint's word, not a signature this validator checked.
+
+A token validated without an audience gets no route, whether it is interactive
+or delegated. It is still served exactly as before, including loading its upstream
+tokens.
+
+A token that fits neither route gets no route. This
+includes a token that carries both a `tsid` and the delegated-access marker:
+the authorization server never issues one, and it is neither interactive nor
+delegated, so it is treated like any other unclassified token.
+
+Consumers that grant anything must compare for one exact value, such as
+`delegated`. They must never test for a non-empty route or against the empty
+value, because new values may be added and an empty route is also what every
+unbound or introspected token gets.
 
 ## Implementation
 
@@ -3137,6 +3332,7 @@ it refuses the assertion instead of issuing an unrestricted token.
 - `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the required actor parameters for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
 - `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`, `idJAGGrantOwner`, `grantUpstreamIdentity`, `validateIDJAGActor`, `idJAGMintWithActor`: the grant checks, the actor validator call and the Debug line for an ID-JAG
 - `pkg/authserver/server/id_jag_seam.go` — `OwnsResourceParameter`, `ReasonDPoPNotSupported`; the token endpoint calls them from `pkg/authserver/server/handlers/token.go`
+- `pkg/authserver/server/tokenexchange/redemption_details.go` — `refuseDetailsParameter`, `grantSignedDetails`, `setRedemptionDetails`, `echoRedemptionDetails`: the redemption parameter refusal, ID-JAG claim processing through `authorizationdetails.Pending.GrantSubset`, and the token claim and response member
 - `pkg/authserver/server/tokenexchange/id_jag_resolve.go` — `idJAGRedemption`, `resolveSubject`, `upstreamSubjectRef`: the redemption for an ID-JAG and, for a `resolve` issuer, the subject resolution
 - `pkg/authserver/server/tokenexchange/subject_mode.go` — `SubjectMode`, `delegatedAccessEnabled`, `checkSubjectModeGate`, the startup WARN for `resolve` issuers, the subject-mode validation
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`

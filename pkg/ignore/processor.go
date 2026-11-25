@@ -437,7 +437,21 @@ func (*Processor) getMatchingPaths(dir, pattern string) []string {
 		dirPattern := strings.TrimSuffix(pattern, "/")
 		targetPath := filepath.Join(dir, dirPattern)
 		if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
-			matchingPaths = append(matchingPaths, targetPath)
+			return []string{targetPath}
+		}
+		// Literal directory did not match; glob the trimmed pattern but keep
+		// only directories, since a trailing slash marks a directory-only
+		// pattern. This lets wildcard directory patterns such as "secrets-*/"
+		// or "*.egg-info/" match their directories.
+		matches, err := filepath.Glob(filepath.Join(dir, dirPattern))
+		if err != nil {
+			slog.Debug("Error matching pattern", "pattern", pattern, "error", err)
+			return matchingPaths
+		}
+		for _, match := range matches {
+			if info, err := os.Stat(match); err == nil && info.IsDir() {
+				matchingPaths = append(matchingPaths, match)
+			}
 		}
 		return matchingPaths
 	}

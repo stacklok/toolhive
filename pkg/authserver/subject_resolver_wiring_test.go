@@ -85,6 +85,41 @@ func TestNewSubjectResolver(t *testing.T) {
 	}
 }
 
+func TestNewSubjectResolver_OnlyFirstUpstreamIsMapped(t *testing.T) {
+	t.Parallel()
+
+	const sharedIssuer = "https://idp.example.com"
+	oidc := func(name, claim string) UpstreamConfig {
+		return UpstreamConfig{
+			Name: name, Type: UpstreamProviderTypeOIDC,
+			OIDCConfig: &upstream.OIDCConfig{Issuer: sharedIssuer, SubjectClaim: claim},
+		}
+	}
+	cfg := Config{
+		Upstreams: []UpstreamConfig{oidc("first", "sub"), oidc("second", "oid")},
+		TrustedIssuers: []tokenexchange.TrustedIssuer{{
+			IssuerURL:      "https://as1.example.com",
+			JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{SubjectMode: tokenexchange.SubjectModeResolve},
+		}},
+	}
+	store := storagemocks.NewMockUserStorage(gomock.NewController(t))
+	// Only the first upstream's name is ever looked up, even though the second
+	// upstream shares its issuer.
+	store.EXPECT().GetProviderIdentity(gomock.Any(), "first", "v").
+		Return(&storage.ProviderIdentity{UserID: "user-1"}, nil)
+	store.EXPECT().GetUser(gomock.Any(), "user-1").Return(&storage.User{ID: "user-1"}, nil)
+
+	resolver, err := newSubjectResolver(cfg, store)
+	require.NoError(t, err)
+
+	user, err := resolver.Resolve(context.Background(), subject.Ref{Issuer: sharedIssuer, Claim: "sub", Value: "v"})
+	require.NoError(t, err)
+	assert.Equal(t, "user-1", user)
+
+	_, err = resolver.Resolve(context.Background(), subject.Ref{Issuer: sharedIssuer, Claim: "oid", Value: "v"})
+	require.ErrorIs(t, err, subject.ErrNotConfigured, "the second upstream's claim must not resolve")
+}
+
 func TestBuildJWTBearerFactoriesForConfig(t *testing.T) {
 	t.Parallel()
 

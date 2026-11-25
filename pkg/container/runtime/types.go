@@ -199,13 +199,35 @@ type Monitor interface {
 	StopMonitoring()
 }
 
-// SocketConfig holds optional socket path overrides for container runtimes.
-// When set, these paths take precedence over auto-detection but not over
-// environment variables (TOOLHIVE_PODMAN_SOCKET, TOOLHIVE_DOCKER_SOCKET, etc.).
+// SocketConfig holds optional socket path overrides for container runtimes,
+// read from the container_runtime block of the ToolHive config file. When set,
+// these paths take precedence over auto-detection but not over environment
+// variables (TOOLHIVE_PODMAN_SOCKET, TOOLHIVE_DOCKER_SOCKET, etc.).
+//
+// It lives here rather than in pkg/config because pkg/config transitively
+// imports the Docker SDK client package that consumes it.
 type SocketConfig struct {
 	PodmanSocket string `yaml:"podman_socket,omitempty"`
 	DockerSocket string `yaml:"docker_socket,omitempty"`
 	ColimaSocket string `yaml:"colima_socket,omitempty"`
+}
+
+// SocketFor returns the configured socket path for the given runtime type, or
+// an empty string if none is configured. Each runtime only ever consults its
+// own field, so a stale override for one runtime cannot block discovery of
+// another.
+func (c SocketConfig) SocketFor(rt Type) string {
+	switch rt {
+	case TypePodman:
+		return c.PodmanSocket
+	case TypeDocker:
+		return c.DockerSocket
+	case TypeColima:
+		return c.ColimaSocket
+	case TypeKubernetes:
+		return ""
+	}
+	return ""
 }
 
 // Type represents the type of container runtime

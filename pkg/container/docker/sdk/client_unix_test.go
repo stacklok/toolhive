@@ -149,7 +149,7 @@ func TestFindPlatformContainerSocket_DockerEnvOverrideWins(t *testing.T) {
 	homeSocket := filepath.Join(home, DockerDesktopLinuxSocketPath)
 	require.NoError(t, os.WriteFile(homeSocket, nil, 0o600))
 
-	paths, rt, err := findPlatformContainerSocket(runtime.TypeDocker)
+	paths, rt, err := findPlatformContainerSocket(runtime.TypeDocker, runtime.SocketConfig{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{envSocket}, paths)
 	assert.Equal(t, runtime.TypeDocker, rt)
@@ -165,7 +165,7 @@ func TestFindPlatformContainerSocket_NotFound(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("TMPDIR", "")
 
-	_, _, err := findPlatformContainerSocket(runtime.TypeDocker)
+	_, _, err := findPlatformContainerSocket(runtime.TypeDocker, runtime.SocketConfig{})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrRuntimeNotFound), "expected ErrRuntimeNotFound, got %v", err)
 }
@@ -210,8 +210,199 @@ func TestFindPlatformContainerSocket_ColimaEnvReportsColima(t *testing.T) {
 	require.NoError(t, os.WriteFile(socket, nil, 0o600))
 	t.Setenv(ColimaSocketEnv, socket)
 
-	paths, rt, err := findPlatformContainerSocket(runtime.TypeColima)
+	paths, rt, err := findPlatformContainerSocket(runtime.TypeColima, runtime.SocketConfig{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{socket}, paths)
 	assert.Equal(t, runtime.TypeColima, rt)
 }
+
+// makeSocketFile creates a placeholder file to stand in for a socket. The
+// discovery helpers only stat candidate paths; connecting happens later.
+func makeSocketFile(t *testing.T, name string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(p, nil, 0o600))
+	return p
+}
+
+// isolateDiscovery clears socket env overrides and points the system and
+// XDG/TMPDIR auto-detection paths away from the host. Callers also set HOME to
+// an empty directory so only explicitly created sockets are found.
+func isolateDiscovery(t *testing.T) {
+	t.Helper()
+	clearSocketEnv(t)
+	redirectSystemDockerSocket(t)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("TMPDIR", "")
+}
+
+func TestFindPlatformContainerSocket_ConfigOverride(t *testing.T) {
+	// Not parallel: subtests set process environment via t.Setenv.
+	tests := []struct {
+		name    string
+		rt      runtime.Type
+		config  func(socket string) runtime.SocketConfig
+		missing bool
+	}{
+		{
+			name:   "podman",
+			rt:     runtime.TypePodman,
+			config: func(s string) runtime.SocketConfig { return runtime.SocketConfig{PodmanSocket: s} },
+		},
+		{
+			name:   "docker",
+			rt:     runtime.TypeDocker,
+			config: func(s string) runtime.SocketConfig { return runtime.SocketConfig{DockerSocket: s} },
+		},
+		{
+			name:   "colima reports colima",
+			rt:     runtime.TypeColima,
+			config: func(s string) runtime.SocketConfig { return runtime.SocketConfig{ColimaSocket: s} },
+		},
+		{
+			name:    "nonexistent path is an error for that runtime",
+			rt:      runtime.TypeDocker,
+			config:  func(s string) runtime.SocketConfig { return runtime.SocketConfig{DockerSocket: s} },
+			missing: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateDiscovery(t)
+			t.Setenv("HOME", t.TempDir())
+
+			socket := filepath.Join(t.TempDir(), "missing.sock")
+			if !tc.missing {
+				socket = makeSocketFile(t, "config.sock")
+			}
+
+			paths, rt, err := findPlatformContainerSocket(tc.rt, tc.config(socket))
+			if tc.missing {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, fs.ErrNotExist)
+				assert.Contains(t, err.Error(), "from config")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, []string{socket}, paths)
+			assert.Equal(t, tc.rt, rt)
+		})
+	}
+}
+
+// TestFindPlatformContainerSocket_ConfigOverrideOnlyAppliesToItsRuntime checks
+// that a stale override for one runtime does not stop discovery of another:
+// NewDockerClient probes each runtime in turn, and a broken podman_socket must
+// only rule out Podman.
+func TestFindPlatformContainerSocket_ConfigOverrideOnlyAppliesToItsRuntime(t *testing.T) {
+	isolateDiscovery(t)
+	t.Setenv("HOME", t.TempDir())
+
+	dockerSocket := makeSocketFile(t, "docker.sock")
+	systemDockerSocketPath = dockerSocket
+
+	overrides := runtime.SocketConfig{PodmanSocket: filepath.Join(t.TempDir(), "stale-podman.sock")}
+
+	_, _, err := findPlatformContainerSocket(runtime.TypePodman, overrides)
+	require.Error(t, err, "the stale Podman override should fail the Podman probe")
+
+	paths, rt, err := findPlatformContainerSocket(runtime.TypeDocker, overrides)
+	require.NoError(t, err)
+	assert.Equal(t, []string{dockerSocket}, paths, "Docker auto-detection should still run")
+	assert.Equal(t, runtime.TypeDocker, rt)
+}
+
+// TestFindPlatformContainerSocket_ConfigOverrideReplacesAutoDetection checks
+// that a configured socket is the only candidate for its runtime, matching
+// how the environment variable overrides behave.
+func TestFindPlatformContainerSocket_ConfigOverrideReplacesAutoDetection(t *testing.T) {
+	isolateDiscovery(t)
+	t.Setenv("HOME", t.TempDir())
+
+	systemDockerSocketPath = makeSocketFile(t, "system-docker.sock")
+	configSocket := makeSocketFile(t, "config-docker.sock")
+
+	paths, _, err := findPlatformContainerSocket(runtime.TypeDocker, runtime.SocketConfig{DockerSocket: configSocket})
+	require.NoError(t, err)
+	assert.Equal(t, []string{configSocket}, paths)
+}
+
+func TestFindPlatformContainerSocket_EnvOverridesConfig(t *testing.T) {
+	isolateDiscovery(t)
+	t.Setenv("HOME", t.TempDir())
+
+	envSocket := makeSocketFile(t, "env.sock")
+	t.Setenv(DockerSocketEnv, envSocket)
+
+	paths, rt, err := findPlatformContainerSocket(runtime.TypeDocker,
+		runtime.SocketConfig{DockerSocket: makeSocketFile(t, "config.sock")})
+	require.NoError(t, err)
+	assert.Equal(t, []string{envSocket}, paths)
+	assert.Equal(t, runtime.TypeDocker, rt)
+}
+
+func TestLoadSocketConfigFromPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content *string
+		want    runtime.SocketConfig
+	}{
+		{
+			name:    "missing file",
+			content: nil,
+		},
+		{
+			name:    "empty file",
+			content: ptr(""),
+		},
+		{
+			name:    "malformed YAML",
+			content: ptr("container_runtime: [unterminated"),
+		},
+		{
+			name:    "no container_runtime block",
+			content: ptr("registry_url: https://example.com\nclients:\n  registered_clients: []\n"),
+		},
+		{
+			name:    "container_runtime with the wrong shape",
+			content: ptr("container_runtime: /var/run/docker.sock\n"),
+		},
+		{
+			name:    "docker only",
+			content: ptr("container_runtime:\n  docker_socket: /run/user/1000/docker.sock\n"),
+			want:    runtime.SocketConfig{DockerSocket: "/run/user/1000/docker.sock"},
+		},
+		{
+			name: "all runtimes alongside unrelated keys",
+			content: ptr(`registry_url: https://example.com
+container_runtime:
+  docker_socket: /run/user/1000/docker.sock
+  podman_socket: /run/user/1000/podman/podman.sock
+  colima_socket: /home/user/.colima/custom/docker.sock
+`),
+			want: runtime.SocketConfig{
+				DockerSocket: "/run/user/1000/docker.sock",
+				PodmanSocket: "/run/user/1000/podman/podman.sock",
+				ColimaSocket: "/home/user/.colima/custom/docker.sock",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if tc.content != nil {
+				require.NoError(t, os.WriteFile(path, []byte(*tc.content), 0o600))
+			}
+
+			assert.Equal(t, tc.want, loadSocketConfigFromPath(path))
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }

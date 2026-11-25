@@ -541,8 +541,8 @@ Each auth server process remembers the refresh tokens its IdP rejected with a
 definitive `invalid_grant` for 5 minutes (at most 10,000 entries). While an
 entry exists, the refresher answers a refresh of that token without calling
 the IdP, except when the [refresh grant guard](#upstream-refresh-guard) is
-asking: it always calls the IdP, and still adds a fresh rejection to the
-memory. Without the memory, a row that holds an expired access token and a
+asking: it skips the memory and asks the IdP (see the guard section for a
+refresh already in flight), and still adds a fresh rejection to the memory. Without the memory, a row that holds an expired access token and a
 dead refresh token would cost one IdP call on every request that reads it.
 After the first rejection, the refresh failures behind the repeated WARN lines
 are answered from this memory and do not reach the IdP; a DEBUG line says so.

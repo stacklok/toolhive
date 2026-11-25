@@ -604,9 +604,10 @@ func TestUpstreamRefreshGuard_GrantsOnNonRotatingRefreshDuringRecheck(t *testing
 			refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).DoAndReturn(
 				func(ctx context.Context, sessionID string, expired *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
 					tokens, err := env.refresher.RefreshAndStore(ctx, sessionID, expired)
-					require.ErrorIs(t, err, upstream.ErrGrantRejected)
+					// assert, not require: this runs on the guard's goroutine.
+					assert.ErrorIs(t, err, upstream.ErrGrantRejected)
 					assert.True(t, skipsRememberedRejections(ctx), "the guard must mark its context")
-					require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", tt.winner()))
+					assert.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", tt.winner()))
 					return tokens, err
 				})
 

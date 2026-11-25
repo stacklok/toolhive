@@ -77,7 +77,8 @@ const guardRevokeTimeout = 5 * time.Second
 // no rows, without another IdP call or recheck, on every replica.
 //
 // The guard refreshes through the shared refresher but skips its memory of
-// rejected refresh tokens (see rejectedRefreshes), so it always asks the IdP.
+// rejected refresh tokens, so it asks the IdP unless it joins a refresh of
+// the same row already in flight (see skipRememberedRejectionsKey).
 // If the IdP used invalid_grant for an account or policy state an
 // administrator has since fixed, the client's next refresh grant picks the fix
 // up: the refresh succeeds and stores a new row, the remembered rejection

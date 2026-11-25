@@ -43,8 +43,9 @@ const (
 //
 // The marker is read inside the singleflight call for the row, so a caller
 // that joins a call already in flight for the same row gets that call's
-// result, which may have come from the memory. That window lasts as long as a
-// memory lookup, and is accepted: giving the marked caller its own
+// result, which may have come from the memory. That window lasts as long as
+// the leader's re-read of the row plus a memory lookup, and is accepted:
+// giving the marked caller its own
 // singleflight key would let two redemptions of the same refresh token run at
 // once.
 type skipRememberedRejectionsKey struct{}

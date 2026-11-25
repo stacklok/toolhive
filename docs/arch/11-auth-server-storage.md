@@ -699,7 +699,8 @@ the read fails) is uncertain too. A session without a `tsid` (a session-less
 grant) is not checked.
 
 The guard refreshes through the shared refresher but skips its
-[remembered rejections](#remembered-rejections), so it always asks the IdP.
+[remembered rejections](#remembered-rejections), so it asks the IdP (see
+below for a refresh already in flight).
 If the IdP used `invalid_grant` for an account or policy state that an
 administrator has since fixed, the client's next refresh grant picks the fix
 up. The refresh succeeds and stores a new row, the remembered rejection stops
@@ -707,7 +708,7 @@ matching it, and bearer requests work again. A fresh rejection that the guard
 receives is remembered like any other, so bearer requests after it do not
 call the IdP. A guard call that joins a refresh already in flight for the
 same row gets that call's result, which may come from the memory; that window
-lasts as long as a memory lookup. Embedder handlers in
+lasts as long as a re-read of the row plus a memory lookup. Embedder handlers in
 `Config.RefreshGrantHandlers` that call the shared refresher do not skip the
 memory.
 
@@ -716,9 +717,12 @@ guard re-reads the row and refuses and drops the session's rows only if the
 row is unchanged. If another replica refreshed successfully while the guard
 waited, without rotating the refresh token (for example once an administrator
 cleared an IdP-side block), the row keeps its refresh token but holds a new
-access token or expiry. Every write to a session's row is a successful IdP
-refresh, so the IdP accepted that refresh token, and the guard grants and
-keeps the row.
+access token or expiry. In ToolHive's own storage, every write to a
+session's row under the same refresh token is a successful IdP refresh, so the
+IdP accepted that refresh token, and the guard grants and keeps the row. A
+storage layer that shares rows across sessions can also show a fresh access
+token from a new sign-in; the guard grants then too, because the row holds a
+usable access token, without that meaning the IdP accepted the refresh token.
 
 **Upgrade impact.** The guard is on by default. After an upgrade, a session
 whose upstream credential is already dead is refused on its first refresh

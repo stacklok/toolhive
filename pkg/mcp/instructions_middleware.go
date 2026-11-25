@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
+	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
 
@@ -21,11 +23,12 @@ import (
 // instructions of initialize and server/discover results.
 const InstructionsMiddlewareType = "instructions"
 
-// maxInstructionsHeldBytes bounds what the instructions middleware holds of a
-// response it cannot read yet: a JSON body that is not complete, or an event
-// that has not ended. A response that would make it hold more is forwarded
-// unchanged from then on.
-const maxInstructionsHeldBytes = 16 << 20
+// defaultMaxInstructionsHeldBytes bounds what the instructions middleware
+// holds of a response it cannot read yet: a JSON body that is not complete,
+// or an event that has not ended. An initialize or server/discover result is
+// far smaller, and a response that would make the middleware hold more is
+// withheld.
+const defaultMaxInstructionsHeldBytes = 1 << 20
 
 // instructionsMember is the name of the result member that carries the
 // instructions, in both InitializeResult and DiscoverResult.
@@ -90,18 +93,36 @@ func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.M
 // stream passes through unread, and every POST passes through unread.
 //
 // A rewrite sets the instructions member of the result and keeps every other
-// member as the server sent it. Error responses, responses with a non-2xx
-// status, and every other message pass through unchanged. The middleware fails
-// open: a response to initialize or server/discover that it cannot read (one
-// with a content coding or a charset other than UTF-8, one that would make it
-// hold more than maxInstructionsHeldBytes, or one that does not decode as one
-// unambiguous JSON-RPC message, such as one with duplicate or case-variant
-// member names) is forwarded unchanged and logged as a warning.
+// member as the server sent it. Error responses and responses with a non-2xx
+// status pass through unchanged.
+//
+// The middleware fails closed, as the tool filter does, so that a server
+// cannot keep the configured text from clients. A response it reads but
+// cannot rewrite is withheld and answered with the JSON-RPC error
+// withheldResponse returns, and the cause is logged as a warning: a body with
+// a content coding, a charset other than UTF-8 or an ambiguous Content-Type, a
+// 2xx answer to a POST that is neither JSON nor an event stream or that never
+// carries the result, a body or an event larger than the bound on what the
+// middleware holds, an event stream whose lines clients split differently,
+// and a result that does not decode as one unambiguous JSON-RPC message. A
+// JSON body is answered under HTTP 500 in place of the server's status. On an
+// event stream the error takes the place of the event, or, when the stream
+// cannot be read, is written in place of the rest of it. An event on the
+// legacy SSE stream whose request cannot be named is dropped.
 func NewInstructionsMiddleware(params InstructionsMiddlewareParams) (types.MiddlewareFunction, error) {
-	cfg := params.Instructions
-	if err := cfg.Validate(); err != nil {
+	return newInstructionsMiddleware(params, defaultMaxInstructionsHeldBytes)
+}
+
+// newInstructionsMiddleware is NewInstructionsMiddleware with the bound on
+// what the middleware holds of a response.
+func newInstructionsMiddleware(params InstructionsMiddlewareParams, maxHeldBytes int) (types.MiddlewareFunction, error) {
+	if err := params.Instructions.Validate(); err != nil {
 		return nil, err
 	}
+	if maxHeldBytes < 1 {
+		return nil, fmt.Errorf("the bound on a held response must be positive")
+	}
+	config := &instructionsMiddlewareConfig{instructions: params.Instructions, maxHeldBytes: maxHeldBytes}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			target, ok := instructionsTargetOf(r, params.LegacySSE)
@@ -109,7 +130,7 @@ func NewInstructionsMiddleware(params InstructionsMiddlewareParams) (types.Middl
 				next.ServeHTTP(w, r)
 				return
 			}
-			rw := &instructionsWriter{ResponseWriter: w, config: &cfg, target: target}
+			rw := &instructionsWriter{ResponseWriter: w, config: config, target: target}
 			// The middleware reads the bytes of the response body, so it
 			// forwards the request without the client's Accept-Encoding, as
 			// the tool filter does (see NewListToolsMappingMiddleware).
@@ -121,6 +142,14 @@ func NewInstructionsMiddleware(params InstructionsMiddlewareParams) (types.Middl
 	}, nil
 }
 
+// instructionsMiddlewareConfig is what an instructions middleware applies.
+type instructionsMiddlewareConfig struct {
+	instructions instructions.Config
+	// maxHeldBytes bounds what the middleware holds of a response it cannot
+	// read yet (see defaultMaxInstructionsHeldBytes).
+	maxHeldBytes int
+}
+
 // instructionsTarget names the response of a request whose instructions the
 // middleware sets.
 type instructionsTarget struct {
@@ -129,6 +158,12 @@ type instructionsTarget struct {
 	id jsonrpc2.ID
 	// method is the method of that request, or empty for a GET.
 	method string
+}
+
+// stream reports whether the target is the legacy SSE event stream a GET
+// opened, rather than the response to a POST.
+func (t instructionsTarget) stream() bool {
+	return t.method == ""
 }
 
 // instructionsTargetOf reports which response of r the middleware rewrites,
@@ -164,10 +199,28 @@ type instructionsBodyMode int
 const (
 	// instructionsPassThrough forwards the body unread.
 	instructionsPassThrough instructionsBodyMode = iota
-	// instructionsJSON holds a JSON body until it is one complete value.
+	// instructionsJSON holds a JSON body until it is one complete value. The
+	// status and header are held with it.
 	instructionsJSON
 	// instructionsEventStream reads an event stream event by event.
 	instructionsEventStream
+	// instructionsUnreadable withholds a body the middleware has to read but
+	// cannot. The status and header are held until it is known whether there
+	// is a body.
+	instructionsUnreadable
+)
+
+// messageAction is what the instructions writer does with a message it reads.
+type messageAction int
+
+const (
+	// messagePass forwards the message as it is.
+	messagePass messageAction = iota
+	// messageRewrite forwards the message with the instructions of its result
+	// set.
+	messageRewrite
+	// messageWithhold withholds the message.
+	messageWithhold
 )
 
 // instructionsWriter wraps the ResponseWriter of a request whose response may
@@ -175,23 +228,31 @@ const (
 // instructions of that result as it passes through.
 type instructionsWriter struct {
 	http.ResponseWriter
-	config *instructions.Config
+	config *instructionsMiddlewareConfig
 	target instructionsTarget
 
 	// wroteHeader is set once the wrapped handler has written its final
 	// status, explicitly or with its first Write or Flush.
 	wroteHeader bool
-	// mode is how the body is read, decided by that status and the header.
+	// status is that final status.
+	status int
+	// headerPending is set while the status and header are held (see
+	// instructionsJSON and instructionsUnreadable).
+	headerPending bool
+	// header is the header the wrapped handler wrote with its status, which
+	// is forwarded when the status is (see commitHeader).
+	header http.Header
+	// mode is how the body is read, decided by the status and the header.
 	mode instructionsBodyMode
-	// readable is set when the status is 2xx and the header names a JSON body
-	// or an event stream, so a response to initialize or server/discover is
-	// expected to carry its result.
-	readable bool
-	// done is set once the response the target names has been found, so the
-	// rest of the body passes through unread.
+	// reason names why an unreadable body cannot be read.
+	reason string
+	// done is set once the response the target names has been found, or
+	// withheld, so the rest of the body passes through unread.
 	done bool
-	// warned is set once the writer has logged why it forwards the response
-	// unchanged, so that it logs the failure once.
+	// discard is set once the rest of the response is withheld.
+	discard bool
+	// warned is set once the writer has logged why it withholds a response,
+	// so that it logs the failure once.
 	warned bool
 	// buffer holds the start of the body the writer cannot read yet: a JSON
 	// body that is not complete, or an event that has not ended.
@@ -204,71 +265,79 @@ type instructionsWriter struct {
 }
 
 // WriteHeader decides how the body is read from the final status and the
-// header written with it, and forwards both. An informational status is
-// forwarded as it arrives and decides nothing.
+// header written with it. An informational status is forwarded as it arrives
+// and decides nothing. The final status is forwarded at once unless the body
+// it comes with has to be read whole first (see instructionsBodyMode).
 func (rw *instructionsWriter) WriteHeader(statusCode int) {
-	if informationalStatus(statusCode) || rw.wroteHeader {
+	if informationalStatus(statusCode) {
 		rw.ResponseWriter.WriteHeader(statusCode)
 		return
 	}
+	if rw.wroteHeader {
+		// A second final status is forwarded, for net/http to report, only
+		// once the first one has been.
+		if !rw.headerPending {
+			rw.ResponseWriter.WriteHeader(statusCode)
+		}
+		return
+	}
 	rw.wroteHeader = true
-	rw.mode = rw.bodyMode(statusCode)
+	rw.status = statusCode
+	rw.mode, rw.reason = rw.bodyMode(statusCode)
 	if rw.mode != instructionsPassThrough {
 		// A rewrite changes the length of the body.
 		rw.Header().Del("Content-Length")
+	}
+	if rw.mode == instructionsJSON || rw.mode == instructionsUnreadable {
+		rw.headerPending = true
+		rw.header = rw.Header().Clone()
+		return
 	}
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
 
 // Write reads the body as it arrives. What the writer can read already, a
 // complete JSON body or the complete events of a stream, is written at once;
-// the rest is held, up to maxInstructionsHeldBytes.
+// the rest is held, up to the bound on what the middleware holds.
 func (rw *instructionsWriter) Write(data []byte) (int, error) {
 	if !rw.wroteHeader {
 		rw.WriteHeader(http.StatusOK)
 	}
-	if rw.mode == instructionsPassThrough || rw.done {
+	switch {
+	case rw.discard:
+		return len(data), nil
+	case rw.mode == instructionsPassThrough:
 		return rw.ResponseWriter.Write(data)
+	case len(data) == 0:
+		return 0, nil
+	case rw.mode == instructionsUnreadable:
+		rw.warn("the response body cannot be read", "reason", rw.reason)
+		return len(data), rw.withholdRest()
+	case len(rw.buffer)+len(data) > rw.config.maxHeldBytes:
+		rw.warn("the response would make the middleware hold more than it may",
+			"max_held_bytes", rw.config.maxHeldBytes)
+		return len(data), rw.withholdRest()
 	}
 	rw.buffer = append(rw.buffer, data...)
-	switch rw.mode {
-	case instructionsJSON:
-		if rw.jsonScan.isValid(rw.buffer) {
-			rw.writeHeld(rw.rewriteJSON(rw.buffer))
+	if rw.mode == instructionsJSON {
+		if !rw.jsonScan.isValid(rw.buffer) {
+			return len(data), nil
 		}
-	case instructionsEventStream:
-		if end := completeSSEEvents(rw.buffer, rw.scanned); end > 0 {
-			events := rw.rewriteEvents(rw.buffer[:end])
-			rest := rw.buffer[end:]
-			if rw.done {
-				// The rest passes through unread, after what is held.
-				rw.writeHeld(append(events, rest...))
-				return len(data), nil
-			}
-			rw.buffer = rest
-			if _, err := rw.ResponseWriter.Write(events); err != nil {
-				return len(data), err
-			}
-		}
-		rw.scanned = len(rw.buffer)
-	case instructionsPassThrough:
+		return len(data), rw.answerJSON()
 	}
-	if len(rw.buffer) > maxInstructionsHeldBytes {
-		rw.warn("the response would make the middleware hold more than it may", "max_held_bytes", maxInstructionsHeldBytes)
-		rw.writeHeld(rw.buffer)
-	}
-	return len(data), nil
+	return len(data), rw.readEvents(false)
 }
 
 // Flush forwards a flush to the wrapped ResponseWriter. What is held stays
-// held: it is not complete, so no client could read it yet. A flush before
-// the wrapped handler has written a status writes 200 first, as net/http does.
+// held: it is not complete, so no client could read it yet, and a held status
+// stays held. A flush before the wrapped handler has written a status writes
+// 200 first, as net/http does.
 func (rw *instructionsWriter) Flush() {
 	if !rw.wroteHeader {
 		rw.WriteHeader(http.StatusOK)
 	}
-	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
+	if !rw.headerPending {
+		rw.flush()
 	}
 }
 
@@ -279,153 +348,354 @@ func (rw *instructionsWriter) Unwrap() http.ResponseWriter {
 
 // finish writes out what is held once the wrapped handler has returned. The
 // last event of a stream is read as it stands, since no more of it will
-// arrive.
+// arrive. A 2xx answer to a POST that has not carried the result by then is
+// withheld.
 func (rw *instructionsWriter) finish() {
-	if len(rw.buffer) > 0 {
-		switch rw.mode {
-		case instructionsJSON:
-			rw.writeHeld(rw.rewriteJSON(rw.buffer))
-		case instructionsEventStream:
-			rw.writeHeld(rw.rewriteEvents(rw.buffer))
-		case instructionsPassThrough:
-			rw.writeHeld(rw.buffer)
+	if !rw.wroteHeader || rw.discard {
+		return
+	}
+	var err error
+	switch rw.mode {
+	case instructionsJSON:
+		err = rw.answerJSON()
+	case instructionsEventStream:
+		if len(rw.buffer) > 0 {
+			err = rw.readEvents(true)
+		}
+	case instructionsUnreadable, instructionsPassThrough:
+	}
+	if err == nil && !rw.done && !rw.discard && rw.mode != instructionsPassThrough {
+		if rw.target.stream() {
+			// A stream that carried no initialize result, or the empty
+			// body of a GET the middleware could not have read.
+			err = rw.forwardHeld(nil)
+		} else {
+			rw.warn("the response carries no result whose instructions the middleware could set")
+			err = rw.withholdRest()
 		}
 	}
-	if rw.readable && !rw.done && rw.target.method != "" {
-		rw.warn("the response carries no result whose instructions the middleware could set")
+	if err != nil {
+		slog.Debug("failed to write a response", "error", err)
 	}
 }
 
 // bodyMode returns how a response with statusCode and the header the wrapped
-// handler wrote is read. Only a 2xx JSON body that answers a POST, and a 2xx
-// event stream, are read; a body the middleware cannot read in the clear is
-// passed through.
-func (rw *instructionsWriter) bodyMode(statusCode int) instructionsBodyMode {
+// handler wrote is read, and for a body that cannot be read, why. A 2xx answer
+// to a POST is read as a JSON body or an event stream, and is withheld if it
+// is neither; a 2xx event stream that answers a GET is read, and any other
+// body passes through.
+func (rw *instructionsWriter) bodyMode(statusCode int) (instructionsBodyMode, string) {
 	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
-		return instructionsPassThrough
+		return instructionsPassThrough, ""
 	}
-	mediaType, ambiguous := responseMediaType(rw.Header())
-	mode := func() instructionsBodyMode {
-		switch {
-		case ambiguous:
-			return instructionsPassThrough
-		case mediaType == "text/event-stream":
-			return instructionsEventStream
-		case mediaType == "application/json" && rw.target.method != "":
-			return instructionsJSON
-		}
-		return instructionsPassThrough
-	}()
-	if mode == instructionsPassThrough {
-		if ambiguous {
-			rw.warn("the response has an ambiguous Content-Type")
-		}
-		return mode
+	header := rw.Header()
+	mediaType, ambiguous := responseMediaType(header)
+	switch {
+	case ambiguous:
+		return instructionsUnreadable, "ambiguous Content-Type"
+	case mediaType == "text/event-stream":
+	case rw.target.stream():
+		// A GET that opens no event stream carries no result.
+		return instructionsPassThrough, ""
+	case mediaType == "application/json":
+	default:
+		return instructionsUnreadable, fmt.Sprintf("Content-Type %q is neither JSON nor an event stream", mediaType)
 	}
-	rw.readable = true
-	if reason := unreadableBody(rw.Header()); reason != "" {
-		rw.warn("the response body cannot be read", "reason", reason)
-		rw.readable = false
-		return instructionsPassThrough
+	if reason := unreadableBody(header); reason != "" {
+		return instructionsUnreadable, reason
 	}
-	return mode
+	if mediaType == "text/event-stream" {
+		return instructionsEventStream, ""
+	}
+	return instructionsJSON, ""
 }
 
-// writeHeld writes data to the wrapped ResponseWriter in place of what is
-// held, which it drops, and passes the rest of the body through.
-func (rw *instructionsWriter) writeHeld(data []byte) {
+// answerJSON answers with the JSON body the writer holds: with the
+// instructions of its result set when it is the response the target names,
+// as it is when that response is an error, and withheld otherwise.
+func (rw *instructionsWriter) answerJSON() error {
+	body := rw.buffer
 	rw.buffer = nil
-	rw.scanned = 0
-	rw.mode = instructionsPassThrough
-	if _, err := rw.ResponseWriter.Write(data); err != nil {
-		slog.Debug("failed to write a response body", "error", err)
+	rewritten, action, _ := rw.readMessage(body)
+	switch {
+	case action == messageRewrite:
+		trimmed := bytes.TrimRight(body, " \t\r\n")
+		return rw.forwardHeld(append(rewritten, body[len(trimmed):]...))
+	case action == messagePass && rw.done:
+		return rw.forwardHeld(body)
 	}
+	rw.warn("the JSON body is not the result the request asked for, or cannot be rewritten")
+	return rw.withholdRest()
 }
 
-// rewriteJSON returns body, a complete JSON body, with the instructions of the
-// result it carries set, or body as it is when it carries no such result.
-func (rw *instructionsWriter) rewriteJSON(body []byte) []byte {
-	rewritten, ok := rw.rewriteMessage(body)
-	if !ok {
-		return body
+// readEvents reads the complete events of the stream the writer holds, all
+// of what it holds when terminal is set, writes them with the instructions
+// of the result an event carries set, and keeps the rest.
+//
+// A line that ends in a bare CR, or in one of lineSeparators, is split into
+// lines, and so into events, differently by different clients. The events
+// that end before such a line are read as usual, and unless they carry the
+// result the target names, the rest of the stream is withheld.
+func (rw *instructionsWriter) readEvents(terminal bool) error {
+	// A CR at the end of what is held may start a CRLF that has not arrived.
+	held := rw.buffer
+	if !terminal {
+		held = bytes.TrimSuffix(held, sseCR)
 	}
-	trimmed := bytes.TrimRight(body, " \t\r\n")
-	return append(rewritten, body[len(trimmed):]...)
+	split := lineSplitIndex(held)
+	end := len(rw.buffer)
+	switch {
+	case split >= 0:
+		end = completeSSEEvents(rw.buffer[:split], 0)
+	case !terminal:
+		end = completeSSEEvents(rw.buffer, rw.scanned)
+	}
+	if end > 0 {
+		if err := rw.writeEvents(end); err != nil {
+			return err
+		}
+	}
+	if split >= 0 && !rw.done {
+		rw.warn("the event stream has a line ending that clients split differently")
+		return rw.withholdRest()
+	}
+	rw.scanned = len(rw.buffer)
+	return nil
 }
 
-// rewriteEvents returns stream, which holds complete events, with the
-// instructions of the result an event carries set. Once the response the
-// target names has been found, the events after it are left as they are.
+// writeEvents writes the first end bytes the writer holds, which end with a
+// complete event, with the instructions of the result an event carries set,
+// and keeps the rest. Once the response the target names has been found, the
+// rest passes through unread.
+func (rw *instructionsWriter) writeEvents(end int) error {
+	events := rw.rewriteEvents(rw.buffer[:end])
+	rw.buffer = rw.buffer[end:]
+	if rw.done {
+		events = append(events, rw.buffer...)
+		rw.buffer = nil
+		rw.mode = instructionsPassThrough
+	}
+	_, err := rw.ResponseWriter.Write(events)
+	return err
+}
+
+// rewriteEvents returns stream, which holds complete events, with each event
+// replaced by what readEvent returns for it. Once the response the target
+// names has been found, the events after it are left as they are.
 func (rw *instructionsWriter) rewriteEvents(stream []byte) []byte {
 	var out bytes.Buffer
 	var event []sseLine
-	writeEvent := func(end ...sseLine) {
-		if !rw.done && len(event) > 0 {
-			if data := bytes.Join(sseEventData(event), sseLF); len(data) > 0 {
-				if rewritten, ok := rw.rewriteMessage(data); ok {
-					event = replaceSSEData(event, rewritten)
-				}
-			}
-		}
-		// writeSSELines only fails when its writer does; a bytes.Buffer does not.
-		_ = writeSSELines(&out, event...)
-		_ = writeSSELines(&out, end...)
-		event = nil
-	}
 	for _, line := range splitSSELines(stream) {
 		if isBlankSSELine(line.text) {
-			writeEvent(line)
+			out.Write(rw.readEvent(event, line))
+			event = nil
 			continue
 		}
 		event = append(event, line)
 	}
-	writeEvent()
+	out.Write(rw.readEvent(event))
 	return out.Bytes()
 }
 
-// rewriteMessage returns data, one JSON-RPC message, with the instructions of
-// its result set, and reports whether it did so. It sets done once it finds
-// the response the target names, even when that response is an error.
-func (rw *instructionsWriter) rewriteMessage(data []byte) ([]byte, bool) {
+// readEvent returns what takes the place of event and end, the blank line
+// that ends it if it has one: the event as it is, the event with the
+// instructions of its result set, the error event that takes the place of a
+// result the writer withholds, or nothing when that result answers no
+// request the writer can name.
+func (rw *instructionsWriter) readEvent(event []sseLine, end ...sseLine) []byte {
+	lines := slices.Concat(event, end)
+	if rw.done || len(event) == 0 {
+		return encodeSSELines(lines)
+	}
+	data := bytes.Join(sseEventData(event), sseLF)
+	if len(bytes.TrimSpace(data)) == 0 {
+		return encodeSSELines(lines)
+	}
+	rewritten, action, id := rw.readMessage(data)
+	switch action {
+	case messageRewrite:
+		return encodeSSELines(slices.Concat(replaceSSEData(event, rewritten), end))
+	case messageWithhold:
+		if !id.IsValid() {
+			return nil
+		}
+		return sseErrorEvent(withheldResponse(id))
+	case messagePass:
+	}
+	return encodeSSELines(lines)
+}
+
+// readMessage decides on data, one message: it returns data with the
+// instructions of its result set when it is the response the target names,
+// or says to pass or withhold it, and the id of the request it answers. It
+// sets done once it finds that response, even when it is an error.
+func (rw *instructionsWriter) readMessage(data []byte) ([]byte, messageAction, jsonrpc2.ID) {
 	message, err := decodeMessage(data)
 	if err != nil {
-		return nil, false
+		return rw.readUndecodable(data)
 	}
 	response, ok := message.(*jsonrpc2.Response)
 	if !ok {
-		return nil, false
+		return nil, messagePass, jsonrpc2.ID{}
 	}
-	if rw.target.method == "" {
-		// A GET: the response on the stream that answers initialize.
+	if rw.target.stream() {
+		// The response on the legacy SSE stream that answers initialize.
 		if response.Error != nil || !initializeResultShape(response.Result) {
-			return nil, false
+			return nil, messagePass, jsonrpc2.ID{}
 		}
 	} else if response.ID != rw.target.id {
-		return nil, false
+		return nil, messagePass, jsonrpc2.ID{}
 	}
 	rw.done = true
 	if response.Error != nil {
-		return nil, false
+		return nil, messagePass, response.ID
 	}
-
-	rewritten, err := rewriteInstructions(rw.config, data, response.Result)
+	rewritten, err := rewriteInstructions(&rw.config.instructions, data, response.Result)
 	if err != nil {
-		rw.warn("the result could not be rewritten", "error", err)
-		return nil, false
+		rw.warn("the result cannot be rewritten", "error", err)
+		return nil, messageWithhold, response.ID
 	}
-	return rewritten, true
+	return rewritten, messageRewrite, response.ID
 }
 
-// warn logs why the middleware forwards a response unchanged. A GET stream
-// need not carry an initialize result, so only a response to initialize or
-// server/discover is logged.
+// readUndecodable decides on data that does not decode as one unambiguous
+// message, such as data with duplicate or case-variant member names, which
+// clients read differently. Data that does not start like a JSON value is
+// read by no client as a message and passes. Otherwise, in the response to a
+// POST, data passes only when it names the id of another request (see
+// heldDataID); any other data may be the result the request asked for and is
+// withheld in its place. On the legacy SSE stream, data that a client could
+// read as an InitializeResult, or that is not valid JSON, which lenient
+// clients may still parse, is withheld, with the id it names if it names one.
+func (rw *instructionsWriter) readUndecodable(data []byte) ([]byte, messageAction, jsonrpc2.ID) {
+	if !startsLikeJSON(data) {
+		return nil, messagePass, jsonrpc2.ID{}
+	}
+	id := heldDataID(data)
+	if rw.target.stream() {
+		identified := mayCarryInitializeResult(data)
+		if !identified && json.Valid(data) {
+			return nil, messagePass, jsonrpc2.ID{}
+		}
+		rw.done = identified
+	} else {
+		if id.IsValid() && id != rw.target.id {
+			return nil, messagePass, jsonrpc2.ID{}
+		}
+		id = rw.target.id
+		rw.done = true
+	}
+	rw.warn("a message does not decode as one unambiguous JSON-RPC message")
+	return nil, messageWithhold, id
+}
+
+// withholdRest withholds the rest of the response, and returns the error
+// writing the JSON-RPC error in its place met. While the status is held, the
+// error is the whole answer, under HTTP 500 and without the server's status,
+// Content-Encoding or Content-Length. On an event stream it is an event that
+// follows the ones already written, when the stream answers a POST; a legacy
+// SSE stream names no request to answer, so nothing more is written to it.
+func (rw *instructionsWriter) withholdRest() error {
+	rw.discard = true
+	rw.done = true
+	rw.buffer = nil
+	response := withheldResponse(rw.target.id)
+	if rw.headerPending {
+		rw.header.Del("Content-Encoding")
+		rw.header.Del("Content-Length")
+		var err error
+		rw.commitHeader(func() {
+			err = WriteJSONRPCError(rw.ResponseWriter, http.StatusInternalServerError, response)
+		})
+		return err
+	}
+	if rw.mode != instructionsEventStream || rw.target.stream() {
+		return nil
+	}
+	_, err := rw.ResponseWriter.Write(sseErrorEvent(response))
+	rw.flush()
+	return err
+}
+
+// forwardHeld forwards the held status and header, when they are held, and
+// then body, and passes the rest of the response through.
+func (rw *instructionsWriter) forwardHeld(body []byte) error {
+	rw.mode = instructionsPassThrough
+	if rw.headerPending {
+		rw.commitHeader(func() { rw.ResponseWriter.WriteHeader(rw.status) })
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	_, err := rw.ResponseWriter.Write(body)
+	return err
+}
+
+// commitHeader calls write, which writes the held status, while the header
+// map holds the header the wrapped handler wrote with that status, as the
+// tool filter does (see toolFilterWriter.forwardHeader): what the handler
+// changed in the map afterwards takes effect only as trailers.
+func (rw *instructionsWriter) commitHeader(write func()) {
+	rw.headerPending = false
+	header := rw.Header()
+	later := header.Clone()
+	clear(header)
+	maps.Copy(header, rw.header)
+	write()
+	clear(header)
+	maps.Copy(header, later)
+}
+
+// flush forwards a transport flush to the wrapped ResponseWriter.
+func (rw *instructionsWriter) flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// warn logs why the middleware withholds a response, once per response.
 func (rw *instructionsWriter) warn(msg string, args ...any) {
-	if rw.target.method == "" || rw.warned {
+	if rw.warned {
 		return
 	}
 	rw.warned = true
-	args = append([]any{"method", rw.target.method}, args...)
-	slog.Warn("forwarding a response without setting its instructions: "+msg, args...)
+	target := rw.target.method
+	if rw.target.stream() {
+		target = "legacy SSE stream"
+	}
+	args = append([]any{"target", target}, args...)
+	slog.Warn("withholding a response whose instructions cannot be set: "+msg, args...)
+}
+
+// encodeSSELines returns lines as the bytes of an event stream.
+func encodeSSELines(lines []sseLine) []byte {
+	var out bytes.Buffer
+	// writeSSELines only fails when its writer does; a bytes.Buffer does not.
+	_ = writeSSELines(&out, lines...)
+	return out.Bytes()
+}
+
+// lineSplitIndex returns the index of the first bare CR (see hasBareCR) or
+// line separator (see lineSeparators) in stream, or -1 when it has none.
+func lineSplitIndex(stream []byte) int {
+	for i := range stream {
+		if stream[i] == '\r' && (i+1 == len(stream) || stream[i+1] != '\n') {
+			return i
+		}
+		for _, separator := range lineSeparators {
+			if bytes.HasPrefix(stream[i:], separator) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// startsLikeJSON reports whether data, after any byte order mark and white
+// space, starts like a JSON object or array.
+func startsLikeJSON(data []byte) bool {
+	data = bytes.TrimLeft(bytes.TrimPrefix(data, UTF8BOM), " \t\r\n")
+	return len(data) > 0 && (data[0] == '{' || data[0] == '[')
 }
 
 // initializeResultShape reports whether result is an object with the members
@@ -445,36 +715,78 @@ func initializeResultShape(result json.RawMessage) bool {
 	return found == 3
 }
 
+// mayCarryInitializeResult reports whether some client could read data, one
+// JSON value that may spell a member twice or in another case, as an
+// InitializeResult: a message, or a message in a batch, with a member a
+// decoder could bind to result whose value has a member it could bind to
+// protocolVersion or serverInfo.
+func mayCarryInitializeResult(data []byte) bool {
+	data = bytes.TrimLeft(bytes.TrimPrefix(data, UTF8BOM), " \t\r\n")
+	if len(data) > 0 && data[0] == '[' {
+		var batch []json.RawMessage
+		if json.Unmarshal(data, &batch) != nil {
+			return false
+		}
+		return slices.ContainsFunc(batch, func(message json.RawMessage) bool {
+			return messageMayCarryInitializeResult(message)
+		})
+	}
+	return messageMayCarryInitializeResult(data)
+}
+
+func messageMayCarryInitializeResult(message []byte) bool {
+	members, err := DecodeJSONObjectMembers(message)
+	if err != nil {
+		return false
+	}
+	for _, member := range members {
+		if !strings.EqualFold(member.Name, "result") {
+			continue
+		}
+		resultMembers, err := DecodeJSONObjectMembers(member.Value)
+		if err != nil {
+			continue
+		}
+		for _, resultMember := range resultMembers {
+			if strings.EqualFold(resultMember.Name, "protocolVersion") ||
+				strings.EqualFold(resultMember.Name, "serverInfo") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // rewriteInstructions returns message, a JSON-RPC response whose result is
 // result, with the instructions of the result set as cfg says. Every other
 // member of the message and of the result keeps the bytes the server sent.
-// message has passed decodeMessage, so no object in it has two members a
-// decoder could read as one.
 //
-// The server's instructions are the value of the result's instructions
-// member. A value that is not a string carries none and is replaced.
+// The server's instructions are the value of the result's one instructions
+// member; a value that is not a string carries none and is replaced. A result
+// that spells instructions in another case, or twice, is read differently by
+// clients and cannot be rewritten (see UniqueCanonicalMember).
 func rewriteInstructions(cfg *instructions.Config, message []byte, result json.RawMessage) ([]byte, error) {
 	resultMembers, err := DecodeJSONObjectMembers(result)
 	if err != nil {
 		return nil, fmt.Errorf("result: %w", err)
 	}
-	at := slices.IndexFunc(resultMembers, func(member JSONObjectMember) bool {
-		return member.Name == instructionsMember
-	})
+	current, found, err := UniqueCanonicalMember(resultMembers, instructionsMember)
+	if err != nil {
+		return nil, err
+	}
 	var server string
-	if at >= 0 && json.Unmarshal(resultMembers[at].Value, &server) != nil {
+	if found && json.Unmarshal(current, &server) != nil {
 		server = ""
 	}
 	value, err := json.Marshal(cfg.Apply(server))
 	if err != nil {
 		return nil, err
 	}
-	if at >= 0 {
-		resultMembers[at].Value = value
-	} else {
+	if !found {
 		resultMembers = append(resultMembers, JSONObjectMember{Name: instructionsMember, Value: value})
 	}
-	encodedResult, err := EncodeJSONObjectMembers(nil, resultMembers, nil)
+	encodedResult, err := EncodeJSONObjectMembers(nil, resultMembers,
+		map[string]json.RawMessage{instructionsMember: value})
 	if err != nil {
 		return nil, err
 	}

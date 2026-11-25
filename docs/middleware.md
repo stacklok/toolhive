@@ -902,19 +902,31 @@ The middleware rewrites the result of a successful `initialize` request and of a
 - `append` (the default): the server's instructions, a blank line, then the value.
 - `prepend`: the value, a blank line, then the server's instructions.
 
-When the server returns no instructions, every mode returns the value alone.
+When the server returns no instructions, every mode returns the value alone. The value is used without leading and trailing white space, and is at most 65536 characters.
+
+The instructions are guidance for the model, not a sanitiser. `replace` removes the server's own instructions, but the server still reaches the model through its tool descriptions and tool results.
 
 On Streamable HTTP, the middleware reads only the response to a POSTed `initialize` or `server/discover` request, as a JSON body or an event stream, and only the result whose id is the request's. The response to any other request passes through unread, with its `Content-Length`, and so does every GET stream, which never carries either result. On the legacy SSE transport (transport `sse`, or `stdio` with proxy mode `sse`) the result arrives on the event stream a GET opened, not in the response to the POST. There the middleware reads GET streams instead and leaves POST responses alone. On such a stream it rewrites the first result that has `protocolVersion`, `capabilities` and `serverInfo`, and passes the rest of the stream through unread. The transport is fixed when the middleware is configured, and vMCP, which serves Streamable HTTP only, never reads a GET stream.
 
 A rewrite sets the result's `instructions` member and keeps every other member as the server sent it. A body the middleware reads loses its `Content-Length`, since the rewrite changes its length. Error responses and responses with a non-2xx status pass through unchanged.
 
-The middleware fails open. A response to `initialize` or `server/discover` that it cannot read passes through unchanged and is logged as a warning: a body with a content coding or a charset other than UTF-8, an ambiguous `Content-Type`, a body or event larger than 16 MiB, or a message that does not decode as one unambiguous JSON-RPC message, such as one with duplicate or case-variant member names. Like the tool filter, it forwards a request whose response it reads without the client's `Accept-Encoding`, so the backend answers in the clear.
+The middleware fails closed, as the tool filter does, so that a server cannot keep the configured text from clients. It withholds a response it reads but cannot rewrite, logs the cause as a warning once per response, and answers with a JSON-RPC error with code `-32603` and the message `internal error`. That covers:
+
+- a body with a content coding or a charset other than UTF-8, or an ambiguous `Content-Type`;
+- a 2xx answer to a POSTed `initialize` or `server/discover` that is neither JSON nor an event stream, or that ends without the result, empty bodies included;
+- a JSON body, or an event that has not ended, larger than 1 MiB;
+- an event stream with a line that ends in a bare CR, or in VT, FF, FS, GS, RS, NEL, U+2028 or U+2029, which clients split into lines differently;
+- a result that does not decode as one unambiguous JSON-RPC message, such as one that spells a member twice or in another case, or that is not an object.
+
+A JSON body is answered with the error alone, under HTTP 500, without the server's status, `Content-Encoding` or `Content-Length`. For that reason the client receives nothing of a JSON reply, its status included, until the server has sent all of it. An event stream's status and headers are forwarded at once. On the stream that answers a POST, the error event takes the place of the event that carried the result. When the stream cannot be read further, the error event follows the events already written, and the rest of the stream is dropped. The legacy SSE stream answers no single request, so there an event that may carry the result is replaced by an error event when it names an id, and dropped otherwise. When that stream cannot be read further, nothing more of it reaches the client.
+
+Like the tool filter, the middleware forwards a request whose response it reads without the client's `Accept-Encoding`, so the backend answers in the clear. A well-behaved server never meets the cases above.
 
 **Configuration**:
 - `thv run --instructions-file <path> [--instructions-mode replace|append|prepend]`
 - RunConfig: `instructions` with `mode` and `value`
 - Operator: `spec.instructions` on MCPServer, MCPRemoteProxy and VirtualMCPServer
-- vMCP: `instructions` in the vMCP configuration. On a VirtualMCPServer, `spec.instructions` takes precedence over `spec.config.instructions`.
+- vMCP: `instructions` in the vMCP configuration. A VirtualMCPServer sets `spec.instructions` or `spec.config.instructions`, not both.
 
 **Placement**: Inside the MCP Parser, whose parse names the `initialize` and `server/discover` requests, so the middleware outside it, such as audit and the tool filter, sees the rewritten result. Behind the stdio streamable HTTP proxy, a later handshake is answered from the cached InitializeResult. The cache holds the backend's own result and the middleware rewrites each response, so every client receives the configured text once.
 

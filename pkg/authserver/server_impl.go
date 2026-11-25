@@ -58,10 +58,11 @@ type server struct {
 	// is rejected at boot rather than at first DCR resolve.
 	dcrStore storage.DCRCredentialStore
 	// upstreamRefresher is the single shared refresher instance constructed in
-	// newServer. Storing the interface type (not *upstreamTokenRefresher) keeps
-	// the nil-return contract: newUpstreamTokenRefresher returns a true nil
-	// interface when there are no upstreams, so callers can check == nil safely.
-	upstreamRefresher storage.UpstreamTokenRefresher
+	// newServer, nil when there are no upstreams. It is kept as the concrete
+	// type so a client registration switch can bump its generation; consumers
+	// of the storage.UpstreamTokenRefresher interface get it through
+	// refresherInterface.
+	upstreamRefresher *upstreamTokenRefresher
 	upstreams         []handlers.NamedUpstream
 	// trustedIssuerValidator is the single MultiIssuerTokenValidator shared by
 	// the token-exchange and JWT-bearer handlers, built in buildProvider when
@@ -322,16 +323,17 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// and handed to the upstream refresh guard, ensuring every path shares one
 	// process-local singleflight.Group keyed by opaque storage-row identity.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
+	refresherIface := refresherInterface(refresher)
 
 	// Create fosite provider with the configured storage decorators.
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor, refresher, upstreams)
+	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor, refresherIface, upstreams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fosite OAuth2 provider: %w", err)
 	}
 
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		buildHandlerOptions(refresher, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs)...)
+		buildHandlerOptions(refresherIface, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -1133,7 +1135,17 @@ func (s *server) DCRStore() storage.DCRCredentialStore {
 // path use this instance, ensuring concurrent refreshes for the same logical
 // upstream-token row are deduplicated by one process-local singleflight.Group.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
-	return s.upstreamRefresher
+	return refresherInterface(s.upstreamRefresher)
+}
+
+// refresherInterface returns r as the storage.UpstreamTokenRefresher interface,
+// or a nil interface when r is nil. A plain conversion would wrap a nil
+// pointer in a non-nil interface and defeat the `== nil` checks of consumers.
+func refresherInterface(r *upstreamTokenRefresher) storage.UpstreamTokenRefresher {
+	if r == nil {
+		return nil
+	}
+	return r
 }
 
 // newUpstreamTokenRefresher builds a refresher over the given upstreams, or nil
@@ -1143,7 +1155,7 @@ func newUpstreamTokenRefresher(
 	upstreams []handlers.NamedUpstream,
 	stor storage.UpstreamTokenStorage,
 	refreshTokenLifespan time.Duration,
-) storage.UpstreamTokenRefresher {
+) *upstreamTokenRefresher {
 	if len(upstreams) == 0 {
 		return nil
 	}
@@ -1151,10 +1163,16 @@ func newUpstreamTokenRefresher(
 	for _, u := range upstreams {
 		providers[u.Name] = u.Provider
 	}
+	rejected, err := newRejectedRefreshes(rejectedRefreshesMaxEntries, rejectedRefreshesTTL, time.Now)
+	if err != nil {
+		// Only reachable if the rejectedRefreshes* constants are changed to invalid values.
+		panic(err)
+	}
 	return &upstreamTokenRefresher{
 		providers:            providers,
 		storage:              stor,
 		refreshTokenLifespan: refreshTokenLifespan,
+		rejected:             rejected,
 	}
 }
 
@@ -1180,6 +1198,11 @@ func (s *server) CloseIdleConnections() {
 }
 
 // UpdateUpstreamClientCredentials implements UpstreamCredentialsUpdater.
+//
+// A switch must go through this method for the refresher to forget the
+// refresh rejections it remembers: calling a provider's UpdateClientCredentials
+// directly bypasses that, and a rejection received under the old client keeps
+// being replayed until it expires.
 func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.ClientCredentials) error {
 	name = ResolveUpstreamName(name)
 	for _, u := range s.upstreams {
@@ -1190,7 +1213,14 @@ func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.Cli
 		if !ok {
 			return fmt.Errorf("upstream %q cannot replace its client registration", name)
 		}
-		return updater.UpdateClientCredentials(creds)
+		if err := updater.UpdateClientCredentials(creds); err != nil {
+			return err
+		}
+		// Bump after the provider has swapped; see bumpClientGeneration.
+		if s.upstreamRefresher != nil {
+			s.upstreamRefresher.bumpClientGeneration()
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown upstream %q", name)
 }

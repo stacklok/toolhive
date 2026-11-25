@@ -68,13 +68,34 @@ const guardRevokeTimeout = 5 * time.Second
 // re-authorization, not its grant.
 //
 // Before refusing on an IdP rejection, the guard re-reads the row once more
-// after rejectionRecheckDelay and treats a row now holding a different refresh
-// token as live. A recheck that cannot complete (the check is cancelled or
-// times out, or the read fails) leaves the outcome uncertain, so the grant
-// goes through. Once the rejection is confirmed, the guard deletes all of the
-// session's upstream rows: the client is sent to a new tsid, so nothing reads
+// after rejectionRecheckDelay and treats a row that has changed as live. A
+// recheck that cannot complete (the check is cancelled or times out, or the
+// read fails) leaves the outcome uncertain, so the grant goes through. Once
+// the rejection is confirmed, the guard deletes all of the session's upstream
+// rows: the client is sent to a new tsid, so nothing reads
 // them again, and a replay of the kept refresh token is then refused as having
 // no rows, without another IdP call or recheck, on every replica.
+//
+// The guard refreshes through the shared refresher but skips its memory of
+// rejected refresh tokens, so it asks the IdP. If it joins a refresh of the
+// same row already in flight, it can still be handed a remembered rejection;
+// it then refreshes once more, and if that answer is remembered too the
+// outcome is uncertain and the grant goes through. The guard deletes the
+// session's rows only after a rejection the IdP just gave (see
+// skipRememberedRejectionsKey).
+// If the IdP used invalid_grant for an account or policy state an
+// administrator has since fixed, the client's next refresh grant picks the fix
+// up: the refresh succeeds and stores a new row, the remembered rejection
+// stops matching, and bearer requests work again. A fresh rejection is still
+// remembered, which spares bearer requests the IdP call.
+//
+// The recheck narrows the remaining race: if another replica refreshes
+// successfully while the guard waits without rotating the refresh token (for
+// example once an administrator clears an IdP-side block), the row keeps its
+// refresh token and gets a new access token or expiry. The recheck sees any
+// change to the row, so that row is treated as live and the grant goes
+// through. Comparing the refresh token alone would delete the winner's fresh
+// row.
 //
 // A refusal is logged at WARN only when it revokes or follows a confirmed IdP
 // rejection; the row deletion makes the latter happen once per session. The
@@ -225,7 +246,8 @@ func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid string) *r
 // expired. It returns a refusal when the row is dead. Otherwise usable reports
 // whether the row holds an access token or its state is uncertain (a transient
 // failure), which the guard does not refuse; a row that is neither is not
-// dead on its own.
+// dead on its own. A rejection that comes from the memory of rejected
+// refreshes is never proof of a dead credential; see rejectionConfirmed.
 func (g *upstreamRefreshGuard) checkRow(
 	ctx context.Context, tsid, name string, row *storage.UpstreamTokens,
 ) (usable bool, refused *refusal) {
@@ -251,6 +273,17 @@ func (g *upstreamRefreshGuard) checkRow(
 	}
 
 	refreshed, err := g.refresh(ctx, tsid, row)
+	if isRememberedRejection(err) {
+		// The guard joined a call led by a request that does not skip the
+		// memory. A second call leads or joins a new call, which now likely
+		// reaches the IdP.
+		refreshed, err = g.refresh(ctx, tsid, row)
+		if isRememberedRejection(err) {
+			slog.DebugContext(ctx, "refresh grant guard only got remembered rejections; granting",
+				"provider_id", name)
+			return true, nil
+		}
+	}
 	if err == nil {
 		return refreshed != nil && refreshed.AccessToken != "", nil
 	}
@@ -264,7 +297,7 @@ func (g *upstreamRefreshGuard) checkRow(
 			"provider_id", name, "error", err)
 		return true, nil
 	}
-	if !g.rejectionConfirmed(ctx, tsid, name, row.RefreshToken) {
+	if !g.rejectionConfirmed(ctx, tsid, name, row) {
 		return true, nil
 	}
 	g.dropSession(ctx, tsid)
@@ -288,8 +321,10 @@ func (g *upstreamRefreshGuard) refresh(
 	}
 	// Buffered so the goroutine never blocks once the guard stops waiting.
 	done := make(chan result, 1)
+	// The guard always asks the IdP; see withoutRememberedRejections.
+	refreshCtx := withoutRememberedRejections(ctx)
 	go func() {
-		tokens, err := g.refresher.RefreshAndStore(ctx, tsid, row)
+		tokens, err := g.refresher.RefreshAndStore(refreshCtx, tsid, row)
 		done <- result{tokens: tokens, err: err}
 	}()
 	select {
@@ -301,17 +336,35 @@ func (g *upstreamRefreshGuard) refresh(
 }
 
 // rejectionConfirmed waits recheckDelay, re-reads the row and reports whether
-// the upstream rejection of rejectedRT is confirmed: the row still holds
-// rejectedRT, or is gone. A row holding any other refresh token means another
-// replica won a refresh race and its write has landed, so the session may be
-// live even if that row's access token has already expired. rejectedRT is the
-// guard's own snapshot, which the refresher may have replaced with a newer
-// re-read before redeeming; a mismatch then reads as a successor too, which
-// errs toward granting. The outcome is not known when the wait is cancelled or
-// the read fails with anything but ErrNotFound; that reports false too, so a
-// client disconnect or a storage fault never refuses a session that may be
-// live.
-func (g *upstreamRefreshGuard) rejectionConfirmed(ctx context.Context, tsid, provider, rejectedRT string) bool {
+// the upstream rejection of snapshot is confirmed: the stored row is unchanged
+// or gone. "Unchanged" is rowChanged's comparison of refresh token, access
+// token, ID token and access token expiry. Every write to a session's row is a
+// successful IdP refresh, so any change means the IdP accepted the refresh
+// token, and granting is bounded. The rejection that led here is a fresh IdP
+// answer, so the comparison is about writes that land while the guard waits.
+// That covers a row holding a different
+// refresh token (another replica won a refresh race; the session may be live
+// even if that row's access token has already expired) and a row with the same
+// refresh token but a new access token or expiry (a non-rotating refresh).
+// A storage layer that shares rows across sessions could also show a fresh
+// access token from a new sign-in; that is granted as well, without implying
+// the IdP accepted the refresh token.
+//
+// This deliberately differs from rotatedElsewhere in refresher.go, which treats
+// a row with the rejected refresh token as just as dead. That function decides
+// what the refresher returns; this one decides whether to delete the session's
+// rows, and a row that changed under the same refresh token is evidence the
+// IdP accepted it.
+//
+// snapshot is the guard's own read, which the refresher may have replaced with
+// a newer re-read before redeeming; a difference then reads as a successor
+// too, which errs toward granting. The outcome is not known when the wait is
+// cancelled or the read fails with anything but ErrNotFound; that reports
+// false too, so a client disconnect or a storage fault never refuses a
+// session that may be live.
+func (g *upstreamRefreshGuard) rejectionConfirmed(
+	ctx context.Context, tsid, provider string, snapshot *storage.UpstreamTokens,
+) bool {
 	if g.recheckDelay > 0 {
 		timer := time.NewTimer(g.recheckDelay)
 		defer timer.Stop()
@@ -335,7 +388,7 @@ func (g *upstreamRefreshGuard) rejectionConfirmed(ctx context.Context, tsid, pro
 	case stored == nil:
 		return true
 	}
-	return stored.RefreshToken == rejectedRT
+	return !rowChanged(snapshot, stored)
 }
 
 // dropSession deletes all of the session's upstream rows after a confirmed

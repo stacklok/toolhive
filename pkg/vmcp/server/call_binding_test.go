@@ -722,29 +722,29 @@ func TestCallBinding_OpenCallMessages(t *testing.T) {
 	requireRefused(t, s.send(t, http.MethodPost, token, otherSession, elicitationReply, nil),
 		callbinding.ReasonNoOpenCall, nil)
 
-	// A response on the call's session passes the check; the transport
-	// answers it.
+	// A response and a cancellation on the call's session pass the check;
+	// the transport answers them. The cancellation goes last, since it ends
+	// the call.
 	resp := s.send(t, http.MethodPost, token, session, elicitationReply, nil)
 	assert.NotEqual(t, http.StatusForbidden, resp.status, "body: %s", resp.body)
-
-	bc.unblock()
-	assert.Equal(t, http.StatusOK, awaitStatus(t, done))
-
-	// Once the call's request has returned, a response is refused, but a
-	// cancellation for the call still passes: a Legacy client may close the
-	// POST before it cancels, and the SDK ignores a cancellation for a
-	// finished request.
-	requireRefused(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil), callbinding.ReasonNoOpenCall, nil)
 	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
 	assert.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
-	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("8"), nil), callbinding.ReasonNoOpenCall, nil)
+
+	bc.unblock()
+	awaitStatus(t, done)
+
+	// Once the call's request has returned, nothing belongs to it.
+	requireRefused(t, s.send(t, http.MethodPost, token, session, elicitationReply, nil), callbinding.ReasonNoOpenCall, nil)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil), callbinding.ReasonNoOpenCall, nil)
 	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(9, cbTool, "{}"), nil),
 		callbinding.ReasonTokenReused, 9)
 }
 
-// TestCallBinding_CancelAfterDroppedPost checks the Legacy client order: the
-// client closes the call's POST, then sends notifications/cancelled. The
-// cancellation must still reach the transport.
+// TestCallBinding_CancelAfterDroppedPost pins a known limitation: a Legacy
+// client that closes the call's POST before it sends notifications/cancelled
+// gets no_open_call, because the call's request has returned. Accepting
+// messages for a call after its request returns belongs with accepting them
+// after exp.
 func TestCallBinding_CancelAfterDroppedPost(t *testing.T) {
 	t.Parallel()
 	bc := newBlockingCore()
@@ -773,8 +773,7 @@ func TestCallBinding_CancelAfterDroppedPost(t *testing.T) {
 		return err == nil && found && call.Ended
 	}, 10*time.Second, 10*time.Millisecond, "the dropped POST must end the call's request")
 
-	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
-	assert.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
+	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil), callbinding.ReasonNoOpenCall, nil)
 }
 
 // TestCallBinding_ResponseAfterMaxCallDuration checks that a response is

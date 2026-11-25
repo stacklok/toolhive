@@ -1453,19 +1453,21 @@ to another path is refused):
   `server/discover` probe and `ping`.
 - GET and DELETE. The session-ownership check then limits them to sessions the
   token's principal owns. Neither uses up the token.
-- On the session of its call: a `notifications/cancelled` for the call's JSON-RPC ID
-  for as long as the record lasts, even after the call's request has returned (a
-  Legacy client may close the POST before it cancels, and the SDK ignores a
-  cancellation for a request it has finished), and any JSON-RPC response (for example
-  an in-band elicitation reply) while the call's request is open and younger than the
-  maximum call duration. The vMCP does not see which server-to-client requests the SDK
-  is waiting on, so any response on that session is accepted. A Modern call has no
-  session, so it admits neither: a Modern client cancels by closing the request.
+- On the session of its call, while the call's request is open and younger than the
+  maximum call duration: a `notifications/cancelled` for the call's JSON-RPC ID, and
+  any JSON-RPC response (for example an in-band elicitation reply). The vMCP does not
+  see which server-to-client requests the SDK is waiting on, so any response on that
+  session is accepted. A Modern call has no session, so it admits neither: a Modern
+  client cancels by closing the request. Known limitation: a Legacy client that closes
+  the call's POST before it sends the cancellation (go-sdk does) gets `no_open_call`,
+  because the call's request has already returned. Accepting messages for a call
+  after its request returns, like accepting them after `exp`, is not implemented yet.
 
 Everything else is refused, including list methods and a `tools/call` for a list-call
-entry (`list_call_unsupported`). A retried `tools/call` is a new call: the retry after
-a URL elicitation (Legacy `-32042`, Modern `input_required`) needs a new token with the
-same entry. After the token's `exp` every request is refused with **HTTP 401** and
+entry (`list_call_unsupported`). Single use means one token, one call: a retried
+`tools/call`, such as the retry after a URL elicitation (Legacy `-32042`, Modern
+`input_required`), is a second call and is refused with `token_reused`. The client
+needs a fresh call-bound token for the retry. After the token's `exp` every request is refused with **HTTP 401** and
 `WWW-Authenticate: Bearer error="invalid_token"` (`token_expired`): the middleware
 applies the token validator's leeway, which is zero, so this fires only when the
 embedder's validator allows more. A stream opened before `exp` keeps running.

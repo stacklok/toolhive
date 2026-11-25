@@ -113,7 +113,8 @@ ToolHive under opt-outs that product's users have not been told about.
 
 The vMCP always enforces an access token that carries an `authorization_details`
 entry of type `https://toolhive.dev/mcp_tool_call`: such a token may start only the
-one `tools/call` its entry names, once. `Config.CallBinding` (a
+one `tools/call` its entry names, once; a retried call needs a fresh token.
+`Config.CallBinding` (a
 `callbinding.Config`) adds the clients whose tokens must carry an entry, the maximum
 call duration, and the single-use record. The default record is in memory and covers
 one replica. List a client only once the authorization servers in front of the vMCP

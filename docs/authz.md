@@ -87,7 +87,8 @@ with an access token bound to one MCP call that the token does not permit gets i
 Call binding is not a Cedar policy and runs whether or not Cedar is configured. An
 access token that carries an `authorization_details` entry of type
 `https://toolhive.dev/mcp_tool_call` may start only the one `tools/call` its entry
-names, once. Any other request is refused with **HTTP 403**,
+names, once. A retried call, such as the retry after a URL elicitation, is a second
+call and needs a fresh token. Any other request is refused with **HTTP 403**,
 `WWW-Authenticate: Bearer error="insufficient_scope"` (no `scope`) and a JSON-RPC
 error whose message ends with the reason, and is audited as `denied` with
 `metadata.extra.denial_reason`. See

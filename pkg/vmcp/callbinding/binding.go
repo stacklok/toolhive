@@ -91,8 +91,8 @@ const (
 	// ReasonTokenReused: the token has already started a call.
 	ReasonTokenReused = "token_reused"
 	// ReasonNoOpenCall: a cancellation or response does not belong to the
-	// call the token started, on that call's session, or (for a response)
-	// that call's request is no longer open.
+	// call the token started, on that call's session, or that call's request
+	// is no longer open.
 	ReasonNoOpenCall = "no_open_call"
 	// ReasonTokenExpired: the token's exp has passed.
 	ReasonTokenExpired = "token_expired"

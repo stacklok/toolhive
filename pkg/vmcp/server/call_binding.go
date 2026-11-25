@@ -117,9 +117,9 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 //   - GET and DELETE, which the session-ownership check then limits to the
 //     token's own session; neither uses up the token;
 //   - one tools/call that matches its entry, which uses up the token;
-//   - on the session of that call: a notifications/cancelled for the call's
-//     ID while the record lasts, and a JSON-RPC response (such as an
-//     elicitation reply) while the call's request is open.
+//   - on the session of that call, while the call's request is open: a
+//     notifications/cancelled for the call's ID, and a JSON-RPC response
+//     (such as an elicitation reply).
 //
 // Everything else is refused with 403, and everything after the token's exp
 // with 401. A later refusal, such as the session-ownership 404 or a Cedar 403,
@@ -287,8 +287,9 @@ func (cb *callBinding) serveToolCall(
 		"operation_id", token.Entry.OperationID, "server", token.Entry.Server, "tool", token.Entry.Tool)
 	// The call's request is open while this runs. On Modern, and on Legacy
 	// while the client stays connected, that is the whole call. A Legacy
-	// handler can outlive a dropped POST, which is why a cancellation for the
-	// call is still accepted after this returns (serveCallMessage).
+	// client that closes the POST before it cancels gets no_open_call for the
+	// cancellation: accepting messages for a call after its request returns
+	// is left to the change that also accepts them after exp.
 	next.ServeHTTP(w, r)
 }
 
@@ -304,13 +305,9 @@ func (cb *callBinding) recordExpiry(token *callbinding.Token, now time.Time) tim
 }
 
 // serveCallMessage admits a message that belongs to the call the token
-// started, on that call's session:
-//   - a notifications/cancelled for the call's ID (requestID non-empty), for
-//     as long as the record lasts, even after the call's request returned. A
-//     Legacy client may close the POST before it cancels, and the SDK ignores
-//     a cancellation for a request it has finished;
-//   - a JSON-RPC response (requestID empty) while the call's request is open
-//     and younger than the maximum call duration.
+// started, on that call's session, while the call's request is open and
+// younger than the maximum call duration: a notifications/cancelled for the
+// call's ID (requestID non-empty), or a JSON-RPC response (requestID empty).
 //
 // A call without a session (Modern) has no messages: a Modern client cancels
 // by closing the request and answers input requests by retrying the call.
@@ -327,14 +324,10 @@ func (cb *callBinding) serveCallMessage(
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return
 	}
-	var admitted bool
-	switch {
-	case !found, call.SessionID == "", r.Header.Get("Mcp-Session-Id") != call.SessionID:
-	case requestID != "":
-		admitted = requestID == call.RequestID
-	default:
-		admitted = !call.Ended && cb.now().Before(call.Started.Add(cb.maxCallDuration))
-	}
+	admitted := found && !call.Ended &&
+		call.SessionID != "" && r.Header.Get("Mcp-Session-Id") == call.SessionID &&
+		cb.now().Before(call.Started.Add(cb.maxCallDuration)) &&
+		(requestID == "" || requestID == call.RequestID)
 	if !admitted {
 		cb.refuse(w, r, parsed, token, callbinding.ReasonNoOpenCall)
 		return

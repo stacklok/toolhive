@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"slices"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -58,6 +61,7 @@ func NewIncomingAuthMiddleware(
 	passThroughTools map[string]struct{},
 	upstreamReader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
+	embeddedAuthServerIssuer string,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -72,7 +76,8 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader, keyProvider)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(
+			ctx, cfg.OIDC, upstreamReader, keyProvider, embeddedAuthServerIssuer)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -83,6 +88,21 @@ func NewIncomingAuthMiddleware(
 
 	if err != nil {
 		return nil, nil, nil, err
+	}
+
+	// A pinned primaryUpstreamProvider says "only claims asserted by that upstream
+	// may drive policy", which only means something when incoming auth can produce
+	// an upstream session. Under local or anonymous auth it never can, so every
+	// request would be judged on synthetic claims (sub=anonymous, or a local
+	// username) that no upstream asserted. Reject the combination here rather than
+	// serving it: the operator enforces the same rule for VirtualMCPServer at
+	// cmd/thv-operator/controllers/virtualmcpserver_controller.go, but that check
+	// does not run for a hand-written vmcp config.
+	if cfg.Authz != nil && cfg.Authz.PrimaryUpstreamProvider != "" && cfg.Type != config.IncomingAuthTypeOIDC {
+		return nil, nil, nil, fmt.Errorf(
+			"authz primaryUpstreamProvider %q requires an upstream session, which %q incoming auth cannot provide; "+
+				"remove primaryUpstreamProvider or use oidc incoming auth",
+			cfg.Authz.PrimaryUpstreamProvider, cfg.Type)
 	}
 
 	// If authorization is configured, create authz middleware separately.
@@ -198,6 +218,7 @@ func newOIDCAuthMiddleware(
 	oidcCfg *config.OIDCConfig,
 	reader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
+	embeddedAuthServerIssuer string,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -210,16 +231,13 @@ func newOIDCAuthMiddleware(
 		slog.Warn("no Resource defined in OIDC configuration")
 	}
 
-	oidcConfig := &auth.TokenValidatorConfig{
-		Issuer:            oidcCfg.Issuer,
-		ClientID:          oidcCfg.ClientID,
-		Audience:          oidcCfg.Audience,
-		ResourceURL:       oidcCfg.Resource,
-		JWKSURL:           oidcCfg.JWKSURL,
-		IntrospectionURL:  oidcCfg.IntrospectionURL,
-		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
-		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
-		Scopes:            oidcCfg.Scopes,
+	if err := checkJWKSAuthTokenFile(oidcCfg.JWKSAuthTokenPath); err != nil {
+		return nil, nil, err
+	}
+
+	oidcConfig, err := oidcTokenValidatorConfig(oidcCfg, &env.OSReader{})
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Wire optional dependencies from the embedded auth server so the JWT
@@ -232,6 +250,9 @@ func newOIDCAuthMiddleware(
 	if reader != nil {
 		opts = append(opts, auth.WithUpstreamTokenReader(reader))
 	}
+	if embeddedAuthServerIssuer != "" {
+		opts = append(opts, auth.WithEmbeddedAuthServerIssuer(embeddedAuthServerIssuer))
+	}
 
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
 	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, opts...)
@@ -243,6 +264,73 @@ func newOIDCAuthMiddleware(
 		"issuer", oidcCfg.Issuer, "client_id", oidcCfg.ClientID, "resource", oidcCfg.Resource)
 
 	return authMw, authInfo, nil
+}
+
+// oidcTokenValidatorConfig maps the incoming OIDC configuration to the token
+// validator, resolving ClientSecretEnv from the process environment. The
+// environment is read here rather than in the YAML loader or the operator so
+// both entry points share the same behavior and the secret never lands in
+// configuration.
+func oidcTokenValidatorConfig(oidcCfg *config.OIDCConfig, envReader env.Reader) (*auth.TokenValidatorConfig, error) {
+	clientSecret := ""
+	if oidcCfg.ClientSecretEnv != "" {
+		clientSecret = envReader.Getenv(oidcCfg.ClientSecretEnv)
+		if clientSecret == "" {
+			return nil, fmt.Errorf("OIDC client secret environment variable %q is not set or empty", oidcCfg.ClientSecretEnv)
+		}
+	}
+
+	return &auth.TokenValidatorConfig{
+		Issuer:                oidcCfg.Issuer,
+		ClientID:              oidcCfg.ClientID,
+		Audience:              oidcCfg.Audience,
+		RequiredSubject:       oidcCfg.RequiredSubject,
+		RequiredSubjectPrefix: oidcCfg.RequiredSubjectPrefix,
+		ResourceURL:           oidcCfg.Resource,
+		JWKSURL:               oidcCfg.JWKSURL,
+		IntrospectionURL:      oidcCfg.IntrospectionURL,
+		AllowPrivateIP:        oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
+		InsecureAllowHTTP:     oidcCfg.InsecureAllowHTTP,
+		Scopes:                oidcCfg.Scopes,
+		CACertPath:            oidcCfg.CABundlePath,
+		AuthTokenFile:         oidcCfg.JWKSAuthTokenPath,
+		ClientSecret:          clientSecret,
+	}, nil
+}
+
+// IncomingBearerChallenge returns the parameters of the WWW-Authenticate
+// challenges the incoming token validator sends: its issuer as realm, its
+// resource URL for the RFC 9728 metadata, and its scopes. Another vMCP
+// component that refuses a token with 401, such as call binding, sends them
+// too. It returns the zero value for incoming auth without OIDC.
+func IncomingBearerChallenge(cfg *config.IncomingAuthConfig) auth.BearerChallenge {
+	if cfg == nil || cfg.Type != config.IncomingAuthTypeOIDC || cfg.OIDC == nil {
+		return auth.BearerChallenge{}
+	}
+	return auth.BearerChallenge{
+		Realm:       cfg.OIDC.Issuer,
+		ResourceURL: cfg.OIDC.Resource,
+		Scopes:      slices.Clone(cfg.OIDC.Scopes),
+	}
+}
+
+// checkJWKSAuthTokenFile fails when jwksAuthTokenPath is set but does not name
+// a readable regular file. The token validator would fail on the same file a
+// few layers down; this error names the setting and how to fix it.
+func checkJWKSAuthTokenFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	const fix = "mount the token file into the vMCP pod (for a kubernetesServiceAccount MCPOIDCConfig, " +
+		"the service-account token), or unset jwksAuthTokenPath (useClusterAuth: false)"
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("incomingAuth.oidc.jwksAuthTokenPath %q is not accessible: %w; %s", path, err, fix)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("incomingAuth.oidc.jwksAuthTokenPath %q is not a regular file; %s", path, fix)
+	}
+	return nil
 }
 
 // newLocalAuthMiddleware creates local OS user authentication middleware.

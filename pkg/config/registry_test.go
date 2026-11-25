@@ -311,7 +311,7 @@ func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
 				"data": {"servers": []}
 			}`,
 			expectError:    true,
-			errMsgContains: "no servers or skills",
+			errMsgContains: "no servers, skills, or plugins",
 		},
 		{
 			name: "legacy format with top-level servers returns migration hint",

@@ -12,20 +12,19 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/dump"
+	"k8s.io/utils/dump"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // CalculateConfigHash calculates a hash of any configuration spec using Kubernetes utilities.
-// This function uses k8s.io/apimachinery/pkg/util/dump.ForHash which is designed for
-// generating consistent string representations for hashing in Kubernetes.
+// This function uses k8s.io/utils/dump.ForHash, which is designed for generating
+// consistent string representations for hashing in Kubernetes.
 // It then applies FNV-1a hash which is commonly used in Kubernetes for fast hashing.
 // See: https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/controller_utils.go
 func CalculateConfigHash[T any](spec T) string {
-	// Use k8s.io/apimachinery/pkg/util/dump.ForHash which is designed for
-	// generating consistent string representations for hashing in Kubernetes
+	// Generate a consistent string representation for hashing in Kubernetes.
 	hashString := dump.ForHash(spec)
 
 	// Use FNV-1a hash which is commonly used in Kubernetes for fast hashing
@@ -52,14 +51,6 @@ func CompareWorkloadRefs(a, b mcpv1beta1.WorkloadReference) int {
 // in a different list order across reconcile runs.
 func SortWorkloadRefs(refs []mcpv1beta1.WorkloadReference) {
 	slices.SortFunc(refs, CompareWorkloadRefs)
-}
-
-// WorkloadRefsEqual reports whether two WorkloadReference slices contain the same entries.
-// Both slices must already be sorted (use SortWorkloadRefs) for correct results.
-func WorkloadRefsEqual(a, b []mcpv1beta1.WorkloadReference) bool {
-	return slices.EqualFunc(a, b, func(x, y mcpv1beta1.WorkloadReference) bool {
-		return x.Kind == y.Kind && x.Name == y.Name
-	})
 }
 
 // GetToolConfigForMCPRemoteProxy fetches MCPToolConfig referenced by MCPRemoteProxy

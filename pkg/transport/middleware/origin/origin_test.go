@@ -5,7 +5,6 @@ package origin
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -175,27 +174,36 @@ func TestOriginMiddleware_MultipleOriginHeadersRejected(t *testing.T) {
 
 // assertForbiddenJSONRPC validates that rec carries a 403 with a canonical
 // JSON-RPC error body and that the inner handler was never invoked.
+//
+// The JSONEq below already catches an extra "id":null (it wouldn't match the
+// expected body), so the explicit key-absence check that follows is
+// belt-and-suspenders -- kept because it names the failure directly, whereas
+// a JSONEq diff would just show an unexpected field.
 func assertForbiddenJSONRPC(t *testing.T, rec *httptest.ResponseRecorder, nextCalled bool) {
 	t.Helper()
 	assert.False(t, nextCalled, "next handler must NOT be invoked")
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Origin not allowed"}}`, rec.Body.String())
 
-	body, err := io.ReadAll(rec.Body)
-	require.NoError(t, err)
-	var parsed struct {
-		JSONRPC string `json:"jsonrpc"`
-		Error   struct {
-			Code    int64  `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-		ID any `json:"id"`
-	}
-	require.NoError(t, json.Unmarshal(body, &parsed))
-	assert.Equal(t, "2.0", parsed.JSONRPC)
-	assert.Equal(t, jsonRPCCodeInvalidRequest, parsed.Error.Code)
-	assert.Equal(t, "Origin not allowed", parsed.Error.Message)
-	assert.Nil(t, parsed.ID)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &parsed))
+	_, hasID := parsed["id"]
+	assert.False(t, hasID, "forbidden body must omit \"id\" entirely, never send it as null")
+}
+
+// TestForbiddenBodyFallback verifies the hand-written fallback literal used
+// when json.Marshal fails (unreachable in practice with static map types, so
+// this is the only path that exercises it) has the same shape as the
+// marshaled body: no "id" key, never "null".
+func TestForbiddenBodyFallback(t *testing.T) {
+	t.Parallel()
+	assert.JSONEq(t, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Origin not allowed"}}`, forbiddenBodyFallback)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(forbiddenBodyFallback), &parsed))
+	_, hasID := parsed["id"]
+	assert.False(t, hasID, "fallback body must omit \"id\" entirely, never send it as null")
 }
 
 func TestNewHandler_RejectsDisallowedOrigin(t *testing.T) {

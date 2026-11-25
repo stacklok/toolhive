@@ -67,6 +67,39 @@ sequenceDiagram
 
 **Implementation**: `cmd/thv/app/vmcp.go`, `pkg/vmcp/cli/serve.go`
 
+### Host Header Check and Reverse Proxies
+
+When vMCP is reached over a loopback connection, MCP requests whose `Host`
+header is not `localhost` or a loopback IP get `403 Forbidden: invalid Host
+header`. This protects against DNS rebinding. It applies to both MCP protocol
+revisions (go-sdk already rejected such 2025-11-25 and earlier requests in most
+cases; vMCP now applies the check itself, ahead of both revisions).
+
+A tunnel or reverse proxy that forwards to 127.0.0.1 and keeps the client's
+`Host` (for example cloudflared, Caddy, Traefik or oauth2-proxy) must rewrite
+`Host` to a loopback name such as `localhost:4483`. In cloudflared, set
+`originRequest.httpHostHeader` to `localhost:4483`. In Caddy, use
+`header_up Host {upstream_hostport}`. In oauth2-proxy, use
+`--pass-host-header=false`. nginx's default `proxy_pass` to 127.0.0.1 sends a
+loopback `Host` and works; `proxy_set_header Host $host` (or `$http_host`)
+passes the client's `Host` and gets 403.
+
+Clients configured with `http://host.docker.internal:PORT` (for example from a
+Docker Desktop container) or `http://0.0.0.0:PORT`, or with an `/etc/hosts`
+alias, also get 403. Use `localhost` or `127.0.0.1`.
+
+`/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`,
+`/.well-known/` and the embedded auth server routes are not affected. Every
+other path is served by the MCP handler and is checked.
+
+When incoming auth is configured, an unauthenticated request with a non-loopback
+`Host` is answered 401 by auth before the Host check runs.
+
+The check only applies to connections that arrive over loopback. A vMCP bound to
+0.0.0.0 with anonymous auth and reached through a LAN IP is not protected by it
+(go-sdk behaves the same), so do not combine a non-loopback bind with anonymous
+auth.
+
 ## Key Components
 
 ### Zero-Config Quick Mode
@@ -102,6 +135,8 @@ thv vmcp serve --config vmcp.yaml
 | 1 | `--optimizer` | FTS5 keyword (SQLite in-process) | None | `find_tool`, `call_tool` only |
 | 2 | `--optimizer-embedding` | FTS5 + TEI semantic | Managed TEI container | `find_tool`, `call_tool` only |
 | 3 | `optimizer.embeddingService` in config YAML | FTS5 + external embedding service | User-managed | `find_tool`, `call_tool` only |
+
+Any tier >= 1 keeps clients on MCP 2025-11-25 (Legacy): the `find_tool`/`call_tool` meta-tools are session-scoped, so Modern-capable (2026-07-28) clients are negotiated down to Legacy by the capability gate (`pkg/vmcp/server/modern_gate.go`; Modern parity is tracked in #6089).
 
 Tier 2 (`--optimizer-embedding`) implies `--optimizer`. The TEI container is started automatically and stopped on server shutdown.
 

@@ -27,7 +27,7 @@ func TestEmbeddedRegistrySchemaValidation(t *testing.T) {
 func TestValidateEmbeddedRegistryCanLoadData(t *testing.T) {
 	t.Parallel()
 
-	registry, skills, err := parseRegistryData(catalog.Upstream())
+	registry, skills, _, err := parseRegistryData(catalog.Upstream())
 	require.NoError(t, err, "Embedded upstream registry should parse successfully")
 
 	// Verify basic structure
@@ -45,7 +45,7 @@ func TestValidateEmbeddedRegistryCanLoadData(t *testing.T) {
 func TestUpstreamRegistryParsing(t *testing.T) {
 	t.Parallel()
 
-	registry, _, err := parseRegistryData(catalog.Upstream())
+	registry, _, _, err := parseRegistryData(catalog.Upstream())
 	require.NoError(t, err)
 
 	// Verify servers have names set (from conversion)
@@ -124,7 +124,7 @@ func TestParseRegistryData_LegacyFormatDetection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := parseRegistryData([]byte(tt.input))
+			_, _, _, err := parseRegistryData([]byte(tt.input))
 			if tt.wantLegacy {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, errLegacyFormat)
@@ -142,7 +142,7 @@ func TestParseRegistryData_LegacyFormatDetection(t *testing.T) {
 func TestParseRegistryData_MalformedJSON(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := parseRegistryData([]byte("not json"))
+	_, _, _, err := parseRegistryData([]byte("not json"))
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, errLegacyFormat)
 	assert.Contains(t, err.Error(), "failed to parse registry data")

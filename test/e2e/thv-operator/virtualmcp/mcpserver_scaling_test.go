@@ -116,6 +116,24 @@ func cleanupRedis(name string) {
 	})
 }
 
+// scaleRedis sets the named Redis Deployment's replica count — 0 to simulate a
+// session-store outage, 1 to restore. Parameterized by name (unlike the
+// acceptance-tier helper removed in 5fa67123b, which hardcoded a shared "redis"
+// Deployment) so scaling one spec's Redis cannot disturb another's under
+// --procs=8.
+//
+// Callers should wrap this in Eventually: it is a read-modify-write, and
+// kube-controller-manager writes .status on the same object, so an isolated
+// Update can lose a race and return a 409 conflict.
+func scaleRedis(name string, replicas int32) error {
+	deploy := &appsv1.Deployment{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, deploy); err != nil {
+		return err
+	}
+	deploy.Spec.Replicas = int32Ptr(replicas)
+	return k8sClient.Update(ctx, deploy)
+}
+
 // getReadyMCPServerPods returns all Running+Ready pods for an MCPServer.
 //
 //nolint:unparam // namespace kept as parameter for reusability across test contexts

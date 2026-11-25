@@ -91,6 +91,41 @@ Tests are organized using Ginkgo labels for parallelization and filtering:
 - Docker, Podman, or Colima container runtime
 - ToolHive binary built (for CLI tests): `task build`
 
+### Native rootless Podman host-isolation regression
+
+Run on a native Linux host with rootless Podman (Netavark/pasta), Python 3,
+Ginkgo, a running Podman API socket, an existing `toolhive-external` bridge,
+and cached `images.YardstickServerImage` / `images.NetworkFixtureImage` images.
+The runtime's host aliases must directly reach the native host; stale pasta
+networking is a prerequisite failure, not a denial result or a reason to skip:
+
+```bash
+TOOLHIVE_E2E_PODMAN_NATIVE=1 \
+TOOLHIVE_PODMAN_SOCKET="$XDG_RUNTIME_DIR/podman/podman.sock" \
+task test-e2e-podman-native
+```
+
+The task builds a fresh CLI and runs only the serial `podman-native` specs.
+Without the opt-in variable the specs skip; once opted in, missing prerequisites
+fail. Both Squid and Envoy run actual streamable-HTTP Yardstick workloads with
+ToolHive permission profiles. HTTP and CONNECT probes verify host alias, runtime
+host IP, and bridge gateway denial, then explicit `--allow-docker-gateway` access
+even outside the profile's allowed port. Independent canaries count accepted
+connections, and an ordinary container is the positive control.
+
+For toolbox builds with native execution (shared checkout and Go tools):
+
+```bash
+toolbox run --container dev task test-e2e-podman-native \
+  PODMAN_NATIVE_RUNNER="flatpak-spawn --host env TOOLHIVE_E2E_PODMAN_NATIVE=1 TOOLHIVE_PODMAN_SOCKET=/run/user/1000/podman/podman.sock"
+```
+
+Only ToolHive gets an isolated HOME/XDG environment; native fixture commands keep
+the operator's Podman environment and always use `podman --remote=false`. Cleanup
+is bounded and restricted to uniquely named test resources, with the control
+canary removed last to preserve the original external network ID. This task does
+**not** invoke `run_tests.sh` or its broad cleanup sweep.
+
 ### Run All Tests
 
 ```bash

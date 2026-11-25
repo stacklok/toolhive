@@ -128,7 +128,9 @@ thv run my-server --secret "api-key,target=API_KEY"
 - Password in OS keyring (platform-specific secure storage)
 - Secrets encrypted at rest (AES-256-GCM)
 - File permissions: 0600
-- Key derivation: SHA-256 of password
+- Key derivation: Argon2id over the password with a per-file random salt (16 bytes).
+  Cost parameters are the OWASP minimum for Argon2id (19 MiB, 2 iterations, 1 lane)
+  and are fixed in code per format version, not stored in the file.
 
 **Threat protection:**
 - Plaintext on disk: ✅
@@ -136,7 +138,76 @@ thv run my-server --secret "api-key,target=API_KEY"
 - Log exposure: ✅
 - Malicious container: ❌ (has env access)
 
-**Implementation**: `pkg/secrets/aes/aes.go` (AES-256-GCM), `pkg/secrets/keyring/` (OS keyring storage), `pkg/secrets/factory.go` (SHA-256 key derivation via `sha256.Sum256(secretsPassword)`)
+**Implementation**: `pkg/secrets/aes/aes.go` (AES-256-GCM), `pkg/secrets/keyring/` (OS keyring storage), `pkg/secrets/kdf.go` (Argon2id key derivation), `pkg/secrets/encrypted.go` (file framing and key caching)
+
+**Secrets file format**: a header describing the key derivation, followed by the AES-GCM output.
+
+```
+magic    "THVSEC"  6 bytes
+version  0x01      1 byte
+salt               16 bytes
+body               nonce|ciphertext|tag
+```
+
+The version selects the Argon2id cost parameters, which live in code. Keeping them
+out of the file means no attacker-controllable value reaches Argon2id's memory
+allocation, and raising the cost becomes an explicit new format version rather
+than a silent per-file property.
+
+Files written before this framing existed have no header and were keyed with an
+unsalted SHA-256 of the password. They are detected by the absent magic prefix
+and remain readable by current ToolHive releases. Ordinary reads, writes, and
+cleanup preserve the legacy format so that older ToolHive binaries can continue
+to access the same store. This applies only to existing legacy files: a new
+store, including one recreated after the file is deleted, is always written in
+the framed format and cannot be read by binaries that predate it.
+
+**Upgrading protection**: run `thv secret upgrade-protection` to explicitly
+upgrade a legacy file to the framed Argon2id format. The command requires a
+confirmation (or `--yes` for automation), authenticates the legacy ciphertext
+before making changes, atomically installs the upgraded file, and verifies it
+before reporting success. If post-install verification fails, ToolHive makes a
+best-effort atomic restoration of the original encrypted bytes and reports the
+failure. An already framed file is left unchanged, and the command refuses to
+run when there is no store (or an empty one) to upgrade.
+
+After an upgrade, ToolHive binaries predating the framed format cannot read the
+store. Stop or upgrade older local ToolHive processes — including `thv serve`
+and detached proxies that persist OAuth refresh tokens — before upgrading.
+Secrets already injected into running containers are unaffected. This does not
+apply to the Kubernetes path, which uses Kubernetes Secrets rather than this
+file.
+
+**Recovering from a rollback**: an older binary opening an upgraded file reports
+that the password is incorrect. That message predates this format and does not
+indicate corruption — resetting the keyring or deleting the store is the wrong
+first step and will lose secrets. The fix is to return to a binary that
+understands the framed format. Rolling back to an older binary for real requires
+a pre-upgrade copy of the file, kept as securely as the file itself, plus the
+password that goes with it.
+
+**Recovering from the pre-fix silent conversion (#6710)**: ToolHive releases
+between the introduction of Argon2id (#6657) and this fix (#6710) upgraded a
+legacy file to the framed format as a side effect of merely opening it — not
+only via an explicit `upgrade-protection` run. If a store was already converted
+this way before installing the fix, there is nothing to reverse and no data was
+lost: keep the current secrets file and its OS keyring password exactly as they
+are. What breaks is any *other* installation or already-running process still on
+a binary that predates #6657 — a plain binary swap does not fix a process
+already running, since it keeps the old binary loaded in memory. Recovery is:
+upgrade every ToolHive installation that accesses this store to a version at or
+after this fix, then restart (not just replace) every already-running process —
+`thv serve`, detached proxies, and anything else holding the secrets file open —
+so each one picks up the new binary. Do not delete the store or reset the
+keyring for this; that only discards secrets the file already has.
+
+**What upgrading does and does not protect**: only the live file is upgraded.
+Backups taken before upgrade keep the unsalted SHA-256 derivation and stay
+cheaply crackable offline. Because the password itself is unchanged, recovering
+it from an old backup also decrypts the upgraded file — so retiring old backups
+matters as much as the upgrade. Conversely, a backup of the upgraded file is not
+a substitute for retaining the password or keyring entry; without them it cannot
+be decrypted.
 
 ## Integration Points
 

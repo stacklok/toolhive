@@ -197,6 +197,9 @@ func buildDiscoveryHTTPClient(client *http.Client) *http.Client {
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   5 * time.Second,
 			ResponseHeaderTimeout: 5 * time.Second,
+			IdleConnTimeout:       idleConnTimeout,
+			MaxIdleConns:          maxIdleConns,
+			MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		},
 	}
 }
@@ -209,7 +212,9 @@ func buildDiscoveryHTTPClient(client *http.Client) *http.Client {
 // discovery document URL (for example a multi-tenant IdP that does not
 // advertise the tenant-aware path at {issuer}/.well-known/...). The same
 // RFC 8414 §3.3 issuer-equality check is enforced: the returned metadata's
-// issuer field must exactly match the caller-supplied expectedIssuer.
+// issuer field must match the caller-supplied expectedIssuer byte for byte,
+// except that an origin-only issuer may differ by a trailing "/" (see
+// issuersEqual).
 //
 // If client is nil, the same bounded default client used by
 // FetchAuthorizationServerMetadata is constructed. A 10 s per-call timeout
@@ -310,12 +315,35 @@ func fetchDiscoveryDocument(
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	// RFC 8414 §3.3: the issuer in the metadata MUST exactly match the caller's expected issuer.
-	if metadata.Issuer != expectedIssuer {
+	// RFC 8414 §3.3: the issuer in the metadata MUST match the caller's expected issuer.
+	if !issuersEqual(expectedIssuer, metadata.Issuer) {
 		return nil, fmt.Errorf("issuer mismatch (RFC 8414 §3.3): expected %q, got %q", expectedIssuer, metadata.Issuer)
 	}
 
 	return &metadata, nil
+}
+
+// issuersEqual reports whether expected and got are the same issuer under
+// RFC 8414 §3.3. The comparison is byte-exact except that an origin-only issuer
+// may be written with an empty path or "/" (RFC 3986 §6.2.3), because servers
+// built on FastMCP's OAuth proxy publish "https://host/" for a root deployment.
+// Scheme, host and port must still match exactly, and an issuer with a path
+// keeps byte-exact equality, including any trailing slash, so the relaxation
+// does not weaken mix-up protection.
+func issuersEqual(expected, got string) bool {
+	if expected == got {
+		return true
+	}
+	e, errE := url.Parse(expected)
+	g, errG := url.Parse(got)
+	if errE != nil || errG != nil {
+		return false
+	}
+	originOnly := func(u *url.URL) bool {
+		return u.Host != "" && (u.Path == "" || u.Path == "/") &&
+			u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.User == nil && u.Opaque == ""
+	}
+	return originOnly(e) && originOnly(g) && e.Scheme == g.Scheme && e.Host == g.Host
 }
 
 // AuthorizationServerMetadata represents the OAuth 2.0 Authorization Server Metadata
@@ -325,8 +353,8 @@ type AuthorizationServerMetadata struct {
 	Issuer string `json:"issuer"`
 
 	// AuthorizationEndpoint is the URL of the authorization endpoint (RECOMMENDED).
-	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	// It is omitted for token-only authorization servers.
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
 
 	// TokenEndpoint is the URL of the token endpoint (RECOMMENDED).
 	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
@@ -338,6 +366,9 @@ type AuthorizationServerMetadata struct {
 
 	// RegistrationEndpoint is the URL of the Dynamic Client Registration endpoint (OPTIONAL).
 	RegistrationEndpoint string `json:"registration_endpoint,omitempty"`
+
+	// DeviceAuthorizationEndpoint is the RFC 8628 device authorization endpoint (OPTIONAL).
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint,omitempty"`
 
 	// IntrospectionEndpoint is the URL of the token introspection endpoint (OPTIONAL, RFC 7662).
 	IntrospectionEndpoint string `json:"introspection_endpoint,omitempty"`
@@ -357,6 +388,10 @@ type AuthorizationServerMetadata struct {
 
 	// TokenEndpointAuthMethodsSupported lists the authentication methods supported at the token endpoint (OPTIONAL).
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+
+	// TokenEndpointAuthSigningAlgValuesSupported lists the JWS algorithms supported
+	// for private_key_jwt client assertions (RFC 8414).
+	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values supported (RECOMMENDED per RFC 8414).
 	// For MCP authorization servers, this typically includes "openid" and "offline_access".
@@ -390,7 +425,8 @@ func (d *OIDCDiscoveryDocument) Validate(isOIDC bool) error {
 	if d.Issuer == "" {
 		return ErrMissingIssuer
 	}
-	if d.AuthorizationEndpoint == "" {
+	tokenOnly := !isOIDC && d.AuthorizationEndpoint == "" && d.SupportsGrantType(GrantTypeTokenExchange)
+	if d.AuthorizationEndpoint == "" && !tokenOnly {
 		return ErrMissingAuthorizationEndpoint
 	}
 	if d.TokenEndpoint == "" {

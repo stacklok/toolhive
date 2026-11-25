@@ -61,13 +61,26 @@ type MCPOIDCConfigSpec struct {
 // KubernetesServiceAccountOIDCConfig configures OIDC for Kubernetes service account token validation.
 // This contains shared fields without audience, which is specified per-server via MCPOIDCConfigReference.
 type KubernetesServiceAccountOIDCConfig struct {
-	// ServiceAccount is the name of the service account to validate tokens for.
-	// If empty, uses the pod's service account.
+	// ServiceAccount restricts accepted tokens to a single service account.
+	// When set, the token's "sub" claim must equal
+	// system:serviceaccount:<namespace>:<serviceAccount>, where <namespace> is
+	// Namespace if set, otherwise the namespace of the workload referencing this config.
+	// When empty, tokens are not restricted to a specific service account.
+	// Must be a valid service account name (DNS-1123 subdomain).
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 
-	// Namespace is the namespace of the service account.
-	// If empty, uses the MCPServer's namespace.
+	// Namespace is the namespace of the service account(s) whose tokens are accepted.
+	// When set without ServiceAccount, any service account in this namespace is accepted
+	// (the "sub" claim must start with system:serviceaccount:<namespace>:).
+	// When set with ServiceAccount, it selects that service account's namespace.
+	// When both ServiceAccount and Namespace are empty, no subject restriction is applied
+	// and any token from the issuer with a matching audience is accepted.
+	// Must be a valid namespace name (DNS-1123 label).
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
@@ -86,10 +99,20 @@ type KubernetesServiceAccountOIDCConfig struct {
 	// +optional
 	IntrospectionURL string `json:"introspectionUrl,omitempty"`
 
-	// UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.
-	// When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
-	// and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.
-	// Defaults to true if not specified.
+	// UseClusterAuth controls use of the Kubernetes cluster's CA bundle and the
+	// workload's own service account token when fetching the issuer's signing
+	// keys (OIDC discovery and JWKS). The CA bundle is
+	// /var/run/secrets/kubernetes.io/serviceaccount/ca.crt and the token is
+	// /var/run/secrets/kubernetes.io/serviceaccount/token.
+	//
+	// When unset (the default), the CA bundle is used, and the token is sent
+	// only if the URL fetched is an https URL on the in-cluster API server
+	// (kubernetes.default.svc or kubernetes.default.svc.cluster.local): jwksUrl
+	// when it is set, otherwise the issuer. In that case it goes to the
+	// in-cluster API server and the JWKS URL that server advertises.
+	// When true, the token is always sent; set this for an issuer that requires
+	// it but is not reachable under those names, such as a custom cluster domain.
+	// When false, neither the CA bundle nor the token is used.
 	// +optional
 	UseClusterAuth *bool `json:"useClusterAuth"`
 }
@@ -141,7 +164,7 @@ type InlineOIDCSharedConfig struct {
 	// +optional
 	ProtectedResourceAllowPrivateIP bool `json:"protectedResourceAllowPrivateIP"`
 
-	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing.
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.
 	// WARNING: This is insecure and should NEVER be used in production.
 	// +kubebuilder:default=false
 	// +optional
@@ -184,21 +207,6 @@ type MCPOIDCConfigStatus struct {
 	// ConfigHash is a hash of the current configuration for change detection
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
-
-	// ReferenceCount is the number of workloads referencing this config.
-	// +optional
-	ReferenceCount int32 `json:"referenceCount,omitempty"`
-
-	// ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
-	// Each entry identifies the workload by kind and name. The map key is the
-	// (kind, name) pair so two workloads of different kinds that share a name
-	// (e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct
-	// entries rather than colliding under merge-patch semantics.
-	// +listType=map
-	// +listMapKey=kind
-	// +listMapKey=name
-	// +optional
-	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -208,7 +216,6 @@ type MCPOIDCConfigStatus struct {
 // +kubebuilder:resource:shortName=mcpoidc,categories=toolhive
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-// +kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPOIDCConfig is the Schema for the mcpoidcconfigs API.

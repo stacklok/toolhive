@@ -5,6 +5,7 @@
 package lockfile
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -67,17 +68,86 @@ func NewTrackedLock(lockPath string) *flock.Flock {
 	return lock
 }
 
-// ReleaseTrackedLock unlocks, removes, and unregisters a lock file
+// ReleaseTrackedLock unlocks, removes, and unregisters a lock file.
+//
+// The path is unlinked before the flock is released. flock(2) locks attach to
+// an inode, not a path, so releasing in the other order leaves a window where
+// a waiter can flock this soon-to-be-removed inode and then have the path
+// pulled out from under it by this call's Remove, while a third locker
+// creates a fresh inode at the same path — two lockers now believe they hold
+// "the" lock. Unlinking first means anyone who opens lockPath from here on
+// necessarily gets a new inode, which is what AcquireTrackedLock's identity
+// check depends on to notice and retry past a stale lock.
 func ReleaseTrackedLock(lockPath string, lock *flock.Flock) {
-	if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
-		slog.Warn("failed to unlock file", "path", lockPath, "error", err)
-	}
-
 	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
 		slog.Warn("failed to remove lock file", "path", lockPath, "error", err)
 	}
 
+	if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
+		slog.Warn("failed to unlock file", "path", lockPath, "error", err)
+	}
+
 	globalRegistry.UnregisterLock(lockPath)
+}
+
+// AcquireTrackedLock acquires an exclusive lock on lockPath and registers it
+// for cleanup, the way NewTrackedLock+TryLockContext do, but additionally
+// guards against acquiring a lock on a stale, already-orphaned inode.
+//
+// Because flock(2) locks an open file description on an inode rather than a
+// path, and acquisition (open, then flock) and release (unlink, then unlock —
+// see ReleaseTrackedLock) are separate steps, a caller can open lockPath and
+// still be blocked in flock() at the moment another holder unlinks and
+// releases: that other holder's Remove can land between this caller's open()
+// and its successful flock(), or a concurrent third party can recreate
+// lockPath under a new inode while this caller's flock succeeds on the old,
+// now-unreachable one. Either way this caller would believe it holds "the"
+// lock for lockPath while actually holding a lock nothing else will ever
+// contend for again. After acquiring, this function checks that the locked
+// file's inode is still the one lockPath resolves to (os.SameFile); on
+// mismatch it discards the stale lock and retries with a fresh open, bounded
+// by ctx.
+func AcquireTrackedLock(ctx context.Context, lockPath string, retryDelay time.Duration) (*flock.Flock, bool, error) {
+	for {
+		lock := flock.New(lockPath)
+
+		locked, err := lock.TryLockContext(ctx, retryDelay)
+		if err != nil {
+			return nil, false, err
+		}
+		if !locked {
+			return nil, false, nil
+		}
+
+		if lockMatchesPath(lock, lockPath) {
+			globalRegistry.RegisterLock(lockPath, lock)
+			return lock, true, nil
+		}
+
+		if err := lock.Unlock(); err != nil && !os.IsNotExist(err) {
+			slog.Warn("failed to unlock stale lock file", "path", lockPath, "error", err)
+		}
+		if ctx.Err() != nil {
+			return nil, false, nil
+		}
+	}
+}
+
+// lockMatchesPath reports whether the inode lock currently holds is still the
+// one lockPath resolves to, i.e. that the lock has not been orphaned by a
+// concurrent unlink (and possibly recreation) of lockPath.
+func lockMatchesPath(lock *flock.Flock, lockPath string) bool {
+	heldInfo, err := lock.Stat()
+	if err != nil {
+		return false
+	}
+
+	pathInfo, err := os.Stat(lockPath)
+	if err != nil {
+		return false
+	}
+
+	return os.SameFile(heldInfo, pathInfo)
 }
 
 // CleanupAllLocks provides global cleanup of all registered lock files

@@ -7,32 +7,19 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 )
 
-// View renders the full TUI to a string.
-// We build exactly m.height lines by slotting body lines into a fixed array
-// and placing the 2-line statusbar at the last two rows. This avoids any
-// off-by-one ambiguity from lipgloss Height padding or trailing-newline
-// counting differences between lipgloss and BubbleTea's "\n"-split renderer.
-// oscSetBg is the OSC 11 sequence that sets the terminal's own default
-// background colour. Every cell that has no explicit background (log text,
-// tool descriptions, text-input interiors, etc.) will inherit this colour,
-// giving the whole TUI a uniform #1e2030 background without having to style
-// every individual element. oscResetBg restores the original colour on exit.
-const oscSetBg = "\x1b]11;#1e2030\x07"
-const oscResetBg = "\x1b]111;\x07"
-
-// View implements tea.Model and renders the full TUI to a string.
-func (m Model) View() string {
+// View implements tea.Model and renders the full TUI.
+func (m Model) View() tea.View {
 	if m.quitting {
-		// Reset terminal background before handing control back to the shell.
-		return oscResetBg
+		return newView("")
 	}
 	if m.width == 0 || m.height < 2 {
-		return "Loading…\n"
+		return newView("Loading…\n")
 	}
 
 	sidebar := m.renderSidebar()
@@ -83,19 +70,22 @@ func (m Model) View() string {
 	out[m.height-2] = sbParts[0]
 	out[m.height-1] = sbParts[1]
 
-	// Prepend the OSC 11 sequence so the terminal's default background is
-	// #1e2030 for this frame. Every area with no explicit background colour
-	// (log lines, tool text, text-input interiors, …) will therefore show
-	// the same dark tone as the statusbar with no further changes needed.
-	full := oscSetBg + strings.Join(out, "\n")
+	full := strings.Join(out, "\n")
 
 	if m.showHelp {
-		return m.renderHelpOverlay()
+		return newView(m.renderHelpOverlay())
 	}
 	if m.registry.open {
-		return m.renderRegistryOverlay()
+		return newView(m.renderRegistryOverlay())
 	}
-	return full
+	return newView(full)
+}
+
+func newView(content string) tea.View {
+	view := tea.NewView(content)
+	view.AltScreen = true
+	view.BackgroundColor = ui.ColorBg
+	return view
 }
 
 // renderSidebar renders the left server list.

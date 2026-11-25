@@ -793,7 +793,7 @@ func (d *DefaultManager) spawnDetached(ctx context.Context, runConfig *runner.Ru
 	}
 
 	if err := detachedCmd.Start(); err != nil {
-		if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, ""); statusErr != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
 			slog.Warn("Failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
 		}
 		return 0, err
@@ -1554,8 +1554,12 @@ func (d *DefaultManager) startWorkload(ctx context.Context, name string, mcpRunn
 	}
 
 	if err != nil {
-		// If we could not start the workload, set the status to error before returning
-		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, ""); statusErr != nil {
+		// If we could not start the workload, set the status to error before
+		// returning. Record err itself as the status context: RunWorkload's
+		// retry loop has already written the failure reason there, and an
+		// empty context here would clobber it — CI debug output then shows a
+		// bare status "error" with no way to tell what actually failed.
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
 			slog.Warn("Failed to set workload status to error", "workload", name, "error", statusErr)
 		}
 	}

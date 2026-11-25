@@ -10,7 +10,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -29,6 +28,13 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to resolve auth server TLS listener")
+		return nil
+	}
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgs()
@@ -42,6 +48,15 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		return nil
 	}
 	env := r.buildEnvVarsForProxy(ctx, proxy)
+
+	// Mount the session storage Redis CA bundle when TLS references one.
+	storage := proxy.Spec.SessionStorage
+	if storage == nil {
+		storage = r.DefaultRedisConfig.SessionStorage()
+	}
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(storage)
+	volumes = append(volumes, sessionTLSVolumes...)
+	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
 	// externalAuthConfigRef is used as a fallback (legacy path).
@@ -58,10 +73,25 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 		env = append(env, authServerEnvVars...)
 	}
-	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
+	resources, err := resourceRequirementsForRemoteProxy(proxy)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build resource requirements")
+		return nil
+	}
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
+	if configName != "" {
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, proxy.Namespace, configName)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to calculate auth server CA checksum")
+			return nil
+		}
+		if caChecksum != "" {
+			deploymentTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
+		}
+	}
 	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
+	proxyNodeSelector, proxyTolerations, proxyAffinity := proxyDeploymentScheduling(proxy.Spec.ResourceOverrides)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -86,6 +116,9 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 				Spec: corev1.PodSpec{
 					ServiceAccountName: serviceAccountNameForRemoteProxy(proxy),
 					ImagePullSecrets:   r.imagePullSecretsForRemoteProxy(proxy),
+					NodeSelector:       proxyNodeSelector,
+					Tolerations:        proxyTolerations,
+					Affinity:           proxyAffinity,
 					Containers: []corev1.Container{{
 						Image:           getToolhiveRunnerImage(),
 						Name:            mcpRemoteProxyContainerName,
@@ -93,7 +126,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 						Env:             env,
 						VolumeMounts:    volumeMounts,
 						Resources:       resources,
-						Ports:           r.buildContainerPorts(proxy),
+						Ports:           ctrlutil.ProxyContainerPorts(int32(proxy.GetProxyPort()), tlsListener),
 						StartupProbe:    ctrlutil.BuildHealthProbe("/health", "http", 0, 5, 3, 18),
 						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", "http", 30, 10, 5, 3),
 						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 15, 5, 3, 3),
@@ -119,6 +152,19 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		return nil
 	}
 	return dep
+}
+
+// resourceRequirementsForRemoteProxy returns effective container resources for
+// an MCPRemoteProxy: proxy-runner defaults, overridden per field by
+// spec.resources and then by any resources podTemplateSpec sets on the proxy
+// container.
+func resourceRequirementsForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) (corev1.ResourceRequirements, error) {
+	return ctrlutil.BuildContainerResourceRequirements(
+		ctrlutil.BuildDefaultProxyRunnerResourceRequirements(),
+		proxy.Spec.Resources,
+		proxy.Spec.PodTemplateSpec,
+		mcpRemoteProxyContainerName,
+	)
 }
 
 // buildContainerArgs builds the container arguments for the proxy
@@ -262,10 +308,9 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 			env = append(env, bearerTokenEnvVars...)
 		}
 
-		// Add OBO secret environment variables. Dispatched through the
-		// registered OBO handler; inert (no env vars) in builds without one.
-		// This function feeds both the deployment builder and containerNeedsUpdate,
-		// so builder/drift symmetry is automatic.
+		// Add OBO secret environment variables (none unless the referenced
+		// config is obo-typed). This function feeds both the deployment builder
+		// and containerNeedsUpdate, so builder/drift symmetry is automatic.
 		oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
 			ctx,
 			r.Client,
@@ -307,19 +352,42 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	// The non-sensitive parts (address/db/keyPrefix) are populated into the
 	// runconfig by populateScalingConfigForRemoteProxy; the password is
 	// injected separately so it never lands in the ConfigMap.
-	env = append(env, buildRedisPasswordEnvVarForRemoteProxy(proxy)...)
+	env = append(env, buildRedisPasswordEnvVarForRemoteProxy(proxy, r.DefaultRedisConfig)...)
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
 }
 
 // buildRedisPasswordEnvVarForRemoteProxy returns the THV_SESSION_REDIS_PASSWORD
 // env var sourced from spec.sessionStorage.passwordRef when sessionStorage uses
-// the redis provider; returns nil otherwise. Mirrors VirtualMCPServer's
-// buildRedisPasswordEnvVar in virtualmcpserver_deployment.go.
-func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.EnvVar {
-	if proxy.Spec.SessionStorage == nil ||
-		proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
-		proxy.Spec.SessionStorage.PasswordRef == nil {
+// the redis provider, or from the global default Redis secret when
+// spec.sessionStorage is unset and the injected default references a password Secret;
+// returns nil otherwise. Mirrors VirtualMCPServer's buildRedisPasswordEnvVar
+// in virtualmcpserver_deployment.go.
+func buildRedisPasswordEnvVarForRemoteProxy(
+	proxy *mcpv1beta1.MCPRemoteProxy, defaults *ctrlutil.DefaultRedisConfig,
+) []corev1.EnvVar {
+	if proxy.Spec.SessionStorage != nil {
+		if proxy.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
+			proxy.Spec.SessionStorage.PasswordRef != nil {
+			return []corev1.EnvVar{{
+				Name: session.RedisPasswordEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: proxy.Spec.SessionStorage.PasswordRef.Name,
+						},
+						Key: proxy.Spec.SessionStorage.PasswordRef.Key,
+					},
+				},
+			}}
+		}
+		// spec.sessionStorage was set explicitly — never fall through to the
+		// global default regardless of provider.
+		return nil
+	}
+
+	def := defaults
+	if def == nil || def.SecretName == "" {
 		return nil
 	}
 	return []corev1.EnvVar{{
@@ -327,9 +395,9 @@ func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: proxy.Spec.SessionStorage.PasswordRef.Name,
+					Name: def.SecretName,
 				},
-				Key: proxy.Spec.SessionStorage.PasswordRef.Key,
+				Key: def.SecretKey,
 			},
 		},
 	}}
@@ -503,18 +571,9 @@ func (r *MCPRemoteProxyReconciler) buildSecurityContexts(
 	return securityBuilder.BuildPodSecurityContext(), securityBuilder.BuildContainerSecurityContext()
 }
 
-// buildContainerPorts builds container port configuration
-func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.ContainerPort {
-	return []corev1.ContainerPort{{
-		ContainerPort: int32(proxy.GetProxyPort()),
-		Name:          "http",
-		Protocol:      corev1.ProtocolTCP,
-	}}
-}
-
 // serviceForMCPRemoteProxy returns a MCPRemoteProxy Service object
 func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
-	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, tlsListener bool,
 ) *corev1.Service {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
 	svcName := createProxyServiceName(proxy.Name)
@@ -539,12 +598,7 @@ func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
 		Spec: corev1.ServiceSpec{
 			Selector:        ls,
 			SessionAffinity: sessionAffinity,
-			Ports: []corev1.ServicePort{{
-				Port:       int32(proxy.GetProxyPort()),
-				TargetPort: intstr.FromInt(int(proxy.GetProxyPort())),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
+			Ports:           ctrlutil.ProxyServicePorts(int32(proxy.GetProxyPort()), tlsListener),
 		},
 	}
 

@@ -44,10 +44,8 @@ const (
 	// and signs requests using SigV4.
 	StrategyTypeAwsSts = "aws_sts"
 
-	// StrategyTypeOBO identifies the on-behalf-of (OBO) authentication strategy.
-	// The default upstream implementation returns ErrEnterpriseRequired from
-	// every method; an out-of-tree build registers a real OBO strategy executor
-	// via auth.RegisterOBOStrategy.
+	// StrategyTypeOBO identifies the Microsoft Entra on-behalf-of (OBO)
+	// authentication strategy.
 	StrategyTypeOBO = "obo"
 
 	// StrategyTypeXAA identifies the XAA (Cross-Application Access) strategy.
@@ -86,8 +84,7 @@ type BackendAuthStrategy struct {
 	AwsSts *AwsStsConfig `json:"awsSts,omitempty" yaml:"awsSts,omitempty"`
 
 	// OBO contains configuration for on-behalf-of (OBO) auth strategy.
-	// Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-	// an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+	// Used when Type = "obo".
 	OBO *OBOConfig `json:"obo,omitempty" yaml:"obo,omitempty"`
 
 	// XAA contains configuration for XAA (Cross-Application Access) auth strategy.
@@ -188,7 +185,7 @@ type RoleMapping struct {
 // This strategy uses the Entra jwt-bearer / on_behalf_of grant to exchange
 // the incoming user token for a backend-scoped token on behalf of the user.
 //
-// Field names follow the OBO runtime contract (the enterprise obo.MiddlewareParameters),
+// Field names follow the OBO runtime contract (obo.MiddlewareParameters),
 // not the RFC-8693 TokenExchangeConfig, because OBO uses a distinct Entra-specific grant.
 // +kubebuilder:object:generate=true
 // +gendoc
@@ -208,7 +205,9 @@ type OBOConfig struct {
 	// The value will be resolved at runtime from this environment variable.
 	ClientSecretEnv string `json:"clientSecretEnv,omitempty" yaml:"clientSecretEnv,omitempty"`
 
-	// Audience is the target audience (resource URI) for the exchanged token.
+	// Audience is the backend resource (Application ID URI or client ID) for the
+	// exchanged token. Used when Scopes is empty, sent to Entra as
+	// <audience>/.default (see exchange.Target).
 	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
 
 	// Scopes are the requested scopes for the exchanged token.
@@ -218,13 +217,18 @@ type OBOConfig struct {
 	// SubjectTokenProviderName selects which upstream provider's token to use as the
 	// subject (assertion) token for the OBO exchange. When set, the token is looked
 	// up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-	// inbound end-user token (Identity.Token) is used directly.
-	// Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-	// converter maps both to the runtime contract without renaming.
+	// inbound end-user token (Identity.Token) is used directly. Behind an embedded
+	// auth server an omitted value defaults to its upstream provider, and is an
+	// error when it has more than one (see DefaultSubjectProviderName).
+	// Matches the operator CRD's SubjectTokenProviderName field; the OBO
+	// converter maps it to the runtime contract without renaming.
 	SubjectTokenProviderName string `json:"subjectTokenProviderName,omitempty" yaml:"subjectTokenProviderName,omitempty"`
 
 	// CacheSkewSeconds is the number of seconds to subtract from a cached token's
-	// expiry when deciding whether to refresh it. Defaults to zero (no skew).
+	// expiry when deciding whether to refresh it. When nil or zero the token
+	// cache's default skew (60 seconds) applies; negative values are rejected.
+	// The int32 type caps it at math.MaxInt32, the bound the operator enforces
+	// on the CRD's CacheSkew.
 	// The operator CRD stores this as CacheSkew *metav1.Duration and converts it
 	// to an integer-seconds value for the vMCP runtime contract.
 	CacheSkewSeconds *int32 `json:"cacheSkewSeconds,omitempty" yaml:"cacheSkewSeconds,omitempty"`

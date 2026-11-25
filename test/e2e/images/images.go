@@ -12,9 +12,13 @@ package images
 
 const (
 	yardstickServerImageURL = "ghcr.io/stackloklabs/yardstick/yardstick-server"
-	yardstickServerImageTag = "1.1.1"
-	// YardstickServerImage is used in operator tests across multiple transport protocols
-	// (stdio, SSE, streamable-http) and tenancy modes.
+	yardstickServerImageTag = "1.2.0"
+	// YardstickServerImage (go-sdk v1.7) is the yardstick backend used across the
+	// operator, vMCP, and dual-era e2e tests, over multiple transport protocols (stdio,
+	// SSE, streamable-http) and tenancy modes. A session-mode deployment negotiates down
+	// to the Legacy (2025-11-25) data plane and the vMCP classifies it Legacy from
+	// server/discover's supportedVersions (#5993), so this single image serves both
+	// eras -- the dual-era tests drive it Modern (stateless), the rest drive it Legacy.
 	// Note: This image is also referenced in 8 YAML fixture files under
 	// test/e2e/chainsaw/operator/. Those files are declarative Kubernetes manifests
 	// and cannot import Go constants directly.
@@ -33,10 +37,15 @@ const (
 	OSVMCPServerImage = osvmcpServerImageURL + ":" + osvmcpServerImageTag
 
 	pythonImageURL = "python"
-	pythonImageTag = "3.9-slim"
+	pythonImageTag = "3.15-slim"
 	// PythonImage is used for deploying mock OIDC servers and instrumented backend servers
 	// in Kubernetes tests. These run Flask-based Python services for testing authentication flows.
 	PythonImage = pythonImageURL + ":" + pythonImageTag
+
+	networkFixtureImageDigest = "sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928"
+	// NetworkFixtureImage is pinned because network-isolation tests use it for
+	// security-sensitive DNS and HTTP fixtures in the Docker-backed CI shard.
+	NetworkFixtureImage = pythonImageURL + ":" + pythonImageTag + "@" + networkFixtureImageDigest
 
 	curlImageURL = "curlimages/curl"
 	curlImageTag = "8.17.0"
@@ -88,15 +97,57 @@ const (
 
 	idaProMCPServerImageURL = "ghcr.io/stacklok/dockyard/uvx/ida-pro-mcp"
 	idaProMCPServerImageTag = "1.4.0"
+	// idaProMCPServerImageDigest pins the 2026-07-27 build of tag 1.4.0.
+	//
+	// The tag is mutable: dockyard periodically rebuilds it and resolves Python
+	// dependencies fresh each time. ida-pro-mcp 1.4.0 declares an unbounded
+	// "mcp>=1.16.0" and imports mcp.server.fastmcp, which was removed in the
+	// mcp Python SDK 2.0.0 (released 2026-07-28). The 2026-07-31 rebuild picked
+	// up mcp 2.0.0, so the container now crashloops on startup with
+	// "ModuleNotFoundError: No module named 'mcp.server.fastmcp'".
+	//
+	// 1.4.0 is the newest ida-pro-mcp release on PyPI, so there is nothing to
+	// bump to. Pin the last build that resolved a 1.x mcp (1.28.1) until
+	// upstream caps the constraint or adopts the 2.x API. Every other backend
+	// in the optimizer test is unaffected -- pagerduty-mcp, the only other
+	// dockyard uvx image, caps "mcp[cli]~=1.8".
+	idaProMCPServerImageDigest = "sha256:5a596d965fe05052d615a41152213f93ebc72bf46b07304718de948833d73c70"
 	// IDAProMCPServerImage is used for testing multi-backend optimizer scenarios.
 	// Provides ~47 IDA Pro reverse engineering tools (decompile, disassemble, rename, etc.).
-	IDAProMCPServerImage = idaProMCPServerImageURL + ":" + idaProMCPServerImageTag
+	IDAProMCPServerImage = idaProMCPServerImageURL + ":" + idaProMCPServerImageTag + "@" + idaProMCPServerImageDigest
 
 	pagerdutyMCPServerImageURL = "ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp"
 	pagerdutyMCPServerImageTag = "0.12.0"
 	// PagerDutyMCPServerImage is used for testing multi-backend optimizer scenarios.
 	// Provides ~64 PagerDuty incident management tools (incidents, services, schedules, etc.).
 	PagerDutyMCPServerImage = pagerdutyMCPServerImageURL + ":" + pagerdutyMCPServerImageTag
+
+	timeMCPServerImageURL = "ghcr.io/stacklok/dockyard/uvx/mcp-server-time"
+	timeMCPServerImageTag = "2026.7.10"
+	// timeMCPServerImageDigest pins the 2026-07-27 build of tag 2026.7.10.
+	//
+	// Same failure mode as idaProMCPServerImageDigest above, different symptom:
+	// the tag is mutable, dockyard rebuilds it and resolves Python dependencies
+	// fresh, and the 2026-07-31 rebuild picked up the mcp Python SDK 2.0.0
+	// released 2026-07-28. mcp-server-time imports McpError from
+	// mcp.shared.exceptions, which 2.x moved, so the container now exits on
+	// startup with "ImportError: cannot import name 'McpError' from
+	// 'mcp.shared.exceptions'". The proxy suites then fail with
+	// "timeout waiting for MCP server to be ready".
+	//
+	// Pin the last build that resolved a 1.x mcp until upstream caps the
+	// constraint or adopts the 2.x API. Verified by driving both builds over
+	// stdio: the pinned digest answers initialize, tag 2026.7.10 does not.
+	timeMCPServerImageDigest = "sha256:5cca77dec3fefbacad35e3008ab1660f8725ef246213afb24231504fc73c999d"
+	// TimeMCPServerImage is the stdio backend used by the proxy e2e suites
+	// (proxy_stdio_test.go, stdio_proxy_over_streamable_http_mcp_server_test.go).
+	// Provides get_current_time / convert_time.
+	//
+	// These suites reference this constant rather than the "time" registry entry
+	// so a mutable upstream tag cannot break CI: the registry resolves "time" to
+	// the moving :2026.7.10 tag, which is currently broken. Registry-name
+	// resolution itself is still covered by the suites that run "osv".
+	TimeMCPServerImage = timeMCPServerImageURL + ":" + timeMCPServerImageTag + "@" + timeMCPServerImageDigest
 
 	redisImageURL = "redis"
 	redisImageTag = "7-alpine"
@@ -108,4 +159,19 @@ const (
 	// DexImage is used as an in-cluster OIDC provider for E2E tests requiring
 	// the embedded auth server OAuth2 flow (upstreamInject authentication).
 	DexImage = dexImageURL + ":" + dexImageTag
+
+	spireServerImageURL = "ghcr.io/spiffe/spire-server"
+	spireServerImageTag = "1.15.0"
+	// SPIREServerImage is used by the SPIRE E2E harness to issue SPIFFE identities.
+	SPIREServerImage = spireServerImageURL + ":" + spireServerImageTag
+
+	spireAgentImageURL = "ghcr.io/spiffe/spire-agent"
+	spireAgentImageTag = "1.15.0"
+	// SPIREAgentImage is used by the SPIRE E2E harness to attest workloads.
+	SPIREAgentImage = spireAgentImageURL + ":" + spireAgentImageTag
+
+	// SPIFFEClientImage is the SPIFFE E2E client workload. It is built locally
+	// and loaded into kind by `task build-load-spiffe-e2e-client-image`, never
+	// pulled.
+	SPIFFEClientImage = "kind.local/toolhive-spiffe-e2e-client/spiffe-client:latest"
 )

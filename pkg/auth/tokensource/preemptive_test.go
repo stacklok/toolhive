@@ -25,6 +25,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
+// tokenClient builds the guarded token-endpoint client NewNonCachingRefresher
+// requires. The token servers here are httptest loopback listeners, so the
+// endpoint must be marked operator-trusted for the private-IP dial guard to
+// permit it.
+func tokenClient(t *testing.T, cfg *oauth2.Config) *http.Client {
+	t.Helper()
+	client, err := oauth.NewTokenHTTPClient(cfg.Endpoint.TokenURL, true)
+	require.NoError(t, err)
+	return client
+}
+
 // fakeSecretsProvider is a minimal secrets.Provider for internal tests.
 type fakeSecretsProvider struct{ val string }
 
@@ -242,7 +253,7 @@ func TestWithPreemptiveRefresh_NonCachingRefresher_NoResource(t *testing.T) {
 		ClientID: "test-client",
 		Endpoint: oauth2.Endpoint{TokenURL: srv.URL, AuthStyle: oauth2.AuthStyleInParams},
 	}
-	ncr := oauth.NewNonCachingRefresher(cfg, "refresh-token", "")
+	ncr := oauth.NewNonCachingRefresher(cfg, "refresh-token", "", tokenClient(t, cfg))
 	src := withPreemptiveRefresh(ncr, preemptiveRefreshWindow)
 
 	tok, err := src.Token()
@@ -351,7 +362,11 @@ func (s *staticTokenSource) Token() (*oauth2.Token, error) { return s.tok, nil }
 func TestNonCachingRefresher_EmptyRefreshToken_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	ncr := oauth.NewNonCachingRefresher(&oauth2.Config{ClientID: "test"}, "", "")
+	cfg := &oauth2.Config{
+		ClientID: "test",
+		Endpoint: oauth2.Endpoint{TokenURL: "https://idp.example.com/token"},
+	}
+	ncr := oauth.NewNonCachingRefresher(cfg, "", "", tokenClient(t, cfg))
 	_, err := ncr.Token()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no refresh token available")
@@ -377,7 +392,7 @@ func TestNonCachingRefresher_StandardPath_NoResourceParam(t *testing.T) {
 		Endpoint: oauth2.Endpoint{TokenURL: srv.URL, AuthStyle: oauth2.AuthStyleInParams},
 		Scopes:   []string{"openid"},
 	}
-	ncr := oauth.NewNonCachingRefresher(cfg, "my-refresh-token", "")
+	ncr := oauth.NewNonCachingRefresher(cfg, "my-refresh-token", "", tokenClient(t, cfg))
 
 	tok, err := ncr.Token()
 	require.NoError(t, err)

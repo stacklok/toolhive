@@ -62,7 +62,7 @@ Here are some of the more common use cases for ToolHive:
 
 ## Core capabilities
 
-**ToolHive architecture: Gateway, Registry Server, Runtime, and Portal**
+**ToolHive architecture: Gateway, Registry Server, and Runtime, accessible through ToolHive UI and the CLI**
 
 ToolHive is built on a [modular architecture](./docs/arch/README.md) to streamline secure MCP server management and integration. Here's how the main components work.
 
@@ -98,20 +98,19 @@ Deploy, run, and manage MCP servers locally or in a Kubernetes cluster with secu
 - Kubernetes Operator for fleet and resource management
 - Leverage OpenTelemetry and Prometheus for monitoring and audit logging
 
-### 💻 Portal
+### 💻 Interfaces
 
-Simplify MCP adoption for developers and knowledge workers across your enterprise
+Choose the interface that best fits your workflow.
 
-- Cross-platform [desktop app](https://github.com/stacklok/toolhive-studio) and browser-based [cloud UI](https://github.com/stacklok/toolhive-cloud-ui)
-- Make it easy for admins to curate MCP servers and tools
-- Automate server discovery
-- Install MCP servers with a single click
-- Compatible with hundreds of AI clients
+- Use [ToolHive UI](https://github.com/stacklok/toolhive-studio) for a cross-platform desktop experience
+- Use the [ToolHive CLI](https://docs.stacklok.com/toolhive/guides-cli/quickstart) for terminal workflows and automation
+- Discover, configure, and run MCP servers
+- Automatically connect managed MCP servers to compatible AI clients
 
 ### How it works together
 
 1. **Admins** curate and organize MCP servers in the **Registry**, configuring access and policies.
-2. **Users** discover and request MCP servers from the **Portal**, and ToolHive orchestrates installation and access.
+2. **Users** discover, configure, and run MCP servers through **ToolHive UI** or the **CLI**, and ToolHive orchestrates deployment and access.
 3. **Runtime** securely deploys and manages MCP servers across local and cloud environments, integrating seamlessly with existing SDLC workflows, exporting analytics, and enforcing fine-grained access control.
 4. **Gateway** handles all inbound traffic, secures context and credentials, optimizes tool selection, and applies organizational policies.
 
@@ -153,7 +152,7 @@ Teams and organizations manage MCP servers and registries centrally using famili
 
 ToolHive's complete solution for teams and enterprises supports MCP servers across all environments: on developer machines, inside your Kubernetes clusters, or hosted externally by trusted SaaS providers.
 
-End users access approved MCP servers through a secure, browser-based cloud UI. Developers can also connect using the ToolHive CLI or desktop UI for advanced integration and testing workflows.
+End users and developers manage approved MCP servers through ToolHive UI or the CLI, from guided desktop workflows to terminal-based automation and testing.
 
 Enterprise teams can also leverage ToolHive to integrate MCP servers into custom internal tools, agentic workflows, or chat-based interfaces, using the same runtime and access controls.
 
@@ -184,7 +183,6 @@ Contribute to the CLI, API, and Kubernetes Operator (this repo):
 Contribute to the UI, registry, and docs:
 
 - 💻 [Desktop UI repository](https://github.com/stacklok/toolhive-studio)
-- ☁️ [Cloud UI repository](https://github.com/stacklok/toolhive-cloud-ui)
 - 📦 [ToolHive registry server repository](https://github.com/stacklok/toolhive-registry-server)
 - 🛠️ [ToolHive's built-in registry](https://github.com/stacklok/toolhive-catalog)
 - 📚 [Documentation repository](https://github.com/stacklok/docs-website)

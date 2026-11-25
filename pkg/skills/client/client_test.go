@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,7 +20,9 @@ import (
 
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
 )
 
 // newTestClient returns a *Client pointed at the given test server.
@@ -308,6 +311,25 @@ func TestInfo(t *testing.T) {
 			statusCode: http.StatusOK,
 		},
 		{
+			// `thv skill info` reports trust state from this response alone, so
+			// a provenance field the server records but the wire shape drops is
+			// invisible to the user.
+			name:     "provenance reaches the info renderer",
+			opts:     skills.InfoOptions{Name: "signed-skill"},
+			wantPath: skillsBasePath + "/signed-skill",
+			response: skills.SkillInfo{
+				Metadata: skills.SkillMetadata{Name: "signed-skill", Version: "1.0.0"},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity:    "/.github/workflows/release.yml",
+					CertIssuer:        "https://token.actions.githubusercontent.com",
+					RepositoryURI:     "https://github.com/org/signed-skill",
+					RepositoryRef:     "refs/tags/v1.0.0",
+					RunnerEnvironment: "github-hosted",
+				},
+			},
+			statusCode: http.StatusOK,
+		},
+		{
 			name:       "not found",
 			opts:       skills.InfoOptions{Name: "missing"},
 			wantPath:   skillsBasePath + "/missing",
@@ -486,17 +508,61 @@ func TestPush(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		opts       skills.PushOptions
-		wantBody   pushRequest
-		statusCode int
-		wantErr    bool
-		wantCode   int
+		name             string
+		opts             skills.PushOptions
+		clientCapability string
+		wantCapability   bool
+		wantBody         pushRequest
+		statusCode       int
+		wantErr          bool
+		wantCode         int
 	}{
 		{
 			name:       "success",
 			opts:       skills.PushOptions{Reference: "ghcr.io/org/my-skill:v1.0.0"},
 			wantBody:   pushRequest{Reference: "ghcr.io/org/my-skill:v1.0.0"},
+			statusCode: http.StatusNoContent,
+		},
+		{
+			name: "key push forwards signing capability",
+			opts: skills.PushOptions{
+				Reference: "ghcr.io/org/my-skill:v1.0.0",
+				Key:       "/home/user/cosign.key",
+			},
+			clientCapability: "protected-discovery-capability",
+			wantCapability:   true,
+			wantBody: pushRequest{
+				Reference: "ghcr.io/org/my-skill:v1.0.0",
+				Key:       "/home/user/cosign.key",
+			},
+			statusCode: http.StatusNoContent,
+		},
+		{
+			// Guards the DTO trap: identity_token must reach the wire request,
+			// not just PushOptions.
+			name: "forwards identity token",
+			opts: skills.PushOptions{
+				Reference:     "ghcr.io/org/my-skill:v1.0.0",
+				IdentityToken: "a.b.c",
+			},
+			wantBody: pushRequest{
+				Reference:     "ghcr.io/org/my-skill:v1.0.0",
+				IdentityToken: "a.b.c",
+			},
+			clientCapability: "must-not-be-sent",
+			statusCode:       http.StatusNoContent,
+		},
+		{
+			name: "no-sign push does not forward signing capability",
+			opts: skills.PushOptions{
+				Reference: "ghcr.io/org/my-skill:v1.0.0",
+				NoSign:    true,
+			},
+			clientCapability: "must-not-be-sent",
+			wantBody: pushRequest{
+				Reference: "ghcr.io/org/my-skill:v1.0.0",
+				NoSign:    true,
+			},
 			statusCode: http.StatusNoContent,
 		},
 		{
@@ -515,6 +581,11 @@ func TestPush(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Equal(t, skillsBasePath+"/push", r.URL.Path)
+				if tt.wantCapability {
+					assert.Equal(t, tt.clientCapability, r.Header.Get(discovery.KeySigningCapabilityHeader))
+				} else {
+					assert.Empty(t, r.Header.Values(discovery.KeySigningCapabilityHeader))
+				}
 
 				if tt.wantBody.Reference != "" {
 					var got pushRequest
@@ -528,9 +599,9 @@ func TestPush(t *testing.T) {
 				}
 				w.WriteHeader(tt.statusCode)
 			}))
-			defer srv.Close()
+			t.Cleanup(srv.Close)
 
-			c := newTestClient(t, srv)
+			c := NewClient(srv.URL, WithKeySigningCapability(tt.clientCapability))
 			err := c.Push(t.Context(), tt.opts)
 
 			if tt.wantErr {
@@ -656,9 +727,11 @@ func TestNewDefaultClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery)
 		assert.Equal(t, defaultBaseURL, c.baseURL)
+		assert.Empty(t, c.keySigningCapability)
 	})
 
 	t.Run("uses TOOLHIVE_API_URL from env", func(t *testing.T) {
@@ -666,9 +739,12 @@ func TestNewDefaultClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("http://localhost:9999")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, failDiscovery(t))
 		assert.Equal(t, "http://localhost:9999", c.baseURL)
+		assert.Empty(t, c.keySigningCapability,
+			"an arbitrary environment URL must not inherit a local discovery secret")
 	})
 
 	t.Run("uses discovered server when env is empty", func(t *testing.T) {
@@ -676,12 +752,16 @@ func TestNewDefaultClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		discover := func(context.Context) (string, []Option) {
-			return "http://127.0.0.1:54321", nil
+			return "http://127.0.0.1:54321", []Option{
+				WithKeySigningCapability("protected-discovery-capability"),
+			}
 		}
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, discover)
 		assert.Equal(t, "http://127.0.0.1:54321", c.baseURL)
+		assert.Equal(t, "protected-discovery-capability", c.keySigningCapability)
 	})
 
 	t.Run("applies options", func(t *testing.T) {
@@ -689,6 +769,7 @@ func TestNewDefaultClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("").AnyTimes()
 
 		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery, WithTimeout(5*time.Second))
 		assert.Equal(t, 5*time.Second, c.httpClient.Timeout)
@@ -739,4 +820,384 @@ type failReader struct{}
 
 func (*failReader) Read([]byte) (int, error) {
 	return 0, errors.New("simulated read error")
+}
+
+// TestInstallCarriesAllowUnsigned round-trips the unsigned exception through
+// the client's request body — without this, the CLI flag silently never
+// reaches the server (every --allow-unsigned install would 403 telling the
+// user to pass the flag they passed).
+func TestInstallCarriesAllowUnsigned(t *testing.T) {
+	t.Parallel()
+
+	var got installRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(installResponse{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Install(t.Context(), skills.InstallOptions{
+		Name:          "my-skill",
+		Scope:         skills.ScopeProject,
+		ProjectRoot:   "/tmp/project",
+		AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+}
+
+// TestSyncCarriesAdoptionTrustOptions mirrors the install trust options for
+// sync/adopt. A key is encoded material, not a client-local file path, and
+// both it and the unsigned exception must survive the HTTP boundary.
+func TestSyncCarriesAdoptionTrustOptions(t *testing.T) {
+	t.Parallel()
+
+	var got syncRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(skills.SyncResult{})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Sync(t.Context(), skills.SyncOptions{
+		ProjectRoot:   "/tmp/project",
+		Adopt:         true,
+		AllowUnsigned: true,
+		PublicKey:     "encoded-public-key",
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+	assert.Equal(t, "encoded-public-key", got.PublicKey, "public_key must reach the server")
+}
+
+func TestUpgradeCarriesPublicKey(t *testing.T) {
+	t.Parallel()
+
+	var got upgradeRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(skills.UpgradeResult{}))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).Upgrade(t.Context(), skills.UpgradeOptions{
+		ProjectRoot:       "/tmp/project",
+		AllowSignerChange: true,
+		PublicKey:         "encoded-public-key",
+	})
+	require.NoError(t, err)
+	assert.True(t, got.AllowSignerChange)
+	assert.Equal(t, "encoded-public-key", got.PublicKey, "public_key must reach the server")
+}
+
+func TestTimeoutFromEnv(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+		ok    bool
+	}{
+		{name: "unset falls back to the default", value: "", want: 0, ok: false},
+		{name: "a duration is honored", value: "45s", want: 45 * time.Second, ok: true},
+		{name: "minutes parse", value: "5m", want: 5 * time.Minute, ok: true},
+		{name: "surrounding whitespace is tolerated", value: "  90s ", want: 90 * time.Second, ok: true},
+		{name: "a bare number is not a duration", value: "60", want: 0, ok: false},
+		{name: "garbage degrades to the default", value: "soon", want: 0, ok: false},
+		{name: "zero would disable the timeout, so it is ignored", value: "0s", want: 0, ok: false},
+		{name: "negative is ignored", value: "-5s", want: 0, ok: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			mockEnv := envmocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv(envAPITimeout).Return(tc.value)
+
+			got, ok := timeoutFromEnv(mockEnv)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestNewDefaultClientTimeoutPrecedence(t *testing.T) {
+	t.Parallel()
+
+	noDiscovery := func(context.Context) (string, []Option) { return "", nil }
+
+	t.Run("defaults when the env is unset", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("")
+
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery)
+		assert.Equal(t, defaultTimeout, c.httpClient.Timeout)
+	})
+
+	t.Run("env overrides the default", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("2m")
+
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery)
+		assert.Equal(t, 2*time.Minute, c.httpClient.Timeout)
+	})
+
+	t.Run("an explicit option outranks the env", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("2m")
+
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery, WithTimeout(7*time.Second))
+		assert.Equal(t, 7*time.Second, c.httpClient.Timeout)
+	})
+
+	t.Run("env overrides the timeout discovery installs", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+		mockEnv.EXPECT().Getenv(envAPITimeout).Return("3m")
+
+		discover := func(context.Context) (string, []Option) {
+			return "http://127.0.0.1:54321", []Option{WithHTTPClient(&http.Client{Timeout: defaultTimeout})}
+		}
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, discover)
+		assert.Equal(t, 3*time.Minute, c.httpClient.Timeout,
+			"WithHTTPClient from discovery must not shadow an operator-set timeout")
+	})
+}
+
+// TestTimeoutIsReportedAsTimeoutNotUnreachable pins the distinction the CLI
+// hint depends on: a healthy-but-slow server must not be reported as absent.
+func TestTimeoutIsReportedAsTimeoutNotUnreachable(t *testing.T) {
+	t.Parallel()
+
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-blocked:
+		case <-r.Context().Done():
+		case <-time.After(30 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, WithTimeout(50*time.Millisecond))
+	_, err := c.List(t.Context(), skills.ListOptions{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRequestTimeout)
+	assert.NotErrorIs(t, err, ErrServerUnreachable,
+		"the server answered the connection; only the response was slow")
+}
+
+func TestUnreachableServerIsStillUnreachable(t *testing.T) {
+	t.Parallel()
+
+	// Bind and immediately release a port so nothing is listening on it.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().String()
+	require.NoError(t, l.Close())
+
+	c := NewClient("http://"+addr, WithTimeout(2*time.Second))
+	_, err = c.List(t.Context(), skills.ListOptions{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrServerUnreachable)
+	assert.NotErrorIs(t, err, ErrRequestTimeout)
+}
+
+// TestCallerCancellationIsNeitherSentinel keeps a user pressing Ctrl-C from
+// being reported as a server problem.
+func TestCallerCancellationIsNeitherSentinel(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	c := NewClient(srv.URL, WithTimeout(30*time.Second))
+	_, err := c.List(ctx, skills.ListOptions{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, ErrRequestTimeout)
+	assert.NotErrorIs(t, err, ErrServerUnreachable)
+}
+
+// TestInstallCarriesTrustStateBackToCaller pins the full wire round-trip for
+// the fields the CLI uses to report trust. The CLI is a pure HTTP client, so a
+// field the server sets but the response DTO omits is invisible in production
+// even though a direct unit test of the printer would still pass — every
+// install would silently render as untracked.
+func TestInstallCarriesTrustStateBackToCaller(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response installResponse
+	}{
+		{
+			name: "signed install reports the pinned identity",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "signed-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity: "/.github/workflows/build-skills.yml",
+					CertIssuer:     "https://token.actions.githubusercontent.com",
+					RepositoryURI:  "https://github.com/stacklok/dockyard",
+				},
+			},
+		},
+		{
+			name: "certificate ref and runner environment survive the round trip",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "pinned-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity:    "/.github/workflows/build-skills.yml",
+					CertIssuer:        "https://token.actions.githubusercontent.com",
+					RepositoryURI:     "https://github.com/stacklok/dockyard",
+					RepositoryRef:     "refs/heads/main",
+					RunnerEnvironment: "github-hosted",
+				},
+			},
+		},
+		{
+			name: "provisional provenance survives the round trip",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "git-skill"}},
+				Provenance: &skills.ProvenanceInfo{
+					SignerIdentity: "someone@example.com",
+					CertIssuer:     "https://accounts.google.com",
+					Provisional:    true,
+				},
+			},
+		},
+		{
+			name: "explicit unsigned exception is reported as such",
+			response: installResponse{
+				Skill:    skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "unsigned-skill"}},
+				Unsigned: true,
+			},
+		},
+		{
+			name: "an install with neither reports neither",
+			response: installResponse{
+				Skill: skills.InstalledSkill{Metadata: skills.SkillMetadata{Name: "plain-skill"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				require.NoError(t, json.NewEncoder(w).Encode(tt.response))
+			}))
+			defer srv.Close()
+
+			got, err := newTestClient(t, srv).Install(t.Context(), skills.InstallOptions{Name: "x"})
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.response.Provenance, got.Provenance,
+				"provenance must survive the HTTP boundary — the CLI has no other source for it")
+			assert.Equal(t, tt.response.Unsigned, got.Unsigned)
+		})
+	}
+}
+
+// TestPushDoesNotFollowRedirectsWithIdentityToken proves the transport guard
+// cannot be sidestepped by a redirect. A 307 preserves the method and replays
+// the body, so an accepted origin answering with one would hand the
+// Fulcio-redeemable token to whatever Location names. Two servers: the first
+// is loopback and so passes CheckTransport, the second records any request it
+// receives and must receive none.
+func TestPushDoesNotFollowRedirectsWithIdentityToken(t *testing.T) {
+	t.Parallel()
+
+	var secondHits int
+	var secondSawToken bool
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		var got pushRequest
+		if json.NewDecoder(r.Body).Decode(&got) == nil && got.IdentityToken != "" {
+			secondSawToken = true
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer second.Close()
+
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, second.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer first.Close()
+
+	c := NewClient(first.URL)
+	err := c.Push(t.Context(), skills.PushOptions{
+		Reference:     "ghcr.io/org/artifact:v1.0.0",
+		IdentityToken: "a.b.c",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
+	assert.Zero(t, secondHits, "the redirect target must never be contacted")
+	assert.False(t, secondSawToken, "the identity token must never leave the approved origin")
+}
+
+// TestPushDoesNotFollowRedirectsWithKeySigningCapability proves a server
+// cannot redirect the discovery capability to another origin. A 307 would
+// otherwise preserve the push body and Go's default redirect handling copies
+// the custom header to the next request.
+func TestPushDoesNotFollowRedirectsWithKeySigningCapability(t *testing.T) {
+	t.Parallel()
+
+	var secondHits int
+	var secondSawCapability bool
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		secondSawCapability = r.Header.Get(discovery.KeySigningCapabilityHeader) != ""
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(second.Close)
+
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "protected-discovery-capability",
+			r.Header.Get(discovery.KeySigningCapabilityHeader))
+		http.Redirect(w, r, second.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(first.Close)
+
+	c := NewClient(first.URL, WithKeySigningCapability("protected-discovery-capability"))
+	err := c.Push(t.Context(), skills.PushOptions{
+		Reference: "ghcr.io/org/artifact:v1.0.0",
+		Key:       "/home/user/cosign.key",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, identitytoken.ErrInsecureTransport)
+	assert.Zero(t, secondHits, "the redirect target must never be contacted")
+	assert.False(t, secondSawCapability, "the capability must never leave the approved origin")
 }

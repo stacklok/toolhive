@@ -815,7 +815,7 @@ func TestIntegrationGroupBasedNonListOperations(t *testing.T) {
 				"groups": []interface{}{"devs"},
 			},
 			method:        string(mcp.MethodResourcesRead),
-			params:        map[string]interface{}{"uri": "public_data"},
+			params:        map[string]interface{}{"uri": "harness://static/public_data"},
 			expectAllowed: true,
 		},
 	}
@@ -970,8 +970,10 @@ func TestIntegrationTransitiveGroupHierarchy(t *testing.T) {
 }
 
 // TestIntegrationUpstreamProviderGroupAuth verifies that when
-// PrimaryUpstreamProvider is configured, group extraction uses the upstream
-// token's claims — not the direct request claims — through the full middleware.
+// PrimaryUpstreamProvider is configured, group extraction uses the pinned
+// provider's own tokens — its access token, or its id_token for the claims that
+// access token omits (#6049) — and never the direct request claims, through the
+// full middleware.
 func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 	t.Parallel()
 
@@ -991,7 +993,10 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 		name          string
 		directClaims  jwt.MapClaims
 		upstreamToken string
-		expectAllowed bool
+		// upstreamIDToken is the pinned provider's stored id_token. Empty means the
+		// provider has none stored (an OAuth 2.0 upstream never asked for `openid`).
+		upstreamIDToken string
+		expectAllowed   bool
 	}{
 		{
 			name:         "upstream_groups_authorize",
@@ -1012,12 +1017,47 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 			expectAllowed: false,
 		},
 		{
+			// #6049 through the full middleware: the pinned upstream asserts group
+			// membership in its id_token only, so reading the access token alone
+			// would leave no `groups` key and tools/call would 403 for every user.
+			name:         "upstream_id_token_groups_authorize",
+			directClaims: jwt.MapClaims{"sub": "thv-user"},
+			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub": "upstream-user",
+			}),
+			upstreamIDToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub":    "upstream-user",
+				"groups": []interface{}{"platform-eng"},
+			}),
+			expectAllowed: true,
+		},
+		{
 			name: "direct_groups_ignored_when_upstream_configured",
 			directClaims: jwt.MapClaims{
 				"sub":    "thv-user",
 				"groups": []interface{}{"platform-eng"},
 			},
 			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub":    "upstream-user",
+				"groups": []interface{}{"other"},
+			}),
+			expectAllowed: false,
+		},
+		{
+			// The same invariant with the id_token path live: reading the pinned
+			// provider's id_token as a group source does not make the
+			// ToolHive-issued token one. Neither of the provider's own tokens names the
+			// permitted group, so the request stays 403 even though the token the
+			// client presented does.
+			name: "direct_groups_still_ignored_when_an_id_token_is_present",
+			directClaims: jwt.MapClaims{
+				"sub":    "thv-user",
+				"groups": []interface{}{"platform-eng"},
+			},
+			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub": "upstream-user",
+			}),
+			upstreamIDToken: makeUnsignedJWT(t, jwt.MapClaims{
 				"sub":    "upstream-user",
 				"groups": []interface{}{"other"},
 			}),
@@ -1046,6 +1086,9 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 					Claims:  tt.directClaims,
 				},
 				UpstreamTokens: map[string]string{providerName: tt.upstreamToken},
+			}
+			if tt.upstreamIDToken != "" {
+				identity.UpstreamIDTokens = map[string]string{providerName: tt.upstreamIDToken}
 			}
 			httpReq = httpReq.WithContext(auth.WithIdentity(httpReq.Context(), identity))
 
@@ -1163,6 +1206,175 @@ func TestIntegrationPrimaryUpstreamProviderClaimAttributeAccess(t *testing.T) {
 					Claims:  directClaims,
 				},
 				UpstreamTokens: map[string]string{providerName: upstreamToken},
+			}
+			httpReq = httpReq.WithContext(auth.WithIdentity(httpReq.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			var handlerCalled bool
+			mockHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"result": "ok"}`))
+			})
+
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler, nil))
+			middleware.ServeHTTP(rr, httpReq)
+
+			if tt.expectAllowed {
+				assert.Equal(t, http.StatusOK, rr.Code)
+				assert.True(t, handlerCalled)
+			} else {
+				assert.Equal(t, http.StatusForbidden, rr.Code)
+				assert.False(t, handlerCalled)
+			}
+		})
+	}
+}
+
+// TestIntegrationUpstreamJWTWithoutEmailClaim is the end-to-end reproducer for
+// stacklok/toolhive#5916, driven through the full authorization middleware with
+// the exact policy pair from the report.
+//
+// When the embedded auth server is active, the runner force-injects the first
+// upstream provider as Cedar's PrimaryUpstreamProvider, so Cedar sources claims
+// from the upstream IdP's access token. Providers that issue JWT-shaped access
+// tokens without `email` (JetBrains Hub is a public example) used to make every
+// request deny: the token parsed cleanly, so the opaque-token fallback added in
+// #5147 did not apply, and `principal has claim_email` was false for every user.
+// Opaque-token upstreams (Google, GitHub) masked the bug because their tokens hit
+// that fallback and saw the AS-issued token's mirrored `email`.
+//
+// The provider does assert `email` — in its id_token, which the auth server stores
+// alongside the access token for the same provider. The fix reads the profile
+// claims the access token omits from that id_token, keeping the claim's provenance
+// with the pinned upstream.
+func TestIntegrationUpstreamJWTWithoutEmailClaim(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "hub"
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		// The report's policies verbatim: a defensively `has`-guarded domain
+		// gate plus a tool permit.
+		Policies: []string{
+			`forbid(principal, action, resource)
+			 unless { principal has claim_email && principal.claim_email like "*@example.com" };`,
+			`permit(principal, action == Action::"call_tool", resource);`,
+		},
+		EntitiesJSON:            "[]",
+		PrimaryUpstreamProvider: providerName,
+	}, "")
+	require.NoError(t, err)
+
+	// Claims of the token the client actually presented, as minted by the embedded
+	// auth server: an internal ToolHive user ID (a UserResolver UUID, deliberately
+	// NOT the upstream subject) plus the profile it mirrored from the FIRST
+	// configured upstream. In a multi-upstream chain that is not necessarily the
+	// pinned provider, so these must never reach Cedar on this path — the
+	// distinctive email makes a leak visible as an unexpected deny.
+	asIssuedClaims := jwt.MapClaims{
+		"sub":       "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+		"email":     "leaked-from-as-token@wrong-provider.example",
+		"name":      "Leaked From AS Token",
+		"iss":       "https://thv-as.example.com/",
+		"aud":       "toolhive",
+		"client_id": "vscode",
+	}
+
+	// The pinned provider's id_token, stored beside its access token at login.
+	// This is where this provider asserts the email.
+	upstreamIDToken := makeUnsignedJWT(t, jwt.MapClaims{
+		"sub":   "hub|alice",
+		"email": "alice@example.com",
+		"name":  "Alice",
+	})
+
+	tests := []struct {
+		name          string
+		upstreamToken string
+		requestClaims jwt.MapClaims
+		expectAllowed bool
+	}{
+		{
+			// The reported case: parses as a JWT, carries no `email`.
+			name: "jwt_access_token_without_email_uses_id_token_email",
+			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub": "hub|alice",
+				"iss": "https://hub.example.com",
+			}),
+			expectAllowed: true,
+		},
+		{
+			// The access token's own `email` still wins where it asserts one, and
+			// it is outside the gated domain here, so the gate must reject.
+			name: "access_token_email_wins_over_id_token_email",
+			upstreamToken: makeUnsignedJWT(t, jwt.MapClaims{
+				"sub":   "hub|alice",
+				"email": "alice@contractor.example",
+			}),
+			expectAllowed: false,
+		},
+		{
+			// Regression guard for the #5147 path, which this change leaves intact:
+			// an opaque access token has no claims to read, so that branch still
+			// evaluates the ToolHive-issued token's claims. Those carry the
+			// upstream profile only because the auth server mirrors the FIRST
+			// configured upstream, so this case supplies a single-upstream
+			// AS token rather than the leak sentinel the JWT cases use.
+			//
+			// That leaves the two branches inconsistent about claim provenance
+			// (and about the principal: this branch's `sub` is ToolHive's internal
+			// user ID, not the upstream subject). Unifying them on the id_token is
+			// a follow-up — it changes behaviour on a shipped path.
+			name:          "opaque_upstream_token_still_falls_back",
+			upstreamToken: "ya29.opaque-google-style-token",
+			requestClaims: jwt.MapClaims{
+				"sub":   "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+				"email": "alice@example.com",
+				"name":  "Alice",
+			},
+			expectAllowed: true,
+		},
+		{
+			// A JWT-shaped but unparsable upstream token must stay a hard deny:
+			// silently degrading a tampered token to other claims would let it
+			// bypass policy.
+			name:          "tampered_upstream_jwt_still_denies",
+			upstreamToken: "not-base64.not-base64.not-base64",
+			expectAllowed: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			params, err := json.Marshal(map[string]interface{}{
+				"name":      "deploy",
+				"arguments": map[string]interface{}{},
+			})
+			require.NoError(t, err)
+			callReq, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), string(mcp.MethodToolsCall), json.RawMessage(params))
+			require.NoError(t, err)
+			reqJSON, err := jsonrpc2.EncodeMessage(callReq)
+			require.NoError(t, err)
+
+			httpReq, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(reqJSON))
+			require.NoError(t, err)
+			httpReq.Header.Set("Content-Type", "application/json")
+
+			requestClaims := tt.requestClaims
+			if requestClaims == nil {
+				requestClaims = asIssuedClaims
+			}
+
+			identity := &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "7f3c1e64-9b2a-4d51-8e77-1c0a5f3b9d42",
+					Claims:  requestClaims,
+				},
+				UpstreamTokens:   map[string]string{providerName: tt.upstreamToken},
+				UpstreamIDTokens: map[string]string{providerName: upstreamIDToken},
 			}
 			httpReq = httpReq.WithContext(auth.WithIdentity(httpReq.Context(), identity))
 

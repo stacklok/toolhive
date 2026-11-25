@@ -86,6 +86,66 @@ func TestValidateCABundleSource(t *testing.T) {
 	}
 }
 
+func TestValidateCABundleSourceShape(t *testing.T) {
+	t.Parallel()
+
+	// Longer than the 48-char cap ValidateCABundleSource enforces for OIDC
+	// volume names, which must not apply to the shape-only check.
+	const overOIDCCapLength = 60
+
+	tests := []struct {
+		name        string
+		ref         *mcpv1beta1.CABundleSource
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "nil ref is valid",
+			ref:     nil,
+			wantErr: false,
+		},
+		{
+			name:    "valid configMapRef with name and key",
+			ref:     makeCABundleSource("my-ca", "ca.crt"),
+			wantErr: false,
+		},
+		{
+			name:        "missing configMapRef",
+			ref:         &mcpv1beta1.CABundleSource{},
+			wantErr:     true,
+			errContains: "configMapRef must be specified in caBundleRef",
+		},
+		{
+			name:        "empty configMapRef name",
+			ref:         makeCABundleSource("", ""),
+			wantErr:     true,
+			errContains: "configMapRef.name must be specified",
+		},
+		{
+			name:    "name longer than the OIDC volume-name cap is accepted",
+			ref:     makeCABundleSource(strings.Repeat("a", overOIDCCapLength), ""),
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validation.ValidateCABundleSourceShape(tt.ref)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errContains != "" {
+					assert.ErrorContains(t, err, tt.errContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestValidateOIDCIssuerURL(t *testing.T) {
 	t.Parallel()
 

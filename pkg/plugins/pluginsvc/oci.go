@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // maxConfigSize bounds the OCI image config blob read into memory during
@@ -57,6 +60,46 @@ func parseOCIReference(name string) (nameref.Reference, bool, error) {
 		return nil, true, err
 	}
 	return ref, true, nil
+}
+
+// validateOCIRegistryHost rejects OCI references whose registry host is
+// localhost or a private/loopback IP, preventing SSRF via attacker-controlled
+// references on the install and content endpoints. Mirrors the git install
+// path's validateHost (pkg/skills/gitresolver). In dev mode (TOOLHIVE_DEV=true)
+// the check is relaxed so E2E tests can pull from a local registry.
+//
+// NOTE: This check only validates literal IPs and known localhost strings.
+// Hostnames that DNS-resolve to private IPs (DNS rebinding) are NOT caught.
+func validateOCIRegistryHost(ref nameref.Reference) error {
+	host := ref.Context().RegistryStr()
+
+	// Strip port if present.
+	hostname := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostname = h
+	}
+
+	// Dev-mode bypass mirrors gitresolver.isDevMode() (TOOLHIVE_DEV=true);
+	// that helper is unexported, so the same env-var check is replicated here.
+	if strings.EqualFold(os.Getenv("TOOLHIVE_DEV"), "true") {
+		return nil
+	}
+
+	if networking.IsLocalhost(hostname) {
+		return httperr.WithCode(
+			fmt.Errorf("registry host %q is not allowed: localhost is rejected for SSRF prevention", host),
+			http.StatusBadRequest,
+		)
+	}
+
+	if ip := net.ParseIP(hostname); ip != nil && networking.IsPrivateIP(ip) {
+		return httperr.WithCode(
+			fmt.Errorf("registry host %q is not allowed: private/loopback IPs are rejected for SSRF prevention", host),
+			http.StatusBadRequest,
+		)
+	}
+
+	return nil
 }
 
 // isPluginArtifact reports whether the OCI descriptor at digest d carries

@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -38,10 +39,11 @@ type GatewayRequest struct {
 // for plain HTTP. The HTTP variant is simpler for e2e tests where the thv
 // subprocess cannot be easily configured to trust a self-signed cert.
 type LLMGatewayMock struct {
-	server  *http.Server
-	port    int
-	useTLS  bool
-	certPEM []byte // non-nil only when useTLS is true
+	server   *http.Server
+	listener net.Listener
+	port     int
+	useTLS   bool
+	certPEM  []byte // non-nil only when useTLS is true
 
 	mu       sync.Mutex
 	requests []GatewayRequest
@@ -50,18 +52,31 @@ type LLMGatewayMock struct {
 // NewLLMGatewayMock creates a mock LLM gateway that serves HTTPS with a
 // self-signed certificate. Use CertPEM / TLSClientConfig to build a trusting
 // HTTP client. Call Start to begin serving.
+//
+// The listener is bound before anything else, closing the window between
+// port selection and bind that a separate "pick a port, then bind later"
+// step would leave open. Pass port 0 to let the OS choose an ephemeral port;
+// use Port() to read back the port actually bound.
 func NewLLMGatewayMock(port int) (*LLMGatewayMock, error) {
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return nil, fmt.Errorf("failed to listen: %w", err)
+	}
+	realPort := listener.Addr().(*net.TCPAddr).Port
+
 	certPEM, keyPEM, err := generateGatewayCert()
 	if err != nil {
+		_ = listener.Close()
 		return nil, err
 	}
 
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
+		_ = listener.Close()
 		return nil, fmt.Errorf("loading TLS key pair: %w", err)
 	}
 
-	m := &LLMGatewayMock{port: port, useTLS: true, certPEM: certPEM}
+	m := &LLMGatewayMock{listener: listener, port: realPort, useTLS: true, certPEM: certPEM}
 	m.server = m.newServer()
 	m.server.TLSConfig = &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -69,6 +84,11 @@ func NewLLMGatewayMock(port int) (*LLMGatewayMock, error) {
 	}
 
 	return m, nil
+}
+
+// Port returns the port the mock gateway is bound to.
+func (m *LLMGatewayMock) Port() int {
+	return m.port
 }
 
 func (m *LLMGatewayMock) newServer() *http.Server {
@@ -84,7 +104,6 @@ func (m *LLMGatewayMock) newServer() *http.Server {
 		_, _ = w.Write([]byte("OK"))
 	})
 	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", m.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -96,11 +115,11 @@ func (m *LLMGatewayMock) Start() error {
 	go func() {
 		var err error
 		if m.useTLS {
-			err = m.server.ListenAndServeTLS("", "")
+			err = m.server.ServeTLS(m.listener, "", "")
 		} else {
-			err = m.server.ListenAndServe()
+			err = m.server.Serve(m.listener)
 		}
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()

@@ -1,0 +1,122 @@
+#
+# Copyright 2025 Stacklok, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This workflow builds distributable Claude Code Agent Skills from skills/
+# and publishes them as signed OCI artifacts to GHCR, through
+# StacklokLabs/toolhive-actions' skills-publish action.
+#
+# Keep this file's name and path. Keyless signatures carry this reusable
+# workflow's path as the signer identity (job_workflow_ref), and consumers pin
+# it in toolhive.lock.yaml; renaming or moving the file changes the signer.
+#
+# Deliberately separate from skills-build.yml, which performs the same build
+# for verification on pull requests and main. This one holds id-token: write
+# so `thv skill push` can sign keylessly, and it runs repository code
+# (`thv serve`, `thv skill build`) to do so — so it must only ever be called
+# from a trusted, post-merge context. releaser.yml is its sole caller; adding
+# a pull-request-triggered one would hand OIDC signing capability to code
+# from the pull request under review.
+
+name: Publish Skills
+
+on:
+  workflow_call:
+
+jobs:
+  skills-publish:
+    name: Publish Skills
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Lets `thv skill push` mint the ambient OIDC token it signs with. A
+      # reusable workflow cannot be granted more than its caller declares, so
+      # the calling job needs this too (releaser.yml's skills-publish).
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: 'stable'
+
+      - name: Compute version number
+        id: version-string
+        uses: $/.github/actions/compute-version
+
+      # The action refuses to push unless `thv version` reports v0.48.0 or
+      # later, the first release that signs every push. A plain build reports
+      # a development version, so stamp the release tag the same way the
+      # Taskfile and goreleaser do.
+      - name: Build thv binary
+        env:
+          TAG: ${{ steps.version-string.outputs.tag }}
+        run: |
+          go build \
+            -ldflags "-X github.com/stacklok/toolhive/pkg/versions.Version=${TAG}" \
+            -o "${RUNNER_TEMP}/thv-bin/thv" ./cmd/thv
+          echo "${RUNNER_TEMP}/thv-bin" >> "$GITHUB_PATH"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # OCI repository paths must be lowercase. On stacklok/toolhive this is
+      # ghcr.io/stacklok/toolhive/skills.
+      - name: Compute registry prefix
+        id: prefix
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "prefix=ghcr.io/${REPOSITORY,,}/skills" >> "$GITHUB_OUTPUT"
+
+      # The action pushes one tag at a time across every skill, in the order
+      # listed, so latest must come last: it moves only after the release tag
+      # is published everywhere.
+      - name: Compute tags
+        id: tags
+        env:
+          TAG: ${{ steps.version-string.outputs.tag }}
+          GH_REF: ${{ github.ref }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${TAG}"
+            # Also tag as latest when publishing from a release tag
+            if [[ "$GH_REF" == refs/tags/* ]]; then
+              echo "latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Validates every skill, builds each once per tag, then pushes and signs.
+      # No signing flags: with id-token: write granted, each push acquires the
+      # job's ambient OIDC token and signs keylessly against Fulcio and Rekor.
+      # Absent that token the action fails before building rather than
+      # publishing unsigned.
+      - name: Validate, build and publish skills
+        uses: StacklokLabs/toolhive-actions/skills-publish@2a20e956503d8878c219b2d2b7d91bdf89d731b4 # v0.0.9
+        with:
+          root: skills
+          registry-prefix: ${{ steps.prefix.outputs.prefix }}
+          tags: ${{ steps.tags.outputs.tags }}
+          push: 'true'

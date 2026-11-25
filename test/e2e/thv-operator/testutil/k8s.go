@@ -9,7 +9,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/onsi/gomega"
@@ -17,57 +19,61 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // CheckPodsReady checks that at least one pod matching the given labels is running and ready.
+//
+// It passes the instant a single pod is observed ready, so it cannot gate on a multi-replica
+// rollout -- use CheckPodsReadyCount when the workload has a known replica count.
 func CheckPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
-	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList,
-		client.InNamespace(namespace),
-		client.MatchingLabels(labels)); err != nil {
-		return fmt.Errorf("failed to list pods: %w", err)
+	ready, total, err := countReadyPods(ctx, c, namespace, labels)
+	if err != nil {
+		return err
 	}
-
-	if len(podList.Items) == 0 {
+	if total == 0 {
 		return fmt.Errorf("no pods found with labels %v", labels)
 	}
-
-	runningPods := 0
-	for _, pod := range podList.Items {
-		if pod.Status.Phase != corev1.PodRunning {
-			continue
-		}
-		for _, cond := range pod.Status.Conditions {
-			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-				runningPods++
-				break
-			}
-		}
-	}
-	if runningPods == 0 {
+	if ready == 0 {
 		return fmt.Errorf("no running and ready pods found with labels %v", labels)
+	}
+	return nil
+}
+
+// CheckPodsReadyCount checks that exactly want pods matching the given labels are running and
+// ready. Use this over CheckPodsReady whenever the expected replica count is known, so a gate
+// on "the workload is up" cannot be satisfied by a partial rollout.
+func CheckPodsReadyCount(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	labels map[string]string,
+	want int,
+) error {
+	ready, total, err := countReadyPods(ctx, c, namespace, labels)
+	if err != nil {
+		return err
+	}
+	if ready != want {
+		return fmt.Errorf("expected %d running and ready pods with labels %v, got %d ready of %d",
+			want, labels, ready, total)
 	}
 	return nil
 }
 
 // GetPodLogs retrieves logs from a specific pod container.
 func GetPodLogs(ctx context.Context, namespace, podName, containerName string, previous bool) (string, error) {
-	config, err := rest.InClusterConfig()
+	config, err := restConfig()
 	if err != nil {
-		kubeconfigPath := os.Getenv("KUBECONFIG")
-		if kubeconfigPath == "" {
-			kubeconfigPath = clientcmd.RecommendedHomeFile
-		}
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to get rest config: %w", err)
-		}
+		return "", err
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
@@ -94,6 +100,91 @@ func GetPodLogs(ctx context.Context, namespace, podName, containerName string, p
 		return "", fmt.Errorf("failed to read logs: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// ExecutePodCommand runs command in a container through the Kubernetes API exec subresource.
+// It does not invoke kubectl or expose the container's sockets outside the pod.
+func ExecutePodCommand(
+	ctx context.Context,
+	namespace, podName, containerName string,
+	command []string,
+) (string, error) {
+	if err := validatePodExecInput(namespace, podName, containerName, command); err != nil {
+		return "", err
+	}
+
+	config, err := restConfig()
+	if err != nil {
+		return "", err
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return "", fmt.Errorf("create Kubernetes clientset: %w", err)
+	}
+
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Namespace(namespace).
+		Name(podName).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   command,
+			Stdout:    true,
+			Stderr:    true,
+		}, scheme.ParameterCodec)
+	executor, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, req.URL())
+	if err != nil {
+		return "", fmt.Errorf("create pod exec executor: %w", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}); err != nil {
+		return "", fmt.Errorf("execute command in pod %q container %q: %w (stderr: %s)",
+			podName, containerName, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+func restConfig() (*rest.Config, error) {
+	config, err := rest.InClusterConfig()
+	if err == nil {
+		return config, nil
+	}
+
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = clientcmd.RecommendedHomeFile
+	}
+	config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("get rest config: %w", err)
+	}
+	return config, nil
+}
+
+func validatePodExecInput(namespace, podName, containerName string, command []string) error {
+	if errs := k8svalidation.IsDNS1123Label(namespace); len(errs) > 0 {
+		return fmt.Errorf("invalid namespace")
+	}
+	if errs := k8svalidation.IsDNS1123Subdomain(podName); len(errs) > 0 {
+		return fmt.Errorf("invalid pod name")
+	}
+	if errs := k8svalidation.IsDNS1123Label(containerName); len(errs) > 0 {
+		return fmt.Errorf("invalid container name")
+	}
+	if len(command) == 0 {
+		return fmt.Errorf("pod exec command is required")
+	}
+	for _, arg := range command {
+		if strings.TrimSpace(arg) == "" || strings.ContainsRune(arg, '\x00') {
+			return fmt.Errorf("invalid pod exec command argument")
+		}
+	}
+	return nil
 }
 
 // WaitForMCPServerRunning waits for an MCPServer to reach the Running phase.
@@ -169,4 +260,36 @@ func GetNodePort(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 
 	return nodePort
+}
+
+// countReadyPods returns how many pods matching labels are both Running and Ready, alongside the
+// total number matched. Terminating pods count towards the total but never towards ready: they can
+// still report Ready while shutting down, and the operator excludes them from its own status counts
+// for that reason (categorizePodStatus in mcpserver_controller.go, issue #4498), so counting them
+// would let a gate pass on a pod that is going away.
+func countReadyPods(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	labels map[string]string,
+) (ready, total int, err error) {
+	podList := &corev1.PodList{}
+	if err := c.List(ctx, podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels(labels)); err != nil {
+		return 0, 0, fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	for _, pod := range podList.Items {
+		if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				ready++
+				break
+			}
+		}
+	}
+	return ready, len(podList.Items), nil
 }

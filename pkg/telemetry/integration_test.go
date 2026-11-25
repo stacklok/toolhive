@@ -478,6 +478,115 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestTelemetryIntegration_UsesRepublishedRequestForMCPIdentity(t *testing.T) {
+	t.Parallel()
+
+	const (
+		requestedTool = "requested_search"
+		executedTool  = "executed_search"
+	)
+
+	for _, withExistingHolder := range []bool{false, true} {
+		name := "telemetry holder"
+		if withExistingHolder {
+			name = "outer audit holder"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			recorder := tracetest.NewSpanRecorder()
+			tracerProvider := sdktrace.NewTracerProvider(
+				sdktrace.WithSpanProcessor(recorder),
+				sdktrace.WithSampler(sdktrace.AlwaysSample()),
+			)
+			t.Cleanup(func() {
+				require.NoError(t, tracerProvider.Shutdown(context.Background()))
+			})
+
+			metricsReader := sdkmetric.NewManualReader()
+			meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(metricsReader))
+			t.Cleanup(func() {
+				require.NoError(t, meterProvider.Shutdown(context.Background()))
+			})
+
+			middleware := NewHTTPMiddleware(
+				Config{ServiceName: "test-service", ServiceVersion: "1.0.0"},
+				tracerProvider,
+				meterProvider,
+				"github",
+				"streamable-http",
+			)
+
+			mutatedBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"executed_search","arguments":{"query":"mutated"}}}`)
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				republished, err := mcp.RepublishParsedMCPRequest(r, mutatedBody)
+				require.NoError(t, err)
+				require.Equal(t, executedTool, mcp.GetParsedMCPRequest(republished.Context()).ResourceID)
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := mcp.ParsingMiddleware(middleware(inner))
+
+			requestBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"requested_search","arguments":{"query":"original"}}}`
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(requestBody))
+			req.Header.Set("Content-Type", "application/json")
+
+			var outerHolder *mcp.ParsedRequestHolder
+			if withExistingHolder {
+				outerHolder = &mcp.ParsedRequestHolder{}
+				req = req.WithContext(mcp.WithParsedRequestHolder(req.Context(), outerHolder))
+			}
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			spans := recorder.Ended()
+			require.Len(t, spans, 1)
+			assert.Equal(t, "tools/call "+executedTool, spans[0].Name())
+
+			spanAttrs := make(map[string]any, len(spans[0].Attributes()))
+			for _, attr := range spans[0].Attributes() {
+				spanAttrs[string(attr.Key)] = attr.Value.AsInterface()
+			}
+			assert.Equal(t, executedTool, spanAttrs["gen_ai.tool.name"])
+			assert.Contains(t, spanAttrs["gen_ai.tool.call.arguments"], "query=mutated")
+			assert.NotContains(t, spanAttrs["gen_ai.tool.call.arguments"], "query=original")
+
+			var rm metricdata.ResourceMetrics
+			require.NoError(t, metricsReader.Collect(context.Background(), &rm))
+			var requestResourceID, toolCallName string
+			for _, scopeMetrics := range rm.ScopeMetrics {
+				for _, metric := range scopeMetrics.Metrics {
+					sum, ok := metric.Data.(metricdata.Sum[int64])
+					if !ok {
+						continue
+					}
+					for _, dataPoint := range sum.DataPoints {
+						for _, attr := range dataPoint.Attributes.ToSlice() {
+							switch {
+							case metric.Name == metricRequestCounter && attr.Key == "mcp_resource_id":
+								requestResourceID = attr.Value.AsString()
+							case metric.Name == "toolhive_mcp_tool_calls" && attr.Key == "tool":
+								toolCallName = attr.Value.AsString()
+							}
+						}
+					}
+				}
+			}
+			assert.Equal(t, executedTool, requestResourceID)
+			assert.Equal(t, executedTool, toolCallName)
+			assert.NotEqual(t, requestedTool, requestResourceID)
+			assert.NotEqual(t, requestedTool, toolCallName)
+
+			if outerHolder != nil {
+				require.NotNil(t, outerHolder.Parsed)
+				assert.Equal(t, executedTool, outerHolder.Parsed.ResourceID,
+					"telemetry must reuse the holder installed by an outer audit middleware")
+			}
+		})
+	}
+}
+
 func TestTelemetryIntegration_MultipleRequests(t *testing.T) {
 	t.Parallel()
 

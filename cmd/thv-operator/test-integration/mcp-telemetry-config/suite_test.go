@@ -46,6 +46,21 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 
+	// The authz and webhook config controllers have no suite of their own; they
+	// run here so config_deletion_unblock_integration_test.go can cover their
+	// workload watches.
+	err = (&controllers.MCPAuthzConfigReconciler{
+		Client: suiteEnv.Manager.GetClient(),
+		Scheme: suiteEnv.Manager.GetScheme(),
+	}).SetupWithManager(suiteEnv.Manager)
+	Expect(err).ToNot(HaveOccurred())
+
+	err = (&controllers.MCPWebhookConfigReconciler{
+		Client: suiteEnv.Manager.GetClient(),
+		Scheme: suiteEnv.Manager.GetScheme(),
+	}).SetupWithManager(suiteEnv.Manager)
+	Expect(err).ToNot(HaveOccurred())
+
 	suiteEnv.StartManager()
 })
 

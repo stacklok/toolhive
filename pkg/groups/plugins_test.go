@@ -24,12 +24,14 @@ func TestAddPluginToGroups(t *testing.T) {
 		groupName  string
 		pluginName string
 		setupMock  func(*groupmocks.MockManager)
+		wantAdded  bool
 		wantErr    string
 	}{
 		{
 			name:       "adds plugin to one group",
 			groupName:  "mygroup",
 			pluginName: "my-plugin",
+			wantAdded:  true,
 			setupMock: func(m *groupmocks.MockManager) {
 				m.EXPECT().Get(gomock.Any(), "mygroup").
 					Return(&Group{Name: "mygroup", Plugins: []string{}}, nil)
@@ -85,87 +87,65 @@ func TestAddPluginToGroups(t *testing.T) {
 			mgr := groupmocks.NewMockManager(ctrl)
 			tt.setupMock(mgr)
 
-			err := AddPluginToGroup(context.Background(), mgr, tt.groupName, tt.pluginName)
+			added, err := AddPluginToGroup(context.Background(), mgr, tt.groupName, tt.pluginName)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.False(t, added)
 			} else {
 				require.NoError(t, err)
+				assert.Equal(t, tt.wantAdded, added)
 			}
 		})
 	}
 }
 
-func TestRemovePluginFromAllGroups(t *testing.T) {
+func TestRemovePluginFromGroup(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name       string
+		groupName  string
 		pluginName string
 		setupMock  func(*groupmocks.MockManager)
 		wantErr    string
 	}{
 		{
-			name:       "removes plugin from matching group",
+			name:       "removes plugin from group",
+			groupName:  "mygroup",
 			pluginName: "my-plugin",
 			setupMock: func(m *groupmocks.MockManager) {
-				m.EXPECT().List(gomock.Any()).Return([]*Group{
-					{Name: "mygroup", Plugins: []string{"my-plugin", "other"}},
-				}, nil)
+				m.EXPECT().Get(gomock.Any(), "mygroup").
+					Return(&Group{Name: "mygroup", Plugins: []string{"my-plugin", "other"}}, nil)
 				m.EXPECT().Update(gomock.Any(), &Group{Name: "mygroup", Plugins: []string{"other"}}).
 					Return(nil)
 			},
 		},
 		{
-			name:       "no-op when plugin is not in any group",
-			pluginName: "absent-plugin",
+			name:       "no-op when plugin is not a member",
+			groupName:  "mygroup",
+			pluginName: "absent",
 			setupMock: func(m *groupmocks.MockManager) {
-				m.EXPECT().List(gomock.Any()).Return([]*Group{
-					{Name: "mygroup", Plugins: []string{"some-other-plugin"}},
-				}, nil)
-				// No Update call expected.
+				m.EXPECT().Get(gomock.Any(), "mygroup").
+					Return(&Group{Name: "mygroup", Plugins: []string{"other"}}, nil)
 			},
 		},
 		{
-			name:       "no-op when no groups exist",
+			name:       "no-op when group name is empty",
+			groupName:  "",
+			pluginName: "my-plugin",
+			setupMock:  func(_ *groupmocks.MockManager) {},
+		},
+		{
+			name:       "returns error when group not found",
+			groupName:  "nonexistent",
 			pluginName: "my-plugin",
 			setupMock: func(m *groupmocks.MockManager) {
-				m.EXPECT().List(gomock.Any()).Return([]*Group{}, nil)
+				m.EXPECT().Get(gomock.Any(), "nonexistent").
+					Return(nil, errors.New("group not found"))
 			},
-		},
-		{
-			name:       "removes plugin from multiple groups",
-			pluginName: "shared",
-			setupMock: func(m *groupmocks.MockManager) {
-				m.EXPECT().List(gomock.Any()).Return([]*Group{
-					{Name: "group-a", Plugins: []string{"shared"}},
-					{Name: "group-b", Plugins: []string{"shared", "other"}},
-				}, nil)
-				m.EXPECT().Update(gomock.Any(), &Group{Name: "group-a", Plugins: []string{}}).
-					Return(nil)
-				m.EXPECT().Update(gomock.Any(), &Group{Name: "group-b", Plugins: []string{"other"}}).
-					Return(nil)
-			},
-		},
-		{
-			name:       "returns error when List fails",
-			pluginName: "my-plugin",
-			setupMock: func(m *groupmocks.MockManager) {
-				m.EXPECT().List(gomock.Any()).Return(nil, errors.New("store error"))
-			},
-			wantErr: "listing groups",
-		},
-		{
-			name:       "returns error when Update fails",
-			pluginName: "my-plugin",
-			setupMock: func(m *groupmocks.MockManager) {
-				m.EXPECT().List(gomock.Any()).Return([]*Group{
-					{Name: "mygroup", Plugins: []string{"my-plugin"}},
-				}, nil)
-				m.EXPECT().Update(gomock.Any(), gomock.Any()).Return(errors.New("write error"))
-			},
-			wantErr: "updating group",
+			wantErr: "getting group",
 		},
 	}
 
@@ -177,7 +157,7 @@ func TestRemovePluginFromAllGroups(t *testing.T) {
 			mgr := groupmocks.NewMockManager(ctrl)
 			tt.setupMock(mgr)
 
-			err := RemovePluginFromAllGroups(context.Background(), mgr, tt.pluginName)
+			err := RemovePluginFromGroup(context.Background(), mgr, tt.groupName, tt.pluginName)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

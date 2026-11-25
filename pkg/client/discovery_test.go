@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -215,6 +216,17 @@ func TestIsClientInstalled(t *testing.T) {
 
 	// VSCode path (.config/Code/User) is intentionally not created
 
+	// Qoder resolves via PlatformPrefix only (empty RelPath). Resolve its
+	// directory for the current OS and create it to simulate an install.
+	qoderPlatformPrefix := map[Platform][]string{
+		PlatformDarwin:  {".qoder"},
+		PlatformLinux:   {".qoder"},
+		PlatformWindows: {"AppData", "Roaming", "Qoder", "SharedClientCache"},
+	}
+	qoderDir := buildConfigDirectoryPath([]string{}, qoderPlatformPrefix, []string{tempHome})
+	err = os.MkdirAll(qoderDir, 0700)
+	require.NoError(t, err)
+
 	clientIntegrations := []clientAppConfig{
 		{
 			ClientType:   ClaudeCode,
@@ -230,6 +242,22 @@ func TestIsClientInstalled(t *testing.T) {
 			ClientType:   VSCode,
 			SettingsFile: "mcp.json",
 			RelPath:      []string{".config", "Code", "User"}, // not created
+		},
+		{
+			// PlatformPrefix-only client whose directory is present
+			ClientType:     Qoder,
+			SettingsFile:   "mcp.json",
+			PlatformPrefix: qoderPlatformPrefix,
+		},
+		{
+			// PlatformPrefix-only client whose directory is absent
+			ClientType:   ClientApp("qoder-missing"),
+			SettingsFile: "mcp.json",
+			PlatformPrefix: map[Platform][]string{
+				PlatformDarwin:  {".qoder-missing"},
+				PlatformLinux:   {".qoder-missing"},
+				PlatformWindows: {"AppData", "Roaming", "QoderMissing", "SharedClientCache"},
+			},
 		},
 		{
 			// unknown client, no config
@@ -249,6 +277,8 @@ func TestIsClientInstalled(t *testing.T) {
 		{name: "ClaudeCode settings file present", clientType: ClaudeCode, want: true},
 		{name: "Cursor directory present", clientType: Cursor, want: true},
 		{name: "VSCode directory absent", clientType: VSCode, want: false},
+		{name: "PlatformPrefix-only directory present", clientType: Qoder, want: true},
+		{name: "PlatformPrefix-only directory absent", clientType: ClientApp("qoder-missing"), want: false},
 		{name: "client not in integrations", clientType: ClientApp("not-registered"), want: false},
 	}
 
@@ -340,4 +370,29 @@ func TestGetClientStatus_WithGroups(t *testing.T) {
 	assert.True(t, exists)
 	assert.True(t, cursorStatus.Installed)
 	assert.True(t, cursorStatus.Registered, "Cursor should be registered via groups")
+}
+
+func TestQoderConfigPathsResolveCorrectly(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewTestClientManager(t.TempDir(), nil, supportedClientIntegrations, nil).lookupClientAppConfig(Qoder)
+	require.NotNil(t, cfg, "Qoder config should exist")
+	require.Empty(t, cfg.RelPath, "Qoder uses PlatformPrefix only")
+
+	home := t.TempDir()
+
+	// The documented Qoder config locations (verified on a real install):
+	//   macOS/Linux: ~/.qoder/mcp.json
+	//   Windows:     %APPDATA%\Qoder\SharedClientCache\mcp.json
+	expected := map[Platform]string{
+		PlatformDarwin:  filepath.Join(home, ".qoder"),
+		PlatformLinux:   filepath.Join(home, ".qoder"),
+		PlatformWindows: filepath.Join(home, "AppData", "Roaming", "Qoder", "SharedClientCache"),
+	}
+
+	want, ok := expected[Platform(runtime.GOOS)]
+	require.True(t, ok, "Qoder config must define a PlatformPrefix for the current platform")
+
+	got := buildConfigDirectoryPath(cfg.RelPath, cfg.PlatformPrefix, []string{home})
+	assert.Equal(t, want, got)
 }

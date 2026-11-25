@@ -91,7 +91,9 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 func createValidatingHandler(executors []clientExecutor, serverName, transport string) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip if it's not a parsed MCP request (middleware runs after mcp parser)
+			// The configured chain MUST place MCP parsing before this middleware.
+			// A nil POST context may be an admitted response or a missing-parser
+			// misconfiguration. These controls do not apply to non-POST traffic.
 			parsedMCP := mcp.GetParsedMCPRequest(r.Context())
 			if parsedMCP == nil {
 				next.ServeHTTP(w, r)
@@ -146,8 +148,9 @@ func createValidatingHandler(executors []clientExecutor, serverName, transport s
 						return
 					}
 
-					// Handle error based on failure policy
-					if exec.config.FailurePolicy == webhook.FailurePolicyIgnore {
+					// Handle error based on failure policy. A local error means the
+					// webhook was never consulted, so it is never ignored.
+					if exec.config.FailurePolicy == webhook.FailurePolicyIgnore && !webhook.IsLocalError(err) {
 						slog.Warn("Validating webhook error ignored due to fail-open policy",
 							"webhook", whName, "error", err)
 						continue
@@ -181,19 +184,21 @@ func readSourceIP(r *http.Request) string {
 }
 
 func sendErrorResponse(w http.ResponseWriter, statusCode int, message string, msgID interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
 	id, err := mcp.ConvertToJSONRPC2ID(msgID)
 	if err != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails
 	}
+	code := mcp.JSONRPCCodeForStatus(statusCode)
 
 	// Return a JSON-RPC 2.0 error so MCP clients can parse the denial.
 	// The HTTP status code signals the error at the transport level; the JSON-RPC body carries the detail.
 	errResp := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(int64(statusCode), message),
+		Error: jsonrpc2.NewError(code, message),
 	}
-	_ = json.NewEncoder(w).Encode(errResp)
+
+	// The helper encodes before writing any header, so an encode failure never
+	// leaves a half-written response (e.g. a status header followed by a
+	// second write). Nothing to do on a write error for a denial body.
+	_ = mcp.WriteJSONRPCError(w, statusCode, errResp)
 }

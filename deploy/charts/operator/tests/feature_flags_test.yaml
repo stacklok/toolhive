@@ -1,15 +1,18 @@
 suite: opt-in feature flags
 # The experimental and storage-version-migrator features are quoted-boolean env
-# vars. A dropped quote or a renamed var silently disables the feature, so pin
-# both the enabled and (in the baseline suite) disabled states.
-set:
-  operator.features.experimental: true
-  operator.features.storageVersionMigrator: true
+# vars. A dropped quote or a renamed var silently flips the feature, so pin both
+# the enabled and disabled states. storageVersionMigrator defaults to true, so
+# the disabled state is the one the baseline suite can't cover — pin it here.
+# The migrator also requires cluster-scoped RBAC, so the chart rejects it in
+# namespace scope; pin that validation too.
 templates:
   - deployment.yaml
 tests:
   - it: flips both feature-flag env vars to the quoted string "true"
     template: deployment.yaml
+    set:
+      operator.features.experimental: true
+      operator.features.storageVersionMigrator: true
     asserts:
       - contains:
           path: 'spec.template.spec.containers[0].env'
@@ -17,3 +20,28 @@ tests:
       - contains:
           path: 'spec.template.spec.containers[0].env'
           content: { name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR, value: "true" }
+
+  - it: opts out of the storage version migrator when set to false
+    template: deployment.yaml
+    set:
+      operator.features.storageVersionMigrator: false
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR, value: "false" }
+
+  # Namespace-scope + migrator enabled is tested separately in
+  # validate_features_test.yaml (suite-level set is required for failedTemplate).
+  - it: allows namespace scope when the storage version migrator is disabled
+    template: deployment.yaml
+    set:
+      operator.rbac.scope: namespace
+      operator.rbac.allowedNamespaces: [toolhive-system]
+      operator.features.storageVersionMigrator: false
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR, value: "false" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: WATCH_NAMESPACE, value: "toolhive-system" }

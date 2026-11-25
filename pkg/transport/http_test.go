@@ -12,8 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -218,7 +219,7 @@ func TestHTTPTransport_UnauthorizedResponseCallback(t *testing.T) {
 	})
 }
 
-func TestHasTokenExchangeMiddleware(t *testing.T) {
+func TestHasTokenInjectingMiddleware(t *testing.T) {
 	t.Parallel()
 
 	dummyMiddleware := func(next http.Handler) http.Handler { return next }
@@ -241,10 +242,18 @@ func TestHasTokenExchangeMiddleware(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "found",
+			name: "token exchange found",
 			middlewares: []types.NamedMiddleware{
 				{Name: "auth", Function: dummyMiddleware},
 				{Name: tokenexchange.MiddlewareType, Function: dummyMiddleware},
+			},
+			want: true,
+		},
+		{
+			name: "obo found",
+			middlewares: []types.NamedMiddleware{
+				{Name: "auth", Function: dummyMiddleware},
+				{Name: obo.MiddlewareType, Function: dummyMiddleware},
 			},
 			want: true,
 		},
@@ -253,7 +262,7 @@ func TestHasTokenExchangeMiddleware(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, hasTokenExchangeMiddleware(tt.middlewares))
+			assert.Equal(t, tt.want, hasTokenInjectingMiddleware(tt.middlewares))
 		})
 	}
 }

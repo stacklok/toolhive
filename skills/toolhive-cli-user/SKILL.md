@@ -1,13 +1,14 @@
 ---
 name: toolhive-cli-user
 description: >-
-  Guide for using ToolHive CLI (thv) to run and manage MCP servers and skills.
-  Use when running, listing, stopping, building, or configuring MCP servers locally.
-  Covers server lifecycle, registry browsing, secrets management, client registration,
-  groups, container builds, exports, permissions, network isolation, authentication,
-  and skill management (install, uninstall, list, info, build, push, validate).
-  NOT for Kubernetes operator usage or ToolHive development/contributing.
-version: 0.3.0
+  Guide for using ToolHive CLI (thv) to run and manage MCP servers, skills, and
+  AI-client plugins. Use when managing `thv ai-plugin` installs, project sync or
+  upgrades, or plugin publishing for Claude Code or Codex; also use for MCP
+  server and skill lifecycle commands. Covers server lifecycle, registries,
+  secrets, client registration, builds, permissions, skills, and AI plugins.
+  NOT for Kubernetes operator usage, ToolHive development/contributing, or
+  general AI-client configuration unrelated to ToolHive.
+version: 0.4.0
 license: Apache-2.0
 ---
 
@@ -23,12 +24,12 @@ Verify: `thv version`
 ## Quick Start
 
 ```bash
-thv run filesystem      # Run server from registry
+thv run fetch      # Run server from registry
 thv list                # List running servers
-thv status filesystem   # Detailed server info
-thv logs filesystem     # View logs
-thv stop filesystem     # Stop server
-thv rm filesystem       # Remove server
+thv status fetch   # Detailed server info
+thv logs fetch     # View logs
+thv stop fetch     # Stop server
+thv rm fetch       # Remove server
 ```
 
 ## Running MCP Servers
@@ -36,7 +37,7 @@ thv rm filesystem       # Remove server
 Five input methods: registry name, container image, protocol scheme (`uvx://`, `npx://`, `go://`), exported config (`--from-config`), or remote URL.
 
 ```bash
-thv run filesystem                                          # Registry
+thv run fetch                                          # Registry
 thv run ghcr.io/github/github-mcp-server:latest -- <args>   # Container image
 thv run uvx://mcp-server-git                                # Python (uvx)
 thv run npx://@modelcontextprotocol/server-filesystem       # Node.js (npx)
@@ -57,23 +58,23 @@ thv list --format json            # JSON output
 thv list --format mcpservers      # MCP client config format
 thv list --group production       # Filter by group
 
-thv status filesystem             # Detailed server info (URL, port, transport, uptime)
-thv status filesystem --format json
+thv status fetch             # Detailed server info (URL, port, transport, uptime)
+thv status fetch --format json
 
-thv stop filesystem github        # Stop specific servers
+thv stop fetch github        # Stop specific servers
 thv stop --all                    # Stop all
 
-thv start filesystem              # Resume stopped server
+thv start fetch              # Resume stopped server
 thv start --all                   # Start all stopped servers
 thv start --group development     # Start all in group
-thv restart filesystem            # Alias for start (backward compat)
+thv restart fetch            # Alias for start (backward compat)
 
-thv rm filesystem github          # Remove servers
+thv rm fetch github          # Remove servers
 thv rm --all                      # Remove all
 
-thv logs filesystem               # Container logs
-thv logs filesystem --follow      # Real-time
-thv logs filesystem --proxy       # Proxy logs
+thv logs fetch               # Container logs
+thv logs fetch --follow      # Real-time
+thv logs fetch --proxy       # Proxy logs
 thv logs prune                    # Clean orphaned logs
 ```
 
@@ -162,7 +163,7 @@ thv run myserver --isolate-network    # Block all outbound except allowlisted ho
 **Volume mounts** for filesystem access:
 
 ```bash
-thv run filesystem -v /home/user/projects:/workspace:ro    # Read-only mount
+thv run <server> -v /home/user/projects:/workspace:ro    # Read-only mount
 ```
 
 **.thvignore** hides sensitive files from volume mounts using gitignore-style patterns. Place `.thvignore` in mounted directories or globally at `~/.config/toolhive/thvignore`. Disable global patterns with `--ignore-globally=false`.
@@ -213,14 +214,39 @@ thv skill push ghcr.io/org/skill:v1.0                   # Push to registry
 
 For all flags and detailed examples, see [COMMANDS.md](references/COMMANDS.md#skill-commands) and [EXAMPLES.md](references/EXAMPLES.md#skills-management-examples).
 
+## AI Plugin Management
+
+Use `thv ai-plugin` for manifest-based bundles for AI clients, not ToolHive itself. Plugins may contain commands, agents, skills, hooks, and declared MCP/LSP entries; they are distinct from standalone ToolHive skills and MCP workloads. Plugin-declared MCP/LSP entries are not ToolHive-managed workloads.
+
+These commands use the ToolHive API; start `thv serve` first. The supported plugin clients are `claude-code` and `codex`; target either, or `all` available clients, with `--clients`. Install an exact registry name, OCI reference, or `git://host/org/repo[@ref][#subdir]` source, then use `list`/`info` to inspect what ToolHive installed. Verification and lock-file trust are project-only: user-scoped installs do not use lock-file verification.
+
+```bash
+thv ai-plugin install example-plugin --clients claude-code
+thv ai-plugin install ghcr.io/example-org/example-plugin:v1.0 --scope project --project-root .
+thv ai-plugin install git://github.com/example-org/example-plugin@v1.0#plugin --scope project --project-root .
+thv ai-plugin list --scope project --project-root .
+thv ai-plugin sync --check --project-root .
+thv ai-plugin upgrade --preview --project-root .
+```
+
+ToolHive extracts, registers, and enables Claude Code plugins. For Codex, ToolHive only materializes the ToolHive marketplace; complete activation yourself:
+
+```bash
+codex plugin install example-plugin@toolhive
+```
+
+ToolHive does not edit Codex `config.toml` or invoke Codex. Installed-component metadata only describes the extracted/materialized tree; it does not prove client activation. A client can leave unsupported components in that tree without loading them.
+
+For command details, trust boundaries, and publishing, see [COMMANDS.md](references/COMMANDS.md#ai-plugin-commands) and [EXAMPLES.md](references/EXAMPLES.md#ai-plugin-management-examples).
+
 ## Debugging
 
 ```bash
-thv inspector filesystem                        # MCP Inspector UI
-thv mcp list tools --server filesystem
-thv mcp list resources --server filesystem
-thv mcp list prompts --server filesystem
-thv mcp call read_file --server filesystem --args '{"path":"/etc/hosts"}'  # Invoke a tool
+thv inspector fetch                        # MCP Inspector UI
+thv mcp list tools --server fetch
+thv mcp list resources --server fetch
+thv mcp list prompts --server fetch
+thv mcp call fetch --server fetch --args '{"url":"https://example.com"}'  # Invoke a tool
 thv runtime check                               # Verify container runtime
 ```
 
@@ -232,6 +258,9 @@ For tool invocation patterns (file args, stdin, JSON output, error handling), se
 - NEVER pass secrets as `-e SECRET=value` -- use `--secret` with managed secrets instead.
 - Confirm destructive operations (`thv rm --all`, `thv stop --all`, `thv group rm --with-workloads`) with the user before running.
 - Skill commands require `thv serve` to be running. If a skill command fails with a connection error, suggest starting `thv serve` first.
+- AI plugin commands also require `thv serve`. Treat plugin content as AI-followed instructions: inspect the source and use project-scoped installs only in the intended project.
+- For an externally key-pair-signed OCI plugin, give `--public-key` only on its first project install; ToolHive pins the key in `toolhive.lock.yaml` for sync and upgrade. Do not replace that pin without explicit review.
+- Never add `--allow-unsigned`, `--allow-signer-change`, `--allow-ref-change`, `--force`, `--prune`, or `--yes` silently. Unsigned consent is explicit and does not bypass invalid signature verification. Confirm before `sync`/`upgrade` applies content or `builds remove` deletes a local artifact.
 - If the user asks about Kubernetes deployment, this skill does not cover the operator -- direct them accordingly.
 
 ## Error Handling
@@ -248,6 +277,10 @@ For tool invocation patterns (file args, stdin, JSON output, error handling), se
 | Sensitive files exposed in mount | No `.thvignore` configured | Add `.thvignore` in mounted directory or globally at `~/.config/toolhive/thvignore` |
 | Skill command fails with connection error | `thv serve` not running | Start `thv serve` before using skill commands |
 | Skill validation fails | Invalid SKILL.md or directory structure | Run `thv skill validate ./path` and fix reported errors |
+| AI plugin API unreachable | `thv serve` is not running | Start `thv serve`; increase `TOOLHIVE_API_TIMEOUT` only for a server that is still working |
+| Plugin sync check fails | Missing or drifted project plugin | Review the result, then run `thv ai-plugin sync` and confirm; do not add trust-bypass flags automatically |
+| Plugin activation unclear | Client did not load a declared component | Inspect client support and client output; materialized component metadata is not activation proof |
+| Plugin signature rejected | Untrusted, invalid, or changed signer | Inspect the artifact and lock pin; `--allow-unsigned` cannot bypass invalid verification |
 
 ## Global Options
 

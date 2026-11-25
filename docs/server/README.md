@@ -24,9 +24,9 @@ go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4
 
    This will generate:
 
-   - `docs/swagger.json`: OpenAPI 3.1.0 specification
-   - `docs/swagger.yaml`: YAML version of the specification
-   - `docs/docs.go`: Go code containing the specification
+   - `docs/server/swagger.json`: OpenAPI 3.1.0 specification
+   - `docs/server/swagger.yaml`: YAML version of the specification
+   - `docs/server/docs.go`: Go code containing the specification
 
 ## Viewing Documentation
 

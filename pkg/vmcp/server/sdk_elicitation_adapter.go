@@ -7,11 +7,12 @@ package server
 
 import (
 	"context"
-	"maps"
+	"errors"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
 // sdkElicitationAdapter wraps mcpcompat MCPServer to implement vmcp.ElicitationRequester.
@@ -87,12 +88,19 @@ func (a *sdkElicitationAdapter) RequestElicitation(
 			RequestedSchema: req.RequestedSchema,
 		},
 	}
-	// Only attach _meta when the caller actually set it. NewMetaFromMap mutates
-	// its argument (it deletes progressToken), so copy first to avoid mutating
-	// the caller's map.
-	if req.Meta != nil {
-		mcpReq.Params.Meta = mcp.NewMetaFromMap(maps.Clone(req.Meta))
-	}
+	// req.Meta came from the BACKEND's elicitation/create (forwarding.go's
+	// newElicitationForwarder), so it crosses the same trust boundary as a backend
+	// result: route it through conversion.ToMCPMeta, which strips the reserved
+	// io.modelcontextprotocol/* keys before they reach the downstream client. A
+	// leaked protocolVersion here is worse than on a result -- this is a
+	// server->client REQUEST, where a go-sdk client may validate it.
+	//
+	// ToMCPMeta also hoists progressToken and copies (never mutating the caller's
+	// map), and returns nil for empty input -- so _meta stays absent when the
+	// backend set none, or set only reserved keys. Do not swap in
+	// mcp.NewMetaFromMap: it returns a non-nil *Meta for nil input, which would
+	// start emitting an empty _meta.
+	mcpReq.Params.Meta = conversion.ToMCPMeta(req.Meta)
 
 	// Delegate to the mcpcompat SDK's RequestElicitation method.
 	// The SDK will:
@@ -106,6 +114,18 @@ func (a *sdkElicitationAdapter) RequestElicitation(
 	// We don't need to manage any of this - it's all handled by the SDK.
 	resp, err := a.mcpServer.RequestElicitation(ctx, mcpReq)
 	if err != nil {
+		// A refusal for lack of a downstream session (Modern ingress: the
+		// stateless dispatch installed no ClientSession) is recorded so
+		// dispatchModern can classify the resulting call failure as a
+		// -32021 MissingRequiredClientCapabilityError instead of an opaque
+		// internal error. The error itself still propagates unchanged: it is
+		// the answer to the BACKEND's elicitation request, and the typed
+		// sentinel does not survive that wire round-trip — the recorder is
+		// the only channel back to the dispatcher (see
+		// modern_capability_refusal.go).
+		if errors.Is(err, server.ErrNoActiveSession) {
+			recordCapabilityRefusal(ctx, capabilityElicitation)
+		}
 		return nil, err
 	}
 

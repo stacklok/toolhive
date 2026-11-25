@@ -44,6 +44,14 @@ func TestOIDCDiscoveryDocument_Validate(t *testing.T) {
 		{"valid OIDC document", nil, true, nil},
 		{"missing issuer", func(d *OIDCDiscoveryDocument) { d.Issuer = "" }, false, ErrMissingIssuer},
 		{"missing authorization_endpoint", func(d *OIDCDiscoveryDocument) { d.AuthorizationEndpoint = "" }, false, ErrMissingAuthorizationEndpoint},
+		{"token-only OAuth metadata omits authorization_endpoint", func(d *OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = ""
+			d.GrantTypesSupported = []string{GrantTypeTokenExchange}
+		}, false, nil},
+		{"token-only OIDC metadata is rejected", func(d *OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = ""
+			d.GrantTypesSupported = []string{GrantTypeTokenExchange}
+		}, true, ErrMissingAuthorizationEndpoint},
 		{"missing token_endpoint", func(d *OIDCDiscoveryDocument) { d.TokenEndpoint = "" }, false, ErrMissingTokenEndpoint},
 		{"missing jwks_uri for OIDC", func(d *OIDCDiscoveryDocument) { d.JWKSURI = "" }, true, ErrMissingJWKSURI},
 		{"missing jwks_uri for OAuth is OK", func(d *OIDCDiscoveryDocument) { d.JWKSURI = "" }, false, nil},
@@ -702,4 +710,80 @@ func TestFetchAuthorizationServerMetadata_DedupesPathInsertionAndBare(t *testing
 		gotPaths,
 		"expected exactly two distinct discovery requests in priority order: path-insertion before OIDC",
 	)
+}
+
+// TestBuildDiscoveryHTTPClient_BoundsIdleConnectionPool pins that the default
+// discovery client bounds its idle-connection pool. A zero IdleConnTimeout
+// never expires a pooled connection, pinning a socket and its goroutine pair
+// for the process lifetime.
+func TestBuildDiscoveryHTTPClient_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	client := buildDiscoveryHTTPClient(nil)
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "default discovery client must use an *http.Transport")
+
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+
+	// A caller-supplied client must be returned unchanged.
+	custom := &http.Client{}
+	assert.Same(t, custom, buildDiscoveryHTTPClient(custom))
+}
+
+func TestIssuersEqual(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		expected string
+		got      string
+		want     bool
+	}{
+		{name: "exact match", expected: "https://host.example.com", got: "https://host.example.com", want: true},
+		{name: "slash on got", expected: "https://host.example.com", got: "https://host.example.com/", want: true},
+		{name: "slash on expected", expected: "https://host.example.com/", got: "https://host.example.com", want: true},
+		{name: "different host", expected: "https://host.example.com", got: "https://evil.example.com/", want: false},
+		{name: "different scheme", expected: "https://host.example.com", got: "http://host.example.com/", want: false},
+		{name: "different port", expected: "https://host.example.com", got: "https://host.example.com:8443/", want: false},
+		{name: "path issuer exact", expected: "https://host.example.com/tenant", got: "https://host.example.com/tenant", want: true},
+		{name: "path issuer, slash on got", expected: "https://host.example.com/tenant", got: "https://host.example.com/tenant/", want: false},
+		{name: "path issuer, slash on expected", expected: "https://host.example.com/tenant/", got: "https://host.example.com/tenant", want: false},
+		{name: "query on got", expected: "https://host.example.com", got: "https://host.example.com/?a=b", want: false},
+		{name: "empty query marker on got", expected: "https://host.example.com", got: "https://host.example.com/?", want: false},
+		{name: "fragment on got", expected: "https://host.example.com", got: "https://host.example.com/#frag", want: false},
+		{name: "userinfo on got", expected: "https://host.example.com", got: "https://user@host.example.com/", want: false},
+		{name: "no host", expected: "", got: "/", want: false},
+		{name: "unparsable issuers differing only by slash", expected: "https://host.example.com:abc", got: "https://host.example.com:abc/", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, issuersEqual(tt.expected, tt.got))
+		})
+	}
+}
+
+func TestFetchAuthorizationServerMetadataFromURL_AcceptsOriginOnlyIssuerWithTrailingSlash(t *testing.T) {
+	t.Parallel()
+
+	var issuer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(AuthorizationServerMetadata{
+			Issuer:                issuer + "/",
+			AuthorizationEndpoint: issuer + "/authorize",
+			TokenEndpoint:         issuer + "/token",
+			RegistrationEndpoint:  issuer + "/register",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	issuer = srv.URL
+
+	md, err := FetchAuthorizationServerMetadataFromURL(
+		context.Background(), issuer+"/.well-known/oauth-authorization-server", issuer, nil)
+	require.NoError(t, err)
+	assert.Equal(t, issuer+"/", md.Issuer)
 }

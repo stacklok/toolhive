@@ -223,7 +223,7 @@ func TestRemoteRegistryProvider_ValidateConnectivity(t *testing.T) {
 			responseBody:   `{"$schema": "x", "version": "1.0", "meta": {}, "data": {"servers": []}}`,
 			responseStatus: 200,
 			expectError:    true,
-			errorContains:  "no servers or skills",
+			errorContains:  "no servers, skills, or plugins",
 		},
 		{
 			name:           "legacy format surfaces migration hint",

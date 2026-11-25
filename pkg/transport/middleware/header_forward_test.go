@@ -110,6 +110,7 @@ func TestCreateHeaderForwardMiddleware_RestrictedHeaders(t *testing.T) {
 		{name: "Trailer", header: "Trailer"},
 		{name: "Upgrade", header: "Upgrade"},
 		{name: "Http2-Settings", header: "Http2-Settings"},
+		{name: "Close", header: "Close"},
 		{name: "Proxy-Authorization", header: "Proxy-Authorization"},
 		{name: "Proxy-Authenticate", header: "Proxy-Authenticate"},
 		{name: "Proxy-Connection", header: "Proxy-Connection"},

@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/clientCapabilities": {
+        "roots": {
+          "listChanged": true
+        }
+      },
+      "io.modelcontextprotocol/clientInfo": {
+        "name": "golden-fixture-capture",
+        "version": "0.0.0"
+      },
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+    }
+  }
+}

@@ -1,0 +1,3356 @@
+# External Subject-Token Exchange (Delegation)
+
+This document covers the embedded authorization server's RFC 8693 token-exchange
+grant when the `subject_token` comes from an external, trusted OIDC issuer
+(`trustedIssuers`). It is unrelated to the *outgoing* token exchange described in
+docs [02](02-core-concepts.md), [04](04-secrets-management.md),
+[05](05-runconfig-and-permissions.md), [09](09-operator-architecture.md), and
+[10](10-virtual-mcp-architecture.md), where `MCPExternalAuthConfig` middleware
+exchanges a client's token for an upstream IdP token. Here the server is the
+token *issuer*, accepting an externally-minted token as proof of identity and
+re-issuing a ToolHive-scoped delegated token.
+
+Normally the grant accepts only the server's own self-issued tokens as
+`subject_token`. `trustedIssuers` extends that to tokens minted by an external
+IdP (e.g. a corporate IdP), so a client already holding a token from that IdP
+can exchange it for a ToolHive delegated token without a separate ToolHive
+login.
+
+This document also describes how a DCR-registered client can authenticate to the
+exchange without receiving a secret. That is RFC 7523 §2.2 `private_key_jwt`
+**client authentication**: the client registers an inline public JWKS and signs
+a `client_assertion` with its private key. It is not the RFC 7523 §2.1
+JWT-bearer grant, which uses a JWT as the grant assertion itself and does not
+authenticate a registered client. The two mechanisms are independent.
+
+ToolHive requires every registered private-key JWT JWK to be public, have
+`use: "sig"`, and identify a signing algorithm compatible with the registered
+`token_endpoint_auth_signing_alg`. ToolHive requires this explicit `use` value
+even though the JWK specification makes the member optional.
+
+## Deployment and configuration
+
+RFC 8693 is reachable through a pre-provisioned **delegate client**. A delegate
+client is a confidential client registered when the embedded authorization server
+starts. By default it is limited to the token-exchange grant and authenticates at
+`/oauth/token` with `client_secret_basic` or `client_secret_post`. See
+[Configured client metadata](#configured-client-metadata) to change either.
+
+### RunConfig
+
+`RunConfig.delegate_clients` is the portable runtime configuration surface. Each
+client must name a unique `client_id`, a secret **reference**, one or more scopes,
+and one or more audiences (a client that only gets refresh tokens may have none;
+see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)).
+The grant type defaults to
+`urn:ietf:params:oauth:grant-type:token-exchange`; see
+[Configured client metadata](#configured-client-metadata) for the other options.
+Scopes must be a subset of `scopes_supported` (or the default supported OIDC
+scopes when that field is omitted), and audiences, when present, must be a subset
+of `allowed_audiences`. These narrowing lists prevent a delegate client from
+inheriting every server scope or resource.
+
+The following is a relevant `RunConfig` excerpt. `client_secret_env_var` may be
+replaced by `client_secret_file`; an inline secret is not supported. Generate
+the secret with a CSPRNG, e.g. `openssl rand -base64 32`.
+
+```yaml
+issuer: https://auth.example.com
+scopes_supported: [openid, profile]
+allowed_audiences: [https://mcp.example.com]
+delegate_clients:
+  - client_id: reporting-delegate
+    client_secret_env_var: REPORTING_DELEGATE_CLIENT_SECRET
+    scopes: [openid]
+    audiences: [https://mcp.example.com]
+trusted_issuers:
+  - issuer_url: https://login.example-idp.com
+    expected_audience: https://mcp.example.com
+    allowed_actors: [external-reporting-client]
+    allowed_delegate_clients: [reporting-delegate]
+```
+
+A `RunConfig` is needed only when subject tokens originate at an external
+issuer; a configured delegate client can also exchange a self-issued subject
+token. See [Trust model](#trust-model) for the required external-issuer
+binding. The Kubernetes operator also exposes `trusted_issuers` as
+`EmbeddedAuthServerConfig.trustedIssuers` — see
+[Kubernetes operator](#kubernetes-operator) below.
+
+#### Canonical `inbound_grants` configuration
+
+The top-level `delegate_clients` and the RFC 8693/7523 fields embedded
+directly on `trusted_issuers[*]` above are the legacy configuration shape.
+`RunConfig.inbound_grants` (`authserver.InboundGrantsRunConfig`) is the
+canonical replacement: it groups the same policy under
+`inbound_grants.token_exchange` (delegate clients and per-issuer RFC 8693
+policy) and `inbound_grants.jwt_bearer` (per-issuer RFC 7523 policy), each
+referencing a `trusted_issuers` entry by its `name` rather than embedding
+policy fields on the issuer itself. SPIFFE client policy is configured
+separately, as a sibling of both under `inbound_grants.spiffe_client_auth`
+(described further below) — not
+nested under `inbound_grants.token_exchange`, since a SPIFFE association
+authenticates a client but does not by itself grant it anything:
+
+```yaml
+issuer: https://auth.example.com
+scopes_supported: [openid, profile]
+allowed_audiences: [https://mcp.example.com]
+trusted_issuers:
+  - name: reporting-idp
+    issuer_url: https://login.example-idp.com
+inbound_grants:
+  token_exchange:
+    delegate_clients:
+      - client_id: reporting-delegate
+        client_secret_env_var: REPORTING_DELEGATE_CLIENT_SECRET
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
+    issuer_policies:
+      - issuer_ref: reporting-idp
+        expected_audience: https://mcp.example.com
+        allowed_actors: [external-reporting-client]
+        allowed_delegate_clients: [reporting-delegate]
+```
+
+`NormalizeInboundGrants` (`pkg/authserver/inbound_grants.go`) reconciles both
+shapes at validation time, per grant family:
+
+- If `inbound_grants.token_exchange` is set, any legacy `delegate_clients` or
+  RFC 8693 fields embedded on `trusted_issuers[*]` are rejected as a
+  configuration conflict — the two token-exchange sources are mutually
+  exclusive. Likewise for `inbound_grants.jwt_bearer` against a legacy
+  `trusted_issuers[*].jwt_bearer_grant`.
+- The two grant families are independent: setting only
+  `inbound_grants.jwt_bearer` still lets legacy `delegate_clients`/RFC 8693
+  fields enable token exchange, and vice versa — `inbound_grants` does not
+  take over both families just by being non-nil.
+- `issuer_ref` resolves against `trusted_issuers[*].name`; an issuer without
+  a `name`, an unresolvable `issuer_ref`, or a duplicate `name`/`issuer_url`
+  fails validation.
+
+Existing deployments using only the legacy shape are unaffected: omitting
+`inbound_grants` entirely preserves the released behavior, including RFC
+8693 being enabled by default. SPIFFE client policy
+(`inbound_grants.spiffe_client_auth`) has no legacy equivalent
+and must reference a `spiffe_trust_domains` entry the same way issuer
+policies reference `trusted_issuers`.
+
+### Token-only embedded authorization servers
+
+An embedded authorization server may omit upstream identity providers only when
+it has a pre-provisioned delegate client, a trusted issuer with `jwtBearerGrant`,
+or a SPIFFE client association (`inbound_grants.spiffe_client_auth`). This mode serves token exchange, when it is enabled, and the SPIFFE `client_credentials` grant, when a SPIFFE association lists it, without an interactive login:
+`/oauth/authorize` validates the OAuth client and redirect URI, then returns
+`unsupported_response_type`. Discovery omits authorization-code, refresh-token,
+and PKCE capabilities. It advertises token exchange only when it is enabled,
+JWT bearer when a trusted issuer enables it, and `client_credentials` when a SPIFFE
+association lists that grant. Token exchange is enabled by a
+delegate client, a legacy trusted-issuer token-exchange policy, an
+`inbound_grants.token_exchange` block, or a SPIFFE association that lists the
+token-exchange grant. A config with no `inbound_grants` block at all also has
+it on, because `NormalizeInboundGrants` defaults token exchange to enabled in
+that case. A SPIFFE association that lists only `client_credentials`
+does not enable it. Generic MCP and OIDC authorization-code clients
+cannot use token-only servers: the metadata deliberately lacks the
+authorization-code and PKCE fields those clients require to start an interactive
+flow. The OpenID well-known route returns the same RFC 8414 token-only metadata
+alias, not OIDC-only fields.
+
+Token-only metadata continues to advertise configured scopes such as `openid`
+and `offline_access`. Scopes describe permissions that token exchange can issue,
+not interactive-login availability; removing them would falsely imply those
+valid exchanged-token permissions are unavailable.
+
+In token-only mode, ordinary dynamic registrations are rejected. The
+registration endpoint is advertised only when `private_key_jwt` registration is
+enabled, and then accepts only private-key-JWT token-exchange clients. Backend
+requests strip inbound credential headers after ToolHive authentication because
+there is no upstream credential to inject; outgoing token exchange and AWS STS
+remain incompatible because they would add credentials after the strip.
+
+### Kubernetes operator
+
+The operator exposes delegate clients on the shared
+`EmbeddedAuthServerConfig`, which has two supported consumers:
+
+- `MCPExternalAuthConfig.spec.embeddedAuthServer.delegateClients`, for an
+  embedded authorization server referenced by an `MCPServer` or
+  `MCPRemoteProxy`.
+- `VirtualMCPServer.spec.authServerConfig.delegateClients`, for a vMCP's inline
+  embedded authorization server.
+
+The following `MCPExternalAuthConfig` excerpt declares the same client. The
+operator converts the Secret reference into a pod environment-variable reference
+and always supplies the token-exchange grant; it does not copy the secret into
+the generated ConfigMap or `RunConfig`.
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPExternalAuthConfig
+metadata:
+  name: embedded-auth
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    issuer: https://auth.example.com
+    # Other required embedded-auth-server fields, including upstreamProviders,
+    # are omitted here.
+    delegateClients:
+      - clientId: reporting-delegate
+        clientSecretRef:
+          name: reporting-delegate-secret
+          key: client-secret
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
+```
+
+For a `VirtualMCPServer`, place the list under `spec.authServerConfig`:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: VirtualMCPServer
+metadata:
+  name: reporting-gateway
+spec:
+  # Other required VirtualMCPServer fields are omitted here.
+  authServerConfig:
+    issuer: https://auth.example.com
+    # Other required embedded-auth-server fields, including upstreamProviders,
+    # are omitted here.
+    delegateClients:
+      - clientId: reporting-delegate
+        clientSecretRef:
+          name: reporting-delegate-secret
+          key: client-secret
+        scopes: [openid]
+        audiences: [https://mcp.example.com]
+```
+
+A token-only vMCP cannot use Cedar authorization: grant-only issuance does not
+create the provenance-bound upstream-token entries Cedar needs for
+upstream-derived claims.
+
+The CRD accepts Secret references only: no plaintext secret, redirect URI, or
+arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
+`.key`, at least one scope, and at least one audience are required. Delegate
+clients require an HTTPS issuer at admission. Every delegate client, including
+`private_key_jwt` ones, counts as confidential for the cleartext-transport rule,
+in both the CRD and the RunConfig/`Config` validation paths.
+
+`trustedIssuers` is exposed the same way, on the same shared
+`EmbeddedAuthServerConfig`, and converts directly to `[]tokenexchange.TrustedIssuer`
+(no secret is referenced, so there is no `SecretKeyRef` indirection to apply):
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPExternalAuthConfig
+metadata:
+  name: embedded-auth
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    issuer: https://auth.example.com
+    # Other required embedded-auth-server fields, including upstreamProviders,
+    # are omitted here.
+    trustedIssuers:
+      - issuerUrl: https://login.example-idp.com
+        expectedAudience: https://mcp.example.com
+        allowedActors: [external-reporting-client]
+        # actorMatcher is additive with allowedActors, not a replacement —
+        # either signal is sufficient. Omit it to rely on allowedActors alone.
+        actorMatcher: "has(claims.roles) && 'trusted-delegator' in claims.roles"
+        allowedDelegateClients: [reporting-delegate]
+        allowMayAct: false
+        # Optional: trust a private CA for this issuer's discovery/JWKS fetch.
+        caBundleRef:
+          configMapRef:
+            name: login-example-idp-ca
+            key: ca.crt
+```
+
+Static delegate clients and confidential Dynamic Client Registration (DCR) are
+independent. Declaring `delegateClients` neither enables nor requires
+`allowConfidentialClientRegistration`; the latter governs unauthenticated
+`/oauth/register` requests. If a persisted DCR client has the same ID as a
+static delegate client, the static client is registered at server startup and
+replaces the DCR registration, including its secret and permissions. Do not
+reuse IDs between the two mechanisms.
+
+### Discovery and secret rotation
+
+Both `/.well-known/oauth-authorization-server` and
+`/.well-known/openid-configuration` advertise the token-exchange grant in
+`grant_types_supported` when token exchange is enabled. With no `inbound_grants`
+block it is enabled by default. Once `inbound_grants` is set, omitting its
+`token_exchange` block does not by itself turn RFC 8693 off: it stays enabled,
+and advertised, when a legacy delegate client or legacy trusted-issuer RFC 8693
+policy is present, or when any SPIFFE association lists the token-exchange
+grant. It is disabled, and no longer advertised, only when none of these is
+present (see the enablement rules in the token-only section above).
+`Config.DisableTokenExchange` and `AuthorizationServerConfig.TokenExchangeEnabled`
+carry the result. The same flag governs both registration with fosite and
+discovery advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
+includes `none`. It also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a configured delegate
+client authenticates with a secret, so a deployment whose delegate clients all
+use `private_key_jwt` does not advertise them. It includes `private_key_jwt`, together with
+`token_endpoint_auth_signing_alg_values_supported` (the implemented algorithms),
+when `allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
+uses `private_key_jwt`. It lists `spiffe_x509` and `spiffe_jwt` when some SPIFFE
+association enables that method, and `grant_types_supported` lists
+`client_credentials` when some association grants it (see
+[SPIFFE association declarations](18-spiffe-association-declarations.md)). The
+RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted issuer opts
+into it. A private-key JWT DCR client is limited to
+token exchange; it is not an authorization-code client.
+
+On Kubernetes, a delegate-client Secret is injected as a pod environment
+variable and is resolved when the authorization server starts. Updating that
+Secret does not change the environment of an already running pod. The operator
+has no delegate-client Secret watch or automatic rollout for this feature, so
+restart or otherwise roll out the workload after rotating the secret.
+
+Changing a delegate client's scopes, audiences, grant types, redirect URIs or
+token endpoint auth method works the same way. The new values replace the
+stored client row when the server restarts. On Redis, with more than one
+replica, a rolling update can briefly serve either policy. See
+[Auth Server Storage](11-auth-server-storage.md#configured-clients-across-restarts).
+
+## Secretless DCR delegate flow
+
+Set `allowPrivateKeyJWTRegistration: true` without enabling
+`allowConfidentialClientRegistration` when the authorization server should
+accept key-based registrations but must not mint secret-based confidential
+clients. Registration is still unauthenticated, so protect the endpoint through
+network policy and enable it only for callers that are trusted to register.
+
+The request uses an inline public JWK. This example intentionally uses a
+placeholder key and contains no private key or secret; the client keeps the
+corresponding private key locally and never sends it to ToolHive:
+
+```http
+POST /oauth/register HTTP/1.1
+Host: auth.example.com
+Content-Type: application/json
+
+{
+  "redirect_uris": ["https://client.example/callback"],
+  "token_endpoint_auth_method": "private_key_jwt",
+  "token_endpoint_auth_signing_alg": "RS256",
+  "grant_types": ["urn:ietf:params:oauth:grant-type:token-exchange"],
+  "jwks": {"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "client-key", "n": "<base64url-public-modulus>", "e": "AQAB"}]}
+}
+```
+
+The successful response returns a `client_id`, the registered metadata, and no
+`client_secret`. The client then signs a short-lived `client_assertion` with
+its private key and sends it to `/oauth/token` together with the token-exchange
+request:
+
+```text
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange&
+subject_token=<subject-token>&
+subject_token_type=urn:ietf:params:oauth:token-type:access_token&
+client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&
+client_assertion=<signed-assertion>
+```
+
+The assertion identifies the registered `client_id` in `iss` and `sub`, targets
+the issuer in `aud`, and includes a unique `jti` and an `exp`. The
+server verifies it against the stored inline JWKS and rejects replay while the
+assertion is valid. No `client_secret` is included in registration or token
+exchange.
+
+The `exp`, `iat` and `nbf` claims may differ from the server's clock by up to
+60 seconds: an assertion is accepted until 60 seconds after its `exp`, and
+from 60 seconds before its `iat` or `nbf`. `exp` must not be before `iat`, and
+it may be at most 5 minutes plus 60 seconds ahead of the server's current time.
+Nothing limits the gap between `iat` and `exp`, and `iat` is optional.
+
+The server decides how long the replay marker of each `jti` is kept: until 65
+seconds after `exp`, which is the 60 second margin plus a 5 second grace for the
+gap between clock reads. It hands that deadline to the store, so replay
+protection holds across the margin. This holds for any store that keeps the
+`jti` until the deadline it is given, provided the store's
+`ClientAssertionJWTValid` or `SetClientAssertionJWT` is atomic for a `jti`.
+ToolHive's backends reserve the `jti` in `ClientAssertionJWTValid`; fosite's
+`MemoryStore` checks and inserts in `SetClientAssertionJWT`.
+
+Two limits apply. First, the grace does not cover clock differences between
+replicas. Redis counts the marker's lifetime from the clock of the replica that
+writes it, so replicas whose clocks differ by more than 5 seconds can leave a
+short gap after the margin. Keep replica clocks synchronised. Second, during an
+upgrade, replicas on the older version keep the marker only until `exp`. An
+assertion first used on an older replica can then be used again on an upgraded
+replica until 60 seconds after `exp`, because the older marker is already gone.
+A single replica restarted on this version has the same gap for assertions used
+just before the restart. Protection holds once no older replica has run for more
+than 6 minutes.
+
+A marker whose deadline is already past would allow replay, so one function,
+`server.ValidateClientAssertionExp`, refuses an assertion unless that deadline
+is in the future and `exp` is not too far ahead. This refuses an `exp` of 0,
+which fosite's expiry check skips, and an `exp` near the int64 limit, which
+wraps to a time before 1970. An assertion fosite accepts in the second
+named by its `exp` is accepted.
+
+The storage given to fosite's provider is wrapped, and the clock skew fallback
+uses the same wrapper. The wrapper applies the rule and passes the deadline to
+the backend, so retention is decided in one place. The memory and Redis backends
+store the deadline they are given, and refuse one that is in the past or more
+than 7 minutes 5 seconds ahead
+(`server.ValidateClientAssertionMarkerDeadline`). This also covers a provider
+built over those backends without the wrapper: it passes the raw `exp`, which is
+safe because such a provider accepts nothing after the second named by `exp`,
+and the backend refuses a deadline that has already passed, so a replay in that
+second fails closed. The handler factories
+receive the unwrapped storage, because handlers call `storage.Unwrap` and check
+storage capabilities by type assertion, which the wrapper would hide. The token
+exchange assertion checks elsewhere stay strict, because their `exp` bounds a
+token this server issues.
+
+Every failed assertion check (unknown `kid`, bad signature, wrong `iss`, `sub`
+or `aud`, a time claim outside the margin, `exp` before `iat`, `exp` more than
+5 minutes plus 60 seconds ahead, reused `jti`) is refused with HTTP 401
+`invalid_client`. The `error_description` names the check that failed, and never
+contains the server time or a claim value. A storage failure while checking or
+recording
+the `jti` is HTTP 500 `server_error`, so clients can retry it. A request
+that sets `client_assertion_type` but omits `client_assertion` is HTTP 400
+`invalid_request`.
+
+Private-key JWT registration accepts only inline `jwks`; `jwks_uri`, SPIFFE/SVID
+authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
+of scope. `token_endpoint_auth_signing_alg` is required and the supported
+values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`,
+`ES384`, and `ES512` (not `EdDSA` — the pinned fosite version's
+client-assertion verification doesn't handle it). RSA keys must have a
+2048–8192-bit modulus and an odd public exponent between 3 and 65537, and a
+registration may carry at most 10 inline JWKS keys. Stored `private_key_jwt`
+clients whose keys no longer meet these limits are rejected with
+`invalid_client` when loaded. Unlike confidential-client
+registration, this has no transport restriction of its own: the DCR response
+for a `private_key_jwt` client never contains a `client_secret` or any other
+secret, so there is nothing for cleartext HTTP to expose. It is governed only
+by the issuer's general transport policy (`insecureAllowHTTP`), the same as a
+public (`none`) client.
+
+### Client-assertion audience
+
+A `private_key_jwt` client assertion is accepted only when its `aud` claim holds
+the issuer and nothing else. This follows RFC 10070 section 4, which requires
+the issuer identifier as the sole value of `aud` and forbids the token endpoint
+URL. The issuer may be sent as a JSON string or as a one-element array; RFC 7519
+section 4.1.3 allows both forms.
+
+The server refuses these with `401 invalid_client` and issues no token:
+
+- the token endpoint URL (`{issuer}/oauth/token`), as a string or inside an array
+- an array with more than one value, even when one of them is the issuer
+- a missing `aud`, an empty array, or any other value
+- an assertion that go-jose v4 cannot read under strict base64url decoding, such
+  as one with base64 padding on a segment or a space or tab inside it, which
+  some JOSE parsers tolerate. The check must see `aud` as sent, so the server
+  does not leave such an assertion to a more lenient parser.
+
+The server logs each of these refusals at WARN with the cause and `client_id`,
+because a client that worked with an earlier release can start failing here.
+
+A client that sends the token endpoint URL as `aud` must be updated to send the
+issuer instead. The check has no setting; it always applies, including to an
+assertion that is accepted only through the 60-second clock skew allowance.
+
+Assertions with the `client-authentication+jwt` JOSE `typ` header
+(RFC 10070 section 4) are accepted.
+
+Accepting the issuer is safe because the assertion is still bound by
+`iss == sub == client_id` and a signature from the client's registered keys.
+The issuer is this server's unique identifier (RFC 8414 section 2), and `aud` is
+compared as an exact string. An assertion addressed to this issuer is therefore
+not accepted by another issuer, even one on the same host.
+
+This applies to every `private_key_jwt` client. Inbound `private_key_jwt`
+clients come from Dynamic Client Registration and from configured delegate
+clients. The `aud` checks on
+RFC 7523 JWT-bearer and ID-JAG assertions, and on SPIFFE JWT-SVID client
+authentication, are unchanged.
+
+## Trust model
+
+A trusted issuer plus a matching audience and a valid signature only proves
+the token was minted for ToolHive to consume — it authorizes ToolHive as a
+*resource*, not any particular *client* as a delegate. Accepting the token on
+that basis alone would let any client presenting a validly-signed token
+exchange it: a confused-deputy risk (CWE-863). The handler therefore requires
+an explicit consent signal before treating the request as an authorized
+delegation.
+
+## Consent signals
+
+Two functions cooperate here. `resolveActorAuthorization`
+(`pkg/authserver/server/tokenexchange/multi_issuer_validator.go`), called from
+`validateExternalToken` during signature/claim validation, checks the
+external-issuer authorization and — when it matches — sets
+`ValidatedClaims.ExternalActorAuthorized` (and `ValidatedClaims.ExternalActor`
+when the allowlist path resolved an actor claim). `checkDelegationConsent`
+(`pkg/authserver/server/tokenexchange/handler.go`) runs afterwards and decides
+whether to grant the exchange, in this order. For a configured delegate client
+with a `token_exchange` block, `checkSourcePolicy` and
+`checkSubjectTokenAudience` run before all of these
+(see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)):
+
+1. **`may_act` (RFC 8693 §4.4).** A trusted issuer must explicitly set
+   `allow_may_act: true` before its well-formed `may_act` claim is considered.
+   It is otherwise rejected outright, not silently ignored or fallen through
+   to external-issuer authorization. When enabled, `may_act` is authoritative:
+   external-issuer authorization below is skipped entirely
+   (`validateExternalToken` never calls `resolveActorAuthorization` when
+   `may_act` is present), and `checkDelegationConsent` enforces `may_act.sub`
+   against the resolved actor (for a SPIFFE client, the client ID is also
+   accepted). A malformed `may_act` is rejected outright by
+   `validateMayActShape`, not silently ignored. On the external path,
+   `may_act.iss` is mandatory, not merely constrained when present as on the
+   self-issued path — `validateMayActShape`'s `requireIss` parameter is `true`
+   there. Without this, an external issuer omitting `iss` could authorize any
+   ToolHive client by naming its ID in a bare `may_act.sub`, bypassing
+   `allowedActors`/`actorMatcher` external authorization entirely. The handler
+   still enforces `allowedDelegateClients` for every external token.
+2. **External actor authorization.** Otherwise, consent was already
+   established by `resolveActorAuthorization`: the claim named by that
+   issuer's `actorClaim` (default `azp`; `appid` for Microsoft Entra v1,
+   `cid` for Okta) matched an entry in that issuer's `allowedActors`, **or**
+   its `actorMatcher` CEL expression evaluated to `true`. `allowedActors`
+   holds client IDs in the *external* IdP's namespace, not ToolHive client
+   IDs — the likeliest misconfiguration. `actorMatcher` is an admin-authored
+   CEL expression whose only variable is `claims`, a `map[string]any`
+   containing the complete signature-verified JWT claims map, including
+   registered claims such as `iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, and
+   `jti`. It is compiled during config validation and validator construction;
+   a syntax or type error fails startup, but an expression that compiles yet
+   never returns bool does NOT — it is only caught the first time a real
+   token evaluates it, denying that token (and every subsequent one, since it
+   can never return bool). Runtime CEL errors, including that one, deny the
+   token (they are never treated as a match). Access to optional claims must be
+   guarded with `has()` (for example, `has(claims.roles) && 'trusted-delegator'
+   in claims.roles`), because a missing claim produces a CEL evaluation error
+   and denies the token. An empty `allowedActors` and
+   `actorMatcher` accepts only permitted `may_act`-bearing tokens from that
+   issuer; without `allowMayAct`, it accepts no tokens at all.
+   `checkDelegationConsent` then additionally checks the issuer's
+   `allowedDelegateClients` against the authenticated ToolHive client — this
+   field is required (see below), so the check always applies on this path.
+
+   **`actorMatcher` misconfiguration risk, analogous to `allowedActors`
+   above:** write the predicate against a claim the external issuer alone
+   controls and that does not vary with a user- or self-service-editable
+   attribute — an actor/client identifier such as `azp`, `appid`, or `cid`,
+   not a profile or business attribute such as a department or team name
+   (which may be HR-synced or editable by the user themselves). A matcher
+   written against the wrong kind of claim can grant delegation on a basis
+   the operator never intended.
+3. **`client_id` binding.** For a self-issued subject token (not part of the
+   external path above), the token's `client_id` must match the authenticated
+   client — **unless** the authenticated client is a configured delegate
+   client (`Handler.configuredDelegateClients`, sourced from
+   `Config.DelegateClients`), in which case the binding is skipped and any
+   self-issued subject token is accepted regardless of which client it was
+   originally issued to. The exception is narrower for a delegate client whose
+   `token_exchange.self_issued_subject_tokens` is `restricted`:
+   `checkSourcePolicy` has already limited it to tokens issued to itself or to
+   its `allowed_source_clients` (see [Source policy and subject token
+   audiences](#source-policy-and-subject-token-audiences)). This exception applies only on
+   the self-issued path (`ExternalIssuer == ""`); a delegate client presenting
+   an externally-issued
+   token with a mismatched `client_id` is still rejected here.
+
+   For a SPIFFE client, a matching `client_id` is not enough. The token must
+   also name the calling workload, because many workloads share one client ID.
+   See [Workloads that share a client ID](18-spiffe-association-declarations.md)
+   in the SPIFFE association declarations.
+4. **No binding.** If none of the above apply, the token carries no
+   verifiable client binding and the exchange is rejected.
+
+## `actor_token` and `id_token`
+
+RFC 8693 also defines an optional `actor_token`/`actor_token_type` pair,
+which `resolveActorIdentity` (`handler.go`) supports for self-issued actor
+tokens only — an `actor_token` validated against any other issuer is
+rejected. Two claims on the `actor_token` matter, and they play different
+roles:
+
+- **`client_id`** is the authenticated-client binding: it must equal the
+  authenticated OAuth client ID (the client fosite already authenticated for
+  this request). This is the same role a `client_id` claim plays on a normal
+  issued token — it says which client the token was minted for.
+- **`sub`** is the actor identity that flows into the delegated token's
+  `act.sub`, in the same slot the authenticated client ID would otherwise
+  occupy. It is not required to equal the client ID: this is what lets a
+  single OAuth client present a more specific actor identity (e.g. a
+  particular agent instance or delegate persona) than its own `client_id`.
+
+Presenting a distinct `sub` this way does not itself grant any extra
+privilege — the resulting actor identity still has to clear
+`checkDelegationConsent` above like any other actor identity would (via
+`may_act`, `ExternalActor`, the `client_id` binding, or the configured-
+delegate exemption).
+
+An authenticated SPIFFE client cannot present a distinct actor this way: its
+actor token's `sub` must equal the client's verified SPIFFE ID, or the request
+fails with `invalid_request`. See [SPIFFE association
+declarations](18-spiffe-association-declarations.md).
+
+A SPIFFE client that sends no `actor_token` is in the same position. Its
+acting party is its verified SPIFFE ID, not its client ID, so the outermost
+`act.sub` of the issued token is the workload's SPIFFE ID. The `client_id`
+claim is still the client ID. Non-SPIFFE clients without an `actor_token` keep
+their client ID as the outermost `act.sub`. See [Workloads that share a client
+ID](18-spiffe-association-declarations.md) for the full rules.
+
+Plain token exchange is unchanged for every client, including a client with an
+`actor_profile`. The profile applies only to ID-JAG issuance from an exchange
+grant; see [Actor-token validation at ID-JAG issuance](#actor-token-validation-at-id-jag-issuance).
+
+`actor_token_type` only accepts `access_token` or `jwt`; `id_token` is
+rejected outright. Similarly, `subject_token_type` accepts `access_token` or
+`jwt`, but not `id_token`. A client with `exchange_refresh_tokens` may also
+present a refresh-token subject (see [Refresh tokens through token
+exchange](#refresh-tokens-through-token-exchange) and [Minting ID-JAGs from a
+grant](#minting-id-jags-from-a-grant)). Because ID tokens are not accepted as
+subjects, this endpoint is not the XAA/ID-JAG profile in the token-exchange
+slot (an ID-JAG is accepted as a JWT-bearer *grant* assertion instead — see [Bound ID-JAG
+assertions](#bound-id-jag-assertions)) and applies exactly one validation profile
+to a subject or actor token (the self-issued/access-token one — see
+`rejectIDTokenClaims`'s doc comment in `validator.go`), so accepting a
+declared `subject_token_type`/`actor_token_type` of `id_token` without a
+distinct validation profile behind it would silently ignore the semantic
+differences between an ID token and an access token (e.g. an ID token's
+`aud` names the relying-party client, not a resource). Rather than validate
+an ID token as if it were an access token, the server declines the type
+until a real ID-token validation profile is implemented.
+
+### Delegate clients and self-issued token exchange
+
+A configured delegate client in `any` mode, or a secret-authenticated delegate
+client that omits both `grant_types` and the `token_exchange` block, can
+convert *any* self-issued ToolHive access token it can obtain — for any user,
+regardless of which client originally obtained that token — into a delegated
+token asserting that user's `sub`.
+This is an intentional blanket-trust model, not an oversight: delegate
+clients are declared by the operator at server startup (`RunConfig`/CRD),
+not obtained through self-service registration, so the same trust already
+placed in them by granting the token-exchange grant extends to any
+self-issued subject token rather than only ones issued to that specific
+client.
+
+The relaxation is bounded the same way every other exchange is: `grantScopes`
+and `grantAndBoundAudiences`'s `ensureAudienceSubsetOfSubject` still narrow
+the delegated token to what both the delegate client and the subject token
+are authorized for. The delegated token's lifetime is still capped by
+`min(subject token's remaining lifetime, configured delegationLifespan)`.
+It is **not** bounded by per-`jti` single-use enforcement — there is none in
+this codebase today, for any token-exchange path, self-issued or external
+(see the `Handler` doc comment in `handler.go` for why: replay is bounded by
+lifetime, not single-use tracking, pending the broader M2M/sender-constrained-
+token effort).
+
+Removing a delegate client from config revokes it on the next server restart.
+After that restart the client is no longer served at all: it cannot
+authenticate at the token endpoint (see "Client admission" in
+[Auth Server Storage](11-auth-server-storage.md#configured-clients-across-restarts)).
+The stored row is not deleted. Access tokens already issued to the client stay
+valid until they expire. Self-issued subject tokens whose `client_id` is the
+removed client can still be exchanged by other configured delegates until those
+subject tokens expire, because the exchange checks the subject token's own
+claims and does not look the original client up again. A delegate client with
+`self_issued_subject_tokens: restricted` refuses those tokens unless the removed
+client is listed in its `allowed_source_clients`. A binary without client
+admission still honors the stored row.
+
+Admission is per replica. A newly added delegate is served reliably only once
+every replica runs the new config. Until then, a replica that runs client
+admission with the old config answers `invalid_client`.
+
+RFC 8693 §2.1 permits this: it defines the subject token only as a token
+that represents "the identity of the party on behalf of whom the request is
+being made," with no requirement that the token be validated against the
+identity of the client presenting it as `subject_token`. Applying a
+client-authentication-based policy on top of that — as this exception does —
+is within the authorization server's discretion as the token-exchange STS.
+
+### Configured client metadata
+
+A delegate client can declare more than a secret. All fields below are
+optional; a client that sets none of them is the same client as before.
+
+| Field | Meaning |
+|---|---|
+| `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
+| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg`. When that field is omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve; RSA keys without `alg` use `RS256`; keys that disagree are rejected and the field must be set. When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
+| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)). |
+| `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
+| `access_token_lifespan` | A Go duration string, for example `30s`. The lifetime of the access tokens the client gets by redeeming an ID-JAG. Omitted: the server's `access_token_lifespan` applies. When set it must be at least `2s` and at most `24h`; smaller (including zero and negative) and larger values are refused when the configuration is loaded, so a bad value fails at startup and a zero never means unlimited. The floor exists because `exp` is signed in whole seconds, rounded down, so a sub-second lifespan could issue a token that is already expired after its single-use ID-JAG is consumed. `expires_in` is rounded down, so it is usually one second less than a whole-second lifespan. A client that sets it must be able to redeem ID-JAGs: startup fails when no trusted issuer accepts ID-JAG assertions (an enabled JWT-bearer grant whose issuers accept only plain assertions is not enough), or when the client sets `grant_types` without the JWT-bearer grant. Other grants ignore it. It is a `RunConfig` field only; the operator CRDs have no matching field. See [Lifetime of a redeemed token](#lifetime-of-a-redeemed-token). |
+
+A delegate's `audiences` limit what it may request. List the narrowest
+audience the client needs: with the default path-prefix strategy, an audience
+such as `https://h/` covers every child path that is also in the server's
+`allowed_audiences` (see "Grants and audiences" below).
+
+One validator in the `registration` package checks these fields. It runs when
+`RunConfig` is validated (with the JWKS contents still unloaded) and when the
+client is built (with the keys loaded). The built client is never marked as
+DCR-issued, so it has no TTL and does not count against `max_dcr_clients`.
+
+At startup the runner reads each `jwks_file` next to the existing
+`client_secret_file` handling, so rotating a key means replacing the file and
+restarting. The stored client keeps its `client_id`; the new key set replaces
+the old one. Discovery lists the client authentication methods as described in
+[Discovery and secret rotation](#discovery-and-secret-rotation). The
+cleartext-transport rule is separate: every delegate client, `private_key_jwt`
+ones included, counts as confidential there.
+
+To rotate the key of a configured `private_key_jwt` delegate client without
+refusing the client in between:
+
+1. Add the new key to the JWKS file next to the old one, each with its own
+   `kid`, and restart the auth server. An assertion is accepted with either key,
+   as long as it carries the `kid` of the key that signed it. The new key must
+   imply the same signing algorithm as the old one: its `alg`, the algorithm its
+   EC curve fixes, or RS256 for an RSA key without `alg`. Keys that disagree stop
+   startup. Setting `token_endpoint_auth_signing_alg` helps only when every key
+   can sign with that one algorithm and none carries a different `alg`, for
+   example RSA keys without `alg` next to an RSA key labelled PS256.
+2. Switch the client to sign with the new key.
+3. Remove the old key from the file and restart again. An assertion signed with
+   the old key now gets `401 invalid_client`, and the `error_description` names
+   the refused `kid`.
+
+The order matters: a client that signs with a key the server has not loaded gets
+`401 invalid_client`, so do step 2 only after step 1 has taken effect. With
+memory storage a restart also drops everything the auth server had stored, such
+as issued refresh tokens. Use shared storage (Redis) when that matters.
+
+The server builds each configured delegate client in memory and checks it as
+consent-exempt before it writes the client. A configured login client can
+therefore be listed in `WithConsentExemptClientIDs`, and a bad ID aborts startup
+without leaving delegate rows in storage. When an ID names both a configured
+delegate and a stored row, the delegate as built is the one checked.
+
+`/authorize` treats every client without the `authorization_code` grant as
+back-channel only and answers `invalid_client`, as it does for an unknown
+client, so the response does not show whether such a client exists. RFC 6749
+section 4.1.2.1 would use `unauthorized_client` for a known client; the server
+returns `invalid_client` deliberately. A client that holds `authorization_code`
+in addition to other grants can log users in.
+
+#### Grants and audiences
+
+- **Client audiences.** `/authorize` refuses a `resource` that the client may
+  not request, with `invalid_target`. A `resource` that is omitted defaults to
+  the server's sole allowed audience and is checked the same way. The check
+  applies to every client, including dynamically registered and CIMD clients.
+  It uses the client's own `audiences`, or its resource allowlist for SPIFFE
+  clients (which have no audiences), and the server's configured audience matching strategy (fosite's
+  path-prefix strategy by default), which is the rule the authorization code
+  callback and the refresh grant already apply to a client's audiences. For a
+  client without a separate resource list, a request the check accepts therefore
+  cannot fail the callback's audience check later, and a client with no
+  audiences, which could never complete the callback, fails at `/authorize`
+  with `invalid_target`, before the upstream login. The server-level and the
+  client-level refusal return the same error text, so an unauthenticated caller
+  cannot tell which of the two refused a resource. (SPIFFE clients, which keep
+  a resource list, have no response types and never reach `/authorize`.) The
+  default strategy compares scheme and host exactly and accepts a path that
+  equals the client's audience path or extends it at a segment boundary
+  (`https://api.example.com/v1` matches an audience of
+  `https://api.example.com`, but `/v1x` does not match `/v1`). The resource must still be an exact member of the server's allowed
+  audiences, which is checked first. The RFC 8693 `resource` check uses the
+  same strategy. Code redemption reuses the audience bound at `/authorize`, and
+  refresh is enforced by fosite.
+- **Token exchange audience refusal.** The RFC 8693 token exchange refuses an
+  `audience` or a `resource` that is outside the client's audiences with
+  `invalid_target` (HTTP 400), as RFC 8693 §2.2.2 says to. Before this, an
+  `audience` refusal returned fosite's `invalid_request`
+  ("Requested audience ... has not been whitelisted"), so a client that
+  branched on the error code saw a different code depending on which parameter
+  it used. The hint does not say which list refused the audience. An `audience`
+  that is not a parseable URI is still `invalid_request`. When the request
+  names no target and the server's sole default audience is not one of the
+  client's audiences, the refusal stays `invalid_request`: the client named no
+  target, and the fix is to send an explicit `resource` or `audience`, which
+  the hint says. SPIFFE-authenticated clients use the resource-only rule
+  instead: any `audience` parameter, and a request with no `resource`, get
+  `invalid_target`. See
+  [SPIFFE Association Declarations](18-spiffe-association-declarations.md).
+- **Dynamically registered clients.** A DCR client keeps the audience list the
+  server had when it registered, and that list is never refreshed. After an
+  operator adds an audience, an existing DCR client that asks for it gets
+  `invalid_target` at `/authorize`, before the upstream login. The client has to
+  register again to use the new audience.
+- **ID-JAG redemption.** Only a client that authenticates gets this far: a
+  public client, which includes every CIMD client and a DCR client registered
+  with `token_endpoint_auth_method: none`, is refused with `invalid_client`
+  before the audience check (see
+  [Bound ID-JAG assertions](#bound-id-jag-assertions)). The `resource` of an ID-JAG
+  gets the same client check, except for DCR clients, which are not narrowed
+  (a `resolve` issuer refuses such a client; see
+  [Resolution at redemption](#resolution-at-redemption)).
+  They hold a
+  copy of the server's allowed audiences taken at registration, not a
+  per-client policy, so checking them adds nothing while the copy is current
+  and would wrongly refuse an audience added since. The resource must still be
+  an exact member of the server's allowed audiences. Every other client is
+  checked, so a client with no audiences, or an empty resource allowlist,
+  permits nothing. A client that sets `grant_types` explicitly must also list
+  the JWT-bearer grant, or the redemption fails with `unauthorized_client`.
+  SPIFFE association clients are always gated: `idJAGExplicitGrantClientIDs`
+  includes every association, and their `grant_types` hold only the grants the
+  association declares (`client_credentials`, token exchange, or both). They
+  never include the JWT-bearer grant, so an ID-JAG for such a client always
+  fails with `unauthorized_client`. A delegate client that omits `grant_types` is stored
+  with token exchange alone but is not gated, for backward compatibility. The plain JWT-bearer grant is not
+  gated this way, because it can run without client authentication.
+
+#### Source policy and subject token audiences
+
+A delegate client can carry a `token_exchange` block:
+
+```yaml
+token_exchange:
+  self_issued_subject_tokens: restricted
+  allowed_source_clients: [tui-client-id]
+  subject_token_audiences: [https://api.example.com]
+```
+
+`self_issued_subject_tokens` selects the trust rule for self-issued subject
+tokens. It is required whenever the block is present; a block without it,
+including an empty `token_exchange: {}`, fails validation. It has two values:
+
+- **`restricted`.** The blanket trust ends. A self-issued subject token must
+  carry a `client_id` equal to the client itself or to one of
+  `allowed_source_clients`. With an empty or absent list, the client accepts
+  only tokens issued to itself. A token issued to any other client is refused
+  with `invalid_grant`. This check runs before the `may_act` consent check, so
+  it also narrows `may_act`: a token whose `may_act` names this client is still
+  refused when the client it was issued to is not listed. If the token passes
+  and also carries `may_act`, `may_act.sub` must match the resolved actor as
+  well: the `actor_token` subject when one is supplied, otherwise the
+  authenticated client ID. The source check itself always uses the
+  authenticated client. Both checks must pass and neither overrides the other.
+- **`any`.** The client keeps the blanket trust described above: it may
+  exchange any self-issued subject token. The startup WARN is logged with
+  `explicit_any=true` when the client also sets `grant_types` or uses
+  `private_key_jwt`, because such a client must declare its mode. It also
+  carries `redeems_id_jag=true` when the client sets no `grant_types` and a
+  trusted issuer has the JWT-bearer grant enabled.
+
+The block may be omitted only by a secret-authenticated client whose
+`grant_types` is omitted or empty. Such a client behaves as `any` and logs the
+startup WARN; when a trusted issuer accepts `id_jag` assertions (an unset
+`acceptedAssertionTypes` accepts both types), the WARN carries
+`redeems_id_jag=true`, because the client can also redeem an ID-JAG and so
+mint its own self-issued tokens. A client that sets `grant_types`, or uses
+`private_key_jwt`, must declare the block and the mode, so a client written
+for the newer metadata never falls back to blanket trust because a block was
+dropped. A client with `restricted` logs no startup WARN.
+
+**External-issuer subject tokens** are never governed by
+`self_issued_subject_tokens`, in either mode. The trusted issuer's policy
+(`allowed_actors`, `actor_matcher`, `may_act`, and `allowed_delegate_clients`
+naming this client) decides them.
+
+`allowed_source_clients` and `subject_token_audiences` are valid only with
+`restricted`; setting either with `any` fails validation. A client in `any`
+mode has no per-client policy at runtime, so the audience check would never
+run. The setting is not supported with `any`.
+
+`allowed_source_clients` holds `client_id` values as they appear in the subject
+token. They are user-facing clients such as a TUI, which register at
+runtime (DCR or CIMD), so startup cannot check that they exist. A configured
+delegate client cannot be listed: a token it obtains carries the delegate's
+own `client_id`, so listing it would trust everything that delegate accepts.
+The list has at most 20 entries, with no duplicates and no `*` wildcard. A
+client cannot list its own `client_id` (validation rejects it, because its own
+tokens are accepted on plain token exchange without being listed). A DCR `client_id` is a poor fit for this list: the
+server generates it, and it changes when the registration expires and the
+client registers again.
+
+`subject_token_audiences` says what a self-issued subject token is for. It is
+about the subject token's `aud` claim, not RFC 8693's `audience` request
+parameter. When it is set, the token's `aud` must contain one of the listed
+values. The match is exact, not path prefix, so a token for a sub-path or
+sibling path of the API does not qualify.
+
+The check runs on plain token exchange and on refresh-token requests. It also
+applies to tokens issued to the client itself. On plain token exchange a token
+that fails it is refused with `invalid_grant` (the same documented deviation
+from RFC 8693 section 2.2.2 as the source-client check). For refresh-token
+requests, see [Refresh tokens through token
+exchange](#refresh-tokens-through-token-exchange). Subject tokens from an
+external issuer are not checked: that issuer's policy decides them. Listing a
+value here grants nothing. The client can receive it only if its `audiences`
+also covers it, and startup refuses that while `exchange_refresh_tokens` is set.
+
+Take a client that sets `subject_token_audiences: [X]` and `audiences: [Y]`.
+Plain exchange needs a subject token that carries both X (the input rule) and Y
+(the coverage rule). A token from `/authorize` carries one audience, so in
+practice such a client gets only refresh tokens. A client in `any` mode, a DCR or
+CIMD client, and a restricted client without the field or with an empty list are
+not affected.
+
+An input setting limits which subject tokens the client accepts. An output
+setting limits which tokens the client receives.
+
+| Setting | Meaning |
+|---|---|
+| `allowed_source_clients` | Input. Who the subject token was issued to. On plain token exchange, a self-issued subject token must carry the client's own `client_id` or one listed here. On the exchange-grant path, only the listed clients are accepted, and the list must not be empty. |
+| `subject_token_audiences` | Input. What the subject token is for. |
+| `audiences` (client level) | Output. The audiences of the access tokens the client can receive. |
+| `allowed_audiences` (server level) | Every audience the server accepts. The entries of the two audience lists above must be in it. |
+
+`audiences` limits the access tokens the client can receive. It applies to
+`audience`, `resource` and the default audience on token exchange, to ID-JAG
+redemption, to `/authorize` and to the refresh grant. What it holds depends on
+the client type:
+
+- **Configured delegate clients.** A per-client allowlist. `audience` matches by
+  path prefix. `resource` must also be an exact member of `allowed_audiences`.
+- **SPIFFE clients.** Both grants ignore `audiences` and use one rule: the
+  request must send exactly one `resource` that exactly matches an entry in the
+  association's resource list, and `audience` is rejected (see
+  [SPIFFE Association Declarations](18-spiffe-association-declarations.md)
+  for the full rule).
+- **DCR and CIMD clients.** A copy of the server's list taken at registration.
+  ID-JAG redemption does not narrow a confidential DCR client, so only the
+  server list applies, except at a `resolve` issuer, which refuses such a
+  client (see "Resolution at redemption"). Public clients, including every CIMD
+  client, cannot redeem an ID-JAG at all.
+- **Device flow.** The client receives all of its `audiences`.
+
+On token exchange, every audience the client receives must also appear, exactly,
+in the subject token's `aud`, with no exceptions (`ensureAudienceSubsetOfSubject`).
+Otherwise a client registered for audiences A and B could turn a user's token
+for A into one for B. This holds for every delegate, whether or not it sets
+`subject_token_audiences`.
+
+An empty `audiences` means the client can receive no access tokens. Startup
+accepts it only when `exchange_refresh_tokens` is set and token exchange is the
+client's only grant.
+
+While `exchange_refresh_tokens` is set, startup refuses a
+`subject_token_audiences` entry that one of the client's `audiences` covers.
+Reason: a refresh token issued from a token for `https://api.example.com` must
+not let the client receive access tokens for `https://api.example.com`.
+
+Here "covers" means the server's audience matching rule (path prefix on parsed
+URLs), the function the token endpoint calls (`AudienceMatchingStrategy`). A
+value the matcher cannot parse counts only when it is equal. The rule is
+conservative with `urn:` values: any two `urn:` audiences cover each other,
+because they parse to an empty host and path.
+
+Example: a refresh-token-only broker client. It can receive no access tokens.
+For self-issued subject tokens, it accepts only tokens issued to `tui-client-id`
+or to itself whose `aud` contains `https://api.example.com`. That audience must
+be in the server's `allowed_audiences`. Listing it in `audiences` too would fail
+startup.
+
+```yaml
+delegate_clients:
+  - client_id: token-broker
+    client_secret_env_var: TOKEN_BROKER_CLIENT_SECRET
+    scopes: [openid]
+    audiences: []
+    grant_types: [urn:ietf:params:oauth:grant-type:token-exchange]
+    token_exchange:
+      self_issued_subject_tokens: restricted
+      allowed_source_clients: [tui-client-id]
+      subject_token_audiences: [https://api.example.com]
+      exchange_refresh_tokens:
+        id_jag_max_lifetime: 12h
+      id_jag:
+        targets:
+          - issuer: https://as.partner.example.com
+            client_id: toolhive-broker
+            resources: [https://mcp.partner.example.com/mcp]
+            lifetime: 60s
+```
+
+Example: a plain access-token delegate. For self-issued subject tokens, it
+accepts tokens issued to `chat-ui` or to `coding-agent` itself whose `aud`
+contains `https://api.example.com`. Tokens from an external issuer are decided by
+that issuer's policy. The audience must be in `allowed_audiences`. The client can
+receive only audiences that the subject token already carries.
+
+```yaml
+delegate_clients:
+  - client_id: coding-agent
+    client_secret_env_var: CODING_AGENT_CLIENT_SECRET
+    scopes: [openid]
+    audiences: [https://api.example.com]
+    token_exchange:
+      self_issued_subject_tokens: restricted
+      allowed_source_clients: [chat-ui]
+      subject_token_audiences: [https://api.example.com]
+```
+
+Startup refuses a configuration that breaks any of these rules:
+
+- `subject_token_audiences` has an empty or duplicate entry, or has more than 20
+  entries. An empty list is the same as an omitted field: no requirement.
+- `subject_token_audiences` is set with `self_issued_subject_tokens: any`.
+- A `subject_token_audiences` entry is not one of `allowed_audiences`.
+- `exchange_refresh_tokens` is set without `subject_token_audiences` (an empty
+  list counts as without).
+- `exchange_refresh_tokens` is set without a non-empty `allowed_source_clients`.
+- `exchange_refresh_tokens` is set and a `subject_token_audiences` entry is
+  covered by one of the client's `audiences`.
+- `audiences` is empty without `exchange_refresh_tokens`, or is empty while
+  `grant_types` includes a grant other than token exchange.
+- `id_jag` is set without token exchange enabled, without
+  `self_issued_subject_tokens: restricted`, without
+  `exchange_refresh_tokens.id_jag_max_lifetime`, or with an empty `targets` list.
+- An `id_jag` target breaks a rule in [ID-JAG targets](#id-jag-targets).
+
+Policy edits take effect on restart. The policy is built once at startup and
+is not stored with the client.
+
+A delegate client with `self_issued_subject_tokens: restricted` accepts only
+self-issued tokens issued to itself and to its listed source clients. A
+secret-authenticated delegate client may omit both `grant_types` and the block. A
+client that sets `grant_types`, or uses `private_key_jwt`, must declare the block
+and the mode.
+
+### ID-JAG targets
+
+A delegate client that holds ID-JAG grants can list the authorization servers it
+may get an ID-JAG for. Set `token_exchange.id_jag.targets` on the client.
+Requests for an ID-JAG are described in [Minting ID-JAGs from a
+grant](#minting-id-jags-from-a-grant). The policy is keyed by the issuer exactly as configured. At request time
+the client's `audience` parameter must equal it exactly. These settings are RunConfig-only: no CRD exposes `id_jag`.
+
+Each target has these fields:
+
+- `issuer`: the other authorization server's issuer. The client sends it as the
+  request's `audience`, and it becomes the ID-JAG's `aud` exactly as written. The
+  target server compares `aud` to its issuer as an exact string (RFC 8414,
+  RFC 7519), so the value must match the target's published issuer byte for byte.
+  Startup refuses an issuer that is not well-formed. It must be an absolute
+  `https` URL, or `http` on a loopback host, with a lower-case scheme and host,
+  no explicit default port (`:443` for `https`, `:80` for `http`), no query,
+  fragment or userinfo, no dot segments, no empty path segments, no unneeded
+  percent-encoding and no leading zeros in the port. One trailing slash is
+  allowed and kept as written. `https://as.example.com` and
+  `https://as.example.com/` are different issuers. The issuer must be unique
+  within the client, and the `(issuer, client_id)` pair must not be used by
+  another delegate client. These two checks ignore one trailing slash. The issuer
+  must not equal this server's issuer, its token endpoint (issuer plus
+  `/oauth/token`) or one of its `allowed_audiences`. This check also ignores case
+  in the scheme and host and a default port, because this server's own values are
+  not held to the well-formed rule.
+- `client_id`: required. This client's `client_id` at the other authorization
+  server. The `(issuer, client_id)` pair must not be used by another delegate
+  client.
+- `resources`: at least one, each a valid RFC 8707 resource URI, with no
+  duplicates.
+- `lifetime`: a Go duration in whole seconds. It must be above zero and at most
+  `300s`. The default is `60s`.
+- `required_subject_claims`: optional. Values are `upstream_subject` and
+  `sub_id`, with no duplicates. A config file cannot set it: it is not
+  serialized to or from JSON or YAML. Only Go callers that build the RunConfig or
+  Config in code can set it, together with `SubjectIdentifierAudiences` through
+  the `WithSubjectIdentifierAudiences` runner option. Each entry needs every
+  `token_exchange.subject_token_audiences` entry to be in
+  `SubjectIdentifierAudiences`. The runner checks this before upstream
+  registration.
+
+A client with `exchange_refresh_tokens.id_jag_max_lifetime` and no
+`id_jag.targets` logs one DEBUG line at startup. It says the client can hold
+ID-JAG grants but cannot mint ID-JAGs.
+
+### Worked example
+
+This is the scenario the relaxation exists for (issue #5194): an interactive
+client obtains a self-issued token for a user, and a separate, unrelated
+delegate client later exchanges that same token to act as the user.
+
+`RunConfig` declares the delegate client (`chat-ui`, the client the user
+authenticated through, needs no entry here — only the delegate does):
+
+```yaml
+delegate_clients:
+  - client_id: coding-agent
+    client_secret_env_var: CODING_AGENT_CLIENT_SECRET
+    scopes: [openid, mcp:tools]
+    audiences: [https://mcp.example.com]
+```
+
+1. The user signs in through `chat-ui` and ToolHive mints a self-issued
+   access token whose `client_id` is `chat-ui` — not `coding-agent`:
+
+   ```json
+   {
+     "iss": "https://auth.example.com",
+     "sub": "3f9c2eab-1a4e-4b8f-9c11-3a0d2e6f9d21",
+     "client_id": "chat-ui",
+     "aud": "https://mcp.example.com",
+     "scope": "openid mcp:tools",
+     "exp": 1755100000
+   }
+   ```
+
+2. `coding-agent` — a client the user never signed in through — presents
+   that access token as `subject_token`, authenticating itself with its own
+   client credentials (`client_secret_basic`, i.e. an `Authorization: Basic`
+   header):
+
+   ```http
+   POST /oauth/token HTTP/1.1
+   Host: auth.example.com
+   Authorization: Basic Y29kaW5nLWFnZW50OjxzZWNyZXQ+
+   Content-Type: application/x-www-form-urlencoded
+
+   grant_type=urn:ietf:params:oauth:grant-type:token-exchange&
+   subject_token=<the access token from step 1>&
+   subject_token_type=urn:ietf:params:oauth:token-type:access_token&
+   audience=https://mcp.example.com&
+   scope=openid
+   ```
+
+   Because `coding-agent` is a configured delegate client, `checkDelegationConsent`
+   skips the `client_id` binding described in step 3 above — `chat-ui` on the
+   subject token is not compared against `coding-agent`, the authenticated
+   client — and the exchange proceeds.
+
+3. The delegated token names the same user as `sub`, and records
+   `coding-agent` — the client that performed the exchange, not `chat-ui` —
+   as the acting party in `act.sub`:
+
+   ```json
+   {
+     "iss": "https://auth.example.com",
+     "sub": "3f9c2eab-1a4e-4b8f-9c11-3a0d2e6f9d21",
+     "act": { "iss": "https://auth.example.com", "sub": "coding-agent" },
+     "aud": "https://mcp.example.com",
+     "scope": "openid",
+     "exp": 1755099400
+   }
+   ```
+
+   `scope` is narrowed from the requested `openid` to what both `coding-agent`
+   and the subject token already carried (`grantScopes` never grows it); had
+   the request asked for `mcp:tools` too, the same subset rule would have
+   granted it, since the subject token carried it. `aud` passes
+   `ensureAudienceSubsetOfSubject` because it's both in the subject token's
+   own `aud` and in `coding-agent`'s configured `audiences`. `exp` is capped
+   to `min(subject token's remaining lifetime, delegationLifespan)`, which
+   here yields an expiry earlier than the subject token's own.
+
+## Accepted limitations
+
+1. **`allowedDelegateClients` binds external actor authorization to specific
+   ToolHive clients, and is mandatory, not opt-in.** `allowedActors` or
+   `actorMatcher` by itself authorizes "these external tokens may be exchanged
+   here," not "…by this particular ToolHive client" — the external actor
+   claim (when one exists) is never compared against the authenticated
+   ToolHive client ID. Without a separate binding, every ToolHive confidential
+   client holding the token-exchange grant would be delegation-equivalent with
+   respect to an authorized external token, so compromise of the weakest such
+   client would be as good as compromise of all of them.
+
+   `TrustedIssuer.AllowedDelegateClients` (`allowed_delegate_clients` on a
+   hand-written `authserver.RunConfig`) closes this per issuer: a list of
+   ToolHive client IDs permitted to use that issuer's allowlisted actors, or
+   the wildcard `"*"` to explicitly permit any ToolHive client holding the
+   token-exchange grant. `validateTrustedIssuer` rejects the field when it is
+   empty or absent — permissiveness must be *declared* with the wildcard, not
+   obtained by leaving the field out — and rejects the wildcard combined with
+   specific client IDs. The wildcard is also rejected when `allow_may_act` is
+   enabled: trusting a foreign issuer to name ToolHive clients in `may_act`
+   requires explicit per-client containment. `checkDelegationConsent` checks
+   the authenticated client against this list on both consent paths:
+   `may_act` bypasses `allowedActors` and `actorMatcher` (external-issuer
+   authorization) but NOT
+   `allowedDelegateClients`, since the validator sets `AllowedDelegateClients`
+   for every external token regardless of which path authorized it (see
+   limitation 4 below). A self-issued `may_act` (no external issuer involved)
+   has no `allowedDelegateClients` equivalent and is unaffected — it remains
+   bound by `may_act.sub` alone.
+
+2. **Subject namespace collisions are closed, not accepted.** A trusted
+   issuer is trusted to assert *any* subject this server accepts for
+   delegation, and downstream authorization decisions (Cedar) key on `sub`
+   alone — not `iss`. Rather than requiring operators to keep every issuer's
+   subject namespace disjoint, the delegated token's `sub` is qualified as
+   `<issuerURL>#<externalSub>` for every trusted-issuer exchange
+   (`tokenexchange.delegatedSubject`), never the external `sub` copied
+   verbatim. ToolHive's own native subjects are UUIDs minted by
+   `UserResolver.ResolveUser`, which cannot contain `#`, so a qualified
+   external subject can never collide with one. Scope names are not
+   qualified this way and remain the operator's responsibility to keep
+   disjoint across issuers.
+3. **Provenance is recorded for every external token, but never as a
+   phantom actor.** The RFC 8693 §4.1 `act` claim identifies parties that
+   acted: its outer hop always contains ToolHive's issuer and the acting
+   party's identifier (the client ID, or the workload's SPIFFE ID for a SPIFFE
+   client; see [Workloads that share a client ID](18-spiffe-association-declarations.md)),
+   and a genuine external actor — the allowlist path's allowlisted actor
+   claim — nests one level in, e.g. `act = {iss: <toolhive-issuer>, sub:
+   <toolhive-client>, act: {iss: <external-issuer>, sub: <external-actor>}}`.
+   A `may_act`-bearing or `ActorMatcher`-only external token has no
+   client-namespace actor to nest — `may_act.sub` already names the
+   delegate directly via the outer hop — so `act` stays a single hop for
+   those; nesting a bare `{iss: <external-issuer>}` there would misrepresent
+   the issuer as a prior actor to any RFC-8693-aware consumer walking the
+   chain, including this codebase's own audit tooling (`pkg/audit`'s
+   `DelegationChain`, documented as "the full chain of acting parties").
+   The external issuer is instead always recorded as its own top-level
+   `external_issuer` claim — set whenever `ValidatedClaims.ExternalIssuer`
+   is non-empty, regardless of whether an actor was also nested under
+   `act` — so operators and policy authors have one consistent place to
+   check for "was an external issuer involved," rather than sometimes
+   inside `act` and sometimes not. It is carried forward on re-exchange, so it
+   names the external issuer of the original hop. `act` is not excluded from
+   Cedar's generic claim exposure (`preprocessClaims` prefixes every claim
+   key, `act` and `external_issuer` included, so they surface as
+   `context.claim_act` and `context.claim_external_issuer`), so a policy CAN
+   key on `context.claim_act.sub` — see
+   `pkg/authz/authorizers/cedar/core_test.go` for worked examples gating on an
+   actor's SPIFFE ID this way. Most policies still key on `sub` alone, since
+   `act` is populated for audit provenance rather than as the primary
+   access-control signal, but an operator authoring delegation policy should
+   not assume it is unreachable.
+4. **`may_act` trust is a per-issuer opt-in, and it bypasses more than one
+   thing.** `allow_may_act` is false by default because an enabled issuer
+   bypasses BOTH `allowedActors` and `actorMatcher` (external actor
+   authorization) and can name a ToolHive client directly. The claim must be
+   drawn from ToolHive's own client namespace and must not be influenceable by
+   an untrusted party. Its issuer must use explicit `allowedDelegateClients`;
+   wildcard delegation is rejected with this opt-in.
+5. **ID/access-token discrimination on the external path rests on two
+   partial layers, neither of which is exhaustive alone.** Nothing inspects
+   the JWT header's `typ` claim: RFC 8725 §3.12 recommends `typ: at+jwt` for
+   access tokens, but Entra v1/v2, Okta, and Google all emit a bare `JWT`
+   `typ` for access tokens too, so requiring `at+jwt` would reject those
+   providers' genuine access tokens.
+
+   Layer one: `rejectIDTokenClaims` (`validator.go`) rejects a subject token
+   carrying `at_hash` or `c_hash` — OIDC Core §3.3.2.11/§3.3.2.10 define both
+   for ID tokens only. This is a sound *positive* detector but not
+   exhaustive: both claims are OPTIONAL even on a valid
+   authorization-code-flow ID token, so an ID token that omits them is not
+   caught here.
+
+   Layer two: `TrustedIssuer.ExpectedAudience` is documented as MUST be a
+   resource/API identifier and MUST NOT be a client ID, since an ID token's
+   `aud` is the requesting client's own ID while an access token's `aud`
+   names the resource. This check is operator-dependent, not
+   self-enforcing — nothing validates that the operator actually set a
+   resource identifier rather than a client ID.
+   `NewMultiIssuerTokenValidator` emits a `slog.Warn` at startup
+   (`looksLikeResourceIdentifier`) when `expected_audience` has no URI
+   scheme (`https://`, `api://`), naming the issuer and the consequence, but
+   does not hard-reject it: Entra v1 legitimately uses a bare app-ID GUID
+   (no scheme) as an access token's `aud`, so rejecting every non-URI
+   audience would break that real, supported provider.
+
+   A third discriminator — rejecting when a subject token's `aud` equals the
+   issuer's configured actor claim, since OIDC Core requires an ID token's
+   `aud` to equal its own `azp` — was evaluated and not shipped: an app whose
+   API and client share one registration (the same ambiguous
+   bare-GUID-audience configuration layer two warns about) legitimately
+   issues *access* tokens where `aud` and `azp`/`appid` are the same value
+   too, so this would reject genuine access tokens from that setup.
+
+   Taken together: an operator who sets `expected_audience` to a client ID
+   (despite the startup warning), talking to a real IdP whose ID tokens omit
+   `at_hash`/`c_hash` (both legal per OIDC Core), has no remaining
+   discriminator here. The blast radius is bounded: an admitted ID token
+   carries no `scope`/`scp` claim, so `grantScopes` (`handler.go`) either
+   rejects the exchange with `invalid_scope` or grants a zero-scope
+   delegated token — it must also be signed by a configured trusted issuer
+   and satisfy one of the consent signals above.
+
+## RFC 7523 JWT-bearer grant
+
+The embedded authorization server also supports the plain RFC 7523 JWT-bearer
+grant (`urn:ietf:params:oauth:grant-type:jwt-bearer`), a separate grant from
+RFC 8693 token exchange above. Where token exchange lets an already-authenticated
+ToolHive client trade a subject token it holds for a delegated one, the
+JWT-bearer grant lets an external party present a signed assertion directly at
+`/oauth/token` and receive a ToolHive access token — no ToolHive client, no
+delegate client, no consent signal (`may_act`/`allowedActors`/`actorMatcher`)
+involved. It is enabled per trusted issuer by setting
+`TrustedIssuer.JWTBearerGrant` (`jwt_bearer_grant` on a hand-written
+`authserver.RunConfig`, `jwtBearerGrant` on the operator's
+`TrustedIssuerConfig`) — independent of that issuer's RFC 8693 delegation
+fields, though both may be configured on the same issuer. This is the
+legacy shape; a hand-written `RunConfig` may instead configure the same
+policy under `inbound_grants.jwt_bearer.issuer_policies`, referencing the
+issuer by `name` — see [Canonical `inbound_grants`
+configuration](#canonical-inbound_grants-configuration). The two shapes are
+mutually exclusive: setting `inbound_grants.jwt_bearer` while any
+`trusted_issuers[*].jwt_bearer_grant` is still set anywhere in the config is
+rejected, regardless of which issuer each one refers to.
+
+### JWT-bearer configuration
+
+`accepted_audiences` identifies this authorization server, while
+`allowed_audiences` identifies resources that issued access tokens may target.
+They must be disjoint: configuring the same value in both is rejected, because
+a resource audience must not also make an assertion acceptable to the token
+endpoint. When `accepted_audiences` is omitted, a plain JWT-bearer assertion
+must name the token endpoint URL. An ID-JAG may name the token endpoint URL or
+this server's issuer identifier, which is the `aud` the draft requires. A
+configured list replaces both defaults.
+
+The one exception to the issuer default: when this server's issuer identifier
+is also listed in `allowed_audiences`, the ID-JAG handler does not accept it by
+default, for the same reason as the rule above. ID-JAGs then must name the
+token endpoint URL, as before. The server starts normally and logs one warning
+at startup, naming the issuer, if any trusted issuer enables the grant without
+`accepted_audiences`. To accept the issuer in that case, a deployment must
+stop using it as a resource audience.
+
+A `RunConfig` enables the grant per trusted issuer. This example accepts
+assertions for the authorization-server URL and permits the exact assertion
+subject to request only the listed resource:
+
+```yaml
+issuer: https://auth.example.com
+allowed_audiences: [https://mcp.example.com]
+trusted_issuers:
+  - issuer_url: https://issuer.example.com
+    jwt_bearer_grant:
+      max_assertion_age: 5m
+      accepted_audiences: [https://auth.example.com]
+      subject_bindings:
+        - subject: workload-123
+          allowed_resources: [https://mcp.example.com]
+```
+
+The equivalent operator configuration uses camelCase fields:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPExternalAuthConfig
+metadata:
+  name: embedded-auth
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    issuer: https://auth.example.com
+    allowedAudiences: [https://mcp.example.com]
+    trustedIssuers:
+      - issuerUrl: https://issuer.example.com
+        jwtBearerGrant:
+          maxAssertionAge: 5m
+          acceptedAudiences: [https://auth.example.com]
+          subjectBindings:
+            - subject: workload-123
+              allowedResources: [https://mcp.example.com]
+```
+
+- **Clientless.** `JWTBearerHandler.CanSkipClientAuth` permits a
+  credential-free plain assertion. Client credentials in the form or in HTTP
+  Basic prevent this clientless path. Every storage backend's request-marshaling path still
+  needs a non-nil `fosite.Client`, so the handler attaches a synthetic one —
+  see "Synthetic subject and client identity" below.
+- **Assertion bounds.** Beyond the standard RFC 7523 §3 claims (`iss`, `sub`,
+  `aud`, `exp`; `iat` is required here specifically, for the age bound below),
+  two policy-level bounds apply:
+  - `JWTBearerGrantPolicy.MaxAssertionAge` caps `exp - iat` — independent of
+    `exp` itself, which is still checked for plain expiry. This bounds how
+    long an assertion can claim to be "fresh" for, not just how long it
+    remains unexpired.
+  - `JWTBearerGrantPolicy.AcceptedAudiences` is the set of "this AS" identity
+    strings the assertion's `aud` must intersect (`audienceIntersects`),
+    checked by exact-match membership rather than equality — RFC 7523 §3
+    permits a multi-valued `aud`, so a plain JWT-bearer assertion may
+    additionally name other audiences without losing its match. The ID-JAG
+    grant does not: it refuses an `aud` array with more than one value. When unset, the plain JWT-bearer
+    grant defaults to `[tokenEndpoint]`, preserving the original
+    exact-endpoint-match behavior, and the ID-JAG grant defaults to
+    `[tokenEndpoint, issuer]`, so the issuer identifier is accepted. This exists
+    to let an issuer's assertions target this AS by more than one valid name
+    (e.g. across an issuer/token-endpoint URL migration) — it is deliberately
+    NOT the same relaxation as accepting an arbitrary RFC 8707 resource
+    audience, which would let any resource-scoped token satisfy the grant
+    instead of only tokens minted for this AS specifically.
+
+  Beyond cryptographic and claim validation, `JWTBearerGrantPolicy.SubjectBindings`
+  is an exact-match allowlist: an assertion's `sub` must have a configured
+  binding, and the request's `resource` parameter (required, exactly one)
+  must be one of that binding's `allowed_resources`. There is no wildcard
+  subject or resource — every accepted assertion subject and resource pair is
+  named explicitly.
+- **No `cnf`.** An assertion that carries a `cnf` claim (RFC 7800) is refused
+  with `invalid_grant`, whatever the value: the claim means the issuer expects
+  proof of possession of a key, and redeeming the assertion as a bearer token
+  would silently drop that. Only the presence of the claim counts, so
+  `"cnf": null` and `"cnf": {}` are refused too. The check runs before the
+  assertion is consumed. It stays until proof of possession (DPoP or mTLS) is
+  verified. The grant still does not require client authentication.
+- **No `authorization_details`.** A plain assertion that carries an
+  `authorization_details` claim is refused with `invalid_grant`, whatever the
+  value. RFC 7523 defines no such claim, so redeeming the assertion would
+  silently drop the restriction its issuer signed. Only presence counts. The
+  check runs after the issuer's policy lookup, so an issuer that is not enabled
+  for the grant gets that refusal instead, and before the assertion is
+  consumed. See [Terminal tokens](#terminal-tokens). An ID-JAG's claim is
+  processed instead (see [On ID-JAG redemption](#on-id-jag-redemption)). Both
+  forms refuse the `authorization_details` parameter with
+  `parameter_not_allowed`, or with `invalid_request` when it is repeated.
+- **Synthetic subject and client identity.** The issued token's `sub` is
+  `<assertion issuer>#<assertion subject>` (`session.New`'s first argument,
+  matching the delegated-token subject qualification pattern in [Accepted
+  limitations](#accepted-limitations) #2, so it can never collide with a
+  native ToolHive UUID subject). Its `client_id` claim has the precise format
+  `synthetic:jwt-bearer-<base64url SHA-256>`: the base64url value is the
+  unpadded SHA-256 digest of `<issuer>\x00<subject>` (`jwtBearerClientID`). It
+  is never a real registered `fosite.Client`. `storage.NewSyntheticClient`
+  builds the client object attached to the access request, and
+  `storage.IsSyntheticClientID` lets a storage backend reconstruct it on read
+  (e.g. `RedisStorage.unmarshalRequester`) without a client-registry lookup,
+  `RegisterClient`. This mechanism is generic — any future clientless grant
+  can reuse it, not just this one.
+- **Replay model.** `storage.AssertionJWTConsumer.ConsumeAssertionJWT` atomically
+  records `(purpose, issuer, key)` as consumed, keyed until the assertion's own
+  `exp`, and returns `fosite.ErrJTIKnown` on a repeat. `key` is not always the
+  assertion's `jti`: many real-world IdPs (e.g. Entra ID `client_credentials`
+  tokens) never emit one, so `jti` is not a required claim here. `assertionReplayKey`
+  uses `jti` when present. Plain JWT-bearer assertions must first be compact
+  JWTs with exactly three canonical unpadded base64url segments (protected
+  header, payload, signature); malformed or alternate encodings are rejected
+  as `invalid_grant` before validation. Without `jti`, the key is a SHA-256
+  digest of the decoded protected header and payload, with the header length
+  framed to separate the two. The signature is excluded so re-signing the
+  same header and payload cannot evade replay detection. This also treats
+  independently issued assertions with identical header and payload as one use;
+  without an issuer-provided identifier they cannot be distinguished safely.
+  No-`jti` keys use purpose `"jwt-bearer-no-jti"`, separate from the `"jwt-bearer"`
+  purpose for issuer-supplied `jti` values, so those keys cannot collide.
+  Existing no-`jti` replay entries keyed by the old hash of the raw JWT are not
+  migrated; until those assertions expire, a previously consumed no-`jti`
+  assertion may be accepted once more across the upgrade. Replay protection
+  is otherwise never skipped. Both purposes are kept separate from other
+  assertion-consuming grants so a reused key cannot be laundered across
+  purposes. Consumption happens *before* issuance: if token
+  issuance somehow fails after that point, the assertion stays consumed rather
+  than becoming replayable — a fail-closed choice that costs an otherwise-valid
+  assertion its one use on an issuance-side error, rather than risk a second
+  grant on a retried replay.
+- **Discovery.** `grant_types_supported` in `/.well-known/oauth-authorization-server`
+  and `/.well-known/openid-configuration` advertises
+  `urn:ietf:params:oauth:grant-type:jwt-bearer` only when at least one trusted
+  issuer has `jwtBearerGrant` configured (`AuthorizationServerConfig.JWTBearerGrantEnabled`,
+  computed by the same `jwtBearerGrantEnabled` helper that decides whether
+  `buildProvider` registers the grant with fosite in the first place — the two
+  can't drift out of sync).
+- **Validator sharing.** Whenever any trusted issuer is configured,
+  `buildProvider` constructs a single `MultiIssuerTokenValidator`
+  (`tokenexchange.NewSharedTrustedIssuerValidator`), holds it on the server, and
+  passes it to `tokenexchange.FactoryWithSharedTrustedIssuerValidator` (and, when
+  the JWT-bearer grant is enabled, `tokenexchange.JWTBearerIssuanceFactory`),
+  which require it rather than each building its own. A `MultiIssuerTokenValidator`
+  registers a `jwkfetch.Cache` and background refresh goroutines per issuer, so one
+  shared instance both avoids doubling that cost and gives the server a single
+  handle to shut those workers down on `Close`. (Previously the shared validator
+  was built only when the JWT-bearer grant was also enabled, and a token-exchange-only
+  server built its validator inside a factory closure where nothing could release
+  it.)
+- **No delegation consent.** The JWT-bearer grant does not apply
+  `allowedActors`, `actorMatcher`, or `may_act` — those are RFC 8693 delegation
+  concepts. An issuer's JWT-bearer subjects are authorized entirely by
+  `SubjectBindings`, independent of whatever `allowedActors`/`allowMayAct` that
+  same issuer may also have configured for delegation.
+
+### Subject mode (Go only)
+
+Every ID-JAG redemption issues a token whose subject is
+`<assertion issuer>#<assertion subject>`. That subject is not a user in this
+server's own user table, so a gateway behind it cannot find that user's
+connections. Two per-issuer settings prepare the alternative, which maps the
+ID-JAG's subject to a local user:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `SubjectMode` | empty, which means `namespaced` | `namespaced` issues `<iss>#<sub>`, as before. `resolve` maps the subject to a local user and implies the delegated-access marker. While the gate below is closed, every redemption from a `resolve` issuer is refused |
+| `ActorIssuers` | empty | The `act.iss` values to accept besides the ID-JAG's own `iss`. Allowed only with `resolve`. Checked at redemption, before the actor policy runs |
+
+Both fields are set only from Go, by embedders: on
+`TrustedIssuer.JWTBearerGrant`, or on the `JWTBearerIssuerPolicyRunConfig` of
+`inbound_grants.jwt_bearer.issuer_policies`, which copies them into the
+runtime policy. Their tags are `json:"-" yaml:"-"`, like `ActorProfile` and
+`RequiredSubjectClaims`, so a config file or the CRD cannot set them, and they
+do not appear in the swagger or the SDK.
+
+Startup refuses these configurations. The first four are per-issuer checks, run
+at config validation and again when the validator is built. The last needs the
+upstream list, so it runs in `RunConfig.Validate`, before any upstream
+registration, and again in `Config.Validate`.
+
+| Configuration | Error |
+| --- | --- |
+| `SubjectMode` other than empty, `namespaced` or `resolve` | `issuer_url "<url>": jwt_bearer_grant.subject_mode has unsupported value "<value>"` |
+| `ActorIssuers` without `resolve` | `issuer_url "<url>": jwt_bearer_grant.actor_issuers requires subject_mode resolve` |
+| `resolve` with any `subject_bindings` | `issuer_url "<url>": jwt_bearer_grant.subject_bindings must be empty when subject_mode is resolve` |
+| `resolve` on an issuer that accepts `jwt_bearer` assertions (an unset `accepted_assertion_types` accepts both forms) | `issuer_url "<url>": jwt_bearer_grant.subject_mode resolve requires accepted_assertion_types [id_jag]` |
+| `resolve` when the server has no upstream, or its first upstream is not `oidc` | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream` |
+| `resolve` when the first upstream's `subject_claim` is mutable (`email`, `preferred_username`, `upn` and the others `subject.ValidateBindingClaim` refuses) | `trusted_issuers: issuer_url "<url>": jwt_bearer_grant.subject_mode resolve needs a stable subject_claim on the first upstream: <reason>` |
+
+`subject_bindings` stays required for a `namespaced` issuer, with the same
+error as before, and must be empty for a `resolve` issuer. A file-based
+configuration cannot set `resolve`, so for it nothing changes. Because a
+`resolve` issuer names `id_jag` explicitly, the existing `id_jag` rule applies
+to it too: a non-empty `accepted_audiences` must include this server's issuer,
+and an empty one accepts that issuer by default unless the issuer is also in
+`allowed_audiences`, which is refused.
+
+At redemption, a `resolve` issuer skips the subject-binding check, since it has
+no bindings. The other ID-JAG checks run unchanged.
+
+The first upstream must be OIDC because the first upstream is the only sign-in
+leg that writes the provider-identity rows a subject is resolved against, and
+only an OIDC upstream records the issuer URL and subject claim those rows are
+keyed by. An OAuth2 first upstream also writes rows, but they carry no issuer
+URL or subject claim. A later OIDC upstream does not count, and a token-only
+server (no upstreams) is refused. The ID-JAG's `upstream_subject` claim is
+resolved by a resolver built from this server's configuration. Today it knows
+one pair: the first upstream's issuer and `subject_claim` (default `sub`). The
+resolver refuses any other `iss` or `claim` with `subject.ErrNotConfigured`, and
+the handler does not check the pair itself. The stored
+provider-identity rows are keyed only by the upstream name and the subject
+value, so the issuer and claim are not read from the rows. The `value` is looked
+up under the first upstream's name.
+
+At startup the server logs a WARN once if the subject claim is `sub` and the
+first upstream's issuer looks like an Okta custom authorization server, because
+`sub` there may not match the sign-in subject and `uid` may be the better claim.
+
+### The gate
+
+Redemptions from a `resolve` issuer are closed by an unexported constant in the
+`tokenexchange` package, `delegatedAccessEnabled`, which is `false`. It is not a
+setting, an acknowledgement or a build tag. A redemption from a `resolve`
+issuer that passes every other check, up to and including the client-audience
+check and the actor issuer check (see "The actor, for `resolve` issuers only"
+under "Bound ID-JAG assertions"), is refused with `400 access_denied` and
+`subject_unknown` before the `jti` is used up, so the ID-JAG stays unused and a
+client sees what it sees for an unknown user. A redemption that fails an
+earlier check gets that check's refusal. When a `resolve` issuer is configured,
+the server logs one WARN at startup, "Resolution of the subject at ID-JAG
+redemption is not enabled in this build; redemptions from resolve issuers are
+refused", with the affected issuer URLs in `issuers`.
+
+The gate exists because the authorization server cannot see how the gateway
+behind it is wired, so no configuration check can prove that the gateway
+enforces the delegated-access marker. Resolution at redemption is in place
+behind the gate. Removing the gate is a later change.
+
+### Resolution at redemption
+
+None of this runs while the gate is closed: resolution comes after the gate, so
+every `resolve` redemption is refused before it starts.
+
+The check order for a `resolve` issuer is: client authentication and grant,
+the `authorization_details` parameter, assertion validation, `jti`, client
+binding, policy (resource), client audience, actor issuer, gate, resolution,
+actor policy, the `authorization_details` claim, consume, lifetime.
+Resolution starts with a client check: a client registered through DCR that is
+not resource-scoped is refused before the resolver is called. It then requires
+the `resource` claim. The actor policy runs once the subject has resolved, with
+the resolved local user ID, and before the `jti` is used up (see "The actor, for
+`resolve` issuers only" under "Bound ID-JAG assertions"). Every refusal in
+resolution and in the actor policy happens before the `jti` is used up.
+
+Resolution reads the ID-JAG's `https://toolhive.dev/upstream_subject` claim, an
+object with `iss`, `claim` and `value`, and maps it to a local user through the
+provider-identity rows the sign-in leg wrote. The resolver is built at startup
+from the first upstream. It alone decides which issuers and claims resolve; one
+it does not know is reported with `subject.ErrNotConfigured` and refused as
+foreign, which keeps a wrong assertion apart from a user who is not
+provisioned.
+
+| Case | Client sees | Reason in the Debug log |
+| --- | --- | --- |
+| The redeeming client was registered through DCR and is not resource-scoped (CIMD clients are public and are refused earlier, at client authentication) | 400 `access_denied`, `client_not_permitted: This client may not redeem an ID-JAG assertion from this issuer.` | `client_not_permitted` |
+| The ID-JAG has no `resource` claim | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must carry a 'resource' claim.` | `resource_claim_missing` |
+| `upstream_subject` missing, not an object, or `iss`, `claim` or `value` missing or not a non-empty string | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion has a missing or malformed upstream_subject claim.` | `upstream_subject_invalid` |
+| The resolver does not resolve this `iss` and `claim` (today: `iss` is not the first upstream's issuer, or `claim` is not its subject claim) | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion upstream_subject does not name this server's sign-in identity provider and subject claim.` | `upstream_subject_foreign` |
+| No local user, more than one, or an empty user ID | 400 `access_denied`, `subject_unknown` | `subject_unknown` |
+| The resolver failed, or no resolver is configured | 500 `server_error`, generic text ("The subject could not be resolved.") | `subject_resolver_unavailable` |
+
+The ID-JAG is not consumed in any of these cases. The Debug line names the
+issuer, the client and the reason, and never the subject, the `jti` or any
+`upstream_subject` member.
+
+A `resolve` issuer has no subject bindings, so nothing narrows the resource per
+subject. In `resolve` mode the resource is bounded by the ID-JAG's `resource`
+claim, which is required: an ID-JAG without it is refused with
+`invalid_assertion` and is not consumed, and the request's `resource` parameter
+is not used as a fallback. Draft -06 section 4.4.1 allows the resource server to
+require the claim and refuse with `invalid_grant`. The claim must list
+resources this server governs. A `namespaced` issuer uses the claim when it is
+present and otherwise the request parameter, within the client's allowed
+audiences. The resource is also bounded by the client-audience check. That
+check does not narrow a client registered through DCR that is not
+resource-scoped, so such a client is refused (reason `client_not_permitted`).
+This includes clients from the secretless private-key-JWT DCR flow. Every other
+client, configured or static delegate clients and resource-scoped clients such
+as SPIFFE clients, is checked against its own audiences or resource allowlist,
+so each marked token has a resource bound on this server's side.
+
+For redemption to work, the authorization server that issued the ID-JAG (AS-1)
+must send:
+
+1. A `resource` claim, and `upstream_subject` in AS-1's `required_subject_claims`.
+   `required_subject_claims` is AS-1 configuration: it must include
+   `upstream_subject` so the ID-JAG carries
+   `https://toolhive.dev/upstream_subject`.
+2. An actor issuer (`ActorProfile.ActIssuer`) that is listed in this server's
+   `actor_issuers`.
+3. An ID-JAG lifetime (`lifetime`, default 60 seconds, at most 300 seconds)
+   that outlasts the redemption.
+4. The same IdP issuer string and `subject_claim` as this server uses for its
+   first upstream. AS-1 stamps `upstream_subject` from its own first upstream,
+   so a different issuer string or claim makes every redemption fail with
+   `invalid_assertion`. The issuer string and claim name are not enough: both
+   OIDC client registrations (AS-1's and this server's) must also receive the
+   same value for the user. An IdP that issues a pairwise `sub` per application,
+   such as Microsoft Entra, gives each registration a different `sub`; use a
+   stable claim such as `oid` there, or redemptions fail with `subject_unknown`.
+
+The issued token has `sub` set to the local user and `act` copied from the
+ID-JAG. The token's `iss` is this server, so when the ID-JAG's `act` has no
+`iss` the server writes the ID-JAG issuer into the copy, the same issuer the
+actor check used. An `act.iss` the ID-JAG already carries, and any nested actor,
+stay as they are, and the ID-JAG itself is not changed. A `namespaced` redemption
+copies `act` as is. It carries the no-upstream-session claim and the
+delegated-access marker (see "Delegated-access marker"). It has no `tsid` and
+no refresh token is issued. Its granted audience is the resource.
+
+The token's lifetime is the shortest of: the client's `access_token_lifespan`
+(the server's access-token lifespan when the client sets none), the ID-JAG's
+remaining validity, and five minutes for a marked token. The five-minute cap is
+applied last, so it wins over a longer client lifespan. An expired ID-JAG is
+refused first. See [Lifetime of a redeemed token](#lifetime-of-a-redeemed-token).
+
+### Redemption refusal reasons
+
+Both assertion forms refuse with an `error_description` that starts with a
+reason code, so a client can act on the refusal without parsing prose. This
+holds for every refusal that carries a reason; the plain grant's two
+`subject_bindings` refusals, a repeated `authorization_details` parameter and
+fosite's own client-authentication errors do not (see the table). The description matches
+`^[a-z_]+(: .*)?$`: the reason, optionally followed by `: ` and a fixed hint. The hint is printable ASCII without `"` or `\` and never
+contains a claim value (`sub`, `jti`, `client_id`, issuer). The handlers build
+the error as a literal (`redemptionRefusal`) because fosite's `WithHint` puts
+its own default text before the reason.
+
+| Refusal | Plain JWT-bearer | ID-JAG |
+| --- | --- | --- |
+| Not a compact signed JWT, bad `typ` or algorithm (an assertion with such a `typ` is routed to the plain handler, never the ID-JAG one) | 400 `invalid_grant`, `invalid_assertion: <hint>` | n/a |
+| Signature or claim validation fails, issuer not enabled, assertion whose issued lifetime (`exp` − `iat`) exceeds `max_assertion_age`, replayed or expired | 400 `invalid_grant`, `invalid_assertion: <hint>` | same code and reason; the hint names an ID-JAG for the first two |
+| Redeeming client is public, or the request names no client at all (no `client_id`, `client_secret`, `client_assertion` or `client_assertion_type` form field, and no HTTP Basic credentials) | n/a (the plain grant does not require client authentication) | 401 `invalid_client`, `client_authentication_required: The ID-JAG grant requires client authentication.` The status is 401 whatever the request sent, the same as fosite's own `invalid_client`. The check runs before the assertion is validated or consumed (only its unverified `typ` header is read, to route the request), so the response says nothing about the assertion and the ID-JAG is not consumed |
+| Client credentials sent, but fosite cannot authenticate them (wrong secret, unknown client, a confidential client that sends only `client_id`, or a `client_secret` without a `client_id`) | fosite's error, before the handler runs: usually 401 `invalid_client`, or 400 `invalid_request` for missing or malformed credentials; fosite's text, no reason | same |
+| ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| Assertion that carries a `cnf` claim, with any value including `null`, for any issuer | 400 `invalid_grant`, `invalid_assertion: The JWT bearer assertion must not carry a 'cnf' claim.` | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must not carry a 'cnf' claim.` Both checks run before the assertion is consumed |
+| The `authorization_details` parameter with a single non-empty value | 400 `invalid_authorization_details`, `parameter_not_allowed`, from an issuer enabled for the grant, after the `cnf` check and the claim refusal below (an assertion with both gets `invalid_assertion`) | 400 `invalid_authorization_details`, `parameter_not_allowed`, after client authentication and the client's grant check, before the ID-JAG is validated |
+| The `authorization_details` parameter repeated, empty values included | 400 `invalid_request`, "The authorization_details parameter must not be repeated.", no reason, at the same point as the row above | same, at the same point as the row above |
+| Assertion that carries an `authorization_details` claim, with any value including `null`, from an issuer enabled for the grant, that passes the checks above (no `cnf` claim) | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` The assertion is not consumed | processed, after subject resolution; see the rows below and [On ID-JAG redemption](#on-id-jag-redemption) |
+| ID-JAG whose `authorization_details` claim is not a non-empty array of objects | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion authorization_details claim must be a non-empty array of objects.` The ID-JAG is not consumed |
+| ID-JAG whose claim holds a type that is not registered for the JWT-bearer grant, or any type when no registry is configured | n/a | 400 `invalid_authorization_details`, `unknown_type`. The ID-JAG is not consumed |
+| ID-JAG whose claim holds an entry that breaks the generic shape rules | n/a | 400 `invalid_authorization_details`, `malformed_entry`. The ID-JAG is not consumed |
+| ID-JAG whose claim a type's hook refuses, or of whose entries the hooks together keep none | n/a | 400 with the hook's code and reason, or `invalid_authorization_details`, `empty_grant`. The ID-JAG is not consumed |
+| ID-JAG whose claim a hook fails on, or for which a hook returns an entry the ID-JAG did not sign | n/a | 500 `server_error`, fixed text. The ID-JAG is not consumed |
+| Subject not listed in `subject_bindings` (namespaced issuers) | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
+| Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
+| A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
+| A `resource` claim with a value that is not in `allowed_audiences` or is not a valid resource URI, whatever the request holds | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim names a resource this server does not govern.` |
+| Every `resource` claim value is in `allowed_audiences`, but the claim does not list the requested `resource` | n/a (the plain grant has no `resource` claim) | 400 `invalid_target`, no reason (the description does not name the resource) |
+| Resource outside the redeeming client's audiences | n/a (the plain grant does not check client audiences) | 400 `access_denied`, `resource_denied` (the description does not name the resource). A DCR-issued client that is not resource-scoped skips this check (`pkg/authserver/server/audience.go`) |
+| `resolve` issuer: `act` missing or malformed, or `act.iss` neither the ID-JAG's `iss` nor in `actor_issuers` | n/a | 400 `access_denied`, `actor_denied`. The ID-JAG is not consumed |
+| `resolve` issuer: the actor policy denies the actor for the resolved user. Not reachable while the gate is closed | n/a | 400 `access_denied`, `actor_denied`. The ID-JAG is not consumed |
+| `resolve` issuer: the actor policy could not decide. Not reachable while the gate is closed | n/a | 500 `server_error`, generic text ("The actor could not be checked."). The ID-JAG is not consumed |
+| Redemption from a `resolve` issuer while resolution is not enabled (see "The gate") | n/a | 400 `access_denied`, `subject_unknown`. The ID-JAG is not consumed |
+| `resolve` issuer: the redeeming client was registered through DCR and is not resource-scoped. Not reachable while the gate is closed | n/a | 400 `access_denied`, `client_not_permitted: <hint>`. The ID-JAG is not consumed |
+| `resolve` issuer: the ID-JAG has no `resource` claim. Not reachable while the gate is closed | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must carry a 'resource' claim.` The ID-JAG is not consumed |
+| `resolve` issuer: `upstream_subject` missing or malformed, or naming an issuer and claim the resolver does not resolve (today the first upstream's issuer and subject claim). Not reachable while the gate is closed | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>`. The ID-JAG is not consumed |
+| `resolve` issuer: the subject maps to no user, more than one, or an empty user. Not reachable while the gate is closed | n/a | 400 `access_denied`, `subject_unknown`. The ID-JAG is not consumed |
+| `resolve` issuer: the resolver is unavailable. Not reachable while the gate is closed | n/a | 500 `server_error`, generic text. The ID-JAG is not consumed |
+| Issuer's signing keys could not be obtained (key fetch or cache lookup fails, or the key set is empty or too large) | 503 `temporarily_unavailable`, `issuer_unavailable` | same |
+| The request ended (client disconnect or deadline) while the keys were being fetched, or the server has no default audiences configured | 500 `server_error`, generic text | same |
+
+`invalid_grant` means the assertion failed a validation rule, and a re-issued
+one may succeed. `access_denied` means the ID-JAG is valid but this server's
+allowlist does not permit it, and a re-issued one with the same claims will not
+help. The exception is `actor_denied` for a missing or malformed `act`: an
+ID-JAG re-issued with a correct `act` can pass the actor check (while the gate
+is closed it is still refused with `subject_unknown`). A client that retries a
+reasonless `invalid_grant` once with a new ID-JAG therefore stops retrying
+`invalid_assertion` refusals and the `access_denied` refusals that a new ID-JAG
+with the same claims would not change. An `invalid_authorization_details`
+refusal of the claim depends only on the signed details, so a re-issued ID-JAG
+with the same `authorization_details` gets the same answer;
+`parameter_not_allowed` goes away by dropping the parameter.
+`issuer_unavailable` is the retryable one: the assertion was never judged, because
+this server could not reach the issuer's signing keys, so the same ID-JAG may
+succeed once the issuer is reachable again. It is a 503 with no `Retry-After`
+header, and its description never names the issuer. The response body carries
+no cause text. The token endpoint logs each refused request at Debug, since any
+caller can trigger one. The cause is logged at Error once per 30-second backoff
+window per issuer, naming the issuer, when the server attempts a fetch and it
+fails. That line also covers discovery failures and an invalid or mismatched
+discovery document or `jwks_uri`, which retrying does not fix. It only covers
+failures before a usable key set exists. A fetched key set that the server cannot
+use (an empty key set, a cache lookup failure, only unsupported keys, or too many
+keys) also returns this
+503, and its cause is logged at Error once per 30-second window per issuer with the
+message "issuer signing keys unusable". When keys are in hand and the token's `kid` is
+not among them, even after the server refreshes the keys, the refusal stays
+`invalid_assertion`, so a freshly rotated `kid` that arrives while the issuer's
+key endpoint is down gets `invalid_assertion` until the keys are reachable.
+`invalid_assertion` is only ever used with `invalid_grant`. The plain RFC 7523
+grant keeps its codes for the two `subject_bindings` refusals, because it is
+outside the ID-JAG profile. The RFC 8693 token-exchange path is unchanged and
+still reports an unreachable issuer as `invalid_request`. Other refusals
+(`invalid_request`, `invalid_client`, `unauthorized_client`) are unchanged. On the
+plain JWT-bearer grant, the `server_error` row in the table (the request ended,
+or no default audiences are configured) was `invalid_grant` before this change. `invalid_target` for a `resource` the client
+may not target is unchanged on the plain JWT-bearer grant and on other grant
+types. On the ID-JAG grant that refusal is now `access_denied` with
+`resource_denied`, as the table shows, whether the client sent the `resource`
+parameter or the resource came from the ID-JAG's `resource` claim. Draft -06
+section 4.4.1 requires `access_denied` when none of the requested resources is
+acceptable.
+
+### Lifetime of a redeemed token
+
+A JWT-bearer or ID-JAG access token lives for the shortest of:
+
+1. the redeeming client's `access_token_lifespan` (see
+   [Configured client metadata](#configured-client-metadata)), or the server's
+   `access_token_lifespan` when the client sets none;
+2. the time left on the assertion when it is redeemed: the assertion's own
+   lifetime minus however long the client took to redeem it;
+3. for a token that carries the delegated-access marker, five minutes (see
+   [Delegated-access marker](#delegated-access-marker)). This cap is applied
+   last.
+
+The token's `exp` and the response's `expires_in` use that one value. It is
+computed once, from a single clock reading, as the earliest of now plus the
+lifespan, the assertion's own `exp`, and (for a marked token) now plus the cap,
+so a token never outlives its assertion. The
+per-client lifespan applies to ID-JAG redemption only, where the client is
+authenticated. A plain JWT-bearer assertion has no client and uses the server
+lifespan. Other grants are not affected. A client lifespan may be longer than
+the server lifespan; it replaces it, it is not capped by it.
+
+The client lifespan is an upper bound, not a guarantee. A longer lifespan is
+shortened silently, with no error, when the ID-JAG has less time left. AS-2
+cannot see AS-1's settings, so it does not compare the two. On a ToolHive AS-1
+an ID-JAG lives as long as its target's `lifetime`: 60 seconds when the target
+sets none, at most 300 seconds, and also capped by the actor credential's and
+the grant's expiry. Examples, for a redemption 2 seconds after issuance:
+
+| ID-JAG target lifetime at AS-1 | Client `access_token_lifespan` at AS-2 | Issued token lives |
+|---|---|---|
+| 60 s (default) | 30 s | 30 s |
+| 60 s (default) | 2 min | about 58 s |
+| 300 s (maximum) | 2 min | 2 min |
+| 300 s (maximum) | 5 min | about 298 s |
+
+To get the lifespan you configure, set the AS-1 target's ID-JAG lifetime to at
+least that lifespan plus the expected delay before redemption. With a ToolHive
+AS-1, a client lifespan above 300 seconds is never reached.
+
+### Bound ID-JAG assertions
+
+The grant type has a second assertion form: Identity Assertion Authorization
+Grant JWTs (draft-ietf-oauth-identity-assertion-authz-grant, "ID-JAG" — the
+inbound half of Cross App Access; the vMCP's *outgoing* XAA strategy in
+`pkg/vmcp/auth/strategies/xaa.go` is the requesting half). An IdP such as Okta
+mints an ID-JAG when an agent exchanges a user's ID token for access to a
+resource the IdP administrator connected to that agent; the agent then redeems
+it at this token endpoint.
+
+One grant type, two handlers, split by the assertion's JOSE `typ` header:
+`JWTBearerHandler` claims plain assertions (`typ` absent, empty, or `JWT`) and
+`IDJAGHandler` claims exactly `typ: oauth-id-jag+jwt`. For any given request at
+most one is responsible. Both handlers are registered whenever the grant
+is enabled (see below). Both enforce the same
+per-issuer policy (`maxAssertionAge`, `acceptedAudiences`, and, for namespaced
+issuers, `subjectBindings` — no separate configuration surface).
+
+`acceptedAssertionTypes` (a list of `jwt_bearer` and/or `id_jag`) narrows which
+form(s) a `jwtBearerGrant` issuer accepts. When it is omitted, the issuer
+accepts both, which is exactly the behavior before the field existed, so
+upgrading changes nothing for existing deployments (ID-JAG shipped in v0.50.0).
+The default is applied at the Go level
+(`tokenexchange.IssuersAcceptingAssertionType`), not as a CRD default: a CRD
+default would be written into every stored object and make "explicitly listed"
+true for all of them, and non-Kubernetes deployments never see CRD defaults
+anyway.
+
+- `[id_jag]` restricts an IdP issuer (e.g. Okta acting as a Cross-App-Access
+  IdP) to ID-JAG grants, so its other signed JWTs cannot be redeemed on the
+  credential-free plain jwt-bearer path.
+- `[jwt_bearer]` refuses ID-JAG from that issuer.
+
+Enforcement works by construction, not by a separate check: an issuer whose
+`acceptedAssertionTypes` excludes a form is left out of that form's handler's
+per-issuer policy map, so it hits the same "issuer not enabled for this grant"
+rejection as an issuer that was never configured. Both
+handlers are registered whenever the jwt-bearer grant type is enabled, even
+with an empty policy map, so either assertion form from an excluded issuer
+gets that precise rejection instead of falling through every registered
+handler to fosite's generic `invalid_request`.
+
+Two things to know about the ID-JAG form:
+
+- When `id_jag` is listed explicitly, startup fails unless this AS's own
+  issuer identifier (the ID-JAG's `aud` per draft §4.4.1) is accepted: a
+  non-empty `acceptedAudiences` must include it, and an empty
+  `acceptedAudiences` accepts it by default, unless the issuer is also an
+  allowed audience (a resource), where the default is dropped and startup
+  fails. The check does not apply when `acceptedAssertionTypes` is unset, so
+  existing configs keep starting. At request time an ID-JAG's `aud` is
+  matched against `acceptedAudiences`, or against the token endpoint URL and
+  the issuer when the list is empty.
+- `subjectBindings` are shared between both forms: a binding added for an
+  ID-JAG's (human) subject also permits that subject on the plain jwt-bearer
+  grant for that issuer (client-auth-skippable there) whenever `jwt_bearer` is
+  accepted. To avoid that, list only `[id_jag]`.
+
+Where the two differ is the trust model — the ID-JAG handler is **bound**:
+
+- **The client must authenticate.** An ID-JAG carries a `client_id`
+  claim naming the OAuth client that may redeem it (draft §4.4.1; the IdP
+  mints it from its administrator-configured resource connection). fosite
+  authenticates a confidential client before the handler runs. A public client
+  it only identifies by `client_id`, and a request with no credentials gets a
+  placeholder client with an empty ID. Before it validates the assertion, the
+  handler refuses both with `invalid_client`, because draft §4.4 requires
+  client authentication or a sender-constrained ID-JAG, and this server
+  cannot yet verify a sender-constrained one (proof of possession, DPoP or
+  mTLS). A `client_id` is not a credential, and an assertion that is
+  single-use, short-lived and audience-pinned to this AS only decides who
+  redeems a leaked copy first. For a request with no client credentials at
+  all, `CanSkipClientAuth` returns true so that the handler returns this
+  refusal instead of fosite's `invalid_request`. A request with any
+  credentials is authenticated by fosite first, and a failure is fosite's own
+  error with no reason code (see the table). After the check, the handler
+  rejects the grant unless the authenticated client is the one the assertion
+  names. A CIMD or public DCR client therefore cannot redeem an ID-JAG. The
+  client's registered `grant_types` metadata is deliberately not consulted —
+  with open DCR, self-asserted metadata authorizes nothing. The exception is an
+  operator-configured client that sets `grant_types` explicitly: those grants
+  are operator policy, so they are enforced.
+- **`jti` is required.** The draft requires it, and it is what makes the
+  assertion single-use; there is no assertion-hash fallback like the plain
+  handler's. Replay consumption uses its own purpose (`"id-jag"`,
+  `idJAGReplayPurpose`), keeping the two handlers' replay namespaces separate.
+- **Real client, no synthetic identity.** For namespaced issuers, the issued
+  token's subject is still `<assertion issuer>#<assertion subject>` — one consistent subject form for
+  every assertion-derived token — but its `client_id` is the real redeeming
+  client's, and the request keeps that client for storage marshaling.
+- **The actor chain survives redemption.** The assertion's `act` claim (for an
+  Okta-minted ID-JAG, the agent's identity at the IdP) is copied into
+  the issued token (for a `resolve` issuer with `iss` filled in when absent, see "Resolution at redemption"), so a resource server or auditor can still tell which agent
+  acted for the subject. Other ID-JAG-specific claims (`aud_tenant`,
+  `sub_profile`) are validated as opaque extras and not propagated.
+- **The actor, for `resolve` issuers only.** The check has two steps, and both
+  run before the `jti` is used up, so a refusal leaves the ID-JAG unused. The
+  first step checks the actor's issuer. It runs before the gate, after the
+  client-audience check, and needs no storage. The second step asks the actor
+  policy. It runs after the subject has resolved, so the policy sees the local
+  user and not the ID-JAG's own `sub`. The effective actor is the outermost
+  `act`; an `act` without `iss` takes the ID-JAG's `iss`, and an `act` inside
+  `act` is not checked. A missing or malformed `act` (not an object, no `sub`,
+  or an `iss` that is not a non-empty string) is refused with `400 access_denied`,
+  `actor_denied`. So is an `act.iss` that is neither the ID-JAG's own `iss` nor
+  in `actor_issuers`; this is the issuer step, so it is refused before the gate
+  and before resolution. The actor policy is built once per issuer at startup
+  from the ID-JAG's `iss` and `actor_issuers`. It is asked whether this actor,
+  from this issuer and for this client, may act for the resolved user on the
+  resource. While the gate is closed no redemption reaches it. A denial is
+  `actor_denied`. A policy that cannot decide
+  gives `500 server_error` instead of a denial. The log line for a refusal
+  names the issuer, the client and a reason, never the subject, the `jti` or
+  an `act` value. A denial is logged at Debug; a policy that cannot decide is
+  logged at Warn. A `namespaced` issuer is not checked: its `act` is still
+  copied without being read.
+
+  The default policy checks only the actor's issuer. It does not restrict
+  actors per subject or per client: any `act.sub` at an allowed issuer passes,
+  and an `act` without `iss` is checked as the ID-JAG's issuer. Which clients
+  may redeem is bounded separately, by the client checks. A finer check needs a
+  different `Policy`.
+- **The subject, for `resolve` issuers only.** After the gate, the server maps
+  the ID-JAG's `upstream_subject` to a local user, and the user ID becomes the
+  subject of the redemption. See "Resolution at redemption".
+- Everything else is shared with the plain handler: JWKS verification through
+  the shared `MultiIssuerTokenValidator`, `NoUpstreamSessionClaimKey` stamping
+  (an ID-JAG conveys no upstream vendor session at this server),
+  consume-before-issue, and the issued token's lifetime being capped by the
+  assertion's remaining validity (see "Lifetime of a redeemed token"; only the
+  ID-JAG handler applies a client's own lifespan).
+- **The `resource` claim.** Draft §4.4.1 restricts the access token to the
+  resources in the `resource` claim, so the handler checks it. A claim that is
+  not a non-empty string or a non-empty array of distinct non-empty strings
+  (a JSON `null` counts) is refused with `invalid_grant`, `invalid_assertion`,
+  whatever the request holds. Draft §4.4.1 also requires every claim value to
+  be a resource this server governs. The governed resources are
+  `allowed_audiences`, and each claim value must equal one of them exactly
+  (draft §4.3: simple string comparison, no normalization). If any value is
+  not in that list, or is not a valid resource URI, the request is refused
+  with `invalid_grant`, `invalid_assertion`, whatever the request holds, even
+  when the requested resource is one of the governed values. A server with no
+  `allowed_audiences` refuses every ID-JAG that has a `resource` claim. When
+  every value is governed, the claim must list the `resource` parameter if the
+  request has one; if it does not, the request is refused with
+  `invalid_target`. None of these refusals names the resource or a claim
+  value. When the request has no `resource` parameter and the claim holds a
+  single value, that value is used (draft §4.4 defines no `resource` parameter
+  for redemption). Every other case needs exactly one `resource` parameter,
+  including an empty or repeated one and a claim with several values. A
+  requested resource that is not a valid URI still gets `invalid_target`. An
+  ID-JAG with no `resource` claim keeps the old rule: the parameter decides.
+  The chosen resource goes through the same subject-binding and
+  client-audience checks. The assertion age is checked first.
+
+**Departures from the draft are logged, not refused.** The handler accepts some
+ID-JAGs that draft §4.4.1 does not allow. It logs these only for a request that
+passes validation: after the replay check and the lifetime check have both
+succeeded. Issuance can still fail later. A refused request, such as a replay,
+logs nothing. The handler logs each finding once per assertion issuer and
+finding at WARN, and later ones at DEBUG. The line carries only `issuer`,
+`client_id`, `finding` and, for one finding, `hint`. It never carries the
+subject, `jti` or claim values. The findings are:
+
+- `audience_not_issuer`: `aud` does not contain this server's issuer
+  identifier. The handler accepts any value in the assertion issuer's
+  `jwt_bearer_grant.accepted_audiences`. When that list is empty, it accepts
+  both the token endpoint URL and the issuer identifier, so this finding means
+  the IdP still uses the token endpoint (or another configured value) as `aud`.
+  This line also carries a `hint` attribute that says what to change. If
+  `accepted_audiences` is empty, the issuer identifier is already accepted, so
+  have the IdP use it as `aud`. If the list does not hold the issuer
+  identifier, add it. If the list already holds it, have the IdP use it as
+  `aud`. This finding is not logged when the issuer identifier is also in
+  `allowed_audiences`, because then no `aud` can name it (see
+  [JWT-bearer configuration](#jwt-bearer-configuration)); the startup warning
+  reports that case instead.
+
+This is logging only. It changes nothing about what is accepted.
+
+**ID-JAGs that carry `cnf` are refused.** Draft §9.11 says an ID-JAG with a
+`cnf` claim needs proof of possession, and a server that cannot check it MUST
+refuse the ID-JAG with `invalid_grant`. This server cannot check it yet, so the
+handler refuses every ID-JAG that has a `cnf` claim, for every issuer. Only the
+presence of the claim counts: `"cnf": null` and `"cnf": {}` are refused too, and
+the value is never read. The refusal stays until proof of possession (DPoP or
+mTLS) is verified.
+
+**ID-JAGs that carry `authorization_details` are processed.** Draft §4.4.1
+asks the redeeming server to process the claim. The handler checks its shape
+and types, runs the registered hooks, and copies the entries they keep into the
+issued token and the response; any refusal comes before the ID-JAG is consumed.
+It only drops whole signed entries, and the token carries the bytes the issuer
+signed. See [On ID-JAG redemption](#on-id-jag-redemption).
+
+**Keeping AS-2 ID-JAG-only.** Trusting AS-1 as a JWT-bearer issuer at AS-2
+also lets AS-2's plain handler (`typ` `JWT`, empty or absent) accept AS-1's
+access tokens. That handler needs no client authentication, applies none of the
+ID-JAG checks, and issues a token with a synthetic `client_id`. It accepts the
+token when its `aud` is a value AS-2 accepts (a value in `accepted_audiences`,
+or AS-2's token endpoint when that list is empty) and AS-2's
+`max_assertion_age` covers the token's lifetime. The subject binding and
+resource checks still apply. Mitigations:
+
+- Set AS-1's `AccessTokenType` to `at+jwt` (Go code only). The plain handler
+  refuses that `typ`. Some resource servers reject `at+jwt`.
+- Set AS-2's `accepted_audiences` to exactly AS-2's issuer, and keep that value
+  out of AS-2's `allowed_audiences`. Make sure no AS-1 client, trusted-issuer or
+  DCR audience equals that value or is a path prefix of it. After removing a
+  value from AS-1's `allowed_audiences`, remove the DCR clients and refresh
+  tokens granted it.
+- Keep AS-2's `max_assertion_age` short.
+
+A `resolve` issuer must accept only `id_jag` (see "Subject mode"), which closes
+the plain path for it.
+
+## Operational notes
+
+- **Audience.** The requested audience is bounded by the subject token's own
+  `aud` claim (`ensureAudienceSubsetOfSubject`); a request for an audience the
+  subject token doesn't carry fails with `invalid_target`. An external IdP's
+  `aud` is typically an app-ID GUID or `api://<app-id>`. For an exchange to
+  succeed, the external IdP's API identifier must be set as the per-issuer
+  `expectedAudience` *and* appear in the server's own `allowedAudiences` (plus
+  the calling client's registered audiences) — `expectedAudience` alone is not
+  enough, since it only governs whether the subject token validates, not what
+  the delegated token is granted. A startup WARN fires when `expectedAudience`
+  isn't in `allowedAudiences`.
+- **Scopes.** `grantScopes` rejects — it does not intersect — any requested
+  scope absent from the subject token's granted scopes, with `invalid_scope`.
+  Both the RFC 9068 `"scope"` string claim and the `"scp"` array claim are
+  read (`"scope"` wins if both are present) — `"scp"` is not an Entra
+  quirk, it is what fosite's own default JWT claims strategy writes for a
+  self-issued ToolHive access token, so a genuine subject token minted by
+  this server's own token endpoint carries scopes this way already.
+- **Delegated token lifetime.** `min(subject token's remaining lifetime,
+  configured delegationLifespan)`. A short-lived external token silently
+  yields a short delegated token.
+- **Delegation chain depth and size.** Re-exchanging an already-delegated
+  token nests `act` further; `maxDelegationDepth` (10) and the complete
+  serialized `act` claim limit (8 KiB) bound it. An exchange exceeding either
+  limit fails with `invalid_request`.
+- **Discovery redirects.** The per-issuer HTTP client only follows same-host
+  redirects (`networking.SameHostRedirectPolicy()`), so an issuer whose
+  `/.well-known/openid-configuration` redirects cross-host cannot be
+  onboarded via discovery — set `jwksUrl` explicitly to skip discovery.
+- **JWKS caching.** A successful fetch is cached and refreshed on the fixed
+  five-minute `jwksRefreshInterval`, independent of response `Cache-Control` or
+  `Expires` headers. The 30-second figure is `jwksFetchFailureBackoff`, which
+  gates only how often a persistently-failing issuer is retried before
+  its first successful fetch — so a just-corrected `jwksUrl` can keep failing
+  for up to 30s before the next retry; once a fetch has ever succeeded, this
+  backoff no longer applies.
+- **Diagnostics.** A non-allowlisted/non-matching actor, a runtime
+  `actorMatcher` CEL evaluation failure, and an untrusted issuer all surface
+  as the same generic `invalid_request` ("The subject token is invalid or
+  could not be verified."), per RFC 8693 §2.2.2. The only discriminator is a
+  safe `slog.Debug` log line (the matcher diagnostic names only the configured
+  issuer and CEL error, never claims or tokens), so diagnosing a failed
+  exchange needs debug logging enabled. The two exceptions are startup
+  `slog.Warn` lines — an issuer with both empty `allowedActors` and
+  `actorMatcher`, and an `expectedAudience` that does not look like a resource
+  identifier — the only non-DEBUG diagnostics this feature emits.
+- **HTTPS enforcement for a trusted issuer.** `validateTrustedIssuerURL`
+  (`pkg/authserver/config.go`) validates `issuer_url` at config time and,
+  unlike the server's own issuer, grants no localhost exemption: an
+  `http://localhost` trusted issuer is rejected unless that issuer's own
+  `insecure_allow_http` is set. There is no separate runtime scheme check for
+  `issuer_url` — only `jwks_url` gets one (`ValidateJWKSURL`, on every fetch;
+  shared verbatim between the runtime choke point and the config-time check
+  so the two can't drift). The operator exposes both delegate clients and
+  `trusted_issuers` on `EmbeddedAuthServerConfig` (`delegateClients` and
+  `trustedIssuers`), so both self-issued and external-issuer token exchange
+  are configurable through the CRD.
+- **`allowPrivateIPs` requires `jwksUrl`.** Enforced at config time by
+  `validateTrustedIssuers` (`pkg/authserver/config.go`) for every RunConfig.
+  Without a hand-configured `jwksUrl`, OIDC discovery — a document fetched
+  from, and thus influenceable by, the external issuer itself — would choose
+  the private JWKS dial target, which is exactly what pinning it to
+  operator-supplied config prevents.
+- **Private-CA discovery/JWKS fetch.** A trusted issuer's `caBundleRef`
+  (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`) names a
+  namespace-local ConfigMap whose PEM bytes are added to the system roots for
+  that issuer's own HTTP client only (`WithSystemRootsPlusCABundle`) — other
+  issuers and the upstream-provider clients are unaffected. It has no effect
+  when `insecureAllowHTTP` is set, since a plain-HTTP fetch never consults it.
+- **Misconfiguration surfaces as a pod crash** for a hand-authored RunConfig
+  passed directly to `pkg/authserver`, not an operator condition — check pod
+  logs, not `kubectl describe`. Through the operator, a malformed `caBundleRef`
+  is instead caught at reconcile time and reported as
+  `ConditionReasonInvalidCABundle` on the owning MCPServer, MCPRemoteProxy, or
+  VirtualMCPServer before any RunConfig is built.
+
+## Authorization details
+
+RFC 9396 `authorization_details` reaches this server in two places: as the
+request parameter of an RFC 8693 token exchange, and as the signed claim of an
+ID-JAG redeemed with the RFC 7523 JWT-bearer grant. Both read one type
+registry. Without a registry, token exchange ignores the parameter, and an
+ID-JAG that carries the claim is refused with `unknown_type`.
+
+**The registry.** The registry (`pkg/authserver/authorizationdetails`) is
+Go-only. It is not part of `RunConfig`, YAML, or CRDs. It maps exact,
+case-sensitive `type` names to a `Type`, which lists the grant types it applies
+to (`GrantTypes`) and a `Grant` hook. A type applies to ID-JAG redemption when
+it lists `urn:ietf:params:oauth:grant-type:jwt-bearer`; that grant type means
+ID-JAG redemption only, because the plain RFC 7523 grant refuses an assertion
+that carries the claim. Nothing is advertised in discovery.
+
+A value must follow RFC 9396 section 2: one JSON array of objects, each with a
+non-empty string `type` registered for the grant type. On top of that, ToolHive
+rejects duplicate member names after unescaping, member names that are equal
+under JSON case folding (the folding `encoding/json` uses to match struct
+fields), values over 64 KiB, and nesting deeper than 64 containers.
+
+Each type's `Grant` hook runs once per request, with all of that type's entries
+and the request context. The `Request` holds what every grant has (`Entries`,
+`GrantType`, `ClientID`, `GrantedAudience`, `Subject`) at the top level. What
+only one grant has is in its own part, nil on the other grant: `Exchange`
+(`Actor`, `ActorTokenPresent`, `RequestedTokenType`, `RequestedScopes`) on
+token exchange, and `Redemption` (`ResolvedUser`) on ID-JAG redemption. A hook
+checks that a part is not nil before reading it. Token issuance comes last, so hooks are decide-only: a
+hook may read state but must not commit it, because the request can still fail
+after a hook returns. On ID-JAG redemption the ID-JAG is consumed after the
+hooks run, so a hook can run again for the same ID-JAG when a later redemption
+of it is refused as a replay. A hook reads the entries from `Request.Entries`,
+which keep every digit of a number; `Request.Subject.Claims` leaves the
+`authorization_details` claim out.
+
+### On token exchange
+
+An absent parameter or a single empty value (`authorization_details=`) is
+ignored and nothing is echoed, while `[]` is accepted and echoed as
+`"authorization_details":[]`.
+
+**Check order.** Fosite authenticates the client. The handler then checks for a
+public client, the grant type and the required parameters. Next come the
+repeated-value rejection and shape parsing, then the `requested_token_type`,
+subject token, actor, source policy (restricted delegate clients), delegation
+consent, scope and audience checks. Then the hooks run. After the hooks, the
+handler still builds the `act` claim and checks the subject token's remaining
+lifetime, and either can fail the request before the token is issued.
+
+**Response.** After the token is issued, the response member
+`authorization_details` holds the entries the hooks returned, not the request.
+The echo is equal to the hook output as JSON values, but not byte-identical:
+`encoding/json` compacts it and HTML-escapes `<`, `>` and `&`. Types appear in
+the order of their first appearance in the request, and each type's entries in
+the order its hook returned them. The issued token does not carry them.
+
+**Errors.**
+
+| Cause | Response |
+| --- | --- |
+| Parameter repeated | 400 `invalid_request`, fixed description (RFC 6749 section 5.2) |
+| Parse or shape failure | 400 `invalid_authorization_details`, fixed description |
+| Hook returns a valid `authorizationdetails.Error` | 400 with its code (`invalid_authorization_details` or `invalid_request`) and its reason as `error_description` |
+| Any other hook error, an `Error` with an unknown code or a malformed reason, or invalid hook output | 500 `server_error`, fixed description |
+
+Invalid hook output is an empty result, an entry that is not an object of the
+hook's own type or breaks the request limits, or a combined result over 64 KiB.
+Each rejection is logged once at WARN with `client_id` and a fixed reason code
+(`malformed`, `repeated`, `hook_rejected` or `hook_failed`). Hook rejections
+also carry `code` and `hook_reason`. The text of a failed hook's error is not
+logged at any level, and the submitted value is never logged.
+
+A subject or actor token that carries `authorization_details` is never
+exchanged (see [Terminal tokens](#terminal-tokens)).
+
+### On ID-JAG redemption
+
+ID-JAG draft section 4.4.1 requires the redeeming server to process the
+`authorization_details` claim the ID-JAG's issuer signed. The ID-JAG handler
+does so after subject resolution and before the ID-JAG is consumed, so a
+refused ID-JAG stays unconsumed and, for a `resolve` issuer, the hooks see the
+resolved user (not reachable while the gate is closed; see "The gate"). The
+steps:
+
+1. **The parameter is refused.** Redemption takes details only from the signed
+   claim. A JWT-bearer or ID-JAG redemption that sends the
+   `authorization_details` parameter is refused before the assertion is
+   consumed; the ID-JAG grant refuses it after client authentication and the
+   client's grant check, before the ID-JAG is validated. A single empty value
+   counts as absent, a single non-empty value is refused with
+   `invalid_authorization_details` and `parameter_not_allowed`, and any
+   repeat, empty values included, with `invalid_request` (RFC 6749 section
+   5.2). A plain RFC 7523 assertion that carries the claim is refused (see
+   [Terminal tokens](#terminal-tokens)); only an ID-JAG's claim is processed.
+2. **The claim must be a non-empty array of objects.** The claim is read from
+   the verified payload's raw bytes, so numbers keep every digit. Presence is
+   checked in the raw member and in both the full decoded claim set and the
+   extra claims. `null`, `[]`, a string,
+   an object, or an array that holds a non-object is refused with
+   `invalid_grant` and `invalid_assertion`. Treating `[]` as absent would issue
+   an unrestricted token.
+3. **Every type must be registered for the JWT-bearer grant.** With no
+   registry, any claim that passed step 2 is refused with
+   `invalid_authorization_details` and `unknown_type`. With a registry, a type
+   not registered for that grant is `unknown_type`, and an entry that does not
+   fit the generic shape above is `malformed_entry`.
+4. **The hooks decide.** The hook `Request` holds the authenticated client in
+   `ClientID`, the granted resource in `GrantedAudience`, and the ID-JAG in
+   `Subject`: `Subject.Subject` is the ID-JAG's `sub` and `External` is true.
+   `Redemption` is set and `Exchange` is nil. `Redemption.ResolvedUser` is the
+   local user for a `resolve` issuer (empty for a namespaced one, and not
+   reachable while the gate is closed; see "The gate"). A hook's
+   `authorizationdetails.Error` passes through with its code and reason.
+5. **Hooks keep or drop whole signed entries.** The entries come from
+   `Pending.GrantSubset`. A hook returns the entries it keeps exactly as it
+   received them: each must equal a distinct signed entry of its type as a
+   JSON value, with numbers compared as written (`1` and `1.0` differ). The
+   token carries each kept entry with the bytes the issuer signed, never the
+   hook's. A hook that changes or adds an entry has a bug: the redemption fails
+   with 500 `server_error` and no token. A type whose hook keeps none of its
+   entries is dropped, and the other types' kept entries are still granted.
+   When no entry is left at all the redemption is refused with `empty_grant`,
+   because a token without the claim would be unrestricted. (On token exchange
+   a hook that returns no entries is still a `server_error`.)
+
+The draft lets the redeeming server "modify, filter, or omit" the entries. This
+server only omits whole signed entries: it never narrows inside an entry and
+never adds one. A refused claim content (`unknown_type`, `malformed_entry`,
+`empty_grant`) uses RFC 9396's `invalid_authorization_details`, and a hook's
+refusal its own code, rather than the draft's `invalid_grant` (section 4.4.3),
+so the client gets a reason it can act on. "Authorization server: narrow a
+JWT-bearer access token to one MCP call with authorization_details"
+([#7061](https://github.com/stacklok/toolhive/issues/7061)) asks for this
+code. Per-type narrowing is tracked in "Narrow authorization_details on token
+exchange and refresh"
+([#6912](https://github.com/stacklok/toolhive/issues/6912)).
+
+**Token and response.** The issued access token carries the granted entries in
+its `authorization_details` claim, and the token response returns the same
+entries in its `authorization_details` member, which the draft requires whether
+or not the redemption asked. Both come from the bytes the issuer signed, so an
+integer above 2^53 is kept. The entries never add a resource, scope or
+audience: the token's audience is the resource the redemption granted anyway.
+The session holds the claim as raw JSON, in memory and when read back from
+storage (`session.Session.UnmarshalJSON`), so a stored session keeps every
+digit too.
+
+**Errors.**
+
+| Cause | Response |
+| --- | --- |
+| The `authorization_details` parameter with a single non-empty value, on either redemption form | 400 `invalid_authorization_details`, `parameter_not_allowed` |
+| The `authorization_details` parameter repeated, on either redemption form | 400 `invalid_request`, "The authorization_details parameter must not be repeated." |
+| The claim is not a non-empty JSON array of objects | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion authorization_details claim must be a non-empty array of objects.` |
+| A member name repeated exactly anywhere in the ID-JAG | 400 `invalid_grant`, `invalid_assertion` (the JWT decoder refuses it) |
+| No registry, or a type not registered for the JWT-bearer grant | 400 `invalid_authorization_details`, `unknown_type` |
+| An entry that breaks the generic shape rules | 400 `invalid_authorization_details`, `malformed_entry` |
+| A hook refuses with an `authorizationdetails.Error` | 400 with its code and its reason as `error_description` |
+| The hooks together keep none of the entries | 400 `invalid_authorization_details`, `empty_grant` |
+| A hook fails, returns invalid output, or returns an entry that was not signed | 500 `server_error`, "The authorization_details could not be processed." |
+
+Every refusal in the table except the repeated member name, which the JWT
+decoder refuses before this processing, is logged as `authorization_details
+rejected` with the `client_id` and a fixed `reason`: `parameter_not_allowed`,
+`repeated`, `claim_not_array_of_objects`, `unknown_type`, `malformed_entry`,
+`empty_grant`, `hook_rejected` (with `code` and `hook_reason`) or
+`hook_failed`. An `unknown_type` line also names the ID-JAG's `issuer` and the
+entry `types` (at most eight; a type that is not a short URI-like name is
+logged as `<invalid>`), so the operator can see which registration is missing.
+An `empty_grant` line names the dropped `types`, which are registered names. An
+entry's value is never logged.
+
+A caller can repeat a refusal at request rate: a refused assertion is not
+consumed, so it can be resent until it expires, the plain grant needs no client
+authentication, and with confidential dynamic client registration any client
+can register itself. So each line is at WARN the first time per key and reason
+and at DEBUG after that. On the ID-JAG grant the key is the authenticated
+client for the parameter refusals, which run before the ID-JAG is validated,
+and the ID-JAG's issuer for the claim refusals. On the plain grant the key is
+the assertion's issuer, and the line names the synthetic client ID minted from
+the assertion.
+
+### Wiring
+
+Pass `runner.WithAuthorizationDetailsRegistry` to `NewEmbeddedAuthServer` or
+`NewEmbeddedAuthServerWithStorage`, or set
+`authserver.Config.AuthorizationDetailsRegistry` before `authserver.New`. The
+registry goes to the token-exchange factory and to the ID-JAG factory
+(`tokenexchange.WithAuthorizationDetailsRegistry`). Setting a registry while
+neither token exchange nor ID-JAG redemption (a trusted issuer that accepts
+`id_jag` assertions) is enabled is a startup error
+(`authserver.ErrAuthorizationDetailsRegistryUnreachable`).
+
+```go
+registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+	"session_binding": {
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+			return authorizationdetails.Result{Entries: req.Entries}, nil
+		},
+	},
+})
+```
+
+**Boundary.** Details a token exchange grants are not put in its token, not
+persisted, and not conveyed to resource servers. Details an ID-JAG redemption
+grants are in the issued token; enforcing them is the resource server's job.
+The vMCP enforces the `mcp_tool_call` type; see
+[Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
+Register only types the deployment enforces. Conveying exchanged details to
+resource servers is tracked in
+[#6909](https://github.com/stacklok/toolhive/issues/6909), and grant storage in
+[#6895](https://github.com/stacklok/toolhive/issues/6895). Refresh tokens issued
+through token exchange use their own entry type and registry; see
+[Refresh tokens through token exchange](#refresh-tokens-through-token-exchange).
+
+**MCP call type.** `pkg/mcp/toolcalldetails` defines
+`https://toolhive.dev/mcp_tool_call`, which is meant to narrow an access token
+to one MCP call: a tool call (`server`, `tool`, `arguments_sha256`,
+`operation_id`) or a list call (`server`, `method`). `server` is the ID of the
+vMCP backend the call is routed to; `tool` is the request's `params.name`
+exactly as sent, including any backend prefix; a list call is meant to be
+answered with that backend's items only, which the vMCP does not implement
+yet. `arguments_sha256` is the lowercase hex
+SHA-256 of the RFC 8785 serialization of `params.arguments`, or of `{}` when
+the arguments are absent or `null`. Nothing registers it by default; an embedder
+adds it with `toolcalldetails.Register` to the types passed to
+`authorizationdetails.New`. It is registered for token exchange and JWT-bearer.
+On token exchange its hook refuses any request whose `requested_token_type` is
+not the ID-JAG type, with `invalid_request` and `id_jag_required`; it refuses
+the same way a request that carries neither the `Exchange` nor the
+`Redemption` part. Requests for
+an ID-JAG still refuse the parameter, so ToolHive does not yet sign the entry
+into an ID-JAG it issues. On ID-JAG redemption, an entry signed by a trusted
+issuer goes through the same hook and, once granted, is in the issued access
+token; see [On ID-JAG redemption](#on-id-jag-redemption). The hook
+accepts exactly one entry of its type, with no other members, and grants it
+unchanged; it does not see entries of other registered types. Otherwise it
+refuses with `invalid_authorization_details` and one of
+`single_entry_required`, `malformed_entry`, `invalid_arguments_hash` or
+`invalid_method`. The authorization server checks only the entry's shape; the
+receiver of the token enforces the call, using `toolcalldetails.ParseEntry` for
+the same shape check. The vMCP enforces a tool-call entry and refuses a
+list-call entry for now; see
+[Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
+
+## Refresh tokens through token exchange
+
+A configured confidential client can exchange a user's login access token for
+an opaque refresh token. The token is not redeemable at `grant_type=refresh_token`;
+only token exchange accepts it. What the token may be used for is fixed when it
+is issued. This section describes issuing it from an access token and deriving a
+child token from it. Revoking it is not covered here yet. Exchanging a grant for
+an ID-JAG is described in "Minting ID-JAGs from a grant".
+
+**Enabling.** Set `token_exchange.exchange_refresh_tokens` on the client, with
+`id_jag_max_lifetime` or both `id_jag_max_lifetime` and `refresh_token_max_lifetime`
+(each at most 720h; a missing value refuses that kind of token).
+`refresh_token_max_lifetime` without `id_jag_max_lifetime` is a startup error,
+because a derived child is capped by `id_jag_max_lifetime` and every derive would
+be refused with `token_type_not_permitted`. The client also needs
+`token_exchange.self_issued_subject_tokens: restricted` and
+`token_exchange.subject_token_audiences`. Validation refuses the feature with
+`any`. The client must be confidential and must have the token-exchange grant.
+`allowed_source_clients` must not be empty. Setting the block enables the feature. Each
+kind of grant is issued only when its lifetime cap is set. These settings are
+RunConfig-only for now: no released CRD exposes `token_exchange` or
+`exchangeRefreshTokens`. The storage backend must support
+`storage.ExchangeGrantStorage`; startup fails if a client enables the feature
+and it does not. The memory and Redis backends both support it.
+Startup also refuses the feature when `scopes_supported` contains neither
+`offline_access` nor `offline`: no subject token could carry one, so no grant
+could ever open. An empty `scopes_supported` uses the default scopes, which
+include `offline_access`.
+
+**Request.** `POST /oauth/token` with client authentication and:
+
+| Parameter | Value |
+| --- | --- |
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token` | A login access token (see below) |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` |
+| `requested_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `authorization_details` | `[{"type":"https://toolhive.dev/exchange_grant","issuable_token_types":["<one URN>"],"expires_at":<seconds>}]` |
+
+`issuable_token_types` holds exactly one of the ID-JAG URN
+(`urn:ietf:params:oauth:token-type:id-jag`) or the refresh-token URN. `expires_at`
+is optional, in whole seconds since the epoch. The array must hold exactly one
+entry, and no other member is accepted. `actor_token`, `scope`, `resource` and
+`audience` are refused.
+
+**Subject token.** The checks run in this order. It must be a login access token
+(`checkLoginToken`): self-issued, with no `act`, `external_issuer` or
+no-upstream-session claim, no `#` in `sub`, a `client_id` and a `jti`, and not
+an ID token. Its `aud` must contain one of the client's
+`subject_token_audiences`. Its `client_id` must be one of the client's
+`allowed_source_clients`. This differs from the rule `checkSourcePolicy` applies
+to other exchanges: for a refresh-token request the client's own tokens are not
+accepted, and the list must not be empty. Startup validation rejects
+`exchange_refresh_tokens` without a non-empty `allowed_source_clients`. Tokens
+made by token exchange, the JWT-bearer grant, an ID-JAG or the
+`client_credentials` grant are refused.
+
+Last, its scope must contain `offline_access` or `offline`, the server's
+refresh-token scopes. A grant outlives the sign-in session, so opening one needs
+`offline_access` granted at sign-in. This is ToolHive policy modeled on OIDC
+Core section 11, not something the spec requires. The authorization code flow
+uses the same scopes: when neither is granted, it returns the access token
+without a refresh token and reports no error. A refresh token is the only thing
+this path returns, so here the request is refused instead. The server reads the
+scope from the `scope` claim, or from `scp` when `scope` is absent. Matching is
+case-sensitive. This check applies only when a grant is opened.
+
+**Lifetime.** The grant lasts until the requested `expires_at`, but never longer
+than the client's cap for that kind of token. A request above the cap is capped,
+not refused. A missing `expires_at` gets the cap. A past or fractional value, or
+one that is not a number, is refused.
+
+**Response.** `200` with `Cache-Control: no-store` and `Pragma: no-cache`:
+
+```json
+{
+  "access_token": "<the refresh token>",
+  "token_type": "N_A",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
+  "expires_in": 2591999,
+  "authorization_details": [{"type": "https://toolhive.dev/exchange_grant",
+    "issuable_token_types": ["urn:ietf:params:oauth:token-type:refresh_token"],
+    "expires_at": 1893456000}]
+}
+```
+
+There is no `refresh_token` member. The echoed `expires_at` is the granted value
+and equals the whole second of the response time plus `expires_in`.
+
+The token is stored only in the exchange-grant store, not in fosite's store. The
+server has no revocation or introspection endpoint today. One added later must
+look these tokens up in the exchange-grant store.
+
+**Single use of the subject token.** Each subject token can open one grant. The
+server records the token's issuer and `jti` together with the grant in one
+atomic store call, so a second exchange of the same token, including a
+concurrent one, fails with `token_used`. A request that is refused for any other
+reason does not use up the token. The grant made by the first exchange is not
+revoked when the token is reused. It stays valid until it expires or is revoked.
+Revoking it on reuse is planned in
+[#6973](https://github.com/stacklok/toolhive/issues/6973).
+
+**Recorded subject data.** The grant records the subject token's `sub`, and, when
+present, its `sub_id` claim and its `https://toolhive.dev/upstream_subject` claim
+(`iss`, `claim`, `value`) as JSON. They are copied at creation because the access
+token is gone when the grant is used later, and `upstream_subject` cannot be
+derived from `sub_id`: on some identity providers `sub_id` carries the
+per-application `sub`, while `upstream_subject` carries a tenant-wide object ID.
+A token without either claim still gets a grant with the field empty. The Redis
+record holds the upstream subject in an optional JSON member, so records written
+before it existed load with an empty field.
+
+**Routing.** A token-exchange request whose `requested_token_type` or
+`subject_token_type` is the refresh-token URN is handled by the refresh-token
+handler (`RefreshTokenHandler`); every other token-exchange request is handled by
+the access-token handler. Both use one predicate, `isRefreshTokenExchange`, so a
+request goes to exactly one. A refresh-token `subject_token_type` is a derive
+request (see "Deriving a child token") when `requested_token_type` is also the
+refresh-token URN, and an ID-JAG request (see "Minting ID-JAGs from a grant")
+when `requested_token_type` is the ID-JAG URN. Each needs its own entry in the
+client's `exchange_refresh_tokens`. With any other `requested_token_type`, without
+the matching entry, or from a client without `exchange_refresh_tokens`, it is
+refused with the unsupported `subject_token_type` text in the error table. A
+client that has the ID-JAG entry but no `id_jag.targets` and asks for an ID-JAG
+gets the unsupported `requested_token_type` text instead.
+
+**Errors.** Each `error_description` is one of two kinds. The reason-code rows,
+the `authorization_details` rows and the internal-failure row are exact: the
+client gets the text shown. Every other row with text is a hint built with
+fosite's `WithHint`. For those, the client gets fosite's generic description for
+the `error` code, then a space, then the hint. fosite also replaces every double
+quote with a single quote, so the quoted values below show single quotes as the
+client receives them.
+
+| Condition | `error` | `error_description` |
+| --- | --- | --- |
+| Client is public | `invalid_grant` | generic text, then a fixed hint |
+| Client lacks the token-exchange grant | `unauthorized_client` | generic text, then a fixed hint |
+| `subject_token_type` is the refresh-token URN, and the client has no `exchange_refresh_tokens`, or `requested_token_type` is neither the refresh-token nor the ID-JAG URN, or the client lacks the `exchange_refresh_tokens` entry for the requested type | `invalid_request` | generic text, then `The 'subject_token_type' value '<URN>' is not supported. Use '<access token URN>' or '<JWT URN>'.` (unchanged from before) |
+| `requested_token_type` is the refresh-token URN and the client has no `exchange_refresh_tokens` | `invalid_request` | generic text, then the unsupported `requested_token_type` hint (see below) |
+| `subject_token_type` is the refresh-token URN, `requested_token_type` is the ID-JAG URN, and the client has the ID-JAG entry but no `id_jag.targets` | `invalid_request` | generic text, then the unsupported `requested_token_type` hint (see below) |
+| Missing `subject_token` | `invalid_request` | generic text, then a fixed hint |
+| For an access-token subject: `subject_token_type` is not the access-token URN. For any subject: `actor_token` or `actor_token_type` is present | `invalid_request` | generic text, then a fixed hint |
+| `scope` | `invalid_scope` | generic text, then a fixed hint |
+| `resource` or `audience` | `invalid_target` | generic text, then a fixed hint |
+| `authorization_details` repeated | `invalid_request` | `The authorization_details parameter must not be repeated.` |
+| `authorization_details` absent or a single empty value | `invalid_request` | `The authorization_details parameter is required.` |
+| `authorization_details` is `[]` or not exactly one entry | `invalid_authorization_details` | `single_entry_required` |
+| Not valid JSON, or an entry with no known `type` | `invalid_authorization_details` | `The authorization_details parameter is invalid.` |
+| Unknown member in the entry | `invalid_authorization_details` | `malformed_entry` |
+| `issuable_token_types` not exactly one known URN | `invalid_authorization_details` | `invalid_issuable_token_types` |
+| `expires_at` in the past, fractional, or not a number | `invalid_authorization_details` | `invalid_expires_at` |
+| Kind of token not enabled for the client | `invalid_authorization_details` | `token_type_not_permitted` |
+| Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
+| Subject token carries the delegated-access marker (see [Terminal tokens](#terminal-tokens)) | `invalid_request` | `subject_token_delegated_access` |
+| Subject token carries `authorization_details` and no marker (see [Terminal tokens](#terminal-tokens)) | `invalid_request` | `subject_token_authorization_details` |
+| Subject token's `aud` has none of the client's `subject_token_audiences`, or it was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
+| Subject token's scope has neither `offline_access` nor `offline` | `invalid_request` | `subject_token_offline_access` |
+| Subject token already used | `invalid_request` | `token_used` |
+| Derive: the refresh token fails its HMAC check, is unknown, belongs to another client, is a login refresh token, or has expired | `invalid_request` | `grant_invalid` (one code for all of these cases, on purpose) |
+| Derive: the presented grant or its parent cannot be used, or it does not allow `refresh_token` | `invalid_request` | `revoked`, `parent_revoked` or `not_issuable` |
+| Store failure | `server_error` | generic text, then the hint `The refresh token could not be issued.` |
+| Internal failure while processing `authorization_details` | `server_error` | `The authorization_details could not be processed.` |
+
+Checks run in this order, after the public-client, grant, subject-type and feature
+checks: request parameters, then `authorization_details` presence and parsing,
+then the subject token (validation, then the terminal-token refusal, then
+the login-subject checks), then the entry content. A request with an expired
+subject token and a bad entry therefore gets the subject-token error.
+
+A subject token that is expired, invalid, or not a login token gets
+`error_description` `subject_token_invalid`. A fresh login access token fixes
+these, so the client can refresh its access token and retry. The precise reason
+(for example a delegated token or a missing `jti`) is only in the server log.
+`subject_token_audience` and `subject_token_source_client` mean a configuration
+fault, not a retry: a new access token will be refused the same way.
+`subject_token_offline_access` is not fixed by a new access token either. A
+refreshed access token keeps its original scopes. The user must sign in again,
+and the source client must request `offline_access` or `offline` at sign-in. A
+source client that is not registered for the scope cannot request it: sign-in
+fails with `invalid_scope`.
+`subject_token_delegated_access` and `subject_token_authorization_details` are
+not a retry either: the token is terminal (see [Terminal tokens](#terminal-tokens)),
+and refreshing it only yields another one like it. The client must present a
+user's login access token instead.
+
+This path uses `invalid_request` for an expired subject token and for a disallowed
+source client, as RFC 8693 section 2.2.2 requires. The access-token handler uses
+`invalid_grant` for the same cases. The difference is deliberate.
+
+The reason strings are stable. Reasons that come from the entry are fixed
+strings. Some fixed texts echo a request parameter value, for example the
+unsupported `subject_token_type` and `requested_token_type` texts.
+
+An entry of another `type` is refused earlier, by the parse step, with the
+generic text above, because only the exchange-grant type is registered on this
+path.
+
+**Before and after.** Any `requested_token_type` other than the access-token URN
+now gets a new text on every deployment, whether or not the feature is enabled.
+Before: `The 'requested_token_type' value '<v>' is not supported. This server only
+issues '<access token URN>'.` After: `The 'requested_token_type' value '<v>' is
+not supported for this client. The access token type '<access token URN>' is
+always supported.` Both are hints after the generic `invalid_request` text. The
+code is still `invalid_request`. A request whose
+`subject_token_type` is the refresh-token URN now goes to the refresh-token
+handler. A request with the refresh-token URN as both `subject_token_type` and `requested_token_type`, from a client with
+`exchange_refresh_tokens`, was refused before and is now a derive request (see
+"Deriving a child token"). With the ID-JAG URN as `requested_token_type`, from a
+client with the ID-JAG entry, it is now an ID-JAG request (see "Minting ID-JAGs
+from a grant"), and from a client with that entry but no `id_jag.targets` it now
+gets the unsupported `requested_token_type` text instead of the unsupported
+`subject_token_type` text. For every other client or `requested_token_type`, the
+refusal text is unchanged. Check precedence changed for a refresh-token subject
+in one way: the `subject_token_type` refusal now comes before a missing
+`subject_token`. For `requested_token_type` set to the refresh-token URN from a
+client without `exchange_refresh_tokens`, the request is now refused right after
+the public-client and grant checks. The embedder's `authorization_details`
+registry is no longer consulted, and problems with `subject_token`,
+`subject_token_type`, the actor parameters or `authorization_details` are no
+longer reported first.
+
+**Logging.** The server logs "Exchange grant created" and "Exchange grant derived"
+at debug level when it issues a token, and "Exchange grant refused" at warn level
+for refusals after the public-client and grant checks. The public-client and
+missing-grant refusals are not logged this way. Each line carries `client_id`,
+plus `sub`, `source_jti`, `sub_id` (top-level grants only; derive lines never
+carry it), `has_parent`, `issuable_token_type` and
+`expires_at` once they are known, and a stable `reason` on a refusal. The refresh
+token, its signature and the subject token are never logged.
+
+**Accepted limits.** A client can hold one top-level grant per login access
+token `jti`, and any number of children of each grant that allows
+`refresh_token`; there is no other bound on the number of grants. A Redis
+instance that does not persist its data (no AOF) can lose the `jti` markers, which reopens the single-use
+check for tokens that have not yet expired. Revoked JWT access tokens stay valid at
+resource servers until they expire. A grant's `ExpiresAt` is a whole second, so a
+cap under one second would make every request fail with `invalid_expires_at`;
+configuration should not allow it.
+
+If the response is lost after the grant is stored, that login access token's
+`jti` is used up. The client needs a new login access token to try again.
+
+**Other profiles.** The `refresh_token` URN is bound to this feature, and the
+exchange grant is the only profile today. Ordinary refresh tokens could be added in
+two ways: the access-token handler returns a `refresh_token` member (RFC 8693
+section 2.2.1), or a second profile under the same URN is chosen by client
+configuration. Either needs:
+
+- a single-use marker shared with the exchange grant, so one login access token
+  cannot open one grant of each kind;
+- revocation across both stores (there is no revoke or introspect route today);
+- a decision on lifetime: a redeemable token ends with the login, while an
+  exchange grant does not.
+
+### Deriving a child token
+
+A client that holds a grant allowing `refresh_token` can exchange it for a child
+grant that allows one other kind of token. `POST /oauth/token` with client
+authentication and:
+
+| Parameter | Value |
+| --- | --- |
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token` | The refresh token to derive from |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `requested_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `authorization_details` | One exchange-grant entry, as above |
+
+`actor_token`, `actor_token_type`, `scope`, `resource` and `audience` are
+refused as for an access-token subject. The response has the same shape as for an access token
+subject: `access_token` holds the child token, `issued_token_type` is the
+refresh-token URN, and `authorization_details` echoes the granted entry. The
+child entry lists exactly one kind of token. It is never `refresh_token`, so a
+child cannot be derived from: depth is 1. The child's kind of token must be enabled for the
+client, and its `expires_at` is at most the lesser of the source grant's `expires_at`
+and now plus the client's cap for the child's kind of token. A request above
+that is capped. The child copies the source grant's client, subject, `sub_id` and
+`upstream_subject`. It has no subject-token `jti`, so it has no single-use marker.
+
+**Check order.** The server runs these checks in this order and stops at the
+first that fails:
+
+1. The request parameters are valid (`subject_token` present, no `actor_token`,
+   `scope`, `resource` or `audience`), then `authorization_details` is present
+   and parses, as for an access-token subject. These checks say nothing about
+   the presented token, so a forged token with no `authorization_details` gets
+   `invalid_request` with "The authorization_details parameter is required.",
+   not `grant_invalid`.
+2. The token passes the HMAC check. This needs no store, so a forged token
+   causes no lookup.
+3. The grant is read by the token's signature.
+4. The grant belongs to the presenting client. If the grant is missing or
+   belongs to another client, the request fails with the same error as step 2.
+5. The grant has at least one whole second left, because `expires_at` is whole
+   seconds. If not, the request fails with `grant_invalid`, whatever else is
+   wrong with the grant (revoked, or its own parent not live).
+6. The grant is not revoked (`revoked`). Expiry is checked at step 5, before this.
+7. If the grant has a parent, the parent exists and is live. A parent that is
+   missing, revoked or expired gives `parent_revoked`. An expired parent always
+   means the child has expired too, because a child's `expires_at` is never later
+   than its parent's. So a child of an expired parent fails earlier, at step 5,
+   with `grant_invalid`. (The stores report an expired grant as not found, so it
+   can already fail at step 3 with the same error.)
+8. The grant allows `refresh_token` and is top-level, else `not_issuable`. A
+   child fails here.
+9. The child entry passes the rules above.
+
+Nothing about the token is revealed until step 4 has passed. A forged token, an
+unknown token, another client's token, a login refresh token and an expired grant
+all get one error:
+`invalid_request` with the `error_description` `grant_invalid`. This is one code
+for all of these cases on purpose, so a caller learns nothing about which one
+applied. From step 6 on, the reasons are exact `error_description` values with
+`invalid_request`:
+
+| Condition | `error_description` |
+| --- | --- |
+| Presented grant is revoked | `revoked` |
+| Parent of the presented grant is revoked, expired or gone | `parent_revoked` |
+| Presented grant does not allow `refresh_token` (this includes a child) | `not_issuable` |
+
+A child entry fails with `invalid_authorization_details` and one of these
+reasons: `token_type_not_permitted` (the child lists `refresh_token`, or its
+kind of token is not enabled for the client; the second only for a handler built
+without config validation) or `invalid_expires_at`. A store
+failure is `server_error`.
+
+Both stores report a grant past its `ExpiresAt` as not found, before the
+liveness check runs. So an expired grant gets the same `grant_invalid` error as
+an unknown token on both backends. A child never outlives its parent, since its
+`expires_at` is capped to the parent's, so a child whose parent has expired has
+expired too and gets `grant_invalid` as well. A presented grant with no whole second
+left is refused the same way, because `expires_at` is whole seconds, whether or
+not it is revoked and whether or not its own parent is live. The check runs right
+after the client check, before the liveness answers, so it never gives
+`revoked`, `parent_revoked` or `not_issuable`. The server log says
+`not_found_or_other_client` for these. The legitimate client knows the expiry
+from the `expires_at` in the response that issued the grant, so a separate reason
+would tell it nothing. The handler checks expiry before revocation, so an expired
+grant gets `grant_invalid` whether or not it was revoked, and `revoked` is
+reported only while the grant has at least one whole second left.
+
+A derive needs the client's current policy to allow `refresh_token`, so removing
+`refresh_token_max_lifetime` from a client's configuration stops deriving from
+source grants the client already holds. The derive gate refuses such a request with
+`unsupported_token_type` (`invalid_request`, "The 'subject_token_type' value ...
+is not supported"), before the source grant is looked up. The child's cap comes from
+its own type's key. Removing `id_jag_max_lifetime` while keeping
+`refresh_token_max_lifetime` is refused at startup. The policy is the client's
+current configuration, and validation requires `id_jag_max_lifetime` whenever
+`refresh_token_max_lifetime` is set, so a configured client never reaches the
+missing-cap case. For a child, `token_type_not_permitted` then means the child
+lists `refresh_token`. The missing-cap refusal only applies to a handler built
+without config validation.
+
+A parent can be derived from many times; each call creates an independent child.
+If the response is lost, the child stays until its parent ends (revoked or
+expired). This is accepted. Today the derive path checks the parent on every
+use. The ID-JAG path (see "Minting ID-JAGs from a grant") checks the grant's and
+the parent's liveness on every use as well, because a child is usable only while
+its parent is live.
+
+**Logging.** A derive logs "Exchange grant derived" at debug level with
+`has_parent=true`. Every refusal after the public-client and grant checks is
+logged as "Exchange grant refused", including a failed HMAC check
+(`token_invalid`) and request-parameter refusals. The log reason for the
+`grant_invalid` error (`not_found_or_other_client` or `token_invalid`) is
+internal and is never sent to the client.
+
+## Minting ID-JAGs from a grant
+
+A client that holds an exchange grant (see "Refresh tokens through token
+exchange") can exchange the grant's refresh token for an Identity Assertion JWT
+Authorization Grant (ID-JAG): a short-lived signed JWT that another
+authorization server redeems at its own token endpoint. "The draft" below is
+draft-ietf-oauth-identity-assertion-authz-grant, revision 06.
+
+### Roles and limits
+
+The embedded authorization server issues ID-JAGs through RFC 8693 token
+exchange. It is a partial *IdP Authorization Server* (draft section 2.1). Its
+only subject token is the refresh token of an exchange grant. The `iss` and
+`sub` of an ID-JAG are its own, so AS-2 must trust ToolHive's issuer directly.
+
+| Role | Who |
+| --- | --- |
+| AS-1 | The embedded authorization server that holds the grant and issues the ID-JAG |
+| AS-2 | The authorization server that redeems the ID-JAG |
+| Client | The confidential delegate client at AS-1 (the "broker") that holds the grant |
+
+It does not meet draft section 4.3 in full and is not a Cross App Access
+identity provider. Not supported:
+
+- ID tokens, or an ordinary login refresh token, as the subject.
+- `scope`. Exchange grants record no scopes, so every `scope` is refused.
+- Metadata. Discovery does not advertise the ID-JAG token type (draft section
+  7.1), and targets are not discovered.
+
+### Request and response
+
+`POST /oauth/token` from a confidential client with the token-exchange grant,
+`exchange_refresh_tokens` and `id_jag.targets`:
+
+```http
+POST /oauth/token HTTP/1.1
+Host: as1.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&subject_token=<the grant's refresh token>
+&subject_token_type=urn:ietf:params:oauth:token-type:refresh_token
+&requested_token_type=urn:ietf:params:oauth:token-type:id-jag
+&audience=https://as2.example.com
+&resource=https://gw.example.com/mcp
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion=<signed by the broker>
+```
+
+`audience` must be exactly one target `issuer` and `resource` exactly one of
+that target's `resources`, both as written. `scope` and `authorization_details`
+are refused. `actor_token` and `actor_token_type` are refused too, unless the
+client has an actor profile, which must send both (see [Required actor
+parameters](#required-actor-parameters)). Unknown parameters, including `sub`,
+are ignored. The response is `200` with `Cache-Control: no-store`:
+
+```json
+{
+  "access_token": "<the ID-JAG>",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:id-jag",
+  "token_type": "N_A",
+  "expires_in": 60
+}
+```
+
+There is no `refresh_token` and no `scope`. The ID-JAG's header `typ` is
+`oauth-id-jag+jwt`, and it is signed with AS-1's access-token key. Its claims
+are listed in "Claims and subject".
+
+### Checks and errors
+
+The server stops at the first check that fails:
+
+1. The client: confidential, with the token-exchange grant, and with both
+   `exchange_refresh_tokens` and `id_jag.targets`.
+2. The request shape: `subject_token`, `audience`, `resource`, then `scope` and
+   `authorization_details` (refused). Then the actor parameters: a client
+   without an actor profile has `actor_token` and `actor_token_type` refused,
+   and a client with one must send them (see [Required actor
+   parameters](#required-actor-parameters)). Then a target of this client that
+   lists the `resource`. Nothing is read from the store yet.
+3. The grant: an unknown, forged, foreign, login or expired token all get
+   `grant_invalid`. Then revoked, parent revoked, and `not_issuable` when the
+   grant does not list the ID-JAG output.
+4. The claims the target requires must have been recorded at login.
+5. For a client with an actor profile: the grant's recorded `sub_id` and
+   `upstream_subject` must both be complete, with `sub_id` in the `iss_sub`
+   format and the same issuer in both, or both be absent. A broken pair is a
+   `server_error`, and the validator is not called.
+6. For a client with an actor profile: the actor validator, called once, after
+   every check above (see [Why the validator is last](#why-the-validator-is-last)).
+   Its answer sets `act` and `iat` and caps `exp`. The bounds check and signing
+   follow. Just before the call, an actor token this server signed that is
+   terminal is refused (see [Terminal tokens](#terminal-tokens)).
+
+An `error_description` is either a *stable reason*, the whole text, which is
+safe to match on, or a *hint* that can change (match on `error`). Grant problems
+use `invalid_request`, as RFC 8693 section 2.2.2 requires. The stable reasons
+are `grant_invalid`, `revoked`, `parent_revoked`, `not_issuable`,
+`upstream_subject_missing`, `sub_id_missing` and `dpop_not_supported`. A client
+with an actor profile can also get `actor_token_expired`, `approval_required` or
+`denied` from the actor check (see [Outcomes](#outcomes)). `bound_elapsed` is
+the one grant problem sent as `invalid_grant` (see [Grant reuse and
+revocation](#grant-reuse-and-revocation)). Store and signing failures give
+`server_error` with no detail. An ID token as the subject is refused with the
+unsupported `subject_token_type` hint.
+
+A missing `resource` gives `invalid_target`, as draft section 4.3.3 requires
+when the IdP requires `resource`. More than one `audience` gives
+`invalid_request`, as section 4.3.3 requires.
+
+ToolHive departs from the draft in these places:
+
+- Another client's target gets `invalid_target`, not the draft's
+  `access_denied`, so it looks like an unknown one.
+- More than one `resource` is refused with `invalid_target`. The draft lets the
+  IdP grant a subset and put an array in the `resource` claim.
+- A request with a `DPoP` header is refused with `400`, `invalid_request` and
+  the description `dpop_not_supported`, with no hint, after any other refusal.
+  Draft section 9.11.1.1 says the IdP MUST validate the proof and bind the
+  ID-JAG with `cnf`, which ToolHive cannot do yet, and silently issuing an
+  unbound token would be worse. AS-1 logs one Warn line with the `client_id`.
+
+### Targets
+
+Targets are configured on the delegate client that holds the grants. Each
+target names AS-2 and the resources AS-2 protects. The fields and their
+startup checks are in [ID-JAG targets](#id-jag-targets); startup also requires
+the client to be `restricted` and to set `id_jag_max_lifetime`.
+
+```yaml
+# AS-1: issuer https://as1.example.com
+inbound_grants:
+  token_exchange:
+    delegate_clients:
+      - client_id: broker            # auth settings omitted
+        token_exchange:
+          self_issued_subject_tokens: restricted
+          allowed_source_clients: [mcp-client]
+          subject_token_audiences: [https://broker.example.com/api]
+          exchange_refresh_tokens:
+            id_jag_max_lifetime: 12h                # how long the GRANT may live
+          id_jag:
+            targets:
+              - issuer: https://as2.example.com            # AS-2: the request's `audience`, the ID-JAG's `aud`
+                client_id: broker-at-as2                   # the broker's confidential client at AS-2; its credentials are set where the broker redeems, not here
+                resources: [https://gw.example.com/mcp]    # behind AS-2: the request's `resource`
+                lifetime: 60s                              # how long each ID-JAG lives
+```
+
+**Two lifetimes.** `id_jag_max_lifetime` caps the grant (at most 720h). The
+target's `lifetime` is each ID-JAG's life (60s by default). The ID-JAG's `exp`
+is the earliest of now plus `lifetime`, the grant's expiry, and the grant's
+creation plus the client's current `id_jag_max_lifetime`. Lowering the cap
+therefore also limits grants already issued; a grant past the new cap is refused
+like an expired one.
+For a client with an actor profile, now is the time the validator's answer was
+checked, and `exp` also stops at the actor credential's expiry (see
+[Actor-token validation at ID-JAG issuance](#actor-token-validation-at-id-jag-issuance)).
+
+**Why `SubjectIdentifierAudiences` matters.** A login records the upstream
+identity on the grant only when the login token's audience is in
+`SubjectIdentifierAudiences` (see the target fields). If an entry of the
+broker's `subject_token_audiences` is missing there, a target that requires
+`upstream_subject` or `sub_id` always fails with `<claim>_missing`.
+
+### Claims and subject
+
+| Claim | Type | Value |
+| --- | --- | --- |
+| `iss` | string | AS-1's access-token issuer |
+| `sub` | string | AS-1's own ID for the grant's user. Never empty |
+| `aud` | string | The target's `issuer` as configured. Always a string, never an array |
+| `client_id` | string | The target's `client_id`: the client at AS-2 that may redeem the ID-JAG |
+| `jti`, `iat`, `exp` | string, integers | A random UUID, then whole seconds |
+| `resource` | string | The requested resource |
+| `sub_id` | object | Only if the target requires it: `{"format": "iss_sub", "iss", "sub"}` (RFC 9493) |
+| `https://toolhive.dev/upstream_subject` | object | Only if the target requires it: `{"iss", "claim", "value"}`. The config calls it `upstream_subject` |
+| `act` | object | Only for a client with an actor profile: `{"iss", "sub"}`, the issuer registered for the client's validator and the agent ID it returned |
+
+There is no `nbf`, `scope`, `cnf` or `authorization_details` claim. A client without
+an actor profile sends no actor token, so the ID-JAG has no `act` and the client in
+`client_id` acts for the user. A client with an actor profile must send an actor
+token (see [Required actor parameters](#required-actor-parameters)), and its ID-JAG
+has `act` built from the validator's answer (see [The act claim](#the-act-claim)).
+
+`sub` is the same for every audience. AS-1 draws it as a random UUID at the
+user's first login. With memory storage a restart gives every user a new `sub`,
+and AS-2 subject bindings stop matching. It also changes if the upstream's
+`subject_claim` is changed after users exist.
+
+`sub`, `sub_id` and `upstream_subject` come from what the grant recorded at
+login. AS-1 does not read them again from the upstream when it mints, so an
+upstream change shows up only in grants from a later login.
+
+### Grant reuse and revocation
+
+Minting writes nothing to the store. It does not use up the grant, so one grant
+can mint many ID-JAGs, each with a new `jti`. AS-2 records each `jti` and
+refuses a second use. A revocation stops the next mint; an ID-JAG already
+issued stays valid until its `exp`.
+
+For a client with an actor profile, the validator runs after the grant is read,
+and the grant is not read again after the validator returns. A revocation that
+commits while the validator runs does not stop that ID-JAG, which is valid until
+its own `exp`. A grant that expires, or whose `id_jag_max_lifetime` cap passes,
+while the validator runs is refused with `invalid_grant` and
+`bound_elapsed` (see [Outcomes](#outcomes)). That is
+deliberate. It matches how the access-token exchange answers an expired subject
+token and an elapsed bound (`handler.go`, `issueBoundedAccessToken`; RFC 6749
+section 5.2), rather than the `invalid_request` that RFC 8693 section 2.2.2 could
+be read to require. A grant that is already expired at the grant check still
+gets `grant_invalid`. A client without a profile cannot reach it, because its mint
+reuses the instant of the grant check.
+
+Minting also needs the ID-JAG entry in the client's *current*
+`exchange_refresh_tokens` policy. Removing that entry stops minting from grants
+the client already holds, the same way removing the `refresh_token` entry stops
+derives.
+
+For an ID-JAG request the token endpoint does not check `resource` against
+`allowed_audiences` or grant it as an audience: it names a resource behind
+AS-2, and the target's `resources` list is the only check.
+
+### Keeping ID-JAGs apart from access tokens
+
+An ID-JAG is signed with AS-1's access-token key. Its `typ`,
+`oauth-id-jag+jwt`, is kept even when `AccessTokenType` is `at+jwt`, and
+ToolHive's access-token and subject-token validators refuse it. No target
+issuer may be an audience AS-1 accepts, so an ID-JAG's `aud` never passes
+AS-1's own audience checks. Always set `--oidc-audience` on resource servers:
+with an empty audience `pkg/auth` skips the audience check.
+
+### Redemption and known gaps
+
+See [Bound ID-JAG assertions](#bound-id-jag-assertions) for how AS-2 redeems
+the ID-JAG. A ToolHive AS-2 finds the user by an exact AS-1 `sub` in
+`subject_bindings`, and its `max_assertion_age` must be at least the target's
+`lifetime`. One gap remains: an AS-1 access token can redeem as a plain
+JWT-bearer assertion (see "Keeping AS-2 ID-JAG-only").
+
+### Logging
+
+There is no audit record yet, so the Debug line below is the only record of a
+mint. A refusal logs "Exchange grant refused" at Warn with the reason and
+without `sub_id`. The Warn line's `error` field, when present, is the validator's
+own text with the literal actor token replaced by `[redacted]`, or ToolHive's own
+description of a timeout, a cancellation, a slot wait, a bad result or a panic
+(a panic includes a stack). For a server error from the grant's own checks, the token endpoint logs
+the cause once, at Error in `debug`, and the Warn line does not repeat it. A
+validator server error has no `debug` text. A 400 refusal
+has no Error line, because the endpoint logs 4xx at Debug. A successful mint is
+one Debug line, `ID-JAG minted`, with `client_id`, `sub`, `target`, `resource`,
+`has_parent`, `jti` and, when recorded, `sub_id`. For a client with an actor
+profile it also has `act_sub` (the AgentID) and, when the validator gives one,
+`actor_credential_subject`. ToolHive does not log the subject token,
+the actor token, the ID-JAG, any assertion, the form, the DPoP proof or
+`upstream_subject`. ToolHive redacts only the literal actor token, so a validator
+must keep credentials and user identifiers out of its error text (see the
+`ActorTokenValidator` contract in
+`pkg/authserver/server/tokenexchange/actor_validator.go`). The Warn line carries
+whatever the validator's error says.
+
+### Actor-token validation at ID-JAG issuance
+
+An ID-JAG can name the acting agent in its `act` claim. The ID-JAG draft
+(`draft-ietf-oauth-identity-assertion-authz-grant-06`) defines `act` as an
+OPTIONAL claim (§3.1) and leaves how it is derived to profiles (§9.10 "Actor
+Delegation Extensions"); this is ToolHive's profile. The issuing server cannot
+see the client's agent registry, so it cannot check an actor token or find the
+agent it names. An embedder that holds such a registry registers an in-process
+**validator**. For a client with an actor profile, ID-JAG issuance from an
+exchange grant requires an `actor_token` (RFC 8693 §2.1), passes it to the
+validator, and builds `act` from the answer.
+
+**Status.** Built: the actor parameters (see [Required actor
+parameters](#required-actor-parameters)), the grant's upstream identity check,
+the validator call, and the `act`, `iat` and `exp` rules below. The upstream
+re-check in the issue "Re-check the user's upstream refresh token when issuing
+an ID-JAG" (#6978) is not built; when it is, it will run before the validator.
+
+#### Why the validator is last
+
+Every grant and target refusal comes before the validator, so an agent refusal
+never hides one. The one exception is a grant that expires during the call (see
+[Grant reuse and revocation](#grant-reuse-and-revocation)). The full order is in
+[Checks and errors](#checks-and-errors). The validator's answer sets `iat`, so
+the call finishes before `iat` is set. It runs once per request, when the
+response is built, not in the first of the two times the request is decided
+(`HandleTokenEndpointRequest`).
+
+The validator contract (the request, the result, the refusal reasons and the
+rules ToolHive applies when it calls the validator) is in the Go doc comments of
+`pkg/authserver/server/tokenexchange/actor_validator.go`.
+
+#### Configuration
+
+Validators are Go values. There is no YAML or JSON form for them, and no global
+registry.
+
+1. **Register.** An embedder sets `authserver.Config.ActorTokenValidators`, a map from
+   name to `tokenexchange.ActorValidatorRegistration`. Through the runner, it passes
+   `runner.WithActorTokenValidators(...)` with the same map type to
+   `NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`. The map is copied
+   when the option is created and again into the server's configuration. The server
+   reads it only at startup. Each validator must be safe for concurrent use.
+
+   ```go
+   validators := map[string]tokenexchange.ActorValidatorRegistration{
+       "mecatl-broker": {
+           Validator: registryValidator,
+           ActIssuer: "spiffe://example.org",
+       },
+   }
+   srv, err := runner.NewEmbeddedAuthServer(ctx, cfg, runner.WithActorTokenValidators(validators))
+   ```
+
+   `ActIssuer` is the value ToolHive writes as `act.iss` in every ID-JAG built
+   from this validator's answer. The validator never sets it, so one validator cannot
+   claim to speak for another issuer's agents. It is the namespace in which an agent's
+   ID is unique (RFC 7519 §4.1.2). It is often the actor token's issuer, but it does
+   not have to be: ToolHive never compares it to the token. A consumer may key agent
+   policy on `(act.iss, act.sub)`, so changing `ActIssuer` renames every agent.
+   ToolHive emits it exactly as configured. Registrations may share an
+   `ActIssuer` (see [The act claim](#the-act-claim)).
+
+   `ActIssuer` is required. It must be an absolute URI of at most 2048 bytes, with no
+   query, userinfo or fragment, in canonical spelling (lower-case scheme and host, no
+   default port, no dot segments, no empty path segments, no unneeded
+   percent-encoding, no empty or zero-padded port), and not this server's own issuer.
+   If it is an `http` or `https` URL, it must name a host, and it must use `https`, or
+   `http` on a loopback host. Other schemes, such as `spiffe://example.org` and
+   `urn:example:agents`, are allowed. ToolHive does not compare it with the token
+   endpoint, the allowed audiences or the ID-JAG target issuers.
+2. **Select.** A delegate client names a validator in its `actor_profile`, under
+   `token_exchange`. The client can be under `delegate_clients` or under
+   `inbound_grants.token_exchange.delegate_clients`. `ActorProfile` is set only from
+   Go, like `RequiredSubjectClaims`. It has no JSON or YAML form, so config files and
+   the exported RunConfig cannot carry it, and the Kubernetes CRD does not expose it.
+
+   ```go
+   authserver.DelegateClient{
+       ClientID: "mecatl",
+       // ...
+       TokenExchange: &authserver.DelegateClientTokenExchange{
+           SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
+           // allowed_source_clients, subject_token_audiences and
+           // exchange_refresh_tokens.id_jag_max_lifetime as usual
+           IDJAG: &authserver.DelegateClientIDJAG{Targets: targets},
+           ActorProfile: &authserver.DelegateClientActorProfile{
+               Validator:      "mecatl-broker",
+               ActorTokenType: oauthproto.TokenTypeJWT,
+           },
+       },
+   }
+   ```
+
+   A profile only affects ID-JAG issuance, so a client needs an `id_jag` block to use
+   one. Without the block, the profile is refused. The `id_jag` block itself needs token
+   exchange enabled, `self_issued_subject_tokens: restricted` and
+   `exchange_refresh_tokens.id_jag_max_lifetime`.
+
+Startup refuses these configurations with these messages. A rule checked earlier, such
+as `exchange_refresh_tokens` requiring `restricted`, may report its own error first.
+The `id_jag` rules report their own errors, for example
+`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`:
+
+- `actor token validator name must not be empty`
+- `actor token validator name %q is reserved for built-in validators`
+- `actor token validator %q is nil`, including a typed-nil pointer
+- `actor token validator %q: ActIssuer is required`
+- `actor token validator %q: ActIssuer %q is not an absolute URI: <reason>`
+- `actor token validator %q: ActIssuer %q is not in canonical form: lower-case scheme and host, no default port, dot segments, empty path segments, unneeded percent-encoding, or an empty or zero-padded port`
+- `actor token validator %q: ActIssuer %q must name a host`
+- `actor token validator %q: ActIssuer %q must use https, or http on a loopback host`
+- `actor token validator %q: ActIssuer must not be this server's issuer`; a trailing slash on the same URL does not change that (a different case is refused earlier as not canonical)
+- `delegate_clients: client_id %q: actor_profile requires id_jag.targets`
+- `delegate_clients: client_id %q: actor_profile.validator is required`
+- `delegate_clients: client_id %q: actor_profile.actor_token_type is required`
+- `delegate_clients: client_id %q: actor_profile.actor_token_type %q is not an absolute URI`
+- `delegate_clients: client_id %q: actor_profile.validator %q is not registered in ActorTokenValidators`
+
+Both runner constructors check this before any upstream work, and `NewEmbeddedAuthServer`
+also checks it before it creates storage, so a configuration error does not leave a
+dynamic client registration behind for a server that never starts. The runner first
+calls `RunConfig.Validate`, which checks each profile's shape. It then calls
+`authserver.ValidateActorProfilesForRunConfig`, which checks the validator map
+(comparing each `ActIssuer` with `RunConfig.Issuer`) and refuses a profile whose
+validator is not registered. `Config.Validate` runs the same checks when the server is
+built. In both paths the unregistered-name rule runs after the shape checks, so a
+malformed profile reports its own error first. In the runner, the shape errors from
+`RunConfig.Validate` reach the operator prefixed with `invalid run config: `. When the
+server builds its per-client policies, it binds each profile to its registered
+validator. It does not check the registration again, because `Config.Validate` has
+already done so.
+
+#### Required actor parameters
+
+A client with an actor profile must send exactly one `actor_token`, with at least
+one character that is not white space, and exactly one `actor_token_type` that
+equals the profile's token type. The token is passed to the validator unchanged.
+The type is compared exactly, with no case folding. Otherwise the request fails
+with `invalid_request` and one of these hints:
+
+- `The 'actor_token' parameter is required, once, for this client.`
+- `The 'actor_token_type' parameter must name the token type configured for this client, once.`
+
+`checkIDJAGRequest` makes this check before it looks up the target and before
+any grant is read.
+
+A client without an actor profile is refused both parameters with
+`invalid_request`. The hint is `The 'actor_token' parameter is not supported when
+requesting an ID-JAG.`, or, for `actor_token_type` sent without `actor_token`,
+`The 'actor_token_type' parameter must not be given without 'actor_token'.`
+
+#### The act claim
+
+For a client with an actor profile, the ID-JAG carries an `act` claim built from
+the validator's answer:
+
+```json
+"act": {"iss": "spiffe://example.org", "sub": "spiffe://example.org/agent/build-7"}
+```
+
+- `act.iss` is the `ActIssuer` registered for the client's validator. It is never
+  this server's `iss`, which startup enforces (see [Configuration](#configuration)). Two validators can return the same plain agent ID, and
+  their different `act.iss` values keep their agents apart for whoever reads the
+  token.
+- `act.sub` is the AgentID, in one of two forms. A plain token is 1 to 255 bytes
+  and has no `:`. An absolute URI is up to 2048 bytes and has no userinfo or
+  fragment, such as a SPIFFE ID. Both forms use printable ASCII only, from `!` to
+  `~`. ToolHive never rewrites an AgentID. A value in neither form is a
+  `server_error`.
+- `act.sub` is unique only within its `act.iss`. Registrations may share an
+  `ActIssuer`, and their validators must then not return the same AgentID.
+  ToolHive cannot check that.
+- `act` goes to every target of a client with an actor profile. It is not
+  filtered per target the way `sub_id` and `upstream_subject` are, so every
+  authorization server the client reaches sees the same AgentID, which may be a
+  SPIFFE ID. This is deliberate: the profile belongs to the client, and every
+  ID-JAG it gets names the agent. ID-JAG -06 §9.10 asks profiles to limit
+  actor disclosure across trust domains; an embedder that must hide the agent
+  from one target needs a client without an actor profile for it.
+
+**Open.** ToolHive does not check that a SPIFFE agent ID belongs to the trust domain
+named by a `spiffe://` `ActIssuer`. A validator that accepts JWT-SVIDs must verify each
+SVID against the bundle of the trust domain in its `sub`. That check is the binding,
+and it belongs in the embedder's validator.
+
+#### Lifetime
+
+`iat` is the whole second in which the validator's answer was checked. `exp` is
+the earliest, in whole seconds, of `iat` plus the target's `lifetime`, the
+grant's expiry, the grant's creation plus the client's `id_jag_max_lifetime`,
+and the credential's `ExpiresAt`. There is no minimum remaining lifetime, so an
+ID-JAG for a credential that ends in two seconds lasts at most two seconds.
+
+Times are compared in whole seconds. A credential whose `ExpiresAt` is at or
+before the check, and less than 60 seconds earlier, is refused as
+`actor_token_expired`, so the client can renew it and retry. One 60 seconds or
+more earlier is a `server_error`, because a retry would not help. A zero
+`ExpiresAt` is also a `server_error`.
+
+#### Outcomes
+
+A validator refusal reaches the client as `invalid_request`, with the reason as
+the whole `error_description`. A server error's `error_description` is fosite's generic
+`server_error` text, followed by the hint shown. Clients should match on `error`.
+The last column is the reason on the Warn line of the log.
+
+| Outcome | Client sees | Reason on the Warn line |
+| --- | --- | --- |
+| Refusal `actor_token_expired`, `approval_required` or `denied` | 400 `invalid_request`, with the reason | The same reason |
+| `ExpiresAt` at or before the check, less than 60 seconds earlier | 400 `invalid_request`, `actor_token_expired` | `actor_token_expired` |
+| Actor token is a delegated-access token this server issued (see [Terminal tokens](#terminal-tokens)) | 400 `invalid_request`, `actor_token_delegated_access` | `actor_token_delegated_access` |
+| Actor token this server issued carries `authorization_details` and no marker (see [Terminal tokens](#terminal-tokens)) | 400 `invalid_request`, `actor_token_authorization_details` | `actor_token_authorization_details` |
+| Missing or wrong actor parameters (see [Required actor parameters](#required-actor-parameters)) | 400 `invalid_request`, with the hint | `request_parameter_refused` |
+| Plain error, or a refusal ToolHive cannot read | 500 `server_error`, hint "The actor token could not be validated." | `actor_validator_error` |
+| AgentID in neither form, or `ExpiresAt` zero or 60 seconds or more earlier | 500 `server_error`, the same hint | `actor_result_invalid` |
+| Validator panics | 500 `server_error`, the same hint | `actor_validator_panic` |
+| No answer within the budget (see [Validator calls](#validator-calls)) | 500 `server_error`, the same hint | `actor_validator_timeout`, or `actor_validator_canceled` when the request ended first |
+| Grant's stored upstream identity is broken (see [Checks and errors](#checks-and-errors)) | 500 `server_error`, hint "The ID-JAG could not be minted." | `internal_error` |
+| Grant expires, or its `id_jag_max_lifetime` cap passes, during the validator call (see [Grant reuse and revocation](#grant-reuse-and-revocation)) | 400 `invalid_grant`, `bound_elapsed` | `bound_elapsed` |
+
+Which refusals count as plain errors is in the contract in `actor_validator.go`.
+For what each Warn line carries besides the reason, see [Logging](#logging).
+
+#### Validator calls
+
+**Budget and slots.** A validation has 5 seconds, counted from when it starts,
+and the wait for a free slot uses the same 5 seconds. The server allows 64
+validator calls at once, one limit for the whole server. A call that finds no
+free slot in time does not call the validator, and the client gets the server
+error from the table. The Warn line's `error` reads `no actor validator slot free within 5s`.
+When the budget ends, ToolHive stops waiting. A validator that ignores its
+context keeps running, and keeps its slot, until it returns. The contract in
+`actor_validator.go` states the rest of what a validator must do.
+
+**What the validator receives.** The actor token and its type, the `client_id`,
+and:
+
+- `Grant.Subject`: the user's `sub`.
+- `Grant.SubjectIdentifier`: the grant's `sub_id`, as raw JSON, when recorded.
+- `Grant.Upstream`: the user's identity at the upstream, from `sub_id` and
+  `upstream_subject`. It has all four members, or it is the zero value when the
+  grant recorded neither (see item 5 in [Checks and errors](#checks-and-errors)).
+- `Target`: the configured target's `issuer` and the requested `resource`, which
+  is one of the target's configured resources.
+
+For a child grant, the user fields (`sub`, `sub_id` and the upstream identity)
+are the ones the child copied from its parent. Nothing else from the request
+reaches the validator.
+
+**What the validator must decide.** ToolHive does not check how the actor, the
+client and the user relate. The validator must refuse an actor that may not act
+for `Grant`'s user through `client_id` (with `approval_required` when the user
+could still approve it, `denied` otherwise). A validator that only checks the
+credential's signature would let a client pair any user's grant with any
+agent's credential. ID-JAG -06 §9.10 asks profiles to say who authorizes this
+relationship; in ToolHive it is the validator.
+
+## Delegated-access marker
+
+The claim `https://toolhive.dev/claims/delegated_access` marks an access token
+issued through an approved delegated redemption. A gateway that holds a user's
+stored upstream credentials may read them for a marked token. Nothing in the
+shape of `sub` can say this: a synthetic subject, made for an upstream provider
+with no userinfo endpoint, looks like a real one.
+
+**Meaning.** Consumers check only that the claim is present and never read its
+value. The marker counts only on a token the embedded authorization server
+issued and the consumer validated against that server's own keys. The same claim
+on a token from any other issuer means nothing to a consumer. Middleware sees
+the claim in the validated raw claims, but it is left out of `Identity.Claims`,
+and so out of webhook payloads and audit output, like `tsid`.
+
+A marked token is terminal; see [Terminal tokens](#terminal-tokens).
+
+The authorization server issues the marker only on a token for a resolved
+`resolve` redemption, and caps that token's lifetime at five minutes. While the
+gate is closed it issues none. The terminal-token refusals are in place so that
+no marked token can ever be exchanged.
+
+### Terminal tokens
+
+A token that carries the delegated-access marker or an `authorization_details`
+claim is terminal: it is never exchanged into another token. The marker cannot
+become a token that lives longer or names another party, and a token narrowed
+with `authorization_details` cannot become one without the restriction, since
+no exchange copies the claim into the token it mints. Only the presence of a
+claim counts; its value is never read. Each exchange-site refusal runs after
+signature validation and before any other claim of the token is used. At plain
+RFC 7523 redemption the refusal runs after signature validation and the `cnf`
+check, and before the assertion is consumed. An ID-JAG's claim is not refused
+but processed (see [On ID-JAG redemption](#on-id-jag-redemption)).
+
+| Where | Marker | `authorization_details` | Issuers checked |
+| --- | --- | --- | --- |
+| RFC 8693 exchange, as `subject_token` | 400 `invalid_request`, hint "The subject token is a delegated-access token and cannot be exchanged." | 400 `invalid_request`, hint "The subject token carries authorization_details and cannot be exchanged." | This server and every trusted external issuer |
+| RFC 8693 exchange, as `actor_token` | 400 `invalid_request`, hint "The actor token is a delegated-access token and cannot be exchanged." | 400 `invalid_request`, hint "The actor token carries authorization_details and cannot be exchanged." | This server only |
+| Opening an exchange grant, as `subject_token` | 400 `invalid_request`, `subject_token_delegated_access` | 400 `invalid_request`, `subject_token_authorization_details` | This server only |
+| ID-JAG issuance, as `actor_token`, before the actor validator is called | 400 `invalid_request`, `actor_token_delegated_access` | 400 `invalid_request`, `actor_token_authorization_details` | Tokens this server signed; others go to the validator |
+| Plain RFC 7523 redemption, as `assertion` | not refused | 400 `invalid_grant`, `invalid_assertion: The assertion must not carry an 'authorization_details' claim.` | Every issuer the grant accepts |
+
+At the four exchange sites a token that carries both claims gets the marker's
+response, so the wire text for a marked token is the same whether or not it
+also carries `authorization_details`. The RFC 8693 refusals log
+`Subject token refused` or `Actor token refused` at WARN with the reason
+`delegated_access_token` or `authorization_details_token`. Redemption does not
+refuse the marker, so a plain assertion that carries both is refused for its
+`authorization_details`, while one with the marker alone is redeemed. A `cnf`
+claim is refused first. The plain redemption refusal logs `Assertion refused` with the reason
+`authorization_details_assertion` and the assertion's issuer, at WARN the first
+time for each issuer and at DEBUG after that, since a refused assertion is not
+consumed and can be resent.
+
+The grant-opening refusal runs right after validation, before any other claim is
+read, so it does not depend on the `act` and no-upstream-session claims a
+redeemed token also carries.
+
+On the RFC 8693 `subject_token` path, whose validator also accepts trusted
+external issuers, a token with either claim from such an issuer is refused the
+same way as a self-issued one. No issuer may pass the marker on, and a trusted
+IdP's RFC 9396 token is refused rather than exchanged without its details. This
+is also what keeps a narrowed token narrow across servers: if
+another authorization server trusts this one as an external issuer and applies
+the same rule, a token this server narrowed cannot be exchanged there for an
+unrestricted one. The RFC 8693 `actor_token` and grant-opening paths validate
+against this server's own keys only, so a token from another issuer fails there
+as an invalid token before either claim is read.
+
+At ID-JAG issuance the actor token is opaque to ToolHive, because the client's
+validator decides on it. ToolHive checks only the signature against its own keys
+and the issuer: a terminal token it signed is refused even when it has expired or
+names another audience, because a verified signature is enough to refuse a token,
+though not to accept one. A token it did not sign goes to the validator unchanged:
+an external actor's `authorization_details` would describe the agent's own
+limits, not the subject's grant. This costs one signature check per ID-JAG
+request with an actor token.
+
+RFC 7523 defines no `authorization_details` claim, so the plain grant cannot
+know what the claim restricts and refuses the assertion instead of issuing an
+unrestricted token. The ID-JAG draft (section 4.4.1) defines the claim, and the
+ID-JAG handler processes it and carries the entries its hooks keep into the
+token.
+
+**Admission route.** The token validator records how it admitted a request's
+token in `Identity.AdmissionRoute`. Only the token validator sets it. It is
+internal provenance and is left out of `PrincipalInfo` and the JSON form of the
+identity.
+
+| Value | Meaning |
+| --- | --- |
+| `interactive` | The token came from an interactive login. It carries a non-empty token session ID (`tsid`), no delegated-access marker, and no proof of a session-less mint: no well-formed `act` chain and no `no_upstream_session` claim set to `true`. |
+| `delegated` | The token carries the delegated-access marker (any value) and has no usable `tsid`: the claim is absent, empty or not a string. |
+| (empty) | Every other token. This is the zero value, `AdmissionRouteUnspecified`. |
+
+The validator classifies a route only when all of these hold:
+
+- It is bound to the embedded authorization server, meaning its own issuer is
+  the embedded server's issuer.
+- The JWT was verified with the embedded server's in-process signing keys. A
+  key found only through the HTTP JWKS fallback, or an introspection response,
+  gets no route. A validator bound to the embedded server but given no
+  in-process key provider never assigns a route.
+- The validator has an audience configured, so the token's `aud` was checked.
+  Without an audience the validator does not check `aud`, and a token minted
+  for another resource on the same authorization server would otherwise be
+  given a route.
+
+`SessionlessGrant` is looser on one point: any verified JWT signature counts,
+but claims from an introspection response never do, because they are the
+introspection endpoint's word, not a signature this validator checked.
+
+A token validated without an audience gets no route, whether it is interactive
+or delegated. It is still served exactly as before, including loading its upstream
+tokens.
+
+A token that fits neither route gets no route. This
+includes a token that carries both a `tsid` and the delegated-access marker:
+the authorization server never issues one, and it is neither interactive nor
+delegated, so it is treated like any other unclassified token.
+
+Consumers that grant anything must compare for one exact value, such as
+`delegated`. They must never test for a non-empty route or against the empty
+value, because new values may be added and an empty route is also what every
+unbound or introspected token gets.
+
+## Implementation
+
+- `pkg/authserver/server/tokenexchange/actor_validator.go` — `ActorTokenValidator` and its contract, `ActorValidatorRegistration`, `ActIssuerProblem`, `ActorProfile`
+- `pkg/authserver/server/tokenexchange/handler.go` — `checkSourcePolicy`, `ConfiguredClientPolicy`, `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`, `externalOrigin`, `IDJAGTarget`, `ConfiguredClientPolicy.IDJAGTargets`, `ConfiguredClientPolicy.ActorProfile`
+- `pkg/authserver/server/tokenexchange/refresh_token_handler.go` — `RefreshTokenHandler`, `isRefreshTokenExchange`, `checkLoginToken`, `checkExchangeGrantSubject`
+- `pkg/authserver/server/tokenexchange/restriction.go` — `restrictions` and `restrictionsOf`: which of the marker, `authorization_details` and `cnf` a validated token carries, for each terminal-token and redemption site to refuse in its own order
+- `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
+- `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the required actor parameters for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
+- `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`, `idJAGGrantOwner`, `grantUpstreamIdentity`, `validateIDJAGActor`, `idJAGMintWithActor`: the grant checks, the actor validator call and the Debug line for an ID-JAG
+- `pkg/authserver/server/id_jag_seam.go` — `OwnsResourceParameter`, `ReasonDPoPNotSupported`; the token endpoint calls them from `pkg/authserver/server/handlers/token.go`
+- `pkg/authserver/server/tokenexchange/redemption_details.go` — `refuseDetailsParameter`, `grantSignedDetails`, `setRedemptionDetails`, `echoRedemptionDetails`: the redemption parameter refusal, ID-JAG claim processing through `authorizationdetails.Pending.GrantSubset`, and the token claim and response member
+- `pkg/authserver/server/tokenexchange/id_jag_resolve.go` — `idJAGRedemption`, `resolveSubject`, `upstreamSubjectRef`: the redemption for an ID-JAG and, for a `resolve` issuer, the subject resolution
+- `pkg/authserver/server/tokenexchange/subject_mode.go` — `SubjectMode`, `delegatedAccessEnabled`, `checkSubjectModeGate`, the startup WARN for `resolve` issuers, the subject-mode validation
+- `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
+- `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
+- `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `validateResolveIssuerUpstream`, `warnTrustedIssuerAudiences`, `Config.ActorTokenValidators`, `DelegateClientTokenExchange.ActorProfile`, `validateActorTokenValidatorMap`, `validateActIssuer`, `validateActorProfilesRegistered`, `validateActorProfile`, `validateActorTokenType`, `ValidateActorProfilesForRunConfig`, `validateIDJAG`, `validateIDJAGTarget`, `claimIDJAGTargets`, `validateIDJAGSubjectClaims`, the exported `ValidateIDJAGSubjectClaimAudiences` (called by the runner before upstream registration), the issuer comparison used by the reserved check
+- `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — `DelegateClientConfig`, `TrustedIssuerConfig`, `EmbeddedAuthServerConfig`
+- `cmd/thv-operator/pkg/controllerutil/authserver.go` — `buildDelegateClientRunConfigs`, `buildTrustedIssuerRunConfigs`, `BuildAuthServerRunConfig`
+- `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup, `WithActorTokenValidators`, and the early `id_jag` check
+- `pkg/authserver/server_impl.go` — `newSubjectResolver` (the resolver for `resolve` issuers, built from the first upstream), static delegate-client registration and precedence over an existing storage registration, `idJAGTargetPolicies`, `resolveActorProfile` (binds each profile to its validator), the DEBUG log in `configuredClientPolicies`
+- `pkg/authserver/server/endpoints.go` — `TokenEndpointPath`
+- `pkg/authserver/server/handlers/discovery.go` — advertised token-exchange and JWT-bearer grants, client-secret authentication methods
+- `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — shared `DelegateClientConfig` CRD contract
+- `cmd/thv-operator/pkg/controllerutil/authserver.go` — Secret-reference to pod-environment conversion
+- `pkg/authserver/server/tokenexchange/jwt_bearer_handler.go` — `JWTBearerHandler`, `JWTBearerIssuanceFactory`, `NewSharedTrustedIssuerValidator`, synthetic client-ID minting
+- `pkg/authserver/server/tokenexchange/redeemer.go` — `redeemer`, the consume, lifetime, session and populate steps both JWT-bearer handlers share, the delegated-access marker on a resolved redemption and its five-minute cap
+- `pkg/authserver/server/tokenexchange/issuance_deps.go` — `issuanceDeps`, the compose-time inputs and per-form issuer policy filtering for both handlers
+- `pkg/authserver/storage/types.go` — `SyntheticClientIDPrefix`, `NewSyntheticClient`, `IsSyntheticClientID`
+- `pkg/authserver/storage/redis.go` — synthetic-client-aware `marshalRequester`/`unmarshalRequester`
+- `pkg/authserver/authorizationdetails/authorizationdetails.go`, `errors.go`, `scan.go` — `Registry`, `Type`, `Pending.Grant`, typed `Error`, strict JSON scanner
+- `pkg/authserver/server/tokenexchange/authdetails.go` — handler parsing, hook invocation, error mapping, response echo

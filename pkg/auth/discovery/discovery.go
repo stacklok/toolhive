@@ -79,6 +79,24 @@ func DefaultDiscoveryConfig() *Config {
 	}
 }
 
+// newDetectionClient builds the HTTP client used to probe a target server for
+// WWW-Authenticate. The remote MCP server is untrusted, so it refuses
+// cross-host / scheme-downgrade redirects to prevent the server driving the
+// host into an SSRF (CWE-918). Extracted so the pool bounds
+// networking.SetIdleConnBounds applies stay unit-testable.
+func newDetectionClient(config *Config) *http.Client {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
+	}
+	networking.SetIdleConnBounds(transport)
+	return &http.Client{
+		Timeout:       config.Timeout,
+		Transport:     transport,
+		CheckRedirect: networking.SameHostRedirectPolicy(),
+	}
+}
+
 // DetectAuthenticationFromServer attempts to detect authentication requirements from the target server
 func DetectAuthenticationFromServer(ctx context.Context, targetURI string, config *Config) (*AuthInfo, error) {
 	if config == nil {
@@ -90,16 +108,7 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 	defer cancel()
 
 	// Make a test request to the target server to see if it returns WWW-Authenticate.
-	// The remote MCP server is untrusted, so refuse cross-host / scheme-downgrade
-	// redirects to prevent it driving the host into an SSRF (CWE-918).
-	client := &http.Client{
-		Timeout: config.Timeout,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
-			ResponseHeaderTimeout: config.ResponseHeaderTimeout,
-		},
-		CheckRedirect: networking.SameHostRedirectPolicy(),
-	}
+	client := newDetectionClient(config)
 
 	// First try a GET request
 	authInfo, err := detectAuthWithRequest(detectCtx, client, targetURI, http.MethodGet, nil)
@@ -529,6 +538,27 @@ type OAuthFlowConfig struct {
 	// blockPrivateIPs decision the flow already applies to its other discovery
 	// fetches. Defaults to false (guarded).
 	AllowPrivateIPs bool
+
+	// TokenEndpointTrusted reports that the token endpoint's authority was
+	// supplied by the operator — configured directly, or named by the
+	// operator-configured issuer's own metadata document. It permits
+	// private/loopback dialing of the token endpoint; the zero value is the
+	// guarded posture. Never set it for an endpoint whose authority a remote
+	// MCP server chose.
+	TokenEndpointTrusted bool
+
+	// IssuerTrusted reports that the issuer URL came from operator
+	// configuration rather than from the remote MCP server's WWW-Authenticate
+	// realm / resource metadata.
+	IssuerTrusted bool
+
+	// DCR renewal metadata — populated by handleDynamicRegistration and threaded
+	// into OAuthFlowResult so callers can persist the data for RFC 7592 operations.
+	SecretExpiry            time.Time // zero means the secret never expires
+	RegistrationAccessToken string    //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
+	TokenEndpointAuthMethod string
+	RegisteredCallbackPort  int
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -544,6 +574,16 @@ type OAuthFlowResult struct {
 	// DCR client credentials for persistence (obtained during Dynamic Client Registration)
 	ClientID     string
 	ClientSecret string //nolint:gosec // G117: field legitimately holds sensitive data
+
+	// DCR renewal metadata (RFC 7591 §3.2.1 / RFC 7592).
+	// SecretExpiry is zero when the provider did not issue an expiring secret.
+	// RegistrationAccessToken and RegistrationClientURI are empty when the
+	// provider does not support RFC 7592 management operations.
+	SecretExpiry            time.Time
+	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
+	TokenEndpointAuthMethod string
+	RegisteredCallbackPort  int
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -616,20 +656,12 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 // exists.
 //
 // One consequence of option (b) is that the resolver's RFC 7591 §3.2.1
-// expiry-driven refetch does NOT participate in the CLI's cross-
-// invocation persistence loop: each PerformOAuthFlow call builds a fresh
-// in-memory store, so a "cached but expired" entry from the previous
-// invocation never reaches the resolver. Cross-invocation expiry is also
-// NOT enforced by the remote handler's gate today —
-// HasCachedClientCredentials only checks CachedClientID != "" and does
-// not consult CachedSecretExpiry, so an expired-but-still-cached client
-// gets reused on the next invocation and surfaces as a token-endpoint
-// failure rather than a clean DCR re-registration. Tightening the gate
-// to also check CachedSecretExpiry is open follow-up work; the
-// behaviour today is "cross-invocation expiry is unhandled". Within a
-// single invocation, the resolver's expiry check is still in the loop
-// and would fire if the same call site somehow registered, persisted,
-// and re-queried the in-memory store — but the CLI never does this today.
+// expiry-driven refetch does NOT participate in the CLI's cross-invocation
+// persistence loop: each PerformOAuthFlow call builds a fresh in-memory store,
+// so a cached entry from a previous invocation never reaches the resolver.
+// Cross-invocation client-secret expiry is handled instead by the remote
+// handler, which consults CachedSecretExpiry and renews through RFC 7592 before
+// cached credentials are used.
 //
 // Wrapping the remote handler's secretProvider into a dcr.CredentialStore
 // adapter (option (a)) would close that loop and is the natural follow-up;
@@ -674,7 +706,26 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 		config.AuthorizeURL = resolution.AuthorizationEndpoint
 	}
 	if resolution.TokenEndpoint != "" {
+		// A registration response — or the metadata document behind it — can name
+		// a token endpoint on any authority. Trust survives only while the new
+		// authority is one the operator already named (CWE-918); this can clear
+		// the flag but never set it.
+		if !networking.AuthorityMatchesAny(resolution.TokenEndpoint, config.TokenURL, issuer) {
+			config.TokenEndpointTrusted = false
+		}
 		config.TokenURL = resolution.TokenEndpoint
+	}
+
+	// Store DCR renewal metadata for RFC 7592 operations.
+	// A zero ClientSecretExpiresAt means the secret never expires (RFC 7591 §3.2.1).
+	config.SecretExpiry = resolution.ClientSecretExpiresAt
+	config.RegistrationAccessToken = resolution.RegistrationAccessToken
+	config.RegistrationClientURI = resolution.RegistrationClientURI
+	config.TokenEndpointAuthMethod = resolution.TokenEndpointAuthMethod
+	config.RegisteredCallbackPort = config.CallbackPort
+
+	if resolution.RegistrationAccessToken != "" {
+		slog.Debug("DCR response includes registration access token for RFC 7592 operations")
 	}
 
 	return nil
@@ -737,6 +788,9 @@ func resolveDCRCredentials(
 		// calls would always be guarded and a legitimately private upstream
 		// would be refused. See OAuthFlowConfig.AllowPrivateIPs.
 		AllowPrivateIPs: config.AllowPrivateIPs,
+		// An operator-configured issuer is not server-supplied input; only a
+		// realm or resource-metadata URL named by the remote MCP server is.
+		ServerSuppliedEndpoints: !config.IssuerTrusted,
 	}
 
 	// Fetch AS metadata using the multi-URL fallback so non-root issuers
@@ -750,13 +804,21 @@ func resolveDCRCredentials(
 		// on some discovery branches (see discoverIssuerAndScopes in
 		// pkg/auth/remote/handler.go), so a nil client here would reopen the
 		// discovery-indirection and DNS-rebinding vectors this PR closes
-		// elsewhere. See networking.NewHostScopedClientBuilder for the guard
-		// policy and pkg/auth/dcr's newGuardedDCRClient for the same pattern.
+		// elsewhere. Which builder applies depends on who named the issuer: an
+		// operator-configured one gets the host-scoped policy, a server-supplied
+		// one the strict policy where localhost and
+		// INSECURE_DISABLE_URL_VALIDATION cannot widen the private-IP gate.
 		metaHost, parseErr := url.Parse(discoveredDoc.Issuer)
 		if parseErr != nil {
 			return nil, fmt.Errorf("dynamic client registration failed: parse issuer for http client: %w", parseErr)
 		}
-		metaClient, clientErr := networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false).
+		metaBuilder := func() *networking.HttpClientBuilder {
+			if config.IssuerTrusted {
+				return networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false)
+			}
+			return networking.NewServerSuppliedHostClientBuilder(metaHost.Host, config.AllowPrivateIPs, false)
+		}()
+		metaClient, clientErr := metaBuilder.
 			WithDisableKeepAlives(true).
 			Build()
 		if clientErr != nil {
@@ -795,12 +857,8 @@ func resolveDCRCredentials(
 
 	store := dcr.NewInMemoryStore()
 	defer func() {
-		// Close returns nil today (inMemoryStore.Close is sync.Once-guarded
-		// over an in-memory map), but a future change to the underlying
-		// MemoryStorage.Close — e.g., timeout-aware cleanup goroutine
-		// teardown — could surface a real error. Log it at debug rather
-		// than dropping it so a regression is visible without elevating
-		// every CLI-flow shutdown to WARN.
+		// Close is a no-op for this operation-scoped map. Keep the lifecycle
+		// call explicit for callers of CloseableCredentialStore.
 		if err := store.Close(); err != nil {
 			slog.Debug("dcr: in-memory store close failed", "error", err)
 		}
@@ -859,7 +917,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		slog.Debug("Using OAuth endpoints",
 			"authorize_url", config.AuthorizeURL, "token_url", config.TokenURL)
 
-		return oauth.CreateOAuthConfigManual(
+		cfg, err := oauth.CreateOAuthConfigManual(
 			config.ClientID,
 			config.ClientSecret,
 			config.AuthorizeURL,
@@ -871,6 +929,12 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 			config.OAuthParams,
 			config.ScopeParamName,
 		)
+		if err != nil {
+			return nil, err
+		}
+		// The token URL here is the operator's own, so the flag carries over as-is.
+		cfg.TokenEndpointTrusted = config.TokenEndpointTrusted
+		return cfg, nil
 	}
 
 	// Fall back to OIDC discovery
@@ -884,11 +948,17 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		true, // Enable PKCE by default for security
 		config.CallbackPort,
 		config.Resource,
+		!config.AllowPrivateIPs,
 	)
 	if err != nil {
 		return nil, err
 	}
 	cfg.ScopeParamName = config.ScopeParamName
+	// cfg.TokenURL came out of the issuer's discovery document. The issuer naming
+	// its own authority stays within the operator's decision to configure it;
+	// naming any other authority does not (CWE-918).
+	cfg.TokenEndpointTrusted = config.TokenEndpointTrusted &&
+		networking.AuthorityMatchesAny(cfg.TokenURL, config.TokenURL, issuer)
 	return cfg, nil
 }
 
@@ -929,15 +999,50 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	}
 
 	source := flow.TokenSource()
+	return buildOAuthFlowResult(source, oauthConfig, tokenResult, config), nil
+}
+
+func buildOAuthFlowResult(
+	tokenSource oauth2.TokenSource,
+	oauthConfig *oauth.Config,
+	tokenResult *oauth.TokenResult,
+	config *OAuthFlowConfig,
+) *OAuthFlowResult {
 	return &OAuthFlowResult{
-		TokenSource:  source,
+		TokenSource:  tokenSource,
 		Config:       oauthConfig,
 		AccessToken:  tokenResult.AccessToken,
 		RefreshToken: tokenResult.RefreshToken,
 		Expiry:       tokenResult.Expiry,
 		ClientID:     oauthConfig.ClientID,
 		ClientSecret: oauthConfig.ClientSecret,
-	}, nil
+		// DCR renewal metadata — populated only when dynamic registration was performed.
+		SecretExpiry:            config.SecretExpiry,
+		RegistrationAccessToken: config.RegistrationAccessToken,
+		RegistrationClientURI:   config.RegistrationClientURI,
+		TokenEndpointAuthMethod: config.TokenEndpointAuthMethod,
+		RegisteredCallbackPort:  config.RegisteredCallbackPort,
+	}
+}
+
+// newResourceMetadataTransport builds the transport for RFC 9728 metadata
+// fetches. The metadataURL is server-supplied, so the caller pairs it with a
+// same-host redirect policy; when blockPrivateIPs is true it also refuses to
+// dial private/loopback/link-local addresses on every hop (and disables
+// keep-alive so a pooled connection cannot skip the per-dial check).
+// Extracted so the pool bounds networking.SetIdleConnBounds applies stay
+// unit-testable.
+func newResourceMetadataTransport(blockPrivateIPs bool) *http.Transport {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	}
+	networking.SetIdleConnBounds(transport)
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
+	return transport
 }
 
 // FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a
@@ -966,17 +1071,7 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string, blockPrivate
 		return nil, fmt.Errorf("metadata URL must use HTTPS: %s", metadataURL)
 	}
 
-	// The HTTPS check above runs once on the initial URL only, so refuse
-	// cross-host and scheme-downgrade redirects to stop a 30x reaching an
-	// internal address; optionally block private dials on every hop.
-	transport := &http.Transport{
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Second,
-	}
-	if blockPrivateIPs {
-		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
-		transport.DisableKeepAlives = true
-	}
+	transport := newResourceMetadataTransport(blockPrivateIPs)
 	client := &http.Client{
 		Timeout:       DefaultHTTPTimeout,
 		Transport:     transport,

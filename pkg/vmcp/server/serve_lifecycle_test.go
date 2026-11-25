@@ -149,8 +149,9 @@ func TestServeWithOptimizerStartsAndStopsCleanly(t *testing.T) {
 
 	cfg := testMinimalServeConfig()
 	cfg.SessionManagerConfig = &sessionmanager.FactoryConfig{
-		Base:            testMinimalFactory(),
-		OptimizerConfig: &optimizer.Config{},
+		Base:              testMinimalFactory(),
+		OptimizerConfig:   &optimizer.Config{},
+		AdvertiseFromCore: true,
 	}
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)

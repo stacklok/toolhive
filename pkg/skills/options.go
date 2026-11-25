@@ -3,6 +3,8 @@
 
 package skills
 
+import regtypes "github.com/stacklok/toolhive-core/registry/types"
+
 // ListOptions configures the behavior of the List operation.
 type ListOptions struct {
 	// Scope filters results by installation scope.
@@ -23,7 +25,8 @@ type InstallOptions struct {
 	Version string `json:"version,omitempty"`
 	// Scope is the installation scope.
 	Scope Scope `json:"scope,omitempty"`
-	// Clients lists target clients (e.g., "claude-code"). Empty means first skill-supporting client.
+	// Clients lists target clients (e.g., "claude-code"). Empty means every
+	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`
 	// Force allows overwriting unmanaged skill directories.
 	Force bool `json:"force,omitempty"`
@@ -31,18 +34,143 @@ type InstallOptions struct {
 	ProjectRoot string `json:"project_root,omitempty"`
 	// Group is the group name to add the skill to after installation.
 	Group string `json:"group,omitempty"`
+	// AllowUnsigned permits installing a project-scoped skill whose artifact
+	// carries no Sigstore signature. Without it, unsigned artifacts are
+	// rejected; with it, the lock entry records the exception as
+	// "unsigned: true". Skill content is AI-executed instructions, so this
+	// is an explicit per-install trust decision, never a default.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key a
+	// project-scoped install must verify the artifact against, for artifacts
+	// signed with a cosign key pair rather than keylessly. Required on true
+	// first use of such an artifact — the signing key is recoverable from
+	// neither the artifact nor its bundle, so nothing else can supply the
+	// trust anchor — and pinned into the lock entry, which supplies it on
+	// every install thereafter. A value that conflicts with what the lock
+	// already pins is rejected, never ignored.
+	PublicKey string `json:"public_key,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/skill:v1).
 	Reference string `json:"-"`
 	// Digest is the OCI digest for upgrade detection.
 	Digest string `json:"-"`
+	// LockSource overrides the value recorded as the lock entry's Source. When
+	// empty, the entry's Source is Name as given by the caller before any
+	// internal resolution. Set by Sync/Upgrade, which pass an already-resolved
+	// Name that must not overwrite the entry's original Source. Internal use
+	// only — NOT exposed via HTTP API.
+	LockSource string `json:"-"`
+	// LockResolvedReference overrides the value recorded as the lock entry's
+	// ResolvedReference. When empty, the entry's ResolvedReference is
+	// whatever this install actually resolved to. Set by Sync when
+	// reinstalling at a pinned reference: without this override, a drift
+	// repair would overwrite ResolvedReference with the internal pinned
+	// form (e.g. a digest or commit hash spliced into the reference)
+	// instead of preserving what Source originally resolved to. Internal
+	// use only — NOT exposed via HTTP API.
+	LockResolvedReference string `json:"-"`
+	// RequiredByParent is set when this install is a transitively materialized
+	// dependency (toolhive.requires) of another skill, naming that parent.
+	// Empty means the user explicitly requested this install. Internal use
+	// only — NOT exposed via HTTP API.
+	RequiredByParent string `json:"-"`
+	// ExpectedCanonicalName, when set, requires the resolved skill/manifest
+	// name to equal this value before any install mutation. Used by
+	// Sync/Upgrade so a lock entry cannot be repaired under a different
+	// canonical identity. Internal use only — NOT exposed via HTTP API.
+	ExpectedCanonicalName string `json:"-"`
+	// SyncRestore forces re-extraction to every existing client even when
+	// Digest matches the currently-installed digest. Set by Sync when
+	// reinstalling at a pinned reference: the whole point is repairing
+	// on-disk drift that happened without the pinned digest changing, so the
+	// normal "same digest means content is already correct" fast path must
+	// not apply. Internal use only — NOT exposed via HTTP API.
+	SyncRestore bool `json:"-"`
+	// RefreshMetadata updates the installed record when content is already at
+	// the requested digest and no client needs extraction. Upgrade sets it
+	// when an explicitly allowed resolved-reference change must be persisted.
+	// Internal use only — NOT exposed via HTTP API.
+	RefreshMetadata bool `json:"-"`
+	// AllowSignerChange lets install-time verification re-record the
+	// observed identity instead of enforcing the lock file's recorded one.
+	// Internal use only — set by upgrade when its signer-change guard was
+	// explicitly overridden.
+	AllowSignerChange bool `json:"-"`
+	// Unsigned records the trust decision that this install proceeded
+	// without a verified signature (via AllowUnsigned). Set internally by
+	// install-time verification; recorded as `unsigned: true` in the lock
+	// entry.
+	Unsigned bool `json:"-"`
+	// CatalogProvenance is the independently optional provenance constraints
+	// declared by the skill registry/catalog entry this install resolved
+	// from. On true first use, install-time verification checks each non-empty
+	// field against the observed signature. A lock entry, including a legacy
+	// entry with no trust state, always takes precedence over this. Internal
+	// use only — NOT exposed via HTTP API.
+	CatalogProvenance *regtypes.Provenance `json:"-"`
+	// Provenance carries the verified signer identity established during
+	// install-time verification, for recording into the lock entry. Set by
+	// the verification step, nil when the artifact is unsigned or
+	// verification did not run. Internal use only — NOT exposed via HTTP API.
+	Provenance *ProvenanceInfo `json:"-"`
+	// SigstoreBundle is the signature material backing Provenance, in core's
+	// durable form (see verifier.Result.Bundle), persisted alongside the
+	// install record so sync can re-verify offline against the artifact digest.
+	// Internal use only — NOT exposed via HTTP API.
+	SigstoreBundle []byte `json:"-"`
+}
+
+// ProvenanceInfo is the verified signer identity of an installed artifact,
+// the in-memory mirror of the lock file's provenance block.
+type ProvenanceInfo struct {
+	// SignerIdentity is the certificate subject identity (workflow path for
+	// GitHub Actions certificates, SAN verbatim otherwise).
+	SignerIdentity string `json:"signer_identity"`
+	// CertIssuer is the OIDC issuer that authenticated the signer.
+	CertIssuer string `json:"cert_issuer"`
+	// RepositoryURI is the source repository from the certificate
+	// extensions, when present.
+	RepositoryURI string `json:"repository_uri,omitempty"`
+	// RepositoryRef is the git ref the signing workflow ran on, from Fulcio
+	// certificate extension 1.3.6.1.4.1.57264.1.14. Empty means
+	// unconstrained, matching lock files written before the field existed.
+	RepositoryRef string `json:"repository_ref,omitempty"`
+	// RunnerEnvironment is the runner class the signing workflow executed in
+	// (e.g. "github-hosted"), from Fulcio certificate extension
+	// 1.3.6.1.4.1.57264.1.11. Empty means unconstrained.
+	RunnerEnvironment string `json:"runner_environment,omitempty"`
+	// SigstoreURL is the Sigstore instance the signature chains to.
+	SigstoreURL string `json:"sigstore_url,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key a
+	// key-pair-signed entry is pinned to. Set only when SignerIdentity and
+	// CertIssuer are empty: the two anchors are mutually exclusive.
+	PublicKey string `json:"public_key,omitempty"`
+	// Provisional marks provenance with a documented verification gap
+	// (git signatures until transparency-log validation lands).
+	Provisional bool `json:"provisional,omitempty"`
 }
 
 // InstallResult contains the outcome of an Install operation.
 type InstallResult struct {
 	// Skill is the installed skill.
 	Skill InstalledSkill `json:"skill"`
+	// PreExisting is the store record as it was before this install, or nil
+	// when this install created the record. Rollback uses it to restore the
+	// previous state instead of destructively deleting a record this call
+	// did not create. Internal use only — NOT exposed via HTTP API.
+	PreExisting *InstalledSkill `json:"-"`
+	// RestoreFiles restores on-disk skill trees overwritten by a force
+	// reinstall or upgrade. Set when extraction snapshotted prior content;
+	// rollback calls it so a failed install does not leave half-written
+	// files. Internal use only — NOT exposed via HTTP API.
+	RestoreFiles func() error `json:"-"`
+	// Provenance is the verified signer identity this install recorded —
+	// surfaced so callers can display what trust-on-first-use pinned.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the install was recorded as an explicit
+	// unsigned exception.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.
@@ -53,6 +181,12 @@ type UninstallOptions struct {
 	Scope Scope `json:"scope,omitempty"`
 	// ProjectRoot is the project root path for project-scoped skills.
 	ProjectRoot string `json:"project_root,omitempty"`
+	// Visited tracks skill names already removed in this cascade-uninstall
+	// tree, preventing infinite recursion on a requiredBy cycle. Left nil by
+	// external callers; Uninstall initializes it on first entry and threads
+	// it through recursive cascade removals. Internal use only — NOT exposed
+	// via HTTP API.
+	Visited map[string]struct{} `json:"-"`
 }
 
 // InfoOptions configures the behavior of the Info operation.
@@ -71,6 +205,12 @@ type SkillInfo struct {
 	Metadata SkillMetadata `json:"metadata"`
 	// InstalledSkill contains the full installation record.
 	InstalledSkill *InstalledSkill `json:"installed_skill,omitempty"`
+	// Provenance is the signer identity the project's lock file records
+	// for this skill, when project-scoped and lock-managed.
+	Provenance *ProvenanceInfo `json:"provenance,omitempty"`
+	// Unsigned reports that the lock file records an explicit unsigned
+	// exception for this skill.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation.
@@ -111,6 +251,9 @@ type ValidationResult struct {
 	Errors []string `json:"errors,omitempty"`
 	// Warnings is a list of non-blocking validation warnings, if any.
 	Warnings []string `json:"warnings,omitempty"`
+	// Findings lists every error and warning with its rule ID and location.
+	// Each Errors or Warnings entry corresponds to exactly one finding.
+	Findings []Finding `json:"findings,omitempty"`
 }
 
 // BuildOptions configures the behavior of the Build operation.
@@ -131,6 +274,206 @@ type BuildResult struct {
 type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
+	// Key is the path to a cosign PEM private key used to sign the pushed
+	// artifact (COSIGN_PASSWORD decrypts encrypted keys). Mutually exclusive
+	// with IdentityToken. One of Key, IdentityToken, or NoSign is required.
+	Key string `json:"key,omitempty"`
+	// IdentityToken is a short-lived OIDC identity token (raw JWT) used for
+	// keyless signing: the server exchanges it with Fulcio for a short-lived
+	// signing certificate and records the signature in Rekor. Mutually
+	// exclusive with Key. One of Key, IdentityToken, or NoSign is required.
+	IdentityToken string `json:"identity_token,omitempty"`
+	// NoSign pushes without signing. Consumers installing the artifact
+	// project-scoped will need an explicit unsigned exception.
+	NoSign bool `json:"no_sign,omitempty"`
+}
+
+// SyncOptions configures the behavior of the Sync operation.
+type SyncOptions struct {
+	// ProjectRoot is the project root path whose lock file should be synced.
+	ProjectRoot string `json:"project_root"`
+	// Clients lists target clients (e.g., "claude-code"). Empty means every
+	// skill-supporting client detected on this host.
+	Clients []string `json:"clients,omitempty"`
+	// Prune removes project-scoped skills that are installed but not present
+	// in the lock file. When false, such skills are only reported.
+	Prune bool `json:"prune,omitempty"`
+	// Check verifies on-disk content against contentDigest without installing
+	// or writing anything.
+	Check bool `json:"check,omitempty"`
+	// AllowUnsigned permits adopting a skill whose signature state cannot
+	// be established (no stored bundle), recording an explicit unsigned
+	// exception — the same trust decision as an unsigned install.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// Adopt writes lock entries for existing unmanaged project-scope installs.
+	Adopt bool `json:"adopt,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key used to
+	// verify key-pair-signed bundles during adoption. It is accepted only
+	// with Adopt and without Check.
+	PublicKey string `json:"public_key,omitempty"`
+}
+
+// FailureReason is a typed failure reason for sync/upgrade operations, per
+// RFC THV-0080's exit-code and automation contract. Only reasons the current
+// feature set can actually produce are defined; the RFC's remaining values
+// (the Sigstore verification reasons and ref-change-blocked, which surfaces
+// as an UpgradeStatus rather than a failure) land together with the code
+// that emits them.
+type FailureReason string
+
+// Typed failure reasons for sync/upgrade operations.
+const (
+	// FailureReasonRegistryUnreachable means the skill's remote source — an
+	// OCI registry or a git host — could not be reached.
+	FailureReasonRegistryUnreachable FailureReason = "registry-unreachable"
+	FailureReasonDigestMissing       FailureReason = "digest-missing"
+	FailureReasonValidationRejected  FailureReason = "validation-rejected"
+	FailureReasonLockWriteFailed     FailureReason = "lock-write-failed"
+	// FailureReasonSignatureInvalid means the artifact carries signature
+	// material that failed cryptographic verification.
+	FailureReasonSignatureInvalid FailureReason = "signature-invalid"
+	// FailureReasonSignerMismatch means the artifact verifies, but against
+	// an identity other than the one recorded in the lock file.
+	FailureReasonSignerMismatch FailureReason = "signer-mismatch"
+	// FailureReasonProvenanceFieldMismatch means the artifact verifies
+	// against the recorded signer identity and issuer, but its
+	// certificate's repository ref or runner environment differs from what
+	// is pinned — a narrower case than FailureReasonSignerMismatch, whose
+	// remediation (--allow-signer-change) is nonetheless the same.
+	FailureReasonProvenanceFieldMismatch FailureReason = "provenance-field-mismatch"
+	// FailureReasonKeySigned means the artifact carries only cosign
+	// key-pair signatures, which install-time verification cannot check.
+	// Distinct from FailureReasonSignatureInvalid: nothing is wrong with
+	// the signature, there is simply no trust anchor to check it against.
+	FailureReasonKeySigned FailureReason = "key-signed-unverifiable"
+	// FailureReasonUnsignedRejected means the artifact is unsigned and the
+	// operation did not permit unsigned installs.
+	FailureReasonUnsignedRejected FailureReason = "unsigned-rejected"
+	FailureReasonUnknown          FailureReason = "unknown"
+)
+
+// SyncFailure describes a single skill that failed to sync.
+type SyncFailure struct {
+	// Name is the skill name that failed.
+	Name string `json:"name"`
+	// Reason is a typed failure reason for CI and automation.
+	Reason FailureReason `json:"reason,omitempty"`
+	// Error is a human-readable description of the failure.
+	Error string `json:"error"`
+}
+
+// SyncResult contains the outcome of a Sync operation.
+type SyncResult struct {
+	// Installed lists skills that were installed or reinstalled to match the lock file.
+	Installed []string `json:"installed,omitempty"`
+	// Drifted lists skills whose on-disk contentDigest differed from the lock
+	// file. Normally these are reinstalled to match it; when Check is set,
+	// nothing is written and this field reports the drift only.
+	Drifted []string `json:"drifted,omitempty"`
+	// Missing lists lock entries with no corresponding install record at all
+	// — the fresh-clone state. Normally these are installed at their pinned
+	// reference; when Check is set, nothing is written and this field
+	// reports the gap only.
+	Missing []string `json:"missing,omitempty"`
+	// AlreadyCurrent lists skills that already matched the lock file.
+	AlreadyCurrent []string `json:"already_current,omitempty"`
+	// NeverManaged lists project-scoped skills never recorded as lock-managed.
+	NeverManaged []string `json:"never_managed,omitempty"`
+	// RemovedFromLock lists previously managed skills absent from the lock file.
+	RemovedFromLock []string `json:"removed_from_lock,omitempty"`
+	// Pruned lists removed-from-lock skills that were uninstalled because Prune was set.
+	Pruned []string `json:"pruned,omitempty"`
+	// Failed lists skills that could not be synced, with the reason for each.
+	// Drift alone is never reported here — see Drifted.
+	Failed []SyncFailure `json:"failed,omitempty"`
+}
+
+// UpgradeOptions configures the behavior of the Upgrade operation.
+type UpgradeOptions struct {
+	// ProjectRoot is the project root path whose lock file should be upgraded.
+	ProjectRoot string `json:"project_root"`
+	// Names restricts the upgrade to specific skill names. Empty means every
+	// entry in the lock file.
+	Names []string `json:"names,omitempty"`
+	// Preview reports what would change without installing (still fetches
+	// artifacts to compare digests).
+	Preview bool `json:"preview,omitempty"`
+	// FailOnChanges reports content and trust changes without applying them;
+	// callers decide whether those outcomes should fail their freshness gate.
+	FailOnChanges bool `json:"fail_on_changes,omitempty"`
+	// AllowRefChange permits an upgrade whose candidate lives in a different
+	// repository. Tag moves within the same repository are always allowed —
+	// they are how a mutable source advances.
+	AllowRefChange bool `json:"allow_ref_change,omitempty"`
+	// AllowSignerChange permits upgrading to an artifact signed by a
+	// different identity than the one recorded in the lock file; the new
+	// identity is recorded in its place.
+	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key proposed as
+	// a replacement trust anchor. It is accepted only together with
+	// AllowSignerChange and recorded only for candidates it verifies.
+	PublicKey string `json:"public_key,omitempty"`
+	// Clients lists target clients (e.g., "claude-code"). Empty preserves the
+	// skill's currently installed client list; when that is also empty,
+	// every skill-supporting client detected on this host is used.
+	Clients []string `json:"clients,omitempty"`
+}
+
+// UpgradeStatus represents the outcome of upgrading a single skill.
+type UpgradeStatus string
+
+const (
+	// UpgradeStatusUpgraded indicates the skill was installed at a new digest
+	// or resolved reference.
+	UpgradeStatusUpgraded UpgradeStatus = "upgraded"
+	// UpgradeStatusUpToDate indicates the resolved source still matches the pinned digest and reference.
+	UpgradeStatusUpToDate UpgradeStatus = "up-to-date"
+	// UpgradeStatusTrustUpdated indicates content and resolved reference stayed
+	// unchanged while verified trust or persisted verification material was updated.
+	UpgradeStatusTrustUpdated UpgradeStatus = "trust-updated"
+	// UpgradeStatusNotUpgradable indicates the entry is pinned to an immutable
+	// reference (an OCI digest or a full git commit hash) and cannot be upgraded.
+	UpgradeStatusNotUpgradable UpgradeStatus = "not-upgradable"
+	// UpgradeStatusRefChangeBlocked indicates re-resolution moved to a different
+	// repository without explicit permission.
+	UpgradeStatusRefChangeBlocked UpgradeStatus = "ref-change-blocked"
+	// UpgradeStatusSignerChangeBlocked indicates the candidate artifact is
+	// signed by a different identity (or unsigned) versus the identity the
+	// lock file records.
+	UpgradeStatusSignerChangeBlocked UpgradeStatus = "signer-change-blocked"
+	// UpgradeStatusFailed indicates the upgrade attempt failed.
+	UpgradeStatusFailed UpgradeStatus = "failed"
+)
+
+// UpgradeOutcome describes the result of attempting to upgrade one skill.
+type UpgradeOutcome struct {
+	// Name is the skill name.
+	Name string `json:"name"`
+	// Status is the outcome of the upgrade attempt.
+	Status UpgradeStatus `json:"status"`
+	// OldDigest is the digest pinned in the lock file before this operation.
+	OldDigest string `json:"old_digest,omitempty"`
+	// NewDigest is the digest the source currently resolves to. It may equal
+	// OldDigest when only the resolved reference or trust material changed.
+	NewDigest string `json:"new_digest,omitempty"`
+	// NewResolvedReference is the new resolvedReference when it changed.
+	NewResolvedReference string `json:"new_resolved_reference,omitempty"`
+	// NewSignerIdentity is the candidate's signer identity when it differs
+	// from the recorded one (empty when the candidate is unsigned).
+	NewSignerIdentity string `json:"new_signer_identity,omitempty"`
+	// TrustAnchorChanged reports that the operation selected a different
+	// verified provenance or unsigned trust state than the lock recorded.
+	TrustAnchorChanged bool `json:"trust_anchor_changed,omitempty"`
+	// Reason is a typed failure reason when Status is UpgradeStatusFailed.
+	Reason FailureReason `json:"reason,omitempty"`
+	// Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.
+	Error string `json:"error,omitempty"`
+}
+
+// UpgradeResult contains the outcome of an Upgrade operation.
+type UpgradeResult struct {
+	// Outcomes contains one entry per skill considered for upgrade.
+	Outcomes []UpgradeOutcome `json:"outcomes"`
 }
 
 // LocalBuild represents a locally-built OCI skill artifact in the local store.

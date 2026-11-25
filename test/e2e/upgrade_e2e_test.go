@@ -5,14 +5,15 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
 	"github.com/stacklok/toolhive/test/e2e"
@@ -107,7 +108,7 @@ var _ = Describe("Upgrade Command", Label("core", "upgrade", "e2e"), func() {
 				thvCmd("run", "--name", serverName, rawOSVImage).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				waitForIsolatedMCPServer(thvCmd, serverName, 60*time.Second)
+				waitForIsolatedMCPServer(thvCmd, serverName, e2e.ServerReadyTimeout())
 
 				By("Checking the workload for an available upgrade")
 				stdout, _ := thvCmd("upgrade", "check", serverName).ExpectSuccess()
@@ -123,7 +124,7 @@ var _ = Describe("Upgrade Command", Label("core", "upgrade", "e2e"), func() {
 				thvCmd("run", "--name", serverName, rawOSVImage).ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				waitForIsolatedMCPServer(thvCmd, serverName, 60*time.Second)
+				waitForIsolatedMCPServer(thvCmd, serverName, e2e.ServerReadyTimeout())
 
 				By("Checking the workload for an available upgrade in JSON format")
 				stdout, _ := thvCmd("upgrade", "check", serverName, "--format", "json").ExpectSuccess()
@@ -240,19 +241,43 @@ var _ = Describe("Upgrade Command", Label("core", "upgrade", "e2e"), func() {
 	})
 })
 
-// waitForIsolatedMCPServer polls `thv list` (through the supplied isolated-env
-// command builder) until the named workload reports running, or fails the spec
-// on timeout. It mirrors e2e.WaitForMCPServer but runs every poll under the same
-// isolated config/home/data env as the rest of the spec, so it observes the
-// workload created in that isolated state rather than the real ToolHive config.
+// waitForIsolatedMCPServer polls until the named workload reports running, or
+// fails the spec on timeout. It exists alongside e2e.WaitForMCPServer because it
+// runs every poll through the supplied isolated-env command builder, so it
+// observes the workload created in that isolated config/home/data state rather
+// than the real ToolHive config. The lookup itself is shared, so the status is
+// read from the named workload's own record.
 func waitForIsolatedMCPServer(thvCmd func(args ...string) *e2e.THVCommand, serverName string, timeout time.Duration) {
 	GinkgoHelper()
-	Eventually(func() bool {
-		stdout, _, err := thvCmd("list").Run()
-		if err != nil {
+	var lastObserved string
+	ok := func() bool {
+		workload, err := e2e.FindWorkload(thvCmd, serverName)
+		switch {
+		case err != nil:
+			lastObserved = fmt.Sprintf("thv list failed: %v", err)
+			return false
+		case workload == nil:
+			lastObserved = "not listed"
+			return false
+		case workload.Status == runtime.WorkloadStatusRunning:
+			return true
+		default:
+			lastObserved = fmt.Sprintf("status %q (%s)", workload.Status, workload.StatusContext)
 			return false
 		}
-		return strings.Contains(stdout, serverName) && strings.Contains(stdout, "running")
-	}, timeout, 1*time.Second).Should(BeTrue(),
-		"workload %q should be running within %s", serverName, timeout)
+	}
+	// On timeout, dump state through the SAME isolated env before failing —
+	// e2e.DebugServerState would query the real ToolHive config and show
+	// nothing. Without this dump a CI failure here is undiagnosable: it reads
+	// as a bare "not running" with no way to tell a stuck startup from an
+	// errored workload (which is exactly what happened on main run 30335474873).
+	Eventually(ok, timeout, 1*time.Second).Should(BeTrue(), func() string {
+		stdout, stderr, err := thvCmd("list", "--all").Run()
+		GinkgoWriter.Printf("isolated thv list output:\nStdout: %s\nStderr: %s\nError: %v\n", stdout, stderr, err)
+		logs, stderr, err := thvCmd("logs", serverName).Run()
+		GinkgoWriter.Printf("Server logs:\n%s\nStderr: %s\nError: %v\n", logs, stderr, err)
+		proxyLogs, stderr, err := thvCmd("logs", serverName, "--proxy").Run()
+		GinkgoWriter.Printf("Proxy logs:\n%s\nStderr: %s\nError: %v\n", proxyLogs, stderr, err)
+		return fmt.Sprintf("workload %q should be running within %s; last observed: %s", serverName, timeout, lastObserved)
+	})
 }

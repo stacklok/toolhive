@@ -123,6 +123,54 @@ spec:
               {{- $rdAddr = printf "%s:%v" $gh $gp }}
             {{- end }}
           {{- end }}
+          {{- $rdTLS := .Values.operator.defaultRedis.tls }}
+          {{- if kindIs "invalid" $rdTLS }}
+            {{- $rdTLS = dict }}
+          {{- end }}
+          {{- if not (kindIs "map" $rdTLS) }}
+            {{- fail "operator.defaultRedis.tls must be an object" }}
+          {{- end }}
+          {{- range $field := keys $rdTLS }}
+            {{- if not (has $field (list "enabled" "caCertSecretRef")) }}
+              {{- fail (printf "operator.defaultRedis.tls.%s is unsupported" $field) }}
+            {{- end }}
+          {{- end }}
+          {{- $tlsEnabled := get $rdTLS "enabled" }}
+          {{- if and (hasKey $rdTLS "enabled") (not (kindIs "bool" $tlsEnabled)) }}
+            {{- fail "operator.defaultRedis.tls.enabled must be a boolean" }}
+          {{- end }}
+          {{- $caRef := get $rdTLS "caCertSecretRef" }}
+          {{- if or (not (hasKey $rdTLS "caCertSecretRef")) (kindIs "invalid" $caRef) }}
+            {{- $caRef = dict }}
+          {{- end }}
+          {{- if not (kindIs "map" $caRef) }}
+            {{- fail "operator.defaultRedis.tls.caCertSecretRef must be an object" }}
+          {{- end }}
+          {{- range $field := keys $caRef }}
+            {{- if not (has $field (list "name" "key")) }}
+              {{- fail (printf "operator.defaultRedis.tls.caCertSecretRef.%s is unsupported" $field) }}
+            {{- end }}
+          {{- end }}
+          {{- $caName := get $caRef "name" }}
+          {{- $caKey := get $caRef "key" | default "ca.crt" }}
+          {{- if and (hasKey $caRef "name") (not (kindIs "string" $caName)) }}
+            {{- fail "operator.defaultRedis.tls.caCertSecretRef.name must be a string" }}
+          {{- end }}
+          {{- if and (hasKey $caRef "key") (not (kindIs "string" (get $caRef "key"))) }}
+            {{- fail "operator.defaultRedis.tls.caCertSecretRef.key must be a string" }}
+          {{- end }}
+          {{- if and $caName (not $tlsEnabled) }}
+            {{- fail "operator.defaultRedis.tls.caCertSecretRef.name requires operator.defaultRedis.tls.enabled=true" }}
+          {{- end }}
+          {{- if and $caName (not (get $caRef "key")) }}
+            {{- fail "operator.defaultRedis.tls.caCertSecretRef.key must be non-empty when name is set" }}
+          {{- end }}
+          {{- if and (not $caName) (ne $caKey "ca.crt") }}
+            {{- fail "operator.defaultRedis.tls.caCertSecretRef.key requires a Secret name" }}
+          {{- end }}
+          {{- if and $tlsEnabled (not $rdAddr) }}
+            {{- fail "operator.defaultRedis.tls.enabled requires operator.defaultRedis.addr or global.redis.host" }}
+          {{- end }}
           {{- if $rdAddr }}
           - name: TOOLHIVE_DEFAULT_REDIS_ADDR
             value: {{ $rdAddr | quote }}
@@ -133,6 +181,16 @@ spec:
             value: {{ $rdSecret | quote }}
           - name: TOOLHIVE_DEFAULT_REDIS_SECRET_KEY
             value: {{ $rdKey | quote }}
+          {{- end }}
+          {{- if $tlsEnabled }}
+          - name: TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED
+            value: "true"
+          {{- if $caName }}
+          - name: TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME
+            value: {{ $caName | quote }}
+          - name: TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY
+            value: {{ $caKey | quote }}
+          {{- end }}
           {{- end }}
           {{- end }}
           livenessProbe:

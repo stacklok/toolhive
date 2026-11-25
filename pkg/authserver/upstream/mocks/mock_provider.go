@@ -104,3 +104,77 @@ func (mr *MockOAuth2ProviderMockRecorder) Type() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Type", reflect.TypeOf((*MockOAuth2Provider)(nil).Type))
 }
+
+// MockIdleConnectionCloser is a mock of IdleConnectionCloser interface.
+type MockIdleConnectionCloser struct {
+	ctrl     *gomock.Controller
+	recorder *MockIdleConnectionCloserMockRecorder
+	isgomock struct{}
+}
+
+// MockIdleConnectionCloserMockRecorder is the mock recorder for MockIdleConnectionCloser.
+type MockIdleConnectionCloserMockRecorder struct {
+	mock *MockIdleConnectionCloser
+}
+
+// NewMockIdleConnectionCloser creates a new mock instance.
+func NewMockIdleConnectionCloser(ctrl *gomock.Controller) *MockIdleConnectionCloser {
+	mock := &MockIdleConnectionCloser{ctrl: ctrl}
+	mock.recorder = &MockIdleConnectionCloserMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockIdleConnectionCloser) EXPECT() *MockIdleConnectionCloserMockRecorder {
+	return m.recorder
+}
+
+// CloseIdleConnections mocks base method.
+func (m *MockIdleConnectionCloser) CloseIdleConnections() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "CloseIdleConnections")
+}
+
+// CloseIdleConnections indicates an expected call of CloseIdleConnections.
+func (mr *MockIdleConnectionCloserMockRecorder) CloseIdleConnections() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloseIdleConnections", reflect.TypeOf((*MockIdleConnectionCloser)(nil).CloseIdleConnections))
+}
+
+// MockClientCredentialsUpdater is a mock of ClientCredentialsUpdater interface.
+type MockClientCredentialsUpdater struct {
+	ctrl     *gomock.Controller
+	recorder *MockClientCredentialsUpdaterMockRecorder
+	isgomock struct{}
+}
+
+// MockClientCredentialsUpdaterMockRecorder is the mock recorder for MockClientCredentialsUpdater.
+type MockClientCredentialsUpdaterMockRecorder struct {
+	mock *MockClientCredentialsUpdater
+}
+
+// NewMockClientCredentialsUpdater creates a new mock instance.
+func NewMockClientCredentialsUpdater(ctrl *gomock.Controller) *MockClientCredentialsUpdater {
+	mock := &MockClientCredentialsUpdater{ctrl: ctrl}
+	mock.recorder = &MockClientCredentialsUpdaterMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockClientCredentialsUpdater) EXPECT() *MockClientCredentialsUpdaterMockRecorder {
+	return m.recorder
+}
+
+// UpdateClientCredentials mocks base method.
+func (m *MockClientCredentialsUpdater) UpdateClientCredentials(creds upstream.ClientCredentials) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateClientCredentials", creds)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateClientCredentials indicates an expected call of UpdateClientCredentials.
+func (mr *MockClientCredentialsUpdaterMockRecorder) UpdateClientCredentials(creds any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateClientCredentials", reflect.TypeOf((*MockClientCredentialsUpdater)(nil).UpdateClientCredentials), creds)
+}

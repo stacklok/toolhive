@@ -24,13 +24,13 @@ comparison and never pull images.
 ### Options
 
 ```
-  -h, --help   help for upgrade
+  -h, --help[=true|false]   help for upgrade
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

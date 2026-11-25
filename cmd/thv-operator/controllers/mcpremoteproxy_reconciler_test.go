@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -397,6 +398,9 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "proxy", Ready: true},
+			},
 		},
 	}
 	err = fakeClient.Create(ctx, runningPod)
@@ -657,6 +661,7 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 		errContains     string
 		expectCondition string // expected reason for ConfigurationValid condition
 		conditionStatus metav1.ConditionStatus
+		eventContains   string // optional substring expected in the recorded event
 	}{
 		{
 			name:            "valid proxy with no OIDC config",
@@ -678,6 +683,22 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			errContains:     "invalid syntax",
 			expectCondition: mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid,
 			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "oversized Cedar policy is rejected",
+			proxy: v1beta1test.NewMCPRemoteProxy("oversized-cedar-proxy", "default",
+				v1beta1test.WithRemoteProxyAuthzConfig(&mcpv1beta1.AuthzConfigRef{
+					Type: mcpv1beta1.AuthzConfigTypeInline,
+					Inline: &mcpv1beta1.InlineAuthzConfig{
+						// One byte over the limit in pkg/validation (8192).
+						Policies: []string{"permit (principal, action, resource);//" + strings.Repeat("a", 8192)},
+					},
+				})),
+			expectError:     true,
+			errContains:     "too large",
+			expectCondition: mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid,
+			conditionStatus: metav1.ConditionFalse,
+			eventContains:   "too large",
 		},
 		{
 			name: "referenced authz ConfigMap not found is rejected",
@@ -763,6 +784,26 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			expectCondition: mcpv1beta1.ConditionReasonRemoteURLInvalid,
 			conditionStatus: metav1.ConditionFalse,
 		},
+		{
+			name: "private remote URL is rejected without allowPrivateEndpoint",
+			proxy: v1beta1test.NewMCPRemoteProxy("private-url-proxy", "default",
+				v1beta1test.WithRemoteProxyURL("http://foo.ns.svc.cluster.local")),
+			expectError:     true,
+			errContains:     "blocked internal hostname",
+			expectCondition: mcpv1beta1.ConditionReasonRemoteURLInvalid,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "private remote URL is allowed with allowPrivateEndpoint",
+			proxy: v1beta1test.NewMCPRemoteProxy("private-url-allowed-proxy", "default",
+				v1beta1test.WithRemoteProxyURL("http://foo.ns.svc.cluster.local"),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.AllowPrivateEndpoint = true
+				})),
+			expectError:     false,
+			expectCondition: mcpv1beta1.ConditionReasonConfigurationValid,
+			conditionStatus: metav1.ConditionTrue,
+		},
 	}
 
 	for _, tt := range tests {
@@ -807,6 +848,9 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 				select {
 				case event := <-fakeRecorder.Events:
 					assert.Contains(t, event, tt.expectCondition)
+					if tt.eventContains != "" {
+						assert.Contains(t, event, tt.eventContains)
+					}
 				default:
 					t.Error("expected a warning event to be recorded")
 				}
@@ -919,7 +963,8 @@ func TestMCPRemoteProxy_ValidateAuthzPrimaryUpstreamProviderIgnored(t *testing.T
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: mcpv1beta1.AuthzConfigTypeInline,
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises backward compatibility for the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},

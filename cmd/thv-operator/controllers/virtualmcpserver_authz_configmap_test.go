@@ -80,6 +80,7 @@ func TestMapAuthzConfigMapToVirtualMCPServer(t *testing.T) {
 			vmcpNoIncomingAuth,
 			vmcpInOtherNamespace,
 		).
+		WithIndex(&mcpv1beta1.VirtualMCPServer{}, virtualMCPServerConfigMapIndex, indexVirtualMCPServerConfigMaps).
 		Build()
 
 	reconciler := &VirtualMCPServerReconciler{
@@ -132,6 +133,21 @@ func TestMapAuthzConfigMapToVirtualMCPServer(t *testing.T) {
 			assert.ElementsMatch(t, tt.expected, got)
 		})
 	}
+}
+
+func TestMapAuthzConfigMapToVirtualMCPServer_InlineCABundle(t *testing.T) {
+	t.Parallel()
+	ns := "default"
+	vmcp := v1beta1test.NewVirtualMCPServer("vmcp", ns)
+	vmcp.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+		Name: "idp", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "ca-map"}}}},
+	}}}
+	scheme := testutil.NewScheme(t)
+	r := &VirtualMCPServerReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(vmcp).
+		WithIndex(&mcpv1beta1.VirtualMCPServer{}, virtualMCPServerConfigMapIndex, indexVirtualMCPServerConfigMaps).Build()}
+	requests := r.mapAuthzConfigMapToVirtualMCPServer(t.Context(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ca-map", Namespace: ns}})
+	require.Equal(t, []types.NamespacedName{{Name: "vmcp", Namespace: ns}}, []types.NamespacedName{requests[0].NamespacedName})
 }
 
 func TestConfigMapDataChangedPredicate(t *testing.T) {

@@ -15,9 +15,10 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
@@ -34,19 +35,20 @@ const (
 
 // HTTPTransport implements the Transport interface using Server-Sent/Streamable Events.
 type HTTPTransport struct {
-	transportType     types.TransportType
-	host              string
-	proxyPort         int
-	targetPort        int
-	targetHost        string
-	containerName     string
-	targetURI         string
-	deployer          rt.Deployer
-	debug             bool
-	middlewares       []types.NamedMiddleware
-	prometheusHandler http.Handler
-	authInfoHandler   http.Handler
-	prefixHandlers    map[string]http.Handler
+	transportType      types.TransportType
+	host               string
+	proxyPort          int
+	targetPort         int
+	targetHost         string
+	containerName      string
+	targetURI          string
+	deployer           rt.Deployer
+	debug              bool
+	middlewares        []types.NamedMiddleware
+	prometheusHandler  http.Handler
+	authInfoHandler    http.Handler
+	prefixHandlers     map[string]http.Handler
+	stripConsentCookie bool
 
 	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
 	endpointPrefix string
@@ -86,6 +88,10 @@ type HTTPTransport struct {
 	// sessionTTL overrides the inactivity timeout for sessions managed by the
 	// underlying proxy. Zero uses the proxy's default.
 	sessionTTL time.Duration
+
+	// readTimeout overrides http.Server.ReadTimeout on the underlying transparent
+	// proxy. Zero uses the proxy's default.
+	readTimeout time.Duration
 
 	// Transparent proxy
 	proxy types.Proxy
@@ -206,12 +212,14 @@ func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunctio
 	return middleware.CreateTokenInjectionMiddleware(t.tokenSource)
 }
 
-// hasTokenExchangeMiddleware checks if any middleware in the slice is a token exchange middleware.
-// When token exchange is configured, it handles its own Authorization header injection,
-// so the oauth-token-injection middleware should be skipped to avoid overwriting the exchanged token.
-func hasTokenExchangeMiddleware(middlewares []types.NamedMiddleware) bool {
+// hasTokenInjectingMiddleware checks if any middleware in the slice sets the
+// backend Authorization header from an exchanged token (token exchange or OBO).
+// Such a middleware handles its own Authorization header injection, so the
+// oauth-token-injection middleware should be skipped to avoid overwriting the
+// exchanged token.
+func hasTokenInjectingMiddleware(middlewares []types.NamedMiddleware) bool {
 	for _, mw := range middlewares {
-		if mw.Name == tokenexchange.MiddlewareType {
+		if mw.Name == tokenexchange.MiddlewareType || mw.Name == obo.MiddlewareType {
 			return true
 		}
 	}
@@ -313,8 +321,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	isRemote := t.remoteURL != ""
 
 	// Add OAuth token injection middleware for remote authentication if we have a token source.
-	// Skip if token exchange is configured (it handles its own Authorization header injection).
-	if isRemote && t.tokenSource != nil && !hasTokenExchangeMiddleware(t.middlewares) {
+	// Skip if token exchange or OBO is configured (each handles its own Authorization header injection).
+	if isRemote && t.tokenSource != nil && !hasTokenInjectingMiddleware(t.middlewares) {
 		tokenMiddleware := t.createTokenInjectionMiddleware()
 		middlewares = append(middlewares, types.NamedMiddleware{
 			Name:     "oauth-token-injection",
@@ -430,8 +438,14 @@ func (t *HTTPTransport) buildProxyOptions(remoteBasePath, remoteRawQuery string)
 	if t.sessionTTL > 0 {
 		opts = append(opts, transparent.WithSessionTTL(t.sessionTTL))
 	}
+	if t.readTimeout > 0 {
+		opts = append(opts, transparent.WithReadTimeout(t.readTimeout))
+	}
 	if t.sessionStorage != nil {
 		opts = append(opts, transparent.WithSessionStorage(t.sessionStorage))
+	}
+	if t.stripConsentCookie {
+		opts = append(opts, transparent.WithStripConsentCookie())
 	}
 	return opts
 }

@@ -34,7 +34,7 @@ spec:
     - assert:
         file: assert-mcpserver-proxy-runner-svc.yaml
     - assert:
-        file: ../common/proxyrunner-role.yaml
+        file: ../common/proxyrunner-role-stdio.yaml
     - assert:
         file: ../common/proxyrunner-rolebinding.yaml
     - assert:

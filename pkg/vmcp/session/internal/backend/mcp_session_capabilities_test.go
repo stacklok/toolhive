@@ -67,11 +67,23 @@ type fakeBackend struct {
 	// method name. Tests asserting transport-chain behavior (e.g. HeaderForward)
 	// use headersFor(method) to inspect the headers a backend actually saw.
 	headersByMethod map[string]http.Header
+
+	// metaByMethod records the raw params._meta keyed by JSON-RPC method name.
+	// Tests asserting outbound W3C trace context propagation (SEP-414) use
+	// toolCallMeta() to inspect the _meta a backend actually saw on the wire.
+	metaByMethod map[string]json.RawMessage
 }
 
 type jsonRPCError struct {
 	code    int
 	message string
+
+	// httpStatus, when non-zero, is the HTTP status the error envelope is
+	// returned under instead of 200. The 2026-07-28 spec has servers answer an
+	// unknown method with HTTP 404 carrying a -32601 body; tests set this to 404
+	// for that shape, and to 405 / 501 for the wider scope named in #5242. Zero
+	// keeps the pre-2026-07-28 shape (-32601 inside a 200).
+	httpStatus int
 }
 
 // newFakeBackend wires up an httptest.Server speaking just enough JSON-RPC for
@@ -82,6 +94,7 @@ func newFakeBackend(t *testing.T, fb *fakeBackend) string {
 	fb.t = t
 	fb.methodCalls = make(map[string]int)
 	fb.headersByMethod = make(map[string]http.Header)
+	fb.metaByMethod = make(map[string]json.RawMessage)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", fb.handle)
@@ -116,6 +129,16 @@ func (f *fakeBackend) headersFor(method string) http.Header {
 	return h.Clone()
 }
 
+// toolCallMeta returns the raw params._meta recorded for the most recent
+// tools/call request, or nil if no such request was seen or it carried no
+// _meta field. metaByMethod is keyed by method, but every test so far only
+// inspects tools/call; add a sibling accessor if another method needs one.
+func (f *fakeBackend) toolCallMeta() json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.metaByMethod[string(mcp.MethodToolsCall)]
+}
+
 // handle implements the JSON-RPC subset needed for backend init. The
 // streamable-HTTP transport sends POST requests with Accept:
 // application/json, text/event-stream — we always reply with
@@ -142,7 +165,8 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 		ID      json.RawMessage `json:"id"`
 		Method  string          `json:"method"`
 		Params  struct {
-			Cursor string `json:"cursor"`
+			Cursor string          `json:"cursor"`
+			Meta   json.RawMessage `json:"_meta"`
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(body, &msg); err != nil {
@@ -154,6 +178,7 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.methodCalls[msg.Method]++
 	f.headersByMethod[msg.Method] = r.Header.Clone()
+	f.metaByMethod[msg.Method] = msg.Params.Meta
 	f.mu.Unlock()
 
 	// Notifications (no id, e.g. notifications/initialized) get an empty 202.
@@ -259,8 +284,12 @@ func (f *fakeBackend) writeResult(w http.ResponseWriter, id json.RawMessage, res
 }
 
 func (f *fakeBackend) writeError(w http.ResponseWriter, id json.RawMessage, e *jsonRPCError) {
+	status := e.httpStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      json.RawMessage(id),
@@ -278,7 +307,15 @@ func (f *fakeBackend) writeError(w http.ResponseWriter, id json.RawMessage, e *j
 // is registered via t.Cleanup.
 func newTestClient(t *testing.T, url string) *mcpclient.Client {
 	t.Helper()
-	c, err := mcpclient.NewStreamableHttpClient(url, mcptransport.WithHTTPBasicClient(&http.Client{}))
+	// Each test client gets its own transport with keep-alive disabled. A bare
+	// &http.Client{} shares the process-global http.DefaultTransport, so across
+	// t.Parallel() subtests one client's teardown (t.Cleanup -> Close) can close
+	// idle connections a sibling is mid-request on. Go surfaces that as
+	// "connection broken: http: CloseIdleConnections called", which the
+	// streamable transport reports as a spurious 4xx/legacy-SSE init failure.
+	c, err := mcpclient.NewStreamableHttpClient(url, mcptransport.WithHTTPBasicClient(&http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}))
 	require.NoError(t, err)
 	require.NoError(t, c.Start(context.Background()))
 	t.Cleanup(func() { _ = c.Close() })
@@ -565,4 +602,153 @@ func TestInitAndQueryCapabilities_FollowsToolPagination(t *testing.T) {
 	// The cursor loop must issue ceil(total/pageSize) tools/list calls — proof
 	// pagination actually happened rather than one oversized page.
 	assert.Equal(t, 3, fb.callCount(string(mcp.MethodToolsList)), "expected one tools/list per page")
+}
+
+// TestInitAndQueryCapabilities_RecoversFromErrorStatusMethodNotFound covers the
+// shape the 2026-07-28 spec requires for an unknown method: HTTP 404 carrying a
+// JSON-RPC -32601 body. 405 and 501 are exercised alongside it as the defensive
+// scope named in #5242 rather than spec requirements; the recovery path is the same
+// for all three, and must behave exactly as it does for -32601 inside a 200 — init
+// succeeds with the backend's tools intact.
+//
+// Beyond the return value, each case asserts the session is still USABLE: the
+// recovery is worthless if init reports success but hands back a client whose
+// connection the SDK has already torn down, because the backend's tools would
+// then appear in the catalog while every tools/call fails.
+func TestInitAndQueryCapabilities_RecoversFromErrorStatusMethodNotFound(t *testing.T) {
+	t.Parallel()
+
+	helloTool := mcp.Tool{Name: "hello"}
+
+	methods := []struct {
+		name string
+		// inject returns a fakeBackend whose optional list method fails with
+		// the -32601 body under the given HTTP status.
+		inject func(status int) *fakeBackend
+		// listMethod is the JSON-RPC method expected to have been attempted.
+		listMethod string
+	}{
+		{
+			name:       "resources/list",
+			listMethod: string(mcp.MethodResourcesList),
+			inject: func(status int) *fakeBackend {
+				return &fakeBackend{
+					advertiseTools:     true,
+					advertiseResources: true,
+					tools:              []mcp.Tool{helloTool},
+					listResourcesErr: &jsonRPCError{
+						code:       mcp.METHOD_NOT_FOUND,
+						message:    "Method not found",
+						httpStatus: status,
+					},
+				}
+			},
+		},
+		{
+			name:       "prompts/list",
+			listMethod: string(mcp.MethodPromptsList),
+			inject: func(status int) *fakeBackend {
+				return &fakeBackend{
+					advertiseTools:   true,
+					advertisePrompts: true,
+					tools:            []mcp.Tool{helloTool},
+					listPromptsErr: &jsonRPCError{
+						code:       mcp.METHOD_NOT_FOUND,
+						message:    "Method not found",
+						httpStatus: status,
+					},
+				}
+			},
+		},
+	}
+
+	statuses := []int{
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusNotImplemented,
+	}
+
+	for _, m := range methods {
+		for _, status := range statuses {
+			t.Run(fmt.Sprintf("%s/%d", m.name, status), func(t *testing.T) {
+				t.Parallel()
+
+				fb := m.inject(status)
+				url := newFakeBackend(t, fb)
+				c := newTestClient(t, url)
+				target := &vmcp.BackendTarget{
+					WorkloadID:    "fake-backend",
+					WorkloadName:  "fake-backend",
+					BaseURL:       url,
+					TransportType: "streamable-http",
+				}
+
+				caps, err := initAndQueryCapabilities(context.Background(), c, target)
+				require.NoError(t, err,
+					"init must survive %s returning HTTP %d with a -32601 body", m.name, status)
+				require.NotNil(t, caps)
+
+				// The point of the recovery: the backend's tools are kept.
+				require.Len(t, caps.Tools, 1)
+				assert.Equal(t, helloTool.Name, caps.Tools[0].Name)
+				assert.Empty(t, caps.Resources)
+				assert.Empty(t, caps.Prompts)
+
+				// The failing list method was genuinely attempted, so the case
+				// under test is the recovery path and not a skipped capability.
+				assert.Equal(t, 1, fb.callCount(m.listMethod))
+
+				// The session must still work. A recovery that leaves the
+				// client's connection closed would publish tools nobody can call.
+				listResult, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
+				require.NoError(t, err, "session must remain usable after recovery")
+				require.Len(t, listResult.Tools, 1)
+
+				_, err = c.CallTool(context.Background(), mcp.CallToolRequest{
+					Params: mcp.CallToolParams{Name: helloTool.Name},
+				})
+				require.NoError(t, err, "tools/call must succeed on the recovered session")
+			})
+		}
+	}
+}
+
+// TestInitAndQueryCapabilities_ErrorStatusToolsListFatal is the regression guard
+// for #5242: widening recovery to error-status responses must not soften
+// tools/list. A backend that advertises tools but cannot list them has no usable
+// surface, so init still aborts — whether the -32601 arrives under a 200 (covered
+// by TestInitAndQueryCapabilities_FatalErrors) or under 404 / 405 / 501.
+func TestInitAndQueryCapabilities_ErrorStatusToolsListFatal(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []int{
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusNotImplemented,
+	} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			t.Parallel()
+
+			fb := &fakeBackend{
+				advertiseTools: true,
+				listToolsErr: &jsonRPCError{
+					code:       mcp.METHOD_NOT_FOUND,
+					message:    "Method not found",
+					httpStatus: status,
+				},
+			}
+			url := newFakeBackend(t, fb)
+			c := newTestClient(t, url)
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "fake-backend",
+				WorkloadName:  "fake-backend",
+				BaseURL:       url,
+				TransportType: "streamable-http",
+			}
+
+			_, err := initAndQueryCapabilities(context.Background(), c, target)
+			require.Error(t, err, "tools/list must stay strict under HTTP %d", status)
+			assert.ErrorContains(t, err, "list tools failed")
+		})
+	}
 }

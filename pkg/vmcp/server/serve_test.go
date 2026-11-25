@@ -17,8 +17,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -45,6 +47,9 @@ func (*stubVMCP) CallTool(
 func (*stubVMCP) ListResources(context.Context, *auth.Identity) ([]vmcp.Resource, error) {
 	return nil, nil
 }
+func (*stubVMCP) ListResourceTemplates(context.Context, *auth.Identity) ([]vmcp.ResourceTemplate, error) {
+	return nil, nil
+}
 func (*stubVMCP) ReadResource(context.Context, *auth.Identity, string) (*vmcp.ResourceReadResult, error) {
 	return nil, nil
 }
@@ -52,6 +57,11 @@ func (*stubVMCP) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Prompt, er
 func (*stubVMCP) GetPrompt(
 	context.Context, *auth.Identity, string, map[string]any,
 ) (*vmcp.PromptGetResult, error) {
+	return nil, nil
+}
+func (*stubVMCP) Complete(
+	context.Context, *auth.Identity, vmcp.CompletionRef, string, string, map[string]string,
+) (*vmcp.CompletionResult, error) {
 	return nil, nil
 }
 func (*stubVMCP) LookupTool(context.Context, *auth.Identity, string) (*vmcp.Tool, error) {
@@ -74,8 +84,12 @@ func (*stubVMCP) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Bac
 func (*stubVMCP) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
 	return nil, nil
 }
+func (*stubVMCP) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
+	return core.DiscoverCapabilities{}, nil
+}
 func (s *stubVMCP) Close() error                 { s.closed = true; return nil }
 func (*stubVMCP) BackendHealth() health.Reporter { return nil }
+func (*stubVMCP) InvalidateCapabilityCache()     {}
 
 // stubWatcher is a non-nil Watcher for the drift-guard test; its behavior is not
 // exercised there.
@@ -155,6 +169,15 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 	assert.Equal(t, 11*time.Second, srv.config.StatusReportingInterval)
 }
 
+func TestServeRefusesInvalidCallBinding(t *testing.T) {
+	t.Parallel()
+	cfg := testMinimalServeConfig()
+	cfg.CallBinding = callbinding.Config{MaxCallDuration: -time.Second}
+	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Nil(t, srv)
+}
+
 func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 	t.Parallel()
 
@@ -219,34 +242,79 @@ func TestServeOmitsAuthzAndAnnotation(t *testing.T) {
 	require.NotNil(t, handler)
 }
 
-func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
+// TestServeHandlerMetricsOnTransportPort pins both ends of the migration: while
+// metricsOnTransportPort is on, /metrics stays reachable on the port serving MCP
+// traffic so existing scrapers keep working; once it is off, the application mux
+// answers with diagnostics.NotServedHereHandler rather than a bare 404 or letting
+// /metrics fall through to the "/" MCP handler -- an operator whose scraper is
+// still pointed here needs the same explanation the proxies give (see #6369).
+//
+// Metrics are served on the diagnostics listener in both cases.
+func TestServeHandlerMetricsOnTransportPort(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	provider, err := telemetry.NewProvider(ctx, telemetry.Config{
-		ServiceName:                 "vmcp-serve-test",
-		ServiceVersion:              "0.0.0",
-		EnablePrometheusMetricsPath: true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
+	tests := []struct {
+		name                   string
+		metricsOnTransportPort *bool
+		wantStatus             int
+		// wantExplained asserts the body names the diagnostics listener, so a
+		// regression to a bare 404 (indistinguishable from a typo) is caught here
+		// rather than only in pkg/diagnostics.
+		wantExplained bool
+	}{
+		{
+			name:                   "default serves on the transport port during the migration window",
+			metricsOnTransportPort: nil,
+			wantStatus:             http.StatusOK,
+		},
+		{
+			name:                   "explicitly enabled serves on the transport port",
+			metricsOnTransportPort: ptrTo(true),
+			wantStatus:             http.StatusOK,
+		},
+		{
+			name:                   "opted out leaves only the diagnostics listener",
+			metricsOnTransportPort: ptrTo(false),
+			wantStatus:             http.StatusNotFound,
+			wantExplained:          true,
+		},
+	}
 
-	srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
-		SessionTTL:           defaultSessionTTL,
-		SessionManagerConfig: testMinimalSessionManagerConfig(),
-		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
-		TelemetryProvider:    provider,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	handler, err := srv.Handler(ctx)
-	require.NoError(t, err)
+			ctx := context.Background()
+			provider, err := telemetry.NewProvider(ctx, telemetry.Config{
+				ServiceName:                 "vmcp-serve-test",
+				ServiceVersion:              "0.0.0",
+				EnablePrometheusMetricsPath: true,
+				MetricsOnTransportPort:      tt.metricsOnTransportPort,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = provider.Shutdown(ctx) })
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+			srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
+				SessionTTL:           defaultSessionTTL,
+				SessionManagerConfig: testMinimalSessionManagerConfig(),
+				BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+				TelemetryProvider:    provider,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+			handler, err := srv.Handler(ctx)
+			require.NoError(t, err)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, diagnostics.MetricsPath, nil))
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			if tt.wantExplained {
+				assert.Contains(t, rec.Body.String(), "diagnostics",
+					"the 404 body must explain where metrics moved to, not just say not found")
+			}
+		})
+	}
 }
 
 func TestServeStopClosesCore(t *testing.T) {
@@ -336,6 +404,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		"RateLimiter":         {}, // consumed by New to wrap the core (rate-limit decorator) before Serve; not a transport field
 		"Aggregator":          {}, // core collaborator: fed to core.New via deriveCoreConfig, not the transport
 		"Authz":               {}, // core collaborator: fed to the core admission seam via deriveCoreConfig
+		"CallBinding":         {}, // Serve builds the enforcement from ServerConfig.CallBinding; Config.CallBinding is only read by New
 	}
 
 	// Every field set to a non-zero value so a dropped mapping surfaces as a zero
@@ -362,7 +431,10 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		SessionStorage:          &vmcpconfig.SessionStorageConfig{},
 		SessionManagerConfig:    testMinimalSessionManagerConfig(),
 		TelemetryProvider:       &telemetry.Provider{},
+		UsageMetricsMiddleware:  func(h http.Handler) http.Handler { return h },
 		AuditConfig:             &audit.Config{},
+		AuditSubjectEnricher:    stubSubjectEnricher,
+		CallBinding:             callbinding.Config{Clients: []string{"c"}},
 	}
 
 	got := reflect.ValueOf(*buildServeConfig(src))

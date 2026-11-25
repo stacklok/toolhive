@@ -6,7 +6,6 @@ package aggregator
 import (
 	"context"
 	"log/slog"
-	"strings"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -26,7 +25,7 @@ type PrefixConflictResolver struct {
 // NewPrefixConflictResolver creates a new prefix-based conflict resolver.
 func NewPrefixConflictResolver(prefixFormat string) *PrefixConflictResolver {
 	if prefixFormat == "" {
-		prefixFormat = "{workload}_" // Default format
+		prefixFormat = defaultPrefixFormat
 	}
 	return &PrefixConflictResolver{
 		PrefixFormat: prefixFormat,
@@ -79,10 +78,5 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 
 // applyPrefix applies the configured prefix format to a tool name.
 func (r *PrefixConflictResolver) applyPrefix(backendID, toolName string) string {
-	prefix := r.PrefixFormat
-
-	// Replace {workload} placeholder with actual backend ID
-	prefix = strings.ReplaceAll(prefix, "{workload}", backendID)
-
-	return prefix + toolName
+	return applyPrefixFormat(r.PrefixFormat, backendID, toolName)
 }

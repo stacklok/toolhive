@@ -11,12 +11,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,10 +29,12 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -87,6 +93,20 @@ func WaitForVirtualMCPServerReady(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
+// WaitForObjectDeletion waits until Kubernetes reports that obj no longer exists.
+func WaitForObjectDeletion(
+	ctx context.Context,
+	c client.Client,
+	obj client.Object,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) {
+	key := client.ObjectKeyFromObject(obj)
+	gomega.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, key, obj))
+	}, timeout, pollingInterval).Should(gomega.BeTrue())
+}
+
 // checkPodsReady waits for at least one pod matching the given labels to be ready.
 func checkPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
 	return testutil.CheckPodsReady(ctx, c, namespace, labels)
@@ -112,6 +132,18 @@ func (c *InitializedMCPClient) Close() {
 // CreateInitializedMCPClient creates an MCP client, starts the transport, and initializes
 // the connection with the given client name. Returns an InitializedMCPClient that should
 // be closed when done using defer client.Close().
+//
+// DO NOT use this (or any mcpcompat-built client) in a spec that asserts
+// SESSION semantics against a vMCP. The underlying go-sdk client is
+// Modern-first — it probes server/discover before initialize and upgrades to
+// 2026-07-28 whenever the server advertises it — and cannot be pinned to
+// Legacy (#5911). Against a Modern-serving vMCP it gets no session, and
+// GetSessionId() is empty. Session specs must pin the era explicitly with the
+// raw Legacy primitives in legacy_session_helpers_test.go instead. (Specs that
+// only assert tool/resource behavior are era-agnostic and may use this freely;
+// clients of the thv-proxyrunner transparent proxy negotiate against the
+// BACKEND, so MCPServer/MCPRemoteProxy session specs are unaffected as long as
+// the backend itself is Legacy.)
 func CreateInitializedMCPClient(nodePort int32, clientName string, timeout time.Duration) (*InitializedMCPClient, error) {
 	serverURL := fmt.Sprintf("http://localhost:%d/mcp", nodePort)
 	mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL)
@@ -332,6 +364,174 @@ func GetServiceStats(ctx context.Context, c client.Client, namespace, serviceNam
 	_ = c.Delete(ctx, curlPod)
 
 	return logs, nil
+}
+
+// GetHTTPResponseHeaders performs a GET request against url from inside the
+// cluster and returns the status line and headers (no body). Useful for
+// asserting on response codes/headers (e.g. 401 + WWW-Authenticate) without a
+// port-forward.
+func GetHTTPResponseHeaders(ctx context.Context, c client.Client, namespace, targetURL string) (string, error) {
+	curlPodName := fmt.Sprintf("headers-checker-%d", time.Now().UnixNano())
+	curlPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: curlPodName, Namespace: namespace},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{
+				{
+					Name:    "curl",
+					Image:   images.CurlImage,
+					Command: []string{"curl", "-s", "-D", "-", "-o", "/dev/null", targetURL},
+				},
+			},
+		},
+	}
+	if err := c.Create(ctx, curlPod); err != nil {
+		return "", fmt.Errorf("failed to create headers-checker pod: %w", err)
+	}
+	defer func() { _ = c.Delete(ctx, curlPod) }()
+
+	if err := waitForCheckerPodCompletion(ctx, c, curlPodName, namespace); err != nil {
+		return "", err
+	}
+
+	logs, err := getPodLogs(ctx, namespace, curlPodName, "curl", false)
+	if err != nil {
+		return "", fmt.Errorf("failed to get headers-checker logs: %w", err)
+	}
+	return logs, nil
+}
+
+// PostHTTPInCluster POSTs body to targetURL from inside the cluster with the
+// given request headers and returns the response status code and body. Header
+// values are passed on the curl command line, so they are visible in the
+// short-lived checker pod's spec.
+func PostHTTPInCluster(
+	ctx context.Context, c client.Client, namespace, targetURL string, headers map[string]string, body string,
+) (int, string, error) {
+	const statusMarker = "\nHTTP_STATUS:"
+	curlPodName := fmt.Sprintf("post-checker-%d", time.Now().UnixNano())
+	command := []string{"curl", "-s", "-X", "POST", "--data-raw", body, "-w", statusMarker + "%{http_code}"}
+	for name, value := range headers {
+		command = append(command, "-H", name+": "+value)
+	}
+	command = append(command, targetURL)
+	curlPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: curlPodName, Namespace: namespace},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers:    []corev1.Container{{Name: "curl", Image: images.CurlImage, Command: command}},
+		},
+	}
+	if err := c.Create(ctx, curlPod); err != nil {
+		return 0, "", fmt.Errorf("failed to create post-checker pod: %w", err)
+	}
+	defer func() { _ = c.Delete(ctx, curlPod) }()
+
+	if err := waitForCheckerPodCompletion(ctx, c, curlPodName, namespace); err != nil {
+		return 0, "", err
+	}
+
+	logs, err := getPodLogs(ctx, namespace, curlPodName, "curl", false)
+	if err != nil {
+		return 0, "", fmt.Errorf("failed to get post-checker logs: %w", err)
+	}
+	responseBody, status, found := strings.Cut(logs, statusMarker)
+	if !found {
+		return 0, "", fmt.Errorf("post-checker output has no status code: %q", logs)
+	}
+	statusCode, err := strconv.Atoi(strings.TrimSpace(status))
+	if err != nil || statusCode == 0 {
+		return 0, "", fmt.Errorf("post-checker request failed, output: %q", logs)
+	}
+	return statusCode, responseBody, nil
+}
+
+// waitForCheckerPodCompletion waits up to 30 seconds for a one-shot checker
+// pod to succeed or fail. It returns an error on timeout instead of failing
+// the spec, so callers inside Eventually retry.
+func waitForCheckerPodCompletion(ctx context.Context, c client.Client, name, namespace string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		pod := &corev1.Pod{}
+		if err := c.Get(waitCtx, types.NamespacedName{Name: name, Namespace: namespace}, pod); err == nil &&
+			(pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed) {
+			return nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("checker pod %s did not complete: %w", name, waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// tlsCertificateProbe is the JSON shape python's ssl.getpeercert() produces
+// for the fields GetTLSCertificateSerial needs.
+type tlsCertificateProbe struct {
+	SerialNumber string `json:"serialNumber"`
+}
+
+// GetTLSCertificateSerial dials host:port over TLS from inside the cluster,
+// verifying the presented certificate against the CA in the "ca.crt" key of
+// the caConfigMapName ConfigMap, and returns the serial number of the
+// certificate the server presented. Used to observe TLS listener certificate
+// rotation from outside the rotated pod.
+func GetTLSCertificateSerial(
+	ctx context.Context, c client.Client, namespace, host string, port int32, caConfigMapName string,
+) (string, error) {
+	podName := fmt.Sprintf("tls-cert-checker-%d", time.Now().UnixNano())
+	script := fmt.Sprintf(`import json, socket, ssl
+ctx = ssl.create_default_context(cafile="/ca/ca.crt")
+with socket.create_connection(("%s", %d), timeout=10) as sock:
+    with ctx.wrap_socket(sock, server_hostname="%s") as ssock:
+        print(json.dumps(ssock.getpeercert()))
+`, host, port, host)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: namespace},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{
+				{
+					Name:         "tls-check",
+					Image:        images.PythonImage,
+					Command:      []string{"python3", "-c", script},
+					VolumeMounts: []corev1.VolumeMount{{Name: "ca", MountPath: "/ca", ReadOnly: true}},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "ca",
+					VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: caConfigMapName},
+					}},
+				},
+			},
+		},
+	}
+	if err := c.Create(ctx, pod); err != nil {
+		return "", fmt.Errorf("failed to create TLS cert checker pod: %w", err)
+	}
+	defer func() { _ = c.Delete(ctx, pod) }()
+
+	if err := waitForCheckerPodCompletion(ctx, c, podName, namespace); err != nil {
+		return "", err
+	}
+
+	logs, err := getPodLogs(ctx, namespace, podName, "tls-check", false)
+	if err != nil {
+		return "", fmt.Errorf("failed to get TLS cert checker logs: %w", err)
+	}
+	var cert tlsCertificateProbe
+	if err := json.Unmarshal([]byte(strings.TrimSpace(logs)), &cert); err != nil {
+		return "", fmt.Errorf("failed to parse TLS certificate probe output %q: %w", logs, err)
+	}
+	if cert.SerialNumber == "" {
+		return "", fmt.Errorf("TLS certificate probe returned no serial number: %s", logs)
+	}
+	return cert.SerialNumber, nil
 }
 
 // GetMockOAuth2Stats queries the /stats endpoint of the mock OAuth2 server (port 8080)
@@ -1278,10 +1478,11 @@ type VMCPStatusResponse struct {
 // VMCPBackendStatus mirrors server.BackendStatus
 // (pkg/vmcp/server/status.go) for test deserialization.
 type VMCPBackendStatus struct {
-	Name      string `json:"name"`
-	Health    string `json:"health"` // "healthy", "degraded", "unhealthy", "unknown"
-	Transport string `json:"transport"`
-	AuthType  string `json:"auth_type,omitempty"`
+	Name        string `json:"name"`
+	Health      string `json:"health"` // "healthy", "degraded", "unhealthy", "unknown"
+	Transport   string `json:"transport"`
+	AuthType    string `json:"auth_type,omitempty"`
+	MCPRevision string `json:"mcp_revision,omitempty"`
 }
 
 // VMCPBackendsHealthResponse mirrors BackendHealthResponse
@@ -1336,7 +1537,9 @@ type InstrumentedMCPBackendStats struct {
 	TotalRequests       int    `json:"total_requests"`
 	BearerTokenRequests int    `json:"bearer_token_requests"`
 	LastBearerToken     string `json:"last_bearer_token"`
-	InitializeCalls     int    `json:"initialize_calls"`
+	// SeenBearerTokens holds every distinct bearer token received, in first-seen order.
+	SeenBearerTokens []string `json:"seen_bearer_tokens"`
+	InitializeCalls  int      `json:"initialize_calls"`
 }
 
 // InstrumentedMCPBackendScript is a Python Flask server that implements the MCP streamable-http
@@ -1355,6 +1558,7 @@ stats = {
     "total_requests": 0,
     "bearer_token_requests": 0,
     "last_bearer_token": None,
+    "seen_bearer_tokens": [],
     "initialize_calls": 0,
 }
 
@@ -1376,6 +1580,8 @@ def mcp():
     if auth.startswith("Bearer ") and len(auth) > 7:
         stats["bearer_token_requests"] += 1
         stats["last_bearer_token"] = auth[7:]
+        if auth[7:] not in stats["seen_bearer_tokens"]:
+            stats["seen_bearer_tokens"].append(auth[7:])
         fingerprint = __import__('hashlib').sha256(auth.encode()).hexdigest()[:16]
         print(f"*** BEARER TOKEN FINGERPRINT (count={stats['bearer_token_requests']}): {fingerprint}", flush=True)
         sys.stdout.flush()
@@ -1526,17 +1732,24 @@ type DexInfo struct {
 func deployDex(
 	ctx context.Context,
 	c client.Client,
-	name, namespace string,
+	name string,
 	vmcpCallbackURL string,
-	timeout, pollingInterval time.Duration,
 ) (*DexInfo, func()) {
-	inClusterBaseURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5556", name, namespace)
+	// Every call site passes defaultNamespace, the same 5-minute timeout, and
+	// the same 2-second poll interval; all three were flagged as unparam once
+	// a fourth identical call site landed, so they're fixed here rather than
+	// threaded through as parameters.
+	const (
+		timeout         = 5 * time.Minute
+		pollingInterval = 2 * time.Second
+	)
+	inClusterBaseURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5556", name, defaultNamespace)
 	configMapName := name + "-config"
 
 	ginkgo.By("Creating Dex ConfigMap with mockCallback connector")
 	configData := dexConfig(inClusterBaseURL, vmcpCallbackURL)
 	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: defaultNamespace},
 		Data:       map[string]string{"config.yaml": configData},
 	})).To(gomega.Succeed())
 
@@ -1544,7 +1757,7 @@ func deployDex(
 
 	ginkgo.By("Creating Dex Deployment")
 	gomega.Expect(c.Create(ctx, &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: int32Ptr(1),
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
@@ -1587,7 +1800,7 @@ func deployDex(
 
 	ginkgo.By("Creating Dex NodePort Service")
 	dexSvc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeNodePort,
 			Selector: labels,
@@ -1604,7 +1817,7 @@ func deployDex(
 	// Wait for the NodePort to be assigned (assigned asynchronously by the endpoint controller).
 	var nodePort int32
 	gomega.Eventually(func() (int32, error) {
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dexSvc); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, dexSvc); err != nil {
 			return 0, err
 		}
 		if len(dexSvc.Spec.Ports) == 0 || dexSvc.Spec.Ports[0].NodePort == 0 {
@@ -1618,7 +1831,7 @@ func deployDex(
 	ginkgo.By("Waiting for Dex to be ready")
 	gomega.Eventually(func() bool {
 		dep := &appsv1.Deployment{}
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dep); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, dep); err != nil {
 			return false
 		}
 		return dep.Status.ReadyReplicas > 0
@@ -1632,12 +1845,709 @@ func deployDex(
 	}
 
 	cleanup := func() {
-		_ = c.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
-		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
-		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace}})
+		_ = c.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace}})
+		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace}})
+		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: defaultNamespace}})
 	}
 
 	return info, cleanup
+}
+
+const (
+	// spireAgentSocketRoot holds one directory per SPIRE instance. An agent
+	// that shuts down unlinks its socket, so instances must not share a path
+	// on the kind node.
+	spireAgentSocketRoot  = "/run/spire/sockets"
+	spireTrustDomain      = "example.org"
+	spireServerSocketPath = "/run/spire/server-socket/api.sock"
+	// spireSVIDTTLSeconds must stay well above the time a test needs to fetch
+	// and use an SVID. A short TTL here doesn't test rotation — the rotation
+	// spec forces it explicitly via the SPIRE Server API
+	// (RotateSPIRELocalAuthorities) — it just makes every other spec flaky by
+	// racing SVID expiry against normal test execution time. 60s was observed
+	// to do exactly that against a real cluster.
+	spireSVIDTTLSeconds = "3600"
+	// spireJWTSVIDTTLSeconds is shorter than the X.509 TTL on purpose: the
+	// embedded auth server rejects JWT-SVID client assertions with more than
+	// six minutes of remaining validity, following the JWT-SVID spec's advice
+	// to keep bearer assertions short-lived. Clients fetch a fresh JWT-SVID
+	// for every token request, so five minutes does not race test execution.
+	spireJWTSVIDTTLSeconds = "300"
+)
+
+// SPIREInfo holds the SPIRE connection details needed by E2E workloads.
+type SPIREInfo struct {
+	// ServerDeploymentName is the Kubernetes Deployment name for the SPIRE Server.
+	ServerDeploymentName string
+	// ServerServiceName is the Kubernetes Service name for the SPIRE Server.
+	ServerServiceName string
+	// AgentServiceAccountName is the ServiceAccount used by the SPIRE Agent.
+	AgentServiceAccountName string
+	// BundleConfigMapName is the ConfigMap to which SPIRE publishes its trust bundle.
+	BundleConfigMapName string
+	// BundleConfigMapKey is the key in BundleConfigMapName containing the trust bundle.
+	BundleConfigMapKey string
+	// AgentSocketPath is the host path at which this instance's agents expose the
+	// Workload API socket. It is unique per instance.
+	AgentSocketPath string
+	// TrustDomain is the SPIFFE trust domain served by this SPIRE deployment.
+	TrustDomain string
+}
+
+func spireServerConfig(namespace, agentServiceAccountName, bundleConfigMapName string) string {
+	return fmt.Sprintf(`server {
+  bind_address = "0.0.0.0"
+  bind_port = "8081"
+  socket_path = "%s"
+  trust_domain = "%s"
+  data_dir = "/run/spire/data"
+  // A short default here isn't a rotation test — it just makes the agent's own
+  // node SVID expire faster than it gracefully rotates, forcing it into a
+  // repeating expire/fail/reattest cycle instead (observed against a real
+  // cluster: "Agent SVID is expired" / PermissionDenied on
+  // SyncAuthorizedEntries, every TTL period). Bundle/CA rotation is exercised
+  // by forcing it through the SPIRE Server API, not by racing this TTL.
+  default_x509_svid_ttl = "1h"
+  default_jwt_svid_ttl = "5m"
+}
+
+plugins {
+  DataStore "sql" {
+    plugin_data {
+      database_type = "sqlite3"
+      connection_string = "/run/spire/data/datastore.sqlite3"
+    }
+  }
+  KeyManager "disk" {
+    plugin_data {
+      keys_path = "/run/spire/data/keys.json"
+    }
+  }
+  NodeAttestor "k8s_psat" {
+    plugin_data {
+      clusters = {
+        "kind" = {
+          service_account_allow_list = ["%s:%s"]
+        }
+      }
+    }
+  }
+  BundlePublisher "k8s_configmap" {
+    plugin_data {
+      clusters = {
+        "kind" = {
+          namespace = "%s"
+          configmap_name = "%s"
+          configmap_key = "bundle.json"
+          format = "spiffe"
+          refresh_hint = "5m"
+        }
+      }
+    }
+  }
+}
+`, spireServerSocketPath, spireTrustDomain, namespace, agentServiceAccountName, namespace, bundleConfigMapName)
+}
+
+// spireAgentSocketPath returns the Workload API socket path for the SPIRE
+// instance called name.
+func spireAgentSocketPath(name string) string {
+	return path.Join(spireAgentSocketRoot, name, "agent.sock")
+}
+
+func spireAgentConfig(serverServiceName, namespace, socketPath string) string {
+	return fmt.Sprintf(`agent {
+  data_dir = "/run/spire/data"
+  server_address = "%s.%s.svc"
+  server_port = "8081"
+  socket_path = "%s"
+  trust_domain = "%s"
+  insecure_bootstrap = true
+}
+
+plugins {
+  NodeAttestor "k8s_psat" {
+    plugin_data {
+      cluster = "kind"
+    }
+  }
+  KeyManager "memory" {
+  }
+  WorkloadAttestor "k8s" {
+    plugin_data {
+      node_name_env = "MY_NODE_NAME"
+      skip_kubelet_verification = true
+    }
+  }
+}
+`, serverServiceName, namespace, socketPath, spireTrustDomain)
+}
+
+// SPIREWorkloadAPIVolume returns the read-only mount of the directory holding
+// socketPath (SPIREInfo.AgentSocketPath) and the endpoint environment variable
+// needed by a PodTemplateSpec container that uses the SPIFFE Workload API.
+func SPIREWorkloadAPIVolume(volumeName, socketPath string) (corev1.Volume, corev1.VolumeMount, corev1.EnvVar, error) {
+	if errs := k8svalidation.IsDNS1123Label(volumeName); len(errs) > 0 {
+		return corev1.Volume{}, corev1.VolumeMount{}, corev1.EnvVar{}, fmt.Errorf("invalid SPIRE socket volume name")
+	}
+	if !path.IsAbs(socketPath) || path.Clean(socketPath) != socketPath || path.Dir(socketPath) == "/" {
+		return corev1.Volume{}, corev1.VolumeMount{}, corev1.EnvVar{}, fmt.Errorf("invalid SPIRE agent socket path")
+	}
+	socketDir := path.Dir(socketPath)
+
+	return corev1.Volume{
+		Name: volumeName,
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: socketDir,
+				Type: ptr.To(corev1.HostPathDirectory),
+			},
+		},
+	}, corev1.VolumeMount{
+		Name:      volumeName,
+		MountPath: socketDir,
+		ReadOnly:  true,
+	}, corev1.EnvVar{
+		Name:  "SPIFFE_ENDPOINT_SOCKET",
+		Value: "unix://" + socketPath,
+	}, nil
+}
+
+// RotateSPIRELocalAuthorities rotates the X.509 and JWT local authorities through
+// the SPIRE Server pod's private API socket and returns the authority ID of the
+// newly activated JWT authority. It never exposes that socket outside the pod.
+func RotateSPIRELocalAuthorities(ctx context.Context, namespace, serverPodName string) (string, error) {
+	if err := validateSPIRENames(namespace, serverPodName); err != nil {
+		return "", err
+	}
+	if _, err := rotateSPIRELocalAuthority(ctx, namespace, serverPodName, "x509"); err != nil {
+		return "", fmt.Errorf("rotate SPIRE x509 local authority: %w", err)
+	}
+	jwtAuthorityID, err := rotateSPIRELocalAuthority(ctx, namespace, serverPodName, "jwt")
+	if err != nil {
+		return "", fmt.Errorf("rotate SPIRE jwt local authority: %w", err)
+	}
+	return jwtAuthorityID, nil
+}
+
+type spireAuthority struct {
+	AuthorityID string `json:"authority_id"`
+}
+
+type spireAuthorityShowResponse struct {
+	Active spireAuthority `json:"active"`
+}
+
+type spireAuthorityPrepareResponse struct {
+	PreparedAuthority spireAuthority `json:"prepared_authority"`
+}
+
+type spireAuthorityActivateResponse struct {
+	ActivatedAuthority spireAuthority `json:"activated_authority"`
+}
+
+type spireAuthorityTaintResponse struct {
+	TaintedAuthority spireAuthority `json:"tainted_authority"`
+}
+
+// rotateSPIRELocalAuthority prepares and activates a new local authority of
+// authorityType, taints the previous one, and returns the activated authority ID.
+func rotateSPIRELocalAuthority(ctx context.Context, namespace, serverPodName, authorityType string) (string, error) {
+	activeOutput, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+		"localauthority", authorityType, "show",
+		"-socketPath", spireServerSocketPath, "-output", "json",
+	)
+	if err != nil {
+		return "", fmt.Errorf("show active authority: %w", err)
+	}
+	active := spireAuthorityShowResponse{}
+	if err := json.Unmarshal([]byte(activeOutput), &active); err != nil {
+		return "", fmt.Errorf("parse active authority response: %w", err)
+	}
+	if active.Active.AuthorityID == "" {
+		return "", fmt.Errorf("active authority response has no authority ID")
+	}
+
+	preparedOutput, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+		"localauthority", authorityType, "prepare",
+		"-socketPath", spireServerSocketPath, "-output", "json",
+	)
+	if err != nil {
+		return "", fmt.Errorf("prepare authority: %w", err)
+	}
+	prepared := spireAuthorityPrepareResponse{}
+	if err := json.Unmarshal([]byte(preparedOutput), &prepared); err != nil {
+		return "", fmt.Errorf("parse prepared authority response: %w", err)
+	}
+	if prepared.PreparedAuthority.AuthorityID == "" || prepared.PreparedAuthority.AuthorityID == active.Active.AuthorityID {
+		return "", fmt.Errorf("prepared authority response has an invalid authority ID")
+	}
+
+	activatedOutput, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+		"localauthority", authorityType, "activate",
+		"-socketPath", spireServerSocketPath, "-authorityID", prepared.PreparedAuthority.AuthorityID, "-output", "json",
+	)
+	if err != nil {
+		return "", fmt.Errorf("activate authority: %w", err)
+	}
+	activated := spireAuthorityActivateResponse{}
+	if err := json.Unmarshal([]byte(activatedOutput), &activated); err != nil {
+		return "", fmt.Errorf("parse activated authority response: %w", err)
+	}
+	if activated.ActivatedAuthority.AuthorityID != prepared.PreparedAuthority.AuthorityID {
+		return "", fmt.Errorf("activated authority response has an unexpected authority ID")
+	}
+
+	taintedOutput, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+		"localauthority", authorityType, "taint",
+		"-socketPath", spireServerSocketPath, "-authorityID", active.Active.AuthorityID, "-output", "json",
+	)
+	if err != nil {
+		return "", fmt.Errorf("taint previous authority: %w", err)
+	}
+	tainted := spireAuthorityTaintResponse{}
+	if err := json.Unmarshal([]byte(taintedOutput), &tainted); err != nil {
+		return "", fmt.Errorf("parse tainted authority response: %w", err)
+	}
+	if tainted.TaintedAuthority.AuthorityID != active.Active.AuthorityID {
+		return "", fmt.Errorf("tainted authority response has an unexpected authority ID")
+	}
+	return activated.ActivatedAuthority.AuthorityID, nil
+}
+
+// CreateSPIREWorkloadEntries registers the workload identity
+// spiffe://<trust domain>/workload/<namespace>/<service account> for
+// workloadServiceAccountName in workloadNamespace beneath each node that
+// currently runs a SPIRE Agent. The workload entries use Kubernetes
+// service-account and namespace selectors and explicit SVID TTLs.
+func CreateSPIREWorkloadEntries(
+	ctx context.Context,
+	c client.Client,
+	namespace, serverPodName, agentName, workloadNamespace, workloadServiceAccountName string,
+) error {
+	if err := validateSPIRENames(
+		namespace,
+		serverPodName,
+		agentName,
+		workloadNamespace,
+		workloadServiceAccountName,
+	); err != nil {
+		return err
+	}
+
+	parentIDs, err := spireAgentParentIDs(ctx, c, namespace, agentName)
+	if err != nil {
+		return err
+	}
+	workloadID := fmt.Sprintf(
+		"spiffe://%s/workload/%s/%s",
+		spireTrustDomain,
+		workloadNamespace,
+		workloadServiceAccountName,
+	)
+	for _, parentID := range parentIDs {
+		_, err := executeSPIREServerCommand(ctx, namespace, serverPodName,
+			"entry", "create",
+			"-socketPath", spireServerSocketPath,
+			"-spiffeID", workloadID,
+			"-parentID", parentID,
+			"-selector", "k8s:ns:"+workloadNamespace,
+			"-selector", "k8s:sa:"+workloadServiceAccountName,
+			"-x509SVIDTTL", spireSVIDTTLSeconds,
+			"-jwtSVIDTTL", spireJWTSVIDTTLSeconds,
+		)
+		if err != nil {
+			return fmt.Errorf("create SPIRE workload registration entry: %w", err)
+		}
+	}
+	return nil
+}
+
+func spireAgentParentIDs(ctx context.Context, c client.Client, namespace, agentName string) ([]string, error) {
+	pods := &corev1.PodList{}
+	if err := c.List(
+		ctx,
+		pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels(map[string]string{"app": agentName}),
+	); err != nil {
+		return nil, fmt.Errorf("list SPIRE Agent pods: %w", err)
+	}
+	if len(pods.Items) == 0 {
+		return nil, fmt.Errorf("no SPIRE Agent pods found")
+	}
+
+	parentIDs := make([]string, 0, len(pods.Items))
+	seenNodeUIDs := make(map[types.UID]struct{}, len(pods.Items))
+	for _, pod := range pods.Items {
+		if pod.Spec.NodeName == "" {
+			return nil, fmt.Errorf("SPIRE Agent pod has no assigned node")
+		}
+		node := &corev1.Node{}
+		if err := c.Get(ctx, types.NamespacedName{Name: pod.Spec.NodeName}, node); err != nil {
+			return nil, fmt.Errorf("get SPIRE Agent node: %w", err)
+		}
+		if !validSPIRENodeUID(node.UID) {
+			return nil, fmt.Errorf("SPIRE Agent node has invalid UID")
+		}
+		if _, ok := seenNodeUIDs[node.UID]; ok {
+			continue
+		}
+		seenNodeUIDs[node.UID] = struct{}{}
+		parentIDs = append(parentIDs, fmt.Sprintf("spiffe://%s/spire/agent/k8s_psat/kind/%s", spireTrustDomain, node.UID))
+	}
+	return parentIDs, nil
+}
+
+func findPodName(ctx context.Context, c client.Client, namespace string, labels map[string]string) (string, error) {
+	pods := &corev1.PodList{}
+	if err := c.List(ctx, pods, client.InNamespace(namespace), client.MatchingLabels(labels)); err != nil {
+		return "", fmt.Errorf("list pods: %w", err)
+	}
+	for _, pod := range pods.Items {
+		if pod.DeletionTimestamp == nil && pod.Status.Phase == corev1.PodRunning {
+			return pod.Name, nil
+		}
+	}
+	return "", fmt.Errorf("no running pod found")
+}
+
+func executeSPIREServerCommand(ctx context.Context, namespace, serverPodName string, args ...string) (string, error) {
+	if err := validateSPIRENames(namespace, serverPodName); err != nil {
+		return "", err
+	}
+	// /opt/spire/bin is not on the image's $PATH, so the exec target must be
+	// the full path — see the Command fix on the spire-server container.
+	return testutil.ExecutePodCommand(ctx, namespace, serverPodName, "spire-server",
+		append([]string{"/opt/spire/bin/spire-server"}, args...))
+}
+
+func validateSPIRENames(names ...string) error {
+	for _, name := range names {
+		if errs := k8svalidation.IsDNS1123Label(name); len(errs) > 0 {
+			return fmt.Errorf("invalid SPIRE resource name")
+		}
+	}
+	return nil
+}
+
+func validSPIRENodeUID(uid types.UID) bool {
+	if len(uid) != 36 {
+		return false
+	}
+	for i, char := range uid {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if char != '-' {
+				return false
+			}
+			continue
+		}
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// deploySPIRE deploys a SPIRE Server and an Agent DaemonSet for E2E tests and
+// returns the connection details. Before creating anything it registers a
+// ginkgo.DeferCleanup that removes every resource it creates, so a failure
+// part-way through deployment does not leak cluster-scoped RBAC or the agent.
+func deploySPIRE(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) *SPIREInfo {
+	serverName := name + "-server"
+	agentName := name + "-agent"
+	bundleConfigMapName := name + "-bundle"
+	serverConfigMapName := serverName + "-config"
+	agentConfigMapName := agentName + "-config"
+	serverClusterRoleName := serverName + "-e2e"
+	agentClusterRoleName := agentName + "-e2e"
+	serverLabels := map[string]string{"app": serverName}
+	agentLabels := map[string]string{"app": agentName}
+	agentSocketPath := spireAgentSocketPath(name)
+	agentSocketDir := path.Dir(agentSocketPath)
+
+	ginkgo.DeferCleanup(func() {
+		var errs []error
+		for _, resource := range []client.Object{
+			&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace}},
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName}},
+			&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName}},
+			&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: serverClusterRoleName}},
+			&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: serverClusterRoleName}},
+			&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace}},
+			&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace}},
+			&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace}},
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: bundleConfigMapName, Namespace: namespace}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: agentConfigMapName, Namespace: namespace}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: serverConfigMapName, Namespace: namespace}},
+		} {
+			if err := client.IgnoreNotFound(c.Delete(ctx, resource)); err != nil {
+				errs = append(errs, fmt.Errorf("delete %T %s: %w", resource, resource.GetName(), err))
+			}
+		}
+		gomega.Expect(errors.Join(errs...)).To(gomega.Succeed())
+	})
+
+	ginkgo.By("Creating SPIRE ConfigMaps and service accounts")
+	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: serverConfigMapName, Namespace: namespace},
+		Data:       map[string]string{"server.conf": spireServerConfig(namespace, agentName, bundleConfigMapName)},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: agentConfigMapName, Namespace: namespace},
+		Data:       map[string]string{"agent.conf": spireAgentConfig(serverName, namespace, agentSocketPath)},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		// No Data here: the SPIRE Server's k8s_configmap BundlePublisher writes
+		// bundle.json via server-side apply. Pre-setting that key with a
+		// plain (non-SSA) client claims field ownership under a different
+		// manager, and the publisher's apply then conflicts with it forever
+		// (observed against a real cluster: "Apply failed with 1 conflict:
+		// conflict with ... using ...: .data.bundle.json"). Leave Data empty
+		// so the publisher is the field's first and only writer.
+		ObjectMeta: metav1.ObjectMeta{Name: bundleConfigMapName, Namespace: namespace},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating SPIRE RBAC resources")
+	gomega.Expect(c.Create(ctx, &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{bundleConfigMapName},
+			Verbs:         []string{"get", "patch"},
+		}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: serverName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: serverName, Namespace: namespace}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"},
+		}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: agentName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: agentName, Namespace: namespace}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: serverClusterRoleName},
+		Rules: []rbacv1.PolicyRule{
+			{APIGroups: []string{"authentication.k8s.io"}, Resources: []string{"tokenreviews"}, Verbs: []string{"create"}},
+			{APIGroups: []string{""}, Resources: []string{"pods", "nodes"}, Verbs: []string{"get"}},
+		},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: serverClusterRoleName},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: serverClusterRoleName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: serverName, Namespace: namespace}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""}, Resources: []string{"nodes", "nodes/proxy"}, Verbs: []string{"get"},
+		}},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: agentClusterRoleName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: agentName, Namespace: namespace}},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating SPIRE Server deployment and service")
+	gomega.Expect(c.Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace, Labels: serverLabels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{MatchLabels: serverLabels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: serverLabels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: serverName,
+					Containers: []corev1.Container{{
+						Name:  "spire-server",
+						Image: images.SPIREServerImage,
+						// The image's own ENTRYPOINT is ["/opt/spire/bin/spire-server", "run"],
+						// so Args must not repeat "run" — a duplicated positional argument
+						// breaks the subcommand's flag parser, and it silently falls back to
+						// the default config path instead of erroring. Command makes the full
+						// invocation explicit regardless of what the image bakes in.
+						Command: []string{"/opt/spire/bin/spire-server", "run"},
+						Args:    []string{"-config", "/run/spire/config/server.conf"},
+						Ports:   []corev1.ContainerPort{{Name: "grpc", ContainerPort: 8081}},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "config", MountPath: "/run/spire/config", ReadOnly: true},
+							{Name: "data", MountPath: "/run/spire/data"},
+							{Name: "socket", MountPath: "/run/spire/server-socket"},
+						},
+					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: serverConfigMapName},
+								},
+							},
+						},
+						{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{Name: "socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+					},
+				},
+			},
+		},
+	})).To(gomega.Succeed())
+	gomega.Expect(c.Create(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+		Spec: corev1.ServiceSpec{
+			Selector: serverLabels,
+			Ports: []corev1.ServicePort{{
+				Name: "grpc", Port: 8081, TargetPort: intstr.FromInt(8081),
+			}},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for SPIRE Server to be ready")
+	gomega.Eventually(func() (int32, error) {
+		deployment := &appsv1.Deployment{}
+		if err := c.Get(ctx, types.NamespacedName{Name: serverName, Namespace: namespace}, deployment); err != nil {
+			return 0, err
+		}
+		return deployment.Status.ReadyReplicas, nil
+	}, timeout, pollingInterval).Should(gomega.Equal(int32(1)))
+
+	ginkgo.By("Creating SPIRE Agent DaemonSet")
+	gomega.Expect(c.Create(ctx, &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace, Labels: agentLabels},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: agentLabels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: agentLabels},
+				Spec: corev1.PodSpec{
+					HostPID:            true,
+					ServiceAccountName: agentName,
+					Containers: []corev1.Container{{
+						Name:  "spire-agent",
+						Image: images.SPIREAgentImage,
+						// See the identical fix on the spire-server container above: the
+						// image's ENTRYPOINT already includes "run".
+						Command: []string{"/opt/spire/bin/spire-agent", "run"},
+						Args:    []string{"-config", "/run/spire/config/agent.conf"},
+						Env: []corev1.EnvVar{{
+							Name: "MY_NODE_NAME",
+							ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
+								FieldPath: "spec.nodeName",
+							}},
+						}},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "config", MountPath: "/run/spire/config", ReadOnly: true},
+							{Name: "data", MountPath: "/run/spire/data"},
+							{Name: "sockets", MountPath: agentSocketDir},
+							{Name: "token", MountPath: "/var/run/secrets/tokens", ReadOnly: true},
+						},
+					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: agentConfigMapName},
+								},
+							},
+						},
+						{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{
+							Name: "sockets",
+							VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
+								Path: agentSocketDir,
+								Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+							}},
+						},
+						{
+							Name: "token",
+							VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+								Sources: []corev1.VolumeProjection{{
+									ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+										Audience: "spire-server",
+										Path:     "spire-agent",
+									},
+								}},
+							}},
+						},
+					},
+				},
+			},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for SPIRE Agent to be ready")
+	gomega.Eventually(func() error {
+		daemonSet := &appsv1.DaemonSet{}
+		if err := c.Get(ctx, types.NamespacedName{Name: agentName, Namespace: namespace}, daemonSet); err != nil {
+			return err
+		}
+		if daemonSet.Status.DesiredNumberScheduled == 0 {
+			return fmt.Errorf("SPIRE Agent has no scheduled nodes")
+		}
+		if daemonSet.Status.NumberReady != daemonSet.Status.DesiredNumberScheduled {
+			return fmt.Errorf(
+				"SPIRE Agent ready count %d does not match desired count %d",
+				daemonSet.Status.NumberReady,
+				daemonSet.Status.DesiredNumberScheduled,
+			)
+		}
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+
+	ginkgo.By("Verifying SPIRE Agent workload API readiness")
+	gomega.Eventually(func() error {
+		agentPodName, err := findPodName(ctx, c, namespace, agentLabels)
+		if err != nil {
+			return err
+		}
+		_, err = testutil.ExecutePodCommand(
+			ctx,
+			namespace,
+			agentPodName,
+			"spire-agent",
+			// Full path: /opt/spire/bin is not on the image's $PATH.
+			[]string{"/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", agentSocketPath},
+		)
+		if err != nil {
+			return fmt.Errorf("check SPIRE Agent workload API: %w", err)
+		}
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+
+	return &SPIREInfo{
+		ServerDeploymentName:    serverName,
+		ServerServiceName:       serverName,
+		AgentServiceAccountName: agentName,
+		BundleConfigMapName:     bundleConfigMapName,
+		BundleConfigMapKey:      "bundle.json",
+		AgentSocketPath:         agentSocketPath,
+		TrustDomain:             spireTrustDomain,
+	}
 }
 
 // embeddedASTokenResult holds the result of an embedded AS token request.
@@ -1651,10 +2561,11 @@ type embeddedASTokenResult struct {
 //
 // It works from outside the cluster by:
 //  1. Calling the embedded AS /oauth/authorize via port-forward
-//  2. Rewriting the Dex redirect URL from in-cluster to the Dex NodePort
-//  3. Following Dex's mockCallback auto-approval redirect
-//  4. Rewriting the callback URL from in-cluster to the port-forward address
-//  5. Exchanging the resulting auth code for an access token
+//  2. Approving embedded AS consent with its configured origin and binding cookie
+//  3. Rewriting the Dex redirect URL from in-cluster to the Dex NodePort
+//  4. Following Dex's mockCallback auto-approval redirect
+//  5. Rewriting the callback URL from in-cluster to the port-forward address
+//  6. Exchanging the resulting auth code for an access token
 //
 // Parameters:
 //   - vmcpLocalURL: base URL for the embedded AS via port-forward (e.g., "http://localhost:9090")
@@ -1685,7 +2596,7 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	clientState := "e2e-test-state"
 	clientRedirectURI := "http://localhost:19999/callback"
 
-	// Step 3: Start authorization at embedded AS
+	// Step 3: Start authorization at embedded AS and approve consent
 	authParams := url.Values{
 		"response_type":         {"code"},
 		"client_id":             {clientID},
@@ -1702,14 +2613,22 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	if err != nil {
 		return "", fmt.Errorf("authorize request failed: %w", err)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		return "", fmt.Errorf("expected 302 from /oauth/authorize, got %d", resp.StatusCode)
+	resp, err = approveEmbeddedASConsent(noRedirectClient, resp, vmcpLocalURL, vmcpInClusterHost)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
+		return "", fmt.Errorf("expected 302/303 from /oauth/consent, got %d", resp.StatusCode)
 	}
 	dexRedirectURL := resp.Header.Get("Location")
+	// Approval rotates the browser binding. Carry the fresh response cookies
+	// to the callback, not the cookies from the awaiting-consent page.
+	// Cookies are carried by hand rather than through a cookie jar because
+	// the issuer is https while the port-forward is plain http, and a jar
+	// would drop the Secure cookie.
+	asBindingCookies := resp.Cookies()
 	if dexRedirectURL == "" {
-		return "", fmt.Errorf("no Location header from /oauth/authorize")
+		return "", fmt.Errorf("no Location header from /oauth/consent")
 	}
 
 	// Step 4: Rewrite the Dex in-cluster URL to the local NodePort URL
@@ -1797,8 +2716,16 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		return "", fmt.Errorf("rewriting callback URL: %w", err)
 	}
 
-	// Step 7: Call the embedded AS callback to complete the Dex code exchange
-	resp, err = noRedirectClient.Get(localCallbackURL)
+	// Step 7: Call the embedded AS callback to complete the Dex code exchange,
+	// as the browser that started the flow in step 3.
+	callbackReq, err := http.NewRequest(http.MethodGet, localCallbackURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("building AS callback request: %w", err)
+	}
+	for _, c := range asBindingCookies {
+		callbackReq.AddCookie(c)
+	}
+	resp, err = noRedirectClient.Do(callbackReq)
 	if err != nil {
 		return "", fmt.Errorf("AS callback request failed: %w", err)
 	}
@@ -1851,6 +2778,73 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		return "", fmt.Errorf("empty access_token in token response")
 	}
 	return result.AccessToken, nil
+}
+
+// approveEmbeddedASConsent consumes the consent page and returns the approval response.
+// Both response bodies are closed here; callers only need the headers and status.
+func approveEmbeddedASConsent(
+	httpClient *http.Client, resp *http.Response, vmcpLocalURL, vmcpInClusterHost string,
+) (*http.Response, error) {
+	page, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
+	// Cleanup is best-effort; preserve the read error. The client timeout bounds draining.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("reading embedded AS consent page: %w", err)
+	}
+	if len(page) > 64<<10 {
+		return nil, fmt.Errorf("embedded AS consent page exceeds 64 KiB")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("expected 200 from /oauth/authorize, got %d", resp.StatusCode)
+	}
+	action, handle, err := parseEmbeddedASConsent(page)
+	if err != nil {
+		return nil, err
+	}
+	localAction, err := rewriteURLBase(action.String(), vmcpInClusterHost, vmcpLocalURL)
+	if err != nil {
+		return nil, fmt.Errorf("cannot rewrite embedded AS consent action to local endpoint")
+	}
+	formData := url.Values{"handle": {handle}, "decision": {"approve"}}
+	req, err := http.NewRequest(http.MethodPost, localAction, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("building embedded AS consent request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Origin is the configured browser-facing origin, not the port-forward address.
+	req.Header.Set("Origin", action.Scheme+"://"+action.Host)
+	for _, cookie := range resp.Cookies() {
+		req.AddCookie(cookie)
+	}
+	approved, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("posting embedded AS consent: %w", err)
+	}
+	// Cleanup errors are immaterial: only the approval headers and status are used.
+	_, _ = io.Copy(io.Discard, approved.Body)
+	_ = approved.Body.Close()
+	return approved, nil
+}
+
+func parseEmbeddedASConsent(page []byte) (*url.URL, string, error) {
+	// Match the fixed server template before unescaping attribute values.
+	_, form, foundForm := strings.Cut(string(page), `<form method="POST" action="`)
+	actionURL, input, foundInput := strings.Cut(form, `"><input type="hidden" name="handle" value="`)
+	handle, _, foundEnd := strings.Cut(input, `"`)
+	if !foundForm || !foundInput || !foundEnd || handle == "" {
+		return nil, "", fmt.Errorf("missing embedded AS consent form or handle")
+	}
+	action, err := url.Parse(html.UnescapeString(actionURL))
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid embedded AS consent action URL")
+	}
+	if (action.Scheme != "http" && action.Scheme != "https") || action.User != nil ||
+		action.RawQuery != "" || action.ForceQuery || action.Fragment != "" ||
+		!strings.HasSuffix(action.Path, "/oauth/consent") {
+		return nil, "", fmt.Errorf("unexpected embedded AS consent action URL")
+	}
+	return action, html.UnescapeString(handle), nil
 }
 
 // registerOAuthClient performs Dynamic Client Registration against the embedded AS.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -17,6 +18,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -47,13 +49,15 @@ type skillMetadataResponse struct {
 }
 
 type installSkillRequest struct {
-	Name        string `json:"name"`
-	Version     string `json:"version,omitempty"`
-	Scope       string `json:"scope,omitempty"`
-	ProjectRoot string `json:"project_root,omitempty"`
-	Client      string `json:"client,omitempty"`
-	Force       bool   `json:"force,omitempty"`
-	Group       string `json:"group,omitempty"`
+	Name          string `json:"name"`
+	Version       string `json:"version,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+	ProjectRoot   string `json:"project_root,omitempty"`
+	Client        string `json:"client,omitempty"`
+	Force         bool   `json:"force,omitempty"`
+	Group         string `json:"group,omitempty"`
+	AllowUnsigned bool   `json:"allow_unsigned,omitempty"`
+	PublicKey     string `json:"public_key,omitempty"`
 }
 
 type installSkillResponse struct {
@@ -65,9 +69,18 @@ type validateSkillRequest struct {
 }
 
 type validationResultResponse struct {
-	Valid    bool     `json:"valid"`
-	Errors   []string `json:"errors,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
+	Valid    bool                `json:"valid"`
+	Errors   []string            `json:"errors,omitempty"`
+	Warnings []string            `json:"warnings,omitempty"`
+	Findings []validationFinding `json:"findings,omitempty"`
+}
+
+type validationFinding struct {
+	Severity string `json:"severity"`
+	Rule     string `json:"rule"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Message  string `json:"message"`
 }
 
 type buildSkillRequest struct {
@@ -201,7 +214,9 @@ func buildAndInstallSkill(server *e2e.Server, skillName, description string) {
 }
 
 func pushSkill(server *e2e.Server, reference string) *http.Response {
-	reqBody := pushSkillRequest{Reference: reference}
+	// E2E artifacts are pushed unsigned (no signing infrastructure in the
+	// suite); project-scoped installs of them pass allow_unsigned.
+	reqBody := pushSkillRequest{Reference: reference, NoSign: true}
 	jsonData, err := json.Marshal(reqBody)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
 
@@ -216,6 +231,8 @@ func pushSkill(server *e2e.Server, reference string) *http.Response {
 
 type pushSkillRequest struct {
 	Reference string `json:"reference"`
+	Key       string `json:"key,omitempty"`
+	NoSign    bool   `json:"no_sign,omitempty"`
 }
 
 // createUpstreamRegistryWithSkill creates a JSON file in the upstream registry
@@ -1048,3 +1065,334 @@ var _ = Describe("Skills API", Label("api", "api-registry", "skills", "e2e"), fu
 		})
 	})
 })
+
+// makeE2EProjectRoot creates a resolved temp dir with a .git directory,
+// satisfying the project-root validation the lock file requires.
+func makeE2EProjectRoot() string {
+	dir := GinkgoT().TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	ExpectWithOffset(1, os.MkdirAll(filepath.Join(resolved, ".git"), 0o755)).To(Succeed())
+	return resolved
+}
+
+func uninstallScopedSkill(server *e2e.Server, name, projectRoot string) *http.Response {
+	u := fmt.Sprintf("%s/api/v1beta/skills/%s?scope=project&project_root=%s",
+		server.BaseURL(), name, url.QueryEscape(projectRoot))
+	req, err := http.NewRequest(http.MethodDelete, u, nil)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	resp, err := http.DefaultClient.Do(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+// buildAndPushSkill creates a skill directory, builds it, and pushes it to
+// ociRegistry, returning the OCI reference.
+func buildAndPushSkill(server *e2e.Server, ociRegistry *httptest.Server, skillName, description string) string {
+	ociRef := fmt.Sprintf("%s/e2e-test/%s:v0.1.0", ociRegistry.Listener.Addr().String(), skillName)
+
+	skillDir := createTestSkillDir(skillName, description)
+	buildResp := buildSkill(server, skillDir, ociRef)
+	defer buildResp.Body.Close()
+	ExpectWithOffset(1, buildResp.StatusCode).To(Equal(http.StatusOK))
+
+	pushResp := pushSkill(server, ociRef)
+	defer pushResp.Body.Close()
+	ExpectWithOffset(1, pushResp.StatusCode).To(Equal(http.StatusNoContent))
+
+	return ociRef
+}
+
+var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "api-registry", "skills", "skills-lock", "e2e"), func() {
+	var (
+		config    *e2e.ServerConfig
+		apiServer *e2e.Server
+	)
+
+	BeforeEach(func() {
+		config = e2e.NewServerConfig()
+		apiServer = e2e.StartServer(config)
+	})
+
+	It("records an installed skill in the project's toolhive.lock.yaml", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-skill"
+
+		By("Starting an in-process OCI registry and pushing a test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "A skill for lock file E2E testing")
+
+		By("Installing the skill into the project")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+		var installResult installSkillResponse
+		Expect(json.NewDecoder(installResp.Body).Decode(&installResult)).To(Succeed())
+
+		By("Verifying the lock file was written with the expected entry")
+		root, err := lockfile.OpenRoot(projectRoot)
+		Expect(err).ToNot(HaveOccurred())
+		lf, err := lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		entry, ok := lf.Get(skillName)
+		Expect(ok).To(BeTrue(), "expected a lock entry for %q", skillName)
+		Expect(entry.Source).To(Equal(ociRef))
+		Expect(entry.Digest).ToNot(BeEmpty())
+		Expect(entry.ContentDigest).ToNot(BeEmpty())
+		Expect(entry.Explicit).To(BeTrue())
+		Expect(entry.Unsigned).To(BeTrue(), "the unsigned exception must be recorded in the lock entry")
+
+		By("Cleaning up")
+		cleanupResp := uninstallScopedSkill(apiServer, skillName, projectRoot)
+		defer cleanupResp.Body.Close()
+	})
+
+	It("rejects an unsigned project-scoped install without allow_unsigned", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-unsigned-rejected"
+
+		By("Starting an in-process OCI registry and pushing an unsigned test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "An unsigned skill that must be rejected")
+
+		By("Installing without allow_unsigned and expecting a 403")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusForbidden))
+
+		By("Verifying no lock entry was written")
+		root, err := lockfile.OpenRoot(projectRoot)
+		Expect(err).ToNot(HaveOccurred())
+		lf, err := lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		_, ok := lf.Get(skillName)
+		Expect(ok).To(BeFalse(), "a rejected install must not write a lock entry")
+	})
+
+	It("removes the lock entry when the skill is uninstalled", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-uninstall-skill"
+
+		By("Starting an in-process OCI registry and pushing a test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "A skill for lock file uninstall E2E testing")
+
+		By("Installing the skill into the project")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+		root, err := lockfile.OpenRoot(projectRoot)
+		Expect(err).ToNot(HaveOccurred())
+		lf, err := lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		_, ok := lf.Get(skillName)
+		Expect(ok).To(BeTrue(), "expected a lock entry before uninstall")
+
+		By("Uninstalling the skill")
+		uninstallResp := uninstallScopedSkill(apiServer, skillName, projectRoot)
+		defer uninstallResp.Body.Close()
+		Expect(uninstallResp.StatusCode).To(Equal(http.StatusNoContent))
+
+		By("Verifying the lock entry was removed")
+		lf, err = lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		_, ok = lf.Get(skillName)
+		Expect(ok).To(BeFalse(), "expected the lock entry to be removed after uninstall")
+	})
+
+	It("restores a deleted skill's files via sync", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-sync-skill"
+
+		By("Starting an in-process OCI registry and pushing a test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "A skill for sync E2E testing")
+
+		By("Installing the skill into the project")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+		By("Deleting the installed files without touching the lock file or DB record")
+		skillDir := filepath.Join(projectRoot, ".claude", "skills", skillName)
+		Expect(os.RemoveAll(skillDir)).To(Succeed())
+		_, statErr := os.Stat(filepath.Join(skillDir, "SKILL.md"))
+		Expect(os.IsNotExist(statErr)).To(BeTrue())
+
+		By("Running sync --check — it must report drift without restoring anything")
+		checkResp := syncSkills(apiServer, syncSkillsRequest{ProjectRoot: projectRoot, Check: true})
+		defer checkResp.Body.Close()
+		Expect(checkResp.StatusCode).To(Equal(http.StatusOK))
+		var checkResult syncResultResponse
+		Expect(json.NewDecoder(checkResp.Body).Decode(&checkResult)).To(Succeed())
+		Expect(checkResult.Drifted).To(ContainElement(skillName))
+		_, statErr = os.Stat(filepath.Join(skillDir, "SKILL.md"))
+		Expect(os.IsNotExist(statErr)).To(BeTrue(), "--check must not restore files")
+
+		By("Running sync — it must restore the missing files")
+		syncResp := syncSkills(apiServer, syncSkillsRequest{ProjectRoot: projectRoot})
+		defer syncResp.Body.Close()
+		Expect(syncResp.StatusCode).To(Equal(http.StatusOK))
+		var syncResult syncResultResponse
+		Expect(json.NewDecoder(syncResp.Body).Decode(&syncResult)).To(Succeed())
+		Expect(syncResult.Installed).To(ContainElement(skillName))
+
+		content, readErr := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+		Expect(readErr).ToNot(HaveOccurred())
+		Expect(string(content)).To(ContainSubstring(skillName))
+
+		By("Cleaning up")
+		cleanupResp := uninstallScopedSkill(apiServer, skillName, projectRoot)
+		defer cleanupResp.Body.Close()
+	})
+
+	It("upgrades a skill when newer content is republished at the same reference", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-upgrade-skill"
+
+		By("Starting an in-process OCI registry and pushing the initial version")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "The original description")
+
+		By("Installing the skill into the project")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
+
+		root, err := lockfile.OpenRoot(projectRoot)
+		Expect(err).ToNot(HaveOccurred())
+		lf, err := lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		before, ok := lf.Get(skillName)
+		Expect(ok).To(BeTrue())
+
+		By("Republishing newer content at the same OCI reference")
+		newSkillDir := createTestSkillDir(skillName, "The updated description")
+		rebuildResp := buildSkill(apiServer, newSkillDir, ociRef)
+		defer rebuildResp.Body.Close()
+		Expect(rebuildResp.StatusCode).To(Equal(http.StatusOK))
+		repushResp := pushSkill(apiServer, ociRef)
+		defer repushResp.Body.Close()
+		Expect(repushResp.StatusCode).To(Equal(http.StatusNoContent))
+
+		By("Previewing the upgrade — it must report the change without installing it")
+		previewResp := upgradeSkills(apiServer, upgradeSkillsRequest{ProjectRoot: projectRoot, Preview: true})
+		defer previewResp.Body.Close()
+		Expect(previewResp.StatusCode).To(Equal(http.StatusOK))
+		var previewResult upgradeResultResponse
+		Expect(json.NewDecoder(previewResp.Body).Decode(&previewResult)).To(Succeed())
+		Expect(previewResult.Outcomes).To(HaveLen(1))
+		Expect(previewResult.Outcomes[0].Status).To(Equal("upgraded"))
+
+		lf, err = lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		afterPreview, ok := lf.Get(skillName)
+		Expect(ok).To(BeTrue())
+		Expect(afterPreview.Digest).To(Equal(before.Digest), "preview must not rewrite the lock file")
+
+		By("Applying the upgrade")
+		applyResp := upgradeSkills(apiServer, upgradeSkillsRequest{ProjectRoot: projectRoot})
+		defer applyResp.Body.Close()
+		Expect(applyResp.StatusCode).To(Equal(http.StatusOK))
+		var applyResult upgradeResultResponse
+		Expect(json.NewDecoder(applyResp.Body).Decode(&applyResult)).To(Succeed())
+		Expect(applyResult.Outcomes).To(HaveLen(1))
+		Expect(applyResult.Outcomes[0].Status).To(Equal("upgraded"))
+
+		lf, err = lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		after, ok := lf.Get(skillName)
+		Expect(ok).To(BeTrue())
+		Expect(after.Digest).ToNot(Equal(before.Digest), "the lock file must record the new digest")
+		Expect(after.Source).To(Equal(before.Source), "Source must never be rewritten by upgrade")
+
+		By("Cleaning up")
+		cleanupResp := uninstallScopedSkill(apiServer, skillName, projectRoot)
+		defer cleanupResp.Body.Close()
+	})
+})
+
+type upgradeSkillsRequest struct {
+	ProjectRoot       string   `json:"project_root"`
+	Names             []string `json:"names,omitempty"`
+	Preview           bool     `json:"preview,omitempty"`
+	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`
+	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	PublicKey         string   `json:"public_key,omitempty"`
+	Clients           []string `json:"clients,omitempty"`
+}
+
+type upgradeOutcomeResponse struct {
+	Name                 string `json:"name"`
+	Status               string `json:"status"`
+	OldDigest            string `json:"old_digest,omitempty"`
+	NewDigest            string `json:"new_digest,omitempty"`
+	NewResolvedReference string `json:"new_resolved_reference,omitempty"`
+	TrustAnchorChanged   bool   `json:"trust_anchor_changed,omitempty"`
+	Reason               string `json:"reason,omitempty"`
+	Error                string `json:"error,omitempty"`
+}
+
+type upgradeResultResponse struct {
+	Outcomes []upgradeOutcomeResponse `json:"outcomes"`
+}
+
+func upgradeSkills(server *e2e.Server, req upgradeSkillsRequest) *http.Response {
+	jsonData, err := json.Marshal(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := http.Post(
+		server.BaseURL()+"/api/v1beta/skills/upgrade",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}
+
+type syncSkillsRequest struct {
+	ProjectRoot string   `json:"project_root"`
+	Clients     []string `json:"clients,omitempty"`
+	Prune       bool     `json:"prune,omitempty"`
+	Check       bool     `json:"check,omitempty"`
+	Adopt       bool     `json:"adopt,omitempty"`
+}
+
+type syncResultResponse struct {
+	Installed       []string `json:"installed,omitempty"`
+	Drifted         []string `json:"drifted,omitempty"`
+	AlreadyCurrent  []string `json:"already_current,omitempty"`
+	NeverManaged    []string `json:"never_managed,omitempty"`
+	RemovedFromLock []string `json:"removed_from_lock,omitempty"`
+	Pruned          []string `json:"pruned,omitempty"`
+}
+
+func syncSkills(server *e2e.Server, req syncSkillsRequest) *http.Response {
+	jsonData, err := json.Marshal(req)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	resp, err := http.Post(
+		server.BaseURL()+"/api/v1beta/skills/sync",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return resp
+}

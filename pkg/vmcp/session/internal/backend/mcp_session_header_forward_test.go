@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/useragent"
 )
 
 // TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests asserts the
@@ -112,7 +113,7 @@ func TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests(t *testing.T) 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		sess, _, err := connector(ctx, target, nil, "")
+		sess, _, err := connector(ctx, target, nil, "", nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = sess.Close() })
 
@@ -123,6 +124,53 @@ func TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests(t *testing.T) 
 		require.NotNil(t, got, "backend never received a tools/call request")
 		assert.Equal(t, authStrategyValue, got.Get(headerName),
 			"inner auth stage must overwrite HeaderForward on overlapping header names")
+	})
+
+	t.Run("vMCP User-Agent reaches backend on tools/call", func(t *testing.T) {
+		t.Parallel()
+
+		fb := &fakeBackend{advertiseTools: true, tools: []mcp.Tool{{Name: "echo"}}}
+		url := newFakeBackend(t, fb)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "user-agent-backend",
+			WorkloadName:  "user-agent-backend",
+			BaseURL:       url,
+			TransportType: "streamable-http",
+		}
+
+		sess := connectAndCallEcho(t, target)
+		t.Cleanup(func() { _ = sess.Close() })
+
+		got := fb.headersFor(string(mcp.MethodToolsCall))
+		require.NotNil(t, got, "backend never received a tools/call request")
+		assert.Equal(t, useragent.Value(), got.Get("User-Agent"))
+	})
+
+	t.Run("HeaderForward User-Agent wins over the vMCP default", func(t *testing.T) {
+		t.Parallel()
+
+		const configured = "custom-agent/1.0"
+
+		fb := &fakeBackend{advertiseTools: true, tools: []mcp.Tool{{Name: "echo"}}}
+		url := newFakeBackend(t, fb)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "user-agent-override-backend",
+			WorkloadName:  "user-agent-override-backend",
+			BaseURL:       url,
+			TransportType: "streamable-http",
+			HeaderForward: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"User-Agent": configured},
+			},
+		}
+
+		sess := connectAndCallEcho(t, target)
+		t.Cleanup(func() { _ = sess.Close() })
+
+		got := fb.headersFor(string(mcp.MethodToolsCall))
+		require.NotNil(t, got, "backend never received a tools/call request")
+		assert.Equal(t, configured, got.Get("User-Agent"))
 	})
 
 	t.Run("restricted header in HeaderForward fails connector at startup", func(t *testing.T) {
@@ -155,7 +203,7 @@ func TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests(t *testing.T) 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		_, _, err := connector(ctx, target, nil, "")
+		_, _, err := connector(ctx, target, nil, "", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "restricted",
 			"connector must reject restricted header names in HeaderForward config")
@@ -216,7 +264,7 @@ func connectAndCallEcho(t *testing.T, target *vmcp.BackendTarget) Session {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	sess, caps, err := connector(ctx, target, nil, "")
+	sess, caps, err := connector(ctx, target, nil, "", nil)
 	require.NoError(t, err, "connector must initialise the backend successfully")
 	require.NotNil(t, sess, "connector returned nil session")
 	require.NotNil(t, caps, "connector returned nil capability list")

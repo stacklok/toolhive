@@ -92,8 +92,14 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 		// Extract metadata from request to forward to backend
 		meta := conversion.FromMCPMeta(request.Params.Meta)
 
-		// Call the backend tool - the backend client handles name translation and metadata forwarding
-		result, err := f.backendClient.CallTool(ctx, target, toolName, args, meta)
+		// Call the backend tool - the backend client handles name translation and metadata forwarding.
+		//
+		// No SEP-2243 Mcp-Param-* headers are mirrored on this path: deriving them
+		// needs the tool's inputSchema, and this factory holds only a router and a
+		// backend client. That is a limitation of this legacy adapter, not a policy
+		// choice — the live Serve path routes tools/call through the core, which has
+		// the aggregated schema and does mirror (see core_calls.go paramHeadersFor).
+		result, err := f.backendClient.CallTool(ctx, target, toolName, args, meta, nil)
 		if err != nil {
 			// Only actual network/transport errors reach here now (IsError=true is handled in result)
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {

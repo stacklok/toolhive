@@ -29,12 +29,13 @@ thv [flags]
 ### Options
 
 ```
-      --debug   Enable debug mode
-  -h, --help    help for thv
+      --debug[=true|false]   Enable debug mode
+  -h, --help[=true|false]    help for thv
 ```
 
 ### SEE ALSO
 
+* [thv ai-plugin](thv_ai-plugin.md)	 - Manage AI-tool plugins
 * [thv build](thv_build.md)	 - Build a container for an MCP server without running it
 * [thv client](thv_client.md)	 - Manage MCP clients
 * [thv config](thv_config.md)	 - Manage application configuration

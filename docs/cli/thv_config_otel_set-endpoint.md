@@ -30,13 +30,13 @@ thv config otel set-endpoint <endpoint> [flags]
 ### Options
 
 ```
-  -h, --help   help for set-endpoint
+  -h, --help[=true|false]   help for set-endpoint
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

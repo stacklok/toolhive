@@ -165,15 +165,13 @@ func NewFormRequest(
 //
 //   - If client is nil, DefaultHTTPClient is used so callers automatically
 //     get the shared transport (connection reuse, consistent timeouts).
-//   - The response body is read with io.LimitReader capped at
+//   - The response body is initially read with io.LimitReader capped at
 //     maxResponseBodySize (1 MiB, matching x/oauth2) before any parsing, so
-//     a pathological server cannot exhaust memory.
+//     a pathological server cannot exhaust memory. Before closing, at most one
+//     additional maxResponseBodySize is drained to enable connection reuse
+//     without unbounded reads from oversized or never-ending bodies.
 //   - On every exit path — success, JSON decode failure, and RetrieveError
-//     — the body is closed. The body is deliberately NOT drained:
-//     io.Copy(io.Discard, resp.Body) would be unbounded on oversized or
-//     never-terminating bodies and would defeat the 1 MiB cap above. When
-//     the body exceeds the cap, net/http cannot reuse the connection; that
-//     is the intended tradeoff and matches x/oauth2/internal/token.go.
+//     — the body is bounded-drained and closed.
 //   - RFC 6749 Section 5.2 routing (a 2xx body with an "error" field) is
 //     handled inside ParseTokenResponse; DoTokenRequest surfaces the
 //     resulting *oauth2.RetrieveError unchanged.
@@ -192,14 +190,9 @@ func DoTokenRequest(client *http.Client, req *http.Request) (*TokenResponse, err
 		return nil, fmt.Errorf("oauth: token request failed: %w", err)
 	}
 	defer func() {
-		// Close without draining. Matching x/oauth2/internal/token.go — the
-		// LimitReader below caps how much we read, and draining the remainder
-		// via io.Copy(io.Discard, resp.Body) would be unbounded on oversized
-		// or never-terminating bodies, which defeats the 1 MiB memory cap.
-		// The tradeoff: when the body exceeds maxResponseBodySize, net/http
-		// cannot reuse the underlying connection. That is acceptable — the
-		// response is already pathological and connection reuse is not worth
-		// unbounded reads.
+		// A bounded drain permits connection reuse for ordinary response bodies
+		// without indefinitely reading oversized or never-ending IdP responses.
+		_, _ = io.CopyN(io.Discard, resp.Body, maxResponseBodySize)
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			slog.Debug("oauth: close token response body", "error", closeErr)
 		}

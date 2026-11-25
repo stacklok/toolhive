@@ -1,0 +1,19 @@
+version: '3'
+
+tasks:
+  tidy:
+    desc: Synchronize SDK module dependencies
+    cmds:
+      - go mod tidy
+
+  test:
+    desc: Test the generated SDK and its behavioral contract
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Lint the generated SDK and its adapter
+    cmds:
+      # The generated package is intentionally verified byte-for-byte; `go vet`
+      # catches correctness issues without lint findings that would churn with ogen output.
+      - go vet ./...

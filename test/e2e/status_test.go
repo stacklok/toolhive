@@ -5,7 +5,6 @@ package e2e_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
@@ -24,7 +23,7 @@ var _ = Describe("Status Command", Label("core", "status", "e2e"), func() {
 
 	BeforeEach(func() {
 		config = e2e.NewTestConfig()
-		serverName = fmt.Sprintf("status-test-%d", GinkgoRandomSeed())
+		serverName = e2e.GenerateUniqueServerName("status-test")
 
 		// Check if thv binary is available
 		err := e2e.CheckTHVBinaryAvailable(config)

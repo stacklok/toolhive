@@ -8,6 +8,8 @@ spec:
   inline:
     # Keycloak issuer URL for the toolhive realm
     issuer: http://keycloak:8080/realms/toolhive
+    # Dev Keycloak has no TLS, so the HTTP issuer and JWKS URLs need this opt-in.
+    insecureAllowHTTP: true
     # Explicit JWKS URL to avoid OIDC discovery issues
     jwksUrl: http://keycloak-dev-service.keycloak.svc.cluster.local:8080/realms/toolhive/protocol/openid-connect/certs
     # Optional: Allow private IP addresses for development
@@ -37,11 +39,6 @@ spec:
     name: keycloak-oidc
     # MCP server client ID - tokens must have this in their audience claim
     audience: mcp-server
-
-  # Basic permission profile allowing network access
-  permissionProfile:
-    type: builtin
-    name: network
 
   # Resource limits
   resources:

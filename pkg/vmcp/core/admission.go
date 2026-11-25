@@ -37,16 +37,22 @@ import (
 // legacy server.New path, which retains the HTTP authz middleware).
 type Admission interface {
 	// FilterTools returns the subset of tools the identity may call. Mirrors
-	// pkg/authz filterToolsByPolicy: a per-tool AuthorizeWithJWTClaims(call) using
+	// pkg/authz authorizedToolIndexes: a per-tool AuthorizeWithJWTClaims(call) using
 	// the tool's annotations; a per-tool authorizer error skips that tool
 	// (log-and-continue), it is not a hard failure.
 	FilterTools(ctx context.Context, identity *auth.Identity, tools []vmcp.Tool) ([]vmcp.Tool, error)
 	// AllowToolCall mirrors pkg/authz authorizeToolCall (MCPFeatureTool/Call),
 	// sourcing the tool's annotations for when-clause evaluation.
 	AllowToolCall(ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any) (bool, error)
-	// FilterResources / AllowResourceRead use MCPFeatureResource/Read.
+	// FilterResources / AllowResourceRead / AllowResourceTemplateRead use
+	// MCPFeatureResource/Read. Implementations may refuse a URI that
+	// authorizers.CheckResourceURI rejects (AllowResourceRead) or a template that
+	// authorizers.CheckResourceTemplateURI rejects (AllowResourceTemplateRead),
+	// returning authorizers.ErrInvalidResourceURI. The allow-all admission
+	// refuses nothing. FilterResources applies neither check.
 	FilterResources(ctx context.Context, identity *auth.Identity, resources []vmcp.Resource) ([]vmcp.Resource, error)
 	AllowResourceRead(ctx context.Context, identity *auth.Identity, resource *vmcp.Resource) (bool, error)
+	AllowResourceTemplateRead(ctx context.Context, identity *auth.Identity, tmpl *vmcp.ResourceTemplate) (bool, error)
 	// FilterPrompts / AllowPromptGet use MCPFeaturePrompt/Get.
 	FilterPrompts(ctx context.Context, identity *auth.Identity, prompts []vmcp.Prompt) ([]vmcp.Prompt, error)
 	AllowPromptGet(ctx context.Context, identity *auth.Identity, prompt *vmcp.Prompt) (bool, error)
@@ -112,17 +118,18 @@ func newAdmission(authzCfg *authorizers.Config, serverName string) (Admission, e
 // uniformly — no optimizer meta-tool carve-out (see the [Admission] doc).
 type cedarAdmission struct {
 	authorizer authorizers.Authorizer
-	// logger receives the per-item "skipping" warnings. It defaults to
-	// slog.Default(); tests inject a buffer-backed logger (via withLogger) so they
-	// can assert on output WITHOUT swapping the process-global slog default — that
-	// global swap races (-race) against parallel sibling tests that also log.
+	// logger receives the per-item "skipping" warnings and the invalid-resource-URI
+	// denial warning. It defaults to slog.Default(); tests inject a buffer-backed
+	// logger (via withLogger) so they can assert on output WITHOUT swapping the
+	// process-global slog default — that global swap races (-race) against
+	// parallel sibling tests that also log.
 	logger *slog.Logger
 }
 
 // cedarOption configures a cedarAdmission at construction.
 type cedarOption func(*cedarAdmission)
 
-// withLogger overrides the logger the seam emits skip warnings to. Used by tests
+// withLogger overrides the logger the seam emits its warnings to. Used by tests
 // to capture log output without mutating the global slog default.
 func withLogger(logger *slog.Logger) cedarOption {
 	return func(c *cedarAdmission) { c.logger = logger }
@@ -139,24 +146,25 @@ func newCedarAdmission(a authorizers.Authorizer, opts ...cedarOption) *cedarAdmi
 	return adm
 }
 
-// FilterTools mirrors pkg/authz filterToolsByPolicy: each tool is authorized for
+// FilterTools mirrors pkg/authz authorizedToolIndexes: each tool is authorized for
 // call with its annotations injected, and a per-tool authorizer error skips that
 // tool (log-and-continue).
 func (a *cedarAdmission) FilterTools(
 	ctx context.Context, identity *auth.Identity, tools []vmcp.Tool,
 ) ([]vmcp.Tool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
-	// A filter returns a subset, so build a fresh non-nil slice — mirroring
-	// pkg/authz filterToolsByPolicy (its configured-authorizer path is also
-	// non-nil; its nil-authorizer no-op, like the allow-all seam here, returns the
-	// input as-is). nil-vs-[] wire normalization is the Serve layer's concern.
+	// A filter returns a subset, so build a fresh non-nil slice. The allow-all
+	// seam returns the input as-is instead. nil-vs-[] wire normalization is the
+	// Serve layer's concern.
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
 		tool := &tools[i]
-		toolCtx := ctx
-		if ann := convertAnnotations(tool.Annotations); ann != nil {
-			toolCtx = authorizers.WithToolAnnotations(toolCtx, ann)
-		}
+		// An empty BackendID is deliberate: composites have no Backend parent,
+		// so backend-scoped permits fail closed for them.
+		toolCtx := authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{
+			BackendID:   tool.BackendID,
+			Annotations: convertAnnotations(tool.Annotations),
+		})
 		allowed, err := a.authorizer.AuthorizeWithJWTClaims(
 			toolCtx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, tool.Name, nil)
 		if err != nil {
@@ -180,9 +188,11 @@ func (a *cedarAdmission) AllowToolCall(
 	ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any,
 ) (bool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
-	if ann := convertAnnotations(tool.Annotations); ann != nil {
-		ctx = authorizers.WithToolAnnotations(ctx, ann)
-	}
+	// Keep the list and call paths identical for backendless composite tools.
+	ctx = authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{
+		BackendID:   tool.BackendID,
+		Annotations: convertAnnotations(tool.Annotations),
+	})
 	return a.authorizer.AuthorizeWithJWTClaims(
 		ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, tool.Name, args)
 }
@@ -210,12 +220,53 @@ func (a *cedarAdmission) FilterResources(
 }
 
 // AllowResourceRead authorizes a single resource read (MCPFeatureResource/Read).
+// A URI that is not in canonical form (authorizers.CheckResourceURI) is refused
+// with authorizers.ErrInvalidResourceURI before any policy is evaluated, because
+// a backend that normalizes the URI could resolve it to a resource the policy
+// names by its exact spelling. FilterResources does not apply this check.
 func (a *cedarAdmission) AllowResourceRead(
 	ctx context.Context, identity *auth.Identity, resource *vmcp.Resource,
 ) (bool, error) {
+	if err := authorizers.CheckResourceURI(resource.URI); err != nil {
+		// The URI is caller-chosen and may carry control characters, so it is not
+		// logged. Logging here and returning the error is not a double log: the core
+		// wraps it into ErrAuthorizationFailed and the transport replaces that with a
+		// fixed deny message without logging it. This relies on call_gate.go
+		// (gateDenied), serve_handlers.go and modern_dispatch.go not logging
+		// ErrAuthorizationFailed.
+		a.logger.Warn("admission: denied resource URI not in canonical form",
+			"rule", authorizers.ResourceURIRule(err))
+		return false, err
+	}
 	ctx = auth.WithIdentity(ctx, identity)
 	return a.authorizer.AuthorizeWithJWTClaims(
 		ctx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, resource.URI, nil)
+}
+
+// AllowResourceTemplateRead authorizes a completion on a resource template
+// (MCPFeatureResource/Read on the raw template string). A template is not a URI
+// and SDKs match template refs by exact string, so it is refused with
+// authorizers.ErrInvalidResourceURI only when it contains a control character or
+// space (authorizers.CheckResourceTemplateURI) or is empty, before any policy is
+// evaluated. FilterResources does not apply this check.
+func (a *cedarAdmission) AllowResourceTemplateRead(
+	ctx context.Context, identity *auth.Identity, tmpl *vmcp.ResourceTemplate,
+) (bool, error) {
+	// An empty template must never reach a policy, whose permit might otherwise
+	// match an empty identifier; pkg/authz refuses it the same way.
+	if tmpl.URITemplate == "" {
+		a.logger.Warn("admission: denied empty resource template")
+		return false, authorizers.ErrInvalidResourceURI
+	}
+	if err := authorizers.CheckResourceTemplateURI(tmpl.URITemplate); err != nil {
+		// Not logged with the template: it is caller-chosen. See AllowResourceRead
+		// for why logging here and returning the error is not a double log.
+		a.logger.Warn("admission: denied resource template with a control character or space")
+		return false, err
+	}
+	ctx = auth.WithIdentity(ctx, identity)
+	return a.authorizer.AuthorizeWithJWTClaims(
+		ctx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, tmpl.URITemplate, nil)
 }
 
 // FilterPrompts mirrors the response filter's filterPromptsResponse
@@ -274,6 +325,12 @@ func (allowAllAdmission) FilterResources(
 }
 
 func (allowAllAdmission) AllowResourceRead(_ context.Context, _ *auth.Identity, _ *vmcp.Resource) (bool, error) {
+	return true, nil
+}
+
+func (allowAllAdmission) AllowResourceTemplateRead(
+	_ context.Context, _ *auth.Identity, _ *vmcp.ResourceTemplate,
+) (bool, error) {
 	return true, nil
 }
 

@@ -102,8 +102,9 @@ func TestHTTPSSEProxy_SSEStreamSurvivesReadTimeout(t *testing.T) {
 	// Wait well past ReadTimeout, then confirm the stream still delivers.
 	time.Sleep(3 * readTimeout)
 
-	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("after-read-timeout"), "test.method",
-		map[string]any{"data": "still alive"})
+	routedID, err := encodeRoutedID(sessionID, jsonrpc2.StringID("after-read-timeout"))
+	require.NoError(t, err)
+	msg, err := jsonrpc2.NewResponse(jsonrpc2.StringID(routedID), map[string]any{"data": "still alive"}, nil)
 	require.NoError(t, err)
 	require.NoError(t, proxy.ForwardResponseToClients(t.Context(), msg))
 

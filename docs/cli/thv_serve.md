@@ -24,7 +24,7 @@ thv serve [flags]
 ### Options
 
 ```
-  -h, --help                              help for serve
+  -h, --help[=true|false]                 help for serve
       --host string                       Host address to bind the server to (default "127.0.0.1")
       --oidc-audience string              Expected audience for the token
       --oidc-client-id string             OIDC client ID
@@ -33,7 +33,7 @@ thv serve [flags]
       --oidc-issuer string                OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string              URL to fetch the JWKS from
       --oidc-scopes strings               OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)
-      --openapi                           Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)
+      --openapi[=true|false]              Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)
       --port int                          Port to bind the server to (default 8080)
       --sentry-dsn string                 Sentry DSN for error tracking and distributed tracing (falls back to SENTRY_DSN env var)
       --sentry-environment string         Sentry environment name, e.g. production or development (falls back to SENTRY_ENVIRONMENT env var)
@@ -44,7 +44,7 @@ thv serve [flags]
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

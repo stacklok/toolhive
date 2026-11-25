@@ -6,11 +6,16 @@ package transparent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -19,6 +24,57 @@ import (
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+//nolint:paralleltest // captures the process-global slog logger
+func TestRoundTripBodyReadDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		err          error
+		status       int
+	}{
+		{"reader_error", "read_error", errors.New("reader-detail-marker"), http.StatusBadRequest},
+		{"wrapped_read_limit", "body_too_large", fmt.Errorf("reader-detail-marker: %w", &http.MaxBytesError{Limit: 8}),
+			http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewTransparentProxy("127.0.0.1", 0, "http://backend", nil, nil, nil, false, false,
+				"", nil, nil, "", false)
+			t.Cleanup(func() { require.NoError(t, p.sessionManager.Stop()) })
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			backendCalls := 0
+			spy := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				backendCalls++
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+			})
+			const body = `{"jsonrpc":"2.0","id":"id-marker","method":"body-marker"}`
+			req := httptest.NewRequest(http.MethodPost, "/custom", nil)
+			req.Body = io.NopCloser(io.MultiReader(strings.NewReader(body), iotest.ErrReader(tc.err)))
+			resp, err := newTracingTransport(spy, p).RoundTrip(req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			t.Cleanup(func() { drainAndClose(t, resp) })
+			assert.Equal(t, tc.status, resp.StatusCode)
+			assert.Zero(t, backendCalls)
+			responseBody, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			for _, marker := range []string{"reader-detail-marker", "id-marker", "body-marker"} {
+				assert.NotContains(t, string(responseBody), marker)
+				assert.NotContains(t, logs.String(), marker)
+			}
+			var entry map[string]any
+			require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+			assert.NotEmpty(t, entry["time"])
+			delete(entry, "time")
+			assert.Equal(t, map[string]any{
+				"level": "WARN", "msg": "rejected unreadable MCP request body", "reason": tc.reason,
+			}, entry)
+		})
+	}
+}
 
 // TestTransparentProxy_RejectsOversizedBody verifies the body-limit middleware
 // in the transparent proxy's chain rejects an oversized request body with 413

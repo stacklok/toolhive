@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/container/verifier"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -130,6 +131,74 @@ func TestHasLatestTag(t *testing.T) {
 
 			result := hasLatestTag(tt.imageRef)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestVerifyImage(t *testing.T) {
+	t.Parallel()
+
+	const testImage = "ghcr.io/example/server:v1.0.0"
+
+	// A SigstoreURL with no embedded TUF root makes verifier.New fail
+	// deterministically without touching the network — the same "verifier
+	// cannot be constructed" return path a sigstore TUF CDN outage takes.
+	unreachableVerifier := &regtypes.ImageMetadata{
+		Provenance: &regtypes.Provenance{SigstoreURL: "tuf.invalid.example"},
+	}
+
+	tests := []struct {
+		name          string
+		server        *regtypes.ImageMetadata
+		verifySetting string
+		expectErr     string
+	}{
+		{
+			name:          "disabled skips verification",
+			server:        unreachableVerifier,
+			verifySetting: VerifyImageDisabled,
+		},
+		{
+			name:          "warn without provenance continues",
+			server:        &regtypes.ImageMetadata{},
+			verifySetting: VerifyImageWarn,
+		},
+		{
+			name:          "enabled without provenance fails",
+			server:        &regtypes.ImageMetadata{},
+			verifySetting: VerifyImageEnabled,
+			expectErr:     verifier.ErrProvenanceServerInformationNotSet.Error(),
+		},
+		{
+			name:          "warn with unavailable verifier continues",
+			server:        unreachableVerifier,
+			verifySetting: VerifyImageWarn,
+		},
+		{
+			name:          "enabled with unavailable verifier fails",
+			server:        unreachableVerifier,
+			verifySetting: VerifyImageEnabled,
+			expectErr:     "root.json",
+		},
+		{
+			name:          "invalid setting fails",
+			server:        &regtypes.ImageMetadata{},
+			verifySetting: "sometimes",
+			expectErr:     "invalid value for --image-verification",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := VerifyImage(testImage, tt.server, tt.verifySetting)
+			if tt.expectErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectErr)
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }

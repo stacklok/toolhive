@@ -6,16 +6,19 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
@@ -25,16 +28,14 @@ import (
 // ServerConfig holds the transport-only runtime configuration for Serve.
 //
 // It carries the subset of the legacy server.Config that configures the HTTP/SDK
-// runtime, plus the cross-cutting TelemetryProvider/AuditConfig that are consumed
+// runtime, plus the cross-cutting TelemetryProvider/AuditConfig/AuditSubjectEnricher that are consumed
 // by both the core (core.New) and the transport (Serve) — not a clean partition.
-// The fields the core exclusively owns (Aggregator, Router, BackendClient, Authz)
-// live on core.Config instead and are absent here. Two collaborators are shared
-// rather than core-owned, so they appear on both configs: BackendRegistry (the
-// Serve session layer also enumerates backends when creating a session) and the
-// composite-tool WorkflowDefs (carried indirectly via SessionManagerConfig, whose
-// ComposerFactory closes over the core-owned router/backend client). The
-// composition root passes the same BackendRegistry instance to both core.New and
-// Serve and assembles SessionManagerConfig.
+// The fields the core exclusively owns (Aggregator, Router, BackendClient, Authz,
+// composite-tool WorkflowDefs) live on core.Config instead and are absent here.
+// One collaborator is shared rather than core-owned, so it appears on both
+// configs: BackendRegistry (the Serve session layer also enumerates backends when
+// creating a session). The composition root passes the same BackendRegistry
+// instance to both core.New and Serve and assembles SessionManagerConfig.
 //
 // The name intentionally stutters as server.ServerConfig: it is mandated by the
 // New/Serve split, and the package's existing Config is the legacy transport
@@ -109,17 +110,11 @@ type ServerConfig struct {
 
 	// SessionManagerConfig is the pre-built construction config for the vMCP session
 	// manager (sessionmanager.New). FactoryConfig.Base is the required underlying
-	// MultiSessionFactory; the config also carries the composite-tool WorkflowDefs and
-	// ComposerFactory, the optimizer factory/config, and the telemetry provider.
-	// Required; Serve returns an error when it is nil. The composition root assembles
-	// it because the ComposerFactory closes over the core-owned router and backend
-	// client.
-	//
-	// Caller responsibility: unlike server.New, Serve does NOT run validateWorkflows on
-	// FactoryConfig.WorkflowDefs — the composition root must validate composite-tool
-	// definitions before assembling this config (sessionmanager.New only checks the
-	// WorkflowDefs/ComposerFactory pairing). This responsibility moves here with the
-	// relocation and matters when server.New is routed through Serve in Phase 3.
+	// MultiSessionFactory; the config also carries the optimizer factory/config, the
+	// telemetry provider, the session-cache capacity, and the AdvertiseFromCore flag.
+	// Required; Serve returns an error when it is nil. Composite-tool workflows are
+	// NOT carried here — they are core-owned (core.Config.WorkflowDefs, validated in
+	// core.New).
 	//
 	// Caller responsibility (AC2, the single-aggregation contract): FactoryConfig.Base
 	// MUST be constructed WITHOUT a session.WithAggregator option on the Serve path. On
@@ -134,18 +129,41 @@ type ServerConfig struct {
 	//
 	// Caller responsibility (optimizer): to enable the optimizer on the Serve path, set
 	// FactoryConfig.OptimizerConfig/OptimizerFactory AND FactoryConfig.AdvertiseFromCore.
-	// Serve then builds a per-session optimizer over the core's tools (serve_optimizer.go);
-	// AdvertiseFromCore suppresses the factory's own optimizer decorator so the shared FTS5
-	// store is not double-indexed (see FactoryConfig.AdvertiseFromCore).
+	// Serve then builds a per-session optimizer over the core's tools (serve_optimizer.go).
+	// sessionmanager.New rejects an optimizer without AdvertiseFromCore, so a composition
+	// root that forgets the flag fails at startup instead of double-indexing the shared
+	// FTS5 store (see FactoryConfig.AdvertiseFromCore).
 	SessionManagerConfig *sessionmanager.FactoryConfig
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by
 	// core.New). If nil, no telemetry is recorded.
 	TelemetryProvider *telemetry.Provider
 
+	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware,
+	// applied inside the MCP parsing middleware. If nil, no usage is reported.
+	// ToolHive's own entry points set it (pkg/vmcp/cli); embedders should leave
+	// it nil (see docs/arch/vmcp-library.md).
+	UsageMetricsMiddleware func(http.Handler) http.Handler
+
 	// AuditConfig is the cross-cutting audit configuration (also consumed by
 	// core.New). If nil, no audit logging is performed.
 	AuditConfig *audit.Config
+
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to the
+	// per-request MCP audit events. Set the same enricher on
+	// core.Config.AuditSubjectEnricher so composite-tool workflow events carry
+	// them too. It has no effect when AuditConfig is nil.
+	AuditSubjectEnricher audit.SubjectEnricher
+
+	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// The vMCP always enforces a token that carries an authorization_details
+	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
+	// only the one tools/call its entry names, once. CallBinding adds the
+	// clients whose tokens must carry one, the maximum call duration, the
+	// single-use record, and the parameters of the 401 challenge. The zero
+	// value lists no client and keeps the record in memory, on this replica
+	// only. See callbinding.Config.
+	CallBinding callbinding.Config
 }
 
 // Serve is the transport-side entry point of the New/Serve split: it wraps an
@@ -175,8 +193,9 @@ type ServerConfig struct {
 // by the core (built/started in core.New, stopped in core.Close); Serve neither constructs
 // nor starts it, and the status reporter reads it back through the core (#5443 reversal).
 //
-// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
-// nil required collaborator (SessionManagerConfig or BackendRegistry). The session
+// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, a
+// nil required collaborator (SessionManagerConfig or BackendRegistry), or an invalid
+// CallBinding (a negative MaxCallDuration or an empty client ID). The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
@@ -212,15 +231,99 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// the mcp-go server for the same reason).
 	hooks := &server.Hooks{}
 
-	// Build the mcp-go server (mirrors server.New): tools and resources are
-	// registered dynamically, so capabilities start disabled.
+	// The completion handler is a single global handler (unlike the per-session
+	// tool/resource/prompt handlers), so it is wired here at construction. It closes
+	// over the late-assigned srv — safe because WithCompletionHandler only stores the
+	// handler; it is invoked at request time, always after srv is assigned below. This
+	// mirrors the hooks' close-over-srv pattern. Setting the handler makes the shim
+	// auto-advertise the completions capability at initialize.
+	var srv *Server
+
+	// Validate call binding before anything that needs releasing is built. Its
+	// route closes over the late-assigned srv like the completion handler
+	// below, and runs only at request time.
+	callBinding, err := newCallBinding(cfg.CallBinding, func(
+		ctx context.Context, identity *auth.Identity, name string,
+	) (string, error) {
+		return srv.callBindingRoute(ctx, identity, name)
+	})
+	if err != nil {
+		return nil, err
+	}
+	warnCallBindingRecordPerReplica(cfg)
+
+	completionHandler := func(ctx context.Context, req mcp.CompleteRequest) (*mcp.CompleteResult, error) {
+		return srv.coreCompletionHandler(ctx, req)
+	}
+
+	// Resource subscribe/unsubscribe handlers, wired here alongside the completion
+	// handler for the same close-over-late-srv reason. They accept the subscription
+	// at ack level (enforce session binding, validate the URI is an advertised,
+	// admitted resource) and return nil so go-sdk records it; vMCP does NOT forward
+	// backend resources/updated notifications yet (see coreSubscribeHandler and the
+	// architecture doc's subscription note).
+	subscribeHandler := func(ctx context.Context, uri string) error {
+		return srv.coreSubscribeHandler(ctx, "resources/subscribe", uri)
+	}
+	unsubscribeHandler := func(ctx context.Context, uri string) error {
+		return srv.coreSubscribeHandler(ctx, "resources/unsubscribe", uri)
+	}
+
+	// Build the mcp-go server (mirrors server.New): tools, resources, and
+	// prompts are registered dynamically, so capabilities start disabled —
+	// except resources, which additionally advertise subscribe support so
+	// spec-compliant clients issue resources/subscribe (the handlers above
+	// answer it at ack level).
+	//
+	// tools.listChanged (#5748) and resources.listChanged/prompts.listChanged
+	// (#5969) are now advertised: a persistent backend connection's
+	// notifications/tools/list_changed, notifications/resources/list_changed,
+	// or notifications/prompts/list_changed drives a per-kind session resync
+	// (serve_list_changed.go) that replaces the SDK session's tool, resource
+	// (+ resource-template), or prompt store via SetSessionTools/
+	// SetSessionResources/SetSessionResourceTemplates/SetSessionPrompts, and
+	// go-sdk auto-emits the corresponding list_changed notification to the
+	// downstream client whenever that capability is on. WithPromptCapabilities
+	// also fixes a spec-conformance defect: vMCP already served prompts per
+	// session (SessionWithPrompts) but never declared the prompts capability at
+	// initialize, violating MCP 2025-11-25's "Servers that support prompts MUST
+	// declare the prompts capability during initialization".
+	//
+	// R1 (verified against toolhive-core / go-sdk): go-sdk's own
+	// AddTool/RemoveTools (and the resource/prompt equivalents) call a shared
+	// changeAndNotify that debounces (10ms) and then broadcasts the
+	// notification to EVERY session currently connected to this *gosdk.Server
+	// (mcpcompat/server/server.go's srv is one instance shared across all
+	// sessions) — not just the session whose overlay changed. go-sdk's own
+	// bind() adds a session to that broadcast list as soon as the transport
+	// connects (Connect), before initialize/notifications initialized even
+	// round-trip; go-sdk's shared.go itself documents this as a known upstream
+	// gap ("potential spec violation... when the feature list changes before
+	// the session ... is initialized"). Concretely: every session's
+	// registration-time per-session AddTool/resource/prompt calls
+	// (setSessionToolsDirect/setSessionResourcesDirect/
+	// setSessionResourceTemplatesDirect/setSessionPromptsDirect) now cause a
+	// list_changed broadcast to every OTHER already-connected session too, not
+	// only the one just registered — this is inherent go-sdk behavior, not
+	// something introduced by the #5748/#5969 resync sinks, and there is no
+	// supported hook to scope or suppress it short of patching the vendored SDK
+	// (out of scope here). It is accepted as a benign nuisance for all three
+	// capability kinds: MCP clients treat list_changed as "you may want to
+	// refetch," so an extra notification only costs an idempotent list
+	// round-trip — it never changes what a given session's own list actually
+	// returns (each session's advertised set still comes solely from its own
+	// overlay). See docs/arch/10-virtual-mcp-architecture.md for the
+	// propagation writeup.
 	mcpServer := server.NewMCPServer(
 		serveCfg.Name,
 		serveCfg.Version,
-		server.WithToolCapabilities(false),
-		server.WithResourceCapabilities(false, false),
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
 		server.WithLogging(),
 		server.WithHooks(hooks),
+		server.WithCompletionHandler(completionHandler),
+		server.WithSubscribeHandlers(subscribeHandler, unsubscribeHandler),
 	)
 
 	// Two-phase session-creation wiring (relocated from server.New). The pluggable
@@ -242,32 +345,59 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		}
 	}()
 
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionManagerConfig, cfg.BackendRegistry)
-	if err != nil {
-		return nil, err
-	}
-
-	// Built last — after the fallible calls above — because NewManager starts a cleanup
-	// goroutine on construction (released only by Stop), so an early error return cannot
-	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
-	sessionManager := transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
-
-	srv := &Server{
+	// Assemble the server before the vMCP session manager so the manager's
+	// background cache sweep can be handed srv.healthResync.remove: a session the
+	// sweep reclaims (expired or terminated) is gone for good, so its health-resync
+	// registration is dropped right away instead of waiting for the next health or
+	// list_changed trigger to prune it (#5786). The method value binds
+	// &srv.healthResync before the sweep goroutine starts, and the registry has its
+	// own lock, so filling in the remaining fields below does not race with it.
+	srv = &Server{
 		config:             serveCfg,
 		core:               v,
 		mcpServer:          mcpServer,
 		backendRegistry:    cfg.BackendRegistry,
-		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
-		vmcpSessionMgr:     vmcpSessMgr,
-		// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
-		// session registration builds a per-session optimizer over the core's tools.
-		// Nil when the optimizer is disabled; the store/cleanup stay owned by the
-		// session manager (optimizerCleanup, appended to shutdownFuncs below).
-		optimizerFactory: vmcpSessMgr.OptimizerFactory(),
-		ready:            make(chan struct{}),
-		statusReporter:   cfg.StatusReporter,
+		ready:              make(chan struct{}),
+		statusReporter:     cfg.StatusReporter,
+		callBinding:        callBinding,
 	}
+
+	sessMgrCfg, err := withSharedEmbeddings(serveCfg.SessionStorage, cfg.SessionManagerConfig)
+	if err != nil {
+		return nil, err
+	}
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(
+		sessionDataStorage, sessMgrCfg, cfg.BackendRegistry,
+		sessionmanager.WithSweptSessionHook(srv.healthResync.remove),
+	)
+	if err != nil {
+		return nil, err
+	}
+	srv.vmcpSessionMgr = vmcpSessMgr
+	// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
+	// session registration builds a per-session optimizer over the core's tools.
+	// Nil when the optimizer is disabled; the store/cleanup stay owned by the
+	// session manager (optimizerCleanup, appended to shutdownFuncs below).
+	srv.optimizerFactory = vmcpSessMgr.OptimizerFactory()
+
+	// Built last — after the fallible calls above — because NewManager starts a cleanup
+	// goroutine on construction (released only by Stop), so an early error return cannot
+	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
+	srv.sessionManager = transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
+
+	// Server-lifetime parent context for asynchronous tools/resources/prompts
+	// list_changed resync work (#5748, #5969). Cancelling it on Stop aborts any
+	// in-flight backend re-aggregation a late notification kicked off, so
+	// nothing outlives the server. context.Background() is the parent (not the
+	// Serve ctx, which may be request-scoped) so the resync lifetime is bounded
+	// solely by Stop.
+	resyncCtx, resyncCancel := context.WithCancel(context.Background())
+	srv.resyncBaseCtx = resyncCtx
+	srv.shutdownFuncs = append(srv.shutdownFuncs, func(context.Context) error {
+		resyncCancel()
+		return nil
+	})
 
 	if optimizerCleanup != nil {
 		srv.shutdownFuncs = append(srv.shutdownFuncs, optimizerCleanup)
@@ -293,6 +423,27 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	hooks.AddBeforeCallTool(func(hookCtx context.Context, _ any, _ *mcp.CallToolRequest) {
 		srv.lazyInjectSessionTools(hookCtx)
 	})
+
+	// Backend-health-driven tools resync (#5786, serve_health_resync.go):
+	// subscribe to the core-owned health monitor so passthrough sessions pick
+	// up catalog changes (a backend recovering/failing, backends added/removed)
+	// without reconnecting. The monitor debounces delivery and the listener
+	// runs off the health-check path; the core stops the monitor — and with it
+	// this callback — inside v.Close() during Stop. Nil when health monitoring
+	// is disabled, in which case sessions keep today's snapshot-at-registration
+	// behavior.
+	if reporter := srv.backendHealth(); reporter != nil {
+		reporter.OnChange(srv.resyncSessionsOnBackendHealthChange)
+	}
+
+	// Surface the capability gate's verdict once at startup: the blocker list is
+	// derived from construction-time configuration and cannot change afterwards,
+	// so this single line is the operator-visible record of why Modern-capable
+	// clients of this instance negotiate down to Legacy (see modern_gate.go).
+	if blocked := srv.modernDispatchBlockers(); len(blocked) > 0 {
+		slog.Warn("MCP 2026-07-28 (Modern) dispatch disabled: enabled features require the session (Legacy) path",
+			"features", blocked)
+	}
 
 	// Disarm the close-on-error guard: the Server is fully constructed.
 	closeStorageOnErr = false
@@ -336,9 +487,23 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,
 		TelemetryProvider:       cfg.TelemetryProvider,
+		UsageMetricsMiddleware:  cfg.UsageMetricsMiddleware,
 		AuditConfig:             cfg.AuditConfig,
+		AuditSubjectEnricher:    cfg.AuditSubjectEnricher,
 		StatusReportingInterval: cfg.StatusReportingInterval,
 		Watcher:                 cfg.Watcher,
 		SessionStorage:          cfg.SessionStorage,
 	}
+}
+
+// warnCallBindingRecordPerReplica warns once at startup when sessions are
+// shared between replicas but call binding keeps its single-use record in
+// memory: a call-bound token can then start one call on each replica.
+func warnCallBindingRecordPerReplica(cfg *ServerConfig) {
+	if cfg.CallBinding.Record != nil || cfg.SessionStorage == nil || cfg.SessionStorage.Provider != "redis" {
+		return
+	}
+	slog.Warn("call binding: sessions are stored in Redis, but the single-use record of call-bound " +
+		"access tokens is in memory, so a call-bound token can start one call on each replica; " +
+		"set CallBinding.Record to a shared record to refuse the replay across replicas")
 }

@@ -8,6 +8,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -42,6 +43,8 @@ import (
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
+	"github.com/stacklok/toolhive/pkg/updates"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 var (
@@ -49,11 +52,11 @@ var (
 	setupLog = log.Log.WithName("setup")
 )
 
-// envEnableStorageVersionMigrator is the opt-in for the StorageVersionMigrator
-// controller. The controller defaults to OFF in this release so the change can
-// ship safely without functional impact. Set to "true" (or "1", "t") to enable.
-// A follow-up release will flip the default to true alongside the helm chart
-// surface and user docs.
+// envEnableStorageVersionMigrator gates the StorageVersionMigrator controller.
+// The binary itself defaults to OFF when the var is unset; the operator helm
+// chart sets it to "true" by default, so chart-based installs run the migrator
+// unless the operator explicitly opts out. Set to "true" (or "1", "t") to
+// enable, "false" to disable.
 const envEnableStorageVersionMigrator = "TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR"
 
 func init() {
@@ -81,6 +84,12 @@ func Run() {
 	// Bridge to slog for consistency with the rest of the ToolHive codebase.
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
+	defaultRedis, err := ctrlutil.LoadDefaultRedisConfigFromEnv()
+	if err != nil {
+		setupLog.Error(err, "invalid global Redis configuration")
+		os.Exit(1)
+	}
+
 	podNamespace, _ := os.LookupEnv("POD_NAMESPACE")
 
 	options := ctrl.Options{
@@ -97,7 +106,15 @@ func Run() {
 		},
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
+	cfg := ctrl.GetConfigOrDie()
+	// The MCPRegistry CRD is deprecated; kube-apiserver emits a 299 Warning
+	// header on every LIST/WATCH. client-go re-establishes the WATCH every
+	// 5–10m (reflector timeout), which re-parses response headers and would
+	// otherwise spam the deprecation even when no MCPRegistry CRs exist
+	// (#6346). next is nil so the constructor installs CRT's slog logger.
+	installMCPRegistryWarningHandler(cfg, nil)
+
+	mgr, err := ctrl.NewManager(cfg, options)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -123,7 +140,7 @@ func Run() {
 		)
 	}
 
-	if err := setupControllersAndWebhooks(mgr, imagePullSecretsDefaults); err != nil {
+	if err := setupControllersAndWebhooks(mgr, imagePullSecretsDefaults, defaultRedis); err != nil {
 		setupLog.Error(err, "unable to setup controllers and webhooks")
 		os.Exit(1)
 	}
@@ -138,6 +155,29 @@ func Run() {
 	}
 	// Set up telemetry service - only runs when elected as leader
 	telemetryService := telemetry.NewService(mgr.GetClient(), podNamespace)
+
+	// Resolve the installation's instance ID before any controller reconciles,
+	// so every workload gets the same anonymous ID from its first pod template.
+	// If the API server stays unreachable, exit and let the pod restart: a
+	// replica that ran without the ID would roll every workload whenever it
+	// became the leader. An error a restart cannot fix (such as missing RBAC)
+	// hits every replica alike, so the operator runs without the ID.
+	// An operator opted out of update checks or usage metrics opts its
+	// workloads out of the same.
+	ctrlutil.SetUsageMetricsOptOut(updates.ShouldSkipUpdateChecks())
+	ctrlutil.SetUsageMetricsDisabled(os.Getenv(usagemetrics.EnvVarUsageMetricsEnabled) == "false")
+	instanceID, err := telemetryService.EnsureInstanceID(
+		context.Background(), mgr.GetAPIReader(), telemetry.InstanceIDBackoff,
+	)
+	switch {
+	case errors.Is(err, telemetry.ErrInstanceIDUnavailable):
+		setupLog.Error(err, "unable to resolve telemetry instance ID")
+		os.Exit(1)
+	case err != nil:
+		setupLog.Error(err, "unable to resolve telemetry instance ID; workloads that carry it will be rolled out without it")
+	default:
+		ctrlutil.SetUsageMetricsAnonymousID(instanceID)
+	}
 	if err := mgr.Add(&telemetry.LeaderTelemetryRunnable{
 		TelemetryService: telemetryService,
 	}); err != nil {
@@ -155,14 +195,18 @@ func Run() {
 // setupControllersAndWebhooks sets up all controllers and webhooks with the manager.
 // The imagePullSecretsDefaults are propagated to controllers that construct
 // workloads so that chart-level defaults are applied alongside per-CR overrides.
-func setupControllersAndWebhooks(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
-	if err := setupServerControllers(mgr, imagePullSecretsDefaults); err != nil {
+// defaultRedis is the validated, read-only snapshot shared by session storage
+// configuration and workload construction; controllers do not re-read the env.
+func setupControllersAndWebhooks(
+	mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults, defaultRedis *ctrlutil.DefaultRedisConfig,
+) error {
+	if err := setupServerControllers(mgr, imagePullSecretsDefaults, defaultRedis); err != nil {
 		return err
 	}
 	if err := setupRegistryController(mgr, imagePullSecretsDefaults); err != nil {
 		return err
 	}
-	if err := setupAggregationControllers(mgr, imagePullSecretsDefaults); err != nil {
+	if err := setupAggregationControllers(mgr, imagePullSecretsDefaults, defaultRedis); err != nil {
 		return err
 	}
 	enabled, err := isStorageVersionMigratorEnabled()
@@ -197,10 +241,10 @@ func setupStorageVersionMigrator(mgr ctrl.Manager) error {
 }
 
 // isStorageVersionMigratorEnabled reports whether the StorageVersionMigrator
-// controller should be registered. Defaults to false in this release — admins
-// must explicitly opt in via TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR=true.
-// An unparsable value returns an error so startup fails loudly rather than
-// silently disabling the feature an admin asked to turn on.
+// controller should be registered. Defaults to false when
+// TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR is unset; the operator helm chart
+// sets it to "true" by default. An unparsable value returns an error so startup
+// fails loudly rather than silently disabling the feature an admin asked to turn on.
 func isStorageVersionMigratorEnabled() (bool, error) {
 	value, found := os.LookupEnv(envEnableStorageVersionMigrator)
 	if !found {
@@ -213,6 +257,19 @@ func isStorageVersionMigratorEnabled() (bool, error) {
 			envEnableStorageVersionMigrator, value, err)
 	}
 	return enabled, nil
+}
+
+// setupEmbeddedAuthConfigMapRefFieldIndex sets up the shared embedded-auth ConfigMap reference index.
+func setupEmbeddedAuthConfigMapRefFieldIndex(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1beta1.MCPExternalAuthConfig{},
+		controllers.EmbeddedAuthConfigMapRefIndex,
+		controllers.IndexEmbeddedAuthConfigMapRefs,
+	); err != nil {
+		return fmt.Errorf("index MCPExternalAuthConfig CA bundle references: %w", err)
+	}
+	return nil
 }
 
 // setupGroupRefFieldIndexes sets up field indexing for spec.groupRef on all resource types
@@ -275,8 +332,13 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 // setupServerControllers sets up server-related controllers
 // (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, MCPServerEntry, ToolConfig).
 // imagePullSecretsDefaults are merged with per-CR imagePullSecrets when
-// reconcilers construct workloads.
-func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
+// reconcilers construct workloads. defaultRedis is shared without modification.
+func setupServerControllers(
+	mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults, defaultRedis *ctrlutil.DefaultRedisConfig,
+) error {
+	if err := setupEmbeddedAuthConfigMapRefFieldIndex(mgr); err != nil {
+		return err
+	}
 	if err := setupGroupRefFieldIndexes(mgr); err != nil {
 		return err
 	}
@@ -288,6 +350,7 @@ func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepull
 		Recorder:                 mgr.GetEventRecorder("mcpserver-controller"),
 		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
+		DefaultRedisConfig:       defaultRedis,
 	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPServer: %w", err)
@@ -351,6 +414,7 @@ func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepull
 		Recorder:                 mgr.GetEventRecorder("mcpremoteproxy-controller"),
 		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
+		DefaultRedisConfig:       defaultRedis,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
 	}
@@ -393,8 +457,10 @@ func setupRegistryController(mgr ctrl.Manager, imagePullSecretsDefaults imagepul
 // setupServerControllers, which creates the MCPServer.Spec.GroupRef field index
 // these controllers depend on.
 // imagePullSecretsDefaults are merged with vmcp.Spec.ImagePullSecrets when the
-// VirtualMCPServer Deployment is constructed.
-func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
+// VirtualMCPServer Deployment is constructed. defaultRedis is shared without modification.
+func setupAggregationControllers(
+	mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults, defaultRedis *ctrlutil.DefaultRedisConfig,
+) error {
 	// Set up MCPGroup controller
 	if err := (&controllers.MCPGroupReconciler{
 		Client: mgr.GetClient(),
@@ -409,6 +475,7 @@ func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imag
 		Recorder:                 mgr.GetEventRecorder("virtualmcpserver-controller"),
 		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
+		DefaultRedisConfig:       defaultRedis,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
 	}

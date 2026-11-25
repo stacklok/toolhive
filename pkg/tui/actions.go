@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	cfg "github.com/stacklok/toolhive/pkg/config"

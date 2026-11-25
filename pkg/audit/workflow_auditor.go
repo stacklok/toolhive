@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -21,11 +22,17 @@ type WorkflowAuditor struct {
 	auditLogger *slog.Logger
 	config      *Config
 	component   string
+	logWriter   io.Writer
+	// subjectEnricher adds embedder-supplied subjects to each event; nil
+	// leaves events unchanged.
+	subjectEnricher SubjectEnricher
 }
 
 // NewWorkflowAuditor creates a new workflow auditor.
 // If config is nil, creates a default configuration with stdout logging.
-func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
+// opts set behavior that is configured from Go rather than the serialized Config,
+// such as WithSubjectEnricher.
+func NewWorkflowAuditor(config *Config, opts ...Option) (*WorkflowAuditor, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -41,11 +48,21 @@ func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
 		component = "vmcp-composer"
 	}
 
+	o := buildOptions(opts)
+
 	return &WorkflowAuditor{
-		auditLogger: NewAuditLogger(logWriter),
-		config:      config,
-		component:   component,
+		auditLogger:     NewAuditLogger(logWriter),
+		config:          config,
+		component:       component,
+		logWriter:       logWriter,
+		subjectEnricher: o.subjectEnricher,
 	}, nil
+}
+
+// Close closes the underlying log writer if it owns a closeable resource.
+// This should be called when the workflow auditor is no longer needed.
+func (w *WorkflowAuditor) Close() error {
+	return closeLogWriter(w.logWriter)
 }
 
 // LogWorkflowStarted logs the start of workflow execution.
@@ -60,16 +77,7 @@ func (w *WorkflowAuditor) LogWorkflowStarted(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStarted,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
+	event := w.newEvent(ctx, EventTypeWorkflowStarted, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -111,16 +119,7 @@ func (w *WorkflowAuditor) LogWorkflowCompleted(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowCompleted,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
+	event := w.newEvent(ctx, EventTypeWorkflowCompleted, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -163,16 +162,7 @@ func (w *WorkflowAuditor) LogWorkflowFailed(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowFailed,
-		source,
-		OutcomeFailure,
-		subjects,
-		w.component,
-	)
+	event := w.newEvent(ctx, EventTypeWorkflowFailed, OutcomeFailure)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -202,16 +192,7 @@ func (w *WorkflowAuditor) LogWorkflowTimedOut(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowTimedOut,
-		source,
-		OutcomeFailure,
-		subjects,
-		w.component,
-	)
+	event := w.newEvent(ctx, EventTypeWorkflowTimedOut, OutcomeFailure)
 
 	target := map[string]string{
 		TargetKeyWorkflowID:   workflowID,
@@ -241,16 +222,7 @@ func (w *WorkflowAuditor) LogStepStarted(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStepStarted,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
+	event := w.newEvent(ctx, EventTypeWorkflowStepStarted, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -278,16 +250,7 @@ func (w *WorkflowAuditor) LogStepCompleted(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStepCompleted,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
+	event := w.newEvent(ctx, EventTypeWorkflowStepCompleted, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -317,16 +280,7 @@ func (w *WorkflowAuditor) LogStepFailed(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStepFailed,
-		source,
-		OutcomeFailure,
-		subjects,
-		w.component,
-	)
+	event := w.newEvent(ctx, EventTypeWorkflowStepFailed, OutcomeFailure)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -354,16 +308,7 @@ func (w *WorkflowAuditor) LogStepSkipped(
 		return
 	}
 
-	source := w.extractSource(ctx)
-	subjects := w.extractSubjects(ctx)
-
-	event := NewAuditEvent(
-		EventTypeWorkflowStepSkipped,
-		source,
-		OutcomeSuccess,
-		subjects,
-		w.component,
-	)
+	event := w.newEvent(ctx, EventTypeWorkflowStepSkipped, OutcomeSuccess)
 
 	target := map[string]string{
 		TargetKeyWorkflowID: workflowID,
@@ -382,6 +327,22 @@ func (w *WorkflowAuditor) LogStepSkipped(
 	event.LogTo(ctx, w.auditLogger, LevelAudit)
 }
 
+// newEvent creates an audit event of the given type and outcome with the
+// source, subjects, and RFC 8693 delegation chain extracted from the context.
+// Every Log* method MUST build its event through this helper so that the
+// delegation chain cannot be forgotten at any individual call site.
+func (w *WorkflowAuditor) newEvent(ctx context.Context, eventType, outcome string) *AuditEvent {
+	event := NewAuditEvent(
+		eventType,
+		w.extractSource(ctx),
+		outcome,
+		w.extractSubjects(ctx, eventType),
+		w.component,
+	)
+	w.attachDelegation(ctx, event)
+	return event
+}
+
 // extractSource extracts source information from context.
 // For workflows, source is always local since they're internal orchestration.
 func (*WorkflowAuditor) extractSource(_ context.Context) EventSource {
@@ -392,14 +353,20 @@ func (*WorkflowAuditor) extractSource(_ context.Context) EventSource {
 	}
 }
 
-// extractSubjects extracts subject information from context.
-func (*WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string {
+// extractSubjects extracts subject information from context, including any
+// subjects the configured SubjectEnricher adds.
+//
+// eventType is the event being built, used only to label an enricher panic.
+func (w *WorkflowAuditor) extractSubjects(ctx context.Context, eventType string) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity
-	if identity, ok := auth.IdentityFromContext(ctx); ok {
+	identity, ok := auth.IdentityFromContext(ctx)
+	if ok {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
+
+	applySubjectEnricher(ctx, w.subjectEnricher, identity, eventType, subjects)
 
 	// If no user found, set anonymous
 	if subjects[SubjectKeyUser] == "" {
@@ -407,4 +374,16 @@ func (*WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string {
 	}
 
 	return subjects
+}
+
+// attachDelegation attaches the RFC 8693 delegation chain from the context's
+// identity to the event. It is a no-op when there is no identity or the
+// identity carries no delegation chain.
+func (w *WorkflowAuditor) attachDelegation(ctx context.Context, event *AuditEvent) {
+	identity, ok := auth.IdentityFromContext(ctx)
+	if !ok {
+		return
+	}
+	event.WithDelegationChain(
+		extractDelegationChainFromIdentity(identity, w.config.MaxDelegationDepthOrDefault()))
 }

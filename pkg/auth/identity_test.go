@@ -5,11 +5,14 @@ package auth
 
 import (
 	"encoding/json"
+	"maps"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/audit"
 )
 
 func TestClaimsToIdentity(t *testing.T) {
@@ -482,7 +485,7 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "strips_tsid_claim_from_serialized_claims",
+			name: "strips_internal_claims_from_serialized_claims",
 			identity: &Identity{
 				PrincipalInfo: PrincipalInfo{
 					Subject: "user123",
@@ -490,6 +493,7 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 						"tsid":   "session-xyz",
 						"sub":    "user123",
 						"org_id": "org456",
+						"https://toolhive.dev/claims/delegated_access": "true",
 					},
 				},
 			},
@@ -504,11 +508,82 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 				require.True(t, ok, "claims should be a map")
 				_, hasTsid := claims["tsid"]
 				assert.False(t, hasTsid, "tsid must be stripped from serialized claims")
+				_, hasDelegated := claims["https://toolhive.dev/claims/delegated_access"]
+				assert.False(t, hasDelegated, "delegated-access marker must be stripped from serialized claims")
 				assert.NotContains(t, string(data), "session-xyz",
 					"tsid value must not appear anywhere in marshaled output")
+				assert.NotContains(t, string(data), "https://toolhive.dev/claims/delegated_access",
+					"delegated-access marker must not appear anywhere in marshaled output")
 				// Guard: co-resident claims must be preserved
 				assert.Equal(t, "user123", claims["sub"], "sub claim must be preserved")
 				assert.Equal(t, "org456", claims["org_id"], "org_id claim must be preserved")
+			},
+		},
+		{
+			name: "includes_delegation_chain",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{
+					Subject: "user123",
+					DelegationChain: audit.ParseDelegationChain(map[string]any{
+						"sub": "agent-1",
+						"iss": "https://issuer.example",
+						"act": map[string]any{"sub": "agent-2"},
+					}, DefaultMaxDelegationDepth),
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(data, &result))
+
+				chain, ok := result["delegation"].(map[string]any)
+				require.True(t, ok, "delegation should be a map")
+				assert.Equal(t, false, chain["truncated"])
+				assert.Equal(t, float64(0), chain["omitted"])
+				assert.Equal(t, false, chain["malformed"])
+
+				hops, ok := chain["chain"].([]any)
+				require.True(t, ok, "chain should be an array")
+				require.Len(t, hops, 2)
+
+				first, ok := hops[0].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "agent-1", first["sub"])
+				assert.Equal(t, "https://issuer.example", first["iss"])
+
+				second, ok := hops[1].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "agent-2", second["sub"])
+			},
+		},
+		{
+			name: "omits_empty_delegation_chain",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{Subject: "user123"},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(data, &result))
+
+				_, exists := result["delegation"]
+				assert.False(t, exists, "delegation key should be omitted when no chain is present")
+			},
+		},
+		{
+			name: "omits_admission_route",
+			identity: &Identity{
+				PrincipalInfo:  PrincipalInfo{Subject: "user123"},
+				AdmissionRoute: AdmissionRouteDelegated,
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+				assert.NotContains(t, string(data), "delegated", "admission route must not be serialized")
 			},
 		},
 		{
@@ -542,7 +617,15 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			var before map[string]any
+			if tt.identity != nil {
+				before = maps.Clone(tt.identity.Claims)
+			}
 			data, err := tt.identity.MarshalJSON()
+			if tt.identity != nil {
+				// Stripping internal claims for output must not touch the caller's map.
+				require.Equal(t, before, tt.identity.Claims, "MarshalJSON must leave the caller's claims intact")
+			}
 
 			if tt.wantErr {
 				require.Error(t, err)

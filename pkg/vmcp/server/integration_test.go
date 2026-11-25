@@ -395,7 +395,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		AnyTimes()
 
 	mockBackendClient.EXPECT().
-		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{
 			StructuredContent: map[string]any{
 				"result": "Sunny, 72°F",
@@ -463,8 +463,8 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	// table needed for tool calls and resource reads to be audit-logged correctly.
 	auditSessionFactory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 	auditSessionFactory.EXPECT().
-		MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+		MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
@@ -773,6 +773,12 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 		Port:           0, // Let OS assign port
 		AuditConfig:    auditConfig,
 		AuthMiddleware: identityMiddleware,
+		AuditSubjectEnricher: func(ctx context.Context) map[string]string {
+			if _, ok := auth.IdentityFromContext(ctx); !ok {
+				return nil
+			}
+			return map[string]string{"client_id": "abc"}
+		},
 		SessionFactory: newNoopMockFactory(t),
 		Aggregator:     newStubAggregator(nil),
 	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
@@ -850,4 +856,5 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 	assert.Equal(t, "John Doe", subjects["user"], "Should have correct user name")
 	assert.Equal(t, "mcp-client", subjects["client_name"], "Should have correct client_name")
 	assert.Equal(t, "2.0.0", subjects["client_version"], "Should have correct client_version")
+	assert.Equal(t, "abc", subjects["client_id"], "Should carry the subject enricher's client_id")
 }

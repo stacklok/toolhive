@@ -77,8 +77,17 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 		return nil, err
 	}
 
-	return &skills.SkillInfo{
+	info := &skills.SkillInfo{
 		Metadata:       skill.Metadata,
 		InstalledSkill: &skill,
-	}, nil
+	}
+	// Project-scoped, lock-managed skills carry the lock file's recorded
+	// trust state so callers can display what installs are checked against.
+	if scope == skills.ScopeProject && projectRoot != "" {
+		if expected, expectUnsigned, _, trustErr := expectedLockTrust(projectRoot, opts.Name); trustErr == nil {
+			info.Provenance = provenanceInfoFromLock(expected)
+			info.Unsigned = expectUnsigned
+		}
+	}
+	return info, nil
 }

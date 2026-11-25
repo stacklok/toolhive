@@ -40,18 +40,18 @@ thv list [flags]
 ### Options
 
 ```
-  -a, --all                 Show all workloads (default shows running and auth_retrying)
-      --check-upgrades      Check each workload for available upgrades against its source registry (performs a registry lookup)
-      --format string       Output format (json, text, mcpservers) (default "text")
-      --group string        Filter by group
-  -h, --help                help for list
-  -l, --label stringArray   Filter workloads by labels (format: key=value)
+  -a, --all[=true|false]              Show all workloads (default shows running and auth_retrying)
+      --check-upgrades[=true|false]   Check each workload for available upgrades against its source registry (performs a registry lookup)
+      --format string                 Output format (json, text, mcpservers) (default "text")
+      --group string                  Filter by group
+  -h, --help[=true|false]             help for list
+  -l, --label stringArray             Filter workloads by labels (format: key=value)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

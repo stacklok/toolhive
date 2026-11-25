@@ -1,0 +1,85 @@
+#
+# Copyright 2025 Stacklok, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Verification-only build of the distributable Claude Code Agent Skills in
+# skills/ — it proves every skill still packages cleanly, and publishes
+# nothing.
+#
+# Validating and building go through StacklokLabs/toolhive-actions'
+# skills-publish action with push: 'false', run against a thv built from this
+# checkout so a pull request exercises its own validator and builder.
+#
+# This is deliberately a separate workflow from skills-publish.yml rather
+# than the same one behind a `push: false` input. The build runs repository
+# code (`thv serve`, `thv skill validate`, `thv skill build`), which on a
+# pull request is code from the pull request itself; keeping publishing in
+# its own file means this job never needs packages: write or id-token: write,
+# so a pull request cannot reach the credentials that sign a release. GitHub
+# validates a called workflow's permissions against its caller's statically,
+# so a shared workflow would have forced every caller to grant the union
+# regardless of the input.
+
+name: Build Skills
+
+on:
+  workflow_call:
+
+jobs:
+  skills-build:
+    name: Build Skills
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: 'stable'
+
+      - name: Compute version number
+        id: version-string
+        uses: $/.github/actions/compute-version
+
+      # No version ldflags: the action checks the thv version only before
+      # pushing, and this workflow never pushes.
+      - name: Build thv binary
+        run: |
+          go build -o "${RUNNER_TEMP}/thv-bin/thv" ./cmd/thv
+          echo "${RUNNER_TEMP}/thv-bin" >> "$GITHUB_PATH"
+
+      # OCI repository paths must be lowercase. On stacklok/toolhive this is
+      # ghcr.io/stacklok/toolhive/skills.
+      - name: Compute registry prefix
+        id: prefix
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "prefix=ghcr.io/${REPOSITORY,,}/skills" >> "$GITHUB_OUTPUT"
+
+      # Validates every skill (errors fail the job), then builds each one
+      # tagged with the real destination even though nothing is pushed, so
+      # the reference is checked exactly as a release would build it.
+      - name: Validate and build skills
+        uses: StacklokLabs/toolhive-actions/skills-publish@2a20e956503d8878c219b2d2b7d91bdf89d731b4 # v0.0.9
+        with:
+          root: skills
+          registry-prefix: ${{ steps.prefix.outputs.prefix }}
+          tags: ${{ steps.version-string.outputs.tag }}
+          push: 'false'

@@ -39,18 +39,18 @@ thv config set-registry <url-or-path> [flags]
 ### Options
 
 ```
-  -p, --allow-private-ip   Allow setting the registry URL or API endpoint, even if it references a private IP address (default false)
-      --audience string    OAuth audience parameter for registry authentication
-      --client-id string   OAuth client ID for registry authentication
-  -h, --help               help for set-registry
-      --issuer string      OIDC issuer URL for registry authentication
-      --scopes strings     OAuth scopes for registry authentication (default [openid,offline_access])
+  -p, --allow-private-ip[=true|false]   Allow setting the registry URL or API endpoint, even if it references a private IP address (default false)
+      --audience string                 OAuth audience parameter for registry authentication
+      --client-id string                OAuth client ID for registry authentication
+  -h, --help[=true|false]               help for set-registry
+      --issuer string                   OIDC issuer URL for registry authentication
+      --scopes strings                  OAuth scopes for registry authentication (default [openid,offline_access])
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

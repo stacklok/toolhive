@@ -10,13 +10,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"syscall"
 	"time"
 
 	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
 	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -24,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/useragent"
 )
 
 const (
@@ -33,15 +38,226 @@ const (
 	maxBackendResponseSize = 100 * 1024 * 1024 // 100 MB
 
 	// defaultBackendRequestTimeout is the wall-clock deadline for individual
-	// streamable-HTTP requests. Applied at both the http.Client and SDK layers
-	// (defense-in-depth). Not used for SSE, whose stream lifetime is unbounded.
+	// backend operations. Streamable-HTTP also applies it at the http.Client and
+	// SDK layers; SSE keeps its connection unbounded but bounds operation contexts.
 	defaultBackendRequestTimeout = 30 * time.Second
 )
+
+// HTTPConnectorOption configures the persistent HTTP backend connector.
+type HTTPConnectorOption func(*httpConnectorConfig)
+
+type httpConnectorConfig struct {
+	requestTimeoutResolver func(workloadID string) time.Duration
+	dialControlResolver    func(workloadID string) func(network, address string, c syscall.RawConn) error
+}
+
+// mcpClientParams carries the per-connection options NewHTTPConnector's closure
+// threads into createMCPClient. They are grouped into a struct — rather than
+// passed positionally — because sink and dialControl are both func-typed and
+// frequently nil, so as bare adjacent arguments a future reorder could
+// transpose them with no compiler error. Named fields remove that risk.
+type mcpClientParams struct {
+	// sink, when non-nil, enables persistent backend-notification consumption
+	// (see createMCPClient); nil leaves it disabled.
+	sink ListChangedSink
+	// dialControl is the hook resolved for this backend's workload ID (see
+	// WithDialControlResolver). When non-nil it installs a net.Dialer.Control hook
+	// on the backend transport; nil uses http.DefaultTransport.
+	dialControl func(network, address string, c syscall.RawConn) error
+	// requestTimeout bounds each backend operation and the transport dial.
+	requestTimeout time.Duration
+}
+
+// WithRequestTimeoutResolver configures the timeout used for each backend
+// operation. The resolver receives the backend workload ID and may return a
+// workload-specific duration. A nil resolver, or a non-positive result, uses
+// the 30-second default.
+//
+// The resolver may be called concurrently and must therefore be safe for
+// concurrent use. SSE connection lifetimes remain unbounded, but individual
+// operations on those connections are bounded through request contexts.
+func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) HTTPConnectorOption {
+	return func(cfg *httpConnectorConfig) {
+		if resolver != nil {
+			cfg.requestTimeoutResolver = resolver
+		}
+	}
+}
+
+// WithDialControlResolver supplies a dial-control hook chosen per backend, so an
+// embedder can apply a per-backend dial policy to the connections opened at
+// session init (the MCP handshake and capability listing). The resolver receives
+// a backend workload ID and returns the net.Dialer.Control hook to install for
+// that backend, or nil to leave it on http.DefaultTransport.
+//
+// The returned hook fires after DNS resolution and before the TCP handshake,
+// receiving the resolved peer IP in address — which is why it defeats
+// DNS-rebinding attacks that a host-name–based check cannot: a hostname can
+// legitimately resolve to a blocked IP after the name-based check passes.
+//
+// The returned hook has the same net.Dialer.Control signature as
+// pkg/vmcp/client.WithDialControl (which guards the aggregation and tool-call
+// paths) and the same standard 30 s dial timeouts. The option shapes differ,
+// though: this one is a per-backend resolver, whereas client.WithDialControl is
+// not (yet) per-backend — it installs one hook for every backend. A nil resolver
+// (the default), or a resolver that returns nil for a given workload, leaves that
+// backend's dial path byte-for-byte identical to before this hook existed.
+//
+// The resolver is called once per backend from the per-backend init goroutines,
+// so it must be safe for concurrent use. The hook it returns matches
+// net.Dialer.Control exactly.
+//
+// Security limitations embedders must understand:
+//
+//   - The resolver only SELECTS a hook; it is not itself the guard. The SSRF /
+//     DNS-rebinding protection exists only if the RETURNED hook inspects the
+//     resolved address. A resolver that decides allow/deny purely from the
+//     workloadID — never looking at address inside the hook it returns — looks
+//     like a per-backend guard but gives zero protection against that workload's
+//     endpoint resolving into a blocked range. Return an address-checking hook.
+//   - Per-TCP-dial, not per-request: the hook fires once per TCP connection.
+//     A pooled connection is reused without re-invoking the hook until it is
+//     recycled. Because each backend gets its own isolated transport and
+//     connection pool, a reused connection is always one this hook already
+//     approved on its first dial — reuse cannot reach an unclassified peer.
+//     This connector does not offer per-request re-classification.
+//   - Proxy transparency: when http.ProxyFromEnvironment selects a proxy
+//     (HTTP_PROXY/HTTPS_PROXY set), the dial target is the proxy server, so the
+//     hook receives the proxy's IP, not the backend's. Embedders relying on this
+//     hook for SSRF or IP allow-listing must either unset the proxy env vars or
+//     additionally validate the backend URL's host before dialing.
+//   - Both IP families: the address argument may be an IPv4 or IPv6 literal
+//     (host:port form); embedders must handle both — including IPv4-mapped IPv6
+//     such as ::ffff:127.0.0.1 — in their check. See the OWASP SSRF Prevention
+//     Cheat Sheet for the full set of ranges to deny (loopback, RFC 1918,
+//     link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
+func WithDialControlResolver(
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
+) HTTPConnectorOption {
+	return func(cfg *httpConnectorConfig) {
+		cfg.dialControlResolver = resolver
+	}
+}
+
+// resolveDialControl invokes the per-workload dial-control resolver, isolating a
+// panicking embedder resolver to this one backend: a panic is recovered and
+// returned as an error, so the backend is excluded from the session like any
+// other init failure rather than crashing the per-backend init goroutine (and
+// with it the process). A nil resolver, or one that returns nil for this
+// workload, yields a nil hook — the transport stays on http.DefaultTransport.
+func resolveDialControl(
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
+	workloadID string,
+) (hook func(network, address string, c syscall.RawConn) error, err error) {
+	if resolver == nil {
+		return nil, nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			hook = nil
+			err = fmt.Errorf("dial-control resolver panicked for backend %s: %v", workloadID, r)
+		}
+	}()
+	return resolver(workloadID), nil
+}
+
+func (c *httpConnectorConfig) requestTimeout(workloadID string) time.Duration {
+	if c.requestTimeoutResolver != nil {
+		if timeout := c.requestTimeoutResolver(workloadID); timeout > 0 {
+			return timeout
+		}
+	}
+	return defaultBackendRequestTimeout
+}
+
+// ChangeKind identifies which capability class a backend reported changed via
+// ListChangedSink. Using a typed constant (rather than a bare string) means a
+// typo is a compile error at the producer and consumer instead of a silent
+// no-op.
+type ChangeKind string
+
+const (
+	// KindTools is reported when a backend emits notifications/tools/list_changed.
+	KindTools ChangeKind = "tools"
+
+	// KindResources is reported when a backend emits
+	// notifications/resources/list_changed. Per MCP 2025-11-25 there is no
+	// separate wire method for resource TEMPLATE changes, so this kind also
+	// covers a resync of the backend's resource templates (see
+	// resyncSessionResources in pkg/vmcp/server).
+	KindResources ChangeKind = "resources"
+
+	// KindPrompts is reported when a backend emits
+	// notifications/prompts/list_changed.
+	KindPrompts ChangeKind = "prompts"
+)
+
+// ListChangedSink is invoked when a persistent backend connection observes a
+// notification this package consumes asynchronously (outside any in-flight
+// call): notifications/tools/list_changed (kind=KindTools),
+// notifications/resources/list_changed (kind=KindResources, which also covers
+// resource templates — MCP 2025-11-25 has no separate wire method for those),
+// and notifications/prompts/list_changed (kind=KindPrompts).
+//
+// The sink is invoked on the mcpcompat client's receive-loop goroutine (see
+// Client.dispatch in toolhive-core), so implementations MUST be non-blocking:
+// they must hand the work off (e.g. set a dirty flag / signal a worker) and
+// return immediately. A sink that does real work (network I/O, cache purges)
+// inline stalls that backend's entire notification delivery and lets a
+// misbehaving backend amplify one notification into unbounded work. The ctx
+// passed here is only for the hand-off; long-lived resync work must run under
+// a caller-owned, cancellable context, not this one.
+type ListChangedSink func(ctx context.Context, backendWorkloadID string, kind ChangeKind)
+
+// newListChangedNotificationHandler builds the OnNotification handler
+// registered by createMCPClient when sink is non-nil. It dispatches
+// notifications/tools/list_changed (kind=KindTools),
+// notifications/resources/list_changed (kind=KindResources, also covering
+// resource templates), and notifications/prompts/list_changed
+// (kind=KindPrompts) to sink, and log-only handles notifications/message;
+// every other notification method is ignored — this handler is not the
+// mid-call server->client relay (that is pkg/vmcp/client's per-call
+// notification forwarder), it only feeds the session-registration resync path.
+func newListChangedNotificationHandler(workloadID string, sink ListChangedSink) func(mcp.JSONRPCNotification) {
+	return func(n mcp.JSONRPCNotification) {
+		switch n.Method {
+		case vmcp.MethodToolsListChangedNotification:
+			sink(context.Background(), workloadID, KindTools)
+		case vmcp.MethodResourcesListChangedNotification:
+			sink(context.Background(), workloadID, KindResources)
+		case vmcp.MethodPromptsListChangedNotification:
+			sink(context.Background(), workloadID, KindPrompts)
+		case vmcp.MethodLogNotification:
+			// Out-of-call backend log messages are not relayed to the downstream
+			// client on this path; log so the signal is visible rather than
+			// silently dropped.
+			slog.Debug("backend log notification received outside call", "backendID", workloadID)
+		default:
+			// Other notification types (resource subscription updates, ...) are
+			// out of scope here.
+		}
+	}
+}
 
 // httpRoundTripperFunc adapts a plain function to http.RoundTripper.
 type httpRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f httpRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// backendBaseTransport returns the innermost RoundTripper for backend
+// connections. With a nil dialControl it returns http.DefaultTransport
+// unchanged, so the no-hook path is byte-for-byte identical to before
+// any dial-control hook existed. With a non-nil hook it delegates to
+// networking.CloneDefaultTransportWithDialControl — the single backend
+// transport construction point shared with pkg/vmcp/client — which clones
+// DefaultTransport and installs a net.Dialer whose Control hook fires on the
+// resolved peer IP before the TCP handshake.
+func backendBaseTransport(dialControl func(network, address string, c syscall.RawConn) error) http.RoundTripper {
+	if dialControl == nil {
+		return http.DefaultTransport
+	}
+	return networking.CloneDefaultTransportWithDialControl(dialControl)
+}
 
 // authRoundTripper adds pre-resolved authentication to outgoing backend requests.
 type authRoundTripper struct {
@@ -57,6 +273,14 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, fmt.Errorf("authentication failed for backend %s: %w", a.target.WorkloadID, err)
 	}
 	return a.base.RoundTrip(reqClone)
+}
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying pool instead of
+// stopping at this wrapper. Mirrors the canonical twin authRoundTripper in
+// pkg/vmcp/client/client.go.
+func (a *authRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(a.base)
 }
 
 // identityRoundTripper propagates a fallback identity to outgoing backend
@@ -95,6 +319,22 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return i.base.RoundTrip(req)
 }
 
+// CloseIdleConnections forwards to the wrapped RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying pool instead of
+// stopping at this wrapper. Mirrors the canonical twin
+// identityPropagatingRoundTripper in pkg/vmcp/client/client.go.
+func (i *identityRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(i.base)
+}
+
+// Compile-time assertions: a rename or typo of CloseIdleConnections on either
+// twin would silently re-hide the backend pool (see
+// networking.IdleConnectionCloser), the anti-pattern #6483 removes.
+var (
+	_ networking.IdleConnectionCloser = (*authRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*identityRoundTripper)(nil)
+)
+
 // Compile-time assertion: mcpSession must implement Session.
 var _ Session = (*mcpSession)(nil)
 
@@ -111,6 +351,7 @@ type mcpSession struct {
 	client           *mcpclient.Client
 	target           *vmcp.BackendTarget // bound at creation; used for capability name translation
 	backendSessionID string              // backend-assigned session ID (may be empty)
+	requestTimeout   time.Duration       // bounds each backend operation, including over SSE
 }
 
 // SessionID returns the backend-assigned session ID.
@@ -126,16 +367,26 @@ func (c *mcpSession) CallTool(
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+
 	backendName := c.target.GetBackendCapabilityName(toolName)
 	if backendName != toolName {
 		slog.Debug("Translating tool name", "clientName", toolName, "backendName", backendName)
 	}
 
+	// Strip the reserved io.modelcontextprotocol/* keys before forwarding to this
+	// Legacy (session-based, stateful) backend: a downstream Modern caller's
+	// _meta.protocolVersion is only valid on a stateless Modern hop, and go-sdk
+	// v1.7 hard-rejects ANY _meta.protocolVersion on a stateful server (HTTP 400)
+	// regardless of its value — see mcpparser.StripReservedMeta. conversion.ToMCPMeta
+	// below strips too; this stays as the guard at the site that knows the hazard.
+	meta = mcpparser.StripReservedMeta(meta)
 	result, err := c.client.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      backendName,
 			Arguments: arguments,
-			Meta:      conversion.ToMCPMeta(meta),
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, meta)),
 		},
 	})
 	if err != nil {
@@ -167,13 +418,22 @@ func (c *mcpSession) ReadResource(
 	ctx context.Context,
 	uri string,
 ) (*vmcp.ResourceReadResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+
 	backendURI := c.target.GetBackendCapabilityName(uri)
 	if backendURI != uri {
 		slog.Debug("Translating resource URI", "clientURI", uri, "backendURI", backendURI)
 	}
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See pkg/vmcp/client's TestOutboundMetaTraceContext for
+	// details/tripwire.
 	result, err := c.client.ReadResource(ctx, mcp.ReadResourceRequest{
-		Params: mcp.ReadResourceParams{URI: backendURI},
+		Params: mcp.ReadResourceParams{
+			URI:  backendURI,
+			Meta: conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resource %q read failed on backend %s: %w", uri, c.target.WorkloadID, err)
@@ -191,6 +451,9 @@ func (c *mcpSession) GetPrompt(
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+
 	backendName := c.target.GetBackendCapabilityName(name)
 	if backendName != name {
 		slog.Debug("Translating prompt name", "clientName", name, "backendName", backendName)
@@ -198,10 +461,14 @@ func (c *mcpSession) GetPrompt(
 
 	stringArgs := conversion.ConvertPromptArguments(arguments)
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See pkg/vmcp/client's TestOutboundMetaTraceContext for
+	// details/tripwire.
 	result, err := c.client.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
 			Name:      backendName,
 			Arguments: stringArgs,
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
 		},
 	})
 	if err != nil {
@@ -225,20 +492,57 @@ func (c *mcpSession) GetPrompt(
 // shared across every session it creates; its lifetime matches the connector's.
 // It is consumed by BuildHeaderForwardTripper to resolve secret-backed entries
 // in target.HeaderForward.
-func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
+//
+// The returned function's sink parameter, when non-nil, enables persistent
+// backend-notification consumption for this backend connection — see
+// createMCPClient for what that does and does not enable (nil-sink callers are
+// completely unaffected: no OnNotification handler is registered and no
+// standalone GET stream is opened).
+func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, opts ...HTTPConnectorOption) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	sessionHint string,
+	sink ListChangedSink,
 ) (Session, *vmcp.CapabilityList, error) {
 	provider := secrets.NewEnvironmentProvider()
+	connectorConfig := &httpConnectorConfig{}
+	for _, opt := range opts {
+		opt(connectorConfig)
+	}
 	return func(
 		ctx context.Context,
 		target *vmcp.BackendTarget,
 		identity *auth.Identity,
 		sessionHint string,
+		sink ListChangedSink,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider)
+		requestTimeout := connectorConfig.requestTimeout(target.WorkloadID)
+		transportTimeout := requestTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > transportTimeout {
+				transportTimeout = remaining
+			}
+		}
+
+		// Resolve the dial-control hook for this backend. A nil resolver, or a
+		// resolver that returns nil for this workload, leaves dialControl nil so
+		// the transport stays on http.DefaultTransport (see WithDialControlResolver).
+		// A panicking resolver is isolated to this backend rather than crashing the
+		// per-backend init goroutine (and the process).
+		dialControl, err := resolveDialControl(connectorConfig.dialControlResolver, target.WorkloadID)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		c, err := createMCPClient(
+			ctx, target, identity, registry, sessionHint, provider,
+			mcpClientParams{
+				sink:           sink,
+				dialControl:    dialControl,
+				requestTimeout: transportTimeout,
+			},
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -259,7 +563,9 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 			backendSessionID = sh.GetSessionId()
 		}
 
-		return &mcpSession{client: c, target: target, backendSessionID: backendSessionID}, caps, nil
+		return &mcpSession{
+			client: c, target: target, backendSessionID: backendSessionID, requestTimeout: requestTimeout,
+		}, caps, nil
 	}
 }
 
@@ -272,6 +578,19 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 // ctx is used only to resolve secret-backed entries in target.HeaderForward at
 // client-creation time; the transport itself is started with context.Background()
 // as described above. provider supplies values for those secret-backed headers.
+//
+// sink is gated STRICTLY on non-nil: when nil, this function's behavior is
+// byte-for-byte identical to before sink existed (no OnNotification handler is
+// registered, and the streamable-HTTP branch does not enable continuous
+// listening). When non-nil, an OnNotification handler is registered (before
+// c.Start, per the mcpcompat client's registration contract) that invokes sink
+// on notifications/tools/list_changed, notifications/resources/list_changed
+// (which also covers resource templates), and notifications/prompts/list_changed,
+// and log-only handles notifications/message. For the streamable-HTTP transport,
+// a non-nil sink also enables mcptransport.WithContinuousListening() — required
+// for the backend's asynchronous (outside any in-flight call) notifications to
+// reach this client at all — since some backends hang when a standalone GET
+// stream is opened against them, this must stay opt-in (#5748 R3).
 func createMCPClient(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -279,7 +598,15 @@ func createMCPClient(
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
 	provider secrets.Provider,
+	params mcpClientParams,
 ) (*mcpclient.Client, error) {
+	// Destructure once so the body below reads unchanged. The named fields on
+	// mcpClientParams are what protect the two adjacent nil-able func members
+	// (sink, dialControl) from being silently transposed at call sites.
+	sink := params.sink
+	dialControl := params.dialControl
+	requestTimeout := params.requestTimeout
+
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
 	if target.AuthConfig != nil {
@@ -296,7 +623,10 @@ func createMCPClient(
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
 	// Build shared transport chain (innermost first → outermost):
-	//   http.DefaultTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	//   backendBaseTransport → authRoundTripper → identityRoundTripper → User-Agent → headerForwardRoundTripper
+	// The innermost stage is http.DefaultTransport unless a dial-control hook was
+	// resolved for this backend (see WithDialControlResolver), in which case it is
+	// a cloned transport carrying that hook on its dialer.
 	// On an outbound request, the outermost stage runs first: header-forward
 	// injects its headers onto a request that does not yet carry auth/identity
 	// headers, then inner stages run and call Set() unconditionally so any
@@ -305,7 +635,7 @@ func createMCPClient(
 	// rejected at resolve time by resolveHeaderForward, so user-supplied
 	// HeaderForward cannot inject them in the first place.
 	// The per-transport sections below may add a size-limiting wrapper on top.
-	base := http.RoundTripper(http.DefaultTransport)
+	base := backendBaseTransport(dialControl)
 	base = &authRoundTripper{
 		base:         base,
 		authStrategy: strategy,
@@ -318,10 +648,17 @@ func createMCPClient(
 	// refreshed identity placed on the request context by
 	// auth.TokenValidator.Middleware (see issue #5323).
 	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
+	// Identify vMCP to the backend unless header-forward (outer) already set a
+	// User-Agent, so an operator-forwarded User-Agent wins over the default.
+	base = useragent.NewRoundTripper(base)
 	// Forwarded headers ride the request context (set by headerforward.CaptureMiddleware
 	// at the vMCP server's incoming edge) and are merged into the per-session backend
-	// header-forward config here. The session is created once per request, so the
-	// captured headers are stable for the session's lifetime.
+	// header-forward config here. This connection is built once, from the request
+	// that creates the session, so it carries that request's headers for its whole
+	// lifetime, including the requests it makes when the session is torn down. On
+	// the vMCP server's Serve path, tool calls, resource reads and prompt gets go
+	// through the per-request backend client (pkg/vmcp/client) instead, which reads
+	// each request's own headers.
 	mergedHeaderForward, err := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: %w", target.WorkloadID, err)
@@ -342,7 +679,7 @@ func createMCPClient(
 		// WithHTTPTimeout additionally wraps each SDK request in a
 		// context.WithTimeout so the mcpcompat transport surfaces a descriptive
 		// error before the stdlib deadline fires. Both are set to
-		// defaultBackendRequestTimeout: defense-in-depth.
+		// requestTimeout: defense-in-depth.
 		sizeLimited := httpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			resp, err := base.RoundTrip(req)
 			if err != nil {
@@ -357,16 +694,28 @@ func createMCPClient(
 			}
 			return resp, nil
 		})
+		// CheckRedirect: keep in sync with pkg/vmcp/client.newBackendHTTPClient — a
+		// cross-host 30x would otherwise re-inject (via the RoundTripper chain) the
+		// auth/identity/header-forward credentials at the attacker host.
 		httpClient := &http.Client{
-			Transport: sizeLimited,
-			Timeout:   defaultBackendRequestTimeout,
+			Transport:     sizeLimited,
+			Timeout:       requestTimeout,
+			CheckRedirect: networking.SameHostRedirectPolicy(),
 		}
 		streamableOpts := []mcptransport.StreamableHTTPCOption{
-			mcptransport.WithHTTPTimeout(defaultBackendRequestTimeout),
+			mcptransport.WithHTTPTimeout(requestTimeout),
 			mcptransport.WithHTTPBasicClient(httpClient),
 		}
 		if sessionHint != "" {
 			streamableOpts = append(streamableOpts, mcptransport.WithSession(sessionHint))
+		}
+		if sink != nil {
+			// A standalone GET stream is the only way this client can receive a
+			// notification the backend emits outside an in-flight call (e.g.
+			// tools/list_changed after a registration-time capability change).
+			// Gated strictly on sink != nil: some backends hang when this stream
+			// is opened against them (#5748 R3), so it must stay opt-in.
+			streamableOpts = append(streamableOpts, mcptransport.WithContinuousListening())
 		}
 		c, err = mcpclient.NewStreamableHttpClient(target.BaseURL, streamableOpts...)
 	case "sse":
@@ -378,7 +727,9 @@ func createMCPClient(
 		//
 		// http.Client.Timeout is also omitted: it caps the full round-trip
 		// including body reads, which would kill the stream after the timeout.
-		httpClient := &http.Client{Transport: base}
+		// CheckRedirect: keep in sync with pkg/vmcp/client.newBackendHTTPClient (see
+		// the streamable case above). No Timeout: long-lived SSE stream.
+		httpClient := &http.Client{Transport: base, CheckRedirect: networking.SameHostRedirectPolicy()}
 		c, err = mcpclient.NewSSEMCPClient(
 			target.BaseURL,
 			mcptransport.WithHTTPClient(httpClient),
@@ -389,6 +740,18 @@ func createMCPClient(
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create %s client: %w", target.TransportType, err)
+	}
+
+	// Register the notification handler before Start (mirrors the per-call
+	// client in pkg/vmcp/client, and matches the mcpcompat client's own
+	// registration contract): the handler dispatches
+	// notifications/tools/list_changed, notifications/resources/list_changed,
+	// and notifications/prompts/list_changed to sink and logs
+	// notifications/message. Strictly gated on sink != nil so a nil-sink caller
+	// registers no handler at all — this function's behavior for that caller is
+	// unchanged.
+	if sink != nil {
+		c.OnNotification(newListChangedNotificationHandler(target.WorkloadID, sink))
 	}
 
 	// Start the transport with context.Background() so that the transport's
@@ -495,8 +858,21 @@ func queryBackendTools(ctx context.Context, c *mcpclient.Client, target *vmcp.Ba
 // queryBackendResources lists the backend's resources with cursor-following pagination.
 // A backend that advertises the resources capability but does not implement
 // resources/list (JSON-RPC -32601, e.g. Atlassian Rovo, see #5231) is tolerated: it
-// returns no resources instead of failing the whole discovery. HTTP-level method absence
-// remains fatal.
+// returns no resources instead of failing the whole discovery.
+//
+// The tolerance covers -32601 wherever it is carried. Protocol version 2026-07-28
+// requires a server to answer an unknown method with HTTP 404 carrying the -32601
+// body; the tests cover 405 and 501 alongside it as the defensive scope named in
+// #5242, not as spec requirements. The SDK decodes the JSON-RPC error out of such a
+// non-2xx response and keeps the connection open, so it reaches the check below like
+// any other -32601. That decoding is what makes recovery safe here, and it is
+// disabled by MCPGODEBUG=noprotocolerrorbody=1.
+//
+// An error status with NO JSON-RPC body stays fatal. By the time that surfaces the SDK
+// has already closed the connection, so tolerating it would return a session that
+// advertises tools it can no longer call — worse than dropping the backend. The status
+// alone does not mean the method is missing either: before 2026-07-28 a bare 404 means
+// the session is gone.
 func queryBackendResources(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Resource, error) {
 	resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
 		req := mcp.ListResourcesRequest{}
@@ -530,7 +906,8 @@ func queryBackendResources(ctx context.Context, c *mcpclient.Client, target *vmc
 
 // queryBackendPrompts lists the backend's prompts with cursor-following pagination.
 // Like queryBackendResources, it tolerates a -32601 from a backend that advertises the
-// prompts capability without implementing prompts/list.
+// prompts capability without implementing prompts/list, including one carried under an
+// HTTP error status. See queryBackendResources for what that covers and what stays fatal.
 func queryBackendPrompts(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Prompt, error) {
 	prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
 		req := mcp.ListPromptsRequest{}

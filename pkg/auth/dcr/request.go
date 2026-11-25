@@ -3,6 +3,64 @@
 
 package dcr
 
+import "fmt"
+
+// RegistrationProbe selects how ResolveCredentials confirms, on a cache hit,
+// that the upstream still recognises the cached client (see
+// verifyCachedRegistration). The zero value means ProbeTokenEndpoint.
+type RegistrationProbe string
+
+const (
+	// ProbeTokenEndpoint redeems a random authorization code at the token
+	// endpoint with the cached credentials. invalid_client means the
+	// registration is gone; invalid_grant means it is alive. It decides only
+	// for upstreams that authenticate the client before validating the grant
+	// (a ToolHive auth server does). This is the default.
+	ProbeTokenEndpoint RegistrationProbe = "tokenEndpoint"
+
+	// ProbeAuthorizationEndpoint sends an authorization request for the
+	// cached client without following redirects and no credentials, so it
+	// covers every auth method. RFC 6749 §4.1.2.1 has the server answer an
+	// unknown client_id or redirect_uri directly, with no redirect, while a
+	// known client is redirected (to login, or back to redirect_uri with an
+	// error). A direct 400, 401 or 403 carrying an RFC 6749 JSON error object
+	// with error invalid_client, unauthorized_client or invalid_request means
+	// the registration is gone; any other direct answer (an HTML page, a
+	// gateway's 401/403, another error code) is unverified and keeps the
+	// cached client. Use it for upstreams whose token endpoint validates the
+	// grant before the client, where ProbeTokenEndpoint cannot decide. A
+	// false rejection re-registers at every start and, when registration
+	// also fails, fails startup.
+	ProbeAuthorizationEndpoint RegistrationProbe = "authorizationEndpoint"
+
+	// ProbeNone never contacts the upstream on a cache hit. It turns off
+	// the upstream probe only: a cached registration made with another
+	// method than a configured TokenEndpointAuthMethod is still replaced.
+	// Otherwise the cached registration is used as-is and retired only
+	// through RotationKey.
+	ProbeNone RegistrationProbe = "none"
+)
+
+// Validate rejects a RegistrationProbe value other than the empty default
+// and the three named strategies.
+func (p RegistrationProbe) Validate() error {
+	switch p {
+	case "", ProbeTokenEndpoint, ProbeAuthorizationEndpoint, ProbeNone:
+		return nil
+	default:
+		return fmt.Errorf("registration_probe must be one of %q, %q or %q (got %q)",
+			ProbeTokenEndpoint, ProbeAuthorizationEndpoint, ProbeNone, string(p))
+	}
+}
+
+// effective returns the strategy to run, resolving the empty default.
+func (p RegistrationProbe) effective() RegistrationProbe {
+	if p == "" {
+		return ProbeTokenEndpoint
+	}
+	return p
+}
+
 // Request is the profile-neutral input to ResolveCredentials. Each consumer
 // (embedded authserver, CLI OAuth flow) translates its domain types into a
 // Request at the call site so the resolver does not import any consumer's
@@ -44,8 +102,9 @@ type Request struct {
 	//     exercised on this path.
 	//
 	// The resolver's cache key is (Issuer, UpstreamID, RedirectURI,
-	// ScopesHash), where UpstreamID is derived by the resolver from
-	// DiscoveryURL / RegistrationEndpoint (issue #5823). The two consumers
+	// ScopesHash) plus RotationKey when set, where UpstreamID is derived by
+	// the resolver from DiscoveryURL / RegistrationEndpoint (issue #5823).
+	// The two consumers
 	// do not collide on the key because the embedded authserver's
 	// RedirectURI lives on the authserver's origin and the CLI's lives on a
 	// loopback (RFC 8252 §7.3) — even when Issuer happens to match between
@@ -91,6 +150,44 @@ type Request struct {
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint string
 
+	// RotationKey is an optional operator-chosen label folded into the cache
+	// key (and the in-process singleflight key) when non-empty. It is never
+	// sent to the upstream. Changing it forces a fresh RFC 7591 registration
+	// on the next resolve, without editing the credential store by hand.
+	// ResolveCredentials replaces a registration the upstream rejects on its
+	// own when the configured RegistrationProbe can tell (see
+	// verifyCachedRegistration); RotationKey is how an operator retires one
+	// the probe cannot tell is gone, or rotates one on request. An empty
+	// value addresses the same cache row as a Request written before the
+	// field existed.
+	RotationKey string
+
+	// RegistrationProbe selects how a cached registration is checked against
+	// the upstream on a cache hit. Empty means ProbeTokenEndpoint. See the
+	// RegistrationProbe constants for when each strategy can decide.
+	RegistrationProbe RegistrationProbe
+
+	// Periodic marks a re-check of an already-resolved registration; the
+	// staleness warning is logged at Debug so it repeats only at start.
+	Periodic bool
+
+	// TokenEndpointAuthMethod, when non-empty, is the token endpoint auth
+	// method to register with, in place of the one the resolver picks from
+	// the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). It is for an upstream whose token
+	// endpoint does not accept the method the resolver would pick, for
+	// example one that advertises client_secret_basic but reads client
+	// credentials only from the request body. It must be none,
+	// client_secret_basic or client_secret_post, and one of the upstream's
+	// advertised methods when the upstream advertises any.
+	//
+	// A cached registration made with a different method is replaced with
+	// a new registration on the next resolve, whatever RegistrationProbe
+	// says. A registration response that names a different method is
+	// refused, and so is a resolution that still names one, such as a row
+	// a replica on an older configuration stored first.
+	TokenEndpointAuthMethod string
+
 	// CodeChallengeMethodsSupported lists the PKCE challenge methods the
 	// upstream advertises. Only consulted when RegistrationEndpoint is set;
 	// on the DiscoveryURL branch the resolver reads this value from the
@@ -129,9 +226,12 @@ type Request struct {
 	// a clear error rather than silently downgrading.
 	//
 	// When false (the embedded-authserver default), the resolver picks
-	// the strongest auth method the upstream advertises (private_key_jwt
-	// > client_secret_basic > client_secret_post > none, with the same
-	// S256 gate on "none").
+	// the most preferred auth method the upstream advertises among the
+	// ones our OAuth2 runtime can actually use (client_secret_basic >
+	// client_secret_post > none, with the same S256 gate on "none").
+	// private_key_jwt is excluded from this preference even when
+	// advertised: it requires a signed client assertion the runtime has
+	// no way to produce.
 	//
 	// Has no effect on the RegistrationEndpoint-direct branch when neither
 	// DiscoveryURL nor CodeChallengeMethodsSupported is set: without
@@ -139,15 +239,31 @@ type Request struct {
 	// so the resolver refuses to register as a public client.
 	PublicClient bool
 
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string
+
 	// AllowPrivateIPs permits both of the resolver's outbound calls — the
 	// discovery fetch to DiscoveryURL and the registration POST to the
-	// resolved registration endpoint — to connect to private IP ranges.
-	// See networking.NewHostScopedClientBuilder for the CWE-918 guard policy
-	// this widens (loopback exemption, dial-time re-check, etc.). Set this to
-	// true only when the upstream authorization server is reachable solely
-	// over a private address (e.g. an in-cluster IdP with no public
-	// endpoint); defaults to false. Mirrors the AllowPrivateIPs posture
-	// already carried by the OAuth2 and OIDC upstream configs so a DCR
-	// upstream is not the one outbound-facing path without an SSRF guard.
+	// resolved registration endpoint — to connect to private IP ranges. For
+	// ServerSuppliedEndpoints, this is the only way to permit private,
+	// loopback, or link-local dialing; localhost and
+	// INSECURE_DISABLE_URL_VALIDATION do not widen that gate. Set this to true
+	// only when the upstream authorization server is reachable solely over a
+	// private address (e.g. an in-cluster IdP with no public endpoint);
+	// defaults to false. Mirrors the AllowPrivateIPs posture already carried
+	// by the OAuth2 and OIDC upstream configs so a DCR upstream is not the one
+	// outbound-facing path without an SSRF guard.
 	AllowPrivateIPs bool
+
+	// ServerSuppliedEndpoints reports that DiscoveryURL or RegistrationEndpoint
+	// originated with a remote MCP server rather than with the operator. The
+	// resolver then uses the strict server-supplied client policy, which does
+	// not grant private-IP access merely because an endpoint is localhost or
+	// INSECURE_DISABLE_URL_VALIDATION is set. Leave false for trusted,
+	// operator-configured embedded-authserver upstreams.
+	//
+	// A registration endpoint read out of a fetched metadata document is always
+	// treated as server-supplied regardless of this field: the upstream controls
+	// that document even when the operator chose the DiscoveryURL that returned it.
+	ServerSuppliedEndpoints bool
 }

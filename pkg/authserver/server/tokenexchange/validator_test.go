@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -31,12 +32,20 @@ type testJWKS struct {
 func newTestJWKS(t *testing.T) *testJWKS {
 	t.Helper()
 
+	return newTestJWKSWithKID(t, "test-key-1")
+}
+
+// newTestJWKSWithKID is newTestJWKS with a caller-chosen kid, for tests that
+// need a key the served JWKS does not contain.
+func newTestJWKSWithKID(t *testing.T, kid string) *testJWKS {
+	t.Helper()
+
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
 	jwk := jose.JSONWebKey{
 		Key:       privateKey,
-		KeyID:     "test-key-1",
+		KeyID:     kid,
 		Algorithm: string(jose.ES256),
 		Use:       "sig",
 	}
@@ -57,11 +66,19 @@ func (tj *testJWKS) publicJWKS() *jose.JSONWebKeySet {
 // signToken creates a signed JWT with the given claims using the test JWKS key.
 func (tj *testJWKS) signToken(t *testing.T, claims jwt.Claims, extraClaims map[string]any) string {
 	t.Helper()
+	return tj.signTokenWithType(t, "JWT", claims, extraClaims)
+}
 
-	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.ES256, Key: tj.jwk},
-		(&jose.SignerOptions{}).WithType("JWT"),
-	)
+// signTokenWithType is signToken with the JOSE typ header set to typ, or left
+// out when typ is empty.
+func (tj *testJWKS) signTokenWithType(t *testing.T, typ string, claims jwt.Claims, extraClaims map[string]any) string {
+	t.Helper()
+
+	options := &jose.SignerOptions{}
+	if typ != "" {
+		options.WithType(jose.ContentType(typ))
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: tj.jwk}, options)
 	require.NoError(t, err)
 
 	builder := jwt.Signed(signer).Claims(claims)
@@ -99,34 +116,34 @@ func validExtraClaims() map[string]any {
 	}
 }
 
-func TestSubjectTokenValidator_NewValidation(t *testing.T) {
+func TestSelfIssuedTokenValidator_NewValidation(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
 
 	t.Run("nil JWKS returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewSubjectTokenValidator(nil, testIssuer, []string{testIssuer})
+		_, err := NewSelfIssuedTokenValidator(nil, testIssuer, []string{testIssuer})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "JWKS must not be nil")
 	})
 
 	t.Run("empty issuer returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewSubjectTokenValidator(tj.publicJWKS(), "", []string{testIssuer})
+		_, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), "", []string{testIssuer})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "issuer must not be empty")
 	})
 
 	t.Run("valid params succeed", func(t *testing.T) {
 		t.Parallel()
-		v, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+		v, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 		assert.NotNil(t, v)
 	})
 }
 
-func TestSubjectTokenValidator_Validate(t *testing.T) {
+func TestSelfIssuedTokenValidator_Validate(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
@@ -296,13 +313,76 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 			wantErr:     true,
 			errContains: "malformed 'may_act' claim",
 		},
+		{
+			name: "may_act with iss matching this server's own issuer accepted",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["may_act"] = map[string]any{"sub": "authorized-agent", "iss": testIssuer}
+				return tj.signToken(t, validClaims(), extra)
+			},
+			check: func(t *testing.T, vc *ValidatedClaims) {
+				t.Helper()
+				require.NotNil(t, vc.MayAct)
+				assert.Equal(t, "authorized-agent", vc.MayAct.Sub)
+				assert.Equal(t, testIssuer, vc.MayAct.Iss)
+			},
+		},
+		{
+			// RFC 8693 §4.4: sub is only meaningful together with iss. This
+			// server only ever grants delegation to its own clients, so an
+			// iss naming a different issuer is namespace confusion, not a
+			// legitimate qualifier — reject rather than silently ignore it.
+			name: "malformed may_act — iss not matching this server's own issuer",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["may_act"] = map[string]any{"sub": "authorized-agent", "iss": "https://evil.example.com"}
+				return tj.signToken(t, validClaims(), extra)
+			},
+			wantErr:     true,
+			errContains: "malformed 'may_act' claim",
+		},
+		{
+			name: "malformed may_act — empty iss",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["may_act"] = map[string]any{"sub": "authorized-agent", "iss": ""}
+				return tj.signToken(t, validClaims(), extra)
+			},
+			wantErr:     true,
+			errContains: "malformed 'may_act' claim",
+		},
+		{
+			name: "ID token masquerading as subject token rejected — at_hash present",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["at_hash"] = "some-hash-value"
+				return tj.signToken(t, validClaims(), extra)
+			},
+			wantErr:     true,
+			errContains: "'at_hash'",
+		},
+		{
+			name: "ID token masquerading as subject token rejected — c_hash present",
+			token: func(t *testing.T) string {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["c_hash"] = "some-hash-value"
+				return tj.signToken(t, validClaims(), extra)
+			},
+			wantErr:     true,
+			errContains: "'c_hash'",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+			validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 			require.NoError(t, err)
 			rawToken := tt.token(t)
 
@@ -324,7 +404,7 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 	}
 }
 
-func TestSubjectTokenValidator_AudienceValidation(t *testing.T) {
+func TestSelfIssuedTokenValidator_AudienceValidation(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
@@ -359,7 +439,7 @@ func TestSubjectTokenValidator_AudienceValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, tt.allowedAudiences)
+			validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, tt.allowedAudiences)
 			require.NoError(t, err)
 
 			claims := validClaims()
@@ -377,6 +457,56 @@ func TestSubjectTokenValidator_AudienceValidation(t *testing.T) {
 			require.NotNil(t, result)
 		})
 	}
+}
+
+// TestSelfIssuedTokenValidator_IDJAGType pins that an ID-JAG signed by this
+// server's key is refused as a subject token even when its audience is allowed,
+// so only the typ stops it (RFC 8725 Section 3.12).
+func TestSelfIssuedTokenValidator_IDJAGType(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "ID-JAG typ", typ: "Application/OAuth-ID-JAG+JWT", wantErr: true},
+		{name: "absent typ", typ: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			raw := tj.signTokenWithType(t, tt.typ, validClaims(), validExtraClaims())
+
+			result, err := validator.Validate(context.Background(), raw)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "ID-JAG")
+				assert.Nil(t, result)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, result)
+		})
+	}
+}
+
+// TestRejectIDJAGType pins that rejectIDJAGType accepts a non-string typ header,
+// since it cannot name the ID-JAG type. The signature is never checked there,
+// so the hand-built token carries a bogus one.
+func TestRejectIDJAGType(t *testing.T) {
+	t.Parallel()
+
+	b64 := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	token := b64(`{"alg":"ES256","typ":123}`) + "." + b64(`{"iss":"x"}`) + "." + b64("bogus-signature")
+
+	parsed, err := jwt.ParseSigned(token, allowedSignatureAlgorithms)
+	require.NoError(t, err)
+	require.NoError(t, rejectIDJAGType(parsed))
 }
 
 // newECDSAJWK generates a fresh ECDSA P-256 key with the given key ID. The
@@ -417,7 +547,7 @@ func signWithJWK(t *testing.T, signingKey jose.JSONWebKey, alg jose.SignatureAlg
 	return raw
 }
 
-func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
+func TestSelfIssuedTokenValidator_MultiKeyJWKS(t *testing.T) {
 	t.Parallel()
 
 	t.Run("token verified with kid-matched key", func(t *testing.T) {
@@ -427,7 +557,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		jwk2 := newECDSAJWK(t, "test-key-2")
 		jwks := publicJWKSOf(jwk1, jwk2)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		rawToken := signWithJWK(t, jwk2, jose.ES256, validClaims())
@@ -445,7 +575,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		jwk2 := newECDSAJWK(t, "test-key-2")
 		jwks := publicJWKSOf(jwk1, jwk2)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		// Sign with jwk1 (whose public half is in the JWKS) but omit the kid
@@ -467,7 +597,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		jwk1 := newECDSAJWK(t, "test-key-1")
 		jwks := publicJWKSOf(jwk1)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		// Key B is not in the JWKS.
@@ -487,7 +617,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		jwk2 := newECDSAJWK(t, "test-key-2")
 		jwks := publicJWKSOf(jwk1, jwk2)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		// Sign with jwk2's key material but claim jwk1's kid in the header.
@@ -517,7 +647,7 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		}
 		jwks := publicJWKSOf(rsaJWK)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		rawToken := signWithJWK(t, rsaJWK, jose.RS256, validClaims())
@@ -526,5 +656,56 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.Equal(t, "user-123", result.Subject)
+	})
+
+	t.Run("key marked for a non-signing use is never tried", func(t *testing.T) {
+		t.Parallel()
+
+		// Same key material a signature could actually verify against, but
+		// declared "enc" in the JWKS — RFC 7517 §4.2 reserves it for a
+		// different purpose. Without the use filter, this key would still
+		// verify the signature below and wrongly accept the token.
+		jwk := newECDSAJWK(t, "enc-key")
+		jwk.Use = "enc"
+		jwks := publicJWKSOf(jwk)
+
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
+		require.NoError(t, err)
+
+		// No kid on the token, so verifySignature must fall back to trying
+		// every key in the JWKS — and skip this one.
+		signingKeyNoKID := jwk
+		signingKeyNoKID.KeyID = ""
+		rawToken := signWithJWK(t, signingKeyNoKID, jose.ES256, validClaims())
+
+		result, err := validator.Validate(context.Background(), rawToken)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "signature verification failed")
+		assert.Nil(t, result)
+	})
+
+	t.Run("key with a mismatched declared algorithm is never tried", func(t *testing.T) {
+		t.Parallel()
+
+		// The JWKS entry claims RS256, but the token header (and the actual
+		// signing) uses ES256 — a misconfigured or spoofed JWKS entry.
+		// Without the alg filter, go-jose would still attempt (and, for an
+		// EC key, fail) this candidate; the point here is that it must be
+		// skipped rather than tried at all.
+		jwk := newECDSAJWK(t, "mismatched-alg-key")
+		jwk.Algorithm = string(jose.RS256)
+		jwks := publicJWKSOf(jwk)
+
+		validator, err := NewSelfIssuedTokenValidator(jwks, testIssuer, []string{testIssuer})
+		require.NoError(t, err)
+
+		signingKeyNoKID := jwk
+		signingKeyNoKID.KeyID = ""
+		rawToken := signWithJWK(t, signingKeyNoKID, jose.ES256, validClaims())
+
+		result, err := validator.Validate(context.Background(), rawToken)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "signature verification failed")
+		assert.Nil(t, result)
 	})
 }

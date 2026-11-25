@@ -29,13 +29,20 @@ type BackendStatus struct {
 	Health    string `json:"health"`              // "healthy", "degraded", "unhealthy", "unauthenticated", "unknown"
 	Transport string `json:"transport"`           // MCP transport protocol
 	AuthType  string `json:"auth_type,omitempty"` // "unauthenticated", "header_injection", "token_exchange"
+	// MCPRevision is the backend's resolved MCP protocol revision ("2025-11-25"
+	// or "2026-07-28"), mirroring the value the operator surfaces on
+	// VirtualMCPServer.status.discoveredBackends[]. Empty when the backend has
+	// not been probed yet or when health monitoring is disabled, since the
+	// revision is only observable through the live health state.
+	MCPRevision string `json:"mcp_revision,omitempty"`
 }
 
 // handleStatus handles /status HTTP requests for operational visibility.
 //
 // Security Note: This endpoint is unauthenticated to support operator consumption
-// and debugging. It exposes operational metadata (backend names, auth types)
-// but NOT secrets, tokens, internal URLs, or request data. In sensitive multi-tenant
+// and debugging. It exposes operational metadata (backend names, auth types,
+// negotiated MCP protocol revision) but NOT secrets, tokens, internal URLs, or
+// request data. In sensitive multi-tenant
 // deployments, restrict access to this endpoint via network policies.
 //
 // For minimal health checking (load balancers), use /health instead.
@@ -87,16 +94,22 @@ func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
 	hasHealthyBackend := false
 	for _, backend := range backends {
 		// Prefer the live health monitor state over the static registry value.
+		// The MCP revision has no static counterpart — it is only ever observable
+		// through the live state, so it stays empty when health monitoring is
+		// disabled or the backend has not been probed yet.
 		healthStatus := backend.HealthStatus
+		var mcpRevision string
 		if liveState, ok := liveHealthStates[backend.ID]; ok {
 			healthStatus = liveState.Status
+			mcpRevision = liveState.MCPRevision
 		}
 
 		status := BackendStatus{
-			Name:      backend.Name,
-			Health:    string(healthStatus),
-			Transport: backend.TransportType,
-			AuthType:  getAuthType(backend.AuthConfig),
+			Name:        backend.Name,
+			Health:      string(healthStatus),
+			Transport:   backend.TransportType,
+			AuthType:    getAuthType(backend.AuthConfig),
+			MCPRevision: mcpRevision,
 		}
 		backendStatuses = append(backendStatuses, status)
 

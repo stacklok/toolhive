@@ -22,6 +22,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/useragent"
 )
 
 // TestHeaderForward_EndToEnd_ThroughHTTPBackendClient drives the full
@@ -73,7 +75,7 @@ func TestHeaderForward_EndToEnd_ThroughHTTPBackendClient(t *testing.T) {
 	// CallTool drives the full Initialize → tools/list flow through the
 	// streamable-HTTP transport. We don't care about the call result — only
 	// that the request reached the test server with the configured headers.
-	_, _ = backendClient.CallTool(ctx, target, "anything", map[string]any{}, nil)
+	_, _ = backendClient.CallTool(ctx, target, "anything", map[string]any{}, nil, nil)
 
 	captured.mu.Lock()
 	defer captured.mu.Unlock()
@@ -131,4 +133,58 @@ func newCapturingMCPServer(t *testing.T) *capturingMCPServer {
 	require.True(t, strings.HasPrefix(c.server.URL, "http://"),
 		"capturingMCPServer must serve plain HTTP")
 	return c
+}
+
+// TestUserAgent_ThroughHTTPBackendClient verifies that backend requests carry
+// the vMCP User-Agent by default, and that a User-Agent forwarded from the
+// incoming request (passthroughHeaders) reaches the backend instead.
+func TestUserAgent_ThroughHTTPBackendClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		forwarded map[string]string
+		want      string
+	}{
+		{name: "vMCP User-Agent by default", want: useragent.Value()},
+		{
+			name:      "forwarded User-Agent is kept",
+			forwarded: map[string]string{"User-Agent": "claude-code/2.0"},
+			want:      "claude-code/2.0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			captured := newCapturingMCPServer(t)
+			t.Cleanup(captured.server.Close)
+
+			registry := auth.NewDefaultOutgoingAuthRegistry()
+			require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+			backendClient, err := vmcpclient.NewHTTPBackendClient(registry)
+			require.NoError(t, err)
+
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "backend-ua",
+				WorkloadName:  "Backend UA",
+				BaseURL:       captured.server.URL,
+				TransportType: "streamable-http",
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if tt.forwarded != nil {
+				ctx = headerforward.WithForwardedHeaders(ctx, tt.forwarded)
+			}
+
+			// Only the request headers matter, not the call result.
+			_, _ = backendClient.CallTool(ctx, target, "anything", map[string]any{}, nil, nil)
+
+			captured.mu.Lock()
+			defer captured.mu.Unlock()
+			require.NotEmpty(t, captured.headers, "test server received no requests")
+			assert.Equal(t, tt.want, captured.headers.Get("User-Agent"))
+		})
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -33,9 +34,19 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
-// gracefulShutdownDelay gives a running manager a moment to stop cleanly after
-// the suite context is cancelled, before the envtest control plane is torn down.
-const gracefulShutdownDelay = 100 * time.Millisecond
+const (
+	// managerGracefulShutdownTimeout bounds how long the manager waits for its
+	// runnables (controllers and the informer cache) to return once the suite
+	// context is cancelled. It is deliberately well under envtest's 20s
+	// ControlPlaneStopTimeout so a wedged runnable surfaces as a manager
+	// shutdown timeout rather than as a kube-apiserver teardown failure.
+	managerGracefulShutdownTimeout = 10 * time.Second
+
+	// managerStopTimeout bounds how long Stop waits for Manager.Start to return.
+	// It allows a little slack over managerGracefulShutdownTimeout so the
+	// manager's own bounded shutdown always wins the race.
+	managerStopTimeout = 15 * time.Second
+)
 
 // SuiteOptions configures the envtest bootstrap performed by StartSuite. Add
 // fields only as concrete suites require them.
@@ -64,6 +75,10 @@ type SuiteEnv struct {
 
 	testEnv *envtest.Environment
 	cancel  context.CancelFunc
+	// managerDone is closed when the goroutine started by StartManager returns,
+	// i.e. once Manager.Start has fully shut down every runnable. It stays nil
+	// until StartManager is called.
+	managerDone chan struct{}
 }
 
 // StartSuite bootstraps a full operator integration suite: it starts an envtest
@@ -104,6 +119,9 @@ func StartSuite(opts SuiteOptions) *SuiteEnv {
 			BindAddress: "0", // Disable metrics server for tests to avoid port conflicts
 		},
 		HealthProbeBindAddress: "0", // Disable health probe for tests
+		// Keep the manager's own shutdown bounded so Stop never waits on it
+		// longer than envtest is willing to wait for the control plane.
+		GracefulShutdownTimeout: ptr.To(managerGracefulShutdownTimeout),
 	})
 	Expect(err).ToNot(HaveOccurred())
 
@@ -162,21 +180,40 @@ func (e *SuiteEnv) StartManager() {
 	if e.Manager == nil {
 		return
 	}
+	e.managerDone = make(chan struct{})
 	go func() {
 		defer GinkgoRecover()
+		// Closing before GinkgoRecover runs (deferred functions are LIFO) means
+		// Stop is released even if the manager fails.
+		defer close(e.managerDone)
 		Expect(e.Manager.Start(e.Ctx)).To(Succeed(), "failed to run manager")
 	}()
 }
 
-// Stop cancels the suite context and tears down the envtest control plane. When
-// a manager is running it first waits a short grace period so the manager can
-// shut down cleanly before the API server goes away.
+// Stop cancels the suite context and tears down the envtest control plane.
+//
+// When a manager is running it waits for Manager.Start to return before
+// stopping the control plane. That wait is load-bearing, not politeness: the
+// manager's informers hold long-running watch requests against kube-apiserver,
+// and kube-apiserver's graceful shutdown blocks on draining them. Signalling
+// the API server to stop while watches are still open makes it miss envtest's
+// 20s ControlPlaneStopTimeout, which surfaces as a flaky
+// "timeout waiting for process kube-apiserver to stop" failure in AfterSuite.
+// The suites with fewer specs than Ginkgo procs (MCPTelemetryConfig, MCPGroup)
+// hit it most often: their idle procs cancel the suite context moments after
+// the informers established their watches.
 func (e *SuiteEnv) Stop() {
 	By("tearing down the test environment")
 	e.cancel()
-	if e.Manager != nil {
-		// Give the manager some time to shut down gracefully.
-		time.Sleep(gracefulShutdownDelay)
+	if e.managerDone != nil {
+		select {
+		case <-e.managerDone:
+		case <-time.After(managerStopTimeout):
+			// Fall through to the control plane teardown anyway: reporting the
+			// apiserver timeout on top of this would only obscure the real
+			// problem, which is a runnable that refused to stop.
+			AddReportEntry("manager did not shut down within " + managerStopTimeout.String())
+		}
 	}
 	Expect(e.testEnv.Stop()).NotTo(HaveOccurred())
 }

@@ -272,3 +272,39 @@ func (mr *MockToolOverrideMockRecorder) ApplyOverrides(ctx, tools any) *gomock.C
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplyOverrides", reflect.TypeOf((*MockToolOverride)(nil).ApplyOverrides), ctx, tools)
 }
+
+// MockCacheInvalidator is a mock of CacheInvalidator interface.
+type MockCacheInvalidator struct {
+	ctrl     *gomock.Controller
+	recorder *MockCacheInvalidatorMockRecorder
+	isgomock struct{}
+}
+
+// MockCacheInvalidatorMockRecorder is the mock recorder for MockCacheInvalidator.
+type MockCacheInvalidatorMockRecorder struct {
+	mock *MockCacheInvalidator
+}
+
+// NewMockCacheInvalidator creates a new mock instance.
+func NewMockCacheInvalidator(ctrl *gomock.Controller) *MockCacheInvalidator {
+	mock := &MockCacheInvalidator{ctrl: ctrl}
+	mock.recorder = &MockCacheInvalidatorMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockCacheInvalidator) EXPECT() *MockCacheInvalidatorMockRecorder {
+	return m.recorder
+}
+
+// InvalidateAll mocks base method.
+func (m *MockCacheInvalidator) InvalidateAll() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "InvalidateAll")
+}
+
+// InvalidateAll indicates an expected call of InvalidateAll.
+func (mr *MockCacheInvalidatorMockRecorder) InvalidateAll() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InvalidateAll", reflect.TypeOf((*MockCacheInvalidator)(nil).InvalidateAll))
+}

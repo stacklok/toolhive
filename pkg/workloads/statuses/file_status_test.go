@@ -1204,6 +1204,129 @@ func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
 	assert.True(t, isProxyValidated, "Proxy down workload should be detected as unhealthy")
 }
 
+// TestFileStatusManager_ListWorkloads_DoesNotPoisonWorkloadStartingDuringList
+// pins the snapshot ordering inside ListWorkloads: status files must be read
+// before the runtime is queried. With the inverted order, a workload whose
+// status file flips starting → running between the two snapshots (a `thv run`
+// finishing concurrently) is seen as "file running, runtime missing", and
+// handleRuntimeMissing permanently overwrites its status file as unhealthy —
+// poisoning a healthy, freshly started workload. The mock flips the file to
+// running from inside the runtime-list call, which under the correct ordering
+// is the later of the two snapshots.
+func TestFileStatusManager_ListWorkloads_DoesNotPoisonWorkloadStartingDuringList(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+	ctx := context.Background()
+
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+
+	const workloadName = "starting-workload"
+	require.NoError(t, manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "container starting"))
+
+	// Simulate the concurrent startup completing between the file snapshot and
+	// the runtime snapshot: flip the file to running and return a runtime view
+	// from before the container existed.
+	mockRuntime.EXPECT().ListWorkloads(gomock.Any()).DoAndReturn(func(callCtx context.Context) ([]rt.ContainerInfo, error) {
+		require.NoError(t, manager.SetWorkloadStatus(callCtx, workloadName, rt.WorkloadStatusRunning, ""))
+		return []rt.ContainerInfo{}, nil
+	})
+
+	workloads, err := manager.ListWorkloads(ctx, true, nil)
+	require.NoError(t, err)
+	require.Len(t, workloads, 1)
+	assert.Equal(t, workloadName, workloads[0].Name)
+	assert.Equal(t, rt.WorkloadStatusStarting, workloads[0].Status,
+		"a workload still starting in the file snapshot must be reported as starting, not poisoned")
+
+	// The persisted status file must still say running: ListWorkloads must not
+	// have overwritten the concurrent writer's state with unhealthy.
+	data, err := os.ReadFile(manager.getStatusFilePath(workloadName))
+	require.NoError(t, err)
+	var persisted workloadStatusFile
+	require.NoError(t, json.Unmarshal(data, &persisted))
+	assert.Equal(t, rt.WorkloadStatusRunning, persisted.Status,
+		"ListWorkloads must not overwrite the status file of a workload that finished starting mid-list")
+}
+
+// TestFileStatusManager_ListWorkloads_UnhealthyMarkIsGuarded pins the guarded
+// write in handleRuntimeMissing: by the time the merge decides to mark a
+// workload unhealthy, its snapshot is stale, and a concurrent `thv rm` may
+// have deleted the status file (an unconditional SetWorkloadStatus would
+// recreate it as a ghost) or moved it to `removing` (which must not be
+// clobbered by a stale unhealthy verdict). Both mutations are injected from
+// inside the runtime-list call, which is the later snapshot.
+func TestFileStatusManager_ListWorkloads_UnhealthyMarkIsGuarded(t *testing.T) {
+	t.Parallel()
+
+	const workloadName = "guarded-workload"
+
+	tests := []struct {
+		name            string
+		mutate          func(ctx context.Context, m *fileStatusManager)
+		wantFileExists  bool
+		wantFileStatus  rt.WorkloadStatus
+		wantFileContext string
+	}{
+		{
+			name: "file deleted mid-list is not resurrected",
+			mutate: func(ctx context.Context, m *fileStatusManager) {
+				require.NoError(t, m.DeleteWorkloadStatus(ctx, workloadName))
+			},
+			wantFileExists: false,
+		},
+		{
+			name: "status moved to removing mid-list is not clobbered",
+			mutate: func(ctx context.Context, m *fileStatusManager) {
+				require.NoError(t, m.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRemoving, "being removed"))
+			},
+			wantFileExists:  true,
+			wantFileStatus:  rt.WorkloadStatusRemoving,
+			wantFileContext: "being removed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+			ctx := context.Background()
+
+			mockRunConfigStore.EXPECT().Exists(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+
+			require.NoError(t, manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "container started"))
+
+			mockRuntime.EXPECT().ListWorkloads(gomock.Any()).DoAndReturn(func(callCtx context.Context) ([]rt.ContainerInfo, error) {
+				tt.mutate(callCtx, manager)
+				return []rt.ContainerInfo{}, nil
+			})
+
+			_, err := manager.ListWorkloads(ctx, true, nil)
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(manager.getStatusFilePath(workloadName))
+			if !tt.wantFileExists {
+				require.True(t, os.IsNotExist(err),
+					"status file deleted by a concurrent rm must not be recreated by ListWorkloads")
+				return
+			}
+			require.NoError(t, err)
+			var persisted workloadStatusFile
+			require.NoError(t, json.Unmarshal(data, &persisted))
+			assert.Equal(t, tt.wantFileStatus, persisted.Status,
+				"a status written after the merge's observation must not be clobbered")
+			assert.Equal(t, tt.wantFileContext, persisted.StatusContext)
+		})
+	}
+}
+
 func TestFileStatusManager_GetWorkload_vs_ListWorkloads_Consistency(t *testing.T) {
 	t.Parallel()
 

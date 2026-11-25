@@ -975,7 +975,8 @@ func buildTokenExchangeFactories(
 	// Registered with token exchange so a request for a refresh token
 	// always reaches it, even for a client that has not enabled the feature.
 	refreshTokenFactory, err := tokenexchange.RefreshTokenFactory(
-		clientPolicies, signer, tokenexchange.WithExchangeGrantStorage(exchangeGrantStore))
+		clientPolicies, signer, tokenexchange.WithExchangeGrantStorage(exchangeGrantStore),
+		tokenexchange.WithIDJAGAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create refresh token exchange factory: %w", err)
 	}

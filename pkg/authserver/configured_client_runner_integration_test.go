@@ -130,6 +130,16 @@ type tokenResult struct {
 	status int
 	header http.Header
 	body   map[string]any
+	raw    []byte // the response body as received
+}
+
+// details returns the raw bytes of the response body's authorization_details
+// member, nil when the member is absent.
+func (r tokenResult) details(t *testing.T) json.RawMessage {
+	t.Helper()
+	var members map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(r.raw, &members), string(r.raw))
+	return members["authorization_details"]
 }
 
 func (r tokenResult) str(t *testing.T, key string) string {
@@ -183,9 +193,11 @@ func postTokenWithHeader(t *testing.T, serverURL string, auth clientAuth, values
 		_, _ = io.Copy(io.Discard, response.Body)
 		require.NoError(t, response.Body.Close())
 	}()
+	raw, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
 	var body map[string]any
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
-	return tokenResult{status: response.StatusCode, header: response.Header, body: body}
+	require.NoError(t, json.Unmarshal(raw, &body), string(raw))
+	return tokenResult{status: response.StatusCode, header: response.Header, body: body, raw: raw}
 }
 
 // authorizeProbe sends an authorization request without following redirects and

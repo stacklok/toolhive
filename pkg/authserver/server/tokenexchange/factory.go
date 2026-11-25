@@ -60,7 +60,9 @@ type factoryOptions struct {
 // authorization_details parameter is ignored. On ID-JAG redemption, with no
 // registry an ID-JAG that carries an authorization_details claim is refused
 // with unknown_type. The token-exchange factories and IDJAGIssuanceFactory
-// apply it.
+// apply it. A token exchange that mints an ID-JAG is handled by
+// RefreshTokenFactory's handler, which takes the registry through
+// WithIDJAGAuthorizationDetailsRegistry.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) FactoryOption {
 	return func(o *factoryOptions) { o.authorizationDetailsRegistry = registry }
 }

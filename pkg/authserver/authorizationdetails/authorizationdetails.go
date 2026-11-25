@@ -13,7 +13,8 @@
 // expensive checks, and rejects malformed input. Pending.Grant or
 // Pending.GrantSubset runs late, after the request is otherwise accepted, and
 // calls the hooks: Grant when the hooks decide the granted entries, and
-// GrantSubset when they may only keep or drop entries someone else signed.
+// GrantSubset when they may only keep or drop entries that go into a signed
+// token with their bytes unchanged.
 package authorizationdetails
 
 import (
@@ -50,7 +51,8 @@ type Type struct {
 	// It is called at most once per request, after the other checks passed,
 	// with every entry of the type in request order. What it may return
 	// depends on how the server asks: see Pending.Grant (token exchange) and
-	// Pending.GrantSubset (ID-JAG redemption).
+	// Pending.GrantSubset (a token exchange that mints an ID-JAG, and ID-JAG
+	// redemption).
 	//
 	// Grant is decide-only: it may read state but must not commit it, because
 	// token issuance can still fail after it returns. On ID-JAG redemption the
@@ -98,7 +100,10 @@ type Request struct {
 // ExchangeContext is the part of a Request only RFC 8693 token exchange has.
 type ExchangeContext struct {
 	// Actor is the resolved actor. Without an actor_token it equals the
-	// client ID, or the verified SPIFFE ID for a SPIFFE client.
+	// client ID, or the verified SPIFFE ID for a SPIFFE client. On a token
+	// exchange that mints an ID-JAG for a client with an actor profile, the
+	// actor token is validated only after the hooks run, so Actor is empty
+	// and ActorTokenPresent is true.
 	Actor string
 	// ActorTokenPresent reports whether the request carried an actor_token.
 	ActorTokenPresent bool
@@ -118,6 +123,12 @@ type RedemptionContext struct {
 
 // Subject describes a validated token: the subject_token on token exchange,
 // the ID-JAG on ID-JAG redemption.
+//
+// On a token exchange that mints an ID-JAG, the subject_token is the opaque
+// refresh token of an exchange grant, so Subject describes the grant: Issuer
+// is this server, Subject is the user the grant acts for (the ID-JAG's sub),
+// ClientID is the client that holds the grant, IssuedAt and Expiry are the
+// grant's creation and expiry, and the other fields are empty.
 type Subject struct {
 	Issuer string
 	// Subject is the token's sub claim, on every grant. It is never replaced by
@@ -295,10 +306,13 @@ type Subset struct {
 
 // GrantSubset calls each type's hook once, in the order the types first
 // appear in the parsed value, and keeps the entries the hooks returned. It is
-// for a value whose entries a third party signed: a hook may only keep or
+// for entries that go into a signed token unchanged: a hook may only keep or
 // drop whole entries, and the result carries the parsed bytes of each kept
-// entry, never the hook's. The package fills req.Entries and req.GrantType;
-// each hook gets its own copy of its entries.
+// entry, never the hook's. ToolHive's authorization server uses it on both
+// sides of an ID-JAG: when it mints one, for the entries the client asked to
+// have signed, and when it redeems one, for the entries the issuer signed. The
+// package fills req.Entries and req.GrantType; each hook gets its own copy of
+// its entries.
 //
 // Every entry a hook returns must equal a distinct one of its type's entries
 // as a JSON value, with object members in any order and numbers compared as

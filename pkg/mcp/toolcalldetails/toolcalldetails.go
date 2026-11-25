@@ -30,21 +30,21 @@
 // sent alongside.
 //
 // The intended use is the ID-JAG flow. The authorization server that issues
-// an ID-JAG (AS-1) is meant to accept the entry on the RFC 8693
-// token-exchange request for an ID-JAG and sign it into the ID-JAG's
-// authorization_details claim. The authorization server that redeems the
-// ID-JAG with the RFC 7523 JWT-bearer grant (AS-2) is meant to take the entry
-// only from that signed claim, never from a redemption parameter or from a
-// JWT-bearer assertion that is not an ID-JAG, and copy it unchanged into the
-// access token.
+// an ID-JAG (AS-1) accepts the entry on the RFC 8693 token-exchange request
+// for an ID-JAG and signs it into the ID-JAG's authorization_details claim.
+// The authorization server that redeems the ID-JAG with the RFC 7523
+// JWT-bearer grant (AS-2) takes the entry only from that signed claim, never
+// from a redemption parameter or from a JWT-bearer assertion that is not an
+// ID-JAG, and copies it unchanged into the access token.
 //
 // Registering the type only makes it known to a server's registry; each
 // handler decides whether and where it reads the entry. In pkg/authserver,
-// ID-JAG redemption processes the signed claim and copies a granted entry into
-// the access token, while the token-exchange request for an ID-JAG refuses the
-// authorization_details parameter, so AS-1 does not sign the entry yet. A
-// token exchange that reaches the hook without requesting an ID-JAG is
-// refused with ReasonIDJAGRequired.
+// both sides are implemented: a token exchange for an ID-JAG signs the
+// granted entry into the ID-JAG with the bytes the client sent, and ID-JAG
+// redemption processes the signed claim and copies a granted entry into the
+// access token. Register the type on both servers. A token exchange that
+// reaches the hook without requesting an ID-JAG is refused with
+// ReasonIDJAGRequired.
 //
 // No authorization server computes the arguments hash or compares it with
 // real arguments: the receiver of the access token enforces the call.
@@ -197,12 +197,11 @@ var (
 // grant checks that exactly one well-formed entry was sent and returns it
 // unchanged. The result is never used to pick a resource, scope or audience.
 func grant(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
-	// Token exchange only echoes the granted entries and never puts them in
-	// the token it issues. Minting an ID-JAG is meant to sign them into it,
-	// but that path does not read the parameter yet. Accepting the entry on
-	// any other exchange would return a token the entry does not restrict, so
-	// only ID-JAG redemption and a token exchange for an ID-JAG are accepted,
-	// and a request with neither part is refused.
+	// Only minting an ID-JAG signs the granted entries into the token it
+	// issues; any other token exchange only echoes them. Accepting the entry
+	// on such an exchange would return a token the entry does not restrict,
+	// so only ID-JAG redemption and a token exchange for an ID-JAG are
+	// accepted, and a request with neither part is refused.
 	idJAGExchange := req.Exchange != nil && req.Exchange.RequestedTokenType == oauthproto.TokenTypeIDJAG
 	if req.Redemption == nil && !idJAGExchange {
 		return authorizationdetails.Result{}, authorizationdetails.Error{

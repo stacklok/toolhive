@@ -202,8 +202,8 @@ type Authorizer struct {
 	// Mutex for thread safety
 	mu sync.RWMutex
 	// primaryUpstreamProvider names the upstream IDP provider whose access token
-	// is the source of JWT claims for Cedar evaluation, aside from the narrow
-	// user-profile supplement described in resolveClaims.
+	// is the primary source of JWT claims for Cedar evaluation, supplemented from
+	// the same provider's id_token as described in resolveClaims.
 	// When empty, claims from the token on the original client request are used,
 	// which may be a ToolHive-issued token or any other bearer token.
 	primaryUpstreamProvider string
@@ -222,13 +222,13 @@ type Authorizer struct {
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
-	// supplementLog rate-limits the warning that the upstream access token lacked
-	// profile claims. It is deliberately separate from claimKeyLog: a shared
+	// supplementLog rate-limits the debug line that the upstream access token omitted
+	// claims its id_token asserts. It is deliberately separate from claimKeyLog: a shared
 	// timer would let whichever fires first suppress the other for the rest of
 	// the window, hiding the claim-key dump on exactly the deployments that need it.
 	supplementLog *syncutil.AtMost
 	// missingIDTokenLog rate-limits the warning that the primary provider has no
-	// usable stored id_token, so profile claims cannot be supplemented at all.
+	// usable stored id_token, so no claim can be supplemented at all.
 	// Separate from supplementLog because the two are mutually exclusive per
 	// request and describe opposite conditions.
 	missingIDTokenLog *syncutil.AtMost
@@ -260,11 +260,15 @@ type ConfigOptions struct {
 	// after validation for the configured embedded authorization server; then
 	// request-token claims are used.
 	//
-	// The profile claims in profileClaimsFromIDToken fall back to the SAME
-	// provider's id_token when its access token omits them (many OIDC providers
-	// assert `email` only in the id_token), so `principal has claim_email` keeps
-	// meaning "this upstream asserted an email". Every other claim, including all
-	// group/role/scope claims, comes from the upstream access token or not at all.
+	// Any claim that access token omits falls back to the SAME provider's id_token,
+	// apart from those named in idTokenClaimsNeverSupplemented (token-describing
+	// claims, the delegated grant such as `scope`/`scp`, and `sub`). Providers
+	// routinely split what they assert across the two tokens, so this is what makes
+	// `principal has claim_email` and `principal in THVGroup::"..."` mean "this
+	// upstream asserted it" rather than "this upstream asserted it in one particular
+	// token". Precedence is fill-only: a claim the access token asserts is never
+	// overwritten or extended. See resolveClaims for the rationale and its limits.
+	//
 	// The sole nil-map exception uses only request-token claims because no upstream
 	// provider credential exists, never as a substitute for another provider's
 	// credentials.
@@ -274,7 +278,9 @@ type ConfigOptions struct {
 	// claims cannot be read at all and evaluation degrades to the request token's
 	// claims, labelled claimSourceUpstreamOpaque. That is a fallback, not an
 	// exception to the fail-closed rule above — the credential is there, it just
-	// cannot be parsed. See resolveClaims for the full contract.
+	// cannot be parsed. Outside those two labelled paths the ToolHive-issued token
+	// the client presented is never a claim source, so a group, role or scope claim
+	// on it grants nothing. See resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the
@@ -613,10 +619,13 @@ func (a *Authorizer) IsAuthorized(
 //
 // When primaryUpstreamProvider is set (the embedded auth server path), the claim
 // source is that provider's upstream credentials — and only that provider's. Its
-// access token is primary; the profile claims listed in profileClaimsFromIDToken
-// fall back to the same provider's id_token when the access token does not carry
-// them, because many OIDC providers assert `email` only in the id_token and the
-// access token alone was therefore a deny-all trap (#5916).
+// access token is primary; every claim the access token does not carry falls back
+// to the same provider's id_token, apart from the narrow set named in
+// idTokenClaimsNeverSupplemented. Providers routinely split what they assert
+// across the two tokens, and reading only the access token was a deny-all trap
+// twice over: for `email`, asserted in the id_token only by many OIDC providers
+// (#5916), and for group membership, likewise asserted in the id_token only where
+// groups are a profile-scope claim (#6049).
 //
 // Both tokens belong to the same upstream provider and session: the auth
 // middleware splits a single credential bundle into Identity.UpstreamTokens and
@@ -640,30 +649,118 @@ func (a *Authorizer) IsAuthorized(
 // those belong to the first configured upstream, which need not be the pinned
 // provider, so using them could attribute one IdP's email to another.
 //
-// The supplement is restricted to profileClaimsFromIDToken rather than merging
-// the two token bodies. Read this before widening it:
+// # Why the supplement is a deny-list, and why group and role claims are admitted
 //
-//   - An id_token's registered claims (`iss`, `aud`, `exp`, `nonce`, `at_hash`,
-//     `azp`) describe that token, not the user. Merging them would overwrite the
-//     access token's own `aud`/`exp` with values that mean something different.
-//   - Authorization-bearing claims (`groups`, `roles`, `scope`) are left alone for
-//     now. Taking them from this provider's id_token would be provenance-correct —
-//     unlike taking them from the ToolHive-issued token, which must never happen —
-//     but it would newly grant requests that deny today, so it belongs in its own
-//     change rather than riding along with a deny-all fix.
-//   - `sub` is excluded because it becomes the Cedar principal entity ID rather
-//     than an attribute, and Cedar has no `has`-style guard in the principal
-//     position. An access token without `sub` violates RFC 9068; failing closed
-//     with ErrMissingPrincipal beats silently choosing a principal.
+// The id_token may supply any claim except those in idTokenClaimsNeverSupplemented,
+// so `groups` and `roles` are admitted and `scope` is not.
 //
-// An access-token value always wins, so a claim the access token does assert can
-// never be shadowed. A claim absent from both tokens stays absent, so `has`-guarded
-// policies still fail closed.
+// For facts about the user (email, name, tenant, object ID) the two tokens agree,
+// but group and role claims are not facts about the user alone: every major IdP
+// computes them per client or per audience. Entra builds the access token from the
+// resource API's registration and the id_token from the client's
+// (groupMembershipClaims, app roles and optional claims are all per registration);
+// Okta configures group claims per token type, authorization server and app; Auth0
+// Actions set each token's claims separately; Keycloak resolves
+// realm_access/resource_access through the requesting client's role scope
+// mappings. So a group or role claim filled from the id_token is the answer for
+// ToolHive's own client registration, not the resource API's. That is the model:
+// when the access token carries no group or role claim, ToolHive's client
+// registration at the IdP is authoritative for them, and group filters, app roles
+// and client scopes are configured there. groupClaimsToWithhold keeps the two
+// registrations' answers from being combined in one decision.
 //
-// The id_token is used without checking `exp`, deliberately: it is read as a record
-// of what the upstream asserted at login, not presented as a credential, and
-// rejecting it once expired would flip a policy from permit to deny mid-session.
-// See Identity.UpstreamIDTokens for that contract and its two consumers.
+// Three further points:
+//
+//   - Provenance does not distinguish the two tokens. They are projections of one
+//     credential bundle from one authentication event at one provider (see above),
+//     so `groups` read from the id_token is asserted by exactly the same IdP as
+//     `groups` read from the access token. The objection that ruled this out in
+//     #5916 was that claims must not come from the ToolHive-ISSUED token; that
+//     still holds and is still enforced — the issued token is not read here at all.
+//   - An allow-list cannot express the requirement, so it is not merely narrower,
+//     it is wrong. The claim carrying group membership is named by the deployment,
+//     not by ToolHive: GroupClaimName and RoleClaimName are user-configured, and
+//     Auth0/Okta put it under URI-style names such as
+//     "https://example.com/groups". No fixed list can enumerate names ToolHive
+//     does not choose, and every name missing from one denies silently — the
+//     defect shape of both #5916 and #6049. The rule instead names the claims
+//     that must NEVER be read (idTokenClaimsNeverSupplemented) and
+//     admits the rest.
+//   - The deny-list is not empty because some claims describe a token or the
+//     authority it carries rather than the user; idTokenClaimsNeverSupplemented
+//     explains each entry, including why a scope is not symmetric between the
+//     tokens.
+//
+// # Precedence is fill-only, deliberately not union
+//
+// A claim the access token asserts is used verbatim and is never overwritten or
+// extended, set-valued claims included. So a provider asserting a PARTIAL `groups`
+// list in its access token and the full list in its id_token keeps the partial
+// one. That is intentional: per-application claim filtering (Okta group filters,
+// Entra group-claim configuration) is applied when the token is minted for a
+// given audience, so the access token's list is the provider's answer to "which
+// of this user's groups are relevant to this resource server". Unioning in the
+// id_token's list — minted for ToolHive's own auth-server client — would restore
+// groups the provider chose to withhold from this audience. A deployment wanting
+// the fuller list should have the upstream assert it in the access token.
+//
+// Fill-only does not contradict or extend a claim the access token asserts,
+// but it does supply one the access token leaves out, and that has three
+// consequences:
+//
+//   - Group and role claims are filled as a unit (groupClaimsToWithhold): if
+//     the access token asserts any claim group extraction reads, the id_token
+//     fills none of them. Per-claim filling would let one decision combine the
+//     access token's `groups` with the id_token's `roles`, and a filled default
+//     name could win the first-match default loop over the one the access
+//     token asserted.
+//   - When a per-audience filter matches none of the user's groups, providers
+//     typically omit the claim rather than emit an empty list, and the client
+//     registration's list is then filled in. A deployment relying on such a
+//     filter to withhold group membership from this resource server should apply
+//     the same filter to ToolHive's client registration, have the upstream emit
+//     an empty claim, or keep groups out of the id_token.
+//   - App roles follow the same rule. In Entra ID, `roles` lists the user's
+//     assignments on the app the token was minted for: the resource API in the
+//     access token, ToolHive's auth-server client in the id_token. Entra omits
+//     `roles` when the user has none on the resource, so with no group or role
+//     claim in the access token the client app's roles are filled in. Assign app
+//     roles on the client registration with that in mind, or use one
+//     registration for both.
+//
+// A claim absent from both tokens stays absent, so `has`-guarded policies still
+// fail closed.
+//
+// # Freshness
+//
+// The id_token is used without checking `exp`, deliberately: it is read as a
+// record of what the upstream asserted at login, not presented as a
+// credential, and rejecting it once expired would flip a policy from permit to
+// deny mid-session. See Identity.UpstreamIDTokens for that contract and its two
+// consumers.
+//
+// Group claims filled from the id_token are therefore only as fresh as the stored
+// id_token. An expired one triggers an upstream refresh even while the access
+// token is valid (upstreamtoken.InProcessService), and Entra, Okta, Auth0 and
+// Keycloak return a new id_token on refresh when `openid` was requested, so for
+// them the filled groups track the provider at about the id_token's lifetime.
+// A provider that does not rotate the id_token on refresh, or a refresh that
+// fails, leaves the old one in place, and its groups keep granting for as long
+// as the session is kept alive: RefreshTokenLifespan is renewed on every
+// refresh, so it bounds only idle sessions. Enforcing `exp` is not the remedy —
+// it would flip permit to deny mid-session for every user rather than only the
+// revoked one.
+//
+// Revoking a user's last group interacts with this. Keycloak (and apparently
+// Entra) omit `groups` when the user has none instead of sending an empty list,
+// so the refreshed access token then carries no group claim and the id_token is
+// consulted. Both providers return a new id_token on that same refresh, and it
+// omits `groups` too, so nothing stale is filled. A stale list survives only
+// where such a provider does not rotate the id_token or the refresh fails;
+// keeping groups out of the id_token closes that case. Microsoft also advises
+// against relying on an id_token returned by a refresh for authorization, so on
+// Entra prefer group and role claims in the access token, configured on the
+// resource API's registration.
 func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, string, error) {
 	requestClaims := jwt.MapClaims(identity.Claims)
 
@@ -712,6 +809,12 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, stri
 		// Policies that reference upstream-only claims (groups, hd, custom
 		// namespaced claims) see those attributes as absent on this branch and
 		// must be authored defensively (`principal has claim_groups && ...`).
+		//
+		// Unlike the JWT path below, this branch does not read the provider's
+		// stored id_token: it evaluates the request token's claims under their
+		// own label. Sourcing claims from the id_token here is tracked in #6048;
+		// a change that does so must also revisit claimSourceUpstreamOpaque,
+		// which today names the request token as the only trust root.
 		if !looksLikeJWT(upstreamToken) {
 			// The Warn shares claimKeyLog with logClaimKeys below so a busy
 			// Google/GitHub deployment does not emit one line per tool call.
@@ -732,9 +835,9 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, stri
 	return merged, source, nil
 }
 
-// supplementFromIDToken returns upstreamClaims with the profileClaimsFromIDToken
-// it lacks filled in from the primary provider's stored id_token, logging what it
-// did. upstreamClaims is not mutated.
+// supplementFromIDToken returns upstreamClaims with the claims it lacks filled in
+// from the primary provider's stored id_token, logging what it did.
+// idTokenClaimsNeverSupplemented is withheld. upstreamClaims is not mutated.
 //
 // A provider with no stored id_token (an OAuth 2.0 upstream that was never asked
 // for `openid`, so nothing was captured at login) yields no supplement: the claims
@@ -746,10 +849,9 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 	idToken := identity.UpstreamIDTokens[a.primaryUpstreamProvider] // nil map safe in Go
 	if idToken == "" {
 		a.missingIDTokenLog.Do(func() {
-			slog.Warn("no upstream ID token stored for provider; policies referencing profile claims "+
+			slog.Warn("no upstream ID token stored for provider; policies referencing claims "+
 				"the access token omits will deny",
-				"provider", a.primaryUpstreamProvider,
-				"profile_claims", profileClaimsFromIDToken)
+				"provider", a.primaryUpstreamProvider)
 		})
 		return upstreamClaims
 	}
@@ -760,23 +862,27 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 		// reference its claims must keep working. An unparsable id_token means no
 		// supplement, which denies exactly the policies that needed it.
 		a.missingIDTokenLog.Do(func() {
-			slog.Warn("upstream ID token for provider is not a parsable JWT; not supplementing profile claims",
+			slog.Warn("upstream ID token for provider is not a parsable JWT; not supplementing claims from it",
 				"provider", a.primaryUpstreamProvider,
 				"error", err)
 		})
 		return upstreamClaims
 	}
 
-	merged, filled := supplementProfileClaims(upstreamClaims, idTokenClaims)
+	merged, filled := mergeIDTokenClaims(upstreamClaims, idTokenClaims,
+		a.groupClaimsToWithhold(upstreamClaims))
 	if len(filled) > 0 {
+		// DEBUG because filling from the id_token is the designed path, and
+		// nearly every OIDC id_token carries profile claims the access token omits.
 		// Rate-limited on its own timer, not claimKeyLog: sharing one would let
-		// this Warn consume the window and permanently starve the claim-key dump
+		// this line consume the window and permanently starve the claim-key dump
 		// in resolveClaims, which is what you want when debugging a denying policy.
 		//
-		// Claim keys only — never claim values, which hold user PII.
+		// Claim keys only — never claim values, which hold user PII (and, for a
+		// group claim, the user's organizational placement).
 		a.supplementLog.Do(func() {
-			slog.Warn("upstream access token lacks profile claims; using the upstream ID token's values "+
-				"for Cedar evaluation",
+			slog.Debug("upstream access token omits claims the upstream ID token asserts; using the "+
+				"ID token's values for Cedar evaluation",
 				"provider", a.primaryUpstreamProvider,
 				"claims", filled)
 		})
@@ -784,60 +890,175 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 	return merged
 }
 
-// OIDC Core 1.0 §5.1 standard claim names, declared here rather than borrowed
-// from another package. What this code reads is an upstream provider's id_token,
-// so these are wire names fixed by the OIDC spec — not names ToolHive chooses.
-// Anchoring them to a ToolHive constant would invert the dependency: renaming that
-// constant would silently change which claim Cedar reads out of a third party's
-// token. Two literals also do not justify pulling an authorization-server
-// dependency tree into the authorizer.
-const (
-	oidcNameClaim  = "name"
-	oidcEmailClaim = "email"
-)
-
-// profileClaimsFromIDToken are the OIDC Core §5.1 profile claims that may be read
-// from the primary provider's id_token when its access token omits them. They
-// coincide with the two claims the embedded auth server extracts from that same
-// id_token: pkg/authserver/upstream/oidc.go reads them by their OIDC names, and the
-// callback handler then passes them to session.New
-// (pkg/authserver/server/handlers/callback.go). Both sides key off the wire names
-// independently — a shared reliance on the spec, not a coupling. If the auth server
-// ever mirrors more, adding it here is a separate, deliberate decision.
+// groupClaimsToWithhold returns the claim names the id_token must not fill for
+// this access token: every claim group extraction reads, or none of them.
 //
-// Widening this list widens what can satisfy a policy — see resolveClaims first.
-var profileClaimsFromIDToken = []string{oidcNameClaim, oidcEmailClaim}
+// Group and role claims come from one token as a unit. When the access token
+// asserts any claim group extraction would use (GroupClaimName, RoleClaimName or
+// one of defaultGroupClaimNames, holding a recognized array — the same test
+// extractGroups applies), none of them is filled from the id_token. Filling
+// them per claim would let one decision combine the resource API's answer with
+// ToolHive's client registration's: the access token's `groups` with the
+// id_token's `roles`, or, with GroupClaimName set, the id_token's list replacing
+// the access token's `roles` as the group set. It would also let a filled default
+// name win the first-match default loop and hide the claim the access token
+// asserted. When the access token asserts none of them, the id_token supplies
+// them all, which is the #6049 case.
+//
+// A null or scalar value is skipped by extraction, so it does not count as an
+// assertion. For a dot-separated name such as "realm_access.roles", the
+// top-level container is withheld too, since that is the key a fill would
+// supply. A withheld name is also absent as a claim_<name> attribute.
+func (a *Authorizer) groupClaimsToWithhold(accessTokenClaims jwt.MapClaims) []string {
+	names := a.groupClaimNames()
+	asserted := slices.ContainsFunc(names, func(name string) bool {
+		v := resolveNestedClaim(accessTokenClaims, name)
+		if v == nil {
+			return false
+		}
+		groups, recognized := authclaims.DecodeStringArrayLenient(v)
+		return recognized && groups != nil
+	})
+	if !asserted {
+		return nil
+	}
+	withheld := slices.Clone(names)
+	for _, name := range names {
+		if head, _, nested := strings.Cut(name, "."); nested {
+			withheld = append(withheld, head)
+		}
+	}
+	return withheld
+}
 
-// supplementProfileClaims returns a fresh claim set holding every access-token
-// claim plus, for each name in profileClaimsFromIDToken that the access token does
-// not carry, the id_token's value for that name. It also returns the sorted list of
-// names actually supplied by the id_token, for logging.
+// groupClaimNames returns every claim name group extraction reads: the
+// configured GroupClaimName and RoleClaimName, then defaultGroupClaimNames.
+func (a *Authorizer) groupClaimNames() []string {
+	names := make([]string, 0, len(defaultGroupClaimNames)+2)
+	for _, name := range []string{a.groupClaimName, a.roleClaimName} {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return append(names, defaultGroupClaimNames...)
+}
+
+// idTokenClaimsNeverSupplemented names the claims that are never read out of the
+// primary provider's id_token, whatever the access token does or does not carry.
+// Everything else that id_token asserts is admitted — resolveClaims explains why
+// the rule is a deny-list rather than an allow-list, and why that admits
+// group/role claims. These are wire names fixed by the RFCs, OIDC Core 1.0 and
+// the providers that emit them, not names ToolHive chooses, so they are spelled
+// literally here rather than borrowed from an authorization-server constant:
+// anchoring them to a ToolHive constant would let renaming it silently change
+// which claim Cedar reads out of a third party's token. Because the list is a
+// deny-list, a token-describing claim missing from it is filled silently, so it
+// covers the provider-specific ones Entra ID, Okta, Auth0 and Keycloak emit, not
+// only the standardized names.
+//
+// Exactly three categories belong here, and the list is meant to stay closed:
+//
+//   - Claims describing the id_token itself, or the request that minted it, rather
+//     than the user or their login. Their subject is a token whose audience is
+//     ToolHive's own auth-server client, so filling one would answer a policy's
+//     question about the presented access token with a fact about a different
+//     token. `aud` and `exp` are the sharp cases — a gate on the resource-server
+//     audience, or on token lifetime, would silently read the id_token's — and
+//     `client_id`/`azp` the subtle ones, since they would report ToolHive's own
+//     client rather than the one that made the request. Token-type and
+//     token-binding claims belong here for the same reason.
+//   - The delegated grant. `scope` and `scp` are the one place where the
+//     deny-list is doing real work rather than avoiding confusion, so the
+//     distinction from a group claim matters. A group claim is the provider's
+//     answer about the USER for one client registration, and resolveClaims
+//     explains when ToolHive's registration is the one that answers. A scope is
+//     the AUTHORITY THIS TOKEN CARRIES, and the only token whose authority is at
+//     issue is the access token that was presented. Providers do not emit
+//     `scope` in an id_token per spec, but where one appears it can reflect what
+//     was REQUESTED rather than what was granted — and requested-minus-granted
+//     is routine, not theoretical, since granular/incremental consent lets a
+//     user approve a subset of the scopes the client asked for. Supplementing it
+//     would then match a `claimset_scp.containsAny(...)` gate on authority the
+//     access token does not actually carry. Never infer authority from a token
+//     that is not the one bearing it. Unlike a group claim name, these two are
+//     standardized names (RFC 8693/9068 `scope`, Entra `scp`), so excluding them
+//     by name is an effective control rather than a cosmetic one — the reason an
+//     allow-list had to go for groups does not transfer here. RFC 8693's
+//     `act`/`may_act` and RFC 9396's `authorization_details` are excluded on the
+//     same grounds: they describe delegation or authority a token carries.
+//   - `sub`, because it becomes the Cedar principal entity ID rather than an
+//     attribute, and Cedar has no `has`-style guard in the principal position. An
+//     access token without `sub` violates RFC 9068; failing closed with
+//     ErrMissingPrincipal beats silently choosing a principal. Pinned by
+//     TestAuthorizeWithJWTClaims_PrincipalStaysUpstreamSourced.
+//
+// Claims describing the LOGIN rather than the token — `auth_time`, `acr`, `amr` —
+// are deliberately absent: both tokens come out of one authentication event, so
+// the id_token's values describe the same login the access token's would, and none
+// of them asserts an authority the way a scope does.
+var idTokenClaimsNeverSupplemented = map[string]struct{}{
+	// RFC 7519 §4.1 registered claims.
+	"iss": {}, "aud": {}, "exp": {}, "nbf": {}, "iat": {}, "jti": {},
+	// OIDC Core 1.0 §2 and §3.3.2.11 id_token claims, plus RFC 9068 §2.2's
+	// `client_id` and OIDC front/back-channel logout's `sid`.
+	"nonce": {}, "at_hash": {}, "c_hash": {}, "s_hash": {}, "azp": {},
+	"sid": {}, "client_id": {},
+	// Token-type, token-version and token-binding claims: JWT `typ`, Cognito
+	// `token_use`, Entra `uti`/`rh`/`idtyp`, Entra and Okta `ver`, and RFC 7800
+	// `cnf`.
+	"typ": {}, "token_use": {}, "uti": {}, "rh": {}, "idtyp": {}, "ver": {}, "cnf": {},
+	// The requesting client and how it authenticated, relatives of `azp` and
+	// `client_id`: Entra v1 `appid`/`appidacr` and v2 `azpacr`, Okta `cid`, Auth0
+	// `gty`, and Keycloak `allowed-origins` (client configuration).
+	"appid": {}, "appidacr": {}, "azpacr": {}, "cid": {}, "gty": {}, "allowed-origins": {},
+	// Session and capability claims about the token: Keycloak `session_state` (the
+	// same value as `sid`), and Entra `xms_cc`/`acrs`, whose presence the
+	// resource server controls.
+	"session_state": {}, "xms_cc": {}, "acrs": {},
+	// The delegated grant: RFC 8693/9068 `scope`, Entra `scp`, RFC 8693
+	// `act`/`may_act`, and RFC 9396 `authorization_details`, which has the same
+	// requested-versus-granted problem as `scope`.
+	"scope": {}, "scp": {}, "act": {}, "may_act": {}, "authorization_details": {},
+	// The Cedar principal, not an attribute.
+	"sub": {},
+}
+
+// mergeIDTokenClaims returns a fresh claim set holding every access-token
+// claim plus, for each id_token claim that the access token does not carry and that
+// is in neither idTokenClaimsNeverSupplemented nor withheld, the id_token's value.
+// It also returns the sorted list of names actually supplied by the id_token, for
+// logging. withheld carries per-request exclusions (groupClaimsToWithhold).
+//
+// Precedence is fill-only: an access-token claim is never overwritten or extended,
+// so a claim the access token does assert can neither be shadowed nor unioned with
+// the id_token's value. Absent claims are never fabricated either: a name missing
+// from both tokens is missing from the result, which keeps `has`-guarded policies
+// failing closed. See resolveClaims for the rationale and its limits.
 //
 // Neither input is mutated and the result aliases neither, so the caller may hand
-// it to code that adds synthetic keys. Absent claims are never fabricated: a name
-// missing from both tokens is missing from the result, which keeps `has`-guarded
-// policies failing closed.
-func supplementProfileClaims(accessTokenClaims, idTokenClaims jwt.MapClaims) (merged jwt.MapClaims, filled []string) {
-	merged = make(jwt.MapClaims, len(accessTokenClaims)+len(profileClaimsFromIDToken))
+// it to code that adds synthetic keys.
+func mergeIDTokenClaims(
+	accessTokenClaims, idTokenClaims jwt.MapClaims, withheld []string,
+) (merged jwt.MapClaims, filled []string) {
+	merged = make(jwt.MapClaims, len(accessTokenClaims)+len(idTokenClaims))
 	for k, v := range accessTokenClaims {
 		merged[k] = v
 	}
 
-	for _, name := range profileClaimsFromIDToken {
-		if _, ok := merged[name]; ok {
-			// The access token asserted this claim; it always wins.
+	for name, v := range idTokenClaims {
+		if _, never := idTokenClaimsNeverSupplemented[name]; never || slices.Contains(withheld, name) {
 			continue
 		}
-		v, ok := idTokenClaims[name]
-		if !ok {
+		if _, ok := merged[name]; ok {
+			// The access token asserted this claim; it always wins.
 			continue
 		}
 		merged[name] = v
 		filled = append(filled, name)
 	}
 
-	// Sorted for a canonical, easily-greppable log line — profileClaimsFromIDToken
-	// is ordered for readability (name, email), not alphabetically.
+	// Sorted for a canonical, easily-greppable log line and a deterministic
+	// return value: the loop above walks a map, so iteration order is random.
 	slices.Sort(filled)
 	return merged, filled
 }

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -153,6 +154,29 @@ func captureWarnings(t *testing.T) func() []map[string]any {
 	}
 }
 
+// skipRecords returns the "skipping failed upstream chain leg" records, with the
+// timestamp removed so they compare as plain field maps.
+func skipRecords(records []map[string]any) []map[string]any {
+	var skips []map[string]any
+	for _, r := range records {
+		if r["msg"] == "skipping failed upstream chain leg" {
+			delete(r, "time")
+			skips = append(skips, r)
+		}
+	}
+	return skips
+}
+
+// skipRecord is the expected WARN record for one skipped leg.
+func skipRecord(provider, failureClass string) map[string]any {
+	return map[string]any{
+		"level":         "WARN",
+		"msg":           "skipping failed upstream chain leg",
+		"provider":      provider,
+		"failure_class": failureClass,
+	}
+}
+
 // TestCallback_NonFatalSecondaryLeg_IdPErrorSkipsTheLeg walks a three-upstream
 // chain in which the user cancels provider-2's consent screen. It is not
 // parallel because it swaps the process-wide slog default to assert the log line.
@@ -190,47 +214,88 @@ func TestCallback_NonFatalSecondaryLeg_IdPErrorSkipsTheLeg(t *testing.T) {
 	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-2")
 	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-3")
 
-	// Exactly one WARN for the skipped leg, naming the provider and failure class
-	// and carrying no token, code or user value.
-	var skips []map[string]any
-	for _, r := range records() {
-		if r["msg"] == "skipping failed upstream chain leg" {
-			skips = append(skips, r)
+	// provider-2's failure logs two WARN lines: the existing upstream-error line,
+	// and one skip line naming the provider and failure class and carrying no
+	// token, code or user value. (The walk also logs an unrelated last-used
+	// timestamp WARN against the test storage, left out here.)
+	all := records()
+	var msgs []any
+	for _, r := range all {
+		if r["msg"] != "failed to update identity last used timestamp" {
+			msgs = append(msgs, r["msg"])
 		}
 	}
-	require.Len(t, skips, 1)
-	assert.Equal(t, map[string]any{
-		"level":         "WARN",
-		"msg":           "skipping failed upstream chain leg",
-		"provider":      "provider-2",
-		"failure_class": "idp_error",
-	}, func() map[string]any {
-		delete(skips[0], "time")
-		return skips[0]
-	}())
+	assert.Equal(t, []any{"upstream IDP returned error", "skipping failed upstream chain leg"}, msgs)
+	assert.Equal(t, []map[string]any{skipRecord("provider-2", "idp_error")}, skipRecords(all))
 }
 
+// TestCallback_NonFatalSecondaryLeg_ExchangeFailureCompletesTheChain is not
+// parallel because it swaps the process-wide slog default to assert the log line.
+//
+//nolint:paralleltest // mutates the process-global slog default
 func TestCallback_NonFatalSecondaryLeg_ExchangeFailureCompletesTheChain(t *testing.T) {
+	tests := []struct {
+		name        string
+		exchangeErr error
+		wantFailure string
+	}{
+		{name: "token request fails", exchangeErr: errors.New("token endpoint returned 401"), wantFailure: "code_exchange"},
+		{
+			name:        "identity validation fails",
+			exchangeErr: fmt.Errorf("%w: nonce mismatch", upstream.ErrIdentityResolutionFailed),
+			wantFailure: "identity_resolution",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			records := captureWarnings(t)
+			handler, storState, mocks := threeLegSetup(t, true)
+			const sessionID = "exchange-failure-session"
+			seedToken(storState, sessionID, "provider-1")
+			seedToken(storState, sessionID, "provider-2")
+			mocks["provider-3"].exchangeErr = tt.exchangeErr
+
+			cookie := bindPending(t, storState, "leg3", laterLegPending(sessionID, "provider-3"))
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, newCallbackRequest("code=leg3-code&state=leg3", cookie))
+
+			requireCodeIssued(t, rec)
+			assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-3", "the skipped leg has no stored token")
+			assert.Equal(t, "provider-1-seeded", storState.upstreamTokens[sessionID+":provider-1"].AccessToken)
+			assert.Equal(t, "provider-2-seeded", storState.upstreamTokens[sessionID+":provider-2"].AccessToken)
+			assert.Empty(t, storState.pendingAuths)
+			assert.Equal(t, []map[string]any{skipRecord("provider-3", tt.wantFailure)}, skipRecords(records()))
+		})
+	}
+}
+
+// TestCallback_NonFatalSecondaryLeg_SkippedLegKeepsItsStoredToken covers a
+// re-connect: provider-2 holds an expired credential from an earlier
+// authorization, is prompted, and the user cancels. The skip must leave that
+// credential in place rather than delete it.
+func TestCallback_NonFatalSecondaryLeg_SkippedLegKeepsItsStoredToken(t *testing.T) {
 	t.Parallel()
-	handler, storState, mocks := threeLegSetup(t, true)
-	const sessionID = "exchange-failure-session"
+	handler, storState, _ := threeLegSetup(t, true)
+	const sessionID = "reconnect-session"
 	seedToken(storState, sessionID, "provider-1")
 	seedToken(storState, sessionID, "provider-2")
-	mocks["provider-3"].exchangeErr = errors.New("id token validation failed")
+	seedToken(storState, sessionID, "provider-3")
+	storState.upstreamTokens[sessionID+":provider-2"].ExpiresAt = time.Now().Add(-time.Hour)
 
-	cookie := bindPending(t, storState, "leg3", laterLegPending(sessionID, "provider-3"))
+	cookie := bindPending(t, storState, "leg2", laterLegPending(sessionID, "provider-2"))
 	rec := httptest.NewRecorder()
-	handler.CallbackHandler(rec, newCallbackRequest("code=leg3-code&state=leg3", cookie))
+	handler.CallbackHandler(rec, newCallbackRequest("error=access_denied&state=leg2", cookie))
 
 	requireCodeIssued(t, rec)
-	assert.NotContains(t, storState.upstreamTokens, sessionID+":provider-3", "the skipped leg has no stored token")
-	assert.Equal(t, "provider-1-seeded", storState.upstreamTokens[sessionID+":provider-1"].AccessToken)
+	require.Contains(t, storState.upstreamTokens, sessionID+":provider-2", "the skipped leg's earlier credential is kept")
 	assert.Equal(t, "provider-2-seeded", storState.upstreamTokens[sessionID+":provider-2"].AccessToken)
-	assert.Empty(t, storState.pendingAuths)
 }
 
+// TestCallback_NonFatalSecondaryLeg_AuthorizeURLFailureSkips is not parallel
+// because it swaps the process-wide slog default to assert the log lines.
+//
+//nolint:paralleltest // mutates the process-global slog default
 func TestCallback_NonFatalSecondaryLeg_AuthorizeURLFailureSkips(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name        string
@@ -243,7 +308,7 @@ func TestCallback_NonFatalSecondaryLeg_AuthorizeURLFailureSkips(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			records := captureWarnings(t)
 			handler, storState, mocks := threeLegSetup(t, true)
 			for _, name := range tt.failURLFor {
 				mocks[name].authURLErr = errors.New("bad authorization endpoint")
@@ -258,6 +323,13 @@ func TestCallback_NonFatalSecondaryLeg_AuthorizeURLFailureSkips(t *testing.T) {
 			cookie := bindPending(t, storState, "leg1", firstLegPending(sessionID))
 			rec := httptest.NewRecorder()
 			handler.CallbackHandler(rec, newCallbackRequest("code=leg1-code&state=leg1", cookie))
+
+			// One WARN per skipped leg, in walk order.
+			wantSkips := make([]map[string]any, 0, len(tt.failURLFor))
+			for _, name := range tt.failURLFor {
+				wantSkips = append(wantSkips, skipRecord(name, "authorization_url"))
+			}
+			assert.Equal(t, wantSkips, skipRecords(records()))
 
 			if tt.wantNextLeg == "" {
 				requireCodeIssued(t, rec)
@@ -298,7 +370,7 @@ func TestNextMissingUpstream_IgnoresSkippedLegs(t *testing.T) {
 	}
 }
 
-func TestCallback_NonFatalSecondaryLeg_BindingAndFirstLegFailuresStayFatal(t *testing.T) {
+func TestCallback_NonFatalSecondaryLeg_UnskippableFailuresStayFatal(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -391,6 +463,35 @@ func TestCallback_NonFatalSecondaryLeg_BindingAndFirstLegFailuresStayFatal(t *te
 			},
 		},
 		{
+			// Not first by name, but the pending never resolved a user, so it
+			// would establish one: only canSkipCallbackLeg's ResolvedUserID check
+			// keeps it fatal.
+			name: "later upstream whose pending has no resolved user",
+			pending: func() *storage.PendingAuthorization {
+				p := laterLegPending("s", "provider-2")
+				p.ResolvedUserID, p.ChainUpstreams = "", nil
+				return p
+			},
+			query: "error=access_denied&state=leg",
+			check: func(t *testing.T, rec *httptest.ResponseRecorder, _ *testStorageState) {
+				t.Helper()
+				requireClientError(t, rec, "access_denied")
+			},
+		},
+		{
+			name: "IdP error with a corrupt stored redirect URI",
+			pending: func() *storage.PendingAuthorization {
+				p := laterLegPending("s", "provider-2")
+				p.RedirectURI = "http://%zz"
+				return p
+			},
+			query: "error=access_denied&state=leg",
+			check: func(t *testing.T, rec *httptest.ResponseRecorder, _ *testStorageState) {
+				t.Helper()
+				assert.Equal(t, http.StatusBadGateway, rec.Code, "no client to redirect to: the generic error page")
+			},
+		},
+		{
 			name: "pending skipping the first upstream",
 			pending: func() *storage.PendingAuthorization {
 				return laterLegPending("s", "provider-2", "provider-1")
@@ -424,7 +525,7 @@ func TestCallback_NonFatalSecondaryLeg_BindingAndFirstLegFailuresStayFatal(t *te
 	}
 }
 
-func TestValidateChain_RejectsInvalidSkippedUpstreams(t *testing.T) {
+func TestResolveChain_RejectsInvalidSkippedUpstreams(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

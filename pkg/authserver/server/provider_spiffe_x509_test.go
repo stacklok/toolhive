@@ -188,7 +188,7 @@ func TestStaticSPIFFEClientCannotAuthenticateByDefaultStrategy(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Now()
 	assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
-		Issuer: "spiffe-client", Subject: "spiffe-client", Audience: jwt.Audience{testIssuer + "/oauth/token"},
+		Issuer: "spiffe-client", Subject: "spiffe-client", Audience: jwt.Audience{testIssuer},
 		ID: "assertion-jti", IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Minute)),
 	}).Serialize()
 	require.NoError(t, err)

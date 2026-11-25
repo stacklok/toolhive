@@ -32,12 +32,20 @@ type testJWKS struct {
 func newTestJWKS(t *testing.T) *testJWKS {
 	t.Helper()
 
+	return newTestJWKSWithKID(t, "test-key-1")
+}
+
+// newTestJWKSWithKID is newTestJWKS with a caller-chosen kid, for tests that
+// need a key the served JWKS does not contain.
+func newTestJWKSWithKID(t *testing.T, kid string) *testJWKS {
+	t.Helper()
+
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
 	jwk := jose.JSONWebKey{
 		Key:       privateKey,
-		KeyID:     "test-key-1",
+		KeyID:     kid,
 		Algorithm: string(jose.ES256),
 		Use:       "sig",
 	}

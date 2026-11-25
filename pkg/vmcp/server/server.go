@@ -247,6 +247,9 @@ type Config struct {
 	// code mode may be combined with Authz: a script's inner tool calls are re-authorized
 	// by real name through the core admission seam, so Cedar remains the gate on everything
 	// a script can do. See the codemode.decorator doc for the full rationale.
+	//
+	// When TelemetryProvider is set, New attaches code mode OTel metrics and
+	// spans on a copy: the value passed in is not changed.
 	CodeModeConfig *codemode.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
@@ -539,9 +542,20 @@ func New(
 	// never serves one caller's capability view to another.
 	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
-	if cfg.ScopeAuthorization != nil && (cfg.CodeModeConfig != nil || cfg.OptimizerConfig != nil) {
-		return nil, fmt.Errorf("%w: scope challenges do not support optimizer or code mode", vmcp.ErrInvalidConfig)
+	if err := cfg.validateScopeExecution(); err != nil {
+		return nil, err
 	}
+
+	// Code mode telemetry is built before the core, so a failure here has
+	// nothing to release.
+	codeModeCfg, err := withCodeModeTelemetry(cfg.CodeModeConfig, cfg.TelemetryProvider)
+	if err != nil {
+		return nil, err
+	}
+	if err := registerCodeModeEnabledGauge(cfg.TelemetryProvider, cfg.Name, codeModeCfg != nil); err != nil {
+		return nil, err
+	}
+
 	coreVMCP, err := core.New(deriveCoreConfig(
 		cfg, cachedAgg, rt, backendClient, backendRegistry, workflowDefs,
 		cfg.Authz, elicitation,
@@ -559,8 +573,8 @@ func New(
 	// Serve-layer optimizer (if enabled) indexes it like any other tool, and the script's
 	// inner calls route back through core.CallTool for admission. The decorator delegates
 	// Close to the inner core, so New can release it if Serve fails and srv.Stop owns it on success.
-	if cfg.CodeModeConfig != nil {
-		coreVMCP = codemode.NewDecorator(coreVMCP, cfg.CodeModeConfig)
+	if codeModeCfg != nil {
+		coreVMCP = codemode.NewDecorator(coreVMCP, codeModeCfg)
 	}
 
 	// On the New/Serve path the core is the single aggregator and the source of the
@@ -1447,12 +1461,10 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// removes this gate together with the fan-out's.
 	//
 	// Also gated on health monitoring being enabled: with no monitor there is
-	// no OnChange subscription (see Serve), so no fan-out would ever run the
-	// registry's lazy liveness prune — an entry for a session that ends
-	// without a server-observed Terminate (TTL expiry, node-local cache
-	// eviction, which only calls Close) would retain its worker closure (SDK
-	// session, captured identity and forwarded headers) forever. With no
-	// subscriber the registration could never be triggered anyway.
+	// no OnChange subscription (see Serve), so the registration could never be
+	// triggered. It would only retain its worker closure (SDK session, captured
+	// identity and forwarded headers), and with no fan-out the lazy liveness
+	// prune would never run for a session the cache sweep does not reclaim.
 	if s.optimizerFactory == nil && s.backendHealth() != nil {
 		s.healthResync.add(sessionID, toolsResyncWorker)
 	}

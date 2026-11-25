@@ -4,18 +4,25 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3473,6 +3480,453 @@ func TestNewTokenValidator_GoogleTokeninfoRequiresAudience(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValidateClaimsSubject(t *testing.T) {
+	t.Parallel()
+
+	const (
+		saSubject = "system:serviceaccount:team-a:agent"
+		saPrefix  = "system:serviceaccount:team-a:"
+	)
+
+	baseClaims := func(sub any) jwt.MapClaims {
+		c := jwt.MapClaims{
+			"iss": issuer,
+			"aud": "test-audience",
+			"exp": float64(time.Now().Add(time.Hour).Unix()),
+		}
+		if sub != nil {
+			c["sub"] = sub
+		}
+		return c
+	}
+
+	tests := []struct {
+		name          string
+		subject       string
+		subjectPrefix string
+		sub           any
+		wantErr       error
+	}{
+		{name: "no restriction accepts any subject", sub: "anyone"},
+		{name: "no restriction accepts missing subject", sub: nil},
+		{name: "exact match", subject: saSubject, sub: saSubject},
+		{name: "exact mismatch", subject: saSubject, sub: "system:serviceaccount:team-a:other", wantErr: ErrInvalidSubject},
+		{name: "exact rejects prefix-extended subject", subject: saSubject, sub: saSubject + "x", wantErr: ErrInvalidSubject},
+		{name: "exact rejects missing subject", subject: saSubject, sub: nil, wantErr: ErrInvalidSubject},
+		{name: "exact rejects empty subject", subject: saSubject, sub: "", wantErr: ErrInvalidSubject},
+		{name: "exact rejects non-string subject", subject: saSubject, sub: 42, wantErr: ErrInvalidSubject},
+		{name: "prefix match", subjectPrefix: saPrefix, sub: "system:serviceaccount:team-a:anything"},
+		{name: "prefix mismatch", subjectPrefix: saPrefix, sub: "system:serviceaccount:team-b:agent", wantErr: ErrInvalidSubject},
+		{name: "prefix rejects namespace with shared leading text", subjectPrefix: saPrefix,
+			sub: "system:serviceaccount:team-ab:agent", wantErr: ErrInvalidSubject},
+		{name: "prefix rejects missing subject", subjectPrefix: saPrefix, sub: nil, wantErr: ErrInvalidSubject},
+		{name: "both set and both hold", subject: saSubject, subjectPrefix: saPrefix, sub: saSubject},
+		{name: "both set and prefix fails", subject: saSubject, subjectPrefix: "system:serviceaccount:team-b:",
+			sub: saSubject, wantErr: ErrInvalidSubject},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			v := &TokenValidator{
+				issuer:            issuer,
+				audience:          "test-audience",
+				requiredSubject:   tt.subject,
+				requiredSubPrefix: tt.subjectPrefix,
+			}
+			err := v.validateClaims(baseClaims(tt.sub))
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestSubjectRejectionWarnIsBoundedPerSubject checks that a caller cannot set
+// WARN volume: repeated rejections of one subject log a single WARN, while a
+// different subject gets its own.
+//
+// Not run in parallel: slog.SetDefault is process-wide.
+//
+//nolint:paralleltest // mutates slog default, mirrors TestMonitor_DCRWarnEmittedAfterZeroExpiryExit
+func TestSubjectRejectionWarnIsBoundedPerSubject(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	v, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+		JWKSURL:         "https://issuer.example.com/jwks",
+		RequiredSubject: "system:serviceaccount:ns:allowed",
+	})
+	require.NoError(t, err)
+
+	claims := func(sub string) jwt.MapClaims {
+		return jwt.MapClaims{"sub": sub, "exp": float64(time.Now().Add(time.Hour).Unix())}
+	}
+	for range 5 {
+		require.ErrorIs(t, v.validateClaims(claims("system:serviceaccount:attacker:default")), ErrInvalidSubject)
+	}
+	require.ErrorIs(t, v.validateClaims(claims("system:serviceaccount:ns:other")), ErrInvalidSubject)
+	require.NoError(t, v.validateClaims(claims("system:serviceaccount:ns:allowed")))
+
+	warns := 0
+	for _, line := range strings.Split(logBuf.String(), "\n") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "token subject rejected") {
+			warns++
+		}
+	}
+	require.Equal(t, 2, warns, "one WARN per distinct rejected subject:\n%s", logBuf.String())
+	require.Contains(t, logBuf.String(), "level=DEBUG msg=\"token subject rejected")
+}
+
+// newSubjectTestJWKS serves a JWKS for a fresh RS256 key over TLS and returns
+// a function that signs a token for the given subject with that key.
+func newSubjectTestJWKS(t *testing.T) (jwksURL, caCertPath string, sign func(sub string) string) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
+	require.NoError(t, err)
+	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
+	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))
+	keySet := jwk.NewSet()
+	require.NoError(t, keySet.AddKey(key))
+
+	server, caCertPath := createTestJWKSServer(t, keySet)
+	t.Cleanup(server.Close)
+
+	return server.URL, caCertPath, func(sub string) string {
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+			"iss": "https://kubernetes.default.svc.cluster.local",
+			"aud": "aud-pinned",
+			"sub": sub,
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		token.Header["kid"] = testKeyID
+		signed, err := token.SignedString(privateKey)
+		require.NoError(t, err)
+		return signed
+	}
+}
+
+// TestMiddlewareEnforcesRequiredSubject pins the subject restriction at the
+// HTTP boundary with real signed tokens: the configured service account is
+// let through and any other subject gets 401 invalid_token / invalid subject.
+func TestMiddlewareEnforcesRequiredSubject(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	jwksURL, caCertPath, sign := newSubjectTestJWKS(t)
+
+	validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
+		Issuer:          "https://kubernetes.default.svc.cluster.local",
+		Audience:        "aud-pinned",
+		JWKSURL:         jwksURL,
+		CACertPath:      caCertPath,
+		AllowPrivateIP:  true,
+		RequiredSubject: "system:serviceaccount:trusted:allowed",
+	})
+	require.NoError(t, err)
+
+	handler := validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	tests := []struct {
+		sub  string
+		want int
+	}{
+		{sub: "system:serviceaccount:trusted:allowed", want: http.StatusOK},
+		{sub: "system:serviceaccount:trusted:other", want: http.StatusUnauthorized},
+		{sub: "system:serviceaccount:attacker:default", want: http.StatusUnauthorized},
+	}
+	for _, tc := range tests {
+		t.Run(tc.sub, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			req.Header.Set("Authorization", "Bearer "+sign(tc.sub))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			require.Equal(t, tc.want, rec.Code)
+			if tc.want == http.StatusUnauthorized {
+				wwwAuth := rec.Header().Get("WWW-Authenticate")
+				require.Contains(t, wwwAuth, `error="invalid_token"`)
+				require.Contains(t, wwwAuth, `error_description="invalid subject"`)
+			}
+		})
+	}
+}
+
+// TestIntrospectionEnforcesRequiredSubjectPrefix pins the subject restriction
+// on the opaque-token path, where claims come from an RFC 7662 introspection
+// response rather than a signed JWT.
+func TestIntrospectionEnforcesRequiredSubjectPrefix(t *testing.T) {
+	t.Parallel()
+
+	introspection := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// The opaque token is the subject the introspection endpoint reports.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"active": true,
+			"sub":    r.FormValue("token"),
+			"iss":    "opaque-issuer",
+			"aud":    "opaque-audience",
+			"exp":    time.Now().Add(time.Hour).Unix(),
+		})
+	}))
+	t.Cleanup(introspection.Close)
+
+	registry := NewRegistry()
+	registry.AddProvider(NewRFC7662Provider(introspection.URL))
+	validator := &TokenValidator{
+		introspectURL:     introspection.URL,
+		client:            http.DefaultClient,
+		issuer:            "opaque-issuer",
+		audience:          "opaque-audience",
+		jwksURL:           "https://placeholder/jwks", // prevents lazy OIDC discovery
+		registry:          registry,
+		requiredSubPrefix: "system:serviceaccount:trusted:",
+	}
+
+	tests := []struct {
+		name    string
+		sub     string
+		wantErr error
+	}{
+		{name: "service account in the allowed namespace", sub: "system:serviceaccount:trusted:any"},
+		{name: "service account in another namespace", sub: "system:serviceaccount:attacker:default", wantErr: ErrInvalidSubject},
+		{name: "lookalike namespace", sub: "system:serviceaccount:trusted-evil:sa", wantErr: ErrInvalidSubject},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			claims, err := validator.ValidateToken(context.Background(), tc.sub)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.sub, claims["sub"])
+		})
+	}
+}
+
+// TestTokenValidator_SigningAlgorithms checks every accepted signing algorithm
+// (RS256, ES256, EdDSA) on both key lookup paths, and that a key of the wrong
+// type for the header's alg, or alg none, is refused.
+func TestTokenValidator_SigningAlgorithms(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	edPub, edKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	const (
+		rsaKID = "rsa-key"
+		ecKID  = "ec-key"
+		edKID  = "ed-key"
+	)
+	publicKeys := []*keys.PublicKeyData{
+		{KeyID: rsaKID, Algorithm: "RS256", PublicKey: &rsaKey.PublicKey},
+		{KeyID: ecKID, Algorithm: "ES256", PublicKey: &ecKey.PublicKey},
+		{KeyID: edKID, Algorithm: "EdDSA", PublicKey: edPub},
+	}
+
+	keySet := jwk.NewSet()
+	for _, pk := range publicKeys {
+		key, err := jwk.Import[jwk.Key](pk.PublicKey)
+		require.NoError(t, err)
+		require.NoError(t, key.Set(jwk.KeyIDKey, pk.KeyID))
+		require.NoError(t, key.Set(jwk.KeyUsageKey, "sig"))
+		require.NoError(t, keySet.AddKey(key))
+	}
+	// The Ed25519 key must be served as an OKP key, as the embedded auth server does.
+	edJWK, found := keySet.LookupKeyID(edKID)
+	require.True(t, found)
+	require.Equal(t, "OKP", edJWK.KeyType().String())
+	jwksServer, caCertPath := createTestJWKSServer(t, keySet)
+	t.Cleanup(jwksServer.Close)
+
+	newValidator := func(t *testing.T, withKeyProvider bool) *TokenValidator {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+		opts := []TokenValidatorOption{WithEnvReader(mockEnv)}
+		if withKeyProvider {
+			provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+			provider.EXPECT().PublicKeys(gomock.Any()).Return(publicKeys, nil).AnyTimes()
+			opts = append(opts, WithKeyProvider(provider))
+		}
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		}, opts...)
+		require.NoError(t, err)
+		return validator
+	}
+
+	cases := []struct {
+		name       string
+		method     jwt.SigningMethod
+		kid        string
+		signingKey any
+		wantErr    string
+	}{
+		{name: "RS256 with RSA key", method: jwt.SigningMethodRS256, kid: rsaKID, signingKey: rsaKey},
+		{name: "ES256 with ECDSA key", method: jwt.SigningMethodES256, kid: ecKID, signingKey: ecKey},
+		{name: "EdDSA with Ed25519 key", method: jwt.SigningMethodEdDSA, kid: edKID, signingKey: edKey},
+		{
+			name: "EdDSA header resolving to an RSA key", method: jwt.SigningMethodEdDSA,
+			kid: rsaKID, signingKey: edKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "RS256 header resolving to an Ed25519 key", method: jwt.SigningMethodRS256,
+			kid: edKID, signingKey: rsaKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "ES256 header resolving to an Ed25519 key", method: jwt.SigningMethodES256,
+			kid: edKID, signingKey: ecKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "alg none", method: jwt.SigningMethodNone, kid: edKID,
+			signingKey: jwt.UnsafeAllowNoneSignatureType, wantErr: "unexpected signing method: none",
+		},
+	}
+
+	lookups := []struct {
+		name            string
+		withKeyProvider bool
+	}{
+		{name: "JWKS lookup"},
+		{name: "local key provider", withKeyProvider: true},
+	}
+	for _, lookup := range lookups {
+		for _, tc := range cases {
+			t.Run(lookup.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				validator := newValidator(t, lookup.withKeyProvider)
+
+				token := jwt.NewWithClaims(tc.method, jwt.MapClaims{
+					"iss": "test-issuer",
+					"sub": "test-user",
+					"exp": time.Now().Add(time.Hour).Unix(),
+				})
+				token.Header["kid"] = tc.kid
+				tokenString, err := token.SignedString(tc.signingKey)
+				require.NoError(t, err)
+
+				claims, err := validator.ValidateToken(context.Background(), tokenString)
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+					require.Nil(t, claims)
+				} else {
+					require.NoError(t, err)
+					require.Equal(t, "test-user", claims["sub"])
+				}
+
+				handler := validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				req.Header.Set("Authorization", "Bearer "+tokenString)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				wantStatus := http.StatusOK
+				if tc.wantErr != "" {
+					wantStatus = http.StatusUnauthorized
+				}
+				require.Equal(t, wantStatus, rec.Code)
+			})
+		}
+	}
+}
+
+// TestAuthTokenFileClientsRefuseCrossHostRedirects checks that the clients
+// built with AuthTokenFile (OIDC discovery and JWKS, RFC 7662 introspection)
+// never carry the bearer token to a host a redirect names.
+func TestAuthTokenFileClientsRefuseCrossHostRedirects(t *testing.T) {
+	t.Parallel()
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("sa-token"), 0o600))
+
+	tests := []struct {
+		name string
+		call func(t *testing.T, originURL, caCertPath string) error
+	}{
+		{
+			name: "OIDC discovery",
+			call: func(t *testing.T, originURL, caCertPath string) error {
+				t.Helper()
+				v, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+					Issuer:         originURL,
+					Audience:       "test-audience",
+					CACertPath:     caCertPath,
+					AuthTokenFile:  tokenFile,
+					AllowPrivateIP: true,
+				})
+				require.NoError(t, err)
+				_, err = discoverOIDCConfiguration(context.Background(), originURL, v.client, false)
+				return err
+			},
+		},
+		{
+			name: "RFC 7662 introspection",
+			call: func(t *testing.T, originURL, caCertPath string) error {
+				t.Helper()
+				p, err := NewRFC7662ProviderWithAuth(
+					originURL+"/introspect", "client", "secret", caCertPath, tokenFile, true)
+				require.NoError(t, err)
+				_, err = p.IntrospectToken(context.Background(), "opaque-token")
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var sinkHits atomic.Int32
+			sink := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				sinkHits.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(sink.Close)
+
+			// 307 keeps the method and body, so the introspection POST would be replayed too.
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, sink.URL+r.URL.Path, http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(origin.Close)
+
+			// httptest TLS servers share one certificate, so this trusts both.
+			err := tt.call(t, origin.URL, writeTestServerCert(t, origin))
+			require.ErrorIs(t, err, networking.ErrRedirectRefused)
+			require.Zero(t, sinkHits.Load(), "token-bearing request must not reach the redirect target")
 		})
 	}
 }

@@ -7,6 +7,7 @@ package ignore
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -166,6 +167,13 @@ type OverlayMount struct {
 // GetOverlayMounts returns mounts that should overlay ignored paths
 // based on the loaded ignore patterns
 func (p *Processor) GetOverlayMounts(bindMount, containerPath string) []OverlayMount {
+	// Matches are confined to the resolved mount root, so resolve it once.
+	realRoot, err := filepath.EvalSymlinks(bindMount)
+	if err != nil {
+		slog.Debug("Failed to resolve mount root, skipping ignore patterns", "bindMount", bindMount, "error", err)
+		return nil
+	}
+
 	var overlayMounts []OverlayMount
 	overlaySet := make(map[string]bool) // To avoid duplicates
 
@@ -173,7 +181,7 @@ func (p *Processor) GetOverlayMounts(bindMount, containerPath string) []OverlayM
 	allPatterns := append(p.GlobalPatterns, p.LocalPatterns...)
 
 	for _, pattern := range allPatterns {
-		overlayMounts = append(overlayMounts, p.processPattern(bindMount, containerPath, pattern, overlaySet)...)
+		overlayMounts = append(overlayMounts, p.processPattern(bindMount, realRoot, containerPath, pattern, overlaySet)...)
 	}
 
 	p.printOverlays(overlayMounts, bindMount, containerPath)
@@ -181,12 +189,22 @@ func (p *Processor) GetOverlayMounts(bindMount, containerPath string) []OverlayM
 }
 
 // processPattern processes a single ignore pattern and returns overlay mounts
-func (p *Processor) processPattern(bindMount, containerPath, pattern string, overlaySet map[string]bool) []OverlayMount {
+func (p *Processor) processPattern(
+	bindMount, realRoot, containerPath, pattern string, overlaySet map[string]bool,
+) []OverlayMount {
+	// A pattern that leaves the mount lexically is rejected before matching, so
+	// a line such as "../../*/*" never globs the host filesystem.
+	if _, ok := relWithin(bindMount, filepath.Join(bindMount, pattern)); !ok {
+		slog.Warn("Skipping ignore pattern that reaches outside the mounted directory",
+			"pattern", pattern, "bindMount", bindMount)
+		return nil
+	}
+
 	var overlayMounts []OverlayMount
 	matchingPaths := p.getMatchingPaths(bindMount, pattern)
 
 	for _, matchPath := range matchingPaths {
-		if overlay := p.createOverlayMount(matchPath, bindMount, containerPath, pattern, overlaySet); overlay != nil {
+		if overlay := p.createOverlayMount(matchPath, realRoot, containerPath, pattern, overlaySet); overlay != nil {
 			overlayMounts = append(overlayMounts, *overlay)
 		}
 	}
@@ -196,16 +214,25 @@ func (p *Processor) processPattern(bindMount, containerPath, pattern string, ove
 
 // createOverlayMount creates an overlay mount for a matched path
 func (p *Processor) createOverlayMount(
-	matchPath, bindMount, containerPath, pattern string, overlaySet map[string]bool,
+	matchPath, realRoot, containerPath, pattern string, overlaySet map[string]bool,
 ) *OverlayMount {
-	// Calculate relative path from bind mount to matched path
-	relPath, err := filepath.Rel(bindMount, matchPath)
+	realMatch, relPath, err := resolveWithin(realRoot, matchPath)
+	if errors.Is(err, errOutsideMount) {
+		slog.Warn("Skipping ignore pattern match outside the mounted directory",
+			"pattern", pattern, "matchPath", matchPath)
+		return nil
+	}
 	if err != nil {
-		slog.Debug("Failed to calculate relative path", "matchPath", matchPath, "error", err)
+		slog.Debug("Failed to resolve ignore pattern match", "pattern", pattern, "matchPath", matchPath, "error", err)
+		return nil
+	}
+	if relPath == "." {
+		slog.Warn("Skipping ignore pattern that matches the mounted directory itself", "pattern", pattern)
 		return nil
 	}
 
-	// Convert to container path
+	// relPath is resolved and stays inside the mounted directory. Another mount
+	// nested below containerPath can still redirect the result in the container.
 	containerOverlayPath := filepath.Join(containerPath, relPath)
 
 	// Skip if we already have this overlay
@@ -215,9 +242,9 @@ func (p *Processor) createOverlayMount(
 	overlaySet[containerOverlayPath] = true
 
 	// Check if the matched path is a directory or file
-	info, err := os.Stat(matchPath)
+	info, err := os.Stat(realMatch)
 	if err != nil {
-		slog.Debug("Failed to stat path", "path", matchPath, "error", err)
+		slog.Debug("Failed to stat path", "path", realMatch, "error", err)
 		return nil
 	}
 
@@ -252,6 +279,39 @@ func (p *Processor) createOverlayMount(
 		HostPath:      emptyFilePath,
 		Type:          "bind",
 	}
+}
+
+// errOutsideMount reports an ignore pattern match that resolves outside the
+// mounted directory.
+var errOutsideMount = errors.New("path resolves outside the mounted directory")
+
+// resolveWithin resolves symlinks in matchPath and returns the resolved path
+// and its path relative to realRoot, the already resolved mount root. It
+// returns errOutsideMount when the match lies outside realRoot. Patterns come
+// from a .thvignore inside the mounted directory, so its author must not reach
+// beyond it with ".." segments or a symlink. The resolved path is used because
+// the container runtime follows symlinks in a mount destination, so a lexical
+// path through a symlink could land outside the mount target in the container.
+func resolveWithin(realRoot, matchPath string) (string, string, error) {
+	realMatch, err := filepath.EvalSymlinks(matchPath)
+	if err != nil {
+		return "", "", err
+	}
+	relPath, ok := relWithin(realRoot, realMatch)
+	if !ok {
+		return "", "", errOutsideMount
+	}
+	return realMatch, relPath, nil
+}
+
+// relWithin returns target relative to dir, and whether target is dir or a
+// path below it. The check is lexical.
+func relWithin(dir, target string) (string, bool) {
+	rel, err := filepath.Rel(dir, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }
 
 // printOverlays prints resolved overlays if requested

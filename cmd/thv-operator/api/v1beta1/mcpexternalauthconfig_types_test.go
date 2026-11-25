@@ -12,11 +12,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 )
 
 // makeStringOfLen returns a string of exactly n ASCII bytes.
 func makeStringOfLen(n int) string {
 	return strings.Repeat("a", n)
+}
+
+// makeMultibyteStringOfRunes returns a string of exactly n runes, each 3 bytes
+// ("あ"), so its byte length is 3n. Useful for boundary-length tests that must
+// distinguish rune counts from byte counts.
+func makeMultibyteStringOfRunes(n int) string {
+	return strings.Repeat("あ", n)
 }
 
 // makeURLOfLen returns an https URL whose total length is exactly n.
@@ -1194,6 +1203,93 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_TrustedIssuerEndpoints(t
 	}
 }
 
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_JWTBearerAssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	const selfIssuer = "https://auth.example.com"
+	grant := func(types []JWTBearerAssertionType, audiences []string) JWTBearerGrantConfig {
+		return JWTBearerGrantConfig{
+			MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+			SubjectBindings: []JWTBearerSubjectBinding{{
+				Subject: "workload", AllowedResources: []string{"https://mcp.example.com"},
+			}},
+			AcceptedAssertionTypes: types,
+			AcceptedAudiences:      audiences,
+		}
+	}
+	newConfig := func(canonical bool, g JWTBearerGrantConfig) EmbeddedAuthServerConfig {
+		issuer := TrustedIssuerConfig{Name: "external", IssuerURL: "https://issuer.example.com"}
+		config := EmbeddedAuthServerConfig{Issuer: selfIssuer}
+		if canonical {
+			config.TrustedIssuers = []TrustedIssuerConfig{issuer}
+			config.InboundGrants = &InboundGrantsConfig{JWTBearer: &JWTBearerInboundGrantConfig{
+				IssuerPolicies: []JWTBearerIssuerPolicyConfig{{IssuerRef: "external", JWTBearerGrantConfig: g}},
+			}}
+			return config
+		}
+		issuer.JWTBearerGrant = &g
+		config.TrustedIssuers = []TrustedIssuerConfig{issuer}
+		return config
+	}
+
+	idJAG := []JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG}
+	tests := []struct {
+		name      string
+		types     []JWTBearerAssertionType
+		audiences []string
+		wantErr   string
+	}{
+		{name: "id_jag without issuer audience rejected", types: idJAG, audiences: []string{"https://other.example.com"},
+			wantErr: "must include the authorization server issuer"},
+		{name: "id_jag with no audiences accepted, the issuer is the default", types: idJAG},
+		{name: "id_jag with issuer audience accepted", types: idJAG, audiences: []string{selfIssuer}},
+		{name: "unsupported assertion type rejected", types: []JWTBearerAssertionType{"bogus"},
+			wantErr: "unsupported value"},
+		{name: "unset assertion types keep prior behavior", audiences: []string{"https://other.example.com"}},
+	}
+
+	for _, tt := range tests {
+		for _, canonical := range []bool{false, true} {
+			shape := map[bool]string{false: "legacy", true: "canonical"}[canonical]
+			t.Run(shape+" "+tt.name, func(t *testing.T) {
+				t.Parallel()
+				config := newConfig(canonical, grant(tt.types, tt.audiences))
+				err := config.ValidateInboundGrants()
+				if tt.wantErr == "" {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorContains(t, err, tt.wantErr)
+			})
+		}
+	}
+}
+
+func TestBuildJWTBearerGrantPolicy_AssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		types []JWTBearerAssertionType
+		want  []tokenexchange.JWTBearerAssertionType
+	}{
+		{name: "nil stays nil"},
+		{name: "empty stays empty non-nil", types: []JWTBearerAssertionType{}, want: []tokenexchange.JWTBearerAssertionType{}},
+		{name: "values converted", types: []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer, JWTBearerAssertionTypeIDJAG},
+			want: []tokenexchange.JWTBearerAssertionType{
+				tokenexchange.JWTBearerAssertionTypeJWTBearer, tokenexchange.JWTBearerAssertionTypeIDJAG}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			policy := BuildJWTBearerGrantPolicy(&JWTBearerGrantConfig{AcceptedAssertionTypes: tt.types})
+			require.NotNil(t, policy)
+			assert.Equal(t, tt.want, policy.AcceptedAssertionTypes)
+			assert.Empty(t, policy.MaxAssertionAge, "nil maxAssertionAge must not panic")
+		})
+	}
+}
+
 func TestEmbeddedAuthServerConfig_ValidateInboundGrants_DuplicateCredentialIssuerRedaction(t *testing.T) {
 	t.Parallel()
 
@@ -1938,6 +2034,141 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			},
 			expectErr: true,
 			errMsg:    "dcrConfig.softwareStatement: length",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName at MaxLength is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-at-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.clientName: must be at most 256 characters",
+		},
+		{
+			name: "OIDC provider with DCRConfig clientName at MaxLength is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "oidc-dcr-client-name-at-cap",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OIDC provider with DCRConfig clientName over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "oidc-dcr-client-name-over-cap",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig.dcrConfig.clientName: must be at most 256 characters",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName of 256 multibyte runes is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-multibyte-at-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeMultibyteStringOfRunes(MaxDCRClientNameLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName of 257 multibyte runes is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-multibyte-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeMultibyteStringOfRunes(MaxDCRClientNameLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.clientName: must be at most 256 characters",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig whitespace-only clientName is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-whitespace-only",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   "   ",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.clientName: must not have leading or trailing whitespace",
+		},
+		{
+			name: "OIDC provider with DCRConfig whitespace-only clientName is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "oidc-dcr-client-name-whitespace-only",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   "   ",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig.dcrConfig.clientName: must not have leading or trailing whitespace",
 		},
 		{
 			name: "OAuth2 provider with identityFromToken empty subjectPath rejected",

@@ -467,6 +467,36 @@ spec:
                               description: JWTBearerIssuerPolicyConfig binds RFC 7523
                                 policy to a named trusted issuer.
                               properties:
+                                acceptedAssertionTypes:
+                                  description: |-
+                                    AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                    jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                    are accepted, which is the behavior before this field existed. Set
+                                    ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                    Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                    be redeemed on the credential-free plain jwt-bearer path. Set
+                                    ["jwt_bearer"] to refuse ID-JAG.
+
+                                    When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                    include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                    draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                    token endpoint URL. When acceptedAudiences is empty the issuer is
+                                    accepted by default, unless it is also listed as an allowed audience
+                                    (resource), which fails startup. Subject bindings are shared between both forms, so
+                                    each binding also authorizes a plain jwt-bearer assertion from that
+                                    subject whenever "jwt_bearer" is accepted.
+                                  items:
+                                    description: |-
+                                      JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                      jwt-bearer grant may accept for a trusted issuer.
+                                    enum:
+                                    - jwt_bearer
+                                    - id_jag
+                                    type: string
+                                  maxItems: 2
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
@@ -1566,6 +1596,36 @@ spec:
                             This legacy field is deprecated; configure RFC 7523 policy under
                             inboundGrants.jwtBearer.issuerPolicies.
                           properties:
+                            acceptedAssertionTypes:
+                              description: |-
+                                AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                are accepted, which is the behavior before this field existed. Set
+                                ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                be redeemed on the credential-free plain jwt-bearer path. Set
+                                ["jwt_bearer"] to refuse ID-JAG.
+
+                                When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                token endpoint URL. When acceptedAudiences is empty the issuer is
+                                accepted by default, unless it is also listed as an allowed audience
+                                (resource), which fails startup. Subject bindings are shared between both forms, so
+                                each binding also authorizes a plain jwt-bearer assertion from that
+                                subject whenever "jwt_bearer" is accepted.
+                              items:
+                                description: |-
+                                  JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                  jwt-bearer grant may accept for a trusted issuer.
+                                enum:
+                                - jwt_bearer
+                                - id_jag
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
@@ -1824,6 +1884,20 @@ spec:
                                 runtime rather than being pre-provisioned, and ClientID must be left empty.
                                 Mutually exclusive with ClientID.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -2281,6 +2355,20 @@ spec:
                                 and ClientSecretRef must be omitted. If neither discoveryUrl nor
                                 registrationEndpoint is set, discovery is derived from issuerUrl.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -2758,19 +2846,20 @@ spec:
                 type: object
               obo:
                 description: |-
-                  OBO configures On-Behalf-Of (OBO) authentication.
-                  Only used when Type is "obo". Setting this field on an upstream-only build
-                  causes the MCPExternalAuthConfig to transition to
-                  status.conditions[Valid] = False with Reason: EnterpriseRequired, because
-                  no OBO handler is registered. See OBOConfig for the field-to-runtime
+                  OBO configures Microsoft Entra On-Behalf-Of (OBO) authentication.
+                  Only used when Type is "obo". See OBOConfig for the field-to-runtime
                   contract mapping.
                 properties:
                   audience:
                     description: |-
-                      Audience is the backend target identifier requested in the exchanged
-                      token. Used as the exchange target when Scopes is empty. At least one of
-                      audience or scopes must be set; the operator enforces that at reconcile
-                      (it is not an admission-time rule — see the type doc).
+                      Audience is the backend resource the exchanged token is for: its
+                      Application ID URI (e.g. api://backend) or application (client) ID. Used
+                      when Scopes is empty, as the scope <audience>/.default (a trailing "/" is
+                      dropped, and a value already ending in /.default is sent as is), because
+                      the Entra v2.0 endpoint accepts only scopes. To request specific delegated
+                      permissions, use Scopes instead. At least one of audience or scopes must be
+                      set; the operator enforces that at reconcile (it is not an admission-time
+                      rule — see the type doc).
                     type: string
                   authority:
                     description: |-
@@ -2797,11 +2886,10 @@ spec:
                       CacheSkew overrides the OBO token cache's default expiry skew (the margin
                       by which a cached token is treated as expired before its real expiry),
                       e.g. "30s". The operator converts it to the runtime contract's
-                      integer-seconds cacheSkewSeconds. Should not be negative, but the schema
-                      does not enforce that — metav1.Duration carries no numeric minimum — and
-                      upstream builds do not reject it. A negative value is rejected only by an
-                      enterprise build's OBO handler once that handler validates the converted
-                      parameters; it is not enforced at admission or in upstream-only builds.
+                      integer-seconds cacheSkewSeconds (truncated toward zero). Must be between
+                      zero and 2147483647 seconds (math.MaxInt32); metav1.Duration carries no
+                      numeric bounds, so the operator rejects a negative or larger value at
+                      reconcile (Valid=False, Reason: InvalidConfig) rather than at admission.
                       When omitted, the cache default applies.
                     type: string
                   clientId:
@@ -2852,9 +2940,13 @@ spec:
                     description: |-
                       SubjectTokenProviderName selects the source of the OBO subject (assertion)
                       token from the request's authenticated Identity:
-                        - Omitted: use the inbound end-user token the client presented
-                          (Identity.Token) — the deployment with no embedded auth server, where
-                          the client holds an Entra token directly.
+                        - Omitted, with no embedded auth server: use the inbound end-user token
+                          the client presented (Identity.Token), where the client holds an Entra
+                          token directly.
+                        - Omitted, behind an embedded auth server: defaults to its upstream
+                          provider, since the inbound token is then the proxy's own session
+                          token. A VirtualMCPServer whose embedded auth server has more than one
+                          upstream must set it explicitly.
                         - Set: use the named upstream provider's token
                           (Identity.UpstreamTokens[<name>]) — the embedded-auth-server
                           deployment, where the inbound token is the proxy's own session token.
@@ -2877,7 +2969,7 @@ spec:
                       interpolates it into the token endpoint
                       (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
                       the GUID/domain shape (no path metacharacters); the pattern and 253-char
-                      cap mirror the enterprise exchanger's validateTenant, so any tenantId
+                      cap mirror the Entra exchanger's tenant validation, so any tenantId
                       admitted here is one the runtime can consume.
                     maxLength: 253
                     pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$
@@ -2953,12 +3045,7 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: |-
-                  Type is the type of external authentication to configure.
-                  When set to "obo", the cluster must run a build that has registered an
-                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
-                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
-                  for obo-typed configs.
+                description: Type is the type of external authentication to configure.
                 enum:
                 - tokenExchange
                 - headerInjection
@@ -3643,6 +3730,36 @@ spec:
                               description: JWTBearerIssuerPolicyConfig binds RFC 7523
                                 policy to a named trusted issuer.
                               properties:
+                                acceptedAssertionTypes:
+                                  description: |-
+                                    AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                    jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                    are accepted, which is the behavior before this field existed. Set
+                                    ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                    Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                    be redeemed on the credential-free plain jwt-bearer path. Set
+                                    ["jwt_bearer"] to refuse ID-JAG.
+
+                                    When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                    include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                    draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                    token endpoint URL. When acceptedAudiences is empty the issuer is
+                                    accepted by default, unless it is also listed as an allowed audience
+                                    (resource), which fails startup. Subject bindings are shared between both forms, so
+                                    each binding also authorizes a plain jwt-bearer assertion from that
+                                    subject whenever "jwt_bearer" is accepted.
+                                  items:
+                                    description: |-
+                                      JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                      jwt-bearer grant may accept for a trusted issuer.
+                                    enum:
+                                    - jwt_bearer
+                                    - id_jag
+                                    type: string
+                                  maxItems: 2
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
@@ -4742,6 +4859,36 @@ spec:
                             This legacy field is deprecated; configure RFC 7523 policy under
                             inboundGrants.jwtBearer.issuerPolicies.
                           properties:
+                            acceptedAssertionTypes:
+                              description: |-
+                                AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                are accepted, which is the behavior before this field existed. Set
+                                ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                be redeemed on the credential-free plain jwt-bearer path. Set
+                                ["jwt_bearer"] to refuse ID-JAG.
+
+                                When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                token endpoint URL. When acceptedAudiences is empty the issuer is
+                                accepted by default, unless it is also listed as an allowed audience
+                                (resource), which fails startup. Subject bindings are shared between both forms, so
+                                each binding also authorizes a plain jwt-bearer assertion from that
+                                subject whenever "jwt_bearer" is accepted.
+                              items:
+                                description: |-
+                                  JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                  jwt-bearer grant may accept for a trusted issuer.
+                                enum:
+                                - jwt_bearer
+                                - id_jag
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
@@ -5000,6 +5147,20 @@ spec:
                                 runtime rather than being pre-provisioned, and ClientID must be left empty.
                                 Mutually exclusive with ClientID.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -5457,6 +5618,20 @@ spec:
                                 and ClientSecretRef must be omitted. If neither discoveryUrl nor
                                 registrationEndpoint is set, discovery is derived from issuerUrl.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -5934,19 +6109,20 @@ spec:
                 type: object
               obo:
                 description: |-
-                  OBO configures On-Behalf-Of (OBO) authentication.
-                  Only used when Type is "obo". Setting this field on an upstream-only build
-                  causes the MCPExternalAuthConfig to transition to
-                  status.conditions[Valid] = False with Reason: EnterpriseRequired, because
-                  no OBO handler is registered. See OBOConfig for the field-to-runtime
+                  OBO configures Microsoft Entra On-Behalf-Of (OBO) authentication.
+                  Only used when Type is "obo". See OBOConfig for the field-to-runtime
                   contract mapping.
                 properties:
                   audience:
                     description: |-
-                      Audience is the backend target identifier requested in the exchanged
-                      token. Used as the exchange target when Scopes is empty. At least one of
-                      audience or scopes must be set; the operator enforces that at reconcile
-                      (it is not an admission-time rule — see the type doc).
+                      Audience is the backend resource the exchanged token is for: its
+                      Application ID URI (e.g. api://backend) or application (client) ID. Used
+                      when Scopes is empty, as the scope <audience>/.default (a trailing "/" is
+                      dropped, and a value already ending in /.default is sent as is), because
+                      the Entra v2.0 endpoint accepts only scopes. To request specific delegated
+                      permissions, use Scopes instead. At least one of audience or scopes must be
+                      set; the operator enforces that at reconcile (it is not an admission-time
+                      rule — see the type doc).
                     type: string
                   authority:
                     description: |-
@@ -5973,11 +6149,10 @@ spec:
                       CacheSkew overrides the OBO token cache's default expiry skew (the margin
                       by which a cached token is treated as expired before its real expiry),
                       e.g. "30s". The operator converts it to the runtime contract's
-                      integer-seconds cacheSkewSeconds. Should not be negative, but the schema
-                      does not enforce that — metav1.Duration carries no numeric minimum — and
-                      upstream builds do not reject it. A negative value is rejected only by an
-                      enterprise build's OBO handler once that handler validates the converted
-                      parameters; it is not enforced at admission or in upstream-only builds.
+                      integer-seconds cacheSkewSeconds (truncated toward zero). Must be between
+                      zero and 2147483647 seconds (math.MaxInt32); metav1.Duration carries no
+                      numeric bounds, so the operator rejects a negative or larger value at
+                      reconcile (Valid=False, Reason: InvalidConfig) rather than at admission.
                       When omitted, the cache default applies.
                     type: string
                   clientId:
@@ -6028,9 +6203,13 @@ spec:
                     description: |-
                       SubjectTokenProviderName selects the source of the OBO subject (assertion)
                       token from the request's authenticated Identity:
-                        - Omitted: use the inbound end-user token the client presented
-                          (Identity.Token) — the deployment with no embedded auth server, where
-                          the client holds an Entra token directly.
+                        - Omitted, with no embedded auth server: use the inbound end-user token
+                          the client presented (Identity.Token), where the client holds an Entra
+                          token directly.
+                        - Omitted, behind an embedded auth server: defaults to its upstream
+                          provider, since the inbound token is then the proxy's own session
+                          token. A VirtualMCPServer whose embedded auth server has more than one
+                          upstream must set it explicitly.
                         - Set: use the named upstream provider's token
                           (Identity.UpstreamTokens[<name>]) — the embedded-auth-server
                           deployment, where the inbound token is the proxy's own session token.
@@ -6053,7 +6232,7 @@ spec:
                       interpolates it into the token endpoint
                       (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
                       the GUID/domain shape (no path metacharacters); the pattern and 253-char
-                      cap mirror the enterprise exchanger's validateTenant, so any tenantId
+                      cap mirror the Entra exchanger's tenant validation, so any tenantId
                       admitted here is one the runtime can consume.
                     maxLength: 253
                     pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$
@@ -6129,12 +6308,7 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: |-
-                  Type is the type of external authentication to configure.
-                  When set to "obo", the cluster must run a build that has registered an
-                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
-                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
-                  for obo-typed configs.
+                description: Type is the type of external authentication to configure.
                 enum:
                 - tokenExchange
                 - headerInjection

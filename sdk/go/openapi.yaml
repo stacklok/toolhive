@@ -176,6 +176,18 @@ components:
                 jwksurl:
                     description: JWKSURL is the URL to fetch the JWKS from
                     type: string
+                requiredSubject:
+                    description: |-
+                        RequiredSubject, when non-empty, requires the token's "sub" claim to equal
+                        this value exactly. Tokens with a missing or empty "sub" are rejected.
+                        If RequiredSubjectPrefix is also set, both checks must pass.
+                    type: string
+                requiredSubjectPrefix:
+                    description: |-
+                        RequiredSubjectPrefix, when non-empty, requires the token's "sub" claim to
+                        start with this value. Tokens with a missing or empty "sub" are rejected.
+                        If RequiredSubject is also set, both checks must pass.
+                    type: string
                 resourceURL:
                     description: ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)
                     type: string
@@ -236,6 +248,23 @@ components:
                 ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
                 Mutually exclusive with ClientID.
             properties:
+                client_name:
+                    description: |-
+                        ClientName is the optional RFC 7591 "client_name" registration metadata
+                        sent when ToolHive registers with the upstream. When empty, ToolHive
+                        registers as "ToolHive MCP Client". It is display-only metadata: the
+                        upstream shows it on its authorization screen, and it is never used as
+                        a key. It is capped at 256 characters, matching the client_name bound
+                        the authserver enforces on inbound registrations. Names with leading
+                        or trailing whitespace, or containing control or format characters,
+                        are rejected.
+
+                        Changing it does not rename an already-registered client: the cached
+                        registration is keyed without the client name, so the new value applies
+                        only the next time ToolHive registers a fresh client — for example
+                        after rotating via RotationKey, or when the upstream rejects the cached
+                        registration.
+                    type: string
                 discovery_url:
                     description: |-
                         DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
@@ -413,6 +442,15 @@ components:
             type: object
         AuthenticationDelegateClientRunConfig:
             properties:
+                access_token_lifespan:
+                    description: |-
+                        AccessTokenLifespan is the lifetime of the access tokens this client
+                        obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+                        server's access_token_lifespan applies. When set it must be at least 2s
+                        and at most 24h. It is an upper bound: a token never outlives the
+                        assertion it was redeemed from, and a token that carries the
+                        delegated-access marker is capped further. Other grants ignore it.
+                    type: string
                 audiences:
                     description: |-
                         Audiences are output only: the upper bound on the audiences of the
@@ -601,6 +639,14 @@ components:
             type: object
         AuthenticationJWTBearerIssuerPolicyRunConfig:
             properties:
+                accepted_assertion_types:
+                    description: |-
+                        AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes
+                        for the canonical config path; unset accepts both jwt_bearer and id_jag.
+                    items:
+                        $ref: '#/components/schemas/AuthenticationServerTokenExchangeJWTBearerAssertionType'
+                    type: array
+                    uniqueItems: false
                 accepted_audiences:
                     items:
                         type: string
@@ -957,8 +1003,8 @@ components:
                         When true, the embedded auth server handles OAuth flows for clients, but instead of
                         injecting upstream IdP tokens the proxy strips the client's credential headers
                         (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
-                        backend receives an unauthenticated request. Incompatible with token exchange
-                        and AWS STS, which would re-add credentials after the strip.
+                        backend receives an unauthenticated request. Incompatible with token exchange,
+                        AWS STS and OBO, which would re-add credentials after the strip.
                     type: boolean
                 force_confidential_redirect_uris:
                     description: |-
@@ -1216,6 +1262,14 @@ components:
             type: object
         AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig:
             type: object
+        AuthenticationServerTokenExchangeJWTBearerAssertionType:
+            enum:
+                - jwt_bearer
+                - id_jag
+            type: string
+            x-enum-varnames:
+                - JWTBearerAssertionTypeJWTBearer
+                - JWTBearerAssertionTypeIDJAG
         AuthenticationServerTokenExchangeJWTBearerSubjectBinding:
             properties:
                 allowed_resources:
@@ -5092,6 +5146,24 @@ components:
                 This legacy field is deprecated; configure RFC 7523 policy under
                 inbound_grants.jwt_bearer.issuer_policies.
             properties:
+                accepted_assertion_types:
+                    description: |-
+                        AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                        jwt-bearer grant accepts. nil/empty accepts both jwt_bearer and id_jag
+                        (the behavior before this field existed). Set {id_jag} to restrict an IdP
+                        issuer to Cross-App-Access grants so its other signed JWTs cannot be
+                        redeemed on the credential-free plain path; set {jwt_bearer} to refuse
+                        ID-JAG. Listing id_jag explicitly requires this AS's issuer to be
+                        accepted: AcceptedAudiences, when set, must include it, and when empty
+                        the issuer must not also be an allowed audience. SubjectBindings are shared by both forms. See
+                        docs/arch/17-token-exchange-delegation.md.
+                    items:
+                        enum:
+                            - jwt_bearer
+                            - id_jag
+                        type: string
+                    type: array
+                    uniqueItems: false
                 accepted_audiences:
                     description: |-
                         AcceptedAudiences is the set of "this AS" identity strings an
@@ -5105,7 +5177,9 @@ components:
                         JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
                         the token endpoint and this server's issuer identifier, unless the issuer
                         is also an allowed resource audience. A configured list replaces both
-                        defaults.
+                        defaults. The plain JWT-bearer grant accepts a multi-valued "aud" when
+                        one value matches; the ID-JAG grant refuses any "aud" array with more
+                        than one value.
                     items:
                         type: string
                     type: array

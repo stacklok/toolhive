@@ -328,6 +328,48 @@ func (c *ValidatingCache[K, V]) RemoveMatching(pred func(K, V) bool) int {
 	return removed
 }
 
+// Sweep evicts every entry for which pred reports true, returning the keys it
+// evicted. Unlike RemoveMatching, pred runs OUTSIDE the cache lock — once per
+// snapshot entry — so it may perform I/O such as a storage liveness check. Each
+// removal is re-validated under the lock (sameEntry) so a concurrent Set that
+// replaced the entry is not evicted, and its key is not returned. Once ctx ends,
+// Sweep stops calling pred and leaves the remaining entries in place. Like
+// RemoveMatching, it is intended for infrequent proactive reconciliation (e.g. a
+// background TTL sweep), not the hot path.
+func (c *ValidatingCache[K, V]) Sweep(ctx context.Context, pred func(context.Context, K, V) bool) []K {
+	// Snapshot the candidate entries under a short lock. Keys() returns a copy
+	// and Peek does not update recency, so this leaves the LRU order unchanged.
+	c.mu.Lock()
+	entries := make([]evictedEntry[K, V], 0, c.lruCache.Len())
+	for _, key := range c.lruCache.Keys() {
+		if val, ok := c.lruCache.Peek(key); ok {
+			entries = append(entries, evictedEntry[K, V]{key: key, val: val})
+		}
+	}
+	c.mu.Unlock()
+
+	var evicted []K
+	for _, e := range entries {
+		if ctx.Err() != nil {
+			break
+		}
+		if !pred(ctx, e.key, e.val) {
+			continue
+		}
+		// Re-check under the lock: a concurrent Set may have replaced the entry
+		// with a value pred no longer selects, or another path may have evicted
+		// it. Peek+sameEntry both guards that race and keeps eviction correct.
+		c.mu.Lock()
+		if current, ok := c.lruCache.Peek(e.key); ok && sameEntry(current, e.val) {
+			c.lruCache.Remove(e.key) // buffers the eviction; drained below
+			evicted = append(evicted, e.key)
+		}
+		c.mu.Unlock()
+	}
+	c.drainEvictions()
+	return evicted
+}
+
 // sameEntry reports whether a and b are the same cache entry.
 // For pointer types it compares addresses (identity), so a concurrent Set that
 // stores a distinct new value is never mistaken for the stale entry. For

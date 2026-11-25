@@ -832,9 +832,13 @@ idle, so an idle session holds no goroutine.
 
 Each worker's resync body (`runListChangedResync`), off the receive loop:
 
-1. **Liveness guard** — looks the session up via `GetMultiSession` and returns
-   immediately if it was terminated/expired, so a storm of notifications for a
-   dead session drives no work.
+1. **Liveness guard** — reads the session's metadata via `LookupOwner` and
+   returns immediately if it was terminated/expired, so a storm of
+   notifications for a dead session drives no work. The read neither refreshes
+   the session TTL nor restores the session on this pod (`GetMultiSession`
+   would do both), so backend health flaps and `list_changed` notifications
+   cannot keep a client-abandoned session alive. A storage error skips the run
+   without pruning the session's health-resync registration.
 2. **Reconstructs the request context** — starts from a server-lifetime base
    context (`Server.resyncBaseCtx`, cancelled on `Stop` so in-flight backend
    sweeps never outlive the server) and layers on the captured identity
@@ -988,9 +992,12 @@ register on successful registration (only when health monitoring is enabled —
 with no monitor there is no subscriber and nothing would ever trigger or
 prune the registry) and deregister on the termination paths the server
 observes — including SDK-initiated HTTP DELETE, via a thin
-`SessionIdManager` wrapper; sessions that end without any Terminate call (TTL
-expiry) are pruned lazily when a triggered resync's liveness guard finds them
-gone.
+`SessionIdManager` wrapper. Sessions that end without any Terminate call (TTL
+expiry, or termination on another replica) are pruned when the session
+manager's background cache sweep reclaims them, independent of backend
+activity. A session the sweep never sees (evicted from the node-local cache
+by LRU pressure first, or the sweep disabled) is pruned lazily when a
+triggered resync's liveness guard finds it gone.
 
 **Scope**: passthrough mode, tools only. When the optimizer is enabled the
 fan-out is a no-op — the advertised `find_tool`/`call_tool` meta-tools do not
@@ -1082,8 +1089,32 @@ Validates clients connecting to vMCP using OIDC token validation or anonymous ac
 
 Authenticates vMCP to backend MCP servers using:
 - **Token exchange** - RFC 8693 exchange of client token for backend-specific token
+- **Entra on-behalf-of (OBO)** - Microsoft Entra exchange of the signed-in user's token for a backend-scoped token issued for that user (`pkg/vmcp/auth/strategies/obo.go`)
 - **Header injection** - Static API key or header injection
 - **Unauthenticated** - For internal/trusted backends
+
+The OBO strategy uses the same Entra exchanger and token cache as the proxy
+middleware (`pkg/auth/obo/entra`, `pkg/auth/obo/cache`), built by the shared
+`obo.NewCachedExchanger`. vMCP keeps one cached exchanger per (token URL,
+client ID, cache skew); when that client's secret is rotated, the exchanger
+built with the new secret replaces the old one, and the old one's cached
+tokens are dropped with it. An `audience` is a resource identifier and is
+sent to Entra as `<audience>/.default`; explicit scopes win over it. Behind
+an embedded auth server, an omitted `subjectTokenProviderName` defaults to
+the auth server's upstream (`authtypes.DefaultSubjectProviderName`), and is
+rejected with `ErrAmbiguousSubjectProvider` when there is more than one
+upstream. Health-check probes carry no user and skip the exchange. A conditional-access
+or claims challenge fails the backend request and writes an
+`obo_token_exchange` audit event. The error returned to the MCP client names
+at most the failure class (denied, invalid grant, or transient); a rejected
+client credential reads as a plain "token exchange failed", since it is the
+operator's problem. Entra's error code and description go to the vMCP log
+instead. OBO works for inline `outgoingAuth`
+backends, where the operator mounts each config's client secret under
+`TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>_<HASH8>` (a short hash of the
+config name keeps names such as `my-cfg` and `my.cfg` distinct), and for discovered backends
+(MCPServer, MCPRemoteProxy, and MCPServerEntry in the group), where the
+converter reads the client secret from the referenced Secret.
 
 Exchanged tokens are cached to avoid repeated exchange calls.
 

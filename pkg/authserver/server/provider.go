@@ -42,6 +42,13 @@ const (
 	MinAccessTokenLifespan = 1 * time.Minute
 	// MaxAccessTokenLifespan is the maximum allowed access token lifetime.
 	MaxAccessTokenLifespan = 24 * time.Hour
+	// MinClientAccessTokenLifespan is the minimum per-client access token
+	// lifetime for ID-JAG redemption. exp is signed in whole seconds, rounded
+	// down, and expires_in is truncated when the response is written, so a
+	// lifetime under about two seconds can produce a token that is already
+	// expired, or reports expires_in 0, after its single-use ID-JAG has been
+	// consumed.
+	MinClientAccessTokenLifespan = 2 * time.Second
 	// MinRefreshTokenLifespan is the minimum allowed refresh token lifetime.
 	MinRefreshTokenLifespan = 1 * time.Hour
 	// MaxRefreshTokenLifespan is the maximum allowed refresh token lifetime (30 days).
@@ -750,11 +757,14 @@ func NewAuthorizationServer(
 		recoverTimeErrors = true
 	}
 	// The JWS guard is outermost so it runs before any strategy parses
-	// a client assertion (see fositejose.IsUnsafeJWS).
+	// a client assertion (see fositejose.IsUnsafeJWS). The audience strategy
+	// applies to the caller-supplied strategy too, like the JWS guard, and must
+	// stay above the clock skew strategy, whose recovery does not check aud.
 	fositeConfig.ClientAuthenticationStrategy = newUnsafeJWSGuardClientAuthenticationStrategy(
 		newSPIFFEClientAuthenticationStrategy(
-			newClientAssertionErrorStrategy(newClientAssertionClockSkewStrategy(
-				defaultStrategy, assertionStore, clientAssertionAudiences(&fositeConfig), time.Now, recoverTimeErrors,
+			newClientAssertionErrorStrategy(newClientAssertionAudienceStrategy(
+				newClientAssertionClockSkewStrategy(defaultStrategy, assertionStore, time.Now, recoverTimeErrors),
+				fositeConfig.AccessTokenIssuer,
 			)), config.GetAccessTokenIssuer(),
 			config.SPIFFEJWTBundleSource, config.SPIFFEX509BundleSource, providerConfig.SPIFFEClientResolver,
 			providerConfig.SPIFFEX509ClientMatcher,

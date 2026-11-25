@@ -1297,6 +1297,7 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 		hookErr           error
 		wantError         *fosite.RFC6749Error
 		wantOAuthError    string
+		wantStatus        int
 		wantDescription   string
 		wantCalls         [][]string
 		wantEntries       string
@@ -1311,6 +1312,20 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 			name:            "repeated values",
 			details:         []string{"[]", "[]"},
 			wantOAuthError:  "invalid_request",
+			wantDescription: "The authorization_details parameter must not be repeated.",
+		},
+		{
+			name:            "two empty values",
+			details:         []string{"", ""},
+			wantOAuthError:  "invalid_request",
+			wantStatus:      http.StatusBadRequest,
+			wantDescription: "The authorization_details parameter must not be repeated.",
+		},
+		{
+			name:            "empty value with a second value",
+			details:         []string{"", "x"},
+			wantOAuthError:  "invalid_request",
+			wantStatus:      http.StatusBadRequest,
 			wantDescription: "The authorization_details parameter must not be repeated.",
 		},
 		{
@@ -1476,6 +1491,9 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 				require.ErrorAs(t, err, &rfcErr)
 				assert.Equal(t, tt.wantOAuthError, rfcErr.ErrorField)
 				assert.Equal(t, tt.wantDescription, rfcErr.DescriptionField)
+				if tt.wantStatus != 0 {
+					assert.Equal(t, tt.wantStatus, rfcErr.CodeField)
+				}
 			case tt.wantError != nil:
 				require.Error(t, err)
 				assert.ErrorIs(t, err, tt.wantError)
@@ -3711,4 +3729,94 @@ func TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource(t *testing.T
 	require.NoError(t, h.grantAndBoundAudiences(
 		context.Background(), req, client, &ValidatedClaims{Audience: []string{subPath}}))
 	assert.Equal(t, []string{subPath}, []string(req.GetGrantedAudience()))
+}
+
+func TestIssueBoundedAccessTokenBuildsElapsedErrorOnlyWhenElapsed(t *testing.T) {
+	t.Parallel()
+
+	errElapsed := errors.New("bound lifetime elapsed")
+
+	tests := []struct {
+		name           string
+		sessionExpiry  time.Time
+		wantCalls      int
+		wantErrElapsed bool
+	}{
+		{name: "no session expiry does not call elapsed", wantCalls: 0},
+		{name: "future session expiry does not call elapsed", sessionExpiry: time.Now().Add(time.Hour), wantCalls: 0},
+		{
+			name:           "past session expiry calls elapsed and returns its error",
+			sessionExpiry:  time.Now().Add(-time.Second),
+			wantCalls:      1,
+			wantErrElapsed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			helper := &oauth2.HandleHelper{
+				AccessTokenStrategy: &mockAccessTokenStrategy{},
+				AccessTokenStorage:  &mockAccessTokenStorage{},
+			}
+
+			// session.New initialises the embedded JWT session; a bare
+			// &session.Session{} has a nil one and panics on SetExpiresAt.
+			sess := session.New("", "", "", session.UserClaims{})
+			if !tt.sessionExpiry.IsZero() {
+				sess.SetExpiresAt(fosite.AccessToken, tt.sessionExpiry)
+			}
+			req := fosite.NewAccessRequest(sess)
+
+			calls := 0
+			elapsed := func() error {
+				calls++
+				return errElapsed
+			}
+
+			err := issueBoundedAccessToken(
+				context.Background(), helper, 15*time.Minute, req, fosite.NewAccessResponse(), elapsed)
+
+			assert.Equal(t, tt.wantCalls, calls)
+			if tt.wantErrElapsed {
+				require.ErrorIs(t, err, errElapsed)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// The WARN line for a refused authorization_details shape; a nil registry
+// ignores the parameter and logs nothing.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestTokenExchangeHandler_AuthorizationDetailsShapeLogs(t *testing.T) {
+	logs := captureLogs(t)
+	tj := newTestJWKS(t)
+	run := func(withRegistry bool, details []string) error {
+		h := newTestHandler(t, tj, 15*time.Minute)
+		if withRegistry {
+			h.authorizationDetailsRegistry = newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			})
+		}
+		form := defaultFormValues(t, tj)
+		form["authorization_details"] = details
+		return h.HandleTokenEndpointRequest(context.Background(), newAccessRequest(t, defaultClient(), form))
+	}
+
+	for reason, details := range map[string][]string{"repeated": {"", ""}, "malformed": {"[{"}} {
+		before := logs.String()
+		require.Error(t, run(true, details))
+		added := strings.TrimPrefix(logs.String(), before)
+		assert.Equal(t, 1, strings.Count(added, `msg="authorization_details rejected"`))
+		assert.Contains(t, added, "reason="+reason)
+		assert.Contains(t, added, "client_id="+testAgentClientID)
+	}
+
+	before := logs.String()
+	require.NoError(t, run(false, []string{"[{"}))
+	assert.NotContains(t, strings.TrimPrefix(logs.String(), before), "authorization_details rejected")
 }

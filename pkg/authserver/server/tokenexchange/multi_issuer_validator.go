@@ -133,10 +133,60 @@ type JWTBearerGrantPolicy struct {
 	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
 	// the token endpoint and this server's issuer identifier, unless the issuer
 	// is also an allowed resource audience. A configured list replaces both
-	// defaults.
+	// defaults. The plain JWT-bearer grant accepts a multi-valued "aud" when
+	// one value matches; the ID-JAG grant refuses any "aud" array with more
+	// than one value.
 	AcceptedAudiences []string `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
 
+	// AcceptedAssertionTypes selects which assertion form(s) this issuer's
+	// jwt-bearer grant accepts. nil/empty accepts both jwt_bearer and id_jag
+	// (the behavior before this field existed). Set {id_jag} to restrict an IdP
+	// issuer to Cross-App-Access grants so its other signed JWTs cannot be
+	// redeemed on the credential-free plain path; set {jwt_bearer} to refuse
+	// ID-JAG. Listing id_jag explicitly requires this AS's issuer to be
+	// accepted: AcceptedAudiences, when set, must include it, and when empty
+	// the issuer must not also be an allowed audience. SubjectBindings are shared by both forms. See
+	// docs/arch/17-token-exchange-delegation.md.
+	AcceptedAssertionTypes []JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty" enums:"jwt_bearer,id_jag"` //nolint:lll // struct tag cannot be wrapped
+
+	// SubjectMode selects how an ID-JAG's subject becomes the issued token's
+	// sub. Empty or "namespaced" issues <iss>#<sub>. "resolve" maps the subject
+	// to a local user; it must have no subject_bindings and
+	// accepted_assertion_types of exactly [id_jag], and every redemption from
+	// such an issuer is refused in this build. Set only from Go (embedders),
+	// like RequiredSubjectClaims, so config files cannot set it.
+	SubjectMode SubjectMode `json:"-" yaml:"-"`
+	// ActorIssuers are the act.iss values accepted besides the ID-JAG's own
+	// iss, only with subject_mode resolve. Set only from Go (embedders), like
+	// RequiredSubjectClaims, so config files cannot set it.
+	ActorIssuers []string `json:"-" yaml:"-"`
+
 	maxAssertionAge time.Duration
+}
+
+// JWTBearerAssertionType identifies one assertion form the RFC 7523
+// jwt-bearer grant may accept for a trusted issuer. Values mirror
+// v1beta1.JWTBearerAssertionType.
+type JWTBearerAssertionType string
+
+const (
+	// JWTBearerAssertionTypeJWTBearer accepts plain RFC 7523 assertions
+	// (typ absent, empty, or "JWT") — e.g. service-account/machine credentials.
+	JWTBearerAssertionTypeJWTBearer JWTBearerAssertionType = "jwt_bearer"
+	// JWTBearerAssertionTypeIDJAG accepts Identity Assertion Authorization
+	// Grant assertions (typ: oauth-id-jag+jwt) — cross-app-access grants
+	// minted by this issuer acting as IdP for a different resource owner.
+	JWTBearerAssertionTypeIDJAG JWTBearerAssertionType = "id_jag"
+)
+
+// effectiveAssertionTypes returns policy's AcceptedAssertionTypes, defaulting
+// a nil/empty slice to both assertion types. policy must be non-nil; an issuer
+// without a JWT-bearer grant accepts no assertion type, so callers skip it.
+func effectiveAssertionTypes(policy *JWTBearerGrantPolicy) []JWTBearerAssertionType {
+	if len(policy.AcceptedAssertionTypes) == 0 {
+		return []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer, JWTBearerAssertionTypeIDJAG}
+	}
+	return policy.AcceptedAssertionTypes
 }
 
 // TrustedIssuer configures an external OIDC issuer whose tokens are accepted
@@ -325,6 +375,10 @@ type externalIssuerConfig struct {
 	// never be gated.
 	fetchFailedAt time.Time
 	fetchErr      error
+	// keysUnusableLoggedAt is guarded by mu and is read only once fetched is
+	// true. It limits the post-fetch "keys unusable" Error line (see
+	// logKeySetUnusable) to one per jwksFetchFailureBackoff.
+	keysUnusableLoggedAt time.Time
 }
 
 // newActorMatcherEngine creates a CEL engine for admin-authored actor matcher
@@ -504,6 +558,8 @@ func cloneJWTBearerGrantPolicy(policy *JWTBearerGrantPolicy) *JWTBearerGrantPoli
 	}
 	clone := *policy
 	clone.AcceptedAudiences = slices.Clone(policy.AcceptedAudiences)
+	clone.AcceptedAssertionTypes = slices.Clone(policy.AcceptedAssertionTypes)
+	clone.ActorIssuers = slices.Clone(policy.ActorIssuers)
 	clone.SubjectBindings = make([]JWTBearerSubjectBinding, len(policy.SubjectBindings))
 	for i, binding := range policy.SubjectBindings {
 		clone.SubjectBindings[i] = JWTBearerSubjectBinding{
@@ -679,7 +735,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 	ctx context.Context, rawToken string, defaultAudiences []string,
 ) (*ValidatedClaims, error) {
 	if len(defaultAudiences) == 0 || slices.Contains(defaultAudiences, "") {
-		return nil, errors.New("default audiences must not be empty")
+		return nil, errDefaultAudiencesEmpty
 	}
 
 	issuer, err := peekIssuer(rawToken)
@@ -713,6 +769,16 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 	return buildValidatedClaims(standardClaims, extraClaims), nil
 }
 
+// errDefaultAudiencesEmpty is the precondition failure of
+// ValidateJWTBearerAssertion when the caller passes no usable default
+// audiences. It is a server misconfiguration, not a defect of the assertion.
+var errDefaultAudiencesEmpty = errors.New("default audiences must not be empty")
+
+// errIssuerKeysUnavailable marks a verification failure that happened before a
+// usable key set existed for the issuer (fetch, cache lookup, conversion, empty
+// or oversized set), as opposed to a token that fails against keys in hand.
+var errIssuerKeysUnavailable = errors.New("issuer signing keys unavailable")
+
 // verifyExternalSignature parses and verifies a JWT using the configured
 // issuer's cached JWKS. Both RFC 8693 subject tokens and RFC 7523 assertions
 // use this path so unknown-kid refreshes and key-use/algorithm restrictions
@@ -728,7 +794,15 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 
 	jwks, err := v.lookupJWKS(ctx, issuerConfig)
 	if err != nil {
-		return nil, jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
+		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			// The request ended; this says nothing about the issuer's keys.
+			// Checking ctx.Err() keeps the registration's own timeout, which
+			// is also a DeadlineExceeded, counted as an unreachable issuer.
+			return nil, jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w",
+				issuerConfig.IssuerURL, err)
+		}
+		return nil, jwt.Claims{}, nil, fmt.Errorf("%w: failed to fetch JWKS for issuer %s: %w",
+			errIssuerKeysUnavailable, issuerConfig.IssuerURL, err)
 	}
 
 	standardClaims, extraClaims, kidMatched, err := verifySignature(parsedToken, jwks)
@@ -740,6 +814,10 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 		// spoofed-kid attempt (kidMatched true) never reaches this branch,
 		// since a refresh can't change what signature the token was made
 		// with.
+		//
+		// Accepted trade-off: a rotated kid that arrives while the JWKS
+		// endpoint is down fails here as an ordinary verification error, not
+		// errIssuerKeysUnavailable, until the keys are reachable again.
 		v.refreshOnUnknownKid(ctx, issuerConfig)
 		if refreshedJWKS, lookupErr := v.lookupJWKS(ctx, issuerConfig); lookupErr == nil {
 			standardClaims, extraClaims, _, err = verifySignature(parsedToken, refreshedJWKS)
@@ -903,6 +981,13 @@ func (v *MultiIssuerTokenValidator) ensureRegistered(ctx context.Context, issuer
 	}
 
 	if err := v.registerOrRefresh(ctx, issuerConfig); err != nil {
+		// This is the pre-fetch outage line; logKeySetUnusable logs the
+		// post-fetch one. Replayed errors inside the backoff window return
+		// above without reaching it, so an issuer logs at most one line per
+		// jwksFetchFailureBackoff from each. The per-request refusal is logged
+		// at Debug by the token endpoint.
+		slog.Error("issuer signing keys unavailable; assertions from this issuer are refused until the next fetch attempt",
+			"issuer", issuerConfig.IssuerURL, "error", err, "retry_after", jwksFetchFailureBackoff)
 		issuerConfig.fetchErr = err
 		issuerConfig.fetchFailedAt = time.Now()
 		return err
@@ -1014,6 +1099,27 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 		return nil, err
 	}
 
+	jwks, err := v.usableJWKS(ctx, issuerConfig)
+	if err != nil {
+		// A request that ended (client disconnect, deadline) is not an issuer
+		// fault, so only log while the request context is still live. mu is
+		// not held here: ensureRegistered has already released it.
+		if ctx.Err() == nil {
+			logKeySetUnusable(issuerConfig, err)
+		}
+		return nil, err
+	}
+	return jwks, nil
+}
+
+// usableJWKS reads issuerConfig's cached key set and converts it to a
+// jose.JSONWebKeySet, refusing a set that is empty after dropping unsupported
+// keys or that exceeds maxJWKSKeys. It runs only after ensureRegistered has
+// succeeded.
+func (*MultiIssuerTokenValidator) usableJWKS(
+	ctx context.Context,
+	issuerConfig *externalIssuerConfig,
+) (*jose.JSONWebKeySet, error) {
 	set, err := issuerConfig.jwksCache.Lookup(ctx, issuerConfig.jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
@@ -1032,6 +1138,22 @@ func (v *MultiIssuerTokenValidator) lookupJWKS(
 	}
 
 	return jwks, nil
+}
+
+// logKeySetUnusable logs, at Error, that issuerConfig's fetched key set could
+// not be used, at most once per jwksFetchFailureBackoff per issuer. It takes
+// issuerConfig.mu, so the caller must not hold it.
+func logKeySetUnusable(issuerConfig *externalIssuerConfig, err error) {
+	issuerConfig.mu.Lock()
+	if time.Since(issuerConfig.keysUnusableLoggedAt) < jwksFetchFailureBackoff {
+		issuerConfig.mu.Unlock()
+		return
+	}
+	issuerConfig.keysUnusableLoggedAt = time.Now()
+	issuerConfig.mu.Unlock()
+
+	slog.Error("issuer signing keys unusable; assertions from this issuer are refused until its key set changes",
+		"issuer", issuerConfig.IssuerURL, "error", err)
 }
 
 // bridgeJWKSet converts a jwx jwk.Set into the go-jose jose.JSONWebKeySet
@@ -1309,7 +1431,7 @@ func validateTrustedIssuer(
 	if err := validateDelegationPolicy(ti); err != nil {
 		return err
 	}
-	if err := validateJWTBearerGrantPolicy(ti, allowedAudiences); err != nil {
+	if err := validateJWTBearerGrantPolicy(ti, selfIssuer, allowedAudiences); err != nil {
 		return err
 	}
 	if ti.AllowMayAct && slices.Contains(ti.AllowedDelegateClients, anyDelegateClient) {
@@ -1334,7 +1456,7 @@ func validateDelegationPolicy(ti TrustedIssuer) error {
 	return validateAllowedDelegateClients(ti)
 }
 
-func validateJWTBearerGrantPolicy(ti TrustedIssuer, allowedAudiences []string) error {
+func validateJWTBearerGrantPolicy(ti TrustedIssuer, selfIssuer string, allowedAudiences []string) error {
 	if ti.JWTBearerGrant == nil {
 		return nil
 	}
@@ -1343,8 +1465,38 @@ func validateJWTBearerGrantPolicy(ti TrustedIssuer, allowedAudiences []string) e
 	if err != nil || age <= 0 {
 		return fmt.Errorf("issuer_url %q: jwt_bearer_grant.max_assertion_age must be a positive duration", ti.IssuerURL)
 	}
-	if err := validateJWTBearerSubjectBindings(ti, policy.SubjectBindings); err != nil {
+	if err := validateSubjectMode(ti); err != nil {
 		return err
+	}
+	if policy.SubjectMode != SubjectModeResolve {
+		if err := validateJWTBearerSubjectBindings(ti, policy.SubjectBindings); err != nil {
+			return err
+		}
+	}
+	for _, assertionType := range policy.AcceptedAssertionTypes {
+		if assertionType != JWTBearerAssertionTypeJWTBearer && assertionType != JWTBearerAssertionTypeIDJAG {
+			return fmt.Errorf(
+				"issuer_url %q: jwt_bearer_grant.accepted_assertion_types contains unsupported value %q",
+				ti.IssuerURL, assertionType)
+		}
+	}
+	// Only an explicit id_jag triggers this: the unset default must not break
+	// existing plain-only configs whose audiences name just the token endpoint.
+	// An empty accepted_audiences already accepts the issuer for ID-JAGs, unless
+	// the issuer is also an allowed audience (a resource), where that default is
+	// dropped and no accepted_audiences list can name it either.
+	if slices.Contains(policy.AcceptedAssertionTypes, JWTBearerAssertionTypeIDJAG) {
+		switch {
+		case len(policy.AcceptedAudiences) > 0 && !slices.Contains(policy.AcceptedAudiences, selfIssuer):
+			return fmt.Errorf(
+				"issuer_url %q: jwt_bearer_grant.accepted_audiences must include the authorization server issuer %q when id_jag is enabled",
+				ti.IssuerURL, selfIssuer)
+		case len(policy.AcceptedAudiences) == 0 && slices.Contains(allowedAudiences, selfIssuer):
+			return fmt.Errorf(
+				"issuer_url %q: id_jag is enabled but the authorization server issuer %q is also an allowed audience, "+
+					"so ID-JAGs naming it are refused; remove it from allowed_audiences or drop id_jag from accepted_assertion_types",
+				ti.IssuerURL, selfIssuer)
+		}
 	}
 	return validateJWTBearerAcceptedAudiences(ti, policy.AcceptedAudiences, allowedAudiences)
 }

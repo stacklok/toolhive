@@ -17,15 +17,19 @@
 # skills/ — it proves every skill still packages cleanly, and publishes
 # nothing.
 #
+# Validating and building go through StacklokLabs/toolhive-actions'
+# skills-publish action with push: 'false', run against a thv built from this
+# checkout so a pull request exercises its own validator and builder.
+#
 # This is deliberately a separate workflow from skills-publish.yml rather
 # than the same one behind a `push: false` input. The build runs repository
-# code (`thv serve`, `thv skill build`), which on a pull request is code
-# from the pull request itself; keeping publishing in its own file means
-# this job never needs packages: write or id-token: write, so a pull request
-# cannot reach the credentials that sign a release. GitHub validates a
-# called workflow's permissions against its caller's statically, so a shared
-# workflow would have forced every caller to grant the union regardless of
-# the input.
+# code (`thv serve`, `thv skill validate`, `thv skill build`), which on a
+# pull request is code from the pull request itself; keeping publishing in
+# its own file means this job never needs packages: write or id-token: write,
+# so a pull request cannot reach the credentials that sign a release. GitHub
+# validates a called workflow's permissions against its caller's statically,
+# so a shared workflow would have forced every caller to grant the union
+# regardless of the input.
 
 name: Build Skills
 
@@ -38,9 +42,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
-    env:
-      BASE_REPO: "ghcr.io/stacklok/toolhive/skills"
 
     steps:
       - name: Checkout repository
@@ -57,51 +58,28 @@ jobs:
         id: version-string
         uses: $/.github/actions/compute-version
 
+      # No version ldflags: the action checks the thv version only before
+      # pushing, and this workflow never pushes.
       - name: Build thv binary
-        run: go build -o ./thv ./cmd/thv
-
-      - name: Start thv serve
         run: |
-          ./thv serve --host 127.0.0.1 --port 8080 > /tmp/thv-serve.log 2>&1 &
-          echo "THV_PID=$!" >> "$GITHUB_ENV"
+          go build -o "${RUNNER_TEMP}/thv-bin/thv" ./cmd/thv
+          echo "${RUNNER_TEMP}/thv-bin" >> "$GITHUB_PATH"
 
-          # Wait for the server to be ready
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8080/health > /dev/null 2>&1; then
-              echo "thv serve is ready (PID: $!)"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "thv serve failed to start after 30s; logs:"
-              cat /tmp/thv-serve.log
-              exit 1
-            fi
-            sleep 1
-          done
-
-          # Verify process is still alive after health check
-          kill -0 "$!" 2>/dev/null || { echo "thv serve exited unexpectedly; logs:"; cat /tmp/thv-serve.log; exit 1; }
-
-      - name: Build skills
+      # OCI repository paths must be lowercase. On stacklok/toolhive this is
+      # ghcr.io/stacklok/toolhive/skills.
+      - name: Compute registry prefix
+        id: prefix
         env:
-          TAG: ${{ steps.version-string.outputs.tag }}
-        run: |
-          set -euo pipefail
+          REPOSITORY: ${{ github.repository }}
+        run: echo "prefix=ghcr.io/${REPOSITORY,,}/skills" >> "$GITHUB_OUTPUT"
 
-          for skill_dir in skills/*/; do
-            # Skip if no skills exist
-            [ -d "$skill_dir" ] || continue
-
-            skill_name=$(basename "$skill_dir")
-            # Tagged with the real destination even though nothing is pushed,
-            # so the reference is validated exactly as a release would build it.
-            ref="${BASE_REPO}/${skill_name}:${TAG}"
-
-            echo "Building skill: ${skill_name} -> ${ref}"
-            built_ref=$(./thv skill build "$skill_dir" --tag "$ref")
-            echo "Built: ${built_ref}"
-          done
-
-      - name: Stop thv serve
-        if: always()
-        run: kill "$THV_PID" 2>/dev/null || true
+      # Validates every skill (errors fail the job), then builds each one
+      # tagged with the real destination even though nothing is pushed, so
+      # the reference is checked exactly as a release would build it.
+      - name: Validate and build skills
+        uses: StacklokLabs/toolhive-actions/skills-publish@2a20e956503d8878c219b2d2b7d91bdf89d731b4 # v0.0.9
+        with:
+          root: skills
+          registry-prefix: ${{ steps.prefix.outputs.prefix }}
+          tags: ${{ steps.version-string.outputs.tag }}
+          push: 'false'

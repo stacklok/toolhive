@@ -5,12 +5,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -43,19 +42,16 @@ func (c clientAssertionAudienceConfig) GetTokenURLs(context.Context) []string {
 	return c.tokenURLs
 }
 
-// newClientAssertionAudienceConfig wraps config so that client assertions may
-// carry either the issuer or the token endpoint URL as audience.
+// newClientAssertionAudienceConfig wraps config so that fosite accepts the
+// issuer, and nothing else, as the audience of a client assertion. fosite does
+// not accept the issuer on its own, so it is handed over as a token URL. RFC
+// 10070 section 4 requires the issuer identifier as the sole aud value and
+// forbids the token endpoint URL.
 func newClientAssertionAudienceConfig(config *fosite.Config) clientAssertionAudienceConfig {
 	return clientAssertionAudienceConfig{
 		Config:    config,
-		tokenURLs: clientAssertionAudiences(config),
+		tokenURLs: []string{config.AccessTokenIssuer},
 	}
-}
-
-// clientAssertionAudiences returns the values accepted as the audience of a
-// client assertion: the issuer and the token endpoint URL.
-func clientAssertionAudiences(config *fosite.Config) []string {
-	return []string{config.AccessTokenIssuer, config.TokenURL}
 }
 
 // clientAssertionStore is the part of fosite.Storage that the clock skew
@@ -68,11 +64,51 @@ type clientAssertionStore interface {
 	SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error
 }
 
+// newClientAssertionAudienceStrategy refuses a private_key_jwt client
+// assertion whose aud is not issuer and nothing else, before next runs. The
+// issuer may be sent as a string or as a one-element array, which RFC 7519
+// section 4.1.3 and RFC 10070 both allow. fosite only checks that aud contains
+// an accepted value, so without this an array such as [issuer, "other"] would
+// pass. The refusal comes before any client lookup, so such an assertion costs
+// no lookup and does not use up its jti.
+//
+// It applies to every strategy below it, fosite's own or one the caller
+// supplied, the same way the JWS guard does. The clock skew recovery does not
+// check aud itself and relies on this strategy sitting above it.
+//
+// An assertion that go-jose v4 cannot read is refused as well, instead of being
+// left to next. fosite parses with go-jose v3, which strips spaces and tabs and
+// trims base64 padding where v4 does not, so a token v4 rejects can still be
+// read and verified by fosite, with an aud array this check never saw.
+// Conforming clients send the canonical compact form and are not affected. The
+// claims are read without verifying the signature, which is safe because the
+// result can only refuse. The JWS guard above this strategy has already
+// screened the assertion.
+//
+// A refusal is logged at WARN on purpose: it is a request shape that older
+// releases accepted, and operators need to see why such a client now fails.
+func newClientAssertionAudienceStrategy(
+	next fosite.ClientAuthenticationStrategy,
+	issuer string,
+) fosite.ClientAuthenticationStrategy {
+	return func(ctx context.Context, r *http.Request, form url.Values) (fosite.Client, error) {
+		if !isPrivateKeyJWTRequest(form) {
+			return next(ctx, r, form)
+		}
+		if reason, err := checkClientAssertionAudience(form.Get("client_assertion"), issuer); err != nil {
+			slog.Warn("refused client assertion", "reason", reason, "client_id", form.Get("client_id"))
+			return nil, err
+		}
+		return next(ctx, r, form)
+	}
+}
+
 // newClientAssertionClockSkewStrategy lets a private_key_jwt client assertion
 // whose exp, iat or nbf is within clientAssertionClockSkew of now authenticate.
 // fosite offers no leeway setting, and its jwt.TimeFunc is a process-wide
 // variable, so fosite stays the validator and this wrapper only recovers from
-// its time errors. audiences are the values accepted in aud.
+// its time errors. It must sit below newClientAssertionAudienceStrategy, which
+// checks aud for the recovery.
 //
 // recoverTimeErrors turns the recovery on. Only fosite's own strategy may have
 // it, because the recovery relies on fosite verifying the signature before it
@@ -92,7 +128,6 @@ type clientAssertionStore interface {
 func newClientAssertionClockSkewStrategy(
 	next fosite.ClientAuthenticationStrategy,
 	store clientAssertionStore,
-	audiences []string,
 	now func() time.Time,
 	recoverTimeErrors bool,
 ) fosite.ClientAuthenticationStrategy {
@@ -116,7 +151,7 @@ func newClientAssertionClockSkewStrategy(
 		// so the claims can be read without verifying them again. Tests pin
 		// this order, because a different order in a later fosite release
 		// would make these claims untrusted.
-		return recoverSkewedClientAssertion(ctx, store, audiences, form, assertion, now, err)
+		return recoverSkewedClientAssertion(ctx, store, form, assertion, now, err)
 	}
 }
 
@@ -126,11 +161,12 @@ func newClientAssertionClockSkewStrategy(
 // returned unchanged. A GetClient error is refused as invalid_client. A storage
 // failure while checking the jti is refused as invalid_client here, and becomes
 // server_error in newClientAssertionErrorStrategy, which reads the failure the
-// backend recorded.
+// backend recorded. aud is not checked here: newClientAssertionAudienceStrategy,
+// which sits above the clock skew strategy, has already required it to be the
+// issuer.
 func recoverSkewedClientAssertion(
 	ctx context.Context,
 	store clientAssertionStore,
-	audiences []string,
 	form url.Values,
 	assertion string,
 	now func() time.Time,
@@ -152,7 +188,7 @@ func recoverSkewedClientAssertion(
 	if reason, refusalErr := checkClientAssertionTimes(claims, now(), fositeErr); reason != "" {
 		return refuse(reason, refusalErr)
 	}
-	if reason, refusalErr := checkClientAssertionIdentity(claims, clientID, audiences); reason != "" {
+	if reason, refusalErr := checkClientAssertionIdentity(claims, clientID); reason != "" {
 		return refuse(reason, refusalErr)
 	}
 
@@ -223,10 +259,11 @@ func errClientAssertionUnreadable() error {
 	return fosite.ErrInvalidClient.WithHint("The 'client_assertion' claims could not be read.")
 }
 
-// checkClientAssertionIdentity checks iss, sub, jti and aud against what fosite
-// requires. It returns a refusal reason and error, or an empty reason when the
-// claims are fine.
-func checkClientAssertionIdentity(claims jwt.Claims, clientID string, audiences []string) (string, error) {
+// checkClientAssertionIdentity checks iss, sub and jti against what fosite
+// requires. aud is checked before fosite runs, by checkClientAssertionAudience.
+// It returns a refusal reason and error, or an empty reason when the claims are
+// fine.
+func checkClientAssertionIdentity(claims jwt.Claims, clientID string) (string, error) {
 	if clientID == "" || claims.Issuer != clientID {
 		return "iss does not match the client", fosite.ErrInvalidClient.WithHint(
 			"Claim 'iss' from 'client_assertion' must match the 'client_id' of the OAuth 2.0 Client.")
@@ -239,19 +276,58 @@ func checkClientAssertionIdentity(claims jwt.Claims, clientID string, audiences 
 		return "jti missing", fosite.ErrInvalidClient.WithHint(
 			"Claim 'jti' from 'client_assertion' must be set but is not.")
 	}
-	if !slices.ContainsFunc(claims.Audience, func(aud string) bool {
-		return aud != "" && slices.Contains(audiences, aud)
-	}) {
-		return "audience not accepted", fosite.ErrInvalidClient.WithHintf(
-			"Claim 'audience' from 'client_assertion' must match the authorization server's token endpoint '%s'.",
-			strings.Join(slices.DeleteFunc(slices.Clone(audiences), func(a string) bool { return a == "" }), "' or '"))
+	return "", nil
+}
+
+// errClientAssertionAudience is the refusal for an aud that is not the issuer
+// and nothing else.
+func errClientAssertionAudience(issuer string) error {
+	return fosite.ErrInvalidClient.WithHintf(
+		"Claim 'audience' from 'client_assertion' must hold only the authorization server's issuer '%s'.", issuer)
+}
+
+// checkClientAssertionAudience refuses an assertion that cannot be read, or
+// whose aud is not issuer and nothing else. aud may be the issuer as a string
+// or as a one-element array. The raw claim is read, so that a missing, null or
+// non-string aud is refused rather than read as empty. It returns a refusal
+// reason and error, or an empty reason when the aud is fine. The signature is
+// not verified, so the result may only refuse.
+func checkClientAssertionAudience(assertion, issuer string) (string, error) {
+	token, err := jwt.ParseSigned(assertion, clientAssertionSigningAlgorithms)
+	if err != nil {
+		return "claims unreadable", errClientAssertionUnreadable()
+	}
+	var claims struct {
+		Audience json.RawMessage `json:"aud"`
+	}
+	if token.UnsafeClaimsWithoutVerification(&claims) != nil {
+		return "claims unreadable", errClientAssertionUnreadable()
+	}
+	aud, ok := soleAudience(claims.Audience)
+	if !ok || aud == "" || aud != issuer {
+		return "audience is not the issuer alone", errClientAssertionAudience(issuer)
 	}
 	return "", nil
 }
 
+// soleAudience returns the only value of a raw aud claim, which may be a
+// string or an array of strings. ok is false when aud is missing, is not a
+// string or an array of strings, or does not hold exactly one value.
+func soleAudience(raw json.RawMessage) (aud string, ok bool) {
+	if json.Unmarshal(raw, &aud) == nil {
+		return aud, true
+	}
+	var auds []string
+	if json.Unmarshal(raw, &auds) != nil || len(auds) != 1 {
+		return "", false
+	}
+	return auds[0], true
+}
+
 // parseVerifiedClientAssertionClaims reads the claims of an assertion without
 // verifying the signature. Callers only pass assertions that fosite has
-// already verified.
+// already verified. A check on claims that were not verified, which may only
+// refuse, belongs in checkClientAssertionAudience instead.
 func parseVerifiedClientAssertionClaims(assertion string) (jwt.Claims, bool) {
 	var claims jwt.Claims
 	parsed, err := jwt.ParseSigned(assertion, clientAssertionSigningAlgorithms)

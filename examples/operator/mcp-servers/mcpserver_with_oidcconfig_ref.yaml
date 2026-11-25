@@ -27,7 +27,12 @@ metadata:
   namespace: toolhive-system
 spec:
   type: kubernetesServiceAccount
-  # serviceAccount and namespace default to the pod's own SA and namespace
+  # Restrict callers by service account:
+  #   serviceAccount: my-client   -> only system:serviceaccount:<namespace>:my-client
+  #                                  (namespace defaults to the workload's namespace)
+  #   namespace: clients          -> any service account in the "clients" namespace
+  # With both empty (as here), any token from the cluster issuer with the
+  # server's audience is accepted.
   kubernetesServiceAccount: {}
 
 ---

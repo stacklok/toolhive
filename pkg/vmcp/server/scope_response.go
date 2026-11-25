@@ -62,6 +62,13 @@ func scopeClientInfo(info map[string]interface{}) ScopeClientProfile {
 	return client
 }
 
+func (cfg *Config) validateScopeExecution() error {
+	if cfg.ScopeAuthorization != nil && (cfg.CodeModeConfig != nil || cfg.OptimizerConfig != nil) {
+		return fmt.Errorf("%w: scope challenges do not support optimizer or code mode", vmcp.ErrInvalidConfig)
+	}
+	return nil
+}
+
 func validateScopeServing(cfg *ServerConfig) error {
 	if cfg.ScopeAuthorization == nil && cfg.ScopeChallenge == nil {
 		return nil

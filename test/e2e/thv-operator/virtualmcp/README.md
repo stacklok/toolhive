@@ -34,6 +34,8 @@ The tests will:
 - Run comprehensive MCP protocol tests
 - Clean up resources after completion
 
+The SPIFFE suites need the test client image in the kind cluster. `task thv-operator-e2e-test-run` builds and loads it; when running ginkgo directly, run `task build-load-spiffe-e2e-client-image` first.
+
 ```bash
 cd test/e2e/thv-operator/virtualmcp
 ginkgo -v

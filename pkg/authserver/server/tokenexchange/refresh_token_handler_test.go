@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -320,6 +322,12 @@ type stubSubjectValidator struct {
 	err    error
 }
 
+// signedByThisServer reports that the stub signs nothing, so opaque actor
+// tokens flow on to the client's actor validator.
+func (*stubSubjectValidator) signedByThisServer(string) (*ValidatedClaims, error) {
+	return nil, errors.New("stub validator signs nothing")
+}
+
 func (v *stubSubjectValidator) Validate(context.Context, string) (*ValidatedClaims, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -508,6 +516,87 @@ func TestRefreshTokenHandlerInternalFailureIsGeneric(t *testing.T) {
 			assert.Empty(t, store.created, "no grant is written")
 		})
 	}
+}
+
+// TestRefreshTokenHandlerHookSubject covers the Subject and Request the
+// exchange-grant hook receives when a grant is opened.
+func TestRefreshTokenHandlerHookSubject(t *testing.T) {
+	t.Parallel()
+
+	claims := validLoginClaims()
+	claims.IssuedAt = time.Now().Add(-5 * time.Minute)
+	claims.Audience = []string{testRefreshAPIAud, "https://other.example.com"}
+	claims.Claims = map[string]any{
+		"nested": map[string]any{"k": "v"},
+		"list":   []any{"a", "b"},
+	}
+	wantClaims := map[string]any{
+		"nested": map[string]any{"k": "v"},
+		"list":   []any{"a", "b"},
+	}
+	wantAudience := slices.Clone(claims.Audience)
+
+	var recorded []authorizationdetails.Request
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		exchangeGrantType: {
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Grant: func(ctx context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				recorded = append(recorded, req)
+				return grantExchangeGrantShape(ctx, req)
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: claims}, &fakeGrantStore{})
+	h.registry = registry
+	require.NoError(t, h.HandleTokenEndpointRequest(t.Context(), refreshRequestForTest(brokerClientForTest())))
+
+	require.Len(t, recorded, 1)
+	got := recorded[0]
+	assert.Equal(t, testRefreshClient, got.ClientID)
+	assert.Equal(t, testRefreshClient, got.Actor)
+	assert.Equal(t, oauthproto.TokenTypeRefreshToken, got.RequestedTokenType)
+
+	subject := got.Subject
+	assert.Equal(t, claims.Issuer, subject.Issuer)
+	assert.Equal(t, claims.Subject, subject.Subject)
+	assert.Equal(t, claims.ClientID, subject.ClientID)
+	assert.Equal(t, claims.JWTID, subject.JWTID)
+	assert.Equal(t, wantAudience, subject.Audience)
+	assert.Equal(t, claims.IssuedAt, subject.IssuedAt)
+	assert.Equal(t, claims.Expiry, subject.Expiry)
+	assert.False(t, subject.External)
+	assert.Equal(t, wantClaims, subject.Claims)
+
+	subject.Claims["nested"].(map[string]any)["k"] = "changed"
+	subject.Claims["list"].([]any)[0] = "changed"
+	subject.Claims["added"] = true
+	subject.Audience[0] = "changed"
+	assert.Equal(t, wantClaims, claims.Claims, "the hook gets a copy of the claims")
+	assert.Equal(t, wantAudience, claims.Audience, "the hook gets a copy of the audience")
+}
+
+// A refused exchange-grant shape is logged once at WARN with its reason.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestRefreshTokenHandlerShapeRefusalLog(t *testing.T) {
+	logs := captureLogs(t)
+	h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: validLoginClaims()}, &fakeGrantStore{})
+	req := refreshRequestForTest(brokerClientForTest())
+	req.Form["authorization_details"] = []string{"", ""}
+
+	err := h.HandleTokenEndpointRequest(t.Context(), req)
+
+	var oauthErr *fosite.RFC6749Error
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, http.StatusBadRequest, oauthErr.CodeField)
+	assert.Equal(t, "invalid_request", oauthErr.ErrorField)
+	assert.Equal(t, "The authorization_details parameter must not be repeated.", oauthErr.GetDescription())
+	out := logs.String()
+	assert.Equal(t, 1, strings.Count(out, `msg="Exchange grant refused"`))
+	assert.Contains(t, out, "level=WARN")
+	assert.Contains(t, out, "reason="+refuseDetailsInvalid)
 }
 
 // TestRefreshTokenHandlerDecidesAgainBeforeIssuing covers a subject token that

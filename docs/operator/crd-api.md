@@ -110,7 +110,7 @@ _Appears in:_
 | `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
 | `upstreamInject` _[auth.types.UpstreamInjectConfig](#authtypesupstreaminjectconfig)_ | UpstreamInject contains configuration for upstream inject auth strategy.<br />Used when Type = "upstream_inject". |  |  |
 | `awsSts` _[auth.types.AwsStsConfig](#authtypesawsstsconfig)_ | AwsSts contains configuration for AWS STS auth strategy.<br />Used when Type = "aws_sts". |  |  |
-| `obo` _[auth.types.OBOConfig](#authtypesoboconfig)_ | OBO contains configuration for on-behalf-of (OBO) auth strategy.<br />Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;<br />an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy. |  |  |
+| `obo` _[auth.types.OBOConfig](#authtypesoboconfig)_ | OBO contains configuration for on-behalf-of (OBO) auth strategy.<br />Used when Type = "obo". |  |  |
 | `xaa` _[auth.types.XAAConfig](#authtypesxaaconfig)_ | XAA contains configuration for XAA (Cross-Application Access) auth strategy.<br />Used when Type = "xaa". |  |  |
 
 
@@ -141,7 +141,7 @@ OBOConfig configures the on-behalf-of (OBO) authentication strategy.
 This strategy uses the Entra jwt-bearer / on_behalf_of grant to exchange
 the incoming user token for a backend-scoped token on behalf of the user.
 
-Field names follow the OBO runtime contract (the enterprise obo.MiddlewareParameters),
+Field names follow the OBO runtime contract (obo.MiddlewareParameters),
 not the RFC-8693 TokenExchangeConfig, because OBO uses a distinct Entra-specific grant.
 
 
@@ -155,10 +155,10 @@ _Appears in:_
 | `clientId` _string_ | ClientID is the OAuth client ID for the OBO request. |  |  |
 | `clientSecret` _string_ | ClientSecret is the OAuth client secret (use ClientSecretEnv for security). |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the environment variable name containing the client secret.<br />The value will be resolved at runtime from this environment variable. |  |  |
-| `audience` _string_ | Audience is the target audience (resource URI) for the exchanged token. |  |  |
+| `audience` _string_ | Audience is the backend resource (Application ID URI or client ID) for the<br />exchanged token. Used when Scopes is empty, sent to Entra as<br /><audience>/.default (see exchange.Target). |  |  |
 | `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
-| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects which upstream provider's token to use as the<br />subject (assertion) token for the OBO exchange. When set, the token is looked<br />up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the<br />inbound end-user token (Identity.Token) is used directly.<br />Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO<br />converter maps both to the runtime contract without renaming. |  |  |
-| `cacheSkewSeconds` _integer_ | CacheSkewSeconds is the number of seconds to subtract from a cached token's<br />expiry when deciding whether to refresh it. Defaults to zero (no skew).<br />The operator CRD stores this as CacheSkew *metav1.Duration and converts it<br />to an integer-seconds value for the vMCP runtime contract. |  |  |
+| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects which upstream provider's token to use as the<br />subject (assertion) token for the OBO exchange. When set, the token is looked<br />up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the<br />inbound end-user token (Identity.Token) is used directly. Behind an embedded<br />auth server an omitted value defaults to its upstream provider, and is an<br />error when it has more than one (see DefaultSubjectProviderName).<br />Matches the operator CRD's SubjectTokenProviderName field; the OBO<br />converter maps it to the runtime contract without renaming. |  |  |
+| `cacheSkewSeconds` _integer_ | CacheSkewSeconds is the number of seconds to subtract from a cached token's<br />expiry when deciding whether to refresh it. When nil or zero the token<br />cache's default skew (60 seconds) applies; negative values are rejected.<br />The int32 type caps it at math.MaxInt32, the bound the operator enforces<br />on the CRD's CacheSkew.<br />The operator CRD stores this as CacheSkew *metav1.Duration and converts it<br />to an integer-seconds value for the vMCP runtime contract. |  |  |
 
 
 #### auth.types.RoleMapping
@@ -598,6 +598,8 @@ _Appears in:_
 | `clientId` _string_ | ClientID is the OAuth client ID. |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
 | `audience` _string_ | Audience is the required token audience. |  |  |
+| `requiredSubject` _string_ | RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.<br />Tokens with a missing or empty "sub" claim are rejected.<br />If RequiredSubjectPrefix is also set, both checks must pass. |  | Optional: \{\} <br /> |
+| `requiredSubjectPrefix` _string_ | RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.<br />Tokens with a missing or empty "sub" claim are rejected.<br />If RequiredSubject is also set, both checks must pass. |  | Optional: \{\} <br /> |
 | `resource` _string_ | Resource is the OAuth 2.0 resource indicator (RFC 8707).<br />Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).<br />If not specified, defaults to Audience. |  |  |
 | `jwksUrl` _string_ | JWKSURL is the explicit JWKS endpoint URL.<br />When set, skips OIDC discovery and fetches the JWKS directly from this URL.<br />This is useful when the OIDC issuer does not serve a /.well-known/openid-configuration. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the token introspection endpoint URL (RFC 7662).<br />When set, enables token introspection for opaque (non-JWT) tokens. |  | Optional: \{\} <br /> |
@@ -606,6 +608,7 @@ _Appears in:_
 | `jwksAllowPrivateIp` _boolean_ | JwksAllowPrivateIP allows OIDC discovery and JWKS fetches to private IP addresses.<br />Enable when the embedded auth server runs on a loopback address and<br />the OIDC middleware needs to fetch its JWKS from that address.<br />Use with caution - only enable for trusted internal IDPs or testing. |  |  |
 | `insecureAllowHttp` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production |  |  |
 | `caBundlePath` _string_ | CABundlePath is the absolute file path to a PEM-encoded CA certificate bundle<br />used when the OIDC middleware performs HTTPS requests to the issuer<br />(OIDC discovery, JWKS fetch, token introspection). When set, the CA bundle<br />at this path is added to the trust store used for verifying the issuer's<br />TLS certificate. Typically populated by the Kubernetes operator from<br />MCPOIDCConfig.spec.inline.caBundleRef (ConfigMap) or from the in-cluster<br />service-account CA when using Kubernetes service-account auth. |  | Optional: \{\} <br /> |
+| `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the absolute file path to a bearer token that the<br />OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.<br />Needed when the issuer requires authentication for those endpoints, such<br />as the Kubernetes API server. Typically populated by the Kubernetes<br />operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the<br />pod's service-account token when using Kubernetes service-account auth. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OperationalConfig
@@ -1964,6 +1967,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `clientName` _string_ | ClientName is the optional RFC 7591 "client_name" registration metadata<br />sent when ToolHive registers with the upstream. When empty, ToolHive<br />registers as "ToolHive MCP Client". It is display-only metadata: the<br />upstream shows it on its authorization screen, and it is never used as<br />a key. Changing it does not rename an already-registered client; the<br />new value applies only the next time ToolHive registers a fresh client,<br />for example after rotating via RotationKey, or when the upstream<br />rejects the cached registration. Names with leading or trailing<br />whitespace, or containing control or format characters, are rejected. |  | MaxLength: 256 <br />Pattern: `^[^\p\{Cc\}\p\{Cf\}\p\{Z\}]([^\p\{Cc\}\p\{Cf\}]*[^\p\{Cc\}\p\{Cf\}\p\{Z\}])?$` <br />Optional: \{\} <br /> |
 | `discoveryUrl` _string_ | DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver<br />issues a single GET against this URL (no well-known-path fallback) and<br />reads registration_endpoint, authorization_endpoint, token_endpoint,<br />token_endpoint_auth_methods_supported, and scopes_supported from the<br />response.<br />Mutually exclusive with RegistrationEndpoint.<br />HTTPS is required because the registration endpoint resolved from this<br />document carries the initial access token and the issued client_secret<br />(RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd<br />object budget, regex evaluation cost) and matches the conventional URL<br />length cap. |  | MaxLength: 2048 <br />Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
 | `registrationEndpoint` _string_ | RegistrationEndpoint is the RFC 7591 registration endpoint URL used<br />directly, bypassing discovery. When using this field, the caller is<br />expected to also supply AuthorizationEndpoint, TokenEndpoint, and an<br />explicit Scopes list on the parent OAuth2UpstreamConfig.<br />Mutually exclusive with DiscoveryURL.<br />HTTPS is required because the registration endpoint carries the initial<br />access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).<br />MaxLength is a defensive size cap (etcd object budget, regex evaluation<br />cost) and matches the conventional URL length cap. |  | MaxLength: 2048 <br />Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
 | `rotationKey` _string_ | RotationKey is an optional operator-chosen label that is part of the<br />cached registration's identity but is never sent to the upstream.<br />Change it to make the proxies register a fresh client at their next<br />start instead of reusing the cached one: for example after the<br />upstream has dropped the registration, or when a rotation is required.<br />At start ToolHive checks the cached client at the upstream (see<br />RegistrationProbe) and registers a new one by itself when the upstream<br />rejects it. Where the configured probe cannot tell, the stale client_id<br />may only be rejected in the user's browser, and changing this key is<br />the remedy. The previous registration's row stays in storage, and<br />upstream refresh tokens bound to the previous client_id stop<br />refreshing, so affected users sign in again. |  | MaxLength: 64 <br />Pattern: `^[A-Za-z0-9._-]+$` <br />Optional: \{\} <br /> |
@@ -2305,7 +2309,7 @@ _Appears in:_
 | `embeddedAuthServer` | ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server<br />This enables running an embedded auth server that delegates to upstream IDPs<br /> |
 | `awsSts` | ExternalAuthTypeAWSSts is the type for AWS STS authentication<br /> |
 | `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IdP access token as the Authorization: Bearer header<br /> |
-| `obo` | ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.<br />This type requires a build with an OBO handler registered via<br />controllerutil.RegisterOBOHandler; an upstream-only build surfaces<br />status.conditions[Valid] = False with Reason: EnterpriseRequired<br />when an obo-typed MCPExternalAuthConfig is applied.<br /> |
+| `obo` | ExternalAuthTypeOBO is the type for Microsoft Entra on-behalf-of (OBO)<br />flows: the proxy exchanges the authenticated user's token for a<br />backend-scoped token issued for that same user.<br /> |
 | `xaa` | ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.<br />XAA performs a two-step token exchange to obtain access tokens for target services:<br />  - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT<br />  - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token<br /> |
 
 
@@ -2481,6 +2485,8 @@ _Appears in:_
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
+
+
 #### api.v1beta1.JWTBearerGrantConfig
 
 
@@ -2500,6 +2506,7 @@ _Appears in:_
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
 | `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, plain JWT-bearer assertions must name<br />the token endpoint, and ID-JAG assertions may name the token endpoint or<br />this server's issuer identifier, unless the issuer is also an allowed<br />resource audience. A configured list replaces these defaults. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAssertionTypes` _[api.v1beta1.JWTBearerAssertionType](#apiv1beta1jwtbearerassertiontype) array_ | AcceptedAssertionTypes selects which assertion form(s) this issuer's<br />jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"<br />are accepted, which is the behavior before this field existed. Set<br />["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a<br />Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot<br />be redeemed on the credential-free plain jwt-bearer path. Set<br />["jwt_bearer"] to refuse ID-JAG.<br />When "id_jag" is listed explicitly and acceptedAudiences is set, it must<br />include this AS's own issuer identifier (the ID-JAG's "aud" per<br />draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the<br />token endpoint URL. When acceptedAudiences is empty the issuer is<br />accepted by default, unless it is also listed as an allowed audience<br />(resource), which fails startup. Subject bindings are shared between both forms, so<br />each binding also authorizes a plain jwt-bearer assertion from that<br />subject whenever "jwt_bearer" is accepted. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [jwt_bearer id_jag] <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.JWTBearerInboundGrantConfig
@@ -2535,6 +2542,7 @@ _Appears in:_
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
 | `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, plain JWT-bearer assertions must name<br />the token endpoint, and ID-JAG assertions may name the token endpoint or<br />this server's issuer identifier, unless the issuer is also an allowed<br />resource audience. A configured list replaces these defaults. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAssertionTypes` _[api.v1beta1.JWTBearerAssertionType](#apiv1beta1jwtbearerassertiontype) array_ | AcceptedAssertionTypes selects which assertion form(s) this issuer's<br />jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"<br />are accepted, which is the behavior before this field existed. Set<br />["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a<br />Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot<br />be redeemed on the credential-free plain jwt-bearer path. Set<br />["jwt_bearer"] to refuse ID-JAG.<br />When "id_jag" is listed explicitly and acceptedAudiences is set, it must<br />include this AS's own issuer identifier (the ID-JAG's "aud" per<br />draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the<br />token endpoint URL. When acceptedAudiences is empty the issuer is<br />accepted by default, unless it is also listed as an allowed audience<br />(resource), which fails startup. Subject bindings are shared between both forms, so<br />each binding also authorizes a plain jwt-bearer assertion from that<br />subject whenever "jwt_bearer" is accepted. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [jwt_bearer id_jag] <br />Optional: \{\} <br /> |
 
 
 
@@ -2553,12 +2561,12 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `serviceAccount` _string_ | ServiceAccount is the name of the service account to validate tokens for.<br />If empty, uses the pod's service account. |  | Optional: \{\} <br /> |
-| `namespace` _string_ | Namespace is the namespace of the service account.<br />If empty, uses the MCPServer's namespace. |  | Optional: \{\} <br /> |
+| `serviceAccount` _string_ | ServiceAccount restricts accepted tokens to a single service account.<br />When set, the token's "sub" claim must equal<br />system:serviceaccount:<namespace>:<serviceAccount>, where <namespace> is<br />Namespace if set, otherwise the namespace of the workload referencing this config.<br />When empty, tokens are not restricted to a specific service account.<br />Must be a valid service account name (DNS-1123 subdomain). |  | MaxLength: 253 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` <br />Optional: \{\} <br /> |
+| `namespace` _string_ | Namespace is the namespace of the service account(s) whose tokens are accepted.<br />When set without ServiceAccount, any service account in this namespace is accepted<br />(the "sub" claim must start with system:serviceaccount:<namespace>:).<br />When set with ServiceAccount, it selects that service account's namespace.<br />When both ServiceAccount and Namespace are empty, no subject restriction is applied<br />and any token from the issuer with a matching audience is accepted.<br />Must be a valid namespace name (DNS-1123 label). |  | MaxLength: 63 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `issuer` _string_ | Issuer is the OIDC issuer URL. | https://kubernetes.default.svc | Optional: \{\} <br /> |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from.<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint.<br />If empty, OIDC discovery will be used to automatically determine the introspection URL. |  | Optional: \{\} <br /> |
-| `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.<br />Defaults to true if not specified. |  | Optional: \{\} <br /> |
+| `useClusterAuth` _boolean_ | UseClusterAuth controls use of the Kubernetes cluster's CA bundle and the<br />workload's own service account token when fetching the issuer's signing<br />keys (OIDC discovery and JWKS). The CA bundle is<br />/var/run/secrets/kubernetes.io/serviceaccount/ca.crt and the token is<br />/var/run/secrets/kubernetes.io/serviceaccount/token.<br />When unset (the default), the CA bundle is used, and the token is sent<br />only if the URL fetched is an https URL on the in-cluster API server<br />(kubernetes.default.svc or kubernetes.default.svc.cluster.local): jwksUrl<br />when it is set, otherwise the issuer. In that case it goes to the<br />in-cluster API server and the JWKS URL that server advertises.<br />When true, the token is always sent; set this for an issuer that requires<br />it but is not reachable under those names, such as a custom cluster domain.<br />When false, neither the CA bundle nor the token is used. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPAuthzConfig
@@ -2722,14 +2730,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure.<br />When set to "obo", the cluster must run a build that has registered an<br />OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds<br />surface status.conditions[Valid] = False with Reason: EnterpriseRequired<br />for obo-typed configs. |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo xaa] <br />Required: \{\} <br /> |
+| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure. |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo xaa] <br />Required: \{\} <br /> |
 | `tokenExchange` _[api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  | Optional: \{\} <br /> |
 | `headerInjection` _[api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  | Optional: \{\} <br /> |
 | `bearerToken` _[api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  | Optional: \{\} <br /> |
 | `embeddedAuthServer` _[api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)_ | EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server<br />Only used when Type is "embeddedAuthServer" |  | Optional: \{\} <br /> |
 | `awsSts` _[api.v1beta1.AWSStsConfig](#apiv1beta1awsstsconfig)_ | AWSSts configures AWS STS authentication with SigV4 request signing<br />Only used when Type is "awsSts" |  | Optional: \{\} <br /> |
 | `upstreamInject` _[api.v1beta1.UpstreamInjectSpec](#apiv1beta1upstreaminjectspec)_ | UpstreamInject configures upstream token injection for backend requests.<br />Only used when Type is "upstreamInject". |  | Optional: \{\} <br /> |
-| `obo` _[api.v1beta1.OBOConfig](#apiv1beta1oboconfig)_ | OBO configures On-Behalf-Of (OBO) authentication.<br />Only used when Type is "obo". Setting this field on an upstream-only build<br />causes the MCPExternalAuthConfig to transition to<br />status.conditions[Valid] = False with Reason: EnterpriseRequired, because<br />no OBO handler is registered. See OBOConfig for the field-to-runtime<br />contract mapping. |  | Optional: \{\} <br /> |
+| `obo` _[api.v1beta1.OBOConfig](#apiv1beta1oboconfig)_ | OBO configures Microsoft Entra On-Behalf-Of (OBO) authentication.<br />Only used when Type is "obo". See OBOConfig for the field-to-runtime<br />contract mapping. |  | Optional: \{\} <br /> |
 | `xaa` _[api.v1beta1.XAASpec](#apiv1beta1xaaspec)_ | XAA configures XAA (Cross-Application Access) auth for backend requests.<br />Only used when Type is "xaa". |  | Optional: \{\} <br /> |
 
 
@@ -3821,27 +3829,25 @@ _Appears in:_
 OBOConfig holds configuration for the On-Behalf-Of (OBO) external auth type.
 Only used when Type is "obo".
 
-This is the user-facing CRD surface for the Microsoft Entra OBO flow. It is
-structurally valid in upstream (OSS) builds but inert: an upstream-only build
-returns obo.ErrEnterpriseRequired at reconcile (Valid=False, Reason:
-EnterpriseRequired) because no OBO handler is registered via
-controllerutil.RegisterOBOHandler. A build with the enterprise OBO handler
-translates these fields into the runtime wire contract obo.MiddlewareParameters,
-so the field names and semantics here track that contract rather than the
-upstream TokenExchangeConfig (which uses different names, e.g.
+This is the user-facing CRD surface for the Microsoft Entra OBO flow. The
+operator translates these fields into the runtime wire contract
+obo.MiddlewareParameters (MCPServer, MCPRemoteProxy) or the vMCP OBOConfig
+(VirtualMCPServer), so the field names and semantics here track that
+contract rather than TokenExchangeConfig (which uses different names, e.g.
 subjectProviderName / externalTokenHeaderName). In particular there is no
 externalTokenHeaderName: the OBO subject is sourced from the authenticated
-Identity, never from an inbound request header.
+Identity, never from an inbound request header. An MCPServer or
+MCPRemoteProxy that references an obo config must also set oidcConfigRef,
+so it has an authenticated user token to exchange.
 
-Field-to-contract mapping performed by the operator's OBO handler:
+Field-to-contract mapping performed by the operator:
   - tenantId (+ optional authority) → tokenUrl
     (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token, or the
     configured authority base joined with the tenant for sovereign clouds)
   - clientSecretRef → resolved into a pod env var; only the env var name
     travels in the contract, as clientSecretEnvVar
   - audience / scopes → collapsed to a single exchange target by
-    obo.MiddlewareParameters.ExchangeTarget() (space-joined scopes win,
-    otherwise audience)
+    exchange.Target (space-joined scopes win, otherwise <audience>/.default)
   - cacheSkew → the contract's integer-seconds cacheSkewSeconds
 
 Every field is optional at the CRD level, and the schema deliberately carries
@@ -3850,8 +3856,8 @@ placeholder ({}) in earlier releases, so adding a required field or an
 admission rule that rejects {} would be a backward-incompatible narrowing of
 an already-stored, round-trippable object. Presence and combination
 requirements — a tenant, a client-auth credential, and at least one of
-audience/scopes — are therefore enforced by the registered OBO handler at
-reconcile, which reports a violation as Valid=False / Reason=InvalidConfig.
+audience/scopes — are therefore enforced by the operator at reconcile, which
+reports a violation as Valid=False / Reason=InvalidConfig.
 The per-field patterns below still apply, but only to a value that is present.
 
 
@@ -3861,14 +3867,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `tenantId` _string_ | TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.<br />Optional at the CRD level (see the type doc); the operator enforces its<br />presence, since an OBO confidential-client exchange must target a specific<br />tenant. When set, it must be one of the two forms the Entra v2.0 token<br />endpoint addresses: a directory GUID, or a verified domain name (e.g.<br />contoso.onmicrosoft.com). Well-known aliases such as "common",<br />"organizations", and "consumers" are NOT accepted. The operator<br />interpolates it into the token endpoint<br />(<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to<br />the GUID/domain shape (no path metacharacters); the pattern and 253-char<br />cap mirror the enterprise exchanger's validateTenant, so any tenantId<br />admitted here is one the runtime can consume. |  | MaxLength: 253 <br />Pattern: `^([0-9a-fA-F]\{8\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{12\}\|([a-zA-Z0-9]([a-zA-Z0-9-]\{0,61\}[a-zA-Z0-9])?\.)+[a-zA-Z]\{2,\})$` <br />Optional: \{\} <br /> |
+| `tenantId` _string_ | TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.<br />Optional at the CRD level (see the type doc); the operator enforces its<br />presence, since an OBO confidential-client exchange must target a specific<br />tenant. When set, it must be one of the two forms the Entra v2.0 token<br />endpoint addresses: a directory GUID, or a verified domain name (e.g.<br />contoso.onmicrosoft.com). Well-known aliases such as "common",<br />"organizations", and "consumers" are NOT accepted. The operator<br />interpolates it into the token endpoint<br />(<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to<br />the GUID/domain shape (no path metacharacters); the pattern and 253-char<br />cap mirror the Entra exchanger's tenant validation, so any tenantId<br />admitted here is one the runtime can consume. |  | MaxLength: 253 <br />Pattern: `^([0-9a-fA-F]\{8\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{12\}\|([a-zA-Z0-9]([a-zA-Z0-9-]\{0,61\}[a-zA-Z0-9])?\.)+[a-zA-Z]\{2,\})$` <br />Optional: \{\} <br /> |
 | `authority` _string_ | Authority overrides the default Entra login host<br />(https://login.microsoftonline.com) for sovereign or national clouds, e.g.<br />https://login.microsoftonline.us (US Gov) or<br />https://login.partner.microsoftonline.cn (China). When set, the operator<br />builds the token endpoint by joining <authority>, <tenantId>, and the<br />v2.0 token path. Must be an HTTPS URL with no userinfo, query, fragment,<br />or trailing slash; a path IS permitted and is prefixed before the tenant<br />segment, as some sovereign / B2C / CIAM endpoints require. The OBO exchange<br />POSTs the client secret and the end-user assertion to this host, so it is a<br />credential trust boundary: HTTPS is required and userinfo (user@host) is<br />rejected to prevent host confusion (per RFC 3986 the real host follows the<br />"@", so https://login.microsoftonline.com@attacker.example targets<br />attacker.example). This is intentionally stricter than the downstream<br />exchanger's validateHTTPSURL, which also accepts http for loopback hosts<br />and tolerates a trailing slash — rejecting those at admission is the safe<br />direction. |  | Pattern: `^https://[^\s?#@]+[^/\s?#@]$` <br />Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the confidential client's application (client) ID registered<br />in Entra. Emitted verbatim as the runtime contract's clientId.<br />Optional at the CRD level so future client-authentication methods (e.g.<br />certificate or workload-identity credentials, planned fast-follows) can be<br />added without a breaking schema change. The operator enforces that clientId<br />and clientSecretRef are both present for the v1 shared-secret flow. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the confidential<br />client's secret. v1 supports a shared client secret only. The operator<br />injects the resolved value into the proxyrunner pod as an environment<br />variable and emits only that variable's name in the runtime contract, as<br />clientSecretEnvVar — the secret value never travels in the contract.<br />Optional at the CRD level for the same forward-compatibility reason as<br />clientId (a certificate/workload-identity flow needs no client secret);<br />the operator enforces presence for the v1 shared-secret flow. |  | Optional: \{\} <br /> |
-| `audience` _string_ | Audience is the backend target identifier requested in the exchanged<br />token. Used as the exchange target when Scopes is empty. At least one of<br />audience or scopes must be set; the operator enforces that at reconcile<br />(it is not an admission-time rule — see the type doc). |  | Optional: \{\} <br /> |
+| `audience` _string_ | Audience is the backend resource the exchanged token is for: its<br />Application ID URI (e.g. api://backend) or application (client) ID. Used<br />when Scopes is empty, as the scope <audience>/.default (a trailing "/" is<br />dropped, and a value already ending in /.default is sent as is), because<br />the Entra v2.0 endpoint accepts only scopes. To request specific delegated<br />permissions, use Scopes instead. At least one of audience or scopes must be<br />set; the operator enforces that at reconcile (it is not an admission-time<br />rule — see the type doc). |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the delegated scopes to request for the exchanged token, e.g.<br />["api://<backend>/.default"]. When non-empty they take precedence over<br />Audience. At least one of audience or scopes must be set; the operator<br />enforces that at reconcile. The MaxItems and per-item length caps are<br />defensive bounds on an otherwise unbounded list. |  | MaxItems: 20 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
-| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects the source of the OBO subject (assertion)<br />token from the request's authenticated Identity:<br />  - Omitted: use the inbound end-user token the client presented<br />    (Identity.Token) — the deployment with no embedded auth server, where<br />    the client holds an Entra token directly.<br />  - Set: use the named upstream provider's token<br />    (Identity.UpstreamTokens[<name>]) — the embedded-auth-server<br />    deployment, where the inbound token is the proxy's own session token.<br />    The value must match a configured upstream provider name.<br />The subject is always sourced from the authenticated Identity, never from<br />an inbound request header, so the upstream auth middleware must run first. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
-| `cacheSkew` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | CacheSkew overrides the OBO token cache's default expiry skew (the margin<br />by which a cached token is treated as expired before its real expiry),<br />e.g. "30s". The operator converts it to the runtime contract's<br />integer-seconds cacheSkewSeconds. Should not be negative, but the schema<br />does not enforce that — metav1.Duration carries no numeric minimum — and<br />upstream builds do not reject it. A negative value is rejected only by an<br />enterprise build's OBO handler once that handler validates the converted<br />parameters; it is not enforced at admission or in upstream-only builds.<br />When omitted, the cache default applies. |  | Optional: \{\} <br /> |
+| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects the source of the OBO subject (assertion)<br />token from the request's authenticated Identity:<br />  - Omitted, with no embedded auth server: use the inbound end-user token<br />    the client presented (Identity.Token), where the client holds an Entra<br />    token directly.<br />  - Omitted, behind an embedded auth server: defaults to its upstream<br />    provider, since the inbound token is then the proxy's own session<br />    token. A VirtualMCPServer whose embedded auth server has more than one<br />    upstream must set it explicitly.<br />  - Set: use the named upstream provider's token<br />    (Identity.UpstreamTokens[<name>]) — the embedded-auth-server<br />    deployment, where the inbound token is the proxy's own session token.<br />    The value must match a configured upstream provider name.<br />The subject is always sourced from the authenticated Identity, never from<br />an inbound request header, so the upstream auth middleware must run first. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
+| `cacheSkew` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | CacheSkew overrides the OBO token cache's default expiry skew (the margin<br />by which a cached token is treated as expired before its real expiry),<br />e.g. "30s". The operator converts it to the runtime contract's<br />integer-seconds cacheSkewSeconds (truncated toward zero). Must be between<br />zero and 2147483647 seconds (math.MaxInt32); metav1.Duration carries no<br />numeric bounds, so the operator rejects a negative or larger value at<br />reconcile (Valid=False, Reason: InvalidConfig) rather than at admission.<br />When omitted, the cache default applies. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.OIDCUpstreamConfig
@@ -4567,7 +4573,7 @@ _Appears in:_
 TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 This configuration is used to exchange incoming authentication tokens for tokens
 that can be used with external services.
-The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
+The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
 
 
 

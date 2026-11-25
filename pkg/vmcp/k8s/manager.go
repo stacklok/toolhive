@@ -266,7 +266,7 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 		defer cancel()
 	}
 
-	slog.Info("waiting for Kubernetes cache sync")
+	slog.Debug("waiting for Kubernetes cache sync")
 
 	// Wait for cache to sync
 	synced := informerCache.WaitForCacheSync(ctx)
@@ -275,7 +275,7 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 		return false
 	}
 
-	slog.Info("kubernetes cache synced successfully")
+	slog.Debug("kubernetes cache synced successfully")
 	return true
 }
 

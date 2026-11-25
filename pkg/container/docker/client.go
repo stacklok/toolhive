@@ -285,15 +285,13 @@ func (c *Client) DeployWorkload(
 		if err != nil {
 			return 0, fmt.Errorf("failed to discover Docker bridge gateways: %w", err)
 		}
-		if c.runtimeType == runtime.TypePodman {
-			aliases, err := c.discoverHostAliases(ctx, dnsContainerID)
-			if err != nil {
-				return 0, fmt.Errorf("failed to discover Podman host addresses: %w", err)
-			}
-			gatewayIPs = append(slices.Clone(gatewayIPs), aliases...)
-			slices.SortFunc(gatewayIPs, netip.Addr.Compare)
-			gatewayIPs = slices.Compact(gatewayIPs)
+		aliases, err := c.discoverHostAliases(ctx, dnsContainerID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to discover runtime host addresses: %w", err)
 		}
+		gatewayIPs = append(slices.Clone(gatewayIPs), aliases...)
+		slices.SortFunc(gatewayIPs, netip.Addr.Compare)
+		gatewayIPs = slices.Compact(gatewayIPs)
 
 		pspec = proxySpec{
 			WorkloadName:       name,
@@ -1057,6 +1055,14 @@ func compareHostConfig(existing *container.InspectResponse, desired *container.H
 		return false
 	}
 
+	// Compare requested host mappings, so DNS sidecars created before the
+	// host-gateway mapping was added are recreated rather than reused without
+	// it. Containers that request none are not compared: runtimes may report
+	// mappings they add themselves.
+	if len(desired.ExtraHosts) > 0 && !compareStringSlices(existing.HostConfig.ExtraHosts, desired.ExtraHosts) {
+		return false
+	}
+
 	return true
 }
 
@@ -1686,6 +1692,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 	dnsHostConfig := &container.HostConfig{
 		Mounts:      nil,
 		NetworkMode: container.NetworkMode("bridge"),
+		ExtraHosts:  dnsExtraHosts(c.runtimeType),
 		CapAdd:      nil,
 		CapDrop:     nil,
 		SecurityOpt: []string{"label:disable"},

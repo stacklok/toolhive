@@ -239,6 +239,15 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"The subject token is invalid or could not be verified."))
 	}
 
+	// A delegated-access token, or one that carries authorization_details, is
+	// terminal: refuse it before any other claim of it is read. This holds for
+	// every issuer, external ones included, so a narrowed token from a server
+	// this one trusts cannot be exchanged here for an unrestricted one.
+	if err := refuseTerminalToken(restrictionsOf(validatedClaims), "Subject", actorID,
+		hintSubjectDelegatedAccess, hintSubjectAuthorizationDetails); err != nil {
+		return err
+	}
+
 	// Resolve actor identity: explicit actor_token or authenticated client.
 	actorSub, err := h.resolveActorIdentity(ctx, params, client)
 	if err != nil {
@@ -302,6 +311,33 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	return nil
 }
 
+// Hints for a refused terminal token. RFC 8693 section 2.2.2 requires
+// invalid_request for a subject or actor token that policy makes unacceptable.
+const (
+	hintSubjectDelegatedAccess = "The subject token is a delegated-access token and cannot be exchanged."
+	hintActorDelegatedAccess   = "The actor token is a delegated-access token and cannot be exchanged."
+
+	hintSubjectAuthorizationDetails = "The subject token carries authorization_details and cannot be exchanged."
+	hintActorAuthorizationDetails   = "The actor token carries authorization_details and cannot be exchanged."
+)
+
+// refuseTerminalToken refuses an RFC 8693 subject or actor token that carries
+// the delegated-access marker or an authorization_details claim. The marker is
+// checked first, so a token that carries both gets the marker's hint and
+// reason, as before authorization_details was refused. The WARN line reads
+// "<label> token refused" and names the acting identity.
+func refuseTerminalToken(r restrictions, label, actorID, delegatedHint, detailsHint string) error {
+	switch {
+	case r.DelegatedAccess:
+		slog.Warn(label+" token refused", "reason", reasonDelegatedAccessToken, "actor", actorID)
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(delegatedHint))
+	case r.AuthorizationDetails:
+		slog.Warn(label+" token refused", "reason", reasonAuthorizationDetailsToken, "actor", actorID)
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(detailsHint))
+	}
+	return nil
+}
+
 // unsupportedTokenType is the invalid_request error for a token-type parameter
 // this client or request cannot use. Both token-exchange handlers return it, so
 // a client sees one text whichever of them refuses.
@@ -328,7 +364,9 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	}
 
 	if err := issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
-		"The delegated token's bound lifetime has already elapsed."); err != nil {
+		func() error {
+			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The delegated token's bound lifetime has already elapsed."))
+		}); err != nil {
 		return err
 	}
 
@@ -340,31 +378,38 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	return nil
 }
 
-// issueBoundedAccessToken issues an access token whose lifetime is the
-// session's access-token expiry (set during HandleTokenEndpointRequest) when
-// that is sooner than lifespan, and lifespan otherwise. The session expiry is
-// the authoritative bound, so it respects limits computed earlier such as
-// min(subject_remaining, delegation).
+// issueBoundedAccessToken issues an access token that expires at the session's
+// access-token expiry (set during HandleTokenEndpointRequest). The session
+// expiry is the authoritative bound, so it respects limits computed earlier
+// such as min(subject_remaining, delegation) or a redeeming client's own
+// lifespan, even one longer than lifespan: fosite takes both exp and
+// expires_in from the session expiry whenever it is set. lifespan applies only
+// to a session with no expiry. That is fosite behaviour, not ours: a fosite
+// upgrade that took exp from lifespan instead would quietly cap a longer
+// client lifespan at the server lifespan. The "client lifespan longer than the
+// server lifespan" case in TestRedeemer_ClientAccessTokenLifespan guards it.
 //
 // If the session's bound has already elapsed since HandleTokenEndpointRequest
-// computed it, the call fails closed with invalid_grant and elapsedHint instead
-// of signing a token whose exp is already in the past while reporting a
-// negative expires_in. fosite's JWT strategy sets exp directly from the
-// session's expiry (GetExpiresAt), independent of lifespan, so letting this
-// fall through would not simply hand out a longer-lived token, it would issue
-// an already-expired one.
+// computed it, the call fails closed with the error elapsed returns
+// (invalid_grant) instead of signing a token whose exp is already in the past
+// while reporting a negative expires_in. elapsed is a function so the error and
+// its stack capture are built only on this path, not on every issuance.
+// fosite's JWT strategy sets exp directly from the session's expiry
+// (GetExpiresAt), independent of lifespan, so letting this fall through would
+// not simply hand out a longer-lived token, it would issue an already-expired
+// one.
 func issueBoundedAccessToken(
 	ctx context.Context,
 	helper *oauth2.HandleHelper,
 	lifespan time.Duration,
 	requester fosite.AccessRequester,
 	responder fosite.AccessResponder,
-	elapsedHint string,
+	elapsed func() error,
 ) error {
 	if sessionExpiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !sessionExpiry.IsZero() {
 		remaining := time.Until(sessionExpiry)
 		if remaining <= 0 {
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(elapsedHint))
+			return elapsed()
 		}
 		if remaining < lifespan {
 			lifespan = remaining
@@ -459,6 +504,12 @@ func (h *Handler) resolveActorIdentity(
 			slog.Debug("Actor token validation failed", "error", fmt.Errorf("actor token: %w", err))
 			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token is invalid or could not be verified."))
+		}
+		// A terminal token is refused as an actor token too. This runs before
+		// any other claim of the token is used.
+		if err := refuseTerminalToken(restrictionsOf(actorClaims), "Actor", client.GetID(),
+			hintActorDelegatedAccess, hintActorAuthorizationDetails); err != nil {
+			return "", err
 		}
 		// Client-ID binding: actor_token's client_id claim MUST match the
 		// authenticated client ID. This prevents replay attacks where a leaked

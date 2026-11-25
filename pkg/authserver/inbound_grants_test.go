@@ -168,6 +168,28 @@ func TestNormalizeInboundGrants(t *testing.T) {
 				}},
 			},
 		},
+		{
+			name: "canonical JWT bearer threads AcceptedAssertionTypes into the trusted issuer's grant policy",
+			cfg: &RunConfig{
+				TrustedIssuers: []tokenexchange.TrustedIssuer{issuer},
+				InboundGrants: &InboundGrantsRunConfig{JWTBearer: &JWTBearerInboundGrantRunConfig{
+					IssuerPolicies: []JWTBearerIssuerPolicyRunConfig{{
+						IssuerRef: "idp", MaxAssertionAge: "5m",
+						AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+					}},
+				}},
+			},
+			want: &NormalizedInboundGrants{
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					Name: "idp", IssuerURL: "https://idp.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+						MaxAssertionAge:        "5m",
+						AcceptedAssertionTypes: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+					},
+				}},
+				Capabilities: InboundGrantCapabilities{JWTBearer: true},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -415,5 +437,54 @@ func spiffeClientCredentialsAssociation(clientID string) SPIFFEClientAuthRunConf
 		Scopes:           []string{"openid"},
 		Resources:        []string{"https://mcp.example.com"},
 		GrantTypes:       []string{oauthproto.GrantTypeClientCredentials},
+	}
+}
+
+func TestNormalizeInboundGrantsCarriesSubjectModeFields(t *testing.T) {
+	t.Parallel()
+
+	issuer := func(policy *tokenexchange.JWTBearerGrantPolicy) []tokenexchange.TrustedIssuer {
+		return []tokenexchange.TrustedIssuer{{Name: "idp", IssuerURL: "https://idp.example.com", JWTBearerGrant: policy}}
+	}
+	tests := []struct {
+		name   string
+		config func(actors []string) *RunConfig
+	}{
+		{
+			name: "legacy jwt_bearer_grant",
+			config: func(actors []string) *RunConfig {
+				return &RunConfig{TrustedIssuers: issuer(&tokenexchange.JWTBearerGrantPolicy{
+					MaxAssertionAge: "1h", SubjectMode: tokenexchange.SubjectModeResolve, ActorIssuers: actors,
+				})}
+			},
+		},
+		{
+			name: "inbound_grants issuer policy",
+			config: func(actors []string) *RunConfig {
+				return &RunConfig{
+					TrustedIssuers: issuer(nil),
+					InboundGrants: &InboundGrantsRunConfig{JWTBearer: &JWTBearerInboundGrantRunConfig{
+						IssuerPolicies: []JWTBearerIssuerPolicyRunConfig{{
+							IssuerRef: "idp", MaxAssertionAge: "1h",
+							SubjectMode: tokenexchange.SubjectModeResolve, ActorIssuers: actors,
+						}},
+					}},
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			actors := []string{"https://actor.example.com"}
+
+			got, err := NormalizeInboundGrants(tt.config(actors))
+			require.NoError(t, err)
+			actors[0] = "changed"
+
+			policy := got.TrustedIssuers[0].JWTBearerGrant
+			assert.Equal(t, tokenexchange.SubjectModeResolve, policy.SubjectMode)
+			assert.Equal(t, []string{"https://actor.example.com"}, policy.ActorIssuers)
+		})
 	}
 }

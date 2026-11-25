@@ -82,13 +82,13 @@ func WithEndpoint(endpoint string) CollectorOption {
 func NewCollector(opts ...CollectorOption) (*Collector, error) {
 	client := NewClient("")
 	collector := &Collector{
-		instanceID:    uuid.NewString(), // Generate new instance ID for this process
-		currentDate:   getCurrentDateUTC(),
-		client:        client,
-		callsByClient: make(map[string]int64),
-		stopCh:        make(chan struct{}),
-		doneCh:        make(chan struct{}),
-		flushCh:       make(chan struct{}, 1),
+		instanceID:  uuid.NewString(), // Generate new instance ID for this process
+		currentDate: getCurrentDateUTC(),
+		client:      client,
+		counts:      newCounts(),
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
+		flushCh:     make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		opt(collector)
@@ -117,8 +117,28 @@ func (c *Collector) IncrementToolCallFrom(client string) {
 	client = NormalizeClientName(client)
 	c.countsMu.Lock()
 	defer c.countsMu.Unlock()
-	c.counter++
-	c.callsByClient[client]++
+	c.counts.total++
+	c.counts.byClient[client]++
+}
+
+// IncrementCodeModeCall records that a tool call already counted by
+// IncrementToolCallFrom invoked the vMCP code mode tool.
+func (c *Collector) IncrementCodeModeCall() {
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	c.counts.codeModeCalls++
+}
+
+// AddCodeModeToolCalls records n tool calls made from inside a code mode
+// script. They are reported separately and never added to the tool call count.
+// Non-positive values are ignored.
+func (c *Collector) AddCodeModeToolCalls(n int64) {
+	if n <= 0 {
+		return
+	}
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	c.counts.codeModeToolCalls += n
 }
 
 // Flush sends the current metrics to the API
@@ -145,17 +165,17 @@ func (c *Collector) Flush() error {
 
 		// Take the previous day's per-client split and reset both counters
 		// together, so the split always adds up to the count.
-		prevCount, byClient := c.resetCounts()
+		prev := c.resetCounts()
 
-		if prevCount > 0 {
+		if prev.hasCalls() {
 			// Create fake timestamp for end of previous day
 			previousDayTimestamp := c.currentDate + "T23:59:00Z"
 
-			record := c.newRecord(prevCount, byClient, previousDayTimestamp)
+			record := c.newRecord(prev, previousDayTimestamp)
 
 			//nolint:gosec // G706: date from internal state
 			slog.Debug("flushing tool calls for previous day at midnight boundary",
-				"count", prevCount, "date", c.currentDate)
+				"count", prev.total, "date", c.currentDate)
 
 			if err := c.client.SendMetrics(c.instanceID, record); err != nil {
 				slog.Debug("failed to send metrics for previous day",
@@ -177,11 +197,11 @@ func (c *Collector) Flush() error {
 	now := time.Now().UTC()
 	timestamp := now.Format(time.RFC3339) // ISO 8601 format
 
-	count, byClient := c.snapshotCounts()
-	record := c.newRecord(count, byClient, timestamp)
+	current := c.snapshotCounts()
+	record := c.newRecord(current, timestamp)
 
 	//nolint:gosec // G706: timestamp from time.Now()
-	slog.Debug("flushing tool calls", "count", count, "timestamp", timestamp)
+	slog.Debug("flushing tool calls", "count", current.total, "timestamp", timestamp)
 
 	if err := c.client.SendMetrics(c.instanceID, record); err != nil {
 		slog.Debug("failed to send metrics", "error", err)
@@ -192,7 +212,10 @@ func (c *Collector) Flush() error {
 	return nil
 }
 
-// Shutdown performs final flush and stops background goroutines
+// Shutdown stops background goroutines and sends a final report if any tool
+// calls, including code mode script tool calls, were counted. With nothing to report it sends nothing: an idle process
+// already announced itself through the periodic flush, and a process that is
+// restarted repeatedly would otherwise add one empty report per restart.
 func (c *Collector) Shutdown(ctx context.Context) {
 	if c.shutdown.Load() {
 		return
@@ -206,9 +229,11 @@ func (c *Collector) Shutdown(ctx context.Context) {
 		close(c.stopCh)
 	}
 
-	// Perform final flush
-	if err := c.Flush(); err != nil {
-		slog.Warn("failed to flush metrics on shutdown", "error", err)
+	// Perform final flush, unless there is nothing to report
+	if c.snapshotCounts().hasCalls() {
+		if err := c.Flush(); err != nil {
+			slog.Warn("failed to flush metrics on shutdown", "error", err)
+		}
 	}
 
 	// Wait for goroutines to finish with timeout (only if started)
@@ -226,31 +251,35 @@ func (c *Collector) Shutdown(ctx context.Context) {
 func (c *Collector) GetCurrentCount() int64 {
 	c.countsMu.Lock()
 	defer c.countsMu.Unlock()
-	return c.counter
+	return c.counts.total
 }
 
-// snapshotCounts returns the current count and a copy of the per-client split.
-func (c *Collector) snapshotCounts() (int64, map[string]int64) {
+// snapshotCounts returns a copy of the current counts.
+func (c *Collector) snapshotCounts() counts {
 	c.countsMu.Lock()
 	defer c.countsMu.Unlock()
-	return c.counter, maps.Clone(c.callsByClient)
+	snap := c.counts
+	snap.byClient = maps.Clone(c.counts.byClient)
+	return snap
 }
 
-// resetCounts returns the current count and per-client split, and resets both.
-func (c *Collector) resetCounts() (int64, map[string]int64) {
+// resetCounts returns the current counts and resets them all together.
+func (c *Collector) resetCounts() counts {
 	c.countsMu.Lock()
 	defer c.countsMu.Unlock()
-	count, byClient := c.counter, c.callsByClient
-	c.counter, c.callsByClient = 0, make(map[string]int64)
-	return count, byClient
+	prev := c.counts
+	c.counts = newCounts()
+	return prev
 }
 
 // newRecord builds the payload for one report, adding the server profile.
-func (c *Collector) newRecord(count int64, byClient map[string]int64, timestamp string) MetricRecord {
+func (c *Collector) newRecord(n counts, timestamp string) MetricRecord {
 	record := MetricRecord{
-		Count:         count,
-		Timestamp:     timestamp,
-		CallsByClient: byClient,
+		Count:             n.total,
+		Timestamp:         timestamp,
+		CallsByClient:     n.byClient,
+		CodeModeCalls:     n.codeModeCalls,
+		CodeModeToolCalls: n.codeModeToolCalls,
 	}
 	if c.profile != nil {
 		record.Profile = c.profile().normalize()

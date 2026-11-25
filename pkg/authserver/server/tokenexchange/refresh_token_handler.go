@@ -75,6 +75,28 @@ const (
 	reasonSubjectAudience      = "subject_token_audience"
 	reasonSubjectSourceClient  = "subject_token_source_client"
 	reasonSubjectOfflineAccess = "subject_token_offline_access"
+	// reasonSubjectDelegatedAccess is sent for a delegated-access token. Its
+	// holder is a delegated client that has no login token, and refreshing it
+	// only yields another marked token, so it is not collapsed to
+	// reasonSubjectInvalid, which a client would answer by retrying.
+	reasonSubjectDelegatedAccess = "subject_token_delegated_access"
+	// reasonDelegatedAccessToken is the logged reason where a delegated-access
+	// token is refused as a subject or actor token of the RFC 8693 token-exchange handler.
+	reasonDelegatedAccessToken = "delegated_access_token"
+	// reasonActorDelegatedAccess is sent when a delegated-access token is
+	// presented as the actor token for an ID-JAG.
+	reasonActorDelegatedAccess = "actor_token_delegated_access" //nolint:gosec // G101: not a credential
+	// reasonSubjectAuthorizationDetails is sent for a subject token that
+	// carries authorization_details: the exchange grant would not carry them.
+	// Like reasonSubjectDelegatedAccess, a retry cannot fix it.
+	reasonSubjectAuthorizationDetails = "subject_token_authorization_details"
+	// reasonActorAuthorizationDetails is sent when a token that carries
+	// authorization_details is presented as the actor token for an ID-JAG.
+	reasonActorAuthorizationDetails = "actor_token_authorization_details"
+	// reasonAuthorizationDetailsToken is the logged reason where a token that
+	// carries authorization_details is refused as a subject or actor token of
+	// the RFC 8693 token-exchange handler.
+	reasonAuthorizationDetailsToken = "authorization_details_token"
 )
 
 // isRefreshTokenExchange reports whether a token-exchange request involves the
@@ -85,6 +107,14 @@ const (
 func isRefreshTokenExchange(form url.Values) bool {
 	return form.Get("requested_token_type") == oauthproto.TokenTypeRefreshToken ||
 		form.Get("subject_token_type") == oauthproto.TokenTypeRefreshToken
+}
+
+// selfIssuedValidator validates this server's own access tokens and can also
+// verify, without the exp/aud/shape checks, that a token was signed by this
+// server. The second method may only be used to refuse a token, never to accept one.
+type selfIssuedValidator interface {
+	SubjectTokenValidator
+	signedByThisServer(rawToken string) (*ValidatedClaims, error)
 }
 
 // RefreshTokenHandler implements RFC 8693 token exchange for refresh tokens: a
@@ -120,7 +150,7 @@ func isRefreshTokenExchange(form url.Values) bool {
 type RefreshTokenHandler struct {
 	strategy       oauth2.RefreshTokenStrategy
 	store          storage.ExchangeGrantStorage // nil when no client enables the feature
-	selfValidator  SubjectTokenValidator        // refresh tokens only come from self-issued login tokens
+	selfValidator  selfIssuedValidator          // validates self-issued login tokens at grant opening; refuses marked actor tokens
 	registry       *authorizationdetails.Registry
 	clientPolicies map[string]ConfiguredClientPolicy
 	refreshScopes  fosite.RefreshTokenScopesProvider
@@ -440,6 +470,12 @@ func (h *RefreshTokenHandler) decideTopLevel(
 		return nil, refuse(ctx, log, refuseSubjectToken,
 			errorsx.WithStack(exactReason(fosite.ErrInvalidRequest.ErrorField, reasonSubjectInvalid)))
 	}
+	// A terminal token is refused before any other claim is read, the log
+	// fields included. The marker is checked first, so a token that carries
+	// both keeps the marker's reason.
+	if reason := terminalSubjectReason(restrictionsOf(claims)); reason != "" {
+		return nil, refuse(ctx, log, reason, errorsx.WithStack(loginSubjectError(reason)))
+	}
 	log = log.With("sub", claims.Subject, "source_jti", claims.JWTID)
 	refusal := checkLoginToken(claims)
 	if refusal == "" {
@@ -656,11 +692,7 @@ func decideEntry(
 		ClientID:           clientID,
 		Actor:              clientID,
 		RequestedTokenType: oauthproto.TokenTypeRefreshToken,
-		Subject: authorizationdetails.Subject{
-			Issuer: claims.Issuer, Subject: claims.Subject, ClientID: claims.ClientID, JWTID: claims.JWTID,
-			Audience: slices.Clone(claims.Audience), IssuedAt: claims.IssuedAt, Expiry: claims.Expiry,
-			Claims: deepCopyClaims(claims.Claims),
-		},
+		Subject:            detailsSubject(claims),
 	})
 	if err != nil {
 		return nil, "", time.Time{}, err
@@ -812,7 +844,9 @@ func checkRefreshTokenParams(requester fosite.AccessRequester, form url.Values) 
 // reasonSubjectInvalid and the precise reason stays in the log. A token without
 // one of the client's subject_token_audiences or from a client that is not an
 // allowed source is a configuration fault that a new access token cannot fix,
-// so those carry their own reason code. So does a token without
+// so those carry their own reason code. So does a delegated-access token: no
+// new access token fixes it, and a client that read it as subject_token_invalid
+// would retry forever. So does a token without
 // offline_access. The user must sign in again, and the source client must
 // request offline_access or offline at sign-in; a refreshed token keeps its
 // original scopes.
@@ -824,18 +858,32 @@ func checkRefreshTokenParams(requester fosite.AccessRequester, form url.Values) 
 // handler.go). The difference is deliberate.
 func loginSubjectError(reason string) error {
 	switch reason {
-	case reasonSubjectAudience, reasonSubjectSourceClient, reasonSubjectOfflineAccess:
+	case reasonSubjectAudience, reasonSubjectSourceClient, reasonSubjectOfflineAccess, reasonSubjectDelegatedAccess,
+		reasonSubjectAuthorizationDetails:
 		return exactReason(fosite.ErrInvalidRequest.ErrorField, reason)
 	}
 	return exactReason(fosite.ErrInvalidRequest.ErrorField, reasonSubjectInvalid)
 }
 
+// terminalSubjectReason returns the reason a subject token that opens an
+// exchange grant is refused as terminal, or "" if it is not terminal. The
+// delegated-access marker is checked first.
+func terminalSubjectReason(r restrictions) string {
+	switch {
+	case r.DelegatedAccess:
+		return reasonSubjectDelegatedAccess
+	case r.AuthorizationDetails:
+		return reasonSubjectAuthorizationDetails
+	}
+	return ""
+}
+
 // checkLoginToken reports why a validated subject token is not a user login
-// access token, or "" if it is. A refresh token of any kind needs this, because
-// the token is tied to a real login. A token minted by token exchange (act), by
-// the JWT-bearer or ID-JAG grant (external subject or no upstream session), or
-// by client_credentials (no upstream session), is refused, since its subject
-// did not log in here.
+// access token, or "" if it is. The caller has already refused terminal tokens
+// (terminalSubjectReason). A refresh token needs a real login. A token minted by token exchange
+// (act), by the JWT-bearer or ID-JAG grant (external subject or no upstream
+// session), or by client_credentials (no upstream session) is refused because
+// its subject did not log in here.
 //
 // The jti is checked here because a later profile must share the single-use
 // (iss, jti) marker, so one login access token cannot open one grant of each

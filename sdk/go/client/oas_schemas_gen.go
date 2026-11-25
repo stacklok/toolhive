@@ -365,6 +365,14 @@ type AuthTokenValidatorConfig struct {
 	Issuer OptString `json:"issuer"`
 	// JWKSURL is the URL to fetch the JWKS from.
 	Jwksurl OptString `json:"jwksurl"`
+	// RequiredSubject, when non-empty, requires the token's "sub" claim to equal
+	// this value exactly. Tokens with a missing or empty "sub" are rejected.
+	// If RequiredSubjectPrefix is also set, both checks must pass.
+	RequiredSubject OptString `json:"requiredSubject"`
+	// RequiredSubjectPrefix, when non-empty, requires the token's "sub" claim to
+	// start with this value. Tokens with a missing or empty "sub" are rejected.
+	// If RequiredSubject is also set, both checks must pass.
+	RequiredSubjectPrefix OptString `json:"requiredSubjectPrefix"`
 	// ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728).
 	ResourceURL OptString `json:"resourceURL"`
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
@@ -420,6 +428,16 @@ func (s *AuthTokenValidatorConfig) GetIssuer() OptString {
 // GetJwksurl returns the value of Jwksurl.
 func (s *AuthTokenValidatorConfig) GetJwksurl() OptString {
 	return s.Jwksurl
+}
+
+// GetRequiredSubject returns the value of RequiredSubject.
+func (s *AuthTokenValidatorConfig) GetRequiredSubject() OptString {
+	return s.RequiredSubject
+}
+
+// GetRequiredSubjectPrefix returns the value of RequiredSubjectPrefix.
+func (s *AuthTokenValidatorConfig) GetRequiredSubjectPrefix() OptString {
+	return s.RequiredSubjectPrefix
 }
 
 // GetResourceURL returns the value of ResourceURL.
@@ -480,6 +498,16 @@ func (s *AuthTokenValidatorConfig) SetIssuer(val OptString) {
 // SetJwksurl sets the value of Jwksurl.
 func (s *AuthTokenValidatorConfig) SetJwksurl(val OptString) {
 	s.Jwksurl = val
+}
+
+// SetRequiredSubject sets the value of RequiredSubject.
+func (s *AuthTokenValidatorConfig) SetRequiredSubject(val OptString) {
+	s.RequiredSubject = val
+}
+
+// SetRequiredSubjectPrefix sets the value of RequiredSubjectPrefix.
+func (s *AuthTokenValidatorConfig) SetRequiredSubjectPrefix(val OptString) {
+	s.RequiredSubjectPrefix = val
 }
 
 // SetResourceURL sets the value of ResourceURL.
@@ -590,6 +618,20 @@ func (s *AuthenticationCIMDRunConfig) SetEnabled(val OptBool) {
 // Mutually exclusive with ClientID.
 // Ref: #/components/schemas/AuthenticationDCRUpstreamConfig
 type AuthenticationDCRUpstreamConfig struct {
+	// ClientName is the optional RFC 7591 "client_name" registration metadata
+	// sent when ToolHive registers with the upstream. When empty, ToolHive
+	// registers as "ToolHive MCP Client". It is display-only metadata: the
+	// upstream shows it on its authorization screen, and it is never used as
+	// a key. It is capped at 256 characters, matching the client_name bound
+	// the authserver enforces on inbound registrations. Names with leading
+	// or trailing whitespace, or containing control or format characters,
+	// are rejected.
+	// Changing it does not rename an already-registered client: the cached
+	// registration is keyed without the client name, so the new value applies
+	// only the next time ToolHive registers a fresh client — for example
+	// after rotating via RotationKey, or when the upstream rejects the cached
+	// registration.
+	ClientName OptString `json:"client_name"`
 	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
 	// fetch at runtime. The resolver issues a single GET against this URL
 	// (no well-known-path fallback) and reads registration_endpoint,
@@ -673,6 +715,11 @@ type AuthenticationDCRUpstreamConfig struct {
 	SoftwareStatement OptString `json:"software_statement"`
 }
 
+// GetClientName returns the value of ClientName.
+func (s *AuthenticationDCRUpstreamConfig) GetClientName() OptString {
+	return s.ClientName
+}
+
 // GetDiscoveryURL returns the value of DiscoveryURL.
 func (s *AuthenticationDCRUpstreamConfig) GetDiscoveryURL() OptString {
 	return s.DiscoveryURL
@@ -716,6 +763,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetSoftwareID() OptString {
 // GetSoftwareStatement returns the value of SoftwareStatement.
 func (s *AuthenticationDCRUpstreamConfig) GetSoftwareStatement() OptString {
 	return s.SoftwareStatement
+}
+
+// SetClientName sets the value of ClientName.
+func (s *AuthenticationDCRUpstreamConfig) SetClientName(val OptString) {
+	s.ClientName = val
 }
 
 // SetDiscoveryURL sets the value of DiscoveryURL.
@@ -889,6 +941,13 @@ func (s *AuthenticationDelegateClientIDJAGTarget) SetResources(val []string) {
 
 // Ref: #/components/schemas/AuthenticationDelegateClientRunConfig
 type AuthenticationDelegateClientRunConfig struct {
+	// AccessTokenLifespan is the lifetime of the access tokens this client
+	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+	// server's access_token_lifespan applies. When set it must be at least 2s
+	// and at most 24h. It is an upper bound: a token never outlives the
+	// assertion it was redeemed from, and a token that carries the
+	// delegated-access marker is capped further. Other grants ignore it.
+	AccessTokenLifespan OptString `json:"access_token_lifespan"`
 	// Audiences are output only: the upper bound on the audiences of the
 	// access tokens this client can obtain through any grant. They must be a
 	// subset of RunConfig.AllowedAudiences: a declared client must not receive
@@ -938,6 +997,11 @@ type AuthenticationDelegateClientRunConfig struct {
 	// that disagree must set it.
 	TokenEndpointAuthSigningAlg OptString                                    `json:"token_endpoint_auth_signing_alg"`
 	TokenExchange               OptAuthenticationDelegateClientTokenExchange `json:"token_exchange"`
+}
+
+// GetAccessTokenLifespan returns the value of AccessTokenLifespan.
+func (s *AuthenticationDelegateClientRunConfig) GetAccessTokenLifespan() OptString {
+	return s.AccessTokenLifespan
 }
 
 // GetAudiences returns the value of Audiences.
@@ -993,6 +1057,11 @@ func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthSigningAlg()
 // GetTokenExchange returns the value of TokenExchange.
 func (s *AuthenticationDelegateClientRunConfig) GetTokenExchange() OptAuthenticationDelegateClientTokenExchange {
 	return s.TokenExchange
+}
+
+// SetAccessTokenLifespan sets the value of AccessTokenLifespan.
+func (s *AuthenticationDelegateClientRunConfig) SetAccessTokenLifespan(val OptString) {
+	s.AccessTokenLifespan = val
 }
 
 // SetAudiences sets the value of Audiences.
@@ -1246,10 +1315,18 @@ func (s *AuthenticationJWTBearerInboundGrantRunConfig) SetIssuerPolicies(val []A
 
 // Ref: #/components/schemas/AuthenticationJWTBearerIssuerPolicyRunConfig
 type AuthenticationJWTBearerIssuerPolicyRunConfig struct {
-	AcceptedAudiences []string                                                   `json:"accepted_audiences"`
-	IssuerRef         OptString                                                  `json:"issuer_ref"`
-	MaxAssertionAge   OptString                                                  `json:"max_assertion_age"`
-	SubjectBindings   []AuthenticationServerTokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+	// AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes
+	// for the canonical config path; unset accepts both jwt_bearer and id_jag.
+	AcceptedAssertionTypes []AuthenticationServerTokenExchangeJWTBearerAssertionType  `json:"accepted_assertion_types"`
+	AcceptedAudiences      []string                                                   `json:"accepted_audiences"`
+	IssuerRef              OptString                                                  `json:"issuer_ref"`
+	MaxAssertionAge        OptString                                                  `json:"max_assertion_age"`
+	SubjectBindings        []AuthenticationServerTokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+}
+
+// GetAcceptedAssertionTypes returns the value of AcceptedAssertionTypes.
+func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetAcceptedAssertionTypes() []AuthenticationServerTokenExchangeJWTBearerAssertionType {
+	return s.AcceptedAssertionTypes
 }
 
 // GetAcceptedAudiences returns the value of AcceptedAudiences.
@@ -1270,6 +1347,11 @@ func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetMaxAssertionAge() OptS
 // GetSubjectBindings returns the value of SubjectBindings.
 func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetSubjectBindings() []AuthenticationServerTokenExchangeJWTBearerSubjectBinding {
 	return s.SubjectBindings
+}
+
+// SetAcceptedAssertionTypes sets the value of AcceptedAssertionTypes.
+func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) SetAcceptedAssertionTypes(val []AuthenticationServerTokenExchangeJWTBearerAssertionType) {
+	s.AcceptedAssertionTypes = val
 }
 
 // SetAcceptedAudiences sets the value of AcceptedAudiences.
@@ -1934,8 +2016,8 @@ type AuthenticationRunConfig struct {
 	// When true, the embedded auth server handles OAuth flows for clients, but instead of
 	// injecting upstream IdP tokens the proxy strips the client's credential headers
 	// (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
-	// backend receives an unauthenticated request. Incompatible with token exchange
-	// and AWS STS, which would re-add credentials after the strip.
+	// backend receives an unauthenticated request. Incompatible with token exchange,
+	// AWS STS and OBO, which would re-add credentials after the strip.
 	DisableUpstreamTokenInjection OptBool `json:"disable_upstream_token_injection"`
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the
@@ -2561,6 +2643,48 @@ func (s *AuthenticationSPIFFETrustDomainRunConfig) SetTrustDomain(val OptString)
 
 // Ref: #/components/schemas/AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig
 type AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig struct{}
+
+// Ref: #/components/schemas/AuthenticationServerTokenExchangeJWTBearerAssertionType
+type AuthenticationServerTokenExchangeJWTBearerAssertionType string
+
+const (
+	AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer AuthenticationServerTokenExchangeJWTBearerAssertionType = "jwt_bearer"
+	AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag     AuthenticationServerTokenExchangeJWTBearerAssertionType = "id_jag"
+)
+
+// AllValues returns all AuthenticationServerTokenExchangeJWTBearerAssertionType values.
+func (AuthenticationServerTokenExchangeJWTBearerAssertionType) AllValues() []AuthenticationServerTokenExchangeJWTBearerAssertionType {
+	return []AuthenticationServerTokenExchangeJWTBearerAssertionType{
+		AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer,
+		AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AuthenticationServerTokenExchangeJWTBearerAssertionType) MarshalText() ([]byte, error) {
+	switch s {
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer:
+		return []byte(s), nil
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AuthenticationServerTokenExchangeJWTBearerAssertionType) UnmarshalText(data []byte) error {
+	switch AuthenticationServerTokenExchangeJWTBearerAssertionType(data) {
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer
+		return nil
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/AuthenticationServerTokenExchangeJWTBearerSubjectBinding
 type AuthenticationServerTokenExchangeJWTBearerSubjectBinding struct {
@@ -21812,6 +21936,16 @@ func (s *TokenExchangeConfig) SetTokenURL(val OptString) {
 // inbound_grants.jwt_bearer.issuer_policies.
 // Ref: #/components/schemas/TokenExchangeJWTBearerGrantPolicy
 type TokenExchangeJWTBearerGrantPolicy struct {
+	// AcceptedAssertionTypes selects which assertion form(s) this issuer's
+	// jwt-bearer grant accepts. nil/empty accepts both jwt_bearer and id_jag
+	// (the behavior before this field existed). Set {id_jag} to restrict an IdP
+	// issuer to Cross-App-Access grants so its other signed JWTs cannot be
+	// redeemed on the credential-free plain path; set {jwt_bearer} to refuse
+	// ID-JAG. Listing id_jag explicitly requires this AS's issuer to be
+	// accepted: AcceptedAudiences, when set, must include it, and when empty
+	// the issuer must not also be an allowed audience. SubjectBindings are shared by both forms. See
+	// docs/arch/17-token-exchange-delegation.md.
+	AcceptedAssertionTypes []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem `json:"accepted_assertion_types"`
 	// AcceptedAudiences is the set of "this AS" identity strings an
 	// assertion's "aud" claim must intersect — e.g. to support migrating
 	// this server's issuer/token-endpoint URL, or exposing it under more
@@ -21823,10 +21957,17 @@ type TokenExchangeJWTBearerGrantPolicy struct {
 	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
 	// the token endpoint and this server's issuer identifier, unless the issuer
 	// is also an allowed resource audience. A configured list replaces both
-	// defaults.
+	// defaults. The plain JWT-bearer grant accepts a multi-valued "aud" when
+	// one value matches; the ID-JAG grant refuses any "aud" array with more
+	// than one value.
 	AcceptedAudiences []string                               `json:"accepted_audiences"`
 	MaxAssertionAge   OptString                              `json:"max_assertion_age"`
 	SubjectBindings   []TokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+}
+
+// GetAcceptedAssertionTypes returns the value of AcceptedAssertionTypes.
+func (s *TokenExchangeJWTBearerGrantPolicy) GetAcceptedAssertionTypes() []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem {
+	return s.AcceptedAssertionTypes
 }
 
 // GetAcceptedAudiences returns the value of AcceptedAudiences.
@@ -21844,6 +21985,11 @@ func (s *TokenExchangeJWTBearerGrantPolicy) GetSubjectBindings() []TokenExchange
 	return s.SubjectBindings
 }
 
+// SetAcceptedAssertionTypes sets the value of AcceptedAssertionTypes.
+func (s *TokenExchangeJWTBearerGrantPolicy) SetAcceptedAssertionTypes(val []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) {
+	s.AcceptedAssertionTypes = val
+}
+
 // SetAcceptedAudiences sets the value of AcceptedAudiences.
 func (s *TokenExchangeJWTBearerGrantPolicy) SetAcceptedAudiences(val []string) {
 	s.AcceptedAudiences = val
@@ -21857,6 +22003,47 @@ func (s *TokenExchangeJWTBearerGrantPolicy) SetMaxAssertionAge(val OptString) {
 // SetSubjectBindings sets the value of SubjectBindings.
 func (s *TokenExchangeJWTBearerGrantPolicy) SetSubjectBindings(val []TokenExchangeJWTBearerSubjectBinding) {
 	s.SubjectBindings = val
+}
+
+type TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem string
+
+const (
+	TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem = "jwt_bearer"
+	TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag     TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem = "id_jag"
+)
+
+// AllValues returns all TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem values.
+func (TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) AllValues() []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem {
+	return []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem{
+		TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer,
+		TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) MarshalText() ([]byte, error) {
+	switch s {
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer:
+		return []byte(s), nil
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) UnmarshalText(data []byte) error {
+	switch TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem(data) {
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer:
+		*s = TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer
+		return nil
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag:
+		*s = TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/TokenExchangeJWTBearerSubjectBinding

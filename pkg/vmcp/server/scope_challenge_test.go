@@ -226,7 +226,7 @@ func TestScopeChallengeProtocolValidationPrecedesChallenge(t *testing.T) {
 				nextCalled = true
 				w.WriteHeader(http.StatusAccepted)
 			})
-			var handler http.Handler = s.scopeChallengeMiddleware(next)
+			var handler = s.scopeChallengeMiddleware(next)
 			if !tc.skipParser {
 				handler = mcpparser.ParsingMiddleware(handler)
 			}

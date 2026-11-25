@@ -1760,6 +1760,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 							TokenEndpoint:         "https://idp.example.com/token",
 							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
 							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
+								ClientName:        "Acme MCP Client",
 								DiscoveryURL:      "https://idp.example.com/.well-known/openid-configuration",
 								SoftwareID:        "toolhive",
 								SoftwareStatement: "jwt-statement",
@@ -1782,6 +1783,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Empty(t, upstream.OAuth2Config.ClientID,
 					"ClientID should be empty when DCRConfig is used")
 				require.NotNil(t, upstream.OAuth2Config.DCRConfig)
+				assert.Equal(t, "Acme MCP Client", upstream.OAuth2Config.DCRConfig.ClientName)
 				assert.Equal(t,
 					"https://idp.example.com/.well-known/openid-configuration",
 					upstream.OAuth2Config.DCRConfig.DiscoveryURL)
@@ -3602,6 +3604,26 @@ func TestBuildAuthServerRunConfig_RejectsNilJWTBearerMaxAssertionAge(t *testing.
 	}
 }
 
+func TestBuildTrustedIssuerRunConfigs_JWTBearerGrantUnsetAssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	configs := buildTrustedIssuerRunConfigs([]mcpv1beta1.TrustedIssuerConfig{{
+		IssuerURL: "https://issuer.example.com",
+		JWTBearerGrant: &mcpv1beta1.JWTBearerGrantConfig{
+			MaxAssertionAge: &metav1.Duration{Duration: 5 * time.Minute},
+			SubjectBindings: []mcpv1beta1.JWTBearerSubjectBinding{{
+				Subject:          "workload-123",
+				AllowedResources: []string{"https://mcp.example.com"},
+			}},
+		},
+	}})
+
+	require.Len(t, configs, 1)
+	require.NotNil(t, configs[0].JWTBearerGrant)
+	assert.Empty(t, configs[0].JWTBearerGrant.AcceptedAssertionTypes,
+		"an unset acceptedAssertionTypes must stay unset so the runtime default (both types) applies")
+}
+
 func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 	t.Parallel()
 
@@ -3614,7 +3636,8 @@ func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 				Subject:          "workload-123",
 				AllowedResources: []string{"https://mcp.example.com"},
 			}},
-			AcceptedAudiences: acceptedAudiences,
+			AcceptedAudiences:      acceptedAudiences,
+			AcceptedAssertionTypes: []mcpv1beta1.JWTBearerAssertionType{mcpv1beta1.JWTBearerAssertionTypeIDJAG},
 		},
 	}})
 
@@ -3626,6 +3649,9 @@ func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 		AllowedResources: []string{"https://mcp.example.com"},
 	}}, configs[0].JWTBearerGrant.SubjectBindings)
 	assert.Equal(t, []string{"https://auth.example.com/legacy-token"}, configs[0].JWTBearerGrant.AcceptedAudiences)
+	assert.Equal(t, []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+		configs[0].JWTBearerGrant.AcceptedAssertionTypes,
+		"legacy trustedIssuers[*].jwtBearerGrant.acceptedAssertionTypes must thread through to the runtime policy")
 
 	// The runtime policy must not retain the CRD object's backing slice: the
 	// reconciler may reuse or mutate the source object after conversion.

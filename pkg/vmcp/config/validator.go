@@ -178,14 +178,8 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 		// - Token validation without introspection
 		// - Kubernetes service account token validation
 
-		// Validate CA bundle path: reject null bytes, path traversal, and relative paths.
-		if auth.OIDC.CABundlePath != "" {
-			if strings.ContainsRune(auth.OIDC.CABundlePath, 0) || strings.Contains(auth.OIDC.CABundlePath, "..") {
-				return fmt.Errorf("incomingAuth.oidc.caBundlePath contains invalid path characters")
-			}
-			if !filepath.IsAbs(auth.OIDC.CABundlePath) {
-				return fmt.Errorf("incomingAuth.oidc.caBundlePath must be an absolute path")
-			}
+		if err := ValidateOIDCFilePaths(auth.OIDC); err != nil {
+			return err
 		}
 	}
 
@@ -827,4 +821,35 @@ func upstreamExists(rc *authserver.RunConfig, providerName string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateOIDCFilePaths checks the file path fields of an incoming OIDC
+// configuration (caBundlePath and jwksAuthTokenPath). Each path, when set,
+// must be absolute and must not contain a null byte or "..". A nil config is
+// valid. The operator calls this before writing the vMCP ConfigMap so a bad
+// path is reported on the VirtualMCPServer status rather than as a vMCP
+// startup failure; Validate also calls it when vMCP loads its configuration.
+func ValidateOIDCFilePaths(oidc *OIDCConfig) error {
+	if oidc == nil {
+		return nil
+	}
+	if err := validateOIDCFilePath("caBundlePath", oidc.CABundlePath); err != nil {
+		return err
+	}
+	return validateOIDCFilePath("jwksAuthTokenPath", oidc.JWKSAuthTokenPath)
+}
+
+// validateOIDCFilePath rejects null bytes, path traversal, and relative paths
+// in an optional incomingAuth.oidc file path field. An empty path is valid.
+func validateOIDCFilePath(field, path string) error {
+	if path == "" {
+		return nil
+	}
+	if strings.ContainsRune(path, 0) || strings.Contains(path, "..") {
+		return fmt.Errorf("incomingAuth.oidc.%s contains invalid path characters", field)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("incomingAuth.oidc.%s must be an absolute path", field)
+	}
+	return nil
 }

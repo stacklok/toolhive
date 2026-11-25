@@ -5,6 +5,7 @@
 package authserver
 
 import (
+	"cmp"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -137,8 +139,8 @@ type RunConfig struct {
 	// When true, the embedded auth server handles OAuth flows for clients, but instead of
 	// injecting upstream IdP tokens the proxy strips the client's credential headers
 	// (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
-	// backend receives an unauthenticated request. Incompatible with token exchange
-	// and AWS STS, which would re-add credentials after the strip.
+	// backend receives an unauthenticated request. Incompatible with token exchange,
+	// AWS STS and OBO, which would re-add credentials after the strip.
 	//nolint:lll // field tags require full JSON+YAML names
 	DisableUpstreamTokenInjection bool `json:"disable_upstream_token_injection,omitempty" yaml:"disable_upstream_token_injection,omitempty"`
 
@@ -404,6 +406,64 @@ type DelegateClientRunConfig struct {
 	// and may exchange any self-issued token. A client that sets GrantTypes or
 	// uses private_key_jwt must declare the block.
 	TokenExchange *DelegateClientTokenExchange `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+
+	// AccessTokenLifespan is the lifetime of the access tokens this client
+	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+	// server's access_token_lifespan applies. When set it must be at least 2s
+	// and at most 24h. It is an upper bound: a token never outlives the
+	// assertion it was redeemed from, and a token that carries the
+	// delegated-access marker is capped further. Other grants ignore it.
+	AccessTokenLifespan string `json:"access_token_lifespan,omitempty" yaml:"access_token_lifespan,omitempty"`
+}
+
+// AccessTokenLifespanDuration parses AccessTokenLifespan. An omitted value
+// gives zero, which means the server lifespan applies; any set value must be in
+// [oauthserver.MinClientAccessTokenLifespan, oauthserver.MaxAccessTokenLifespan].
+func (c DelegateClientRunConfig) AccessTokenLifespanDuration() (time.Duration, error) {
+	if c.AccessTokenLifespan == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.AccessTokenLifespan)
+	if err != nil {
+		return 0, fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan %q: %w",
+			c.ClientID, c.AccessTokenLifespan, err)
+	}
+	if err := checkDelegateAccessTokenLifespan(c.ClientID, d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
+
+// validateDelegateAccessTokenLifespanGrant refuses an access_token_lifespan
+// that could never apply: the lifespan is used only by ID-JAG redemption, so
+// a trusted issuer must accept ID-JAG assertions (an enabled JWT-bearer grant
+// whose issuers all accept plain assertions only is not enough), and a client
+// that sets grant_types must list the JWT-bearer grant. It runs on the
+// resolved Config because both are decided from the resolved trusted issuers.
+func validateDelegateAccessTokenLifespanGrant(clients []DelegateClient, idJAGRedeemable bool) error {
+	for _, client := range clients {
+		if client.AccessTokenLifespan == 0 {
+			continue
+		}
+		if !idJAGRedeemable {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, errAccessTokenLifespanNeedsIDJAGIssuer)
+		}
+		if len(client.GrantTypes) > 0 && !slices.Contains(client.GrantTypes, oauthproto.GrantTypeJWTBearer) {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, errAccessTokenLifespanNeedsClientGrant)
+		}
+	}
+	return nil
+}
+
+// checkDelegateAccessTokenLifespan enforces
+// [MinClientAccessTokenLifespan, MaxAccessTokenLifespan] on a
+// set lifespan.
+func checkDelegateAccessTokenLifespan(clientID string, d time.Duration) error {
+	if d < oauthserver.MinClientAccessTokenLifespan || d > oauthserver.MaxAccessTokenLifespan {
+		return fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan must be at least %v and at most %v, got %v",
+			clientID, oauthserver.MinClientAccessTokenLifespan, oauthserver.MaxAccessTokenLifespan, d)
+	}
+	return nil
 }
 
 // SelfIssuedSubjectTokens selects which self-issued subject tokens a delegate
@@ -626,6 +686,9 @@ func (c *RunConfig) Validate() error {
 		return err
 	}
 	if err := validateTrustedIssuers(normalized.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
+		return err
+	}
+	if err := c.validateResolveIssuers(normalized.TrustedIssuers); err != nil {
 		return err
 	}
 	if err := c.validateSPIFFEClientIDsNotDelegates(normalized.DelegateClients); err != nil {
@@ -874,6 +937,9 @@ func validateDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if _, err := client.AccessTokenLifespanDuration(); err != nil {
+			return err
+		}
 		views[i] = delegateClientView{
 			ClientID:      client.ClientID,
 			Scopes:        client.Scopes,
@@ -1163,6 +1229,11 @@ func validateResolvedDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if client.AccessTokenLifespan != 0 {
+			if err := checkDelegateAccessTokenLifespan(client.ClientID, client.AccessTokenLifespan); err != nil {
+				return err
+			}
+		}
 		if client.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			if client.ClientSecret == "" {
 				return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
@@ -1548,6 +1619,22 @@ type OAuth2UpstreamRunConfig struct {
 // surface), this field becomes a confused-deputy SSRF vector. Hardening is
 // tracked in https://github.com/stacklok/toolhive/issues/5135.
 type DCRUpstreamConfig struct {
+	// ClientName is the optional RFC 7591 "client_name" registration metadata
+	// sent when ToolHive registers with the upstream. When empty, ToolHive
+	// registers as "ToolHive MCP Client". It is display-only metadata: the
+	// upstream shows it on its authorization screen, and it is never used as
+	// a key. It is capped at 256 characters, matching the client_name bound
+	// the authserver enforces on inbound registrations. Names with leading
+	// or trailing whitespace, or containing control or format characters,
+	// are rejected.
+	//
+	// Changing it does not rename an already-registered client: the cached
+	// registration is keyed without the client name, so the new value applies
+	// only the next time ToolHive registers a fresh client — for example
+	// after rotating via RotationKey, or when the upstream rejects the cached
+	// registration.
+	ClientName string `json:"client_name,omitempty" yaml:"client_name,omitempty"`
+
 	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
 	// fetch at runtime. The resolver issues a single GET against this URL
 	// (no well-known-path fallback) and reads registration_endpoint,
@@ -2109,6 +2196,12 @@ type DelegateClient struct {
 
 	// TokenExchange carries the matching DelegateClientRunConfig field.
 	TokenExchange *DelegateClientTokenExchange
+
+	// AccessTokenLifespan is the parsed DelegateClientRunConfig field. Zero
+	// means unset: the server's access-token lifespan applies. A value below
+	// server.MinClientAccessTokenLifespan, or above
+	// server.MaxAccessTokenLifespan, is refused.
+	AccessTokenLifespan time.Duration
 }
 
 // Validate checks that the Config is valid.
@@ -2303,7 +2396,7 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
 		return err
 	}
-	if err := c.validateAuthorizationDetailsRequiresTokenExchange(); err != nil {
+	if err := c.validateAuthorizationDetailsRegistryReachable(); err != nil {
 		return err
 	}
 	if err := c.validateSPIFFEAssociationsRequireTokenExchange(); err != nil {
@@ -2373,13 +2466,13 @@ func (c *Config) validateRuntimeSPIFFEBundleSources() error {
 // runtime loader; bundle_endpoint and workload_api pass structural validation
 // but would fail at auth-server startup, so they are rejected here. The
 // operator calls it too, so the config CR and RunConfig.Validate agree.
-// subject is the full field path of the bundle_source, used as the error prefix.
-func ValidateRuntimeSPIFFEBundleSourceType(subject string, sourceType SPIFFEBundleSourceType) error {
+// fieldPath is the full field path of the bundle_source, used as the error prefix.
+func ValidateRuntimeSPIFFEBundleSourceType(fieldPath string, sourceType SPIFFEBundleSourceType) error {
 	if sourceType == SPIFFEBundleSourceTypeFile {
 		return nil
 	}
 	return fmt.Errorf("%s: type %q is not supported by this build; only %q is supported",
-		subject, sourceType, SPIFFEBundleSourceTypeFile)
+		fieldPath, sourceType, SPIFFEBundleSourceTypeFile)
 }
 
 // validateBaselineClientScopes ensures every baseline scope is advertised by
@@ -2403,6 +2496,9 @@ func (c *Config) validateDelegationConfig() error {
 	if err := ValidateIDJAGSubjectClaimAudiences(c.DelegateClients, c.SubjectIdentifierAudiences); err != nil {
 		return err
 	}
+	if err := validateDelegateAccessTokenLifespanGrant(c.DelegateClients, idJAGRedeemable(c.TrustedIssuers)); err != nil {
+		return err
+	}
 	spiffeIDs := make([]string, 0, len(c.SPIFFETrust.Associations()))
 	for _, association := range c.SPIFFETrust.Associations() {
 		spiffeIDs = append(spiffeIDs, association.ClientID())
@@ -2417,7 +2513,74 @@ func (c *Config) validateDelegationConfig() error {
 	if err := c.validateActorProfilesRegistered(); err != nil {
 		return err
 	}
-	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
+	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
+		return err
+	}
+	return validateResolveIssuerUpstream(c.TrustedIssuers, c.signInUpstream())
+}
+
+// signInUpstream returns the first upstream's issuer and subject claim, or nil
+// when it is not an OIDC upstream.
+func (c *Config) signInUpstream() *signInUpstream {
+	if len(c.Upstreams) == 0 || c.Upstreams[0].Type != UpstreamProviderTypeOIDC || c.Upstreams[0].OIDCConfig == nil {
+		return nil
+	}
+	oidc := c.Upstreams[0].OIDCConfig
+	return &signInUpstream{
+		issuer:       oidc.Issuer,
+		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
+	}
+}
+
+// validateResolveIssuers runs the resolve-issuer upstream check for the
+// run-config. Config.Validate also runs it, but this one fires first: it must
+// refuse before upstream registration, for the same reason as the delegate
+// clients in Validate. It runs before the upstream configs are validated, so a
+// missing oidc_config is refused here as not an OIDC identity provider.
+func (c *RunConfig) validateResolveIssuers(issuers []tokenexchange.TrustedIssuer) error {
+	if len(c.Upstreams) == 0 || c.Upstreams[0].Type != UpstreamProviderTypeOIDC || c.Upstreams[0].OIDCConfig == nil {
+		return validateResolveIssuerUpstream(issuers, nil)
+	}
+	oidc := c.Upstreams[0].OIDCConfig
+	return validateResolveIssuerUpstream(issuers, &signInUpstream{
+		issuer:       oidc.IssuerURL,
+		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
+	})
+}
+
+// signInUpstream is the first upstream's issuer and subject claim, which a
+// resolve issuer's subject is matched against. The claim has its default
+// applied.
+type signInUpstream struct {
+	issuer, subjectClaim string
+}
+
+// validateResolveIssuerUpstream refuses a resolve issuer unless the first
+// upstream is an OIDC identity provider (signIn is nil otherwise) whose
+// subject claim is stable. Only the first upstream writes
+// provider-identity rows, and only an OIDC upstream has the issuer URL and
+// subject claim the resolution matches against. A mutable claim such as email
+// would let a user rename themselves into another user's identity. The Okta
+// warning ValidateBindingClaim can return is logged once at startup, where the
+// resolver is built.
+func validateResolveIssuerUpstream(issuers []tokenexchange.TrustedIssuer, signIn *signInUpstream) error {
+	for _, issuer := range issuers {
+		if issuer.JWTBearerGrant == nil || issuer.JWTBearerGrant.SubjectMode != tokenexchange.SubjectModeResolve {
+			continue
+		}
+		if signIn == nil {
+			return fmt.Errorf(
+				"trusted_issuers: issuer_url %q: jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream",
+				issuer.IssuerURL)
+		}
+		if _, err := subject.ValidateBindingClaim(signIn.issuer, signIn.subjectClaim); err != nil {
+			return fmt.Errorf(
+				"trusted_issuers: issuer_url %q: jwt_bearer_grant.subject_mode resolve "+
+					"needs a stable subject_claim on the first upstream: %w",
+				issuer.IssuerURL, err)
+		}
+	}
+	return nil
 }
 
 // hasStaticConfidentialClients reports whether any delegate client is
@@ -2458,12 +2621,23 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 	return nil
 }
 
-// validateAuthorizationDetailsRequiresTokenExchange rejects a registry combined
-// with a disabled token-exchange grant: authorization_details is only handled
-// on token exchange, so the registry could never be reached.
-func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
-	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+// ErrAuthorizationDetailsRegistryUnreachable is returned when an authorization
+// details registry is configured but no grant that handles it is enabled.
+var ErrAuthorizationDetailsRegistryUnreachable = errors.New(
+	"authorization details registry requires token exchange to be enabled")
+
+// AuthorizationDetailsRegistryReachable reports whether an authorization
+// details registry can be reached: authorization_details is only handled on
+// token exchange, so the registry is reachable only when that grant is enabled.
+func AuthorizationDetailsRegistryReachable(tokenExchangeEnabled bool) bool {
+	return tokenExchangeEnabled
+}
+
+// validateAuthorizationDetailsRegistryReachable rejects a registry that no
+// enabled grant could ever reach.
+func (c *Config) validateAuthorizationDetailsRegistryReachable() error {
+	if c.AuthorizationDetailsRegistry != nil && !AuthorizationDetailsRegistryReachable(!c.DisableTokenExchange) {
+		return ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
 }
@@ -2730,10 +2904,8 @@ func (c *DCRUpstreamConfig) Validate() error {
 			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
 	}
 
-	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
-	// YAML and CLI run-config paths, which have no admission-time schema.
-	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
-		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	if err := c.validateRegistrationMetadata(); err != nil {
+		return err
 	}
 
 	// Mirrors the CRD's Enum marker on registrationProbe; the resolver owns
@@ -2746,6 +2918,27 @@ func (c *DCRUpstreamConfig) Validate() error {
 		return fmt.Errorf("dcr_config: %w", err)
 	}
 
+	return nil
+}
+
+// validateRegistrationMetadata checks the DCR registration metadata fields:
+// the rotation key shape and the client name length and character class.
+// Split out of Validate to keep that method's cyclomatic complexity down
+// instead of suppressing the linter.
+func (c *DCRUpstreamConfig) validateRegistrationMetadata() error {
+	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
+	// YAML and CLI run-config paths, which have no admission-time schema.
+	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
+		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
+	// Length and character class are enforced by registration.ValidateClientName,
+	// which mirrors the CRD's MaxLength marker on clientName and the inbound
+	// registration bound (registration.MaxClientNameLength). The length is
+	// counted in characters, matching the CRD's maxLength semantics.
+	if err := registration.ValidateClientName(c.ClientName); err != nil {
+		return fmt.Errorf("dcr_config: client_name: %w", err)
+	}
 	return nil
 }
 
@@ -3149,6 +3342,13 @@ const (
 
 var (
 	errIDJAGRequiresTokenExchange = errors.New("token_exchange.id_jag requires token exchange to be enabled")
+	// errAccessTokenLifespanNeedsIDJAGIssuer and
+	// errAccessTokenLifespanNeedsClientGrant refuse a per-client lifespan that
+	// ID-JAG redemption could never apply.
+	errAccessTokenLifespanNeedsIDJAGIssuer = errors.New(
+		"access_token_lifespan applies to ID-JAG redemption, which requires a trusted issuer that accepts ID-JAG assertions")
+	errAccessTokenLifespanNeedsClientGrant = errors.New(
+		"access_token_lifespan applies to ID-JAG redemption, so grant_types must include the JWT-bearer grant")
 	errIDJAGRequiresRestricted    = errors.New(`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`)
 	errIDJAGRequiresSubjectSource = errors.New("token_exchange.id_jag requires a subject source: " +
 		"set token_exchange.exchange_refresh_tokens.id_jag_max_lifetime")

@@ -46,6 +46,44 @@ func TestNormalizeClientName(t *testing.T) {
 	}
 }
 
+func TestUserAgentClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		userAgent string
+		want      string
+	}{
+		{"claude-code/2.0.14", "claude-code"},
+		{"claude-code/2.0.14 (external, cli)", "claude-code"},
+		{"Cursor/1.7.0 (darwin arm64)", "cursor"},
+		// The User-Agent vMCP and thv send for their own usage reports.
+		{"toolhive/vmcp v0.60.0 release (linux/amd64)", "vmcp"},
+		{"toolhive/local v0.60.0 release (darwin/arm64)", "toolhive"},
+		// versions.GetUserAgent, sent by ToolHive's registry clients.
+		{"ToolHive/v0.60.0 (linux/amd64) go/go1.27.0", "toolhive"},
+		// Generic HTTP library agents say nothing about the MCP client.
+		{"node", ClientUnknown},
+		{"python-httpx/0.28.1", ClientUnknown},
+		{"Go-http-client/1.1", ClientUnknown},
+		{"Go-http-client/2.0", ClientUnknown},
+		{"axios/1.7.7", ClientUnknown},
+		{"curl/8.7.1", ClientUnknown},
+		{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)", ClientUnknown},
+		{"", ClientUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%q", tt.userAgent), func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			if tt.userAgent != "" {
+				r.Header.Set(userAgentHeader, tt.userAgent)
+			}
+			assert.Equal(t, tt.want, userAgentClient(r))
+		})
+	}
+}
+
 func TestSessionClients(t *testing.T) {
 	t.Parallel()
 

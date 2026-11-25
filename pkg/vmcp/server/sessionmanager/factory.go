@@ -100,6 +100,18 @@ type FactoryConfig struct {
 	// monitor, so in-tree compositions are covered; direct-Serve callers that want
 	// the #5861 fix must pass it explicitly.
 	BackendHealth health.StatusProvider
+
+	// SweepInterval is the period between proactive sweeps of the node-local
+	// session cache. Each sweep checks cached sessions against storage (without
+	// refreshing their TTL) and evicts any whose storage record is gone, closing
+	// their backend connections. This reclaims sessions terminated on another
+	// replica or expired after their client abandoned them, whose entry would
+	// otherwise sit in the cache until LRU eviction because no further access
+	// triggers the lazy checkSession (#6932).
+	//
+	// A value of 0 uses defaultSweepInterval. A negative value disables the
+	// sweep entirely (the pre-#6932 behaviour).
+	SweepInterval time.Duration
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry

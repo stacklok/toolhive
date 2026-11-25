@@ -21,13 +21,19 @@ import (
 
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
 const (
@@ -90,9 +96,26 @@ func newUsageMetrics(
 }
 
 // middleware returns the HTTP middleware that counts tool calls. It must run
-// after the MCP parsing middleware.
-func (u *usageMetrics) middleware() func(http.Handler) http.Handler {
-	return usagemetrics.NewMiddleware(u.collector).Handler()
+// after the MCP parsing middleware. With the optimizer on, clients reach code
+// mode through call_tool, so those calls count as code mode calls too.
+func (u *usageMetrics) middleware(optimizerEnabled bool) func(http.Handler) http.Handler {
+	var opts []usagemetrics.MiddlewareOption
+	if optimizerEnabled {
+		opts = append(opts, usagemetrics.WithCodeModeCall(isOptimizerCodeModeCall))
+	}
+	return usagemetrics.NewMiddleware(u.collector, opts...).Handler()
+}
+
+// isOptimizerCodeModeCall reports whether a tools/call is the optimizer's
+// call_tool targeting the code mode tool. It decodes the arguments into
+// optimizer.CallToolInput, as authorization and dispatch do, so it sees the
+// same target they do, including a nested or differently cased tool_name.
+func isOptimizerCodeModeCall(parsed *mcp.ParsedMCPRequest) bool {
+	if parsed.ResourceID != optimizerdec.CallToolName {
+		return false
+	}
+	input, err := schema.Translate[optimizer.CallToolInput](parsed.Arguments)
+	return err == nil && input.ToolName == script.ExecuteToolScriptName
 }
 
 // observe wraps an aggregator so every aggregation updates the reported tool count.
@@ -100,7 +123,30 @@ func (u *usageMetrics) observe(agg aggregator.Aggregator) aggregator.Aggregator 
 	return &toolCountObserver{Aggregator: agg, toolCount: &u.toolCount}
 }
 
-// shutdown sends the final report.
+// codeModeConfig returns a copy of cfg whose observer adds each script's tool
+// calls to the usage report as code_mode_tool_calls. Those calls never pass
+// through the HTTP middleware, so they are not part of count. A nil cfg (code
+// mode off) stays nil.
+//
+// The script call itself is counted when the request arrives, but its tool
+// calls only land when the script returns. A script still running at shutdown
+// can outlast the server's HTTP drain (defaultShutdownTimeout in
+// pkg/vmcp/server, shorter than codemode's script timeout), so the final report
+// may miss that script's tool calls. We accept that window rather than holding
+// shutdown for in-flight scripts.
+func (u *usageMetrics) codeModeConfig(cfg *codemode.Config) *codemode.Config {
+	if cfg == nil {
+		return nil
+	}
+	out := *cfg
+	out.OnScript = func(_ context.Context, stats codemode.ScriptStats) {
+		u.collector.AddCodeModeToolCalls(int64(stats.ToolCalls))
+	}
+	return &out
+}
+
+// shutdown stops the collector, sending a final report if any tool calls,
+// including code mode script tool calls, were counted.
 func (u *usageMetrics) shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), usageMetricsShutdownTimeout)
 	defer cancel()
@@ -169,10 +215,10 @@ func (o *toolCountObserver) record(result *aggregator.AggregatedCapabilities, er
 
 // vmcpFeatures lists the vMCP features a configuration turns on.
 func vmcpFeatures(
-	optimizer bool, codeMode *config.CodeModeConfig, compositeTools int, outgoing *config.OutgoingAuthConfig,
+	optimizerEnabled bool, codeMode *config.CodeModeConfig, compositeTools int, outgoing *config.OutgoingAuthConfig,
 ) []string {
 	var features []string
-	if optimizer {
+	if optimizerEnabled {
 		features = append(features, usagemetrics.FeatureOptimizer)
 	}
 	if codeMode != nil && codeMode.Enabled {

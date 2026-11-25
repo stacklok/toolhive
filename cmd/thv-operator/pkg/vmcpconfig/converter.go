@@ -499,6 +499,8 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 		Issuer:                          resolved.Issuer,
 		ClientID:                        resolved.ClientID,
 		Audience:                        resolved.Audience,
+		RequiredSubject:                 resolved.RequiredSubject,
+		RequiredSubjectPrefix:           resolved.RequiredSubjectPrefix,
 		Resource:                        resolved.ResourceURL,
 		JWKSURL:                         resolved.JWKSURL,
 		IntrospectionURL:                resolved.IntrospectionURL,
@@ -507,6 +509,7 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
 		Scopes:                          resolved.Scopes,
 		CABundlePath:                    resolved.ThvCABundlePath,
+		JWKSAuthTokenPath:               resolved.JWKSAuthTokenPath,
 	}
 
 	// MCPOIDCConfig inline type may have a client secret
@@ -801,6 +804,11 @@ func (*Converter) convertExternalAuthConfigToStrategy(
 		externalAuthConfig.Spec.HeaderInjection != nil &&
 		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
 		strategy.HeaderInjection.HeaderValueEnv = controllerutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
+	}
+	if strategy.OBO != nil &&
+		externalAuthConfig.Spec.OBO != nil &&
+		externalAuthConfig.Spec.OBO.ClientSecretRef != nil {
+		strategy.OBO.ClientSecretEnv = controllerutil.GenerateUniqueOBOSecretEnvVarName(externalAuthConfig.Name)
 	}
 
 	return strategy, nil

@@ -327,36 +327,45 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		}
 	}()
 
-	sessionCfg := *cfg.SessionManagerConfig
-	if serveCfg.ScopeChallenge != nil && serveCfg.ScopeChallenge.ResponseMode == "auto" && sessionCfg.Base != nil {
-		sessionCfg.Base = vmcpsession.NewDecoratingFactory(sessionCfg.Base, captureScopeClient)
-	}
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, &sessionCfg, cfg.BackendRegistry)
-	if err != nil {
-		return nil, err
-	}
-
-	// Built last — after the fallible calls above — because NewManager starts a cleanup
-	// goroutine on construction (released only by Stop), so an early error return cannot
-	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
-	sessionManager := transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
-
+	// Assemble the server before the vMCP session manager so the manager's
+	// background cache sweep can be handed srv.healthResync.remove: a session the
+	// sweep reclaims (expired or terminated) is gone for good, so its health-resync
+	// registration is dropped right away instead of waiting for the next health or
+	// list_changed trigger to prune it (#5786). The method value binds
+	// &srv.healthResync before the sweep goroutine starts, and the registry has its
+	// own lock, so filling in the remaining fields below does not race with it.
 	srv = &Server{
 		config:             serveCfg,
 		core:               v,
 		mcpServer:          mcpServer,
 		backendRegistry:    cfg.BackendRegistry,
-		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
-		vmcpSessionMgr:     vmcpSessMgr,
-		// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
-		// session registration builds a per-session optimizer over the core's tools.
-		// Nil when the optimizer is disabled; the store/cleanup stay owned by the
-		// session manager (optimizerCleanup, appended to shutdownFuncs below).
-		optimizerFactory: vmcpSessMgr.OptimizerFactory(),
-		ready:            make(chan struct{}),
-		statusReporter:   cfg.StatusReporter,
+		ready:              make(chan struct{}),
+		statusReporter:     cfg.StatusReporter,
 	}
+
+	sessionCfg := *cfg.SessionManagerConfig
+	if serveCfg.ScopeChallenge != nil && serveCfg.ScopeChallenge.ResponseMode == "auto" && sessionCfg.Base != nil {
+		sessionCfg.Base = vmcpsession.NewDecoratingFactory(sessionCfg.Base, captureScopeClient)
+	}
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(
+		sessionDataStorage, &sessionCfg, cfg.BackendRegistry,
+		sessionmanager.WithSweptSessionHook(srv.healthResync.remove),
+	)
+	if err != nil {
+		return nil, err
+	}
+	srv.vmcpSessionMgr = vmcpSessMgr
+	// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
+	// session registration builds a per-session optimizer over the core's tools.
+	// Nil when the optimizer is disabled; the store/cleanup stay owned by the
+	// session manager (optimizerCleanup, appended to shutdownFuncs below).
+	srv.optimizerFactory = vmcpSessMgr.OptimizerFactory()
+
+	// Built last — after the fallible calls above — because NewManager starts a cleanup
+	// goroutine on construction (released only by Stop), so an early error return cannot
+	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
+	srv.sessionManager = transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
 
 	// Server-lifetime parent context for asynchronous tools/resources/prompts
 	// list_changed resync work (#5748, #5969). Cancelling it on Stop aborts any

@@ -140,6 +140,9 @@ func (h *RefreshTokenHandler) issueIDJAG(
 	mint, now := d.mint, d.now
 	var res ActorResult
 	if d.actor != nil {
+		if err := h.refuseTerminalActor(ctx, d); err != nil {
+			return err
+		}
 		answer, checkedAt, err := h.validateIDJAGActor(ctx, d)
 		if err != nil {
 			return err
@@ -162,6 +165,35 @@ func (h *RefreshTokenHandler) issueIDJAG(
 		}
 	}
 	d.log.DebugContext(ctx, "ID-JAG minted", attrs...)
+	return nil
+}
+
+// refuseTerminalActor refuses an actor token that carries the delegated-access
+// marker or an authorization_details claim and was signed by this server,
+// before the actor validator sees it. The marker is checked first, so a token
+// that carries both keeps the marker's reason. A signature from this server's
+// keys and a matching issuer are enough to refuse: an expired token, one with
+// an audience this server does not accept, or one that is otherwise not a
+// valid subject token is still refused, because those checks can only make a
+// token less trustworthy to accept, not make a restricted one safe to pass on.
+// A token that does not parse, was not signed by this server, or names another
+// issuer goes on to the client's validator unchanged, which decides on it: an
+// external actor's authorization_details would describe the agent's own
+// limits, not the subject's grant.
+func (h *RefreshTokenHandler) refuseTerminalActor(ctx context.Context, d *idJAGDecision) error {
+	claims, err := h.selfValidator.signedByThisServer(d.actorToken)
+	if err != nil {
+		d.log.DebugContext(ctx, "actor token is not self-issued; passed to the actor validator",
+			"client_id", d.mint.RequestingClientID)
+		return nil
+	}
+	r := restrictionsOf(claims)
+	switch {
+	case r.DelegatedAccess:
+		return refuseWithReason(ctx, d.log, reasonActorDelegatedAccess)
+	case r.AuthorizationDetails:
+		return refuseWithReason(ctx, d.log, reasonActorAuthorizationDetails)
+	}
 	return nil
 }
 

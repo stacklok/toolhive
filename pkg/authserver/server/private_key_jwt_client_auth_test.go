@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	josev3 "github.com/go-jose/go-jose/v3"
+	josev4 "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
@@ -74,8 +76,9 @@ func newAssertionHarness(t *testing.T, mutateClient func(*fosite.DefaultOpenIDCo
 	now := func() time.Time { return h.now }
 	wrapped := newClientAssertionExpiryStore(store, now)
 	provider := fosite.NewOAuth2Provider(wrapped, newClientAssertionAudienceConfig(cfg))
-	h.strategy = newClientAssertionErrorStrategy(newClientAssertionClockSkewStrategy(
-		provider.DefaultClientAuthenticationStrategy, wrapped, clientAssertionAudiences(cfg), now, true))
+	h.strategy = newClientAssertionErrorStrategy(newClientAssertionAudienceStrategy(
+		newClientAssertionClockSkewStrategy(provider.DefaultClientAuthenticationStrategy, wrapped, now, true),
+		cfg.AccessTokenIssuer))
 	return h
 }
 
@@ -83,7 +86,7 @@ func (h *assertionHarness) claims(jti string) jwt.Claims {
 	return jwt.Claims{
 		Issuer:   assertionTestClientID,
 		Subject:  assertionTestClientID,
-		Audience: jwt.Audience{assertionTestTokenURL},
+		Audience: jwt.Audience{assertionTestIssuer},
 		ID:       jti,
 		IssuedAt: jwt.NewNumericDate(h.now),
 		Expiry:   jwt.NewNumericDate(h.now.Add(time.Minute)),
@@ -283,22 +286,6 @@ func TestClientAssertionClockSkew(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name: "skewed assertion with the issuer as audience",
-			mutate: func(h *assertionHarness, c *jwt.Claims) {
-				h.skewIAT(c)
-				c.Audience = jwt.Audience{"https://other.example.com", assertionTestIssuer}
-			},
-			wantOK: true,
-		},
-		{
-			name: "skewed assertion with another audience",
-			mutate: func(h *assertionHarness, c *jwt.Claims) {
-				h.skewIAT(c)
-				c.Audience = jwt.Audience{"https://elsewhere.example.com"}
-			},
-			wantHint: "Claim 'audience'",
-		},
-		{
 			name: "skewed assertion with another issuer",
 			mutate: func(h *assertionHarness, c *jwt.Claims) {
 				h.skewIAT(c)
@@ -356,6 +343,222 @@ func TestClientAssertionClockSkew(t *testing.T) {
 			_, err = h.authenticate(t, jti, mutate, tt.extra)
 			require.Error(t, err)
 			requireInvalidClient(t, err)
+		})
+	}
+}
+
+// signRawAssertion signs a payload built from a map, so that aud can be a
+// string, an array or absent, which jwt.Claims cannot express.
+func (h *assertionHarness) signRawAssertion(t *testing.T, jti string, skewed bool, aud any, withAud bool) string {
+	t.Helper()
+	iat := h.now
+	if skewed {
+		iat = h.now.Add(30 * time.Second)
+	}
+	payload := map[string]any{
+		"iss": assertionTestClientID, "sub": assertionTestClientID, "jti": jti,
+		"iat": iat.Unix(), "exp": h.now.Add(time.Minute).Unix(),
+	}
+	if withAud {
+		payload["aud"] = aud
+	}
+	signer, err := josev4.NewSigner(
+		josev4.SigningKey{Algorithm: josev4.ES256, Key: h.key},
+		(&josev4.SignerOptions{}).WithType("JWT").WithHeader(josev4.HeaderKey("kid"), assertionTestKeyID))
+	require.NoError(t, err)
+	token, err := jwt.Signed(signer).Claims(payload).Serialize()
+	require.NoError(t, err)
+	return token
+}
+
+func TestClientAssertionAudience(t *testing.T) {
+	t.Parallel()
+
+	const audienceHint = "must hold only the authorization server's issuer '" + assertionTestIssuer + "'"
+
+	tests := []struct {
+		name    string
+		aud     any
+		withAud bool
+		wantOK  bool
+	}{
+		{name: "the issuer as a string", aud: assertionTestIssuer, withAud: true, wantOK: true},
+		{name: "the issuer in a one-element array", aud: []string{assertionTestIssuer}, withAud: true, wantOK: true},
+		{name: "the token endpoint URL as a string", aud: assertionTestTokenURL, withAud: true},
+		{name: "another string", aud: "https://elsewhere.example.com", withAud: true},
+		{name: "an empty string", aud: "", withAud: true},
+		{name: "a number", aud: 42, withAud: true},
+		{name: "an array holding a number", aud: []any{42}, withAud: true},
+		{name: "the issuer and another value in an array", aud: []string{assertionTestIssuer, "x"}, withAud: true},
+		{name: "the token endpoint URL in an array", aud: []string{assertionTestTokenURL}, withAud: true},
+		{name: "the issuer and the token endpoint URL in an array", aud: []string{assertionTestIssuer, assertionTestTokenURL}, withAud: true},
+		{name: "an empty array", aud: []string{}, withAud: true},
+		{name: "a null aud", aud: nil, withAud: true},
+		{name: "a missing aud"},
+	}
+	paths := []struct {
+		name   string
+		skewed bool
+	}{
+		{name: "on fosite's path"},
+		{name: "through the clock skew recovery", skewed: true},
+	}
+
+	for _, path := range paths {
+		for _, tt := range tests {
+			t.Run(path.name+" "+tt.name, func(t *testing.T) {
+				t.Parallel()
+				h := newAssertionHarness(t, nil)
+				assertion := h.signRawAssertion(t, "jti-aud", path.skewed, tt.aud, tt.withAud)
+
+				client, err := h.authenticateAssertion(t, assertion, nil)
+				if tt.wantOK {
+					require.NoError(t, err)
+					assert.Equal(t, assertionTestClientID, client.GetID())
+					return
+				}
+				require.Error(t, err)
+				assert.Nil(t, client)
+				assert.Contains(t, requireInvalidClient(t, err).HintField, audienceHint)
+				assert.Zero(t, h.store.validCalls, "a refused assertion must not burn a reservation")
+				assert.Empty(t, h.store.seen)
+			})
+		}
+	}
+
+	t.Run("an assertion that cannot be read is refused", func(t *testing.T) {
+		t.Parallel()
+		h := newAssertionHarness(t, nil)
+
+		_, err := h.authenticateAssertion(t, "not-a-jwt", nil)
+
+		require.Error(t, err)
+		assert.Contains(t, requireInvalidClient(t, err).HintField, "could not be read")
+	})
+}
+
+// TestClientAssertionAudience_UnreadableEncodings pins that an assertion
+// go-jose v4 cannot read is refused, even when fosite's go-jose v3 reads and
+// verifies it. v3 strips spaces and tabs and trims base64 padding where v4 does not,
+// so deferring such a token to fosite would let an aud array through.
+func TestClientAssertionAudience_UnreadableEncodings(t *testing.T) {
+	t.Parallel()
+
+	withPadding := func(token string) string {
+		parts := strings.Split(token, ".")
+		parts[1] += "="
+		return strings.Join(parts, ".")
+	}
+	withSpace := func(token string) string {
+		parts := strings.Split(token, ".")
+		parts[1] = parts[1][:10] + " " + parts[1][10:]
+		return strings.Join(parts, ".")
+	}
+	withTab := func(token string) string {
+		parts := strings.Split(token, ".")
+		parts[2] = "\t" + parts[2]
+		return strings.Join(parts, ".")
+	}
+
+	tests := []struct {
+		name    string
+		aud     any
+		rewrite func(string) string
+	}{
+		{name: "array with a padded segment", aud: []string{assertionTestIssuer, "x"}, rewrite: withPadding},
+		{name: "array with an embedded space", aud: []string{assertionTestIssuer, "x"}, rewrite: withSpace},
+		{name: "one-element array with a padded segment", aud: []string{assertionTestIssuer}, rewrite: withPadding},
+		{name: "one-element array with a tab", aud: []string{assertionTestIssuer}, rewrite: withTab},
+		{name: "the issuer string with a padded segment", aud: assertionTestIssuer, rewrite: withPadding},
+	}
+	for _, skewed := range []bool{false, true} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("skewed=%t %s", skewed, tt.name), func(t *testing.T) {
+				t.Parallel()
+				h := newAssertionHarness(t, nil)
+				assertion := tt.rewrite(h.signRawAssertion(t, "jti-enc", skewed, tt.aud, true))
+
+				client, err := h.authenticateAssertion(t, assertion, nil)
+
+				require.Error(t, err)
+				assert.Nil(t, client)
+				assert.Contains(t, requireInvalidClient(t, err).HintField, "could not be read")
+				assert.Empty(t, h.store.seen)
+			})
+		}
+	}
+}
+
+// TestClientAssertionAudienceStrategy pins that the audience strategy refuses
+// before any strategy below it runs, including one the caller supplied, and
+// that it lets every other kind of request through untouched. The signature is
+// never checked here, so the assertions are not signed.
+func TestClientAssertionAudienceStrategy(t *testing.T) {
+	t.Parallel()
+
+	enc := base64.RawURLEncoding
+	unsigned := func(payload string) string {
+		return enc.EncodeToString([]byte(`{"alg":"ES256"}`)) + "." +
+			enc.EncodeToString([]byte(payload)) + "." + enc.EncodeToString([]byte("sig"))
+	}
+	assertionForm := func(assertion string) url.Values {
+		return url.Values{
+			"client_id":             {assertionTestClientID},
+			"client_assertion_type": {privateKeyJWTAssertionType},
+			"client_assertion":      {assertion},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		form     url.Values
+		wantNext bool
+		wantHint string
+	}{
+		{
+			name:     "the issuer as aud reaches the next strategy",
+			form:     assertionForm(unsigned(`{"aud":"` + assertionTestIssuer + `"}`)),
+			wantNext: true,
+		},
+		{
+			name:     "the token endpoint URL as aud never reaches the next strategy",
+			form:     assertionForm(unsigned(`{"aud":"` + assertionTestTokenURL + `"}`)),
+			wantHint: "must hold only the authorization server's issuer",
+		},
+		{
+			name:     "a payload that is not a JSON object is refused as unreadable",
+			form:     assertionForm(unsigned(`not json`)),
+			wantHint: "could not be read",
+		},
+		{
+			name:     "a request without a client assertion passes through",
+			form:     url.Values{"client_id": {assertionTestClientID}, "client_secret": {"s"}},
+			wantNext: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var nextCalls int
+			want := &fosite.DefaultClient{ID: assertionTestClientID}
+			strategy := newClientAssertionAudienceStrategy(
+				func(context.Context, *http.Request, url.Values) (fosite.Client, error) {
+					nextCalls++
+					return want, nil
+				}, assertionTestIssuer)
+
+			client, err := strategy(context.Background(), httptest.NewRequest(http.MethodPost, "/oauth/token", nil), tt.form)
+
+			if tt.wantNext {
+				require.NoError(t, err)
+				assert.Same(t, want, client)
+				assert.Equal(t, 1, nextCalls)
+				return
+			}
+			require.Error(t, err)
+			assert.Nil(t, client)
+			assert.Contains(t, requireInvalidClient(t, err).HintField, tt.wantHint)
+			assert.Zero(t, nextCalls)
 		})
 	}
 }
@@ -489,7 +692,7 @@ func TestRecoverSkewedClientAssertion_UnreadableClaims(t *testing.T) {
 	form := url.Values{"client_id": {assertionTestClientID}}
 
 	client, err := recoverSkewedClientAssertion(
-		context.Background(), store, []string{assertionTestTokenURL}, form, "not-a-jwt", time.Now, fositeErr)
+		context.Background(), store, form, "not-a-jwt", time.Now, fositeErr)
 
 	require.Error(t, err)
 	assert.Nil(t, client)

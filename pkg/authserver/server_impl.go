@@ -31,6 +31,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
+	"github.com/stacklok/toolhive/pkg/authserver/subjectresolver"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/bodylimit/httplimit"
@@ -409,7 +411,7 @@ func prepareServerStorageAndRegisterClients(
 	if retErr = registerDelegateClients(ctx, prepared, delegates); retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	warnBlanketSelfIssuedExchange(cfg.DelegateClients, JWTBearerGrantEnabled(cfg.TrustedIssuers))
+	warnBlanketSelfIssuedExchange(cfg.DelegateClients, idJAGRedeemable(cfg.TrustedIssuers))
 	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
 }
 
@@ -433,6 +435,22 @@ func explicitGrantClientIDs(clients []DelegateClient) []string {
 		}
 	}
 	return ids
+}
+
+// delegateAccessTokenLifespans maps each delegate client that sets its own
+// access-token lifespan to that lifespan. It is nil when none does.
+func delegateAccessTokenLifespans(clients []DelegateClient) map[string]time.Duration {
+	var lifespans map[string]time.Duration
+	for _, c := range clients {
+		if c.AccessTokenLifespan == 0 {
+			continue
+		}
+		if lifespans == nil {
+			lifespans = make(map[string]time.Duration)
+		}
+		lifespans[c.ClientID] = c.AccessTokenLifespan
+	}
+	return lifespans
 }
 
 // idJAGExplicitGrantClientIDs lists the clients whose registered grant_types
@@ -543,8 +561,9 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, clients 
 
 // warnBlanketSelfIssuedExchange logs a startup WARN for every delegate client
 // that may exchange any user's self-issued token, i.e. one whose token_exchange
-// block does not restrict self_issued_subject_tokens.
-func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, jwtBearerEnabled bool) {
+// block does not restrict self_issued_subject_tokens. idJAGRedeemable reports
+// whether a trusted issuer accepts id_jag assertions.
+func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, idJAGRedeemable bool) {
 	for _, delegateClient := range delegateClients {
 		if delegateClient.TokenExchange.Restricted() {
 			continue
@@ -554,12 +573,12 @@ func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, jwtBearerEn
 		}
 		// A client with grant_types or private_key_jwt must declare its mode,
 		// so reaching here means it chose any explicitly. A client without
-		// grant_types can also redeem an ID-JAG when jwt-bearer is enabled,
-		// minting its own self-issued tokens to exchange.
+		// grant_types can also redeem an ID-JAG when a trusted issuer accepts
+		// id_jag assertions, minting its own self-issued tokens to exchange.
 		if trustModeRequired(delegateClient.GrantTypes, delegateClient.TokenEndpointAuthMethod) {
 			attrs = append(attrs, "explicit_any", true)
 		}
-		if len(delegateClient.GrantTypes) == 0 && jwtBearerEnabled {
+		if len(delegateClient.GrantTypes) == 0 && idJAGRedeemable {
 			attrs = append(attrs, "redeems_id_jag", true)
 		}
 		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
@@ -683,6 +702,12 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 		}
 	}
 	return false
+}
+
+// idJAGRedeemable reports whether any trusted issuer accepts id_jag assertions.
+func idJAGRedeemable(trustedIssuers []tokenexchange.TrustedIssuer) bool {
+	return len(tokenexchange.IssuersAcceptingAssertionType(
+		trustedIssuers, tokenexchange.JWTBearerAssertionTypeIDJAG)) > 0
 }
 
 // exchangeRefreshTokenCaps converts a delegate client's exchange_refresh_tokens
@@ -890,7 +915,7 @@ func buildProvider(
 	}
 	factories = append(factories, tokenExchangeFactories...)
 	if jwtBearerEnabled {
-		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg))
+		jwtBearerFactories, err := buildJWTBearerFactoriesForConfig(cfg, shared, stor)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -979,25 +1004,71 @@ func refreshGrantValidatorChain(
 	return append([]fosite.TokenEndpointHandler{guard}, cfg.RefreshGrantHandlers...), nil
 }
 
+// buildJWTBearerFactoriesForConfig builds the JWT-bearer and ID-JAG factories
+// for cfg, giving the ID-JAG factory the subject resolver when a trusted
+// issuer has subject_mode resolve.
+func buildJWTBearerFactoriesForConfig(
+	cfg Config, shared *tokenexchange.MultiIssuerTokenValidator, stor storage.Storage,
+) ([]oauthserver.Factory, error) {
+	resolver, err := newSubjectResolver(cfg, stor)
+	if err != nil {
+		return nil, err
+	}
+	return buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg), resolver,
+		tokenexchange.WithClientAccessTokenLifespans(delegateAccessTokenLifespans(cfg.DelegateClients)))
+}
+
 // buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together
-// with the bound ID-JAG factory. The bound ID-JAG handler rides the same
-// per-issuer JWT-bearer policy: enabling the grant enables both assertion
-// forms, split by JOSE typ (plain assertions to JWTBearerHandler,
-// oauth-id-jag+jwt to IDJAGHandler). explicitGrantClientIDs names the clients
-// whose registered grant_types the ID-JAG handler enforces.
+// with the bound ID-JAG factory. Both handlers are always registered with
+// JWT-bearer enabled, each tolerating an empty per-issuer policy map: an
+// assertion from an issuer that excludes its form gets the precise "issuer is
+// not enabled for this grant" rejection instead of falling through to fosite's
+// generic invalid_request. Both ride the same per-issuer JWT-bearer policy,
+// split by JOSE typ (plain assertions to JWTBearerHandler, oauth-id-jag+jwt to
+// IDJAGHandler). explicitGrantClientIDs names the clients whose registered
+// grant_types the ID-JAG handler enforces. resolver and idJAGOptions go to the
+// ID-JAG factory only.
 func buildJWTBearerFactories(
 	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
-	explicitGrantClientIDs []string,
+	explicitGrantClientIDs []string, resolver subject.Resolver, idJAGOptions ...tokenexchange.FactoryOption,
 ) ([]oauthserver.Factory, error) {
 	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 	}
-	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs)
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs, resolver,
+		idJAGOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
 	}
 	return []oauthserver.Factory{jwtBearerFactory, idJAGFactory}, nil
+}
+
+// newSubjectResolver builds the resolver for resolve issuers from the first
+// (sign-in) upstream: its issuer and subject claim are the only upstream_subject
+// values the resolver accepts. It returns a nil interface, not a nil
+// *subjectresolver.Resolver, when no trusted issuer has subject_mode resolve.
+// It logs once, at WARN, when the subject claim is sub on an Okta custom
+// authorization server.
+func newSubjectResolver(cfg Config, store subjectresolver.IdentityStore) (subject.Resolver, error) {
+	if !tokenexchange.HasResolveIssuer(cfg.TrustedIssuers) {
+		return nil, nil
+	}
+	signIn := cfg.signInUpstream()
+	if signIn == nil {
+		return nil, errors.New(
+			"subject_mode resolve needs an OIDC identity provider as the first upstream")
+	}
+	resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
+		signIn.issuer: {Name: ResolveUpstreamName(cfg.Upstreams[0].Name), SubjectClaim: signIn.subjectClaim},
+	}, store)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create subject resolver: %w", err)
+	}
+	if warning, err := subject.ValidateBindingClaim(signIn.issuer, signIn.subjectClaim); err == nil && warning != "" {
+		slog.Warn(warning, "issuer", signIn.issuer, "subject_claim", signIn.subjectClaim)
+	}
+	return resolver, nil
 }
 
 // buildDeviceFlowFactory builds the RFC 8628 device authorization grant

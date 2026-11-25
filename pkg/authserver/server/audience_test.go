@@ -334,3 +334,23 @@ func TestValidateIDJAGClientAudience(t *testing.T) {
 		})
 	}
 }
+
+func TestIsUnscopedDCRClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		client fosite.Client
+		want   bool
+	}{
+		{"DCR client without a resource allowlist", registration.MarkDCRIssued(&fosite.DefaultClient{}), true},
+		{"pre-provisioned client", &fosite.DefaultClient{Audience: []string{"https://a.com"}}, false},
+		{"resource-scoped client", resourceClient{DefaultClient: &fosite.DefaultClient{}, resources: []string{"https://a.com"}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsUnscopedDCRClient(tt.client))
+		})
+	}
+}

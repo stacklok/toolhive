@@ -55,16 +55,10 @@ func TestJWTBearerHandler_RedisBacked(t *testing.T) {
 	}})
 	require.NoError(t, err)
 
-	handler, err := newJWTBearerIssuanceHandler(
-		validator,
-		testTokenEndpoint,
-		stor,
-		&fosite.Config{AccessTokenLifespan: time.Hour},
-		&mockAccessTokenStrategy{},
-		stor,
-		resolvedIssuers,
-	)
-	require.NoError(t, err)
+	deps := testIssuanceDeps(validator, resolvedIssuers)
+	deps.consumer = stor
+	deps.tokenStorage = stor
+	handler := newTestJWTBearerHandler(t, deps)
 
 	// The stub validator ignores the raw assertion and always returns these
 	// claims, so the JWT content itself doesn't need to be a real signed

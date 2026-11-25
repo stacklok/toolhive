@@ -412,6 +412,60 @@ func TestInstructionsMiddleware_EventStream(t *testing.T) {
 				"event: message\ndata: " + initializeWithInstructions + "\n\n",
 		},
 		{
+			name:    "GET result in a named event is rewritten and the search goes on",
+			request: "",
+			response: "event: foo\ndata: " + initializeWithInstructions + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: "event: foo\ndata: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				"data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+		},
+		{
+			name:     "GET result in a named event alone is rewritten",
+			request:  "",
+			response: "event: foo\ndata: " + initializeWithInstructions + "\n\n",
+			want:     "event: foo\ndata: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
+		},
+		{
+			name:    "GET message event ends the search",
+			request: "",
+			response: "event: message\ndata: " + initializeWithInstructions + "\n\n" +
+				"event: foo\ndata: " + initializeWithInstructions + "\n\n",
+			want: "event: message\ndata: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				"event: foo\ndata: " + initializeWithInstructions + "\n\n",
+		},
+		{
+			name:    "GET event typed message with a trailing space does not end the search",
+			request: "",
+			response: "event: message \ndata: " + initializeWithInstructions + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: "event: message \ndata: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				"data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
+		},
+		{
+			name:    "POST result in a named event is rewritten and the search goes on",
+			request: initializeRequest,
+			response: "event: foo\ndata: " + initializeWithInstructions + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: "event: foo\ndata: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				"data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
+		},
+		{
+			name:     "POST result in a named event alone is rewritten and the stream ends with an error",
+			request:  initializeRequest,
+			response: "event: foo\ndata: " + initializeWithInstructions + "\n\n",
+			want: "event: foo\ndata: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				withheldEventFor(jsonrpc2.Int64ID(1)),
+		},
+		{
+			name:    "POST named event that cannot be decoded is dropped",
+			request: initializeRequest,
+			response: "event: foo\ndata: " + strings.Replace(duplicateResult, `"id":5`, `"id":1`, 1) + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: "data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
+		},
+		{
 			name:     "GET stream leaves an error response alone",
 			request:  "",
 			response: "data: " + `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"boom"}}` + "\n\n",

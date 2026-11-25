@@ -88,9 +88,16 @@ func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.M
 // the result whose id is the request's is rewritten. The response to any other
 // request passes through unread. With params.LegacySSE set, the response to a
 // POSTed initialize arrives on the event stream a GET opened instead, so on
-// such a stream the first result shaped like an InitializeResult (it has
-// protocolVersion, capabilities and serverInfo) is rewritten, the rest of the
-// stream passes through unread, and every POST passes through unread.
+// such a stream a result shaped like an InitializeResult (it has
+// protocolVersion, capabilities and serverInfo) is rewritten, and every POST
+// passes through unread.
+//
+// On an event stream, every event is read whatever its event type, since some
+// clients dispatch every type as a message (the go-sdk legacy SSE client
+// does), and its result is rewritten. Only an event without a type, or of
+// type message, which every client dispatches, ends the search, so a result
+// in an event of another type cannot let a later one through unread. After
+// that event the rest of the stream passes through unread.
 //
 // A rewrite sets the instructions member of the result and keeps every other
 // member as the server sent it. Error responses and responses with a non-2xx
@@ -107,8 +114,10 @@ func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.M
 // and a result that does not decode as one unambiguous JSON-RPC message. A
 // JSON body is answered under HTTP 500 in place of the server's status. On an
 // event stream the error takes the place of the event, or, when the stream
-// cannot be read, is written in place of the rest of it. An event on the
-// legacy SSE stream whose request cannot be named is dropped.
+// cannot be read, is written in place of the rest of it. An event whose
+// request cannot be named, or whose type some clients skip, is dropped
+// instead, since those clients would read an error in its place as the
+// answer.
 func NewInstructionsMiddleware(params InstructionsMiddlewareParams) (types.MiddlewareFunction, error) {
 	return newInstructionsMiddleware(params, defaultMaxInstructionsHeldBytes)
 }
@@ -416,7 +425,7 @@ func (rw *instructionsWriter) bodyMode(statusCode int) (instructionsBodyMode, st
 func (rw *instructionsWriter) answerJSON() error {
 	body := rw.buffer
 	rw.buffer = nil
-	rewritten, action, _ := rw.readMessage(body)
+	rewritten, action, _ := rw.readMessage(body, true)
 	switch {
 	case action == messageRewrite:
 		trimmed := bytes.TrimRight(body, " \t\r\n")
@@ -501,7 +510,9 @@ func (rw *instructionsWriter) rewriteEvents(stream []byte) []byte {
 // that ends it if it has one: the event as it is, the event with the
 // instructions of its result set, the error event that takes the place of a
 // result the writer withholds, or nothing when that result answers no
-// request the writer can name.
+// request the writer can name or is in an event some clients skip (see
+// dispatchedAsMessage). An error event in place of a skipped event would be
+// read by those clients as the answer to their request.
 func (rw *instructionsWriter) readEvent(event []sseLine, end ...sseLine) []byte {
 	lines := slices.Concat(event, end)
 	if rw.done || len(event) == 0 {
@@ -511,12 +522,13 @@ func (rw *instructionsWriter) readEvent(event []sseLine, end ...sseLine) []byte 
 	if len(bytes.TrimSpace(data)) == 0 {
 		return encodeSSELines(lines)
 	}
-	rewritten, action, id := rw.readMessage(data)
+	message := dispatchedAsMessage(event)
+	rewritten, action, id := rw.readMessage(data, message)
 	switch action {
 	case messageRewrite:
 		return encodeSSELines(slices.Concat(replaceSSEData(event, rewritten), end))
 	case messageWithhold:
-		if !id.IsValid() {
+		if !id.IsValid() || !message {
 			return nil
 		}
 		return sseErrorEvent(withheldResponse(id))
@@ -527,12 +539,14 @@ func (rw *instructionsWriter) readEvent(event []sseLine, end ...sseLine) []byte 
 
 // readMessage decides on data, one message: it returns data with the
 // instructions of its result set when it is the response the target names,
-// or says to pass or withhold it, and the id of the request it answers. It
-// sets done once it finds that response, even when it is an error.
-func (rw *instructionsWriter) readMessage(data []byte) ([]byte, messageAction, jsonrpc2.ID) {
+// or says to pass or withhold it, and the id of the request it answers. When
+// ends is set, the message is one every client reads (a JSON body, or an
+// event of no type or of type message), and finding that response, even an
+// error, sets done.
+func (rw *instructionsWriter) readMessage(data []byte, ends bool) ([]byte, messageAction, jsonrpc2.ID) {
 	message, err := decodeMessage(data)
 	if err != nil {
-		return rw.readUndecodable(data)
+		return rw.readUndecodable(data, ends)
 	}
 	response, ok := message.(*jsonrpc2.Response)
 	if !ok {
@@ -546,7 +560,7 @@ func (rw *instructionsWriter) readMessage(data []byte) ([]byte, messageAction, j
 	} else if response.ID != rw.target.id {
 		return nil, messagePass, jsonrpc2.ID{}
 	}
-	rw.done = true
+	rw.done = ends
 	if response.Error != nil {
 		return nil, messagePass, response.ID
 	}
@@ -567,7 +581,9 @@ func (rw *instructionsWriter) readMessage(data []byte) ([]byte, messageAction, j
 // withheld in its place. On the legacy SSE stream, data that a client could
 // read as an InitializeResult, or that is not valid JSON, which lenient
 // clients may still parse, is withheld, with the id it names if it names one.
-func (rw *instructionsWriter) readUndecodable(data []byte) ([]byte, messageAction, jsonrpc2.ID) {
+// Only when ends is set (see readMessage) does withholding the result end the
+// search for it.
+func (rw *instructionsWriter) readUndecodable(data []byte, ends bool) ([]byte, messageAction, jsonrpc2.ID) {
 	if !startsLikeJSON(data) {
 		return nil, messagePass, jsonrpc2.ID{}
 	}
@@ -577,13 +593,13 @@ func (rw *instructionsWriter) readUndecodable(data []byte) ([]byte, messageActio
 		if !identified && json.Valid(data) {
 			return nil, messagePass, jsonrpc2.ID{}
 		}
-		rw.done = identified
+		rw.done = identified && ends
 	} else {
 		if id.IsValid() && id != rw.target.id {
 			return nil, messagePass, jsonrpc2.ID{}
 		}
 		id = rw.target.id
-		rw.done = true
+		rw.done = ends
 	}
 	rw.warn("a message does not decode as one unambiguous JSON-RPC message")
 	return nil, messageWithhold, id
@@ -673,6 +689,24 @@ func encodeSSELines(lines []sseLine) []byte {
 	// writeSSELines only fails when its writer does; a bytes.Buffer does not.
 	_ = writeSSELines(&out, lines...)
 	return out.Bytes()
+}
+
+// dispatchedAsMessage reports whether every client dispatches event as a
+// message: its event type, the value of its last event field read as the
+// WHATWG grammar reads it (without one leading space), is empty or message.
+// Clients that follow that grammar skip an event of any other type. The
+// go-sdk trims all white space around the value, so it also dispatches every
+// event this reports, while the reverse does not hold: an event typed
+// "message " ends no search, since WHATWG clients skip it.
+func dispatchedAsMessage(event []sseLine) bool {
+	var name []byte
+	for _, line := range event {
+		field, value, _ := bytes.Cut(bytes.TrimSuffix(line.text, sseCR), []byte(":"))
+		if string(field) == "event" {
+			name = bytes.TrimPrefix(value, []byte(" "))
+		}
+	}
+	return len(name) == 0 || string(name) == "message"
 }
 
 // lineSplitIndex returns the index of the first bare CR (see hasBareCR) or

@@ -304,6 +304,55 @@ func TestHttpClientBuilder_WithPrivateIPs(t *testing.T) {
 	}
 }
 
+func TestHttpClientBuilder_WithResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		configure func(*HttpClientBuilder) *HttpClientBuilder
+		want      time.Duration
+	}{
+		{
+			name:      "default applies when not overridden",
+			configure: func(b *HttpClientBuilder) *HttpClientBuilder { return b },
+			want:      10 * time.Second,
+		},
+		{
+			name: "custom value overrides the default",
+			configure: func(b *HttpClientBuilder) *HttpClientBuilder {
+				return b.WithResponseHeaderTimeout(25 * time.Second)
+			},
+			want: 25 * time.Second,
+		},
+		{
+			name: "zero removes the limit",
+			configure: func(b *HttpClientBuilder) *HttpClientBuilder {
+				return b.WithResponseHeaderTimeout(0)
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewHttpClientBuilder()
+			assert.Same(t, builder, tt.configure(builder)) // fluent interface
+
+			client, err := builder.Build()
+			require.NoError(t, err)
+
+			validating, ok := client.Transport.(*ValidatingTransport)
+			require.True(t, ok, "unexpected client transport %T", client.Transport)
+			transport, ok := validating.Transport.(*http.Transport)
+			require.True(t, ok, "unexpected base transport %T", validating.Transport)
+			assert.Equal(t, tt.want, transport.ResponseHeaderTimeout)
+			assert.Equal(t, HttpTimeout, client.Timeout, "the client timeout must not change")
+		})
+	}
+}
+
 func TestHttpClientBuilder_Build(t *testing.T) {
 	t.Parallel()
 
@@ -930,6 +979,64 @@ func TestSameHostRedirectPolicy_Integration(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		assert.Equal(t, "OK", string(body))
+	})
+}
+
+// TestBuild_TokenFileRestrictsRedirects checks that a client carrying a bearer
+// token from a file never sends that token to a host a redirect names.
+// oauth2.Transport re-attaches the token on every hop, so the stdlib's
+// cross-domain Authorization stripping does not apply.
+func TestBuild_TokenFileRestrictsRedirects(t *testing.T) {
+	t.Parallel()
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("secret-token"), 0o600))
+
+	var sinkHits atomic.Int32
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sinkHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(sink.Close)
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/same":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		case "/ok":
+			_, _ = w.Write([]byte(r.Header.Get("Authorization")))
+		default:
+			// Same IP, different port: SameHostRedirectPolicy treats it as cross-host.
+			http.Redirect(w, r, sink.URL+"/jwks", http.StatusFound)
+		}
+	}))
+	t.Cleanup(origin.Close)
+
+	client, err := NewHttpClientBuilder().
+		WithPrivateIPs(true).
+		WithInsecureAllowHTTP(true).
+		WithTokenFromFile(tokenFile).
+		Build()
+	require.NoError(t, err)
+
+	t.Run("cross-host redirect is refused", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Get(origin.URL + "/jwks") //nolint:bodyclose // err path, no body
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		require.ErrorIs(t, err, ErrRedirectRefused)
+		assert.Zero(t, sinkHits.Load(), "token-bearing request must not reach the redirect target")
+	})
+
+	t.Run("same-host redirect keeps the token", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Get(origin.URL + "/same")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "Bearer secret-token", string(body))
 	})
 }
 

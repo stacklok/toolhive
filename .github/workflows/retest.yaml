@@ -26,7 +26,9 @@
 name: Retest Action on PR Comment
 
 on:
-  issue_comment:
+  # Required for /retest; trusted authors can only rerun pull_request workflows.
+  # No PR checkout or execution; event values are passed through quoted env vars.
+  issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
 
 # Default everything to read-only; the job below opts into the minimum it needs.
@@ -71,7 +73,8 @@ jobs:
 
           # Capture the query separately so a transient API failure surfaces as
           # an error (set -e) rather than being mistaken for "nothing to retry".
-          runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100")
+          # Only replay pull_request CI, never push, release, or other privileged runs.
+          runs_json=$(gh api "repos/$REPO/actions/runs?event=pull_request&head_sha=$head_sha&per_page=100")
           mapfile -t run_ids < <(jq -r \
             '.workflow_runs[] | select(.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out") | .id' \
             <<<"$runs_json")

@@ -37,6 +37,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -171,8 +172,8 @@ type Config struct {
 	// PassthroughHeaders is an allowlist of incoming client header names that the
 	// vMCP forwards, unchanged, to every backend it calls. They are captured
 	// per-request at the incoming edge (headerforward.CaptureMiddleware) and merged
-	// into the per-session backend client's header-forward config. Empty disables
-	// capture (no middleware is installed).
+	// into the header-forward config of each backend call the request triggers.
+	// Empty disables capture (no middleware is installed).
 	PassthroughHeaders []string
 
 	// RateLimiter is the optional core-layer limiter applied at CallTool.
@@ -189,10 +190,22 @@ type Config struct {
 	// If nil, no telemetry is recorded.
 	TelemetryProvider *telemetry.Provider
 
+	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware.
+	// It is applied inside the MCP parsing middleware, which it depends on. If
+	// nil, no usage is reported. ToolHive's own entry points set it
+	// (pkg/vmcp/cli); embedders should leave it nil (see docs/arch/vmcp-library.md).
+	UsageMetricsMiddleware func(http.Handler) http.Handler
+
 	// AuditConfig is the optional audit configuration.
 	// If nil, no audit logging is performed.
 	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
 	AuditConfig *audit.Config
+
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to every
+	// audit event, both the per-request MCP events and the composite-tool
+	// workflow events. It is set from Go only and has no effect when
+	// AuditConfig is nil. See audit.SubjectEnricher.
+	AuditSubjectEnricher audit.SubjectEnricher
 
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
@@ -230,6 +243,9 @@ type Config struct {
 	// code mode may be combined with Authz: a script's inner tool calls are re-authorized
 	// by real name through the core admission seam, so Cedar remains the gate on everything
 	// a script can do. See the codemode.decorator doc for the full rationale.
+	//
+	// When TelemetryProvider is set, New attaches code mode OTel metrics and
+	// spans on a copy: the value passed in is not changed.
 	CodeModeConfig *codemode.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
@@ -264,6 +280,16 @@ type Config struct {
 	// from the HTTP middleware. When non-nil, Name must be non-empty (the Cedar resource
 	// entity name).
 	Authz *authz.Config
+
+	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// The vMCP always enforces a token that carries an authorization_details
+	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
+	// only the one tools/call its entry names, once. CallBinding adds the
+	// clients whose tokens must carry one, the maximum call duration, the
+	// single-use record, and the parameters of the 401 challenge. The zero
+	// value lists no client and keeps the record in memory, on this replica
+	// only. See callbinding.Config.
+	CallBinding callbinding.Config
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -285,6 +311,10 @@ type Server struct {
 	// cfg.Authz != nil after Serve builds the Server. It stays false for direct-Serve
 	// callers, which have no way to configure authorization and run allow-all cores.
 	authzGateEnabled bool
+
+	// callBinding enforces call-bound access tokens (call_binding.go). Serve
+	// always sets it.
+	callBinding *callBinding
 
 	// optimizerFactory builds a per-session optimizer over the core's advertised
 	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
@@ -366,8 +396,9 @@ type Server struct {
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
 // When cfg.SessionStorage is nil or provider is "memory" (or empty), local in-process
 // storage is used. When provider is "redis", a Redis-backed store is created
-// using the address, DB, and key prefix from cfg.SessionStorage; the password
-// is read from the THV_SESSION_REDIS_PASSWORD environment variable.
+// using the address, DB, TLS settings, and key prefix from cfg.SessionStorage; the password
+// is read from the THV_SESSION_REDIS_PASSWORD environment variable. A connection
+// without verified TLS is tolerated but logged at WARN by the store constructor.
 // Any other provider value is a misconfiguration and returns an error.
 //
 // Presence of THV_SESSION_REDIS_PASSWORD, not just its value, carries intent:
@@ -378,6 +409,9 @@ type Server struct {
 // — and is rejected rather than silently downgraded, mirroring the embedded auth
 // server's convertRedisACLConfig. An authenticated connection logs at INFO.
 func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession.DataStorage, error) {
+	if cfg.SessionStorage != nil && cfg.SessionStorage.TLS != nil && cfg.SessionStorage.Provider != "redis" {
+		return nil, fmt.Errorf("session storage TLS requires provider redis")
+	}
 	// Default to in-process storage when session storage is not configured,
 	// or when the provider is explicitly "memory" or left empty.
 	if cfg.SessionStorage == nil ||
@@ -389,23 +423,9 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		return nil, fmt.Errorf("unsupported session storage provider %q (supported: \"memory\", \"redis\")",
 			cfg.SessionStorage.Provider)
 	}
-	keyPrefix := cfg.SessionStorage.KeyPrefix
-	if keyPrefix == "" {
-		keyPrefix = "thv:vmcp:session:"
-	}
-	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
-	// A set-but-empty password is a misconfiguration (the operator injected the
-	// var from a passwordRef whose secret resolved empty), not a no-auth request.
-	// Fail loudly rather than silently downgrading a store that holds session data.
-	if passwordSet && password == "" {
-		return nil, fmt.Errorf(
-			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
-			vmcpconfig.RedisPasswordEnvVar)
-	}
-	redisCfg := redisconn.Config{
-		Addr:     cfg.SessionStorage.Address,
-		Password: password,
-		DB:       int(cfg.SessionStorage.DB),
+	redisCfg, keyPrefix, err := sessionRedisConfig(cfg.SessionStorage)
+	if err != nil {
+		return nil, err
 	}
 	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
 	// an unset password is an intended no-auth connection, but the downgrade
@@ -413,7 +433,9 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	// data, so name it either way. Both records carry a "store" attribute matching
 	// the embedded auth server's no-auth WARN (convertRedisRunConfig), so a single
 	// log-based alert can match one key across both Redis consumers.
-	if !passwordSet {
+	// sessionRedisConfig rejects a set-but-empty password, so an empty one here
+	// means the variable is unset.
+	if redisCfg.Password == "" {
 		slog.Warn("vMCP Redis session storage connecting without authentication "+
 			"(THV_SESSION_REDIS_PASSWORD is not set)",
 			"store", cfg.SessionStorage.Address,
@@ -430,6 +452,35 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		)
 	}
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
+}
+
+// sessionRedisConfig resolves the connection and key prefix of Redis session
+// storage, which the optimizer's shared embeddings reuse (withSharedEmbeddings).
+// The password comes from THV_SESSION_REDIS_PASSWORD.
+func sessionRedisConfig(storage *vmcpconfig.SessionStorageConfig) (redisconn.Config, string, error) {
+	keyPrefix := storage.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = "thv:vmcp:session:"
+	}
+	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
+	// A set-but-empty password is a misconfiguration (the operator injected the
+	// var from a passwordRef whose secret resolved empty), not a no-auth request.
+	// Fail loudly rather than silently downgrading a store that holds session data.
+	if passwordSet && password == "" {
+		return redisconn.Config{}, "", fmt.Errorf(
+			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
+			vmcpconfig.RedisPasswordEnvVar)
+	}
+	tlsCfg, err := storage.TLS.Load()
+	if err != nil {
+		return redisconn.Config{}, "", fmt.Errorf("redis session storage TLS configuration: %w", err)
+	}
+	return redisconn.Config{
+		Addr:     storage.Address,
+		Password: password,
+		DB:       int(storage.DB),
+		TLS:      tlsCfg,
+	}, keyPrefix, nil
 }
 
 // New creates a Virtual MCP Server by composing the domain core (core.New) with the
@@ -513,6 +564,16 @@ func New(
 	// never serves one caller's capability view to another.
 	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
+	// Code mode telemetry is built before the core, so a failure here has
+	// nothing to release.
+	codeModeCfg, err := withCodeModeTelemetry(cfg.CodeModeConfig, cfg.TelemetryProvider)
+	if err != nil {
+		return nil, err
+	}
+	if err := registerCodeModeEnabledGauge(cfg.TelemetryProvider, cfg.Name, codeModeCfg != nil); err != nil {
+		return nil, err
+	}
+
 	coreVMCP, err := core.New(deriveCoreConfig(
 		cfg, cachedAgg, rt, backendClient, backendRegistry, workflowDefs,
 		cfg.Authz, elicitation,
@@ -530,8 +591,8 @@ func New(
 	// Serve-layer optimizer (if enabled) indexes it like any other tool, and the script's
 	// inner calls route back through core.CallTool for admission. The decorator delegates
 	// Close to the inner core, so New can release it if Serve fails and srv.Stop owns it on success.
-	if cfg.CodeModeConfig != nil {
-		coreVMCP = codemode.NewDecorator(coreVMCP, cfg.CodeModeConfig)
+	if codeModeCfg != nil {
+		coreVMCP = codemode.NewDecorator(coreVMCP, codeModeCfg)
 	}
 
 	// On the New/Serve path the core is the single aggregator and the source of the
@@ -603,9 +664,16 @@ func New(
 // If the hosting server's drain is incomplete, retry it with a fresh context before Stop.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
-// and the full HTTP middleware chain (recovery, body limit, header validation,
-// auth, audit, MCP parsing, telemetry). Rate limiting decorates the core VMCP
+// and the full HTTP middleware chain (see the chain comment in the body for
+// the order, including session ownership). Rate limiting decorates the core VMCP
 // and runs inside the MCP SDK handler.
+//
+// DNS-rebinding protection: on a loopback connection, the MCP route answers
+// 403 when the Host header is not a loopback name, so a proxy or embedder that
+// reaches it over loopback must send a loopback Host. The guard reads
+// http.LocalAddrContextKey; when it is absent (the handler is not served by
+// net/http) the request is passed through, so such embedders need their own Host
+// check. See loopbackHostGuard for details.
 //
 // Each call builds a fresh handler. The method is safe to call multiple times.
 // All returned handlers share the same underlying MCPServer and SessionManager,
@@ -622,6 +690,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 			registry:         &s.healthResync,
 		}),
 		server.WithHeartbeatInterval(heartbeatInterval(s.config.HeartbeatInterval)),
+		// sessionOwnershipMiddleware answers 404 for an absent or terminated session
+		// before the transport runs, so the transport's own cleanup of this pod's
+		// copy of that session never happens. The idle timeout reaps it instead. It
+		// releases only this pod's copy: the store record is untouched, so a client
+		// that returns after being reaped is rehydrated if the session is still
+		// valid. Only POSTs count as activity. SessionTTL is the same non-zero
+		// value the session storage was built with (see WithDefaults).
+		server.WithSessionIdleTimeout(s.config.SessionTTL),
 	}
 	// Install the pre-dispatch authorization gate only when authz is configured
 	// (allow-all otherwise, matching the core admission seam's guard). The gate
@@ -676,15 +752,17 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Debug("embedded authorization server routes registered")
 	}
 
-	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: audit → auth → MCP-parsing → telemetry → classification
-	// Execution order: recovery → body-limit → header-val → audit → auth →
-	//   MCP-parsing → telemetry → classification → handler
+	// MCP endpoint - middleware chain, in execution order (outermost first):
+	//   recovery → body-limit → write-timeout → header-validation →
+	//   forwarded-header capture (if PassthroughHeaders is set) →
+	//   audit (if configured) → auth (if configured) → MCP-parsing →
+	//   telemetry (if configured) → host-guard → call binding →
+	//   classification → session ownership (Legacy only) → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
-	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
+	// GetAllUpstreamCredentials returns a non-empty failed-provider map when
 	// any upstream refresh fails, and the middleware short-circuits with
 	// HTTP 401 + WWW-Authenticate. Audit wraps auth, so those 401s (and every
 	// other rejection from the inner chain) still produce an audit event; the
@@ -700,11 +778,20 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Authorization additionally runs a pre-dispatch CallGate INSIDE the streamable
 	// server (installed above only when Authz is configured): it re-runs the core
 	// admission decision for tools/call, resources/read, and prompts/get and rejects a
-	// denial as HTTP 403 + JSON-RPC 403 before dispatch. The gate sits before session
-	// validation (403-before-404) and inside the audit middleware, so a denied call is
-	// audited with outcome "denied". See call_gate.go.
+	// denial as HTTP 403 + JSON-RPC 403 before dispatch. The gate runs before the
+	// transport's session-existence validation but after the ownership middleware below,
+	// and inside the audit middleware, so a denied call is audited with outcome
+	// "denied". See call_gate.go.
+	//
+	// Session ownership is enforced in front of the streamable server, after
+	// authentication: a request carrying the Mcp-Session-Id of a session the caller
+	// does not own is answered 404 before the transport routes it (stream, DELETE,
+	// list, client response, cross-replica rehydration). It therefore also precedes
+	// the authorization gate above, so a foreign or unknown session ID gets 404
+	// before any 403.
+	// See session_ownership.go.
 
-	var mcpHandler http.Handler = streamableServer
+	var mcpHandler = s.sessionOwnershipMiddleware(streamableServer)
 
 	// Classify Modern (2026-07-28) vs Legacy at the decode seam, reject
 	// malformed Modern requests before dispatch, and route well-formed Modern
@@ -714,9 +801,31 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
 
+	// Enforce access tokens bound to one MCP call. It runs before
+	// classification, so Legacy and Modern requests both pass through it, and
+	// after auth and parsing, whose identity and parsed request it reads. It
+	// is installed whether or not authorization is configured, and runs before
+	// session ownership, the CallGate and Cedar: it can only refuse more. See
+	// call_binding.go.
+	mcpHandler = s.callBindingMiddleware(mcpHandler)
+
+	// DNS-rebinding protection for both MCP revisions. go-sdk's own localhost
+	// check only sees Legacy requests that reach StreamableHTTPHandler;
+	// classifyingHandler hands Modern requests to dispatchModern, and mcpcompat
+	// serves cross-replica Legacy sessions without that handler. Placed where
+	// go-sdk's check effectively sat (inside audit and telemetry) so a rejected
+	// request is still audited and recorded, for every path alike.
+	mcpHandler = loopbackHostGuard(mcpHandler)
+
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
 		slog.Info("telemetry middleware enabled for MCP endpoints")
+	}
+
+	// Count tool calls for anonymous usage metrics. It reads the parsed request,
+	// so it sits inside the parsing middleware applied below.
+	if s.config.UsageMetricsMiddleware != nil {
+		mcpHandler = s.config.UsageMetricsMiddleware(mcpHandler)
 	}
 
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
@@ -744,6 +853,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		auditor, err := audit.NewAuditorWithTransport(
 			s.config.AuditConfig,
 			"streamable-http", // vMCP uses streamable HTTP transport
+			audit.WithSubjectEnricher(s.config.AuditSubjectEnricher),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create auditor: %w", err)
@@ -780,11 +890,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 // applyForwardedHeaderCapture wraps next with the forwarded-header capture
 // middleware when passthrough headers are configured. It copies the allowlisted
-// incoming headers into the request context so the per-session backend client
-// forwards them to backends (see pkg/vmcp/headerforward). Identity-independent
-// plumbing: its position relative to auth is immaterial; it must only run before
-// session creation, which every inner handler satisfies. No-op when the allowlist
-// is empty.
+// incoming headers into the request context so the backend client forwards them
+// to backends (see pkg/vmcp/headerforward). Identity-independent plumbing: its
+// position relative to auth is immaterial, but it must wrap every MCP request,
+// not only the one that creates the session, so a request that omits a header
+// does not inherit the session creator's value. No-op when the allowlist is
+// empty.
 func (s *Server) applyForwardedHeaderCapture(next http.Handler) http.Handler {
 	if len(s.config.PassthroughHeaders) == 0 {
 		return next
@@ -1269,11 +1380,10 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	// the optimizer is enabled — via serveSessionTools, the same helper registration uses.
 	//
 	// Note: this lists under the CURRENT request identity, not the session's bound identity.
-	// For the realistic same-principal load-balanced case they are equal, so the advertised
-	// set is identical across pods. A cross-identity re-hydration would advertise the
-	// requester's own filtered set, but the call-time binding check (enforceSessionBinding,
-	// run before core.CallTool/ReadResource) is the backstop — it rejects a mismatched
-	// caller, so no other principal's capabilities can be invoked.
+	// They are the same principal (issuer and subject): sessionOwnershipMiddleware rejects any
+	// other principal before the transport rehydrates the session, so the advertised set is identical across
+	// pods. The call-time binding check (enforceSessionBinding, run before
+	// core.CallTool/ReadResource) remains a second layer for embedders without that middleware.
 	identity, _ := auth.IdentityFromContext(ctx)
 	adaptedTools, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil || len(adaptedTools) == 0 {
@@ -1332,18 +1442,14 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		}
 	}()
 
-	// NOTE: the initialize response (including the Mcp-Session-Id header) has
-	// already been sent to the client before this hook fires. Any error below
-	// terminates the session internally, but the client holds a session ID that
-	// will appear to have no tools (tool calls will return "not found" from the
-	// SDK). This is an architectural constraint of the two-phase pattern — there
-	// is no way to retract the session ID after it has been sent.
-	//
-	// NOTE: there is a brief race window between the client receiving the session
-	// ID and this hook completing. A client that pipelines a tools/call immediately
-	// after initialize may receive a "tool not found" error before AddSessionTools
-	// completes. Conforming MCP clients call tools/list before tools/call, so this
-	// window is expected to be harmless in practice.
+	// NOTE: this hook runs synchronously inside the initialize dispatch (the
+	// mcpcompat shim's sessionDispatchMiddleware calls registerAndSync before the
+	// initialize result is returned), so the session record, including its owner,
+	// is complete before the client receives the Mcp-Session-Id header. The
+	// session-ownership middleware relies on this: it rejects a record that has
+	// no owner yet. Any error below terminates the session before the response is
+	// written; the client still receives the session ID, and its next request on
+	// it is answered 404 so it re-initializes.
 	//
 	// The list_changed sink is built here, before CreateSession, so it can be
 	// threaded through to every backend connector this session opens (#5748).
@@ -1381,12 +1487,10 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// removes this gate together with the fan-out's.
 	//
 	// Also gated on health monitoring being enabled: with no monitor there is
-	// no OnChange subscription (see Serve), so no fan-out would ever run the
-	// registry's lazy liveness prune — an entry for a session that ends
-	// without a server-observed Terminate (TTL expiry, node-local cache
-	// eviction, which only calls Close) would retain its worker closure (SDK
-	// session, captured identity and forwarded headers) forever. With no
-	// subscriber the registration could never be triggered anyway.
+	// no OnChange subscription (see Serve), so the registration could never be
+	// triggered. It would only retain its worker closure (SDK session, captured
+	// identity and forwarded headers), and with no fan-out the lazy liveness
+	// prune would never run for a session the cache sweep does not reclaim.
 	if s.optimizerFactory == nil && s.backendHealth() != nil {
 		s.healthResync.add(sessionID, toolsResyncWorker)
 	}

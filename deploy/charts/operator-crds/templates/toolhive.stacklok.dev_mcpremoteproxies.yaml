@@ -1469,8 +1469,15 @@ spec:
                     type: object
                 type: object
               resources:
-                description: Resources defines the resource requirements for the proxy
-                  container
+                description: |-
+                  Resources defines the resource requirements for the proxy container.
+                  Unset fields fall back to defaults: requests of 50m CPU and 64Mi memory,
+                  limits of 200m CPU and 256Mi memory. Resources set on the "toolhive"
+                  container through podTemplateSpec take precedence over this field.
+                  A limit set without a request, here or in podTemplateSpec, drops the
+                  default request so Kubernetes copies the limit into the request as usual.
+                  A request set without a limit raises the default limit to match if the
+                  request is above it. Requests and limits the user sets explicitly are used as given.
                 properties:
                   limits:
                     description: Limits describes the maximum amount of compute resources
@@ -1576,12 +1583,57 @@ spec:
                     - memory
                     - redis
                     type: string
+                  tls:
+                    description: |-
+                      TLS enables TLS for the Redis session storage connection and, when rate
+                      limiting is configured, for the rate-limit connection to the same Redis.
+                      When omitted, the connections are plaintext and the Redis password and
+                      session data cross the network unencrypted. An empty object enables TLS
+                      with server certificate verification against the system root CAs; set
+                      caCertSecretRef for a private CA. A failed handshake never falls back to
+                      plaintext. Only used when provider is redis.
+                    properties:
+                      caCertSecretRef:
+                        description: |-
+                          CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                          for verifying the server. When not specified, system root CAs are used.
+                          If the Secret or key does not exist, the pod cannot start (it stays in
+                          ContainerCreating) rather than connecting without verification.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        description: |-
+                          InsecureSkipVerify disables server certificate and hostname verification.
+                          The connection is encrypted but not authenticated, so anyone able to
+                          impersonate the server can read the credentials and data sent over it.
+                          Intended for testing only; for self-signed or private CAs set
+                          caCertSecretRef instead.
+                        type: boolean
+                    type: object
                 required:
                 - provider
                 type: object
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
+                - message: tls is only supported when provider is redis
+                  rule: '!has(self.tls) || self.provider == ''redis'''
+                - message: tls.insecureSkipVerify disables certificate verification,
+                    so tls.caCertSecretRef would be ignored; set only one
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
+                    || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -3202,8 +3254,15 @@ spec:
                     type: object
                 type: object
               resources:
-                description: Resources defines the resource requirements for the proxy
-                  container
+                description: |-
+                  Resources defines the resource requirements for the proxy container.
+                  Unset fields fall back to defaults: requests of 50m CPU and 64Mi memory,
+                  limits of 200m CPU and 256Mi memory. Resources set on the "toolhive"
+                  container through podTemplateSpec take precedence over this field.
+                  A limit set without a request, here or in podTemplateSpec, drops the
+                  default request so Kubernetes copies the limit into the request as usual.
+                  A request set without a limit raises the default limit to match if the
+                  request is above it. Requests and limits the user sets explicitly are used as given.
                 properties:
                   limits:
                     description: Limits describes the maximum amount of compute resources
@@ -3309,12 +3368,57 @@ spec:
                     - memory
                     - redis
                     type: string
+                  tls:
+                    description: |-
+                      TLS enables TLS for the Redis session storage connection and, when rate
+                      limiting is configured, for the rate-limit connection to the same Redis.
+                      When omitted, the connections are plaintext and the Redis password and
+                      session data cross the network unencrypted. An empty object enables TLS
+                      with server certificate verification against the system root CAs; set
+                      caCertSecretRef for a private CA. A failed handshake never falls back to
+                      plaintext. Only used when provider is redis.
+                    properties:
+                      caCertSecretRef:
+                        description: |-
+                          CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                          for verifying the server. When not specified, system root CAs are used.
+                          If the Secret or key does not exist, the pod cannot start (it stays in
+                          ContainerCreating) rather than connecting without verification.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        description: |-
+                          InsecureSkipVerify disables server certificate and hostname verification.
+                          The connection is encrypted but not authenticated, so anyone able to
+                          impersonate the server can read the credentials and data sent over it.
+                          Intended for testing only; for self-signed or private CAs set
+                          caCertSecretRef instead.
+                        type: boolean
+                    type: object
                 required:
                 - provider
                 type: object
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
+                - message: tls is only supported when provider is redis
+                  rule: '!has(self.tls) || self.provider == ''redis'''
+                - message: tls.insecureSkipVerify disables certificate verification,
+                    so tls.caCertSecretRef would be ignored; set only one
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
+                    || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.

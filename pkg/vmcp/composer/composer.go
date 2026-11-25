@@ -344,7 +344,8 @@ const (
 	// StepStatusFailed indicates the step failed.
 	StepStatusFailed StepStatusType = "failed"
 
-	// StepStatusSkipped indicates the step was skipped (condition was false).
+	// StepStatusSkipped indicates the step was skipped: its condition was false, or an
+	// earlier skip_remaining elicitation action stopped the workflow.
 	StepStatusSkipped StepStatusType = "skipped"
 )
 

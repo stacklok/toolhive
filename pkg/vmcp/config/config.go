@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -195,10 +196,14 @@ type Config struct {
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty" yaml:"rateLimiting,omitempty"`
 
 	// PassthroughHeaders is an allowlist of incoming client request header names
-	// forwarded verbatim to all backends. Captured at the vMCP incoming edge by
-	// headerforward.CaptureMiddleware and consumed once at session creation
-	// when the per-session backend client's HeaderForwardConfig is built. Names
-	// must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+	// forwarded verbatim to all backends. Captured per request at the vMCP
+	// incoming edge by headerforward.CaptureMiddleware: tool calls, resource
+	// reads and prompt gets carry the values from the request that triggered
+	// them, and a header absent on that request is not forwarded. Session-scoped
+	// work (the session's backend connections, its advertised capability list,
+	// and background capability resyncs) uses the values from the request that
+	// created the session. Names must not be in the restricted set (Host,
+	// hop-by-hop, X-Forwarded-*, etc.).
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
@@ -246,6 +251,18 @@ type OIDCConfig struct {
 	// Audience is the required token audience.
 	Audience string `json:"audience" yaml:"audience"`
 
+	// RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+	// Tokens with a missing or empty "sub" claim are rejected.
+	// If RequiredSubjectPrefix is also set, both checks must pass.
+	// +optional
+	RequiredSubject string `json:"requiredSubject,omitempty" yaml:"requiredSubject,omitempty"`
+
+	// RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+	// Tokens with a missing or empty "sub" claim are rejected.
+	// If RequiredSubject is also set, both checks must pass.
+	// +optional
+	RequiredSubjectPrefix string `json:"requiredSubjectPrefix,omitempty" yaml:"requiredSubjectPrefix,omitempty"`
+
 	// Resource is the OAuth 2.0 resource indicator (RFC 8707).
 	// Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).
 	// If not specified, defaults to Audience.
@@ -288,6 +305,15 @@ type OIDCConfig struct {
 	// service-account CA when using Kubernetes service-account auth.
 	// +optional
 	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
+
+	// JWKSAuthTokenPath is the absolute file path to a bearer token that the
+	// OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+	// Needed when the issuer requires authentication for those endpoints, such
+	// as the Kubernetes API server. Typically populated by the Kubernetes
+	// operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+	// pod's service-account token when using Kubernetes service-account auth.
+	// +optional
+	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty" yaml:"jwksAuthTokenPath,omitempty"`
 }
 
 // AuthzConfig configures authorization.
@@ -1256,6 +1282,13 @@ type SessionStorageConfig struct {
 	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
 	// +optional
 	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
+
+	// TLS enables TLS for session storage and rate limiting. An empty
+	// configuration verifies the Redis server using system roots.
+	// On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+	// field from it and rejects a value set under spec.config.sessionStorage.
+	// +optional
+	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // Validator validates configuration.

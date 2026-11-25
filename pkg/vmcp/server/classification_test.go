@@ -116,7 +116,7 @@ func TestClassifyingHandler(t *testing.T) {
 			// A body that is otherwise a well-formed Modern request (valid _meta
 			// protocolVersion + clientCapabilities) but omits the mandatory
 			// MCP-Protocol-Version header MUST be rejected with -32020, not
-			// dispatched: the draft Streamable HTTP spec requires the header on
+			// dispatched: the final 2026-07-28 Streamable HTTP spec requires the header on
 			// every Modern POST. Without the header-presence check in
 			// classifyingHandler this would classify Modern with a nil error and
 			// return 200.
@@ -347,12 +347,10 @@ func TestModernDispatchBlockers(t *testing.T) {
 //
 //   - A well-formed Modern request is refused with a conformant 400 + -32022
 //     UnsupportedProtocolVersionError whose data lists the Legacy version, so a
-//     Modern-first client (go-sdk v1.7+ probes before initialize) negotiates
-//     down cleanly instead of hitting go-sdk's unparsable plain-text
-//     stateful rejection.
-//   - server/discover is exempt and falls through to the SDK path, whose
-//     stateful transport advertises the Legacy-only version list — the one
-//     request a client needs answered to negotiate down.
+//     Modern-first client negotiates down cleanly.
+//   - server/discover is exempt and falls through to go-sdk, whose
+//     stateful transport advertises its transport-filtered Legacy-only version
+//     list — the one request a client needs answered to negotiate down.
 //   - Legacy traffic falls through untouched: the gate only ever refuses
 //     requests that classified Modern.
 //

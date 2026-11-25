@@ -22,13 +22,13 @@ commands, agents, skills, hooks, and server declarations.
 ### Options
 
 ```
-  -h, --help   help for ai-plugin
+  -h, --help[=true|false]   help for ai-plugin
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

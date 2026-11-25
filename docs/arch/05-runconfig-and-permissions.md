@@ -538,6 +538,53 @@ When `isolate_network: true` in RunConfig:
 
 **Implementation**: `pkg/container/docker/squid.go`, `pkg/networking/`
 
+##### Host gateway protection (Docker and Podman)
+
+For isolated bridge workloads, both Squid and Envoy block host access by default,
+including when outbound permissions allow all traffic. The shared protected set
+contains all daemon bridge gateway IPs and the names `host.docker.internal`,
+`gateway.docker.internal`, and `host.containers.internal`. It also contains
+every address mapped to those names in the running DNS sidecar's `/etc/hosts`;
+these addresses need not be bridge gateways and are not a fixed link-local IP or
+subnet. On Docker Desktop, for example, `host.docker.internal` is the VM host
+address (such as `192.168.65.254`), which reaches host loopback services but is
+not the gateway of any bridge network. Squid checks destination IPs before
+outbound allows; Envoy applies both authority matching and resolved-address
+filtering.
+
+Host discovery reads the running DNS sidecar's `/etc/hosts` through the runtime
+archive API before proxy or MCP setup. ToolHive uses `dockurr/dnsmasq:latest` in
+bridge mode with the same endpoint map as its proxies, without mounts. Podman
+writes `host.containers.internal` itself. On Docker, which resolves
+`host.docker.internal` through its DNS rather than the hosts file, the sidecar
+is created with the extra hosts entry `host.docker.internal:host-gateway`, so the
+daemon writes its own host address into the file. A sidecar that lacks this
+entry is recreated rather than reused. Workload mounts do not propagate to
+sidecars. Runtime-generated hosts are a prerequisite: ToolHive does not configure
+image-owned hosts or disable runtime hosts management. Rootless sidecars use the
+same runtime host endpoint; all bridge gateways cover rootful Podman's gateway
+selection. Proxy image selection and image entrypoints are unchanged.
+
+The runtime's own alias must be present with a valid address:
+`host.containers.internal` on Podman, `host.docker.internal` on Docker. The other
+names are protected when present. Missing/malformed/oversized hosts data or runtime read failures
+fail deployment with an error, **even with `--allow-docker-gateway`**. The archive
+read is bounded in size and time, with no host DNS, process-host filesystem, or
+hardcoded-address fallback. No extra discovery container is created.
+
+`--allow-docker-gateway` explicitly allows the same hostnames and exact IPs on
+**any port**, for Podman as well as Docker. Merely adding a host alias to an
+outbound allowlist does not override the default host deny. Previously, Podman
+host aliases resolving to non-bridge IPs could escape that protection; they now
+require this explicit opt-in.
+
+This policy is a **deployment-time snapshot**, taken after DNS startup (including
+any startup network recreation), not continuous runtime discovery. Redeploy
+isolated workloads after changing runtime host mappings, rootless network
+configuration, or bridge networks. Restarting an existing container alone does
+not refresh policy. Docker retains its bridge-discovery path without the hosts
+archive read; Kubernetes uses its separate network policy path.
+
 ##### Network isolation requires bridge networking
 
 Network isolation is a bridge-topology construct: it builds a per-workload
@@ -586,6 +633,34 @@ as a safety net for restart paths). See issue #5775.
 ```
 
 **Implementation**: `github.com/stacklok/toolhive-core/permissions`
+
+### Read-Only Root Filesystem
+
+`read_only_rootfs` in RunConfig (`thv run --read-only-rootfs`, or
+`read_only_rootfs` in the workload API) mounts the MCP server container's root
+filesystem read-only. It is a RunConfig field rather than a permission profile
+field, so it needs no change to `toolhive-core`.
+
+- **Opt-in**: off by default, because servers that write to their root
+  filesystem today would break.
+- **Scratch space**: `/tmp`, `/var/tmp` and `/run` get a tmpfs mounted
+  `rw,nosuid,nodev,noexec,size=64m`. Setting these explicitly keeps Docker and
+  Podman consistent: Podman's compat API otherwise adds its own executable,
+  uncapped tmpfs on those paths while Docker adds none. A path already targeted
+  by a volume or profile mount is skipped, since Docker rejects duplicate mount
+  points. Any other writable path must come from the profile's `write` mounts.
+- **Docker/Podman only**: the Docker runtime sets `HostConfig.ReadonlyRootfs`.
+  The Kubernetes runtime ignores the field; the operator already sets
+  `readOnlyRootFilesystem: true` on MCP server containers.
+- **Reconciliation**: `compareHostConfig` includes the setting, so changing it
+  recreates an existing container instead of reusing it.
+
+**Example:**
+```json
+{
+  "read_only_rootfs": true
+}
+```
 
 ### Built-in Profiles
 
@@ -744,10 +819,10 @@ Custom permission profiles can be defined in JSON files for reusable security po
 
 ### Kubernetes
 
-**Pod security context:**
-- RunConfig permission profile → Security context
-- Network policies generated from profile
-- Volume mounts → PersistentVolumeClaims or HostPath
+**Security configuration:**
+- `spec.permissionProfile` is retained for API compatibility but is deprecated and ignored by the operator
+- Configure pod security through `spec.podTemplateSpec` using Kubernetes `securityContext` fields
+- Define Kubernetes `NetworkPolicy` resources separately for network enforcement
 
 **Pod template patches:**
 ```json
@@ -756,7 +831,7 @@ Custom permission profiles can be defined in JSON files for reusable security po
 }
 ```
 
-**Implementation**: Operator converts profiles to K8s resources
+**Implementation**: `spec.podTemplateSpec` configures pod-level controls; Kubernetes `NetworkPolicy` resources are managed separately
 
 ### Docker/Podman
 

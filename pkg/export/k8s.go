@@ -60,6 +60,8 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1beta1.MCPServer, error) 
 	// Sanitize the name to be a valid Kubernetes resource name
 	name = sanitizeK8sName(name)
 
+	// PermissionProfile is deliberately not exported because the Kubernetes
+	// operator ignores spec.permissionProfile.
 	mcpServer := &v1beta1.MCPServer{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "toolhive.stacklok.dev/v1beta1",
@@ -113,16 +115,6 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1beta1.MCPServer, error) 
 				return nil, fmt.Errorf("failed to parse volume %q: %w", vol, err)
 			}
 			mcpServer.Spec.Volumes = append(mcpServer.Spec.Volumes, volume)
-		}
-	}
-
-	// Convert permission profile
-	if config.PermissionProfile != nil {
-		// For now, we export permission profiles as inline ConfigMaps would need to be created separately
-		// This is a simplified export - users may need to adjust this
-		mcpServer.Spec.PermissionProfile = &v1beta1.PermissionProfileRef{
-			Type: v1beta1.PermissionProfileTypeBuiltin,
-			Name: "none", // Default to none, user should adjust based on their needs
 		}
 	}
 

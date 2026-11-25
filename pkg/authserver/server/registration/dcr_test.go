@@ -20,11 +20,12 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -576,6 +577,43 @@ func TestValidateDCRRequest(t *testing.T) {
 	}
 }
 
+func TestValidateClientName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		client  string
+		wantErr bool
+	}{
+		{name: "empty name is valid (selects the default)", client: ""},
+		{name: "plain name is valid", client: "ToolHive MCP Client (ibkr)"},
+		{name: "internal space is valid", client: "My Application"},
+		{name: "whitespace-only name is rejected", client: "   ", wantErr: true},
+		{name: "leading whitespace is rejected", client: " lead", wantErr: true},
+		{name: "trailing whitespace is rejected", client: "trail ", wantErr: true},
+		{name: "newline is rejected", client: "line\nbreak", wantErr: true},
+		{name: "NUL is rejected", client: "nul\x00byte", wantErr: true},
+		{name: "bidi override is rejected", client: "a\u202eb", wantErr: true},
+		{name: "zero-width space is rejected", client: "a\u200bb", wantErr: true},
+		{name: "256 ASCII runes are accepted", client: strings.Repeat("a", MaxClientNameLength)},
+		{name: "257 ASCII runes are rejected", client: strings.Repeat("a", MaxClientNameLength+1), wantErr: true},
+		{name: "256 multibyte runes are accepted", client: strings.Repeat("あ", MaxClientNameLength)},
+		{name: "257 multibyte runes are rejected", client: strings.Repeat("あ", MaxClientNameLength+1), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateClientName(tt.client)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 	t.Parallel()
 	validKey := jose.JSONWebKey{Key: testRSAPublicKey(t), KeyID: "key-1", Algorithm: string(jose.RS256), Use: "sig"}
@@ -612,6 +650,12 @@ func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 			require.NoError(t, err)
 			r.JWKS.Keys[0].Key = &ecKey.PublicKey
 		}, true, true},
+		{"oversized RSA modulus", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			r.JWKS.Keys[0].Key = &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), 8192), E: 65537}
+		}, true, true},
+		{"oversized RSA exponent", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			r.JWKS.Keys[0].Key = &rsa.PublicKey{N: validKey.Key.(*rsa.PublicKey).N, E: 2147483647}
+		}, true, true},
 		{"unsupported algorithm", func(r *oauthproto.DynamicClientRegistrationRequest) { r.TokenEndpointAuthSigningAlg = "HS256" }, true, true},
 		{"missing algorithm", func(r *oauthproto.DynamicClientRegistrationRequest) { r.TokenEndpointAuthSigningAlg = "" }, true, true},
 		{"jwks_uri", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKSURI = "https://keys.example/jwks" }, true, true},
@@ -644,6 +688,49 @@ func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 		})
 	}
 }
+
+func TestPrivateKeyJWTInlineJWKSCount(t *testing.T) {
+	t.Parallel()
+
+	key := jose.JSONWebKey{Key: testRSAPublicKey(t), KeyID: "key-1", Algorithm: string(jose.RS256), Use: "sig"}
+	for _, tt := range []struct {
+		name            string
+		count           int
+		invalidFirstKey bool
+		wantErr         bool
+	}{
+		{"maximum number of valid keys accepted", maxInlineJWKSKeys, false, false},
+		{"one over the maximum rejected before validating entries", maxInlineJWKSKeys + 1, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			keys := make([]jose.JSONWebKey, tt.count)
+			for i := range keys {
+				keys[i] = key
+			}
+			if tt.invalidFirstKey {
+				keys[0] = jose.JSONWebKey{}
+			}
+			validated, dcrErr := ValidateDCRRequest(&oauthproto.DynamicClientRegistrationRequest{
+				TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				TokenEndpointAuthSigningAlg: string(jose.RS256),
+				JWKS:                        &jose.JSONWebKeySet{Keys: keys},
+			}, false, true)
+			if tt.wantErr {
+				require.Nil(t, validated)
+				require.NotNil(t, dcrErr)
+				assert.Equal(t, DCRErrorInvalidClientMetadata, dcrErr.Error)
+				assert.Contains(t, dcrErr.ErrorDescription,
+					fmt.Sprintf("too many inline jwks keys (maximum %d)", maxInlineJWKSKeys))
+			} else {
+				require.Nil(t, dcrErr)
+				require.NotNil(t, validated)
+				assert.Len(t, validated.JWKS.Keys, maxInlineJWKSKeys)
+			}
+		})
+	}
+}
+
 func TestPrivateKeyJWTAllowsTokenExchangeWithoutRedirectURI(t *testing.T) {
 	t.Parallel()
 

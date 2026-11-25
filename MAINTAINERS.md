@@ -70,6 +70,7 @@ The current list of ToolHive maintainers:
 
 * [@stacklok/stackers](https://github.com/orgs/stacklok/teams/stackers)
 * [@Sanskarzz](https://github.com/Sanskarzz)
+* [@alex-feel](https://github.com/alex-feel)
 
 ## Becoming a Maintainer
 

@@ -89,10 +89,14 @@ type updateRequest struct {
 	// Whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 	// Whether to permit outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when network isolation is on.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty"`
+	// Whether to mount the container's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs bool `json:"read_only_rootfs,omitempty"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
 	// Tools override
@@ -388,6 +392,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			NetworkIsolation:   &runConfig.IsolateNetwork,
 			TrustProxyHeaders:  runConfig.TrustProxyHeaders,
 			AllowDockerGateway: runConfig.AllowDockerGateway,
+			ReadOnlyRootfs:     runConfig.ReadOnlyRootfs,
 			ToolsFilter:        runConfig.ToolsFilter,
 			ToolsOverride:      toolsOverride,
 			Group:              runConfig.Group,

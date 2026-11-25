@@ -8,8 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/stacklok/toolhive-core/audit"
-	upstreamtoken "github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 )
 
 // PrincipalInfo contains the non-sensitive identity fields safe for external consumption.
@@ -72,6 +73,25 @@ type PrincipalInfo struct {
 	DelegationChain *audit.DelegationChain `json:"delegation,omitempty"`
 }
 
+// AdmissionRoute identifies how TokenValidator admitted a token minted by the
+// embedded authorization server.
+type AdmissionRoute string
+
+const (
+	// AdmissionRouteUnspecified is the zero value: the token is neither
+	// interactive nor delegated, so it carries no route.
+	AdmissionRouteUnspecified AdmissionRoute = ""
+	// AdmissionRouteInteractive is a token minted from an interactive login
+	// session: it carries a token session ID and neither the delegated-access
+	// marker nor proof of a session-less mint, and it was validated with a
+	// configured audience (so its "aud" was checked).
+	AdmissionRouteInteractive AdmissionRoute = "interactive"
+	// AdmissionRouteDelegated is a token carrying the delegated-access marker and
+	// no usable tsid, validated with a configured audience (so its "aud" was
+	// checked).
+	AdmissionRouteDelegated AdmissionRoute = "delegated"
+)
+
 // Identity represents an authenticated user or service account.
 // This is the primary type for representing authenticated principals throughout ToolHive.
 //
@@ -105,12 +125,26 @@ type Identity struct {
 	// Metadata stores additional identity information.
 	Metadata map[string]string
 
-	// SessionlessGrant is true only when TokenValidator validated this token for
-	// the configured embedded authorization-server issuer, no upstream session
-	// credentials were loaded, and the token affirmatively proves that it was
-	// minted by a session-less grant. It is internal runtime provenance and is
-	// intentionally not included in PrincipalInfo or MarshalJSON.
+	// SessionlessGrant is true only when TokenValidator validated this token as a
+	// signed JWT (never an introspection response) for the configured embedded
+	// authorization-server issuer, no upstream session credentials were loaded,
+	// and the token affirmatively proves that it was minted by a session-less
+	// grant. It is internal runtime provenance and is intentionally not included
+	// in PrincipalInfo or MarshalJSON.
 	SessionlessGrant bool
+
+	// AdmissionRoute records how TokenValidator admitted this token. It is set
+	// only by TokenValidator, and only when the validator is bound to the
+	// embedded authorization server and the JWT was verified with the
+	// in-process key provider (WithKeyProvider). A key found only through the
+	// HTTP JWKS fallback, or an introspection response, gets no route, so a
+	// validator bound without WithKeyProvider never assigns one.
+	// Both routes also require a configured audience. It is internal
+	// provenance and is intentionally not included in PrincipalInfo,
+	// SafeIdentity, or MarshalJSON. Consumers that grant anything must compare
+	// for equality with AdmissionRouteDelegated (or AdmissionRouteInteractive),
+	// never with != AdmissionRouteUnspecified.
+	AdmissionRoute AdmissionRoute
 
 	// UpstreamTokens maps upstream provider names to their access tokens.
 	// This is populated by the auth middleware when an embedded auth server
@@ -124,15 +158,17 @@ type Identity struct {
 	//                      session at all: local.go, anonymous.go, or middleware
 	//                      validating a JWT from an IdP other than the embedded
 	//                      auth server (see the PlatformUserID note above).
-	//   - empty map      — tsid claim was valid but no providers had a stored
-	//                      access token for the session.
+	//   - empty map      — never produced by TokenValidator, which answers 401
+	//                      when a tsid session holds no usable access token;
+	//                      a consumer that meets one denies it like a session
+	//                      lacking the pinned provider's credential.
 	//   - populated map  — keys are upstream provider names; values are the
 	//                      stored access token strings.
 	//
 	// A nil map therefore says only that no credential was loaded, never why.
-	// Authorization code must use SessionlessGrant, which TokenValidator sets
-	// only for a validated embedded-auth-server token that affirmatively proves
-	// it was minted without an upstream session.
+	// Authorization code must use SessionlessGrant or AdmissionRoute, which
+	// TokenValidator sets only for a signed embedded-auth-server token, from the
+	// claims it carries.
 	//
 	// MUST NOT be mutated after the Identity is placed in the publicly-reachable
 	// request context. It MAY be mutated while the Identity is reachable only via
@@ -166,16 +202,29 @@ type Identity struct {
 	//     exchange and surfaces the resulting `invalid_grant`. So such a caller must
 	//     either check `exp` first or be prepared to handle that failure.
 	//   - READING identity claims out of it — as the Cedar authorizer does for the
-	//     profile claims an upstream access token omits — is not subject to expiry at
-	//     all. The token is evidence that the upstream asserted something at login,
-	//     and expiry says nothing about whether that assertion happened. Rejecting it
-	//     once expired would flip an authorization decision mid-session, since
-	//     sessions outlive ID tokens by days; and the claims are no staler than the
-	//     alternative, since the profile claims mirrored into the ToolHive-issued
-	//     token are likewise captured once at login and never refreshed.
+	//     claims an upstream access token omits, profile and group alike — is not
+	//     subject to expiry at all. The token is evidence that the upstream asserted
+	//     something at login, and expiry says nothing about whether that assertion
+	//     happened. Rejecting it once expired would flip an authorization decision
+	//     mid-session, since sessions outlive ID tokens by days — and it would do so
+	//     for every user at once, which is worse than the staleness it would avoid.
+	//     Read the claims as facts the upstream asserted when it issued the token:
+	//     a group revoked upstream keeps evaluating as granted until the stored ID
+	//     token is replaced, which happens on a refresh that rotates it (see
+	//     below). For a provider that never rotates it, that lasts as long as the
+	//     session is kept alive, since each refresh renews the session.
 	//
 	// Either way the token is NOT re-validated for signature or freshness here, so
-	// treat its claims as login-time facts rather than current state.
+	// treat its claims as facts the upstream asserted when it issued the token
+	// rather than current state.
+	//
+	// When populated by upstreamtoken.InProcessService (see NewInProcessService),
+	// an expired ID token triggers a refresh even while the access token is still
+	// valid, so a provider that rotates the ID token on refresh yields a currently
+	// valid one here. It can still be expired when the provider omits id_token on
+	// refresh (OIDC Core 1.0 §12.2) and the old one is carried forward, when that
+	// refresh failed and the stored token was returned, or when the row has no
+	// refresh token; a consumer that needs a fresh token must check `exp` itself.
 	//
 	// Redacted in MarshalJSON() to prevent token leakage.
 	// MUST NOT be mutated after the Identity is placed in the request context.
@@ -222,15 +271,14 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		token = redacted
 	}
 
-	claims := i.Claims
-	if _, hasTsid := claims[upstreamtoken.TokenSessionIDClaimKey]; hasTsid {
-		claims = make(map[string]any, len(i.Claims))
-		for k, v := range i.Claims {
-			if k != upstreamtoken.TokenSessionIDClaimKey {
-				claims[k] = v
-			}
+	// Strip internal claims (tsid, delegated-access marker) from the copy.
+	// filterInternalClaims never mutates i.Claims.
+	claims := func() map[string]any {
+		if i.Claims == nil {
+			return nil
 		}
-	}
+		return filterInternalClaims(jwt.MapClaims(i.Claims))
+	}()
 
 	// Redact upstream tokens: preserve keys, replace non-empty values
 	var redactedUpstreamTokens map[string]string

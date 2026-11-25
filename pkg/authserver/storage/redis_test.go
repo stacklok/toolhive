@@ -12,10 +12,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
+	"net"
 	"net/url"
 	"reflect"
 	"strings"
@@ -25,16 +28,18 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/redisconn"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/cimd"
 )
 
 // --- Test Helpers ---
@@ -49,6 +54,28 @@ func newTestRedisStorage(t *testing.T) (*RedisStorage, *miniredis.Miniredis) {
 
 	storage := NewRedisStorageWithClient(client, "test:auth:")
 	return storage, mr
+}
+
+// errSimulatedConnectionFailure is what newUnreachableRedisClient's dialer returns.
+var errSimulatedConnectionFailure = errors.New("simulated connection failure")
+
+// newUnreachableRedisClient returns a client whose every dial fails. Tests that
+// need a connection failure use it instead of closing a miniredis and dialing
+// the freed address: that port can be handed to another parallel test's
+// miniredis, which then answers the command and hides the failure.
+func newUnreachableRedisClient(t *testing.T) *redis.Client {
+	t.Helper()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: "unreachable.invalid:6379", // never dialed; Dialer always fails
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errSimulatedConnectionFailure
+		},
+		DialerRetries: 1,
+		MaxRetries:    -1,
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	return client
 }
 
 func withRedisStorage(t *testing.T, fn func(context.Context, *RedisStorage, *miniredis.Miniredis)) {
@@ -570,6 +597,67 @@ func TestRedisStorage_ClientAuthMethodPersistence(t *testing.T) {
 	})
 }
 
+func TestRedisStorage_GetClientRechecksPrivateKeyJWTKeys(t *testing.T) {
+	t.Parallel()
+	for _, tt := range storedPrivateKeyJWTClientCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+				client := storedPrivateKeyJWTClient("stored-client", tt.keys)
+				require.NoError(t, s.RegisterClient(ctx, client))
+				got, err := s.GetClient(ctx, client.GetID())
+				if tt.wantErr {
+					require.ErrorIs(t, err, fosite.ErrInvalidClient)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, client.GetID(), got.GetID())
+			})
+		})
+	}
+}
+
+func TestStoredJWKS_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	oversized := `{"keys":[{"kty":"RSA","n":"` +
+		base64.RawURLEncoding.EncodeToString(new(big.Int).Lsh(big.NewInt(1), 8193).Bytes()) +
+		`","e":"AQAB"}]}`
+	valid := func() string {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		data, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "k1"}}})
+		require.NoError(t, err)
+		return string(data)
+	}()
+
+	tests := []struct {
+		name        string
+		jwks        string
+		wantInvalid bool
+	}{
+		{name: "valid key set decodes", jwks: valid},
+		{name: "modulus above the go-jose limit is kept invalid", jwks: oversized, wantInvalid: true},
+		{name: "non-object key set is kept invalid", jwks: `5`, wantInvalid: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var stored storedClient
+			require.NoError(t, json.Unmarshal([]byte(`{"id":"c1","jwks":`+tt.jwks+`}`), &stored))
+			require.NotNil(t, stored.JSONWebKeys)
+			assert.Equal(t, tt.wantInvalid, stored.JSONWebKeys.invalid)
+			assert.Equal(t, tt.wantInvalid, stored.JSONWebKeys.keySet() == nil)
+
+			// Rewriting the row preserves the key set as stored.
+			rewritten, err := json.Marshal(stored)
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(rewritten, &fields))
+			assert.JSONEq(t, tt.jwks, string(fields["jwks"]))
+		})
+	}
+}
+
 // TestRedisStorage_ForceConfidentialPlainClientRoundTrip pins the storage
 // shape of registration.NewConfidentialPlain (the client the DCR force-
 // confidential override builds): it must round-trip through Redis as a
@@ -684,6 +772,80 @@ func TestRedisStorage_DCRClientTTL(t *testing.T) {
 	})
 }
 
+func TestRedisStorage_DCRClientName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		create func() (fosite.Client, error)
+		method string
+	}{
+		{"public", func() (fosite.Client, error) {
+			return registration.New(registration.Config{
+				ID: "named", ClientName: "Example", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			})
+		}, oauthproto.TokenEndpointAuthMethodNone},
+		{"confidential", func() (fosite.Client, error) {
+			return registration.New(registration.Config{
+				ID: "named", ClientName: "Example", Secret: "secret", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			})
+		}, oauthproto.TokenEndpointAuthMethodClientSecretBasic},
+		{"forced plain", func() (fosite.Client, error) {
+			return registration.NewConfidentialPlain(registration.Config{
+				ID: "named", ClientName: "Example", Secret: "secret",
+			})
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+				client, err := tc.create()
+				require.NoError(t, err)
+				require.NoError(t, s.RegisterClient(ctx, client))
+				loaded, err := s.GetClient(ctx, "named")
+				require.NoError(t, err)
+				assert.Equal(t, "Example", registration.ClientName(loaded))
+				assert.True(t, registration.DCRIssued(loaded))
+				_, oidc := loaded.(fosite.OpenIDConnectClient)
+				assert.Equal(t, tc.method != "", oidc)
+				if oidc {
+					assert.Equal(t, tc.method, loaded.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+				}
+				assert.True(t, fingerprintOfClient(loaded).equal(fingerprintOfClient(client)))
+
+				key := redisKey(s.keyPrefix, KeyTypeClient, "named")
+				row := storedClient{}
+				encoded, err := mr.Get(key)
+				require.NoError(t, err)
+				require.NoError(t, json.Unmarshal([]byte(encoded), &row))
+				assert.Equal(t, "Example", row.ClientName)
+				row.ClientName = "Changed only in display metadata"
+				assert.True(t, row.fingerprint().equal(buildStoredClient(client).fingerprint()))
+			})
+		})
+	}
+
+	// Rows predating the DCR marker and client_name still load without changing auth shape.
+	t.Run("legacy public with TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			client, err := registration.New(registration.Config{ID: "old", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone})
+			require.NoError(t, err)
+			row := buildStoredClient(client)
+			row.DCRIssued = false
+			row.TokenEndpointAuthMethod = ""
+			data, err := json.Marshal(row)
+			require.NoError(t, err)
+			key := redisKey(s.keyPrefix, KeyTypeClient, "old")
+			require.NoError(t, mr.Set(key, string(data)))
+			mr.SetTTL(key, time.Hour)
+			loaded, err := s.GetClient(ctx, "old")
+			require.NoError(t, err)
+			assert.Empty(t, registration.ClientName(loaded))
+			assert.True(t, registration.DCRIssued(loaded))
+			_, oidc := loaded.(fosite.OpenIDConnectClient)
+			assert.False(t, oidc)
+		})
+	})
+}
+
 // TestClientFingerprint_StoredAndReconstructedAgree builds a storedClient by
 // hand and the fosite.Client it round-trips to via clientFromStored, then
 // asserts their fingerprints agree. This is the stronger companion to
@@ -702,6 +864,7 @@ func TestClientFingerprint_StoredAndReconstructedAgree(t *testing.T) {
 		Audience:      []string{"https://mcp.example"},
 		GrantTypes:    []string{oauthproto.GrantTypeTokenExchange},
 		ResponseTypes: []string{"token"},
+		RedirectURIs:  []string{"https://app.example/cb"},
 		Public:        false,
 	}
 
@@ -711,11 +874,108 @@ func TestClientFingerprint_StoredAndReconstructedAgree(t *testing.T) {
 		"a storedClient's fingerprint must agree with the fingerprint of the fosite.Client it reconstructs to")
 }
 
+// TestBuildStoredClient_StoresRawTokenEndpointAuthMethod pins that the stored
+// token endpoint auth method is the raw field. fosite's
+// DefaultClient.GetGrantTypes and GetResponseTypes substitute defaults for
+// empty fields, which is why storedClient.fingerprint reads the raw fields.
+// GetTokenEndpointAuthMethod must not: if a future fosite version defaults ""
+// to client_secret_basic, rows written before the upgrade would no longer
+// match live clients. The require on the stored method is the guard; the
+// fingerprint check cannot catch it, because both sides read the same getter.
+func TestBuildStoredClient_StoresRawTokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	baseClient := func() *fosite.DefaultClient {
+		return &fosite.DefaultClient{
+			ID:            "configured",
+			Scopes:        []string{"openid", "profile"},
+			Audience:      []string{"https://mcp.example"},
+			GrantTypes:    []string{oauthproto.GrantTypeTokenExchange},
+			ResponseTypes: []string{"token"},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		client     func() fosite.Client
+		wantMethod string
+	}{
+		{
+			name: "oidc client with empty method",
+			client: func() fosite.Client {
+				return &fosite.DefaultOpenIDConnectClient{DefaultClient: baseClient(), TokenEndpointAuthMethod: ""}
+			},
+			wantMethod: "",
+		},
+		{
+			name:       "plain DefaultClient",
+			client:     func() fosite.Client { return baseClient() },
+			wantMethod: "",
+		},
+		{
+			name: "client_secret_basic",
+			client: func() fosite.Client {
+				return &fosite.DefaultOpenIDConnectClient{
+					DefaultClient:           baseClient(),
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+				}
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		},
+		{
+			name: "client_secret_post",
+			client: func() fosite.Client {
+				return &fosite.DefaultOpenIDConnectClient{
+					DefaultClient:           baseClient(),
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+				}
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		},
+		{
+			name: "private_key_jwt",
+			client: func() fosite.Client {
+				return &fosite.DefaultOpenIDConnectClient{
+					DefaultClient:           baseClient(),
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				}
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		},
+		{
+			name: "none (public)",
+			client: func() fosite.Client {
+				c := baseClient()
+				c.Public = true
+				return &fosite.DefaultOpenIDConnectClient{
+					DefaultClient:           c,
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+				}
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodNone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := tt.client()
+			stored := buildStoredClient(c)
+
+			require.Equal(t, tt.wantMethod, stored.TokenEndpointAuthMethod,
+				"the stored auth method must equal the raw field, not a getter default")
+			assert.True(t, fingerprintOfClient(c).equal(stored.fingerprint()),
+				"the live client's fingerprint must agree with the stored row's fingerprint")
+		})
+	}
+}
+
 // TestRedisStorage_ReconcileConfiguredClient covers the create/idempotent/
 // reject matrix ReconcileConfiguredClient must implement over Redis: create
-// when absent (no TTL), no-op when the existing record is itself configured
-// and fingerprint-equal, and refuse with ErrAlreadyExists when the existing
-// record is DCR-issued or a different configured client.
+// when absent (no TTL), no-op on an equivalent record, and refuse with
+// ErrAlreadyExists when the existing record is DCR-issued. Replacing a
+// configured client is covered by TestReconcileConfiguredClient_SharedBehaviour.
 func TestRedisStorage_ReconcileConfiguredClient(t *testing.T) {
 	t.Parallel()
 
@@ -752,21 +1012,61 @@ func TestRedisStorage_ReconcileConfiguredClient(t *testing.T) {
 		})
 	})
 
-	t.Run("refuses a different configured client at the same ID", func(t *testing.T) {
-		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.ReconcileConfiguredClient(ctx, newConfigured("configured", "secret", []string{"openid"})))
-
-			err := s.ReconcileConfiguredClient(ctx, newConfigured("configured", "secret", []string{"profile"}))
-			require.ErrorIs(t, err, ErrAlreadyExists)
-		})
-	})
-
 	t.Run("rejects a client carrying the DCR-issued marker", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			err := s.ReconcileConfiguredClient(ctx, newDCRClient(t, "configured", oauthproto.TokenEndpointAuthMethodClientSecretBasic, "secret"))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "must not carry the DCR-issued marker")
 		})
+	})
+}
+
+// TestRedisStorage_CIMDBuiltClientRoundTrip pins that a client built by the
+// CIMD decorator survives UpsertDCRIssuedClient + GetClient intact, since the
+// decorator serves that row when its fetch limiter refuses a lookup.
+func TestRedisStorage_CIMDBuiltClientRoundTrip(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		id := "https://client.example.com/metadata.json"
+		built := registration.MarkDCRIssued(buildFositeClient(fositeClientParams{
+			doc: &cimd.ClientMetadataDocument{
+				ClientID:     id,
+				RedirectURIs: []string{"https://client.example.com/cb", "http://localhost/cb"},
+			},
+			resolvedScopes:          []string{"openid", "profile"},
+			grantTypes:              []string{"authorization_code", "refresh_token"},
+			responseTypes:           []string{"code"},
+			tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+			allowedAudiences:        []string{"https://mcp.example.com"},
+		}))
+		require.NoError(t, s.UpsertDCRIssuedClient(ctx, built))
+
+		got, err := s.GetClient(ctx, id)
+		require.NoError(t, err)
+		assert.True(t, got.IsPublic())
+		assert.True(t, registration.DCRIssued(got))
+		assert.Equal(t, built.GetRedirectURIs(), got.GetRedirectURIs())
+		assert.ElementsMatch(t, built.GetGrantTypes(), got.GetGrantTypes())
+		assert.ElementsMatch(t, built.GetResponseTypes(), got.GetResponseTypes())
+		assert.ElementsMatch(t, built.GetScopes(), got.GetScopes())
+		assert.ElementsMatch(t, built.GetAudience(), got.GetAudience())
+		oidc, ok := got.(fosite.OpenIDConnectClient)
+		require.True(t, ok)
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodNone, oidc.GetTokenEndpointAuthMethod())
+		_, ok = registration.RegisteredLoopbackRedirectURI(got, "http://localhost:54321/cb")
+		assert.True(t, ok, "loopback dynamic-port matching must survive the round trip")
+	})
+}
+
+func TestRedisStorage_ReconcileConfiguredSecretClientShapes(t *testing.T) {
+	withRedisStorage(t, func(_ context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		requireSecretClientShapes(t, s)
+	})
+}
+
+func TestRedisStorage_ReconcileConfiguredPrivateKeyJWTClient(t *testing.T) {
+	withRedisStorage(t, func(_ context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+		requireKeyRotationOverwrites(t, s)
+		assert.Equal(t, time.Duration(0), mr.TTL(redisKey(s.keyPrefix, KeyTypeClient, "broker")))
 	})
 }
 
@@ -791,34 +1091,34 @@ func TestRedisStorage_UpsertDCRIssuedClient(t *testing.T) {
 
 	t.Run("creates when absent, with the DCR TTL", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
-			client := newDCRClient(t, "cimd-client", oauthproto.TokenEndpointAuthMethodNone, "")
+			client := newDCRClient(t, "https://cimd.example/client.json", oauthproto.TokenEndpointAuthMethodNone, "")
 			require.NoError(t, s.UpsertDCRIssuedClient(ctx, client))
 
-			retrieved, err := s.GetClient(ctx, "cimd-client")
+			retrieved, err := s.GetClient(ctx, "https://cimd.example/client.json")
 			require.NoError(t, err)
 			assert.True(t, registration.DCRIssued(retrieved))
-			key := redisKey(s.keyPrefix, KeyTypeClient, "cimd-client")
+			key := redisKey(s.keyPrefix, KeyTypeClient, "https://cimd.example/client.json")
 			assert.InDelta(t, DefaultDCRClientTTL.Seconds(), mr.TTL(key).Seconds(), 60)
 		})
 	})
 
 	t.Run("replaces and renews when existing row is DCR-issued", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
-			first := newDCRClient(t, "cimd-client", oauthproto.TokenEndpointAuthMethodNone, "")
+			first := newDCRClient(t, "https://cimd.example/client.json", oauthproto.TokenEndpointAuthMethodNone, "")
 			require.NoError(t, s.UpsertDCRIssuedClient(ctx, first))
 
-			key := redisKey(s.keyPrefix, KeyTypeClient, "cimd-client")
+			key := redisKey(s.keyPrefix, KeyTypeClient, "https://cimd.example/client.json")
 			mr.FastForward(DefaultDCRClientTTL - time.Hour)
 
 			second, err := registration.New(registration.Config{
-				ID:                      "cimd-client",
+				ID:                      "https://cimd.example/client.json",
 				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
 				RedirectURIs:            []string{"https://app.example/cb-v2"},
 			})
 			require.NoError(t, err)
 			require.NoError(t, s.UpsertDCRIssuedClient(ctx, second))
 
-			retrieved, err := s.GetClient(ctx, "cimd-client")
+			retrieved, err := s.GetClient(ctx, "https://cimd.example/client.json")
 			require.NoError(t, err)
 			assert.Equal(t, []string{"https://app.example/cb-v2"}, retrieved.GetRedirectURIs(),
 				"second call must replace the stored row's data")
@@ -829,13 +1129,13 @@ func TestRedisStorage_UpsertDCRIssuedClient(t *testing.T) {
 
 	t.Run("refuses to overwrite a non-DCR-issued client", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			configured := newConfigured("configured", "secret")
+			configured := newConfigured("https://cimd.example/configured.json", "secret")
 			require.NoError(t, s.ReconcileConfiguredClient(ctx, configured))
 
-			err := s.UpsertDCRIssuedClient(ctx, newDCRClient(t, "configured", oauthproto.TokenEndpointAuthMethodNone, ""))
+			err := s.UpsertDCRIssuedClient(ctx, newDCRClient(t, "https://cimd.example/configured.json", oauthproto.TokenEndpointAuthMethodNone, ""))
 			require.ErrorIs(t, err, ErrAlreadyExists)
 
-			retrieved, err := s.GetClient(ctx, "configured")
+			retrieved, err := s.GetClient(ctx, "https://cimd.example/configured.json")
 			require.NoError(t, err)
 			assert.False(t, registration.DCRIssued(retrieved), "the configured client must be untouched")
 		})
@@ -952,8 +1252,8 @@ func TestRedisStorage_RenewClientTTL(t *testing.T) {
 
 			key := redisKey(s.keyPrefix, KeyTypeClient, "dcr-public-renew")
 
-			// Age the registration so only a small slice of the TTL remains.
-			mr.FastForward(DefaultDCRClientTTL - time.Hour)
+			// Age the registration so only a small slice of its unused TTL remains.
+			mr.FastForward(DefaultUnusedDCRClientTTL - time.Hour)
 			ttlBefore := mr.TTL(key)
 			require.Positive(t, ttlBefore)
 			require.Less(t, ttlBefore, 2*time.Hour, "precondition: TTL should be near expiry")
@@ -1060,11 +1360,101 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		})
 	})
 
-	t.Run("expired JTI is not stored", func(t *testing.T) {
+	t.Run("backend failure is recorded for the client authentication strategy", func(t *testing.T) {
+		t.Parallel()
+		s := NewRedisStorageWithClient(newUnreachableRedisClient(t), "test:auth:")
+		ctx, recorded := server.NewClientAssertionStoreFailureContext(context.Background())
+		err := s.ClientAssertionJWTValid(ctx, "any-jti")
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, fosite.ErrJTIKnown)
+		assert.Equal(t, err, recorded())
+	})
+
+	t.Run("failure to record the jti is recorded for the client authentication strategy", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			mr.Close()
+			err := s.SetClientAssertionJWT(ctx, "any-jti", time.Now().Add(time.Minute))
+			require.Error(t, err)
+			assert.Equal(t, err, recorded())
+		})
+	})
+
+	t.Run("replay is not recorded as a backend failure", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour)))
-			err := s.ClientAssertionJWTValid(ctx, "expired-jti")
-			require.NoError(t, err) // Should be valid because expired JTI is not stored
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
+			require.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "test-jti"), fosite.ErrJTIKnown)
+			assert.NoError(t, recorded())
+		})
+	})
+
+	t.Run("deadline in the past is invalid_client and leaves the reservation", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "past-jti"))
+			key := redisKey(s.keyPrefix, KeyTypeJWT, "past-jti")
+			ttlBefore := mr.TTL(key)
+			require.Positive(t, ttlBefore)
+
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			err := s.SetClientAssertionJWT(ctx, "past-jti", time.Now().Add(-time.Hour))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+			assert.NoError(t, recorded())
+
+			assert.Equal(t, ttlBefore, mr.TTL(key), "the reservation must stay as it was")
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "past-jti"), fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("the key gets the deadline it is given as its TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "ttl-jti"))
+			deadline := time.Now().Add(2 * time.Minute)
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "ttl-jti", deadline))
+			ttl := mr.TTL(redisKey(s.keyPrefix, KeyTypeJWT, "ttl-jti"))
+			assert.InDelta(t, time.Until(deadline), ttl, float64(2*time.Second), "the backend must not add retention of its own")
+		})
+	})
+
+	t.Run("excessive lifetime is invalid_client", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+		})
+	})
+
+	t.Run("deadline just in the past is refused and the jti stays reserved", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "past-grace-jti"))
+
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			err := s.SetClientAssertionJWT(ctx, "past-grace-jti", time.Now().Add(-time.Second))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.NoError(t, recorded())
+			assert.True(t, mr.Exists(redisKey(s.keyPrefix, KeyTypeJWT, "past-grace-jti")))
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "past-grace-jti"), fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("deadline cap allows the retention extra", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			maxDeadline := server.ClientAssertionMaxMarkerAhead
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "cap-ok-jti", time.Now().Add(maxDeadline-5*time.Second)))
+
+			err := s.SetClientAssertionJWT(ctx, "cap-over-jti", time.Now().Add(maxDeadline+5*time.Second))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.HintField, "must be at most")
 		})
 	})
 }
@@ -1378,6 +1768,40 @@ func TestRedisStorage_SessionRoundTrip(t *testing.T) {
 			assert.Equal(t, "upstream-session-456", upstreamSess.GetIDPSessionID())
 		})
 	})
+
+	t.Run("verified upstream identity survives access and refresh token storage", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			client := testClient()
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			sess := session.New("user-123", "upstream-session-456", "test-client", session.UserClaims{})
+			sess.VerifiedUpstream = testVerifiedUpstream
+			request := &fosite.Request{
+				ID:             "req-verified",
+				RequestedAt:    time.Now(),
+				Client:         client,
+				RequestedScope: fosite.Arguments{"openid"},
+				GrantedScope:   fosite.Arguments{"openid"},
+				Form:           make(url.Values),
+				Session:        sess,
+			}
+			require.NoError(t, s.CreateAccessTokenSession(ctx, "verified-access", request))
+			require.NoError(t, s.CreateRefreshTokenSession(ctx, "verified-refresh", "verified-access", request))
+
+			gotAccess, err := s.GetAccessTokenSession(ctx, "verified-access", nil)
+			require.NoError(t, err)
+			accessSess, ok := gotAccess.GetSession().(*session.Session)
+			require.True(t, ok)
+			assert.Equal(t, testVerifiedUpstream, accessSess.VerifiedUpstream)
+
+			gotRefresh, err := s.GetRefreshTokenSession(ctx, "verified-refresh", nil)
+			require.NoError(t, err)
+			refreshSess, ok := gotRefresh.GetSession().(*session.Session)
+			require.True(t, ok)
+			assert.Equal(t, testVerifiedUpstream, refreshSess.VerifiedUpstream)
+		})
+	})
+
 }
 
 // --- Refresh Token Tests ---
@@ -2016,7 +2440,7 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 	})
 
 	t.Run("DeleteUpstreamTokensForProvider leaves sibling intact", func(t *testing.T) {
-		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{
 				ProviderID: "provider-a", AccessToken: "a", ExpiresAt: time.Now().Add(time.Hour),
 			}))
@@ -2036,6 +2460,11 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
 			require.NoError(t, err)
 			assert.Len(t, all, 1)
+
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1")
+			assert.False(t, setHas(mr, idxKey, redisUpstreamKey(s.keyPrefix, "session-1", "provider-a")))
+			assert.True(t, setHas(mr, idxKey, redisUpstreamKey(s.keyPrefix, "session-1", "provider-b")),
+				"sibling's session index member must stay")
 		})
 	})
 
@@ -2448,11 +2877,13 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 		return &PendingAuthorization{
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
-			Scopes: []string{"openid", "profile"}, InternalState: state,
+			Scopes: []string{"openid", "profile"}, Resource: "https://api.example.com",
+			ConsentStage: ConsentStageApproved, InternalState: state,
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
 			BrowserBindingHash: "binding-hash",
 			SingleLeg:          true, ChainUpstreams: []string{"provider-1", "provider-2"},
-			CreatedAt: time.Now(),
+			VerifiedUpstream: testVerifiedUpstream,
+			CreatedAt:        time.Now(),
 		}
 	}
 
@@ -2466,9 +2897,41 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.Resource, retrieved.Resource)
+			assert.Equal(t, pending.ConsentStage, retrieved.ConsentStage)
 			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
+			assert.Equal(t, pending.VerifiedUpstream, retrieved.VerifiedUpstream)
+			assert.WithinDuration(t, pending.CreatedAt, retrieved.CreatedAt, time.Nanosecond)
+		})
+	})
+
+	t.Run("re-store retains original deadline", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			pending := makePending("near-deadline")
+			pending.CreatedAt = time.Now().Add(-DefaultPendingAuthorizationTTL + 3*time.Second)
+			key := redisKey(s.keyPrefix, KeyTypePending, "near-deadline")
+			require.NoError(t, s.StorePendingAuthorization(ctx, "near-deadline", pending))
+			require.NoError(t, s.StorePendingAuthorization(ctx, "near-deadline", pending))
+			assert.InDelta(t, 3*time.Second, mr.TTL(key), float64(time.Second))
+			loaded, err := s.LoadPendingAuthorization(ctx, "near-deadline")
+			require.NoError(t, err)
+			assert.Equal(t, pending.CreatedAt.UnixNano(), loaded.CreatedAt.UnixNano())
+
+			pending.CreatedAt = time.Now().Add(-DefaultPendingAuthorizationTTL - time.Second)
+			require.ErrorIs(t, s.StorePendingAuthorization(ctx, "near-deadline", pending), ErrExpired)
+			assert.InDelta(t, 3*time.Second, mr.TTL(key), float64(time.Second))
+			mr.FastForward(4 * time.Second)
+			_, err = s.LoadPendingAuthorization(ctx, "near-deadline")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
+	t.Run("missing creation time is expired", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.ErrorIs(t, s.StorePendingAuthorization(ctx, "missing-time", &PendingAuthorization{}), ErrExpired)
+			assert.False(t, mr.Exists(redisKey(s.keyPrefix, KeyTypePending, "missing-time")))
 		})
 	})
 
@@ -2505,9 +2968,20 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 
 			assert.Empty(t, retrieved.ChainUpstreams, "legacy record must decode with empty ChainUpstreams")
 			assert.Empty(t, retrieved.BrowserBindingHash, "legacy record must decode with empty BrowserBindingHash")
+			assert.Empty(t, retrieved.Resource)
+			assert.Empty(t, retrieved.ConsentStage)
 			// Sanity-check that unrelated fields still populate from the legacy blob.
 			assert.Equal(t, "legacy-client", retrieved.ClientID)
 			assert.Equal(t, "legacy-session", retrieved.SessionID)
+		})
+	})
+
+	t.Run("expired legacy row without Redis TTL is rejected", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypePending, "legacy-expired")
+			require.NoError(t, mr.Set(key, fmt.Sprintf(`{"created_at":%d}`, time.Now().Add(-DefaultPendingAuthorizationTTL-time.Second).Unix())))
+			_, err := s.LoadPendingAuthorization(ctx, "legacy-expired")
+			require.ErrorIs(t, err, ErrExpired)
 		})
 	})
 
@@ -2594,7 +3068,9 @@ func TestRedisStorage_PendingDeviceConfirmation(t *testing.T) {
 		return &PendingDeviceConfirmation{
 			DeviceCode: "device-code", UserCode: "USER-CODE",
 			ResolvedUserID: "user-1", ResolvedUserName: "Ada Lovelace",
-			ResolvedUserEmail: "ada@example.com", CreatedAt: time.Now(),
+			ResolvedUserEmail: "ada@example.com",
+			VerifiedUpstream:  testVerifiedUpstream,
+			CreatedAt:         time.Now(),
 		}
 	}
 
@@ -2610,6 +3086,7 @@ func TestRedisStorage_PendingDeviceConfirmation(t *testing.T) {
 			assert.Equal(t, pending.ResolvedUserID, retrieved.ResolvedUserID)
 			assert.Equal(t, pending.ResolvedUserName, retrieved.ResolvedUserName)
 			assert.Equal(t, pending.ResolvedUserEmail, retrieved.ResolvedUserEmail)
+			assert.Equal(t, pending.VerifiedUpstream, retrieved.VerifiedUpstream)
 		})
 	})
 
@@ -3153,8 +3630,10 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-auth", "USER-AUTH")))
 
-			require.NoError(t, s.MarkDeviceRequestAuthorized(
-				ctx, "device-auth", "user-1", "Alice", "alice@example.com", "session-1"))
+			require.NoError(t, s.MarkDeviceRequestAuthorized(ctx, "device-auth", DeviceAuthorization{
+				UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+				VerifiedUpstream: testVerifiedUpstream,
+			}))
 
 			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-auth")
 			require.NoError(t, err)
@@ -3163,8 +3642,11 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 			assert.Equal(t, "Alice", retrieved.ResolvedUserName)
 			assert.Equal(t, "alice@example.com", retrieved.ResolvedUserEmail)
 			assert.Equal(t, "session-1", retrieved.SessionID)
+			assert.Equal(t, testVerifiedUpstream, retrieved.VerifiedUpstream)
 
-			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", "user-2", "Bob", "bob@example.com", "session-2")
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", DeviceAuthorization{
+				UserID: "user-2", UserName: "Bob", UserEmail: "bob@example.com", SessionID: "session-2",
+			})
 			require.ErrorIs(t, err, ErrInvalidState)
 
 			err = s.MarkDeviceRequestDenied(ctx, "device-auth")
@@ -3182,7 +3664,9 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, DeviceRequestStatusDenied, retrieved.Status)
 
-			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", "user-1", "Alice", "alice@example.com", "session-1")
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", DeviceAuthorization{
+				UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+			})
 			require.ErrorIs(t, err, ErrInvalidState)
 		})
 	})
@@ -3199,8 +3683,9 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 				go func(idx int) {
 					defer wg.Done()
 					if idx%2 == 0 {
-						results[idx] = s.MarkDeviceRequestAuthorized(
-							ctx, "device-auth-race", "user-1", "Alice", "alice@example.com", "session-1")
+						results[idx] = s.MarkDeviceRequestAuthorized(ctx, "device-auth-race", DeviceAuthorization{
+							UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+						})
 					} else {
 						results[idx] = s.MarkDeviceRequestDenied(ctx, "device-auth-race")
 					}
@@ -3481,6 +3966,22 @@ func TestRedisKeyGeneration(t *testing.T) {
 			"test:auth:dcr:23:https://thv.example.com:23:https://idp.example.com:38:https://thv.example.com/oauth/callback:abc123",
 			result)
 	})
+
+	t.Run("redisDCRKey with rotation key", func(t *testing.T) {
+		t.Parallel()
+		key := DCRKey{
+			Issuer:      "https://thv.example.com",
+			UpstreamID:  "https://idp.example.com",
+			RedirectURI: "https://thv.example.com/oauth/callback",
+			ScopesHash:  "abc123",
+		}
+		legacy := redisDCRKey("test:auth:", key)
+		key.RotationKey = "2026-10"
+		// A rotation key appends one length-prefixed segment after the scopes
+		// hash; the empty value must keep producing the pre-rotation key so
+		// rows written before the field existed stay reachable.
+		assert.Equal(t, legacy+":7:2026-10", redisDCRKey("test:auth:", key))
+	})
 }
 
 // TestRedisDCRKey_Distinct pins the colon-safe lookup contract: any pair of
@@ -3595,14 +4096,7 @@ func TestRedisStorage_Health(t *testing.T) {
 func TestRedisStorage_Health_ConnectionFailure(t *testing.T) {
 	t.Parallel()
 
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
-	})
-	storage := NewRedisStorageWithClient(client, "test:auth:")
-
-	// Close the miniredis server to simulate connection failure
-	mr.Close()
+	storage := NewRedisStorageWithClient(newUnreachableRedisClient(t), "test:auth:")
 
 	err := storage.Health(context.Background())
 	require.Error(t, err)
@@ -3759,6 +4253,65 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, got)
 			assert.Contains(t, []string{"rt-zero-1", "rt-zero-2"}, got.RefreshToken)
+		})
+	})
+
+	// foreign_owned_member_not_returned plants a readable row owned by another
+	// user into user-A's index set. The index is keyed by user and every writer
+	// files its row under its own UserID, so this cannot happen through the
+	// public API — the check guards the decode step against an index that says
+	// otherwise, since nothing else re-reads UserID off the row.
+	t.Run("foreign_owned_member_not_returned", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// Row belongs to user-B, written under its own session.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-B", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-B",
+				RefreshToken: "rt-user-B",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			// Name user-B's row from user-A's index set.
+			mr.SAdd(
+				redisSetKey("test:auth:", KeyTypeUserUpstream, "user-A"),
+				redisUpstreamKey("test:auth:", "session-B", "prov-X"),
+			)
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	// foreign_owned_member_does_not_win_selection is the case the plain
+	// not-returned test above cannot catch: user-A owns a legitimate row, and the
+	// foreign row expires later, so the ExpiresAt tie-breaker would select it if
+	// ownership were not checked per row.
+	t.Run("foreign_owned_member_does_not_win_selection", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-A", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-user-A",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-B", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-B",
+				RefreshToken: "rt-user-B",
+				ExpiresAt:    time.Now().Add(24 * time.Hour),
+			}))
+
+			mr.SAdd(
+				redisSetKey("test:auth:", KeyTypeUserUpstream, "user-A"),
+				redisUpstreamKey("test:auth:", "session-B", "prov-X"),
+			)
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-user-A", got.RefreshToken,
+				"the later-expiring foreign row must not win the selection")
 		})
 	})
 
@@ -3970,6 +4523,33 @@ func TestRedisStorage_DCRCredentials_RoundTrip(t *testing.T) {
 // authoritative value, and the stored row is unchanged. This is the fix for
 // the concurrent-replica bug where two replicas racing a cache miss each
 // independently register a distinct RFC 7591 client for the same key.
+// TestRedisStorage_DCRCredentials_RotationKeyRoundTrip pins that
+// DCRKey.RotationKey survives the stored JSON shape and addresses its own
+// Redis row: the same tuple without the rotation key must miss.
+func TestRedisStorage_DCRCredentials_RotationKeyRoundTrip(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		key.RotationKey = "2026-10"
+
+		_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "rotated-client",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		})
+		require.NoError(t, err)
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, key, got.Key, "RotationKey must round-trip through the stored row")
+		assert.Equal(t, "rotated-client", got.ClientID)
+
+		_, err = s.GetDCRCredentials(ctx, dcrFixtureKey())
+		require.ErrorIs(t, err, ErrNotFound,
+			"the tuple without the rotation key must address a different row")
+	})
+}
+
 func TestRedisStorage_DCRCredentials_FirstClaimWins(t *testing.T) {
 	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 		key := dcrFixtureKey()
@@ -4273,19 +4853,14 @@ func TestRedisStorage_DCRCredentials_UpdateTTL(t *testing.T) {
 // TestRedisStorage_DCRCredentials_UpdateConnectionFailure exercises the generic
 // (non-Nil) error branch of UpdateDCRCredentialsIfPresent: a connection failure
 // mid-call must surface as a wrapped error, never as a spurious ErrNotFound or a
-// silent success. Mirrors TestRedisStorage_Health_ConnectionFailure by closing
-// miniredis before the call. (This branch is likewise untested for the sibling
+// silent success. Mirrors TestRedisStorage_Health_ConnectionFailure by using a
+// client that cannot connect. (This branch is likewise untested for the sibling
 // Store path; this closes the caller-visible gap for the update path.)
 func TestRedisStorage_DCRCredentials_UpdateConnectionFailure(t *testing.T) {
 	t.Parallel()
 
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	s := NewRedisStorageWithClient(client, "test:auth:")
-
-	// Close the server so the SET round-trip fails with a connection error
-	// rather than redis.Nil.
-	mr.Close()
+	// The SET round-trip must fail with a connection error rather than redis.Nil.
+	s := NewRedisStorageWithClient(newUnreachableRedisClient(t), "test:auth:")
 
 	_, err := s.UpdateDCRCredentialsIfPresent(context.Background(), &DCRCredentials{
 		Key:                   dcrFixtureKey(),
@@ -4296,6 +4871,7 @@ func TestRedisStorage_DCRCredentials_UpdateConnectionFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrNotFound,
 		"a connection failure must surface as a generic error, not a spurious not-found")
+	assert.ErrorIs(t, err, errSimulatedConnectionFailure)
 }
 
 // TestRedisStorage_DCRCredentials_UpdateInvalidInputRejected pins that Update
@@ -4547,10 +5123,7 @@ func TestRedisStorage_DCRCredentials_UpdateIfUnchangedInvalidInput(t *testing.T)
 func TestRedisStorage_DCRCredentials_UpdateIfUnchangedConnectionFailure(t *testing.T) {
 	t.Parallel()
 
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	s := NewRedisStorageWithClient(client, "test:auth:")
-	mr.Close()
+	s := NewRedisStorageWithClient(newUnreachableRedisClient(t), "test:auth:")
 
 	key := dcrFixtureKey()
 	_, err := s.UpdateDCRCredentialsIfUnchanged(context.Background(),
@@ -4558,6 +5131,7 @@ func TestRedisStorage_DCRCredentials_UpdateIfUnchangedConnectionFailure(t *testi
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrNotFound)
 	assert.NotErrorIs(t, err, ErrDCRCredentialsChanged)
+	assert.ErrorIs(t, err, errSimulatedConnectionFailure)
 }
 
 // TestRedisStorage_DCRCredentials_UpdateIfUnchangedConcurrent pins that the
@@ -5433,4 +6007,399 @@ func TestFilterIndexMembersByPrefix(t *testing.T) {
 			assert.Equal(t, tc.wantDropped, dropped, "dropped slice mismatch")
 		})
 	}
+}
+
+// afterFirstGetHook runs a competing write straight after the first GET of
+// key, while ReconcileConfiguredClient's WATCH is open, so the transaction's
+// EXEC aborts and the method has to retry.
+type afterFirstGetHook struct {
+	mr     *miniredis.Miniredis
+	key    string
+	value  []byte
+	fired  atomic.Bool
+	setErr atomic.Value
+}
+
+func (*afterFirstGetHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *afterFirstGetHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if args := cmd.Args(); cmd.Name() == "get" && len(args) > 1 && args[1] == h.key &&
+			h.fired.CompareAndSwap(false, true) {
+			if setErr := h.mr.Set(h.key, string(h.value)); setErr != nil {
+				h.setErr.Store(setErr)
+			}
+		}
+		return err
+	}
+}
+
+func (*afterFirstGetHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func (h *afterFirstGetHook) requireFired(t *testing.T) {
+	t.Helper()
+	require.True(t, h.fired.Load(), "the competing write must have run during the WATCH")
+	require.Nil(t, h.setErr.Load())
+}
+
+func marshalStoredClient(t *testing.T, c fosite.Client) []byte {
+	t.Helper()
+	data, err := json.Marshal(buildStoredClient(c))
+	require.NoError(t, err)
+	return data
+}
+
+func TestRedisStorage_ReconcileConfiguredClient_RedisSpecific(t *testing.T) {
+	t.Parallel()
+
+	id := reconcileTestClientID
+	audience := []string{"https://mcp.example"}
+	key := func(s *RedisStorage) string { return redisKey(s.keyPrefix, KeyTypeClient, id) }
+	legacyRow := func(t *testing.T, public bool) string {
+		t.Helper()
+		row := map[string]any{
+			"id": id, "grant_types": []string{oauthproto.GrantTypeTokenExchange},
+			"scopes": []string{"a"}, "audience": audience, "public": public,
+		}
+		data, err := json.Marshal(row)
+		require.NoError(t, err)
+		return string(data)
+	}
+
+	t.Run("replace clears the TTL and removes the ID from the DCR cap index", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a"}, audience)))
+			mr.SetTTL(key(s), time.Hour)
+			_, err := mr.ZAdd(s.dcrClientIndexKey(), 1, id)
+			require.NoError(t, err)
+
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a", "b"}, audience)))
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key(s)))
+			members, err := mr.ZMembers(s.dcrClientIndexKey())
+			if err != nil {
+				assert.ErrorIs(t, err, miniredis.ErrKeyNotFound)
+			}
+			assert.NotContains(t, members, id)
+		})
+	})
+
+	t.Run("legacy delegate row without reserved or identity keys is replaced", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, mr.Set(key(s), legacyRow(t, false)))
+
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a", "b"}, audience)))
+
+			got, err := s.GetClient(ctx, id)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, []string{"a", "b"}, []string(got.GetScopes()))
+		})
+	})
+
+	t.Run("legacy public row with a TTL and no DCR marker is refused as DCR-issued", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, mr.Set(key(s), legacyRow(t, true)))
+			mr.SetTTL(key(s), time.Hour)
+
+			err := s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a"}, audience))
+
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "DCR-issued")
+		})
+	})
+
+	t.Run("placeholder with an empty identity persists Reserved and is refused against a delegate", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testPlaceholder(t, id, "", []string{"a"}, nil)))
+
+			raw, err := mr.Get(key(s))
+			require.NoError(t, err)
+			var persisted storedClient
+			require.NoError(t, json.Unmarshal([]byte(raw), &persisted))
+			assert.True(t, persisted.Reserved)
+			assert.Empty(t, persisted.IdentityFingerprint)
+
+			err = s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a"}, audience))
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "stored row is a SPIFFE-reserved placeholder")
+		})
+	})
+
+	t.Run("WATCH abort on the replace path is retried and re-evaluates the kind", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a"}, audience)))
+			hook := &afterFirstGetHook{mr: mr, key: key(s), value: marshalStoredClient(t, testPlaceholder(t, id, "id-a", []string{"a"}, nil))}
+			s.client.AddHook(hook)
+
+			err := s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a", "b"}, audience))
+
+			hook.requireFired(t)
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "stored row is a SPIFFE-reserved placeholder")
+			got, getErr := s.GetClient(ctx, id)
+			require.NoError(t, getErr)
+			assert.True(t, isReservedPlaceholder(got), "the competing placeholder must survive")
+		})
+	})
+}
+
+// TestRedisStorage_ReconcileConfiguredClient_WarnsOnceAcrossWatchRetry does
+// not run in parallel: it swaps the global slog default.
+func TestRedisStorage_ReconcileConfiguredClient_WarnsOnceAcrossWatchRetry(t *testing.T) {
+	id := reconcileTestClientID
+	audience := []string{"https://mcp.example"}
+	s, mr := newTestRedisStorage(t)
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.ReconcileConfiguredClient(t.Context(), testDelegateClient(t, id, "s", []string{"a"}, audience)))
+	hook := &afterFirstGetHook{
+		mr: mr, key: redisKey(s.keyPrefix, KeyTypeClient, id),
+		value: marshalStoredClient(t, testDelegateClient(t, id, "s", []string{"a", "c"}, audience)),
+	}
+	s.client.AddHook(hook)
+	logs := captureSlog(t)
+
+	require.NoError(t, s.ReconcileConfiguredClient(t.Context(), testDelegateClient(t, id, "s", []string{"a", "b"}, audience)))
+
+	hook.requireFired(t)
+	warns := logs.warnsFor(id)
+	require.Len(t, warns, 1, "the aborted first attempt must not log")
+	assert.Equal(t, []string{"a", "c"}, warns[0]["old_scopes"], "the WARN reports the row the winning attempt replaced")
+	assert.Equal(t, []string{"a", "b"}, warns[0]["new_scopes"])
+}
+
+func TestRedisStorage_UserIdentityContract(t *testing.T) {
+	t.Parallel()
+	runUserIdentityStorageContract(t, func(t *testing.T) UserStorage {
+		t.Helper()
+		s, _ := newTestRedisStorage(t)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+func TestRedisStorage_CreateProviderIdentity_FailedUserSetWriteLeavesNoLink(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now}))
+
+	// A string at the user's provider-set key makes SADD fail with WRONGTYPE.
+	require.NoError(t, mr.Set(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-1"), "not-a-set"))
+
+	err := s.CreateProviderIdentity(ctx, contractIdentity("user-1", "provider-a", "subject-1"))
+	require.Error(t, err)
+
+	_, err = s.GetProviderIdentity(ctx, "provider-a", "subject-1")
+	assert.True(t, errors.Is(err, ErrNotFound), "got %v", err)
+
+	// The identity can be linked once the set is healthy again.
+	mr.Del(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-1"))
+	require.NoError(t, s.CreateProviderIdentity(ctx, contractIdentity("user-1", "provider-a", "subject-1")))
+}
+
+// setHas reports set membership, treating a missing set as empty.
+func setHas(mr *miniredis.Miniredis, key, member string) bool {
+	ok, err := mr.IsMember(key, member)
+	return err == nil && ok
+}
+
+// upstreamRowInvariant reports whether the row exists, is in the session
+// index and is in the user set; the three must always agree.
+func upstreamRowInvariant(s *RedisStorage, mr *miniredis.Miniredis, userID string) (row, idx, user bool) {
+	key := redisUpstreamKey(s.keyPrefix, "session-1", "provider-a")
+	return mr.Exists(key),
+		setHas(mr, redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1"), key),
+		setHas(mr, redisSetKey(s.keyPrefix, KeyTypeUserUpstream, userID), key)
+}
+
+func TestRedisStorage_DeleteUpstreamTokensForProvider_Atomic(t *testing.T) {
+	t.Parallel()
+
+	userTokens := func(userID string) *UpstreamTokens {
+		return &UpstreamTokens{
+			ProviderID: "provider-a", AccessToken: "a", RefreshToken: "r",
+			UserID: userID, ExpiresAt: time.Now().Add(time.Hour),
+		}
+	}
+
+	t.Run("removes the member from both index sets", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+			row, idx, user := upstreamRowInvariant(s, mr, "user-1")
+			require.True(t, row && idx && user)
+
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+			row, idx, user = upstreamRowInvariant(s, mr, "user-1")
+			assert.False(t, row)
+			assert.False(t, idx)
+			assert.False(t, user)
+		})
+	})
+
+	t.Run("delete then store keeps the invariant", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+			row, idx, user := upstreamRowInvariant(s, mr, "user-1")
+			assert.True(t, row)
+			assert.True(t, idx)
+			assert.True(t, user)
+		})
+	})
+
+	t.Run("rows without a usable user ID are removed without error", func(t *testing.T) {
+		rows := map[string]string{
+			"nullMarker placeholder": nullMarker,
+			"empty user_id":          `{"provider_id":"provider-a","user_id":""}`,
+			"null user_id":           `{"provider_id":"provider-a","user_id":null}`,
+			"missing user_id":        `{"provider_id":"provider-a"}`,
+			"not JSON":               `not-json{`,
+			"JSON scalar":            `42`,
+		}
+		for name, raw := range rows {
+			t.Run(name, func(t *testing.T) {
+				withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+					key := redisUpstreamKey(s.keyPrefix, "session-1", "provider-a")
+					idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1")
+					require.NoError(t, s.client.Set(ctx, key, raw, time.Hour).Err())
+					require.NoError(t, s.client.SAdd(ctx, idxKey, key).Err())
+					userSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, "some-user")
+					require.NoError(t, s.client.SAdd(ctx, userSetKey, key).Err())
+
+					require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+					assert.False(t, mr.Exists(key))
+					assert.False(t, setHas(mr, idxKey, key))
+					assert.True(t, setHas(mr, userSetKey, key), "user set removal must be skipped without a usable user_id")
+				})
+			})
+		}
+	})
+
+	t.Run("wrong-type index key fails the call and changes nothing", func(t *testing.T) {
+		cases := map[string]func(s *RedisStorage) string{
+			"session index": func(s *RedisStorage) string { return redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1") },
+			"user set":      func(s *RedisStorage) string { return redisSetKey(s.keyPrefix, KeyTypeUserUpstream, "user-1") },
+		}
+		for name, badKeyOf := range cases {
+			t.Run(name, func(t *testing.T) {
+				withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+					key := redisUpstreamKey(s.keyPrefix, "session-1", "provider-a")
+					idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "session-1")
+					userSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, "user-1")
+					badKey := badKeyOf(s)
+
+					require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+					require.NoError(t, s.client.Set(ctx, badKey, "not-a-set", 0).Err())
+
+					err := s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a")
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), "WRONGTYPE")
+
+					assert.True(t, mr.Exists(key), "row must survive a failed delete")
+					if badKey != idxKey {
+						assert.True(t, setHas(mr, idxKey, key))
+					}
+					if badKey != userSetKey {
+						assert.True(t, setHas(mr, userSetKey, key))
+					}
+
+					// Repair the index, then the retry removes everything.
+					mr.Del(badKey)
+					require.NoError(t, s.client.SAdd(ctx, badKey, key).Err())
+
+					require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+					row, idx, user := upstreamRowInvariant(s, mr, "user-1")
+					assert.False(t, row)
+					assert.False(t, idx)
+					assert.False(t, user)
+				})
+			})
+		}
+	})
+
+	// A non-atomic delete reads or removes the row with a standalone command,
+	// leaving a window in which a concurrent store under a different owner
+	// lands before the index cleanup. The hook stores the row as user-2 right
+	// after any standalone command naming the row; with a single Lua script
+	// the key only appears inside EVAL/EVALSHA, so the hook must never fire.
+	// The fired count is the regression guard; the invariant checks only
+	// confirm the final state is consistent.
+	t.Run("delete sends no standalone command on the row", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			other := NewRedisStorageWithClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), "test:auth:")
+			t.Cleanup(func() { _ = other.Close() })
+
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", userTokens("user-1")))
+
+			hook := &storeAfterRowCommandHook{
+				key: redisUpstreamKey(s.keyPrefix, "session-1", "provider-a"),
+				store: func() error {
+					return other.StoreUpstreamTokens(context.Background(), "session-1", "provider-a", userTokens("user-2"))
+				},
+			}
+			s.client.AddHook(hook)
+
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+			row, idx, user2 := upstreamRowInvariant(s, mr, "user-2")
+			_, _, user1 := upstreamRowInvariant(s, mr, "user-1")
+			assert.Equal(t, row, idx, "row exists=%v but session index member=%v", row, idx)
+			assert.Equal(t, row, user2, "row exists=%v but user-2 set member=%v", row, user2)
+			assert.False(t, user1, "user-1 set must not reference the row")
+			assert.Zero(t, hook.fired.Load(), "delete must be a single script, not a standalone command on the row")
+		})
+	})
+}
+
+// storeAfterRowCommandHook runs store once, right after any standalone
+// command naming key completes. Script invocations are excluded: the key
+// appears in their KEYS list but they are a single atomic step.
+type storeAfterRowCommandHook struct {
+	key   string
+	store func() error
+	fired atomic.Int32
+}
+
+func (*storeAfterRowCommandHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *storeAfterRowCommandHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		args := cmd.Args()
+		if h.touchesRow(args) && h.fired.CompareAndSwap(0, 1) {
+			if storeErr := h.store(); storeErr != nil {
+				return storeErr
+			}
+		}
+		return err
+	}
+}
+
+func (*storeAfterRowCommandHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func (h *storeAfterRowCommandHook) touchesRow(args []any) bool {
+	if len(args) < 2 {
+		return false
+	}
+	switch strings.ToLower(fmt.Sprint(args[0])) {
+	case "eval", "evalsha", "eval_ro", "evalsha_ro", "script":
+		return false
+	}
+	for _, a := range args[1:] {
+		if a == h.key {
+			return true
+		}
+	}
+	return false
 }

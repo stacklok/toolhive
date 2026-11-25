@@ -4,12 +4,16 @@
 package tokenexchange
 
 import (
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 )
 
@@ -40,7 +44,44 @@ func NewSharedTrustedIssuerValidator(
 	return NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), trustedIssuers, config.AllowedAudiences)
 }
 
+// FactoryOption configures Factory, FactoryWithSharedTrustedIssuerValidator and
+// IDJAGIssuanceFactory. Each factory refuses, with an error, an option it does
+// not apply, so an option is never silently ignored. RefreshTokenFactory takes
+// RefreshTokenOption instead.
+type FactoryOption func(*factoryOptions)
+
+type factoryOptions struct {
+	authorizationDetailsRegistry *authorizationdetails.Registry
+	clientAccessTokenLifespans   map[string]time.Duration
+}
+
+// WithAuthorizationDetailsRegistry configures the factory to pass the registry
+// to its handler. On token exchange, with no registry (or a nil one) the
+// authorization_details parameter is ignored. On ID-JAG redemption, with no
+// registry an ID-JAG that carries an authorization_details claim is refused
+// with unknown_type. The token-exchange factories and IDJAGIssuanceFactory
+// apply it.
+func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) FactoryOption {
+	return func(o *factoryOptions) { o.authorizationDetailsRegistry = registry }
+}
+
+// WithClientAccessTokenLifespans gives the ID-JAG handler a per-client
+// access-token lifespan, keyed by client ID. A redeeming client with an entry
+// gets that lifespan in place of the server's; one without an entry keeps the
+// server's. Either way the token still never outlives its ID-JAG, and a marked
+// token stays under the delegated-access marker cap. Every value must be in
+// [server.MinClientAccessTokenLifespan, server.MaxAccessTokenLifespan]. Only
+// IDJAGIssuanceFactory applies it.
+// The map is copied.
+func WithClientAccessTokenLifespans(lifespans map[string]time.Duration) FactoryOption {
+	cloned := maps.Clone(lifespans)
+	return func(o *factoryOptions) { o.clientAccessTokenLifespans = cloned }
+}
+
 // Factory returns a server.Factory that creates a token exchange Handler.
+// RefreshTokenFactory must be registered alongside it: Handler does not claim
+// requests that involve the refresh-token type, and without that handler they
+// would be unhandled.
 // The delegationLifespan parameter sets the maximum lifetime for delegated tokens;
 // the actual lifetime is the minimum of this value and the subject token's remaining lifetime.
 // Returns an error if delegationLifespan is not in (0, server.MaxAccessTokenLifespan]: a zero
@@ -65,11 +106,18 @@ func NewSharedTrustedIssuerValidator(
 // set is read once at process construction, so removing a client from
 // config revokes its trust on the next restart rather than requiring any
 // explicit revocation step against storage.
+//
+// clientPolicies holds the source policy of the configured delegate clients
+// whose self_issued_subject_tokens is restricted, keyed by client ID. A
+// configured client without an entry keeps blanket trust of self-issued
+// subject tokens. It is read-only after construction.
 func Factory(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
+	clientPolicies map[string]ConfiguredClientPolicy,
+	options ...FactoryOption,
 ) (server.Factory, error) {
 	return FactoryWithSharedTrustedIssuerValidator(
-		delegationLifespan, trustedIssuers, configuredDelegateClients, nil)
+		delegationLifespan, trustedIssuers, configuredDelegateClients, clientPolicies, nil, options...)
 }
 
 // FactoryWithSharedTrustedIssuerValidator is Factory with a shared
@@ -82,7 +130,7 @@ func Factory(
 // 7523 JWT-bearer grants.
 func FactoryWithSharedTrustedIssuerValidator(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
-	shared *MultiIssuerTokenValidator,
+	clientPolicies map[string]ConfiguredClientPolicy, shared *MultiIssuerTokenValidator, options ...FactoryOption,
 ) (server.Factory, error) {
 	if delegationLifespan <= 0 || delegationLifespan > server.MaxAccessTokenLifespan {
 		return nil, fmt.Errorf("tokenexchange: delegationLifespan must be between %v and %v, got %v",
@@ -91,6 +139,11 @@ func FactoryWithSharedTrustedIssuerValidator(
 	for _, id := range configuredDelegateClients {
 		if id == "" {
 			return nil, fmt.Errorf("tokenexchange: configuredDelegateClients must not contain an empty client ID")
+		}
+	}
+	for id := range clientPolicies {
+		if !slices.Contains(configuredDelegateClients, id) {
+			return nil, fmt.Errorf("tokenexchange: clientPolicies names %q, which is not a configured delegate client", id)
 		}
 	}
 	// A trusted-issuer validator owns per-issuer JWKS refresh worker pools that
@@ -103,6 +156,10 @@ func FactoryWithSharedTrustedIssuerValidator(
 	if shared == nil && len(trustedIssuers) > 0 {
 		return nil, fmt.Errorf("tokenexchange: trusted issuers require a shared validator built via " +
 			"NewSharedTrustedIssuerValidator so its JWKS refresh workers can be released on shutdown")
+	}
+	resolved := resolveFactoryOptions(options)
+	if len(resolved.clientAccessTokenLifespans) > 0 {
+		return nil, errors.New("tokenexchange: per-client access token lifespans apply to ID-JAG redemption only")
 	}
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
 		selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
@@ -139,13 +196,23 @@ func FactoryWithSharedTrustedIssuerValidator(
 				AccessTokenStorage:  atStorage,
 				Config:              config.Config,
 			},
-			validator:                 validator,
-			selfValidator:             selfValidator,
-			issuer:                    config.GetAccessTokenIssuer(),
-			delegationLifespan:        delegationLifespan,
-			config:                    config.Config,
-			allowedAudiences:          config.AllowedAudiences,
-			configuredDelegateClients: configuredDelegateClients,
+			validator:                    validator,
+			selfValidator:                selfValidator,
+			issuer:                       config.GetAccessTokenIssuer(),
+			delegationLifespan:           delegationLifespan,
+			config:                       config.Config,
+			allowedAudiences:             config.AllowedAudiences,
+			configuredDelegateClients:    configuredDelegateClients,
+			clientPolicies:               clientPolicies,
+			authorizationDetailsRegistry: resolved.authorizationDetailsRegistry,
 		}, nil
 	}, nil
+}
+
+func resolveFactoryOptions(options []FactoryOption) factoryOptions {
+	var resolved factoryOptions
+	for _, option := range options {
+		option(&resolved)
+	}
+	return resolved
 }

@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	tx "github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // TokenExchangeInboundGrantRunConfig configures RFC 8693 inbound clients and issuer policies.
@@ -38,6 +39,15 @@ type JWTBearerIssuerPolicyRunConfig struct {
 	MaxAssertionAge   string                       `json:"max_assertion_age" yaml:"max_assertion_age"`
 	SubjectBindings   []tx.JWTBearerSubjectBinding `json:"subject_bindings" yaml:"subject_bindings"`
 	AcceptedAudiences []string                     `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
+	// AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes
+	// for the canonical config path; unset accepts both jwt_bearer and id_jag.
+	AcceptedAssertionTypes []tx.JWTBearerAssertionType `json:"accepted_assertion_types,omitempty" yaml:"accepted_assertion_types,omitempty"` //nolint:lll // struct tag cannot be wrapped
+
+	// SubjectMode and ActorIssuers mirror the JWTBearerGrantPolicy fields of the
+	// same names for the canonical config path. They are Go-only: set only from
+	// Go (embedders), so config files cannot set them.
+	SubjectMode  tx.SubjectMode `json:"-" yaml:"-"`
+	ActorIssuers []string       `json:"-" yaml:"-"`
 }
 
 // InboundGrantCapabilities reports the effective grant families after normalization.
@@ -120,14 +130,12 @@ func NormalizeInboundGrants(cfg *RunConfig) (*NormalizedInboundGrants, error) {
 	} else {
 		result.Capabilities.TokenExchange = legacyTokenExchange
 	}
-	// SPIFFE client-auth associations always require the token-exchange grant
-	// (SPIFFEGrantTypeTokenExchange is the only grant type they may declare —
-	// see validateSPIFFEGrants), independent of the legacy/canonical
-	// token-exchange projection above. A SPIFFE-only configuration must not
-	// leave Capabilities.TokenExchange false: that would disable the RFC 8693
-	// grant handler server-wide and reject every SPIFFE client's own token
-	// requests before authentication is even checked.
-	if len(cfg.InboundGrants.SPIFFEClientAuth) > 0 {
+	// An association that lists the token-exchange grant needs the RFC 8693
+	// handler registered even when no canonical or legacy token-exchange
+	// configuration exists. Associations limited to client_credentials do not.
+	if slices.ContainsFunc(cfg.InboundGrants.SPIFFEClientAuth, func(entry SPIFFEClientAuthRunConfig) bool {
+		return slices.Contains(entry.GrantTypes, oauthproto.GrantTypeTokenExchange)
+	}) {
 		result.Capabilities.TokenExchange = true
 	}
 
@@ -201,9 +209,12 @@ func applyJWTBearerPolicies(
 		}
 		seen[policy.IssuerRef] = i
 		issuers[issuerIndex].JWTBearerGrant = &tx.JWTBearerGrantPolicy{
-			MaxAssertionAge:   policy.MaxAssertionAge,
-			SubjectBindings:   cloneSubjectBindings(policy.SubjectBindings),
-			AcceptedAudiences: slices.Clone(policy.AcceptedAudiences),
+			MaxAssertionAge:        policy.MaxAssertionAge,
+			SubjectBindings:        cloneSubjectBindings(policy.SubjectBindings),
+			AcceptedAudiences:      slices.Clone(policy.AcceptedAudiences),
+			AcceptedAssertionTypes: slices.Clone(policy.AcceptedAssertionTypes),
+			SubjectMode:            policy.SubjectMode,
+			ActorIssuers:           slices.Clone(policy.ActorIssuers),
 		}
 	}
 	return nil
@@ -233,6 +244,9 @@ func cloneDelegateClients(clients []DelegateClientRunConfig) []DelegateClientRun
 	for i := range cloned {
 		cloned[i].Scopes = slices.Clone(cloned[i].Scopes)
 		cloned[i].Audiences = slices.Clone(cloned[i].Audiences)
+		cloned[i].GrantTypes = slices.Clone(cloned[i].GrantTypes)
+		cloned[i].RedirectURIs = slices.Clone(cloned[i].RedirectURIs)
+		cloned[i].TokenExchange = cloned[i].TokenExchange.Clone()
 	}
 	return cloned
 }
@@ -246,6 +260,8 @@ func cloneTrustedIssuers(issuers []tx.TrustedIssuer) []tx.TrustedIssuer {
 			policy := *cloned[i].JWTBearerGrant
 			policy.SubjectBindings = cloneSubjectBindings(policy.SubjectBindings)
 			policy.AcceptedAudiences = slices.Clone(policy.AcceptedAudiences)
+			policy.AcceptedAssertionTypes = slices.Clone(policy.AcceptedAssertionTypes)
+			policy.ActorIssuers = slices.Clone(policy.ActorIssuers)
 			cloned[i].JWTBearerGrant = &policy
 		}
 	}

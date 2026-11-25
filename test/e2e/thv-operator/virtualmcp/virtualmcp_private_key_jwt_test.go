@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/onsi/ginkgo/v2"
@@ -159,7 +158,7 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 
 		registered := registerPrivateKeyJWTClient(endpoint, clientKey)
 		subjectToken := mintExternalSubjectTokenWithExtraClaim(oidcLocalPort, externalSub, issuer, "azp", "external-agent")
-		assertion := signPrivateKeyJWTAssertion(clientKey, registered.ClientID, issuer+"/oauth/token", "private-key-jwt-assertion-1")
+		assertion := signPrivateKeyJWTAssertion(clientKey, registered.ClientID, issuer, "private-key-jwt-assertion-1")
 		status, body := requestPrivateKeyJWTExchange(endpoint, registered.ClientID, assertion, subjectToken, issuer)
 		gomega.Expect(status).To(gomega.Equal(http.StatusOK), string(body))
 		var token struct {
@@ -172,15 +171,15 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 		gomega.Expect(ok).To(gomega.BeTrue())
 		gomega.Expect(act["sub"]).To(gomega.Equal(registered.ClientID))
 
-		wrongKeyAssertion := signPrivateKeyJWTAssertion(serverKey, registered.ClientID, issuer+"/oauth/token", "private-key-jwt-wrong-key")
+		wrongKeyAssertion := signPrivateKeyJWTAssertion(serverKey, registered.ClientID, issuer, "private-key-jwt-wrong-key")
 		status, body = requestPrivateKeyJWTExchange(endpoint, registered.ClientID, wrongKeyAssertion, subjectToken, issuer)
 		gomega.Expect(status).To(gomega.Equal(http.StatusUnauthorized), string(body))
 
 		status, body = requestPrivateKeyJWTExchange(endpoint, registered.ClientID, assertion, subjectToken, issuer)
-		gomega.Expect(status).To(gomega.Equal(http.StatusBadRequest), string(body))
+		gomega.Expect(status).To(gomega.Equal(http.StatusUnauthorized), string(body))
 		var replayError map[string]any
 		gomega.Expect(json.Unmarshal(body, &replayError)).To(gomega.Succeed())
-		gomega.Expect(replayError["error"]).To(gomega.Equal("jti_known"))
+		gomega.Expect(replayError["error"]).To(gomega.Equal("invalid_client"))
 	})
 })
 
@@ -190,7 +189,7 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 var privateKeyJWTHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func registerPrivateKeyJWTClient(endpoint string, privateKey *rsa.PrivateKey) oauthproto.DynamicClientRegistrationResponse {
-	jwks := &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{Key: privateKey.Public(), KeyID: "dcr-client-key", Algorithm: "RS256", Use: "sig"}}}
+	jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: privateKey.Public(), KeyID: "dcr-client-key", Algorithm: "RS256", Use: "sig"}}}
 	requestBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs: []string{}, TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		TokenEndpointAuthSigningAlg: "RS256", GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, JWKS: jwks,

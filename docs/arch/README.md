@@ -82,6 +82,8 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
    - Multi-tenancy via key prefixes
    - Atomic operations with Lua scripts
    - Configuration and security model
+   - Upstream subject identifiers (RFC 9493 `sub_id`) in access tokens
+   - Access token type (`typ`: `JWT` or `at+jwt`) in JWT access tokens
 
 10. **[Skills System](12-skills-system.md)**
     - Agent Skills lifecycle (discover, build, publish, install)
@@ -138,14 +140,17 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - RFC 7523 JWT-bearer assertions, audience configuration, and replay protection
     - Confused-deputy trust model and the `may_act` / allowlist consent signals
     - Accepted limitations: client-set equivalence, disjoint subject namespaces, partial provenance
+    - Minting ID-JAGs from exchange grants: roles and conformance, request and error contract, target configuration, claims, redeemer guidance, known gaps
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
+    - RFC 9396 `authorization_details`: Go-only type registry; validation and echo on token exchange; the signed ID-JAG claim processed at redemption, granted whole entries copied into the token and the response, the redemption parameter refused
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
-    - Not yet deployable: rejected at startup pending real SVID verification
-    - Configuration-only SPIFFE trust, association, and static-client model
-    - JWT-SVID client-authentication dispatch and validation logic implemented but not yet wired to a trust bundle source
+    - SPIFFE client authentication is enforced for trust domains with a `file` bundle source; `bundle_endpoint` and `workload_api` fail validation
+    - Auth-server TLS listener runs on the proxy runner and vMCP at fixed port 8443; the operator configures its certificate (`tlsListener`) and exposes the port
+    - JWT-SVID and X.509-SVID client authentication (fail closed, certificate leaf profile, no fallback)
+    - Per-association `grant_types` (`grantTypes` in the CRD): `client_credentials`, token exchange, or both, with the `client_credentials` request rules (exact `resource`, no `audience`, no refresh token)
     - Fail-closed policy validation and durable, restart-safe static-client reservation
-    - X.509-SVID validation, trust-bundle loading, and SPIFFE grant/discovery integration remain pending
+    - Endpoint/Workload API loading and RFC 8705 discovery metadata remain pending
 
 ### Existing Documentation
 

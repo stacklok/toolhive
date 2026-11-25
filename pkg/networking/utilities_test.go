@@ -457,6 +457,17 @@ func TestIsPrivateIP(t *testing.T) {
 		// is blocked regardless of what the low 32 bits would decode to.
 		{"Teredo simple address", "2001::1", true},
 		{"Teredo address decoding to a public-looking IPv4", "2001:0:4136:e378:8000:63bf:3fff:fdf6", true},
+
+		// IPv4-compatible (RFC 4291) and IPv4-translated (RFC 2765) addresses:
+		// classified by the IPv4 in the low 32 bits.
+		{"IPv4-compatible -> loopback", "::7f00:1", true},
+		{"IPv4-compatible -> link-local", "::a9fe:a9fe", true},
+		{"IPv4-compatible -> RFC1918 10.x", "::a00:1", true},
+		{"IPv4-compatible -> public", "::8.8.8.8", false},
+		{"IPv4-translated -> loopback", "::ffff:0:7f00:1", true},
+		{"IPv4-translated -> link-local", "::ffff:0:a9fe:a9fe", true},
+		{"IPv4-translated -> RFC1918 192.168.x", "::ffff:0:c0a8:1", true},
+		{"IPv4-translated -> public", "::ffff:0:808:808", false},
 	}
 
 	for _, tt := range tests {
@@ -473,104 +484,142 @@ func TestAddressReferencesPrivateIp(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		address     string
-		expectError bool
+		name    string
+		address string
+		wantErr string // substring of the expected error; empty means allowed
 	}{
 		// Public IP addresses (should not error)
 		{
-			name:        "public IP with port",
-			address:     "8.8.8.8:80",
-			expectError: false,
+			name:    "public IP with port",
+			address: "8.8.8.8:80",
 		},
 		{
-			name:        "public IP with different port",
-			address:     "1.1.1.1:443",
-			expectError: false,
+			name:    "public IP with different port",
+			address: "1.1.1.1:443",
 		},
 
 		// Private IP addresses (should error)
 		{
-			name:        "localhost IP with port",
-			address:     "127.0.0.1:8080",
-			expectError: true,
+			name:    "localhost IP with port",
+			address: "127.0.0.1:8080",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "RFC1918 10.x.x.x with port",
-			address:     "10.0.0.1:80",
-			expectError: true,
+			name:    "RFC1918 10.x.x.x with port",
+			address: "10.0.0.1:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "RFC1918 172.16.x.x with port",
-			address:     "172.16.0.1:80",
-			expectError: true,
+			name:    "RFC1918 172.16.x.x with port",
+			address: "172.16.0.1:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "RFC1918 192.168.x.x with port",
-			address:     "192.168.1.1:80",
-			expectError: true,
+			name:    "RFC1918 192.168.x.x with port",
+			address: "192.168.1.1:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "link-local 169.254.x.x with port",
-			address:     "169.254.1.1:80",
-			expectError: true,
+			name:    "link-local 169.254.x.x with port",
+			address: "169.254.1.1:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "IPv6 loopback with port",
-			address:     "[::1]:8080",
-			expectError: true,
+			name:    "IPv6 loopback with port",
+			address: "[::1]:8080",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "IPv6 link-local with port",
-			address:     "[fe80::1]:80",
-			expectError: true,
+			name:    "IPv6 link-local with port",
+			address: "[fe80::1]:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "IPv6 unique local with port",
-			address:     "[fc00::1]:80",
-			expectError: true,
+			name:    "IPv6 unique local with port",
+			address: "[fc00::1]:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "NAT64 well-known to IMDS with port",
-			address:     "[64:ff9b::a9fe:a9fe]:443",
-			expectError: true,
+			name:    "NAT64 well-known to IMDS with port",
+			address: "[64:ff9b::a9fe:a9fe]:443",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "NAT64 local-use to IMDS with port",
-			address:     "[64:ff9b:1::a9fe:a9fe]:443",
-			expectError: true,
+			name:    "NAT64 local-use to IMDS with port",
+			address: "[64:ff9b:1::a9fe:a9fe]:443",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "NAT64 to public IPv4 with port",
-			address:     "[64:ff9b::8.8.8.8]:443",
-			expectError: false,
+			name:    "NAT64 to public IPv4 with port",
+			address: "[64:ff9b::8.8.8.8]:443",
 		},
 		{
-			name:        "unspecified IPv4 with port",
-			address:     "0.0.0.0:80",
-			expectError: true,
+			name:    "unspecified IPv4 with port",
+			address: "0.0.0.0:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "unspecified IPv6 with port",
-			address:     "[::]:80",
-			expectError: true,
+			name:    "unspecified IPv6 with port",
+			address: "[::]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+
+		// IPv6 zone suffixes must not hide a private address
+		{
+			name:    "zoned IPv6 link-local",
+			address: "[fe80::1%eth0]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv6 loopback",
+			address: "[::1%lo0]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv6 unique local",
+			address: "[fc00::1%eth0]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv4-mapped loopback",
+			address: "[::ffff:127.0.0.1%1]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv4-mapped IMDS",
+			address: "[::ffff:169.254.169.254%eth0]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv4 loopback as passed by the dialer",
+			address: "127.0.0.1%lo0:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned public IPv6",
+			address: "[2001:4860:4860::8888%eth0]:443",
 		},
 
 		// Invalid addresses (should error due to parsing)
 		{
-			name:        "invalid address format",
-			address:     "invalid-address",
-			expectError: true,
+			name:    "hostname instead of IP literal",
+			address: "example.com:443",
+			wantErr: "not an IP address",
 		},
 		{
-			name:        "missing port",
-			address:     "8.8.8.8",
-			expectError: true,
+			name:    "invalid address format",
+			address: "invalid-address",
+			wantErr: "missing port in address",
 		},
 		{
-			name:        "empty address",
-			address:     "",
-			expectError: true,
+			name:    "missing port",
+			address: "8.8.8.8",
+			wantErr: "missing port in address",
+		},
+		{
+			name:    "empty address",
+			address: "",
+			wantErr: "missing port in address",
 		},
 	}
 
@@ -578,11 +627,11 @@ func TestAddressReferencesPrivateIp(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := AddressReferencesPrivateIp(tt.address)
-			if tt.expectError {
-				assert.Error(t, err, "Expected error for address: %s", tt.address)
-			} else {
-				assert.NoError(t, err, "Expected no error for address: %s", tt.address)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
 			}
+			assert.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }

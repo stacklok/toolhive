@@ -21,9 +21,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -71,6 +75,9 @@ const (
 	// MaxRedirectURICount is the maximum number of redirect URIs allowed per client.
 	MaxRedirectURICount = 10
 
+	// maxInlineJWKSKeys limits the number of keys validated for private_key_jwt registration.
+	maxInlineJWKSKeys = 10
+
 	// MaxClientNameLength is the maximum allowed length for a client name.
 	MaxClientNameLength = 256
 
@@ -80,6 +87,34 @@ const (
 	// human-oriented identifier and the same ballpark DoS concerns apply.
 	MaxSoftwareIDLength = 256
 )
+
+// ValidateClientName rejects client names longer than MaxClientNameLength
+// characters (counted in runes, matching the CRD's maxLength semantics) and
+// names that would reach an upstream authorization screen verbatim with
+// control or format runes (newlines, NUL, bidi overrides, zero-width
+// characters) or with leading or trailing whitespace, including
+// whitespace-only names that would display blank.
+// It mirrors the consent page's displayClientName stripping
+// (pkg/authserver/server/handlers) as a rejection instead of a silent
+// strip, so a bad value fails fast at admission, reconcile, and run-config
+// time. An empty name is valid: it selects the default client name.
+func ValidateClientName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if l := utf8.RuneCountInString(name); l > MaxClientNameLength {
+		return fmt.Errorf("must be at most %d characters", MaxClientNameLength)
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("must not have leading or trailing whitespace")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return fmt.Errorf("must not contain control or format characters")
+		}
+	}
+	return nil
+}
 
 // DCRError represents an OAuth 2.0 Dynamic Client Registration error
 // response per RFC 7591 Section 3.2.2.
@@ -346,6 +381,24 @@ func ValidateConfidentialRedirectURIs(redirectURIs []string, authMethod string) 
 	return nil
 }
 
+// ValidatePrivateKeyJWTClientKeys checks persisted private_key_jwt metadata before
+// fosite can use it for signature verification. This also rejects registrations
+// made before the key-size and JWKS limits were introduced. It returns nil for
+// clients that do not use private_key_jwt.
+func ValidatePrivateKeyJWTClientKeys(client fosite.Client) *DCRError {
+	c, ok := client.(fosite.OpenIDConnectClient)
+	if !ok || c.GetTokenEndpointAuthMethod() != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		return nil
+	}
+	return validatePrivateKeyJWTMetadata(&oauthproto.DynamicClientRegistrationRequest{
+		JWKS:                        fositejose.FromFositeKeySet(c.GetJSONWebKeys()),
+		TokenEndpointAuthSigningAlg: c.GetTokenEndpointAuthSigningAlgorithm(),
+	}, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
+}
+
+// validatePrivateKeyJWTMetadata is also run against stored clients on every
+// load (ValidatePrivateKeyJWTClientKeys), so tightening it revokes existing
+// private_key_jwt registrations that no longer pass.
 func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequest, authMethod string) *DCRError {
 	if authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		return nil
@@ -353,18 +406,30 @@ func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequ
 	if req.JWKSURI != "" {
 		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "jwks_uri is not supported; provide inline jwks"}
 	}
-	if req.JWKS == nil || len(req.JWKS.Keys) == 0 {
+	return validatePrivateKeyJWTKeySet(req.JWKS, req.TokenEndpointAuthSigningAlg)
+}
+
+// validatePrivateKeyJWTKeySet is the key check shared by DCR registrations and
+// operator-configured private_key_jwt clients.
+func validatePrivateKeyJWTKeySet(jwks *jose.JSONWebKeySet, algorithm string) *DCRError {
+	if jwks == nil || len(jwks.Keys) == 0 {
 		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "private_key_jwt requires a non-empty inline jwks"}
 	}
-	if !supportedSigningAlgorithm(req.TokenEndpointAuthSigningAlg) {
+	if len(jwks.Keys) > maxInlineJWKSKeys {
+		return &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: fmt.Sprintf("too many inline jwks keys (maximum %d)", maxInlineJWKSKeys),
+		}
+	}
+	if !supportedSigningAlgorithm(algorithm) {
 		return &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
 			ErrorDescription: "token_endpoint_auth_signing_alg is missing or unsupported",
 		}
 	}
 	matching := false
-	for i := range req.JWKS.Keys {
-		keyMatches, dcrErr := validatePrivateKeyJWTKey(&req.JWKS.Keys[i], req.TokenEndpointAuthSigningAlg)
+	for i := range jwks.Keys {
+		keyMatches, dcrErr := validatePrivateKeyJWTKey(&jwks.Keys[i], algorithm)
 		if dcrErr != nil {
 			return dcrErr
 		}

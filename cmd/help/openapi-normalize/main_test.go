@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func TestNormalizeJSONAndYAMLDeterministically(t *testing.T) {
@@ -134,6 +134,8 @@ func TestSchemaNormalizationGuards(t *testing.T) {
 	for source, want := range map[string]string{
 		"authserver.RunConfig":                                "AuthenticationRunConfig",
 		"github_com_stacklok_toolhive_pkg_auth_awssts.Config": "AuthAWSSTSConfig",
+		"awssts.Config":                                       "AuthAWSSTSConfig",
+		"awssts.RoleMapping":                                  "AuthAWSSTSRoleMapping",
 		"github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding": "AuthenticationServerTokenExchangeJWTBearerSubjectBinding",
 		"tokenexchange.JWTBearerGrantPolicy": "TokenExchangeJWTBearerGrantPolicy",
 		"types.ToolRateLimitConfig":          "ToolRateLimitConfig",

@@ -11,26 +11,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
-// filterToolsByPolicy filters tools based on Cedar authorization policies.
-// For each tool, it checks whether the caller (identified by JWT claims in ctx)
-// is authorized to call that tool. Only authorized tools are returned.
-// If authorizer is nil, all tools are returned unmodified.
-func filterToolsByPolicy(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []mcp.Tool {
-	if a == nil {
-		return tools
-	}
-
-	// Note: instantiating the list ensures that no null value is sent over the wire.
-	// This is basically defensive programming, but for clients.
-	indexes := authorizedToolIndexes(ctx, a, tools)
-	filtered := make([]mcp.Tool, 0, len(indexes))
-	for _, index := range indexes {
-		filtered = append(filtered, tools[index])
-	}
-	return filtered
-}
-
-// authorizedToolIndexes returns exact raw-list positions that may be exposed.
+// authorizedToolIndexes returns the positions, in tools, of the tools the caller
+// (identified by JWT claims in ctx) is authorized to call, so a filter can keep
+// the matching raw descriptors. If authorizer is nil, every position is returned.
 func authorizedToolIndexes(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []int {
 	if a == nil {
 		indexes := make([]int, len(tools))

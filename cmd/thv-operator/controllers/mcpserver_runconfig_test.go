@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -1538,6 +1539,30 @@ func TestPopulateScalingConfig(t *testing.T) {
 				assert.Equal(t, "redis.default.svc:6379", sc.SessionRedis.Address)
 				assert.Equal(t, int32(2), sc.SessionRedis.DB)
 				assert.Equal(t, "thv:", sc.SessionRedis.KeyPrefix)
+				assert.Nil(t, sc.SessionRedis.TLS, "omitted tls must keep the existing plaintext behavior")
+			},
+		},
+		{
+			name: "sessionStorage redis with tls — TLS and mounted CA path written to SessionRedis",
+			spec: mcpv1beta1.MCPServerSpec{
+				Image:     testImage,
+				Transport: stdioTransport,
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6380",
+					TLS: &mcpv1beta1.RedisTLSConfig{
+						CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+					},
+				},
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.SessionRedis)
+				assert.Equal(t, &redisconfig.TLSConfig{
+					CACertFile: "/etc/toolhive/session-redis-tls/ca.crt",
+				}, sc.SessionRedis.TLS)
 			},
 		},
 		{
@@ -1667,7 +1692,8 @@ func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
 }
 
 func TestPopulateScalingConfig_GlobalRedisDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	m := &mcpv1beta1.MCPServer{
 		Spec: mcpv1beta1.MCPServerSpec{
@@ -1675,7 +1701,7 @@ func TestPopulateScalingConfig_GlobalRedisDefault(t *testing.T) {
 		},
 	}
 	runConfig := &runner.RunConfig{}
-	populateScalingConfig(runConfig, m)
+	populateScalingConfig(runConfig, m, defaults)
 
 	require.NotNil(t, runConfig.ScalingConfig)
 	require.NotNil(t, runConfig.ScalingConfig.SessionRedis)
@@ -1683,7 +1709,8 @@ func TestPopulateScalingConfig_GlobalRedisDefault(t *testing.T) {
 }
 
 func TestPopulateScalingConfig_SpecTakesPrecedenceOverGlobal(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	m := &mcpv1beta1.MCPServer{
 		Spec: mcpv1beta1.MCPServerSpec{
@@ -1694,18 +1721,18 @@ func TestPopulateScalingConfig_SpecTakesPrecedenceOverGlobal(t *testing.T) {
 		},
 	}
 	runConfig := &runner.RunConfig{}
-	populateScalingConfig(runConfig, m)
+	populateScalingConfig(runConfig, m, defaults)
 
 	require.NotNil(t, runConfig.ScalingConfig.SessionRedis)
 	assert.Equal(t, "local-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
 }
 
 func TestPopulateScalingConfig_NoGlobalNoSpec(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "")
+	t.Parallel()
 
 	m := &mcpv1beta1.MCPServer{Spec: mcpv1beta1.MCPServerSpec{}}
 	runConfig := &runner.RunConfig{}
-	populateScalingConfig(runConfig, m)
+	populateScalingConfig(runConfig, m, nil)
 
 	assert.Nil(t, runConfig.ScalingConfig)
 }

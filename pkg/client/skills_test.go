@@ -59,6 +59,12 @@ func testSkillClientIntegrations() []clientAppConfig {
 			SkillsProjectPath: []string{".factory", "skills"},
 		},
 		{
+			ClientType:        Pi,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".pi", "agent", "skills"},
+			SkillsProjectPath: []string{".pi", "skills"},
+		},
+		{
 			ClientType:        VSCode,
 			SupportsSkills:    true,
 			SkillsGlobalPath:  []string{".copilot", "skills"},
@@ -165,6 +171,7 @@ func TestSupportsSkills(t *testing.T) {
 		{name: "VSCode supports skills", client: VSCode, expected: true},
 		{name: "VSCodeInsider supports skills", client: VSCodeInsider, expected: true},
 		{name: "Factory supports skills", client: Factory, expected: true},
+		{name: "Pi supports skills", client: Pi, expected: true},
 		{name: "Goose supports skills", client: Goose, expected: true},
 		{name: "GeminiCli supports skills", client: GeminiCli, expected: true},
 		{name: "AmpCli supports skills", client: AmpCli, expected: true},
@@ -193,8 +200,8 @@ func TestListSkillSupportingClients(t *testing.T) {
 	clients := cm.ListSkillSupportingClients()
 
 	// Should include AmpCli, Antigravity, ClaudeCode, Cline, Codex, Cursor, Factory, GeminiCli, Goose, Kiro, KimiCli,
-	// MistralVibe, OpenCode, RooCode, Trae, VSCode, VSCodeInsider, Windsurf, and our test-only no-paths-client
-	require.Len(t, clients, 19, "unexpected number of skill-supporting clients: %v", clients)
+	// MistralVibe, OpenCode, Pi, RooCode, Trae, VSCode, VSCodeInsider, Windsurf, and our test-only no-paths-client
+	require.Len(t, clients, 20, "unexpected number of skill-supporting clients: %v", clients)
 
 	// Verify sorted order
 	for i := 1; i < len(clients); i++ {
@@ -335,6 +342,21 @@ func TestGetSkillPath(t *testing.T) {
 			scope:       skills.ScopeProject,
 			projectRoot: "/tmp/myproject",
 			wantPath:    filepath.Join("/tmp/myproject", ".factory", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser Pi",
+			client:    Pi,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".pi", "agent", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject Pi with explicit root",
+			client:      Pi,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".pi", "skills", "my-skill"),
 		},
 		{
 			name:      "ScopeUser VSCode",

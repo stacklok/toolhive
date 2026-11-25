@@ -7,11 +7,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -20,91 +23,53 @@ import (
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/x/errorsx"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
-	idJAGJWTType           = "oauth-id-jag+jwt"
-	jwtBearerReplayPurpose = "jwt-bearer"
+	jwtBearerReplayPurpose      = "jwt-bearer"
+	jwtBearerNoJTIReplayPurpose = "jwt-bearer-no-jti" //nolint:gosec // G101: replay-store purpose label, not a credential
 )
 
 // JWTBearerAssertionValidator verifies cryptographic and registered claims of a
 // plain RFC 7523 JWT-bearer assertion.
 type JWTBearerAssertionValidator interface {
-	ValidateJWTBearerAssertion(ctx context.Context, rawToken, tokenEndpoint string) (*ValidatedClaims, error)
+	ValidateJWTBearerAssertion(
+		ctx context.Context, rawToken string, defaultAudiences []string,
+	) (*ValidatedClaims, error)
 }
 
 // JWTBearerHandler implements the unbound RFC 7523 JWT-bearer grant.
 type JWTBearerHandler struct {
-	*oauth2.HandleHelper
 	validator     JWTBearerAssertionValidator
 	tokenEndpoint string
-	consumer      storage.AssertionJWTConsumer
-	config        tokenExchangeConfig
 	policies      map[string]*JWTBearerGrantPolicy
+	redeemer      *redeemer
 }
 
-// newJWTBearerHandler constructs the shared plain-assertion-matching core of
-// JWTBearerHandler: CanHandleTokenEndpointRequest, CanSkipClientAuth, and
-// request-form/assertion-type validation. It is not, by itself, safe to wire
-// into a real token endpoint — it has no policy, replay-tracking, or
-// issuance dependencies. Kept unexported because of that: the only
-// production path is newJWTBearerIssuanceHandler, which always supplies
-// them. In-package tests use it directly only to exercise this seam in
-// isolation (see jwt_bearer_handler_test.go); HandleTokenEndpointRequest
-// fails closed rather than succeeding when consumer/policies are unset (see
-// below), so an accidental use of this constructor alone can never look like
-// a working grant.
-func newJWTBearerHandler(validator JWTBearerAssertionValidator, tokenEndpoint string) (*JWTBearerHandler, error) {
-	if validator == nil {
-		return nil, errors.New("JWT-bearer assertion validator must not be nil")
-	}
-	if tokenEndpoint == "" {
-		return nil, errors.New("JWT-bearer token endpoint must not be empty")
-	}
-	endpoint, err := url.ParseRequestURI(tokenEndpoint)
-	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
-		return nil, fmt.Errorf("JWT-bearer token endpoint is invalid: %q", tokenEndpoint)
-	}
-	return &JWTBearerHandler{validator: validator, tokenEndpoint: tokenEndpoint}, nil
-}
-
-func newJWTBearerIssuanceHandler(
-	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
-	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-	trustedIssuers []TrustedIssuer,
-) (*JWTBearerHandler, error) {
-	handler, err := newJWTBearerHandler(validator, tokenEndpoint)
-	if err != nil {
+// newJWTBearerIssuanceHandler constructs the production handler for plain
+// jwt-bearer assertions. See issuanceDeps.validate for the dependency
+// requirements.
+func newJWTBearerIssuanceHandler(deps issuanceDeps) (*JWTBearerHandler, error) {
+	if err := deps.validate(); err != nil {
 		return nil, err
 	}
-	if consumer == nil {
-		return nil, errors.New("JWT-bearer storage must implement storage.AssertionJWTConsumer")
-	}
-	if config == nil || strategy == nil || tokenStorage == nil {
-		return nil, errors.New("JWT-bearer issuance dependencies must not be nil")
-	}
-	policies := make(map[string]*JWTBearerGrantPolicy)
-	for _, issuer := range trustedIssuers {
-		if issuer.JWTBearerGrant != nil {
-			policies[issuer.IssuerURL] = issuer.JWTBearerGrant
-		}
-	}
-	if len(policies) == 0 {
-		return nil, errors.New("JWT-bearer issuance requires at least one enabled trusted issuer")
-	}
-	handler.HandleHelper = &oauth2.HandleHelper{
-		AccessTokenStrategy: strategy,
-		AccessTokenStorage:  tokenStorage,
-		Config:              config,
-	}
-	handler.consumer = consumer
-	handler.config = config
-	handler.policies = policies
-	return handler, nil
+	return &JWTBearerHandler{
+		validator:     deps.validator,
+		tokenEndpoint: deps.tokenEndpoint,
+		// AcceptedAssertionTypes may exclude the plain type. Filtering here,
+		// rather than in HandleTokenEndpointRequest, is the entire enforcement
+		// mechanism: an issuer left out of the policy map is indistinguishable
+		// from an issuer never configured at all, so the existing "issuer not
+		// enabled for this grant" rejection already covers issuers that exclude
+		// the plain type. An empty result is valid: every assertion of that
+		// form is then rejected as not enabled.
+		policies: deps.policiesFor(JWTBearerAssertionTypeJWTBearer),
+		redeemer: newRedeemer(deps),
+	}, nil
 }
 
 // CanHandleTokenEndpointRequest only claims plain assertions. A recognized ID-JAG
@@ -112,7 +77,7 @@ func newJWTBearerIssuanceHandler(
 // unsupported typ values remain this handler's responsibility to reject.
 func (*JWTBearerHandler) CanHandleTokenEndpointRequest(_ context.Context, requester fosite.AccessRequester) bool {
 	return requester.GetGrantTypes().ExactOne(oauthproto.GrantTypeJWTBearer) &&
-		assertionType(requester.GetRequestForm().Get("assertion")) != idJAGJWTType
+		assertionType(requester.GetRequestForm().Get("assertion")) != oauthproto.JWTTypeIDJAG
 }
 
 // CanSkipClientAuth permits a credential-free plain JWT-bearer assertion.
@@ -129,21 +94,27 @@ func (*JWTBearerHandler) CanHandleTokenEndpointRequest(_ context.Context, reques
 // closed rather than open.
 func (*JWTBearerHandler) CanSkipClientAuth(ctx context.Context, requester fosite.AccessRequester) bool {
 	form := requester.GetRequestForm()
-	if assertionType(form.Get("assertion")) == idJAGJWTType ||
-		form.Get("client_id") != "" ||
-		form.Get("client_secret") != "" ||
-		form.Get("client_assertion") != "" ||
-		form.Get("client_assertion_type") != "" {
-		return false
+	return assertionType(form.Get("assertion")) != oauthproto.JWTTypeIDJAG && !mayCarryClientCredentials(ctx, form)
+}
+
+// mayCarryClientCredentials reports whether a token request might carry client
+// credentials: a client_id, client_secret, client_assertion or
+// client_assertion_type form field, or HTTP Basic credentials. A missing or
+// malformed raw request counts as "might carry", so callers fail closed.
+func mayCarryClientCredentials(ctx context.Context, form url.Values) bool {
+	// Every value of a field is checked, not just the first, so the decision
+	// matches what a client-authentication strategy that reads any value accepts.
+	for _, field := range []string{"client_id", "client_secret", "client_assertion", "client_assertion_type"} {
+		if slices.ContainsFunc(form[field], func(v string) bool { return v != "" }) {
+			return true
+		}
 	}
 	req, ok := ctx.Value(fosite.RequestContextKey).(*http.Request)
 	if !ok || req == nil {
-		return false
+		return true
 	}
-	if _, _, ok := req.BasicAuth(); ok {
-		return false
-	}
-	return true
+	_, _, basic := req.BasicAuth()
+	return basic
 }
 
 // HandleTokenEndpointRequest validates policy and prepares a bounded access-token session.
@@ -155,70 +126,85 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err != nil {
 		return err
 	}
+	segments, err := canonicalAssertionSegments(assertion)
+	if err != nil {
+		return err
+	}
 	if err := validateAssertionType(assertion); err != nil {
 		return err
 	}
-	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, h.tokenEndpoint)
-	if err != nil {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion is invalid or could not be verified."))
-	}
-	// h.policies is nil when this handler was built by newJWTBearerHandler
-	// directly rather than newJWTBearerIssuanceHandler (the seam tests use it
-	// this way) — a nil map lookup below always misses, so this request is
-	// rejected rather than treated as authorized. Only newJWTBearerIssuanceHandler
-	// is wired into a real token endpoint; see its doc comment.
-	policy, ok := h.policies[claims.Issuer]
-	if !ok {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion issuer is not enabled for this grant."))
-	}
-	if h.consumer == nil {
-		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT-bearer grant is not fully configured."))
-	}
-	resource, err := validateJWTBearerPolicy(requester.GetRequestForm(), claims, policy)
+	claims, err := h.validateAssertion(ctx, assertion)
 	if err != nil {
 		return err
 	}
-	// Consume before issuing. This intentionally fails closed: if issuance fails
-	// after this point, the assertion remains consumed rather than becoming
-	// replayable.
-	replayKey := assertionReplayKey(assertion, claims.JWTID)
-	if err := h.consumeAssertion(ctx, jwtBearerReplayPurpose, claims.Issuer, replayKey, claims.Expiry); err != nil {
-		return err
-	}
-	lifetime, err := h.assertionBoundedLifetime(ctx, claims.Expiry)
+	policy, err := h.enabledPolicy(ctx, claims)
 	if err != nil {
 		return err
 	}
+	// The synthetic client is minted from the validated assertion, so the
+	// parameter refusal's log line names a server-minted client_id. The grant
+	// needs no client authentication and a refused assertion is not consumed,
+	// so the line is at Warn only the first time per (issuer, reason).
 	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
-	issuedSession := session.New(claims.Issuer+"#"+claims.Subject, "", clientID, session.UserClaims{})
-	// This grant links to no upstream IdP login, so the issued token can never
-	// carry an upstream credential. Say so in the token rather than leaving a
-	// resource server to infer it from the absence of a tsid claim, which is
-	// also how an unenriched or foreign-issued identity looks. See
-	// session.NoUpstreamSessionClaimKey.
-	issuedSession.JWTClaims.Extra[session.NoUpstreamSessionClaimKey] = true
-	issuedSession.SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(lifetime))
-	// This grant skips client authentication (CanSkipClientAuth), so fosite
-	// never populates requester's client — attach a synthetic one so every
-	// storage backend's marshal path (which calls GetClient unconditionally)
-	// has a real, non-nil client to serialize.
-	accessRequest, ok := requester.(*fosite.AccessRequest)
-	if !ok {
-		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT-bearer grant requires a *fosite.AccessRequest."))
+	level := func(reason string) slog.Level { return h.redeemer.firstRefusalLevel(claims.Issuer, reason) }
+	if err := refuseDetailsParameter(ctx, requester.GetRequestForm(), clientID, level); err != nil {
+		return err
 	}
-	// Always replace any resolved caller client. Fosite accepts a supplied
-	// public client_id without a secret; retaining it could renew a DCR client
-	// registration TTL after this clientless grant succeeds.
-	accessRequest.Client = storage.NewSyntheticClient(clientID)
-	requester.GrantAudience(resource)
-	requester.SetSession(issuedSession)
+	if err := checkAssertionMaxAge(claims, policy); err != nil {
+		return err
+	}
+	resource, err := requestedResource(requester.GetRequestForm())
+	if err != nil {
+		return err
+	}
+	if err := checkSubjectBinding(claims, policy, resource); err != nil {
+		return plainBindingRefusal(err)
+	}
+	purpose := jwtBearerReplayPurpose
+	if claims.JWTID == "" {
+		purpose = jwtBearerNoJTIReplayPurpose
+	}
+	return h.redeemer.complete(ctx, requester, redemption{
+		claims:   claims,
+		resource: resource,
+		// Namespaced by issuer, so a resource server sees one consistent
+		// subject form for every assertion-derived token, whichever handler
+		// minted it.
+		subject:           claimnames.QualifySubject(claims.Issuer, claims.Subject),
+		replayPurpose:     purpose,
+		replayKey:         assertionReplayKey(segments, claims.JWTID),
+		syntheticClientID: clientID,
+	})
+}
+
+// validateAssertion verifies the assertion and refuses a cnf claim. It runs
+// before the assertion is consumed.
+func (h *JWTBearerHandler) validateAssertion(ctx context.Context, assertion string) (*ValidatedClaims, error) {
+	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.tokenEndpoint})
+	if err != nil {
+		return nil, assertionValidationRefusal(err, "The JWT bearer assertion is invalid or could not be verified.")
+	}
+	// RFC 7800 cnf means the issuer expects proof of possession of a key.
+	// Redeeming the assertion as a bearer token would silently drop that
+	// binding, so refuse it until proof of possession (DPoP or mTLS) is
+	// verified.
+	if restrictionsOf(claims).Confirmation {
+		return nil, invalidAssertion("The JWT bearer assertion must not carry a 'cnf' claim.")
+	}
+	return claims, nil
+}
+
+// checkAssertionMaxAge rejects assertions whose lifetime exceeds the policy maximum.
+func checkAssertionMaxAge(claims *ValidatedClaims, policy *JWTBearerGrantPolicy) error {
+	if claims.IssuedAt.IsZero() || claims.Expiry.IsZero() || claims.Expiry.Sub(claims.IssuedAt) > policy.maxAssertionAge {
+		return invalidAssertion("The JWT bearer assertion exceeds the configured maximum age.")
+	}
 	return nil
 }
 
-func validateJWTBearerPolicy(form url.Values, claims *ValidatedClaims, policy *JWTBearerGrantPolicy) (string, error) {
-	if claims.IssuedAt.IsZero() || claims.Expiry.IsZero() || claims.Expiry.Sub(claims.IssuedAt) > policy.maxAssertionAge {
-		return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion exceeds the configured maximum age."))
-	}
+// requestedResource returns the single resource parameter of the request. Each assertion profile
+// chooses its resource, so this is the choice for plain RFC 7523 and other profiles may differ.
+func requestedResource(form url.Values) (string, error) {
 	resources, present := form["resource"]
 	if !present || len(resources) != 1 || resources[0] == "" {
 		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
@@ -227,21 +213,54 @@ func validateJWTBearerPolicy(form url.Values, claims *ValidatedClaims, policy *J
 	if err := server.ValidateAudienceURI(resources[0]); err != nil {
 		return "", errorsx.WithStack(err)
 	}
+	return resources[0], nil
+}
+
+var (
+	errSubjectUnbound  = errors.New("assertion subject is not listed in subject_bindings")
+	errResourceUnbound = errors.New("resource is not allowed for the assertion subject")
+)
+
+// checkSubjectBinding requires the assertion subject to be bound to the given
+// resource. It returns errSubjectUnbound or errResourceUnbound; each handler
+// maps them to its own response.
+func checkSubjectBinding(claims *ValidatedClaims, policy *JWTBearerGrantPolicy, resource string) error {
 	for _, binding := range policy.SubjectBindings {
 		if binding.Subject == claims.Subject {
-			for _, resource := range binding.AllowedResources {
-				if resource == resources[0] {
-					return resource, nil
-				}
+			if slices.Contains(binding.AllowedResources, resource) {
+				return nil
 			}
-			return "", errorsx.WithStack(&fosite.RFC6749Error{
-				ErrorField: "invalid_target",
-				CodeField:  http.StatusBadRequest,
-			})
+			return errResourceUnbound
 		}
 	}
-	return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
-		"The JWT bearer assertion subject is not configured for this grant."))
+	return errSubjectUnbound
+}
+
+// plainBindingRefusal maps a checkSubjectBinding error for the plain RFC 7523
+// grant, which keeps invalid_grant for an unlisted subject and a bare
+// invalid_target for a resource that is not allowed.
+func plainBindingRefusal(err error) error {
+	switch {
+	case errors.Is(err, errResourceUnbound):
+		return errorsx.WithStack(&fosite.RFC6749Error{ErrorField: "invalid_target", CodeField: http.StatusBadRequest})
+	case errors.Is(err, errSubjectUnbound):
+		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+			"The JWT bearer assertion subject is not configured for this grant."))
+	}
+	return err
+}
+
+// idJAGBindingRefusal maps a checkSubjectBinding error for the ID-JAG path: a
+// valid ID-JAG that the allowlist does not permit is access_denied, because a
+// re-issued one will not help.
+func idJAGBindingRefusal(err error) error {
+	switch {
+	case errors.Is(err, errResourceUnbound):
+		return errorsx.WithStack(redemptionRefusal(fosite.ErrAccessDenied.ErrorField, reasonResourceDenied, ""))
+	case errors.Is(err, errSubjectUnbound):
+		return refuseSubjectUnknown()
+	}
+	return err
 }
 
 // PopulateTokenEndpointResponse issues only an access token.
@@ -251,65 +270,7 @@ func (h *JWTBearerHandler) PopulateTokenEndpointResponse(
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
-	return h.populateAccessTokenResponse(ctx, requester, responder)
-}
-
-// populateAccessTokenResponse issues an access token bounded by the session
-// expiry HandleTokenEndpointRequest set. Shared by both JWT-bearer handlers
-// (plain and ID-JAG-bound), each of which gates on its own
-// CanHandleTokenEndpointRequest before calling this.
-func (h *JWTBearerHandler) populateAccessTokenResponse(
-	ctx context.Context, requester fosite.AccessRequester, responder fosite.AccessResponder,
-) error {
-	if h.HandleHelper == nil {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint("JWT-bearer token issuance is not configured."))
-	}
-	lifetime := h.config.GetAccessTokenLifespan(ctx)
-	if expiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !expiry.IsZero() {
-		remaining := time.Until(expiry)
-		if remaining <= 0 {
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion has expired."))
-		}
-		if remaining < lifetime {
-			lifetime = remaining
-		}
-	}
-	_, err := h.IssueAccessToken(ctx, lifetime, requester, responder)
-	return err
-}
-
-// consumeAssertion marks an assertion's replay key used, mapping consumer
-// errors onto the grant's wire errors. Shared by both JWT-bearer handlers;
-// purpose keeps their replay namespaces separate.
-func (h *JWTBearerHandler) consumeAssertion(
-	ctx context.Context, purpose, issuer, replayKey string, expiry time.Time,
-) error {
-	if err := h.consumer.ConsumeAssertionJWT(ctx, purpose, issuer, replayKey, expiry); err != nil {
-		if errors.Is(err, fosite.ErrJTIKnown) {
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion has already been used."))
-		}
-		// A non-ErrJTIKnown failure here is a storage/operational problem (e.g. a
-		// replay-store outage), not evidence the caller sent a bad assertion —
-		// it must not be indistinguishable from a genuine invalid_grant.
-		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT bearer assertion could not be consumed.").
-			WithWrap(err).WithDebug(err.Error()))
-	}
-	return nil
-}
-
-// assertionBoundedLifetime returns the issued token's lifetime: the
-// configured access-token lifespan, capped by the assertion's remaining
-// validity so a token derived from an assertion can never outlive it.
-func (h *JWTBearerHandler) assertionBoundedLifetime(ctx context.Context, expiry time.Time) (time.Duration, error) {
-	remaining := time.Until(expiry)
-	if remaining <= 0 {
-		return 0, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion has expired."))
-	}
-	lifetime := h.config.GetAccessTokenLifespan(ctx)
-	if remaining < lifetime {
-		lifetime = remaining
-	}
-	return lifetime, nil
+	return h.redeemer.populate(ctx, requester, responder)
 }
 
 func jwtBearerClientID(issuer, subject string) string {
@@ -317,18 +278,39 @@ func jwtBearerClientID(issuer, subject string) string {
 	return storage.SyntheticClientIDPrefix + "jwt-bearer-" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-// assertionReplayKey returns the value used to key the single-use replay
-// check for a JWT-bearer assertion. jti is used when the issuer supplied
-// one; otherwise a hash of the raw assertion JWT stands in for it — the
-// raw assertion (including its signature bytes) is itself guaranteed
-// unique per assertion, so it is an equally valid single-use key. The
-// "noJTI" prefix keeps these synthetic keys visually distinct from real
-// jti values and guarantees they can never collide with one.
-func assertionReplayKey(rawAssertion, jti string) string {
+// canonicalAssertionSegments rejects alternate encodings of a compact JWT before
+// it reaches the validator. The decoded protected header and payload are reused
+// for replay keying; the signature is checked for canonical form but not keyed.
+func canonicalAssertionSegments(assertion string) ([2][]byte, error) {
+	var replaySegments [2][]byte
+	parts := strings.Split(assertion, ".")
+	if len(parts) != 3 {
+		return replaySegments, invalidAssertion("The assertion is not a valid signed JWT.")
+	}
+	for i, part := range parts {
+		decoded, err := base64.RawURLEncoding.DecodeString(part)
+		if err != nil || base64.RawURLEncoding.EncodeToString(decoded) != part {
+			return replaySegments, invalidAssertion("The assertion is not a valid signed JWT.")
+		}
+		if i < len(replaySegments) {
+			replaySegments[i] = decoded
+		}
+	}
+	return replaySegments, nil
+}
+
+// assertionReplayKey uses jti when present; otherwise it hashes the decoded
+// protected header and payload with a length-delimited header. Excluding the
+// signature makes re-signings of the same assertion share a replay slot. The
+// no-jti purpose keeps these keys separate from issuer-supplied jti values.
+func assertionReplayKey(segments [2][]byte, jti string) string {
 	if jti != "" {
 		return jti
 	}
-	digest := sha256.Sum256([]byte(rawAssertion))
+	framed := binary.BigEndian.AppendUint64(nil, uint64(len(segments[0])))
+	framed = append(framed, segments[0]...)
+	framed = append(framed, segments[1]...)
+	digest := sha256.Sum256(framed)
 	return "jwt-bearer-noJTI-" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
@@ -344,10 +326,10 @@ func validateJWTBearerAssertionForm(form url.Values) (string, error) {
 func validateAssertionType(assertion string) error {
 	parsed, err := jwt.ParseSigned(assertion, allowedSignatureAlgorithms)
 	if err != nil {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion is not a valid signed JWT."))
+		return invalidAssertion("The assertion is not a valid signed JWT.")
 	}
 	if len(parsed.Headers) != 1 {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion must contain exactly one JOSE signature."))
+		return invalidAssertion("The assertion must contain exactly one JOSE signature.")
 	}
 	typ, ok := parsed.Headers[0].ExtraHeaders[jose.HeaderType]
 	if !ok {
@@ -355,14 +337,29 @@ func validateAssertionType(assertion string) error {
 	}
 	value, ok := typ.(string)
 	if !ok {
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header must be a string."))
+		return invalidAssertion("The assertion JOSE typ header must be a string.")
 	}
-	if value == "" || value == "JWT" || value == idJAGJWTType {
+	// An ID-JAG is not accepted here. Routing sends every assertion whose typ
+	// is exactly oauthproto.JWTTypeIDJAG to IDJAGHandler, so this handler never
+	// sees one, and any other spelling of that type must stay refused: it has
+	// not been through the client authentication IDJAGHandler requires.
+	if value == "" || value == "JWT" {
 		return nil
 	}
-	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header is not supported."))
+	return invalidAssertion("The assertion JOSE typ header is not supported.")
 }
 
+// assertionType returns the raw JOSE typ header of the assertion, with no
+// normalization. JWT-bearer and ID-JAG routing (CanHandleTokenEndpointRequest
+// of both handlers, and CanSkipClientAuth) compare this value exactly to
+// "oauth-id-jag+jwt", the spelling the ID-JAG draft requires of an issuer.
+// RFC 7515 Section 4.1.9 would also treat a different case, or the
+// "application/" prefix, as the same type, but redemption does not: such an
+// assertion is not routed to IDJAGHandler, and validateAssertionType refuses it
+// with invalid_grant. That narrowness is intended and fails closed. The deny
+// side is the opposite: rejectIDJAGType and pkg/auth call idjag.IsIDJAG, which
+// compares with oauthproto.IsJOSEType, so no spelling of the ID-JAG type passes
+// as an access token. Revisit this if an issuer is found to emit a variant spelling.
 func assertionType(assertion string) string {
 	parsed, err := jwt.ParseSigned(assertion, allowedSignatureAlgorithms)
 	if err != nil || len(parsed.Headers) != 1 {
@@ -377,7 +374,7 @@ func assertionType(assertion string) string {
 // assertion's "aud" must intersect — see JWTBearerGrantPolicy.AcceptedAudiences.
 // "jti" is not required: many real-world IdPs (e.g. Microsoft Entra ID
 // client_credentials tokens) never emit one. When absent, assertionReplayKey
-// falls back to hashing the raw assertion for the replay check instead.
+// hashes the decoded protected header and payload for the replay check.
 func validateJWTBearerAssertionClaims(claims jwt.Claims, issuer string, acceptedAudiences []string) error {
 	if claims.Expiry == nil {
 		return errors.New("assertion is missing required 'exp' claim")
@@ -414,8 +411,12 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 	return false
 }
 
-// JWTBearerIssuanceFactory builds the production RFC 7523 handler. It is only
-// registered by composition when a trusted issuer opts into the grant.
+// JWTBearerIssuanceFactory builds the production RFC 7523 handler. Like the
+// ID-JAG handler it is registered whenever the grant is enabled, even when no
+// trusted issuer accepts the jwt_bearer assertion type (every issuer does
+// unless acceptedAssertionTypes excludes it): a plain assertion from an
+// excluded issuer then gets the precise "issuer is not enabled for this grant"
+// rejection instead of fosite's generic invalid_request.
 //
 // shared is used as the JWTBearerAssertionValidator and is REQUIRED whenever
 // trustedIssuers is non-empty (an error is returned otherwise). The RFC 8693
@@ -428,14 +429,7 @@ func audienceIntersects(audience jwt.Audience, accepted []string) bool {
 // NewSharedTrustedIssuerValidator and hold it for Close.
 func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator) (server.Factory, error) {
 	return jwtBearerGrantFactory(trustedIssuers, shared,
-		func(
-			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
-			config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-			resolvedIssuers []TrustedIssuer,
-		) (any, error) {
-			return newJWTBearerIssuanceHandler(
-				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers)
-		})
+		func(deps issuanceDeps) (any, error) { return newJWTBearerIssuanceHandler(deps) })
 }
 
 // jwtBearerGrantFactory is the shared core of JWTBearerIssuanceFactory and
@@ -449,11 +443,7 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 func jwtBearerGrantFactory(
 	trustedIssuers []TrustedIssuer,
 	shared *MultiIssuerTokenValidator,
-	build func(
-		validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
-		config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-		resolvedIssuers []TrustedIssuer,
-	) (any, error),
+	build func(deps issuanceDeps) (any, error),
 ) (server.Factory, error) {
 	resolvedIssuers, err := ResolveJWTBearerGrantPolicies(trustedIssuers)
 	if err != nil {
@@ -509,7 +499,16 @@ func jwtBearerGrantFactory(
 		// the validator is always the caller-owned, closeable one — this closure
 		// never builds a MultiIssuerTokenValidator whose JWKS workers leak.
 		var validator JWTBearerAssertionValidator = shared
-		return build(validator, config.TokenURL, consumer, config.Config, atStrategy, atStorage, resolvedIssuers)
+		return build(issuanceDeps{
+			validator:        validator,
+			tokenEndpoint:    config.TokenURL,
+			consumer:         consumer,
+			config:           config.Config,
+			strategy:         atStrategy,
+			tokenStorage:     atStorage,
+			trustedIssuers:   resolvedIssuers,
+			allowedAudiences: config.AllowedAudiences,
+		})
 	}, nil
 }
 
@@ -520,8 +519,11 @@ func jwtBearerGrantFactory(
 // that sits between rawStorage and the innermost backend gets an explicit,
 // visible opportunity to intercept or audit assertion-JWT consumption, rather
 // than being silently skipped past. See CIMDStorageDecorator.ConsumeAssertionJWT
-// and SPIFFEStorageDecorator.ConsumeAssertionJWT for the two production
-// decorators that forward it today. A future decorator that omits this method
+// (and the shape guard that NewCIMDShapeGuardStorage returns when CIMD is
+// disabled), SPIFFEStorageDecorator.ConsumeAssertionJWT,
+// ClientAdmissionStorage.ConsumeAssertionJWT and
+// UserKeyedUpstreamStorage.ConsumeAssertionJWT for the production decorators
+// that forward it today. A future decorator that omits this method
 // breaks visibly, right here, with an error naming the offending type -- not
 // silently, by having its ConsumeAssertionJWT logic (if any) never run.
 func assertionJWTConsumer(rawStorage fosite.Storage) (storage.AssertionJWTConsumer, error) {
@@ -533,3 +535,19 @@ func assertionJWTConsumer(rawStorage fosite.Storage) (storage.AssertionJWTConsum
 }
 
 var _ fosite.TokenEndpointHandler = (*JWTBearerHandler)(nil)
+
+// enabledPolicy returns the issuer's policy for this grant. It refuses an
+// issuer that is not enabled for the grant first, so an issuer the validator
+// trusts for another grant gets that refusal, and only then an assertion that
+// carries authorization_details: the details refusal and its log line name only
+// issuers this grant accepts. It runs before the assertion is consumed.
+func (h *JWTBearerHandler) enabledPolicy(ctx context.Context, claims *ValidatedClaims) (*JWTBearerGrantPolicy, error) {
+	policy, ok := h.policies[claims.Issuer]
+	if !ok {
+		return nil, invalidAssertion("The JWT bearer assertion issuer is not enabled for this grant.")
+	}
+	if err := h.redeemer.refuseSignedDetails(ctx, claims); err != nil {
+		return nil, err
+	}
+	return policy, nil
+}

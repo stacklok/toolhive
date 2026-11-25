@@ -643,7 +643,7 @@ func TestWorkflowAuditor_ExtractSubjects(t *testing.T) {
 				ctx = auth.WithIdentity(ctx, tt.identity)
 			}
 
-			subjects := auditor.extractSubjects(ctx)
+			subjects := auditor.extractSubjects(ctx, EventTypeWorkflowStarted)
 
 			for key, expectedValue := range tt.wantSubjects {
 				assert.Equal(t, expectedValue, subjects[key], "subject key %s mismatch", key)

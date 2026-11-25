@@ -33,22 +33,22 @@ thv ai-plugin sync [flags]
 ### Options
 
 ```
-      --adopt                 Write lock entries for existing unmanaged project-scope installs
-      --allow-unsigned        Record plugins as unsigned in the lock file: when adopting installs whose signature state cannot be established (--adopt), and when repairing an entry that records no trust decision and whose content is unsigned
-      --check                 Report drift without installing, writing, or removing anything
-      --clients string        Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
-      --format string         Output format (json, text) (default "text")
-  -h, --help                  help for sync
-      --project-root string   Project root path (default: auto-detected from the current directory)
-      --prune                 Remove installs no longer present in the lock file
-      --public-key string     Path to the cosign public key used to verify key-pair-signed plugins during --adopt
-      --yes                   Skip the confirmation prompt (required when not running interactively)
+      --adopt[=true|false]            Write lock entries for existing unmanaged project-scope installs
+      --allow-unsigned[=true|false]   Record plugins as unsigned in the lock file: when adopting installs whose signature state cannot be established (--adopt), and when repairing an entry that records no trust decision and whose content is unsigned
+      --check[=true|false]            Report drift without installing, writing, or removing anything
+      --clients string                Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
+      --format string                 Output format (json, text) (default "text")
+  -h, --help[=true|false]             help for sync
+      --project-root string           Project root path (default: auto-detected from the current directory)
+      --prune[=true|false]            Remove installs no longer present in the lock file
+      --public-key string             Path to the cosign public key used to verify key-pair-signed plugins during --adopt
+      --yes[=true|false]              Skip the confirmation prompt (required when not running interactively)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

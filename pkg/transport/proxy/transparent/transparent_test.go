@@ -159,6 +159,68 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 	assert.False(t, ok, "no session should be added")
 }
 
+// TestStreamableHTTPTransparentProxyForwardsClientResponse verifies that the
+// transparent proxy used by thv proxy and remote streamable-http runs forwards
+// client-response POSTs and preserves the upstream 202 response.
+func TestStreamableHTTPTransparentProxyForwardsClientResponse(t *testing.T) {
+	t.Parallel()
+
+	const message = `{"jsonrpc":"2.0","id":"server-1","result":{}}`
+	type capturedRequest struct {
+		method string
+		path   string
+		body   []byte
+	}
+	received := make(chan capturedRequest, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read client response: %v", err)
+			return
+		}
+		received <- capturedRequest{method: r.Method, path: r.URL.Path, body: body}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(target.Close)
+
+	targetURL, err := url.Parse(target.URL)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	p := NewTransparentProxy("127.0.0.1", 0, targetURL.String(), nil, nil, nil,
+		false, false, "", nil, nil, "", false)
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+	require.NoError(t, p.Start(ctx))
+
+	requestCtx, requestCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer requestCancel()
+	req, err := http.NewRequestWithContext(
+		requestCtx,
+		http.MethodPost,
+		fmt.Sprintf("http://%s/mcp", p.ListenerAddr()),
+		strings.NewReader(message),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+	assert.Empty(t, responseBody, "client response 202 should have no body")
+
+	select {
+	case request := <-received:
+		assert.Equal(t, http.MethodPost, request.method)
+		assert.Equal(t, "/mcp", request.path)
+		assert.JSONEq(t, message, string(request.body))
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive client response")
+	}
+}
+
 func TestHeaderBasedSessionInitialization(t *testing.T) {
 	t.Parallel()
 
@@ -1487,34 +1549,6 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 	}
 }
 
-// TestTransparentProxy_HealthCheckNotRunBeforeInitialization tests that health checks
-// are skipped until the server is initialized
-func TestTransparentProxy_HealthCheckNotRunBeforeInitialization(t *testing.T) {
-	t.Parallel()
-
-	tracker, callback := newCallbackTracker()
-
-	// Create a failing server
-	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer failingServer.Close()
-
-	proxy, ctx, cancel := setupRemoteProxyTest(t, failingServer.URL, callback)
-	defer cancel()
-	defer func() { _ = proxy.Stop(ctx) }()
-
-	// Do NOT mark server as initialized - health checks should be skipped
-
-	// Wait for health check cycle (should be skipped since server is not initialized)
-	time.Sleep(150 * time.Millisecond)
-	assert.False(t, tracker.isInvoked(), "Callback should NOT be invoked before server initialization")
-
-	// Proxy should still be running
-	running, _ := proxy.IsRunning()
-	assert.True(t, running, "Proxy should continue running when server is not initialized")
-}
-
 // TestTransparentProxy_HealthCheckFailureWithNilCallback tests that proxy stops
 // gracefully even when callback is nil
 func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
@@ -1661,7 +1695,7 @@ func TestPrefixHandlers_MountingAndRouting(t *testing.T) {
 				prometheusHandler,
 				authInfoHandler,
 				prefixHandlers,
-				true,  // enableHealthCheck
+				false, // enableHealthCheck: the health monitor's backend ping would read as a proxied request
 				false, // isRemote
 				"streamable-http",
 				nil, // onHealthCheckFailed
@@ -1716,10 +1750,10 @@ func TestMetricsNotServedWithoutHandler(t *testing.T) {
 		"127.0.0.1",
 		0,
 		backend.URL,
-		nil, // no prometheusHandler: metrics live on the diagnostics listener
-		nil, // authInfoHandler
-		nil, // prefixHandlers
-		true,
+		nil,   // no prometheusHandler: metrics live on the diagnostics listener
+		nil,   // authInfoHandler
+		nil,   // prefixHandlers
+		false, // enableHealthCheck: the health monitor's backend ping would read as a proxied request
 		false,
 		"streamable-http",
 		nil,

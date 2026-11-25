@@ -5,8 +5,11 @@ package authserver
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -25,12 +28,10 @@ const (
 	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
 	SPIFFEAuthenticationMethodJWT = spiffeauth.SPIFFEAuthenticationMethodJWT
 
-	// SPIFFEGrantTypeTokenExchange is the only SPIFFE client grant supported by
-	// this configuration surface.
-	SPIFFEGrantTypeTokenExchange = oauthproto.GrantTypeTokenExchange
-
 	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
 	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
+	// SPIFFEBundleSourceTypeFile selects a locally mounted SPIFFE trust bundle.
+	SPIFFEBundleSourceTypeFile SPIFFEBundleSourceType = "file"
 	// SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.
 	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
 
@@ -69,9 +70,9 @@ type SPIFFETrustDomainRunConfig struct {
 	// domain. No authentication method is enabled when the list is empty.
 	Methods []SPIFFEAuthenticationMethod `json:"methods" yaml:"methods"`
 
-	// BundleSource declares exactly one future trust-bundle source. It is
-	// validated for shape only; fetching or loading a bundle from it is a
-	// later step.
+	// BundleSource declares exactly one trust-bundle source and is validated for
+	// shape here. Only the file source is loaded in this build; bundle_endpoint
+	// and workload_api are rejected by Validate.
 	BundleSource SPIFFEBundleSourceRunConfig `json:"bundle_source" yaml:"bundle_source"`
 }
 
@@ -81,6 +82,7 @@ type SPIFFEBundleSourceRunConfig struct {
 	Type SPIFFEBundleSourceType `json:"type" yaml:"type"`
 
 	Endpoint    *SPIFFEBundleEndpointSourceRunConfig    `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	File        *SPIFFEFileBundleSourceRunConfig        `json:"file,omitempty" yaml:"file,omitempty"`
 	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceRunConfig `json:"workload_api,omitempty" yaml:"workload_api,omitempty"`
 }
 
@@ -91,9 +93,16 @@ type SPIFFEBundleEndpointSourceRunConfig struct {
 	// Profile selects how the endpoint's TLS connection is authenticated:
 	// SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
 	// SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-	// X.509-SVID root). Required, since the future bundle loader cannot
-	// otherwise know which trust anchor to use for the initial connection.
+	// X.509-SVID root). Required, since an endpoint loader needs this profile
+	// to choose the trust anchor for its initial connection.
 	Profile SPIFFEBundleEndpointProfile `json:"profile" yaml:"profile"`
+}
+
+// SPIFFEFileBundleSourceRunConfig declares a trust bundle read from a local
+// file, typically a mounted ConfigMap or Secret containing a SPIFFE JWKS
+// trust-bundle document.
+type SPIFFEFileBundleSourceRunConfig struct {
+	Path string `json:"path" yaml:"path"`
 }
 
 // SPIFFEWorkloadAPIBundleSourceRunConfig selects the local SPIFFE Workload API.
@@ -136,18 +145,18 @@ type SPIFFEClientAuthRunConfig struct {
 	Methods []SPIFFEAuthenticationMethod `json:"methods" yaml:"methods"`
 
 	// Resources are RFC 8707 resource indicators this association may
-	// request. Must be a subset of the server's allowed_audiences allowlist
-	// (RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list
-	// DelegateClientRunConfig.Audiences is validated against. Distinct from
-	// Audiences: a resource permission does not imply the same value is also
-	// a permitted token audience, or vice versa.
+	// request. At least one is required for every association: both
+	// client_credentials and token exchange take exactly one resource per
+	// request and grant it as the token audience. Must be a subset of the
+	// server's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the
+	// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
+	// validated against.
 	Resources []string `json:"resources,omitempty" yaml:"resources,omitempty"`
 
-	// Audiences are RFC 8693 token audiences this association may request.
-	// This is an independent request dimension from Resources: it is not
-	// bounded by allowed_audiences (which is an RFC 8707 resource-URI list)
-	// and may contain non-URI logical audience identifiers.
-	Audiences []string `json:"audiences" yaml:"audiences"`
+	// Audiences is deprecated and ignored; use Resources. It stays in the
+	// schema because v0.65.0 required it, and a warning is logged at startup
+	// when it is set.
+	Audiences []string `json:"audiences,omitempty" yaml:"audiences,omitempty"`
 
 	// Scopes are OAuth scopes granted to this association. They must be a
 	// subset of the server's effective supported scopes.
@@ -164,7 +173,6 @@ type SPIFFEAuthorizationPolicy struct {
 	grantTypes []string
 	scopes     []string
 	resources  []string
-	audiences  []string
 }
 
 // GrantTypes returns a copy of the permitted OAuth grant types.
@@ -175,9 +183,6 @@ func (p SPIFFEAuthorizationPolicy) Scopes() []string { return slices.Clone(p.sco
 
 // Resources returns a copy of the permitted RFC 8707 resource indicators.
 func (p SPIFFEAuthorizationPolicy) Resources() []string { return slices.Clone(p.resources) }
-
-// Audiences returns a copy of the permitted RFC 8693 token audiences.
-func (p SPIFFEAuthorizationPolicy) Audiences() []string { return slices.Clone(p.audiences) }
 
 // matchSPIFFEPrincipalPattern reports whether principal matches pattern. A
 // terminal /* matches descendants only at a path-segment boundary: /agent/*
@@ -214,6 +219,7 @@ func NewSPIFFETrustConfig(
 		return nil, err
 	}
 	associations := inboundAssociations(inboundGrants)
+	warnDeprecatedSPIFFEAudiences(associations)
 	config := &SPIFFETrustConfig{
 		associations: make([]SPIFFEClientAuthConfig, 0, len(associations)),
 		trustDomains: make(map[string]SPIFFETrustDomain, len(trustDomainByName)),
@@ -240,7 +246,6 @@ func NewSPIFFETrustConfig(
 				grantTypes: slices.Clone(association.GrantTypes),
 				scopes:     slices.Clone(association.Scopes),
 				resources:  slices.Clone(association.Resources),
-				audiences:  slices.Clone(association.Audiences),
 			},
 		})
 	}
@@ -259,9 +264,35 @@ func ValidateSPIFFETrust(
 	return err
 }
 
+// ValidateSPIFFEX509Issuer parses issuer and requires the https scheme that
+// SPIFFE X.509 client authentication needs, since only the TLS listener can
+// request a client certificate. It returns the parsed issuer.
+func ValidateSPIFFEX509Issuer(issuer string) (*url.URL, error) {
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return nil, fmt.Errorf("parse auth server issuer: %w", err)
+	}
+	if parsed.Scheme != "https" {
+		return nil, fmt.Errorf("SPIFFE X.509 authentication requires an https issuer")
+	}
+	return parsed, nil
+}
+
+// ValidateSPIFFEClientIDsNotDelegates rejects a client_id that is configured
+// both as a SPIFFE client association and as a delegate client. Both register a
+// static client under that ID, so the second registration would fail at startup.
+func ValidateSPIFFEClientIDsNotDelegates(spiffeClientIDs, delegateClientIDs []string) error {
+	for _, id := range spiffeClientIDs {
+		if slices.Contains(delegateClientIDs, id) {
+			return fmt.Errorf("client_id %q is configured both as a SPIFFE client association and as a delegate client", id)
+		}
+	}
+	return nil
+}
+
 // SPIFFETrustDomain is the immutable normalized form of a declared SPIFFE
 // trust domain: its canonical trust domain string, enabled credential
-// methods, and bundle-source declaration. Future X.509/JWT-SVID validators
+// methods, and bundle-source declaration. The X.509 and JWT-SVID validators
 // look this up by declaration name instead of re-parsing the raw RunConfig,
 // so the canonical trust domain and enabled methods have exactly one
 // authoritative source.
@@ -285,27 +316,36 @@ type SPIFFEBundleSourceConfig struct {
 	sourceType SPIFFEBundleSourceType
 	endpoint   string
 	profile    SPIFFEBundleEndpointProfile
+	path       string
 }
 
 // Type returns the selected bundle-source type.
 func (c SPIFFEBundleSourceConfig) Type() SPIFFEBundleSourceType { return c.sourceType }
 
 // Endpoint returns the configured Bundle Endpoint URL, or an empty string for
-// a Workload API source.
+// a Workload API or file source.
 func (c SPIFFEBundleSourceConfig) Endpoint() string { return c.endpoint }
 
 // Profile returns the configured Bundle Endpoint authentication profile, or
-// an empty string for a Workload API source.
+// an empty string for a Workload API or file source.
 func (c SPIFFEBundleSourceConfig) Profile() SPIFFEBundleEndpointProfile { return c.profile }
 
+// Path returns the configured local bundle file path, or an empty string for
+// a Bundle Endpoint or Workload API source.
+func (c SPIFFEBundleSourceConfig) Path() string { return c.path }
+
 func normalizeSPIFFEBundleSource(source SPIFFEBundleSourceRunConfig) SPIFFEBundleSourceConfig {
-	if source.Endpoint == nil {
+	switch {
+	case source.Endpoint != nil:
+		return SPIFFEBundleSourceConfig{
+			sourceType: source.Type,
+			endpoint:   source.Endpoint.URL,
+			profile:    source.Endpoint.Profile,
+		}
+	case source.File != nil:
+		return SPIFFEBundleSourceConfig{sourceType: source.Type, path: source.File.Path}
+	default:
 		return SPIFFEBundleSourceConfig{sourceType: source.Type}
-	}
-	return SPIFFEBundleSourceConfig{
-		sourceType: source.Type,
-		endpoint:   source.Endpoint.URL,
-		profile:    source.Endpoint.Profile,
 	}
 }
 
@@ -363,19 +403,39 @@ func (c SPIFFEClientAuthConfig) Methods() []SPIFFEAuthenticationMethod {
 	return slices.Clone(c.methods)
 }
 
-// AuthorizationPolicy returns a defensive copy of the association policy.
+// AuthorizationPolicy returns the association policy. Its getters return copies.
 func (c SPIFFEClientAuthConfig) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
-	return SPIFFEAuthorizationPolicy{
-		grantTypes: slices.Clone(c.authorization.grantTypes),
-		scopes:     slices.Clone(c.authorization.scopes),
-		resources:  slices.Clone(c.authorization.resources),
-		audiences:  slices.Clone(c.authorization.audiences),
-	}
+	return c.authorization
+}
+
+// permitsGrant reports whether any association lists grant. It is safe on a
+// nil receiver.
+func (c *SPIFFETrustConfig) permitsGrant(grant string) bool {
+	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
+		return slices.Contains(a.AuthorizationPolicy().GrantTypes(), grant)
+	})
+}
+
+// permitsMethod reports whether any association allows method. It is safe on a
+// nil receiver.
+func (c *SPIFFETrustConfig) permitsMethod(method SPIFFEAuthenticationMethod) bool {
+	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.methods, method)
+	})
+}
+
+// permitsJWTClientCredentials reports whether any single association allows
+// the JWT-SVID method and lists the client_credentials grant. It is safe on a
+// nil receiver.
+func (c *SPIFFETrustConfig) permitsJWTClientCredentials() bool {
+	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.methods, SPIFFEAuthenticationMethodJWT) &&
+			slices.Contains(a.AuthorizationPolicy().GrantTypes(), oauthproto.GrantTypeClientCredentials)
+	})
 }
 
 func (c SPIFFEClientAuthConfig) clone() SPIFFEClientAuthConfig {
 	c.methods = slices.Clone(c.methods)
-	c.authorization = c.AuthorizationPolicy()
 	return c
 }
 
@@ -472,18 +532,39 @@ func validateSPIFFETrustDomains(domains []SPIFFETrustDomainRunConfig) (map[strin
 func validateSPIFFEBundleSource(source SPIFFEBundleSourceRunConfig, index int) error {
 	switch source.Type {
 	case SPIFFEBundleSourceTypeEndpoint:
-		if source.Endpoint == nil || source.WorkloadAPI != nil {
+		if source.Endpoint == nil || source.File != nil || source.WorkloadAPI != nil {
 			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires endpoint only", index, source.Type)
 		}
 		return validateSPIFFEBundleEndpoint(*source.Endpoint, index)
+	case SPIFFEBundleSourceTypeFile:
+		if source.File == nil || source.Endpoint != nil || source.WorkloadAPI != nil {
+			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires file only", index, source.Type)
+		}
+		return validateSPIFFEBundleFilePath(source.File.Path, index)
 	case SPIFFEBundleSourceTypeWorkloadAPI:
-		if source.WorkloadAPI == nil || source.Endpoint != nil {
+		if source.WorkloadAPI == nil || source.Endpoint != nil || source.File != nil {
 			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires workload_api only", index, source.Type)
 		}
 		return nil
 	default:
 		return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.type: unknown source type %q", index, source.Type)
 	}
+}
+
+// validateSPIFFEBundleFilePath validates the context-independent shape of a
+// local trust-bundle file path: it must be a non-empty absolute path with no
+// traversal segments. The isolated file loader checks that it resolves to a
+// regular file and can parse a bundle when it is constructed.
+func validateSPIFFEBundleFilePath(path string, index int) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.file.path must be a non-empty absolute path", index)
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if segment == ".." {
+			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.file.path must not contain traversal segments", index)
+		}
+	}
+	return nil
 }
 
 func validateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig, index int) error {
@@ -571,6 +652,10 @@ func validateSPIFFEClientAuth(
 	return nil
 }
 
+// absoluteURLClientIDPattern matches the same client_id shape the operator CRD
+// rejects, so a hand-written RunConfig is held to the same rule.
+var absoluteURLClientIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://.+`)
+
 func validateSPIFFEClientAssociation(
 	entry SPIFFEClientAuthRunConfig,
 	index int,
@@ -606,6 +691,12 @@ func validateSPIFFEClientAssociation(
 			index, entry.ClientID,
 		)
 	}
+	if absoluteURLClientIDPattern.MatchString(entry.ClientID) {
+		return "", fmt.Errorf(
+			"inbound_grants.spiffe_client_auth[%d]: client_id must not be an absolute URL: %q",
+			index, entry.ClientID,
+		)
+	}
 	fieldPrefix := fmt.Sprintf("inbound_grants.spiffe_client_auth[%d]", index)
 	methods, err := validateMethods(entry.Methods, fieldPrefix+".methods")
 	if err != nil {
@@ -616,28 +707,23 @@ func validateSPIFFEClientAssociation(
 			return "", fmt.Errorf("%s.methods: method %q is not enabled by trust domain %q", fieldPrefix, method, entry.TrustDomainRef)
 		}
 	}
-	if err := validateSPIFFEClientAssociationPermissions(entry, index, fieldPrefix, effectiveScopes, allowedResources); err != nil {
+	if err := validateSPIFFEClientAssociationPermissions(entry, fieldPrefix, effectiveScopes, allowedResources); err != nil {
 		return "", err
 	}
 	return principal, nil
 }
 
 // validateSPIFFEClientAssociationPermissions validates the resources,
-// audiences, scopes, and grant types an association is permitted to request.
-// Resources (RFC 8707) and audiences (RFC 8693) are independent request
-// dimensions: permission in one must never imply permission in the other, so
-// only resources are bounded by the server's allowed_audiences allowlist.
+// scopes, and grant types an association is permitted to request. Resources
+// (RFC 8707) are the only target list and are bounded by the server's
+// allowed_audiences allowlist. The deprecated audiences field is not checked.
 func validateSPIFFEClientAssociationPermissions(
 	entry SPIFFEClientAuthRunConfig,
-	index int,
 	fieldPrefix string,
 	effectiveScopes []string,
 	allowedResources []string,
 ) error {
 	if err := validateSPIFFEResources(entry.Resources, fieldPrefix+".resources", allowedResources); err != nil {
-		return err
-	}
-	if err := validateDistinctNonEmpty(entry.Audiences, fieldPrefix+".audiences"); err != nil {
 		return err
 	}
 	if err := validateDistinctNonEmpty(entry.Scopes, fieldPrefix+".scopes"); err != nil {
@@ -646,7 +732,7 @@ func validateSPIFFEClientAssociationPermissions(
 	if err := registration.ValidateScopeSubset(entry.Scopes, effectiveScopes, fieldPrefix+".scopes"); err != nil {
 		return err
 	}
-	return validateSPIFFEGrants(entry.GrantTypes, index)
+	return validateSPIFFEGrantTypes(entry.GrantTypes, fieldPrefix+".grant_types")
 }
 
 func parseTrustDomain(trustDomain string) (spiffeid.TrustDomain, error) {
@@ -661,11 +747,18 @@ func parseTrustDomain(trustDomain string) (spiffeid.TrustDomain, error) {
 }
 
 func normalizeSPIFFEPrincipal(principal string, allowPattern bool) (string, error) {
+	if !allowPattern {
+		id, err := parseConcreteSPIFFEID(principal)
+		if err != nil {
+			return "", err
+		}
+		return id.String(), nil
+	}
 	if principal == "" {
 		return "", fmt.Errorf("is required")
 	}
 	wildcard := strings.HasSuffix(principal, "/*")
-	if strings.Contains(principal, "*") && (!allowPattern || !wildcard || strings.Count(principal, "*") != 1) {
+	if strings.Contains(principal, "*") && (!wildcard || strings.Count(principal, "*") != 1) {
 		return "", fmt.Errorf("must use only a terminal /* wildcard")
 	}
 	base := strings.TrimSuffix(principal, "/*")
@@ -680,6 +773,24 @@ func normalizeSPIFFEPrincipal(principal string, allowPattern bool) (string, erro
 		return id.String() + "/*", nil
 	}
 	return id.String(), nil
+}
+
+// parseConcreteSPIFFEID parses a non-pattern SPIFFE ID that must include a path.
+func parseConcreteSPIFFEID(principal string) (spiffeid.ID, error) {
+	if principal == "" {
+		return spiffeid.ID{}, fmt.Errorf("is required")
+	}
+	if strings.Contains(principal, "*") {
+		return spiffeid.ID{}, fmt.Errorf("must use only a terminal /* wildcard")
+	}
+	id, err := parseSPIFFEID(principal)
+	if err != nil {
+		return spiffeid.ID{}, err
+	}
+	if id.Path() == "" {
+		return spiffeid.ID{}, fmt.Errorf("must include a path or terminal /* wildcard")
+	}
+	return id, nil
 }
 
 func parseSPIFFEID(principal string) (spiffeid.ID, error) {
@@ -708,13 +819,15 @@ func validateMethods(methods []SPIFFEAuthenticationMethod, field string) (map[SP
 }
 
 // validateSPIFFEResources validates the RFC 8707 resource indicators an
-// association may request: each must be a syntactically valid absolute
-// HTTP(S) URI and a member of the server's allowed_audiences allowlist, the
-// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
-// validated against (see validateDelegateClients in config.go).
+// association may request. At least one is required: client_credentials and
+// token exchange each take exactly one resource per request. Each must be a
+// syntactically valid absolute HTTP(S) URI
+// and a member of the server's allowed_audiences allowlist, the same RFC 8707
+// resource-URI list DelegateClientRunConfig.Audiences is validated against
+// (see validateDelegateClients in config.go).
 func validateSPIFFEResources(values []string, field string, allowedResources []string) error {
 	if len(values) == 0 {
-		return nil
+		return fmt.Errorf("%s is required", field)
 	}
 	if err := ValidateResourceIndicators(values, field); err != nil {
 		return err
@@ -767,14 +880,30 @@ func validateDistinctNonEmpty(values []string, field string) error {
 	return nil
 }
 
-func validateSPIFFEGrants(grants []string, index int) error {
-	if len(grants) != 1 || grants[0] != SPIFFEGrantTypeTokenExchange {
-		return fmt.Errorf(
-			"inbound_grants.spiffe_client_auth[%d].grant_types must be exactly [%q]",
-			index, SPIFFEGrantTypeTokenExchange,
-		)
+// validateSPIFFEGrantTypes requires a distinct, non-empty list naming only
+// client_credentials and the RFC 8693 token-exchange grant.
+func validateSPIFFEGrantTypes(grants []string, field string) error {
+	if err := validateDistinctNonEmpty(grants, field); err != nil {
+		return err
+	}
+	for _, grant := range grants {
+		if grant != oauthproto.GrantTypeClientCredentials && grant != oauthproto.GrantTypeTokenExchange {
+			return fmt.Errorf("%s: unknown grant %q", field, grant)
+		}
 	}
 	return nil
+}
+
+// warnDeprecatedSPIFFEAudiences logs one warning per association that still
+// sets the ignored audiences field.
+func warnDeprecatedSPIFFEAudiences(associations []SPIFFEClientAuthRunConfig) {
+	for _, association := range associations {
+		if len(association.Audiences) == 0 {
+			continue
+		}
+		slog.Warn("SPIFFE association sets audiences, which is deprecated and ignored; use resources instead",
+			"client_id", association.ClientID, "trust_domain_ref", association.TrustDomainRef)
+	}
 }
 
 func overlapsSPIFFEPatterns(patterns []string, principal string) bool {

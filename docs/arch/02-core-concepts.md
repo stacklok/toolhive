@@ -126,7 +126,7 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 - **Tool Filter** (`tool-filter`) - Filter and override tools in `tools/list` responses
 - **Tool Call Filter** (`tool-call-filter`) - Validate and map `tools/call` requests
 - **Rate Limit** (`ratelimit`) - Per-client request rate limiting
-- **Usage Metrics** (`usagemetrics`) - Anonymous usage metrics for ToolHive development (opt-out: `thv config usage-metrics disable`)
+- **Usage Metrics** (`usagemetrics`) - Anonymous usage metrics for ToolHive development, also reported by vMCP; the fields are listed in the [middleware docs](../middleware.md#6-usage-metrics-middleware) (opt-out: `thv config usage-metrics disable`)
 - **Telemetry** (`telemetry`) - OpenTelemetry instrumentation
 - **Authorization** (`authorization`) - Cedar policy evaluation
 - **Audit** (`audit`) - Request logging

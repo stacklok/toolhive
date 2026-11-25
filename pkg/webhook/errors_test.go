@@ -121,3 +121,26 @@ func TestIsAlwaysDenyError(t *testing.T) {
 		})
 	}
 }
+
+func TestIsLocalError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "local error", err: NewLocalError("test", fmt.Errorf("marshal")), want: true},
+		{name: "wrapped local error", err: fmt.Errorf("call: %w", NewLocalError("test", fmt.Errorf("secret"))), want: true},
+		{name: "network error", err: NewNetworkError("test", fmt.Errorf("network")), want: false},
+		{name: "timeout error", err: NewTimeoutError("test", fmt.Errorf("timeout")), want: false},
+		{name: "invalid response", err: NewInvalidResponseError("test", fmt.Errorf("decode"), 0), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsLocalError(tt.err))
+		})
+	}
+}

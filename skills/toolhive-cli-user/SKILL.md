@@ -24,12 +24,12 @@ Verify: `thv version`
 ## Quick Start
 
 ```bash
-thv run filesystem      # Run server from registry
+thv run fetch      # Run server from registry
 thv list                # List running servers
-thv status filesystem   # Detailed server info
-thv logs filesystem     # View logs
-thv stop filesystem     # Stop server
-thv rm filesystem       # Remove server
+thv status fetch   # Detailed server info
+thv logs fetch     # View logs
+thv stop fetch     # Stop server
+thv rm fetch       # Remove server
 ```
 
 ## Running MCP Servers
@@ -37,7 +37,7 @@ thv rm filesystem       # Remove server
 Five input methods: registry name, container image, protocol scheme (`uvx://`, `npx://`, `go://`), exported config (`--from-config`), or remote URL.
 
 ```bash
-thv run filesystem                                          # Registry
+thv run fetch                                          # Registry
 thv run ghcr.io/github/github-mcp-server:latest -- <args>   # Container image
 thv run uvx://mcp-server-git                                # Python (uvx)
 thv run npx://@modelcontextprotocol/server-filesystem       # Node.js (npx)
@@ -58,23 +58,23 @@ thv list --format json            # JSON output
 thv list --format mcpservers      # MCP client config format
 thv list --group production       # Filter by group
 
-thv status filesystem             # Detailed server info (URL, port, transport, uptime)
-thv status filesystem --format json
+thv status fetch             # Detailed server info (URL, port, transport, uptime)
+thv status fetch --format json
 
-thv stop filesystem github        # Stop specific servers
+thv stop fetch github        # Stop specific servers
 thv stop --all                    # Stop all
 
-thv start filesystem              # Resume stopped server
+thv start fetch              # Resume stopped server
 thv start --all                   # Start all stopped servers
 thv start --group development     # Start all in group
-thv restart filesystem            # Alias for start (backward compat)
+thv restart fetch            # Alias for start (backward compat)
 
-thv rm filesystem github          # Remove servers
+thv rm fetch github          # Remove servers
 thv rm --all                      # Remove all
 
-thv logs filesystem               # Container logs
-thv logs filesystem --follow      # Real-time
-thv logs filesystem --proxy       # Proxy logs
+thv logs fetch               # Container logs
+thv logs fetch --follow      # Real-time
+thv logs fetch --proxy       # Proxy logs
 thv logs prune                    # Clean orphaned logs
 ```
 
@@ -163,7 +163,7 @@ thv run myserver --isolate-network    # Block all outbound except allowlisted ho
 **Volume mounts** for filesystem access:
 
 ```bash
-thv run filesystem -v /home/user/projects:/workspace:ro    # Read-only mount
+thv run <server> -v /home/user/projects:/workspace:ro    # Read-only mount
 ```
 
 **.thvignore** hides sensitive files from volume mounts using gitignore-style patterns. Place `.thvignore` in mounted directories or globally at `~/.config/toolhive/thvignore`. Disable global patterns with `--ignore-globally=false`.
@@ -242,11 +242,11 @@ For command details, trust boundaries, and publishing, see [COMMANDS.md](referen
 ## Debugging
 
 ```bash
-thv inspector filesystem                        # MCP Inspector UI
-thv mcp list tools --server filesystem
-thv mcp list resources --server filesystem
-thv mcp list prompts --server filesystem
-thv mcp call read_file --server filesystem --args '{"path":"/etc/hosts"}'  # Invoke a tool
+thv inspector fetch                        # MCP Inspector UI
+thv mcp list tools --server fetch
+thv mcp list resources --server fetch
+thv mcp list prompts --server fetch
+thv mcp call fetch --server fetch --args '{"url":"https://example.com"}'  # Invoke a tool
 thv runtime check                               # Verify container runtime
 ```
 

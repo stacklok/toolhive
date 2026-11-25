@@ -335,6 +335,69 @@ func TestNotifyIfUpdateAvailable(t *testing.T) {
 	})
 }
 
+// TestCheckLatestVersion_WithoutNotice tests that a checker created WithoutNotice
+// never announces a newer version, whether it asks the API or reuses the
+// version cached by a recent check.
+//
+//nolint:paralleltest // Replaces the process-wide os.Stderr.
+func TestCheckLatestVersion_WithoutNotice(t *testing.T) {
+	tests := []struct {
+		name string
+		// cached is the update file content before the check; empty means none.
+		cached *updateFile
+	}{
+		{name: "fresh check asks the API"},
+		{
+			name: "recent check reuses the cached version",
+			cached: &updateFile{
+				InstanceID:    testInstanceID,
+				LatestVersion: testLatestVersion,
+				Components:    map[string]componentInfo{testComponentCLI: {LastCheck: time.Now().UTC()}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := setupMockVersionClient(t)
+			updateFilePath := filepath.Join(t.TempDir(), "updates.json")
+			if tt.cached == nil {
+				mockClient.On("GetLatestVersion", testInstanceID, testCurrentVersion).Return(testLatestVersion, nil)
+			} else {
+				data, err := json.Marshal(tt.cached)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(updateFilePath, data, 0600))
+			}
+
+			checker := &defaultUpdateChecker{
+				instanceID:     testInstanceID,
+				currentVersion: testCurrentVersion,
+				updateFilePath: updateFilePath,
+				versionClient:  mockClient,
+				component:      testComponentCLI,
+			}
+			WithoutNotice()(checker)
+
+			oldStderr := os.Stderr
+			r, w, err := os.Pipe()
+			require.NoError(t, err)
+			os.Stderr = w
+			t.Cleanup(func() { os.Stderr = oldStderr })
+
+			err = checker.CheckLatestVersion()
+			w.Close()
+			os.Stderr = oldStderr
+			require.NoError(t, err)
+
+			var buf bytes.Buffer
+			_, err = buf.ReadFrom(r)
+			require.NoError(t, err)
+			assert.Empty(t, buf.String(), "a newer version must not be announced")
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
 // TestNotifyIfUpdateAvailableDesktopManaged tests that update messages are suppressed
 // for desktop-managed CLI installations
 func TestNotifyIfUpdateAvailableDesktopManaged(t *testing.T) {

@@ -18,9 +18,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -150,12 +152,10 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
 
-	// Dispatch OBO-typed configs through the registered handler. The default
-	// handler returns obo.ErrEnterpriseRequired so upstream-only builds surface
-	// Valid=False / Reason=EnterpriseRequired here rather than failing later
-	// inside a consumer reconciler with a generic "unsupported" error. The OBO
-	// failure path routes through setInvalid, which applies the advisory inside
-	// its own patch closure.
+	// Validate OBO-typed configs beyond what the CRD schema can express (tenant
+	// and authority shape, secret reference, audience or scopes). The failure
+	// path routes through setInvalid, which applies the advisory inside its own
+	// patch closure.
 	if externalAuthConfig.Spec.Type == mcpv1beta1.ExternalAuthTypeOBO {
 		if handled, err := r.triageOBOValidation(ctx, externalAuthConfig); handled {
 			return ctrl.Result{}, err
@@ -212,6 +212,17 @@ func deprecatedInboundGrantFields(cfg *mcpv1beta1.EmbeddedAuthServerConfig, root
 				path:        issuerPath + ".jwtBearerGrant",
 				replacement: root + ".inboundGrants.jwtBearer.issuerPolicies",
 			})
+		}
+	}
+	if cfg.InboundGrants != nil {
+		for i, spiffeClient := range cfg.InboundGrants.SPIFFEClientAuth {
+			//nolint:staticcheck // Reports the deprecated field to the user.
+			if len(spiffeClient.Audiences) > 0 {
+				associationPath := fmt.Sprintf("%s.inboundGrants.spiffeClientAuth[%d]", root, i)
+				fields = append(fields, deprecatedInboundGrantField{
+					path: associationPath + ".audiences", replacement: associationPath + ".resources",
+				})
+			}
 		}
 	}
 	return fields
@@ -337,50 +348,54 @@ func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	})
 }
 
-// triageOBOValidation runs the registered OBO handler's Validate and routes
-// the result through the three-bucket contract documented on OBOHandler:
-//
-//   - ErrEnterpriseRequired   → permanent, Reason=EnterpriseRequired
-//   - *obo.ValidationError    → permanent, Reason=InvalidConfig (the typed
-//     error's Message is written verbatim into condition.Message)
-//   - anything else           → transient; return the error wrapped so
-//     controller-runtime requeues with backoff and self-heals once the
-//     upstream dependency (Secret/JWKS/webhook) recovers
-//
-// Returns handled=true to signal the caller to return immediately (with a
-// zero ctrl.Result and the returned error). handled=false means Validate
-// succeeded and the reconciler should continue with the Valid=True path.
-//
-// Extracted from Reconcile so the parent stays under the gocyclo threshold.
+// triageOBOValidation runs ctrlutil.OBOValidate on cfg and hands the result to
+// applyOBOValidationResult. The two are split only so tests can drive
+// applyOBOValidationResult with an injected error (for example a transient,
+// non-ValidationError one, which the built-in validator never returns but a
+// handler registered through the deprecated ctrlutil.RegisterOBOHandler may);
+// Reconcile always enters through this function.
 func (r *MCPExternalAuthConfigReconciler) triageOBOValidation(
 	ctx context.Context,
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
 ) (handled bool, err error) {
-	validateErr := ctrlutil.OBOValidate(cfg)
+	return r.applyOBOValidationResult(ctx, cfg, ctrlutil.OBOValidate(cfg))
+}
+
+// applyOBOValidationResult routes an OBO validation result through the error
+// contract documented on obo.ValidationError:
+//
+//   - nil                     → handled=false; the reconciler continues with
+//     the Valid=True path
+//   - *obo.ValidationError    → permanent, Reason=InvalidConfig (the typed
+//     error's Message is written verbatim into condition.Message)
+//   - anything else           → transient; return the error wrapped so
+//     controller-runtime requeues with backoff and self-heals once the
+//     dependency recovers
+//
+// handled=true tells the caller to return immediately with a zero ctrl.Result
+// and the returned error.
+func (r *MCPExternalAuthConfigReconciler) applyOBOValidationResult(
+	ctx context.Context,
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+	validateErr error,
+) (handled bool, err error) {
 	if validateErr == nil {
 		return false, nil
 	}
-	switch {
-	case stderrors.Is(validateErr, obo.ErrEnterpriseRequired):
-		return true, r.setInvalid(ctx, cfg, validateErr, mcpv1beta1.ConditionReasonEnterpriseRequired)
-	default:
-		var valErr *obo.ValidationError
-		if stderrors.As(validateErr, &valErr) {
-			return true, r.setInvalid(ctx, cfg, valErr, mcpv1beta1.ConditionReasonInvalidConfig)
-		}
-		// Transient: return the error so controller-runtime requeues with
-		// backoff. Locking the resource into a permanent InvalidConfig on a
-		// transient I/O blip would require the user to touch the spec for
-		// the failure to clear, defeating self-healing.
-		return true, fmt.Errorf("OBO handler validation failed: %w", validateErr)
+	var valErr *obo.ValidationError
+	if stderrors.As(validateErr, &valErr) {
+		return true, r.setInvalid(ctx, cfg, valErr, mcpv1beta1.ConditionReasonInvalidConfig)
 	}
+	// Transient: return the error so controller-runtime requeues with backoff.
+	// Locking the resource into a permanent InvalidConfig on a transient I/O
+	// blip would require the user to touch the spec for the failure to clear.
+	return true, fmt.Errorf("OBO validation failed: %w", validateErr)
 }
 
 // setInvalid writes a Valid=False condition through MutateAndPatchStatus,
 // using the supplied reason string and the error's message as the condition
-// message. Returns an empty result with no requeue: the spec must change (or
-// an out-of-tree handler must be registered) for this branch to clear, so
-// requeuing buys nothing.
+// message. Returns an empty result with no requeue: the spec must change for
+// this branch to clear, so requeuing buys nothing.
 //
 // The IdentitySynthesized advisory is recomputed inside the patch closure so
 // both the advisory transition (e.g., when a user switches a config from
@@ -699,6 +714,10 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Watches(&mcpv1beta1.MCPServer{}, enqueueReferencedConfig(indexMCPServerByExternalAuthConfigRef),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&mcpv1beta1.MCPRemoteProxy{}, enqueueReferencedConfig(indexMCPRemoteProxyByExternalAuthConfigRef),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 

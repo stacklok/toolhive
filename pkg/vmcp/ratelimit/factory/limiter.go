@@ -42,6 +42,7 @@ func NewLimiter(
 		Config:     cfg.RateLimiting,
 		RedisAddr:  cfg.SessionStorage.Address,
 		RedisDB:    cfg.SessionStorage.DB,
+		RedisTLS:   cfg.SessionStorage.TLS,
 	})
 	if err != nil {
 		return nil, nil, err

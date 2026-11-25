@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strconv"
@@ -107,6 +108,9 @@ type TransparentProxy struct {
 
 	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
+
+	// stripConsentCookie prevents remembered-consent cookies (__Host-thv_consent_*) from reaching the backend.
+	stripConsentCookie bool
 
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
@@ -257,6 +261,15 @@ func WithRemoteRawQuery(rawQuery string) Option {
 		if rawQuery != "" {
 			p.remoteRawQuery = rawQuery
 		}
+	}
+}
+
+// WithStripConsentCookie removes the embedded auth server's remembered-consent
+// cookie family (__Host-thv_consent_*) from outbound backend requests, not all
+// auth server browser cookies. Enable only when that server is mounted.
+func WithStripConsentCookie() Option {
+	return func(p *TransparentProxy) {
+		p.stripConsentCookie = true
 	}
 }
 
@@ -501,14 +514,18 @@ func NewTransparentProxyWithOptions(
 
 	// Create health checker always for Kubernetes probes
 	var mcpPinger healthcheck.MCPPinger
+	var healthCheckerOpts []healthcheck.Option
 	if enableHealthCheck {
 		if proxy.stateless {
 			mcpPinger = NewStatelessMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
 		} else {
 			mcpPinger = NewMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
 		}
+		// monitorHealth pings the backend on its own schedule, and /health answers
+		// from its last result, so a slow backend cannot hold a probe past its timeout.
+		healthCheckerOpts = append(healthCheckerOpts, healthcheck.WithLastResult())
 	}
-	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
+	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger, healthCheckerOpts...)
 
 	return proxy
 }
@@ -774,8 +791,8 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 		// Modern (2026-07-28, stateless) has no initialize handshake, so use the
 		// first successful (HTTP 200) Modern request as the readiness signal: it
-		// lets the background health monitor begin probing this backend, which
-		// otherwise never starts for a pure-Modern server. See #5831.
+		// lets the background health monitor's failures count toward shutdown,
+		// which otherwise never happens for a pure-Modern server. See #5831.
 		if revision == mcp.RevisionModern && !t.p.serverInitialized() {
 			t.p.setServerInitialized()
 		}
@@ -1161,6 +1178,44 @@ func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest, upstr
 	}
 }
 
+// stripConsentCookie removes only remembered-consent cookies (__Host-thv_consent_*),
+// retaining other cookie pairs across all Cookie header lines.
+// The caller supplies the outbound header.
+func stripConsentCookie(header http.Header) {
+	var kept []string
+	removed := false
+	for key, values := range header {
+		if !strings.EqualFold(key, "Cookie") {
+			continue
+		}
+		for _, value := range values {
+			var pairs []string
+			for _, pair := range strings.Split(value, ";") {
+				name, _, ok := strings.Cut(strings.TrimSpace(pair), "=")
+				if ok && strings.HasPrefix(strings.TrimSpace(name), "__Host-thv_consent_") {
+					removed = true
+					continue
+				}
+				pairs = append(pairs, pair)
+			}
+			if len(pairs) > 0 {
+				kept = append(kept, strings.Join(pairs, ";"))
+			}
+		}
+	}
+	if !removed {
+		return
+	}
+	for key := range header {
+		if strings.EqualFold(key, "Cookie") {
+			delete(header, key)
+		}
+	}
+	if len(kept) > 0 {
+		header["Cookie"] = kept
+	}
+}
+
 // Start starts the transparent proxy.
 // nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
@@ -1183,6 +1238,9 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
+			if p.stripConsentCookie {
+				stripConsentCookie(pr.Out.Header)
+			}
 			p.setXForwardedHeaders(pr, targetURL.Scheme)
 
 			// Stash the original inbound request in the outbound request's
@@ -1287,7 +1345,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// 5. Catch-all proxy handler (least specific - ServeMux routing handles precedence)
 	// Note: No manual path checking needed - ServeMux longest-match routing ensures
 	// more specific paths registered above take precedence over this catch-all.
-	finalHandler = p.methodGate(finalHandler)
+	finalHandler = rejectConnectionNamedHeaders(p.methodGate(finalHandler))
 	mux.Handle("/", finalHandler)
 
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
@@ -1408,6 +1466,10 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	ticker := time.NewTicker(p.healthCheckInterval)
 	defer ticker.Stop()
 
+	// With health checks enabled, each check records the result /health answers
+	// from, so check once before the first tick.
+	p.healthChecker.CheckHealth(parentCtx)
+
 	consecutiveFailures := 0
 
 	for {
@@ -1421,14 +1483,16 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			slog.Debug("shutdown initiated, stopping health monitor", "target", p.targetURI)
 			return
 		case <-ticker.C:
+			alive := p.healthChecker.CheckHealth(parentCtx)
+
+			// Failures count toward shutdown only once the MCP server is initialized.
 			if !p.serverInitialized() {
 				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("mcp server not initialized yet, skipping health check",
-					"target", p.targetURI)
+				slog.Debug("mcp server not initialized yet, not counting health check",
+					"target", p.targetURI, "status", alive.Status)
 				continue
 			}
 
-			alive := p.healthChecker.CheckHealth(parentCtx)
 			if alive.Status != healthcheck.StatusHealthy {
 				var shouldContinue bool
 				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)
@@ -1542,6 +1606,75 @@ func (*TransparentProxy) SendMessageToDestination(_ jsonrpc2.Message) error {
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
 func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.Message) error {
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
+}
+
+// connectionHopByHopTokens are the only values a client may list in its
+// Connection header: "close" and the standard hop-by-hop header names
+// (RFC 9110 §7.6.1, plus HTTP2-Settings for h2c upgrades). Keys are in
+// canonical form (http.CanonicalHeaderKey).
+var connectionHopByHopTokens = map[string]bool{
+	"Close":               true,
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Http2-Settings":      true,
+}
+
+// maxLoggedConnectionToken caps how much of a rejected Connection token is
+// written to the log.
+const maxLoggedConnectionToken = 64
+
+// rejectConnectionNamedHeaders rejects with 400 any request whose Connection
+// header names something other than a hop-by-hop header.
+//
+// httputil.ReverseProxy removes every header named in Connection from the
+// outbound request, after the middleware chain has run. Middlewares that
+// inject headers (the upstream token, operator-configured headers) set them
+// on the inbound request, so a client sending "Connection: X-Tenant-ID" or
+// "Connection: Authorization" could otherwise have those injected headers
+// removed before the request reaches the upstream.
+//
+// Rejecting is used instead of removing the named headers before the chain
+// runs, because removal would also hide headers from middlewares that
+// validate them only when present: "Origin: <disallowed>" together with
+// "Connection: Origin" would then pass Origin validation. MCP clients and
+// common intermediaries do not name end-to-end headers in Connection. Header
+// forwarding cannot inject any of the allowed names (see
+// middleware.RestrictedHeaders).
+//
+// This runs outermost, before any middleware.
+func rejectConnectionNamedHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, value := range r.Header["Connection"] {
+			for token := range strings.SplitSeq(value, ",") {
+				token = textproto.TrimString(token)
+				if token == "" || connectionHopByHopTokens[http.CanonicalHeaderKey(token)] {
+					continue
+				}
+				// The token is caller-controlled and can be up to the
+				// server's header size limit, so cap what is logged.
+				logged := token
+				if len(logged) > maxLoggedConnectionToken {
+					logged = logged[:maxLoggedConnectionToken] + "..."
+				}
+				slog.Warn("rejecting request that names an end-to-end header in Connection",
+					"header", logged,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"remote", r.RemoteAddr,
+				)
+				http.Error(w, "Connection header may only name hop-by-hop headers", http.StatusBadRequest)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // methodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405

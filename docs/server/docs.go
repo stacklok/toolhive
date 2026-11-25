@@ -105,6 +105,14 @@ const docTemplate = `{
                         "description": "JWKSURL is the URL to fetch the JWKS from",
                         "type": "string"
                     },
+                    "requiredSubject": {
+                        "description": "RequiredSubject, when non-empty, requires the token's \"sub\" claim to equal\nthis value exactly. Tokens with a missing or empty \"sub\" are rejected.\nIf RequiredSubjectPrefix is also set, both checks must pass.",
+                        "type": "string"
+                    },
+                    "requiredSubjectPrefix": {
+                        "description": "RequiredSubjectPrefix, when non-empty, requires the token's \"sub\" claim to\nstart with this value. Tokens with a missing or empty \"sub\" are rejected.\nIf RequiredSubject is also set, both checks must pass.",
+                        "type": "string"
+                    },
                     "resourceURL": {
                         "description": "ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)",
                         "type": "string"
@@ -141,8 +149,12 @@ const docTemplate = `{
             "authserver.DCRUpstreamConfig": {
                 "description": "DCRConfig enables RFC 7591 Dynamic Client Registration against the\nupstream authorization server. When set, the client credentials are\nobtained at runtime rather than being pre-provisioned via ClientID /\nClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.\nMutually exclusive with ClientID.",
                 "properties": {
+                    "client_name": {
+                        "description": "ClientName is the optional RFC 7591 \"client_name\" registration metadata\nsent when ToolHive registers with the upstream. When empty, ToolHive\nregisters as \"ToolHive MCP Client\". It is display-only metadata: the\nupstream shows it on its authorization screen, and it is never used as\na key. It is capped at 256 characters, matching the client_name bound\nthe authserver enforces on inbound registrations. Names with leading\nor trailing whitespace, or containing control or format characters,\nare rejected.\n\nChanging it does not rename an already-registered client: the cached\nregistration is keyed without the client name, so the new value applies\nonly the next time ToolHive registers a fresh client — for example\nafter rotating via RotationKey, or when the upstream rejects the cached\nregistration.",
+                        "type": "string"
+                    },
                     "discovery_url": {
-                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
+                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config, except that an origin-only issuer may differ by a\ntrailing \"/\" (for example https://idp.example.com and\nhttps://idp.example.com/ are treated as equal). Scheme, host, port\nand any path must still match exactly.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
                         "type": "string"
                     },
                     "initial_access_token_env_var": {
@@ -157,6 +169,18 @@ const docTemplate = `{
                         "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
                         "type": "string"
                     },
+                    "registration_probe": {
+                        "description": "RegistrationProbe selects how the resolver checks a cached registration\nagainst the upstream at start. \"tokenEndpoint\" (the default) redeems a\nrandom authorization code with the cached client and reads\ninvalid_client as \"registration gone\"; it decides only for upstreams\nthat authenticate the client before validating the grant.\n\"authorizationEndpoint\" sends an authorization request for the cached\nclient without following redirects and reads a direct 400, 401 or 403\nthat carries an RFC 6749 JSON error object (error invalid_client,\nunauthorized_client or invalid_request) as \"gone\" (RFC 6749 §4.1.2.1),\nfor upstreams whose token endpoint answers invalid_grant for any\nclient_id; an HTML page or a bare gateway status is not a verdict. A\nfalse rejection re-registers at every start and, when registration also\nfails, fails startup. \"none\" skips the check: the upstream is not\ncontacted, but a registration made with another method than a configured\nTokenEndpointAuthMethod is still replaced. Otherwise the registration is\nretired only through RotationKey.",
+                        "type": "string"
+                    },
+                    "registration_probe_interval": {
+                        "description": "RegistrationProbeInterval, when set, repeats the start-time resolution\nwhile the server runs, as a Go duration of at least 1m (e.g. \"5m\"): the\ncached registration is re-read and checked with RegistrationProbe, a\nrejected one is replaced, a missing one is registered, and when the\nresult differs from the client the server holds (also when another\nreplica replaced the row) the server switches to it without a restart.\nEach check sends at most one RegistrationProbe request to the upstream\n(none with RegistrationProbe none), plus a registration request when\nthe probe rejects the client; 5m to 15m suits most upstreams. Empty\nkeeps the check at start only.",
+                        "type": "string"
+                    },
+                    "rotation_key": {
+                        "description": "RotationKey is an optional operator-chosen label (1-64 characters from\n[A-Za-z0-9._-]) that becomes part of the cached registration's identity\nwithout being sent to the upstream. Changing it makes the next start\nregister a fresh client instead of reusing the cached one. At start the\nresolver checks the cached client at the upstream (see RegistrationProbe)\nand replaces it by itself when the upstream rejects it. Use RotationKey\nwhen the upstream has dropped the registration and the configured probe\ncannot tell, so the rejection may not be visible to the resolver, or when\na registration must be rotated on request. The row written under the\nprevious value is left in place. Upstream refresh tokens bound to the\nprevious client_id stop refreshing once the client changes; affected\nusers sign in again.",
+                        "type": "string"
+                    },
                     "software_id": {
                         "description": "SoftwareID is the RFC 7591 \"software_id\" registration metadata value,\nidentifying the client software independent of any particular\nregistration instance.",
                         "type": "string"
@@ -168,10 +192,67 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "authserver.DelegateClientExchangeRefreshTokens": {
+                "description": "ExchangeRefreshTokens enables refresh-token issuance through token\nexchange for this client. Presence of the block enables it; a nil block\nrefuses both grant kinds. Valid only with restricted, and requires\nSubjectTokenAudiences and offline_access or offline in scopes_supported.",
+                "properties": {
+                    "id_jag_max_lifetime": {
+                        "description": "IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for\nID-JAGs. Empty refuses those grants.",
+                        "type": "string"
+                    },
+                    "refresh_token_max_lifetime": {
+                        "description": "RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged\nfor child refresh tokens. Empty refuses those grants. Setting it also needs\nid_jag_max_lifetime, because a child allows ID-JAGs and is capped by that\nvalue; validation rejects refresh_token_max_lifetime without it.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.DelegateClientIDJAG": {
+                "description": "IDJAG lists the authorization servers this client may ask for an\nIdentity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with\nrestricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with\ntoken exchange enabled.",
+                "properties": {
+                    "targets": {
+                        "description": "Targets are the authorization servers the client may ask for an ID-JAG\nfor. At least one is required.",
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.DelegateClientIDJAGTarget"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.DelegateClientIDJAGTarget": {
+                "properties": {
+                    "client_id": {
+                        "description": "ClientID is this client's client_id at the other authorization server.",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "Issuer is the issuer of the other authorization server. The client sends\nit as the request's audience, and it becomes the ID-JAG's aud exactly as\nwritten here. It must be an absolute https URL, or http on a loopback\nhost, with no query, fragment or userinfo. It must be well-formed: lower-case\nscheme and host, no default port (\":443\" for https, \":80\" for http), no dot\nsegments, empty path segments, unneeded percent-encoding or leading zeros\nin the port. One trailing slash is allowed and is kept as written. It must\nbe unique within the client, and the (issuer, client_id) pair must be\nunique across delegate clients; both comparisons ignore one trailing\nslash. It must not be this server's issuer, token endpoint or one of its\nallowed_audiences; that comparison ignores case in the scheme and host, a\ndefault port and one trailing slash.",
+                        "type": "string"
+                    },
+                    "lifetime": {
+                        "description": "Lifetime is how long each ID-JAG lives, as a Go duration string in whole\nseconds (e.g. \"60s\"). Defaults to 60s; at most 300s.",
+                        "type": "string"
+                    },
+                    "resources": {
+                        "description": "Resources are the resources behind the other authorization server, such\nas an MCP endpoint, that the client may name as the request's resource.\nAt least one is required. Each must be a valid RFC 8707 resource URI,\nlisted once.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "authserver.DelegateClientRunConfig": {
                 "properties": {
+                    "access_token_lifespan": {
+                        "description": "AccessTokenLifespan is the lifetime of the access tokens this client\nobtains by redeeming an ID-JAG, as a Go duration string. If omitted, the\nserver's access_token_lifespan applies. When set it must be at least 2s\nand at most 24h. It is an upper bound: a token never outlives the\nassertion it was redeemed from, and a token that carries the\ndelegated-access marker is capped further. Other grants ignore it.",
+                        "type": "string"
+                    },
                     "audiences": {
-                        "description": "Audiences are the RFC 8707 resource values this client may request a\ntoken for. Required, and must be a subset of RunConfig.AllowedAudiences:\na declared client must not receive every allowed audience just because\nthis was left empty.",
+                        "description": "Audiences are output only: the upper bound on the audiences of the\naccess tokens this client can obtain through any grant. They must be a\nsubset of RunConfig.AllowedAudiences: a declared client must not receive\nevery allowed audience just because this was left empty. Required, unless\ntoken_exchange.exchange_refresh_tokens is set and token exchange is the\nclient's only grant (grant_types omitted, or just the token-exchange\ngrant), in which case it may be empty.",
                         "items": {
                             "type": "string"
                         },
@@ -183,12 +264,32 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "client_secret_env_var": {
-                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. One of ClientSecretFile or ClientSecretEnvVar is\nrequired.",
+                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. Unless the client uses private_key_jwt, one of\nClientSecretFile or ClientSecretEnvVar is required.",
                         "type": "string"
                     },
                     "client_secret_file": {
-                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.",
+                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.\nForbidden with private_key_jwt.",
                         "type": "string"
+                    },
+                    "grant_types": {
+                        "description": "GrantTypes are the grants this client may use. If omitted or empty, the\nclient is stored with [urn:ietf:params:oauth:grant-type:token-exchange]\nand its ID-JAG redemption (a JWT-bearer assertion of typ\noauth-id-jag+jwt) is not gated, for backward compatibility. When set, the\nlist is complete: it must include token exchange, and it must include the\njwt-bearer grant to keep ID-JAG redemption. Allowed values are\nauthorization_code, refresh_token, the token-exchange grant and the\njwt-bearer grant.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "jwks_file": {
+                        "description": "JWKSFile is the path to a file containing the client's public JWKS.\nRequired for private_key_jwt and forbidden otherwise. The keys must be\npublic signing keys.",
+                        "type": "string"
+                    },
+                    "redirect_uris": {
+                        "description": "RedirectURIs are the registered redirect URIs. Required with the\nauthorization_code grant and forbidden without it.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "scopes": {
                         "description": "Scopes are the OAuth scopes this client may request. Required, and\nmust be a subset of RunConfig.ScopesSupported: a declared client must\nnot receive every supported scope just because this was left empty.",
@@ -197,8 +298,54 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "token_endpoint_auth_method": {
+                        "description": "TokenEndpointAuthMethod pins how the client authenticates at the token\nendpoint: client_secret_basic, client_secret_post or private_key_jwt.\nIf omitted, the client authenticates with its secret by either HTTP\nBasic or form body.",
+                        "type": "string"
+                    },
+                    "token_endpoint_auth_signing_alg": {
+                        "description": "TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.\nIf omitted, it is derived from the keys: each key's alg, or ES256, ES384\nor ES512 from an EC key's curve. RSA keys without alg use RS256. Keys\nthat disagree must set it.",
+                        "type": "string"
+                    },
+                    "token_exchange": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientTokenExchange"
                     }
                 },
+                "type": "object"
+            },
+            "authserver.DelegateClientTokenExchange": {
+                "description": "TokenExchange is the client's token-exchange policy. Its\nSelfIssuedSubjectTokens field selects which self-issued subject tokens\nthe client may exchange and is required whenever the block is present.\nThe block may be omitted only by a secret-authenticated client whose\nGrantTypes is omitted or empty; such a client keeps the legacy rule (any)\nand may exchange any self-issued token. A client that sets GrantTypes or\nuses private_key_jwt must declare the block.",
+                "properties": {
+                    "allowed_source_clients": {
+                        "description": "AllowedSourceClients are client_id values, as they appear in the subject\ntoken's client_id claim, whose self-issued tokens this client may\nexchange in addition to its own. They must be user-facing clients that\nregister at runtime (DCR or CIMD), so startup cannot check that they\nexist. A configured delegate client cannot be listed: its tokens carry\nits own client_id, so listing it would trust everything it accepts.\nValid only with restricted. On plain token exchange, empty means the\nclient's own tokens only. The exchange-grant path (exchange_refresh_tokens)\naccepts only the listed source clients, never the client's own tokens, so\nthe list must be non-empty there.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "exchange_refresh_tokens": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientExchangeRefreshTokens"
+                    },
+                    "id_jag": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientIDJAG"
+                    },
+                    "self_issued_subject_tokens": {
+                        "description": "SelfIssuedSubjectTokens is any or restricted, and is required. With\nrestricted, a self-issued subject token must carry the client's own\nclient_id or one of AllowedSourceClients, and a may_act claim naming\nthis client does not lift that restriction. With any, the client may\nexchange any self-issued token.",
+                        "type": "string"
+                    },
+                    "subject_token_audiences": {
+                        "description": "SubjectTokenAudiences are the audiences a self-issued subject token must\ncarry, matched exactly: the token must contain at least one of them. The\ncheck applies on every exchange path, including the client's own tokens.\nListing a value grants nothing: the client can receive that audience only\nif its audiences also cover it, and startup refuses that while\nexchange_refresh_tokens is set. Each entry must be one of the server's\nallowed_audiences. Valid only with restricted, and required with\nexchange_refresh_tokens. An empty list is the same as an omitted one:\nno requirement.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "required": [
+                    "self_issued_subject_tokens"
+                ],
                 "type": "object"
             },
             "authserver.IdentityFromTokenRunConfig": {
@@ -254,6 +401,14 @@ const docTemplate = `{
             },
             "authserver.JWTBearerIssuerPolicyRunConfig": {
                 "properties": {
+                    "accepted_assertion_types": {
+                        "description": "AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes\nfor the canonical config path; unset accepts both jwt_bearer and id_jag.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerAssertionType"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "accepted_audiences": {
                         "items": {
                             "type": "string"
@@ -328,6 +483,10 @@ const docTemplate = `{
                         "description": "InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs\nfor this upstream. Only for in-cluster development environments (e.g. an\nOAuth2 provider served over HTTP in a kind cluster) where TLS is not\navailable. Never set this in production.",
                         "type": "boolean"
                     },
+                    "omit_scope_on_refresh": {
+                        "description": "OmitScopeOnRefresh stops the ` + "`" + `scope` + "`" + ` parameter from being sent on\nrefresh_token grant requests. Scopes are still sent on the authorization\nrequest. Useful for providers that reject ` + "`" + `scope` + "`" + ` on refresh, such as\nSalesforce. See upstream.CommonOAuthConfig.",
+                        "type": "boolean"
+                    },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nFor a DCR upstream (dcr_config set) an empty value is resolved to\n` + "`" + `{issuer}/oauth/callback` + "`" + `; a pre-provisioned client (client_id set) must\nspecify it. Its hostname must match the browser-facing authorize URL\n(issuer, or authorization_endpoint_base_url when set): /oauth/callback is\nbound to the browser that started the login by a host-only cookie, so a\ndifferent host rejects every browser login (Config.Validate warns).",
                         "type": "string"
@@ -345,7 +504,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "token_endpoint_auth_method": {
-                        "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty, credentials are sent in the request body (the historical\nclient_secret_post-shaped default). Set this to client_secret_basic explicitly\nfor providers that require HTTP Basic auth. Public clients without a secret use\nthe \"none\" method.",
+                        "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty, credentials are sent in the request body (the historical\nclient_secret_post-shaped default). Set this to client_secret_basic explicitly\nfor providers that require HTTP Basic auth. Public clients without a secret use\nthe \"none\" method.\nWith DCRConfig, it is the method the client registers with, in place of the one\nToolHive picks from the upstream's advertised methods (client_secret_basic, then\nclient_secret_post, then none). Set it for an upstream whose token endpoint does\nnot accept the method ToolHive picks. A cached registration made with another\nmethod is replaced with a new one at the next start.",
                         "type": "string"
                     },
                     "token_response_mapping": {
@@ -405,6 +564,10 @@ const docTemplate = `{
                         "description": "IssuerURL is the OIDC issuer URL for automatic endpoint discovery.\nMust be a valid HTTPS URL.",
                         "type": "string"
                     },
+                    "omit_scope_on_refresh": {
+                        "description": "OmitScopeOnRefresh stops the ` + "`" + `scope` + "`" + ` parameter from being sent on\nrefresh_token grant requests. Scopes are still sent on the authorization\nrequest. Useful for providers that reject ` + "`" + `scope` + "`" + ` on refresh, such as\nSalesforce. See upstream.CommonOAuthConfig.",
+                        "type": "boolean"
+                    },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nFor a DCR upstream (dcr_config set) an empty value is resolved to\n` + "`" + `{issuer}/oauth/callback` + "`" + `; a pre-provisioned client (client_id set) must\nspecify it. Its hostname must match the browser-facing authorize URL\n(issuer, or authorization_endpoint_base_url when set): /oauth/callback is\nbound to the browser that started the login by a host-only cookie, so a\ndifferent host rejects every browser login (Config.Validate warns).",
                         "type": "string"
@@ -427,11 +590,25 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "authserver.RegistrationRateLimitRunConfig": {
+                "description": "RegistrationRateLimit bounds the unauthenticated /oauth/register\nendpoint. If omitted, defaults to 1 registration per second with a\nburst of 5. The limiter is per process, so the effective rate is the\nconfigured rate multiplied by the replica count. The cap on how many\nregistered clients may exist at once is Storage.MaxDCRClients; unused\nclients live 24 hours, so a caller at the full rate keeps up to\nrate x replicas x 86400 of them alive, which at the defaults exceeds the\ndefault cap within about 2.8 hours. The operator sets it from the\nembedded auth server's registrationRateLimit.",
+                "properties": {
+                    "burst": {
+                        "description": "Burst is the number of registrations admitted at once before the rate\napplies. Must be positive.",
+                        "type": "integer"
+                    },
+                    "requests_per_second": {
+                        "description": "RequestsPerSecond is the sustained registration rate. Must be positive.",
+                        "type": "number"
+                    }
+                },
+                "type": "object"
+            },
             "authserver.RunConfig": {
                 "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
                 "properties": {
                     "allow_confidential_client_registration": {
-                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations idle for more than DefaultDCRClientTTL (30 days) are\nevicted and must re-register. This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
+                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations expire and must re-register when never used within\nDefaultUnusedDCRClientTTL (24 hours) or idle for more than\nDefaultDCRClientTTL (30 days). This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
                         "type": "boolean"
                     },
                     "allow_private_key_jwt_registration": {
@@ -478,7 +655,7 @@ const docTemplate = `{
                         "type": "boolean"
                     },
                     "disable_upstream_token_injection": {
-                        "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
+                        "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange,\nAWS STS and OBO, which would re-add credentials after the strip.",
                         "type": "boolean"
                     },
                     "force_confidential_redirect_uris": {
@@ -501,7 +678,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/authserver.InboundGrantsRunConfig"
                     },
                     "insecure_allow_confidential_over_loopback_http": {
-                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients. The\nKubernetes CRD requires the explicit opt-in for a delegate client with an\nHTTP issuer; the shared transport validator enforces that its host is\nloopback — see EmbeddedAuthServerConfig's doc comment.\n\nprivate_key_jwt registration has no equivalent flag or transport\nrestriction: unlike confidential registration, it never returns a\nclient_secret (or any other secret) in the DCR response, so there is\nnothing here for cleartext HTTP to expose.",
+                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to every delegate client (including private_key_jwt\ndelegates) and DCR-registered confidential clients. The Kubernetes CRD\nrequires the explicit opt-in for a delegate client with an HTTP issuer;\nthe shared transport validator enforces that its host is loopback — see\nEmbeddedAuthServerConfig's doc comment.\n\nDCR private_key_jwt registration has no equivalent flag or transport\nrestriction: unlike confidential registration, it never returns a\nclient_secret (or any other secret) in the DCR response, so there is\nnothing here for cleartext HTTP to expose.",
                         "type": "boolean"
                     },
                     "insecure_allow_http": {
@@ -511,6 +688,9 @@ const docTemplate = `{
                     "issuer": {
                         "description": "Issuer is the issuer identifier for this authorization server.\nThis will be included in the \"iss\" claim of issued tokens.\nMust be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.",
                         "type": "string"
+                    },
+                    "registration_rate_limit": {
+                        "$ref": "#/components/schemas/authserver.RegistrationRateLimitRunConfig"
                     },
                     "schema_version": {
                         "description": "SchemaVersion is the version of the RunConfig schema.",
@@ -538,6 +718,9 @@ const docTemplate = `{
                     "storage": {
                         "$ref": "#/components/schemas/storage.RunConfig"
                     },
+                    "tls_listener": {
+                        "$ref": "#/components/schemas/authserver.TLSListenerRunConfig"
+                    },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/authserver.TokenLifespanRunConfig"
                     },
@@ -549,8 +732,11 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "upstream_filter": {
+                        "$ref": "#/components/schemas/upstreamfilter.GroupBasedFilterConfig"
+                    },
                     "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when DelegateClients or a\nTrustedIssuer with JWTBearerGrant enables token-only operation.\nMultiple upstreams are supported for sequential authorization chains.",
+                        "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when token-only operation\nis enabled by DelegateClients (also under InboundGrants.TokenExchange),\nInboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant\n(also under InboundGrants.JWTBearer).\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
                             "$ref": "#/components/schemas/authserver.UpstreamRunConfig"
                         },
@@ -563,7 +749,7 @@ const docTemplate = `{
             "authserver.SPIFFEBundleEndpointSourceRunConfig": {
                 "properties": {
                     "profile": {
-                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required, since the future bundle loader cannot\notherwise know which trust anchor to use for the initial connection.",
+                        "description": "Profile selects how the endpoint's TLS connection is authenticated:\nSPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or\nSPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed\nX.509-SVID root). Required, since an endpoint loader needs this profile\nto choose the trust anchor for its initial connection.",
                         "type": "string"
                     },
                     "url": {
@@ -573,10 +759,13 @@ const docTemplate = `{
                 "type": "object"
             },
             "authserver.SPIFFEBundleSourceRunConfig": {
-                "description": "BundleSource declares exactly one future trust-bundle source. It is\nvalidated for shape only; fetching or loading a bundle from it is a\nlater step.",
+                "description": "BundleSource declares exactly one trust-bundle source and is validated for\nshape here. Only the file source is loaded in this build; bundle_endpoint\nand workload_api are rejected by Validate.",
                 "properties": {
                     "endpoint": {
                         "$ref": "#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig"
+                    },
+                    "file": {
+                        "$ref": "#/components/schemas/authserver.SPIFFEFileBundleSourceRunConfig"
                     },
                     "type": {
                         "type": "string"
@@ -590,7 +779,7 @@ const docTemplate = `{
             "authserver.SPIFFEClientAuthRunConfig": {
                 "properties": {
                     "audiences": {
-                        "description": "Audiences are RFC 8693 token audiences this association may request.\nThis is an independent request dimension from Resources: it is not\nbounded by allowed_audiences (which is an RFC 8707 resource-URI list)\nand may contain non-URI logical audience identifiers.",
+                        "description": "Audiences is deprecated and ignored; use Resources. It stays in the\nschema because v0.65.0 required it, and a warning is logged at startup\nwhen it is set.",
                         "items": {
                             "type": "string"
                         },
@@ -621,7 +810,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "resources": {
-                        "description": "Resources are RFC 8707 resource indicators this association may\nrequest. Must be a subset of the server's allowed_audiences allowlist\n(RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list\nDelegateClientRunConfig.Audiences is validated against. Distinct from\nAudiences: a resource permission does not imply the same value is also\na permitted token audience, or vice versa.",
+                        "description": "Resources are RFC 8707 resource indicators this association may\nrequest. At least one is required for every association: both\nclient_credentials and token exchange take exactly one resource per\nrequest and grant it as the token audience. Must be a subset of the\nserver's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the\nsame RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is\nvalidated against.",
                         "items": {
                             "type": "string"
                         },
@@ -638,6 +827,14 @@ const docTemplate = `{
                     },
                     "trust_domain_ref": {
                         "description": "TrustDomainRef identifies the SPIFFE trust-domain declaration governing\nthis association policy.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.SPIFFEFileBundleSourceRunConfig": {
+                "properties": {
+                    "path": {
                         "type": "string"
                     }
                 },
@@ -687,6 +884,18 @@ const docTemplate = `{
                     },
                     "signing_key_file": {
                         "description": "SigningKeyFile is the filename of the primary signing key (relative to KeyDir).\nThis key is used for signing new tokens.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.TLSListenerRunConfig": {
+                "description": "TLSListener serves the auth server routes over TLS on port 8443, in\naddition to the MCP port. Required for spiffe_x509 client authentication.",
+                "properties": {
+                    "cert_file": {
+                        "type": "string"
+                    },
+                    "key_file": {
                         "type": "string"
                     }
                 },
@@ -788,6 +997,10 @@ const docTemplate = `{
             },
             "authserver.UpstreamRunConfig": {
                 "properties": {
+                    "display_name": {
+                        "description": "DisplayName is an optional human-readable label for this upstream, shown to\nend users on the consent page in place of Name. It is display-only: never\ncompared, stored, or used to route. It is sanitized at render time and never\nrejected by validation. It is shown as trusted text, so it must come from\noperator-controlled configuration only.",
+                        "type": "string"
+                    },
                     "name": {
                         "description": "Name uniquely identifies this upstream.\nUsed for routing decisions and session binding in multi-upstream scenarios.\nIf empty when only one upstream is configured, defaults to \"default\".",
                         "type": "string"
@@ -854,6 +1067,69 @@ const docTemplate = `{
                     },
                     "http_method": {
                         "description": "HTTPMethod is the HTTP method to use for the userinfo request.\nIf not specified, defaults to GET.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "awssts.Config": {
+                "description": "AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services",
+                "properties": {
+                    "fallback_role_arn": {
+                        "description": "FallbackRoleArn is the IAM role ARN to assume when no role mapping matches.",
+                        "type": "string"
+                    },
+                    "region": {
+                        "description": "Region is the AWS region for STS and SigV4 signing.",
+                        "type": "string"
+                    },
+                    "role_claim": {
+                        "description": "RoleClaim is the JWT claim to use for role mapping (default: \"groups\").",
+                        "type": "string"
+                    },
+                    "role_mappings": {
+                        "description": "RoleMappings maps JWT claim values to IAM roles with priority.",
+                        "items": {
+                            "$ref": "#/components/schemas/awssts.RoleMapping"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "service": {
+                        "description": "Service is the AWS service name for SigV4 signing (default: \"aws-mcp\").",
+                        "type": "string"
+                    },
+                    "session_duration": {
+                        "description": "SessionDuration is the duration in seconds for assumed role credentials (default: 3600).",
+                        "type": "integer"
+                    },
+                    "session_name_claim": {
+                        "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
+                        "type": "string"
+                    },
+                    "subject_provider_name": {
+                        "description": "SubjectProviderName identifies which upstream provider's access token to use\nfor STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer\ntoken from the incoming HTTP request is used.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "awssts.RoleMapping": {
+                "properties": {
+                    "claim": {
+                        "description": "Claim is the simple claim value to match (e.g., group name).\nInternally compiles to a CEL expression: \"\u003cclaim_value\u003e\" in claims[\"\u003crole_claim\u003e\"]\nMutually exclusive with Matcher.",
+                        "type": "string"
+                    },
+                    "matcher": {
+                        "description": "Matcher is a CEL expression for complex matching against JWT claims.\nThe expression has access to a \"claims\" variable containing all JWT claims.\nExamples:\n  - \"admins\" in claims[\"groups\"]\n  - claims[\"sub\"] == \"user123\" \u0026\u0026 !(\"act\" in claims)\nMutually exclusive with Claim.",
+                        "type": "string"
+                    },
+                    "priority": {
+                        "description": "Priority determines selection order (lower number = higher priority).\nWhen multiple mappings match, the one with the lowest priority is selected.\nWhen nil (omitted), the mapping has the lowest possible priority, and\nconfiguration order acts as tie-breaker via stable sort.",
+                        "type": "integer"
+                    },
+                    "role_arn": {
+                        "description": "RoleArn is the IAM role ARN to assume when this mapping matches.",
                         "type": "string"
                     }
                 },
@@ -946,69 +1222,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_auth_awssts.Config": {
-                "description": "AWSStsConfig contains AWS STS token exchange configuration for accessing AWS services",
-                "properties": {
-                    "fallback_role_arn": {
-                        "description": "FallbackRoleArn is the IAM role ARN to assume when no role mapping matches.",
-                        "type": "string"
-                    },
-                    "region": {
-                        "description": "Region is the AWS region for STS and SigV4 signing.",
-                        "type": "string"
-                    },
-                    "role_claim": {
-                        "description": "RoleClaim is the JWT claim to use for role mapping (default: \"groups\").",
-                        "type": "string"
-                    },
-                    "role_mappings": {
-                        "description": "RoleMappings maps JWT claim values to IAM roles with priority.",
-                        "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_awssts.RoleMapping"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "service": {
-                        "description": "Service is the AWS service name for SigV4 signing (default: \"aws-mcp\").",
-                        "type": "string"
-                    },
-                    "session_duration": {
-                        "description": "SessionDuration is the duration in seconds for assumed role credentials (default: 3600).",
-                        "type": "integer"
-                    },
-                    "session_name_claim": {
-                        "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
-                        "type": "string"
-                    },
-                    "subject_provider_name": {
-                        "description": "SubjectProviderName identifies which upstream provider's access token to use\nfor STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer\ntoken from the incoming HTTP request is used.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_auth_awssts.RoleMapping": {
-                "properties": {
-                    "claim": {
-                        "description": "Claim is the simple claim value to match (e.g., group name).\nInternally compiles to a CEL expression: \"\u003cclaim_value\u003e\" in claims[\"\u003crole_claim\u003e\"]\nMutually exclusive with Matcher.",
-                        "type": "string"
-                    },
-                    "matcher": {
-                        "description": "Matcher is a CEL expression for complex matching against JWT claims.\nThe expression has access to a \"claims\" variable containing all JWT claims.\nExamples:\n  - \"admins\" in claims[\"groups\"]\n  - claims[\"sub\"] == \"user123\" \u0026\u0026 !(\"act\" in claims)\nMutually exclusive with Claim.",
-                        "type": "string"
-                    },
-                    "priority": {
-                        "description": "Priority determines selection order (lower number = higher priority).\nWhen multiple mappings match, the one with the lowest priority is selected.\nWhen nil (omitted), the mapping has the lowest possible priority, and\nconfiguration order acts as tie-breaker via stable sort.",
-                        "type": "integer"
-                    },
-                    "role_arn": {
-                        "description": "RoleArn is the IAM role ARN to assume when this mapping matches.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config": {
                 "description": "UpstreamSwapConfig contains configuration for upstream token swap middleware.\nWhen set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs\nfor upstream IdP tokens before forwarding requests to the MCP server.",
                 "properties": {
@@ -1026,6 +1239,17 @@ const docTemplate = `{
                     }
                 },
                 "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerAssertionType": {
+                "enum": [
+                    "jwt_bearer",
+                    "id_jag"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "JWTBearerAssertionTypeJWTBearer",
+                    "JWTBearerAssertionTypeIDJAG"
+                ]
             },
             "github_com_stacklok_toolhive_pkg_authserver_server_tokenexchange.JWTBearerSubjectBinding": {
                 "properties": {
@@ -1083,7 +1307,8 @@ const docTemplate = `{
                     "kimi-cli",
                     "factory",
                     "copilot-cli",
-                    "qoder"
+                    "qoder",
+                    "pi"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -1111,7 +1336,8 @@ const docTemplate = `{
                     "KimiCli",
                     "Factory",
                     "CopilotCli",
-                    "Qoder"
+                    "Qoder",
+                    "Pi"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {
@@ -1597,6 +1823,14 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "findings": {
+                        "description": "Findings lists every error and warning with its rule ID and location.\nEach Errors or Warnings entry corresponds to exactly one finding.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Finding"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "valid": {
                         "description": "Valid indicates whether the skill definition is valid.",
                         "type": "boolean"
@@ -1665,7 +1899,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "allow_docker_gateway": {
-                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
                         "type": "boolean"
                     },
                     "allowed_origins": {
@@ -1691,7 +1925,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "aws_sts_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_awssts.Config"
+                        "$ref": "#/components/schemas/awssts.Config"
                     },
                     "base_name": {
                         "description": "BaseName is the base name used for the container (without prefixes)",
@@ -1834,6 +2068,10 @@ const docTemplate = `{
                     "rate_limit_namespace": {
                         "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
                         "type": "string"
+                    },
+                    "read_only_rootfs": {
+                        "description": "ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.\n/tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.\nOpt-in: servers that write anywhere else outside their mounted volumes will fail.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
                     },
                     "registry_api_url": {
                         "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
@@ -1981,6 +2219,9 @@ const docTemplate = `{
                     "key_prefix": {
                         "description": "KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.",
                         "type": "string"
+                    },
+                    "tls": {
+                        "$ref": "#/components/schemas/redisconfig.TLSConfig"
                     }
                 },
                 "type": "object"
@@ -2051,6 +2292,30 @@ const docTemplate = `{
                     "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]
+            },
+            "github_com_stacklok_toolhive_pkg_skills.Finding": {
+                "properties": {
+                    "file": {
+                        "description": "File is the slash-separated path of the affected file, relative to the\nvalidated directory.",
+                        "type": "string"
+                    },
+                    "line": {
+                        "description": "Line is the 1-based line in File, or 0 when unknown.",
+                        "type": "integer"
+                    },
+                    "message": {
+                        "description": "Message describes the problem.",
+                        "type": "string"
+                    },
+                    "rule": {
+                        "description": "Rule is the stable ID of the check that produced the finding.",
+                        "type": "string"
+                    },
+                    "severity": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Severity"
+                    }
+                },
+                "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_skills.InstallStatus": {
                 "description": "Status is the current installation status.",
@@ -2194,6 +2459,18 @@ const docTemplate = `{
                 "x-enum-varnames": [
                     "ScopeUser",
                     "ScopeProject"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_skills.Severity": {
+                "description": "Severity is \"error\" or \"warning\".",
+                "enum": [
+                    "error",
+                    "warning"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "SeverityError",
+                    "SeverityWarning"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_skills.SkillContent": {
@@ -2455,6 +2732,14 @@ const docTemplate = `{
                         "description": "Errors is a list of validation errors, if any.",
                         "items": {
                             "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "findings": {
+                        "description": "Findings lists every error and warning with its rule ID and location.\nEach Errors or Warnings entry corresponds to exactly one finding.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Finding"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -3283,7 +3568,7 @@ const docTemplate = `{
                 "description": "Request to create a new workload",
                 "properties": {
                     "allow_docker_gateway": {
-                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.",
                         "type": "boolean"
                     },
                     "authz_config": {
@@ -3360,6 +3645,10 @@ const docTemplate = `{
                         "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
                         "example": "30s",
                         "type": "string"
+                    },
+                    "read_only_rootfs": {
+                        "description": "Whether to mount the container's root filesystem as read-only.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
                     },
                     "registry": {
                         "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
@@ -4216,7 +4505,7 @@ const docTemplate = `{
                 "description": "Request to update an existing workload (name cannot be changed)",
                 "properties": {
                     "allow_docker_gateway": {
-                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.\nGateways are snapshotted at deployment; redeploy to include bridges created later.",
                         "type": "boolean"
                     },
                     "authz_config": {
@@ -4289,6 +4578,10 @@ const docTemplate = `{
                         "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
                         "example": "30s",
                         "type": "string"
+                    },
+                    "read_only_rootfs": {
+                        "description": "Whether to mount the container's root filesystem as read-only.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
                     },
                     "runtime_config": {
                         "$ref": "#/components/schemas/templates.RuntimeConfig"
@@ -4564,6 +4857,20 @@ const docTemplate = `{
                             "policy_stopped"
                         ],
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "redisconfig.TLSConfig": {
+                "description": "TLS enables TLS for session storage and rate limiting. An empty\nconfiguration verifies the Redis server using system roots.",
+                "properties": {
+                    "caCertFile": {
+                        "description": "CACertFile is the path to a PEM-encoded CA bundle. When configured, this\nbundle replaces the system roots used to verify the Redis server.\n+optional",
+                        "type": "string"
+                    },
+                    "insecureSkipVerify": {
+                        "description": "InsecureSkipVerify skips server certificate and hostname verification.\n+optional",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -5430,6 +5737,10 @@ const docTemplate = `{
             "storage.RunConfig": {
                 "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
                 "properties": {
+                    "max_dcr_clients": {
+                        "description": "MaxDCRClients caps the number of live clients created by\n/oauth/register. At the cap, registration fails with HTTP 503 until a\nclient expires; no existing client is evicted. If omitted, defaults to\n10000; 0 means unlimited, and a negative value is rejected. On Redis the\ncount is shared by every replica.\n\nSizing: a client never used for a token exchange lives 24 hours, so a\ncaller registering at the full rate keeps up to rate x replicas x 86400\nunused clients alive. At the default rate of 1/s that is about 86400 per\nreplica: one replica fills the default cap in about 2.8 hours, and new\nregistrations then get 503 for up to 24 hours after the traffic stops.\nA client promoted by a token exchange holds its slot for 30 days. The\noperator sets it from the embedded auth server's storage.maxDCRClients.",
+                        "type": "integer"
+                    },
                     "redis_config": {
                         "$ref": "#/components/schemas/storage.RedisRunConfig"
                     },
@@ -5616,8 +5927,20 @@ const docTemplate = `{
             "tokenexchange.JWTBearerGrantPolicy": {
                 "description": "JWTBearerGrant optionally enables the plain RFC 7523 JWT-bearer grant.\nIt accepts assertions from this issuer without client authentication and\nlimits their maximum age, subjects, and RFC 8707 resources. It is\nindependent from RFC 8693 delegation policy.\n\nThis legacy field is deprecated; configure RFC 7523 policy under\ninbound_grants.jwt_bearer.issuer_policies.",
                 "properties": {
+                    "accepted_assertion_types": {
+                        "description": "AcceptedAssertionTypes selects which assertion form(s) this issuer's\njwt-bearer grant accepts. nil/empty accepts both jwt_bearer and id_jag\n(the behavior before this field existed). Set {id_jag} to restrict an IdP\nissuer to Cross-App-Access grants so its other signed JWTs cannot be\nredeemed on the credential-free plain path; set {jwt_bearer} to refuse\nID-JAG. Listing id_jag explicitly requires this AS's issuer to be\naccepted: AcceptedAudiences, when set, must include it, and when empty\nthe issuer must not also be an allowed audience. SubjectBindings are shared by both forms. See\ndocs/arch/17-token-exchange-delegation.md.",
+                        "items": {
+                            "enum": [
+                                "jwt_bearer",
+                                "id_jag"
+                            ],
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "accepted_audiences": {
-                        "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. Defaults to\n[tokenEndpoint] when empty, preserving prior exact-match behavior.",
+                        "description": "AcceptedAudiences is the set of \"this AS\" identity strings an\nassertion's \"aud\" claim must intersect — e.g. to support migrating\nthis server's issuer/token-endpoint URL, or exposing it under more\nthan one valid name. Each value uniquely identifies this\nauthorization server for this grant; it is NOT a resource/API\nidentifier — a bare resource audience is deliberately not accepted\nhere, that would let any RFC 8707 resource-scoped token satisfy the\ngrant instead of only tokens minted for this AS. When empty, the plain\nJWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts\nthe token endpoint and this server's issuer identifier, unless the issuer\nis also an allowed resource audience. A configured list replaces both\ndefaults. The plain JWT-bearer grant accepts a multi-valued \"aud\" when\none value matches; the ID-JAG grant refuses any \"aud\" array with more\nthan one value.",
                         "items": {
                             "type": "string"
                         },
@@ -5753,6 +6076,53 @@ const docTemplate = `{
                     },
                     "shared": {
                         "$ref": "#/components/schemas/types.RateLimitBucket"
+                    }
+                },
+                "type": "object"
+            },
+            "upstreamfilter.GroupBasedFilterConfig": {
+                "description": "UpstreamFilter configures an optional group-based filter that narrows the\nmulti-upstream authorization chain per-request based on the first\nupstream's resolved identity. When nil, every request walks the full\nupstream chain in configured order (preserving behavior from before the\nfilter hook existed).\n\nThe filter is applied exactly once per authorization, on the first leg's\ncallback. The mandatory first upstream (Upstreams[0]) is never filtered\nout. See pkg/authserver/upstreamfilter for the configuration schema and\npkg/authserver/server/handlers for the runtime contract.",
+                "properties": {
+                    "claim": {
+                        "description": "Claim is the exact, top-level JWT/OIDC claim name to read group\nmembership from. Defaults to \"groups\" when empty. The claim value MUST be\na JSON array of strings; other shapes (missing, non-array, mixed types)\nfail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)\nmust be flattened by the identity provider — nested paths are not\nsupported in this implementation.\n\nThe value is read from upstream.Identity.Claims as the first upstream\nresolves it: an OIDC upstream fills that map from the validated ID\ntoken, a pure OAuth2 upstream from the userinfo response. The\nidentityFromToken and synthesized-identity paths leave it empty, and\ngroups carried only in an access token never reach it. A missing claim\nfails the authorization — DefaultUpstreams covers a valid-but-empty\nclaim and unmatched groups, not an absent one.",
+                        "type": "string"
+                    },
+                    "defaultUpstreams": {
+                        "description": "DefaultUpstreams is used when the claim is a valid empty array or when no\nrule matches. When empty or omitted, no optional upstreams are added —\nthe mandatory first upstream remains but the authorization walks no\nfurther.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "rules": {
+                        "description": "Rules assigns groups to upstream provider subsets. A principal matches a\nrule if any of the principal's group values appears in the rule's Groups\nlist (any-of / OR semantics). Multiple matching rules are combined by\nunion: the effective upstream chain contains every UpstreamProviders\nvalue from every matching rule, deduplicated.",
+                        "items": {
+                            "$ref": "#/components/schemas/upstreamfilter.GroupRule"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "upstreamfilter.GroupRule": {
+                "properties": {
+                    "groups": {
+                        "description": "Groups is the set of principal group names this rule matches. Matching\nis case-sensitive and exact. Empty and duplicate values are rejected at\nconfiguration validation time.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "upstreamProviders": {
+                        "description": "UpstreamProviders lists the non-first upstream provider names to include\nin the chain when this rule matches. All names must reference a\nconfigured non-first upstream. Empty and duplicate values, references to\nthe mandatory first upstream, and references to undeclared upstreams are\nrejected at configuration validation time.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"

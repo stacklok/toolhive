@@ -67,7 +67,18 @@ spec:
           metadata:
             type: object
           spec:
-            description: VirtualMCPServerSpec defines the desired state of VirtualMCPServer
+            description: |-
+              VirtualMCPServerSpec defines the desired state of VirtualMCPServer
+
+              Deeper cross-reference checks (every referenced upstream provider must
+              exist, and no reference to the mandatory first provider) were previously
+              expressed as CEL on this struct but were removed because they pushed the
+              cluster's x-kubernetes-validations cost budget over the per-schema limit
+              in realistic deployments where upstreamProviders is unbounded. The same
+              invariants are re-checked at reconciliation time by
+              validateAuthServerUpstreamFilter in the VirtualMCPServer controller, which
+              surfaces a terminal AuthServerConfigValidated=False condition — only the
+              kubectl-apply-time feedback is lost, not the safety.
             properties:
               authServerConfig:
                 description: |-
@@ -340,11 +351,43 @@ spec:
                               description: JWTBearerIssuerPolicyConfig binds RFC 7523
                                 policy to a named trusted issuer.
                               properties:
+                                acceptedAssertionTypes:
+                                  description: |-
+                                    AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                    jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                    are accepted, which is the behavior before this field existed. Set
+                                    ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                    Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                    be redeemed on the credential-free plain jwt-bearer path. Set
+                                    ["jwt_bearer"] to refuse ID-JAG.
+
+                                    When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                    include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                    draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                    token endpoint URL. When acceptedAudiences is empty the issuer is
+                                    accepted by default, unless it is also listed as an allowed audience
+                                    (resource), which fails startup. Subject bindings are shared between both forms, so
+                                    each binding also authorizes a plain jwt-bearer assertion from that
+                                    subject whenever "jwt_bearer" is accepted.
+                                  items:
+                                    description: |-
+                                      JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                      jwt-bearer grant may accept for a trusted issuer.
+                                    enum:
+                                    - jwt_bearer
+                                    - id_jag
+                                    type: string
+                                  maxItems: 2
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
-                                    assertion audiences. When omitted, runtime validation defaults to the
-                                    token endpoint.
+                                    assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                    the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                    this server's issuer identifier, unless the issuer is also an allowed
+                                    resource audience. A configured list replaces these defaults.
                                   items:
                                     maxLength: 2048
                                     minLength: 1
@@ -425,24 +468,24 @@ spec:
                           description: |-
                             SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
                             trust domain with an explicit OAuth client identity and permissions.
-                            Configuration is not authentication: configured SPIFFE clients remain
-                            non-public OAuth clients without a secret until live SPIFFE credential
-                            validation is implemented (see SPIFFETrustDomainConfig's doc comment).
-
-                            GrantTypes is deliberately not exposed here: the runtime only accepts
-                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
-                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-                            always supplies it instead of letting it be configured.
+                            Declaring a client does not grant access by itself. SPIFFE clients
+                            authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
+                            Trust material comes from the declared bundle source (see
+                            SPIFFETrustDomainConfig's doc comment).
                           properties:
                             audiences:
-                              description: Audiences are RFC 8693 token audiences
-                                this association may request.
+                              description: |-
+                                Deprecated: ignored; use resources.
+
+                                The field was required in earlier releases and is still accepted so
+                                existing objects keep validating. A non-empty value is reported by the
+                                DeprecatedInboundGrantConfiguration condition and has no effect on token
+                                targeting.
                               items:
                                 maxLength: 2048
                                 minLength: 1
                                 type: string
                               maxItems: 50
-                              minItems: 1
                               type: array
                               x-kubernetes-list-type: set
                             clientId:
@@ -452,6 +495,27 @@ spec:
                               maxLength: 253
                               minLength: 1
                               type: string
+                            grantTypes:
+                              default:
+                              - urn:ietf:params:oauth:grant-type:token-exchange
+                              description: |-
+                                GrantTypes contains the OAuth grants permitted for this association.
+                                It defaults to the token-exchange grant when omitted, which is what the
+                                operator configured before this field existed. List client_credentials
+                                to opt in to the SPIFFE-bound client credentials grant. The list alone
+                                decides which grants the association may use: client authentication does
+                                not confer any grant, and there is no separate per-grant enable switch.
+                                Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token
+                                exchange.
+                              items:
+                                enum:
+                                - client_credentials
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             methods:
                               description: |-
                                 Methods are the credential types this association may authenticate
@@ -485,9 +549,10 @@ spec:
                                 which is derived at reconcile time and not available on this CRD, so
                                 allowlist membership is validated at reconcile time, not admission.
                                 Shape (a well-formed absolute HTTP(S) URI) is independent of that
-                                derived allowlist and is validated here. Distinct from Audiences: a
-                                resource permission does not imply the same value is also a permitted
-                                token audience, or vice versa.
+                                derived allowlist and is validated here. Required, with at least one
+                                entry, for every association: client_credentials and token exchange each
+                                take exactly one resource per request and grant it as the token
+                                audience.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -514,7 +579,6 @@ spec:
                               minLength: 1
                               type: string
                           required:
-                          - audiences
                           - clientId
                           - methods
                           - principalPattern
@@ -526,6 +590,8 @@ spec:
                               segments
                             rule: self.principalPattern.split('/').all(segment, segment
                               != '.' && segment != '..')
+                          - message: resources is required
+                            rule: has(self.resources) && size(self.resources) > 0
                         maxItems: 100
                         type: array
                         x-kubernetes-list-type: atomic
@@ -673,9 +739,12 @@ spec:
                     default: false
                     description: |-
                       InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-                      flag, that combination is rejected at reconcile time: a loopback http://
+                      Dynamic Client Registration (DCR), delegate clients and SPIFFE
+                      associations that have spiffe_jwt in methods and client_credentials in
+                      grantTypes on the same association, when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at admission, and reconcile additionally
+                      requires the issuer host to be loopback. A loopback http://
                       issuer is normally fine for local development since the traffic never
                       leaves the machine, but confidential clients send secrets over cleartext.
                       Forcing TLS onto every loopback deployment instead would just push
@@ -706,8 +775,10 @@ spec:
 
                       One combination is rejected at admission on all three CRDs regardless of the
                       above: setting this field alongside confidential client registration or
-                      delegate clients, which would issue or use client secrets in cleartext over
-                      an unauthenticated endpoint (see the XValidation rule on
+                      delegate clients, or a SPIFFE association that has spiffe_jwt in methods and
+                      client_credentials in grantTypes on the same association, which would issue
+                      or use client secrets or JWT-SVIDs in cleartext over an unauthenticated
+                      endpoint (see the XValidation rule on
                       EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
@@ -738,6 +809,41 @@ spec:
                     minLength: 1
                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
+                  registrationRateLimit:
+                    description: |-
+                      RegistrationRateLimit bounds the unauthenticated /oauth/register
+                      endpoint with a token bucket: up to maxTokens registrations at once,
+                      refilled at maxTokens per refillPeriod. For a sustained rate of R per
+                      second with a burst of B, set maxTokens to B and refillPeriod to B/R;
+                      for example, 10 per minute with a burst of 3 is maxTokens 3,
+                      refillPeriod 18s. If omitted, defaults to 1 registration per second
+                      with a burst of 5 (maxTokens 5, refillPeriod 5s). The limit is per
+                      replica, so the effective rate is the configured rate multiplied by the
+                      replica count. Every successful registration stores a client, so a
+                      higher rate fills storage.maxDCRClients sooner, and with maxDCRClients
+                      0 this limit is the only bound on stored clients.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                    x-kubernetes-validations:
+                    - message: registrationRateLimit.refillPeriod must be positive
+                      rule: duration(self.refillPeriod) > duration('0s')
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -763,24 +869,20 @@ spec:
                   spiffeTrustDomains:
                     description: |-
                       SPIFFETrustDomains declares SPIFFE trust domains for
-                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
-                      doc comment for why declaring a domain does not by itself enable
-                      authentication in this build.
+                      inboundGrants.spiffeClientAuth associations. Each declaration must be
+                      referenced by an inboundGrants.spiffeClientAuth entry.
                     items:
                       description: |-
                         SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-                        embedded authorization server. Configuration is not authentication: no
-                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-                        domain does not by itself let any workload authenticate — RunConfig.Validate
-                        (pkg/authserver/config.go) currently hard-rejects any non-empty
-                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-                        a deliberate placeholder until real SVID verification lands.
+                        embedded authorization server. A declared domain becomes usable only after
+                        the configured source supplies trust material during auth-server startup.
                       properties:
                         bundleSource:
                           description: |-
-                            BundleSource declares exactly one future trust-bundle source. It is
-                            validated for shape only; fetching or loading a bundle from it is a
-                            later step.
+                            BundleSource declares exactly one trust-bundle source and is validated for
+                            shape here. Only the file source is loaded in this build; bundle_endpoint
+                            and workload_api are rejected when the auth-server configuration is
+                            validated.
                           properties:
                             endpoint:
                               description: |-
@@ -807,10 +909,37 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document. It must not be "." or start with "..".
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - rule: self != '.' && !self.startsWith('..')
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -826,6 +955,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
@@ -879,6 +1011,29 @@ spec:
                       Storage configures the storage backend for the embedded auth server.
                       If not specified, defaults to in-memory storage.
                     properties:
+                      maxDCRClients:
+                        description: |-
+                          MaxDCRClients caps the number of live clients created by Dynamic Client
+                          Registration (/oauth/register). At the cap, registration fails with HTTP
+                          503 until a client expires; no existing client is evicted. If omitted,
+                          defaults to 10000. Operator-configured and CIMD clients are not counted.
+                          On Redis the count is shared by every replica; with memory storage each
+                          replica keeps its own count.
+
+                          A client never used for a token exchange lives 24 hours, so a caller
+                          registering at the full registrationRateLimit keeps up to
+                          rate x replicas x 86400 unused clients alive; at the default rate one
+                          replica fills the default cap in about 2.8 hours.
+
+                          0 means unlimited. The endpoint is unauthenticated, so 0 leaves stored
+                          clients bounded only by the per-replica registrationRateLimit, about
+                          86400 per replica per day at the default rate. Use 0 only temporarily,
+                          for example while an existing client population above the cap drains;
+                          a large finite value, such as two to three times the observed live
+                          client count, keeps some protection.
+                        format: int32
+                        minimum: 0
+                        type: integer
                       redis:
                         description: |-
                           Redis configures the Redis storage backend.
@@ -1003,6 +1158,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -1016,8 +1173,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           tls:
@@ -1029,6 +1189,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -1042,8 +1204,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           writeTimeout:
@@ -1071,6 +1236,50 @@ spec:
                         - memory
                         - redis
                         type: string
+                    type: object
+                  tlsListener:
+                    description: |-
+                      TLSListener configures an additional TLS listener on port 8443 that
+                      serves the embedded authorization server's routes. MCP traffic, health
+                      probes and metrics stay on plain HTTP. Both certificateSecretRef and
+                      privateKeySecretRef are required. It is required when
+                      inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
+                      checked when the resource is reconciled and reported in status conditions;
+                      the API server does not reject it. The operator exposes the listener as an
+                      https-auth container port and Service port 8443. Updates to the referenced
+                      Secret contents are picked up without a pod restart.
+                    properties:
+                      certificateSecretRef:
+                        description: CertificateSecretRef references the PEM-encoded
+                          TLS certificate.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      privateKeySecretRef:
+                        description: PrivateKeySecretRef references the PEM-encoded
+                          TLS private key.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - certificateSecretRef
+                    - privateKeySecretRef
                     type: object
                   tokenLifespans:
                     description: |-
@@ -1271,11 +1480,43 @@ spec:
                             This legacy field is deprecated; configure RFC 7523 policy under
                             inboundGrants.jwtBearer.issuerPolicies.
                           properties:
+                            acceptedAssertionTypes:
+                              description: |-
+                                AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                are accepted, which is the behavior before this field existed. Set
+                                ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                be redeemed on the credential-free plain jwt-bearer path. Set
+                                ["jwt_bearer"] to refuse ID-JAG.
+
+                                When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                token endpoint URL. When acceptedAudiences is empty the issuer is
+                                accepted by default, unless it is also listed as an allowed audience
+                                (resource), which fails startup. Subject bindings are shared between both forms, so
+                                each binding also authorizes a plain jwt-bearer assertion from that
+                                subject whenever "jwt_bearer" is accepted.
+                              items:
+                                description: |-
+                                  JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                  jwt-bearer grant may accept for a trusted issuer.
+                                enum:
+                                - jwt_bearer
+                                - id_jag
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
-                                assertion audiences. When omitted, runtime validation defaults to the
-                                token endpoint.
+                                assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                this server's issuer identifier, unless the issuer is also an allowed
+                                resource audience. A configured list replaces these defaults.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -1385,8 +1626,10 @@ spec:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
                       When configured, the embedded auth server delegates interactive authentication
-                      to these providers. It may be omitted only when delegateClients or a trusted
-                      issuer with jwtBearerGrant enables token-only operation.
+                      to these providers. It may be omitted only when token-only operation is
+                      enabled by delegateClients (also under inboundGrants.tokenExchange),
+                      inboundGrants.spiffeClientAuth, or a trusted issuer with jwtBearerGrant
+                      (also under inboundGrants.jwtBearer).
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -1525,6 +1768,20 @@ spec:
                                 runtime rather than being pre-provisioned, and ClientID must be left empty.
                                 Mutually exclusive with ClientID.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -1571,6 +1828,68 @@ spec:
                                     cost) and matches the conventional URL length cap.
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
+                                  type: string
+                                registrationProbe:
+                                  description: |-
+                                    RegistrationProbe selects how ToolHive checks the cached upstream client
+                                    at start. tokenEndpoint (the default) redeems a random authorization
+                                    code with the cached client and reads invalid_client as "registration
+                                    gone"; it decides only for upstreams that authenticate the client
+                                    before validating the grant. authorizationEndpoint sends an
+                                    authorization request for the cached client without following
+                                    redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+                                    JSON error object (error invalid_client, unauthorized_client or
+                                    invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+                                    token endpoint answers invalid_grant for any client_id; an HTML page or
+                                    a bare gateway status is not a verdict. A false rejection re-registers
+                                    at every start and, when registration also fails, fails startup. none
+                                    skips the check: the upstream is not contacted, but a registration made
+                                    with another method than a configured tokenEndpointAuthMethod is still
+                                    replaced. Otherwise the registration is retired only through
+                                    RotationKey.
+                                  enum:
+                                  - tokenEndpoint
+                                  - authorizationEndpoint
+                                  - none
+                                  type: string
+                                registrationProbeInterval:
+                                  description: |-
+                                    RegistrationProbeInterval, when set, repeats the start-time check while
+                                    the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+                                    upstreams. ToolHive re-reads the cached registration, checks it with
+                                    RegistrationProbe, replaces a rejected one or registers a missing one,
+                                    and switches to the result in place when it differs from the client in
+                                    use, including when another replica replaced it. Without it, a
+                                    registration the upstream drops stays in use until the proxy restarts.
+                                    Each check sends at most one RegistrationProbe request to the upstream
+                                    from every replica (none with RegistrationProbe none), plus a
+                                    registration request when the probe rejects the client; the
+                                    tokenEndpoint probe appears in upstream logs as a failed code
+                                    redemption. A re-registration presents the initial access token the pod
+                                    read at start, so an upstream that issues single-use initial access
+                                    tokens still needs a restart to recover.
+                                  pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: registrationProbeInterval must be at
+                                      least 1m
+                                    rule: duration(self) >= duration('1m')
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream (see
+                                    RegistrationProbe) and registers a new one by itself when the upstream
+                                    rejects it. Where the configured probe cannot tell, the stale client_id
+                                    may only be rejected in the user's browser, and changing this key is
+                                    the remedy. The previous registration's row stays in storage, and
+                                    upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
                                   type: string
                                 softwareId:
                                   description: |-
@@ -1650,6 +1969,16 @@ spec:
                                 OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                                 available. Never set this in production.
                               type: boolean
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -1678,6 +2007,11 @@ spec:
                                 client_secret_post-shaped default). Set this to client_secret_basic explicitly
                                 for providers that require HTTP Basic auth. Public clients without a secret use
                                 the "none" method.
+                                With DCRConfig, it is the method the client registers with, in place of the one
+                                ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+                                client_secret_post, then none). Set it for an upstream whose token endpoint does
+                                not accept the method ToolHive picks. A cached registration made with another
+                                method is replaced with a new one at the next start.
                               enum:
                               - none
                               - client_secret_basic
@@ -1905,6 +2239,20 @@ spec:
                                 and ClientSecretRef must be omitted. If neither discoveryUrl nor
                                 registrationEndpoint is set, discovery is derived from issuerUrl.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -1952,6 +2300,68 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                registrationProbe:
+                                  description: |-
+                                    RegistrationProbe selects how ToolHive checks the cached upstream client
+                                    at start. tokenEndpoint (the default) redeems a random authorization
+                                    code with the cached client and reads invalid_client as "registration
+                                    gone"; it decides only for upstreams that authenticate the client
+                                    before validating the grant. authorizationEndpoint sends an
+                                    authorization request for the cached client without following
+                                    redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+                                    JSON error object (error invalid_client, unauthorized_client or
+                                    invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+                                    token endpoint answers invalid_grant for any client_id; an HTML page or
+                                    a bare gateway status is not a verdict. A false rejection re-registers
+                                    at every start and, when registration also fails, fails startup. none
+                                    skips the check: the upstream is not contacted, but a registration made
+                                    with another method than a configured tokenEndpointAuthMethod is still
+                                    replaced. Otherwise the registration is retired only through
+                                    RotationKey.
+                                  enum:
+                                  - tokenEndpoint
+                                  - authorizationEndpoint
+                                  - none
+                                  type: string
+                                registrationProbeInterval:
+                                  description: |-
+                                    RegistrationProbeInterval, when set, repeats the start-time check while
+                                    the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+                                    upstreams. ToolHive re-reads the cached registration, checks it with
+                                    RegistrationProbe, replaces a rejected one or registers a missing one,
+                                    and switches to the result in place when it differs from the client in
+                                    use, including when another replica replaced it. Without it, a
+                                    registration the upstream drops stays in use until the proxy restarts.
+                                    Each check sends at most one RegistrationProbe request to the upstream
+                                    from every replica (none with RegistrationProbe none), plus a
+                                    registration request when the probe rejects the client; the
+                                    tokenEndpoint probe appears in upstream logs as a failed code
+                                    redemption. A re-registration presents the initial access token the pod
+                                    read at start, so an upstream that issues single-use initial access
+                                    tokens still needs a restart to recover.
+                                  pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: registrationProbeInterval must be at
+                                      least 1m
+                                    rule: duration(self) >= duration('1m')
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream (see
+                                    RegistrationProbe) and registers a new one by itself when the upstream
+                                    rejects it. Where the configured probe cannot tell, the stale client_id
+                                    may only be rejected in the user's browser, and changing this key is
+                                    the remedy. The previous registration's row stays in storage, and
+                                    upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -1990,6 +2400,16 @@ spec:
                                 Must be a valid HTTPS URL.
                               pattern: ^https://.*$
                               type: string
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -2211,27 +2631,36 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration or delegateClients; client secrets would be
-                    issued or used in cleartext over an unauthenticated endpoint
+                    client registration, delegateClients or JWT-SVID SPIFFE associations
+                    that grant client_credentials; client secrets or JWT-SVIDs would
+                    be issued or used in cleartext over an unauthenticated endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
                     || (has(self.delegateClients) && size(self.delegateClients) >
                     0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
                     && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0)))'
+                    > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes))))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration or delegateClients with
-                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
-                    to be explicitly enabled; the issuer must still be loopback
+                - message: confidential client registration, delegateClients or JWT-SVID
+                    SPIFFE associations that grant client_credentials with an HTTP
+                    issuer require insecureAllowConfidentialOverLoopbackHTTP to be
+                    explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
                     || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0)
+                    && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes)))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -2272,6 +2701,107 @@ spec:
                     || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
                     self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef
                     == policy.issuerRef).size() == 1)'
+              authServerUpstreamFilter:
+                description: |-
+                  AuthServerUpstreamFilter optionally narrows the multi-upstream
+                  authorization chain per-request based on the first upstream's resolved
+                  identity, so principals only walk the upstream providers they are
+                  entitled to. Lives beside AuthServerConfig (rather than nested in it)
+                  because the shared EmbeddedAuthServerConfig type is also used by
+                  MCPExternalAuthConfig, where multi-upstream filtering has no meaning.
+
+                  When nil, every request walks the full upstream chain in configured
+                  order — the behavior from before the filter hook existed. The filter
+                  only controls which OAuth credentials are collected during login;
+                  backend and tool authorization remain Cedar's responsibility.
+                properties:
+                  claim:
+                    description: |-
+                      Claim is the exact top-level JWT/OIDC claim name to read group
+                      membership from on the first upstream's resolved principal. Defaults
+                      to "groups" when empty. Nested claims (e.g. Keycloak's
+                      realm_access.roles) are not supported and must be flattened to a
+                      top-level string array by the identity provider.
+
+                      The value is read from the identity the first upstream resolves: an
+                      OIDC upstream fills it from the validated ID token, a pure OAuth2
+                      upstream from the userinfo response. Groups carried only in an access
+                      token never reach it. Before enabling the filter, configure the first
+                      upstream to include the claim in its ID token or userinfo response,
+                      and request any required scopes. A missing claim fails the
+                      authorization (defaultUpstreams covers a valid-but-empty claim and
+                      unmatched groups, not an absent one), so enabling the filter before
+                      the provider emits the claim locks every principal out.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  defaultUpstreams:
+                    description: |-
+                      DefaultUpstreams is used when the claim is a valid empty array or
+                      when no rule matches. When omitted, no optional upstreams are added —
+                      the mandatory first upstream remains but the authorization walks no
+                      further. Every entry must name a configured
+                      authServerConfig.upstreamProviders provider other than the mandatory
+                      first provider; those cross-reference checks are enforced at
+                      reconciliation time rather than by CEL (CEL cost-budget constraints
+                      moved the check into the Go filter constructor; see the top-level CEL
+                      rules on VirtualMCPServerSpec for the shape invariants that remain at
+                      admission time).
+                    items:
+                      type: string
+                    maxItems: 100
+                    type: array
+                    x-kubernetes-list-type: set
+                  rules:
+                    description: |-
+                      Rules assigns groups to upstream provider subsets. A principal matches
+                      a rule if any of its groups appears in the rule's groups list
+                      (any-of / OR semantics). Multiple matching rules are combined by
+                      union — the effective chain contains every upstream from every
+                      matching rule, deduplicated and in configured order.
+                    items:
+                      description: |-
+                        UpstreamFilterGroupRule pairs a set of principal group names with the set
+                        of non-first upstream provider names those principals are entitled to walk.
+                      properties:
+                        groups:
+                          description: |-
+                            Groups is the set of principal group names this rule matches. Matching
+                            is case-sensitive and exact. Per-element emptiness and duplicate
+                            detection are enforced at reconciliation time by the Go filter
+                            constructor, which runs again before the auth server starts.
+                          items:
+                            type: string
+                          maxItems: 100
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        upstreamProviders:
+                          description: |-
+                            UpstreamProviders lists the non-first upstream provider names to
+                            include in the chain when this rule matches. Every entry must name a
+                            configured authServerConfig.upstreamProviders provider other than the
+                            mandatory first provider; these cross-reference checks are enforced at
+                            reconciliation time rather than by CEL (CEL cost-budget constraints
+                            moved the check into the Go filter constructor). Per-element emptiness
+                            and duplicates are also enforced at reconciliation time.
+                          items:
+                            type: string
+                          maxItems: 100
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                      required:
+                      - groups
+                      - upstreamProviders
+                      type: object
+                    maxItems: 100
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - rules
+                type: object
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -3063,6 +3593,15 @@ spec:
                               the OIDC middleware needs to fetch its JWKS from that address.
                               Use with caution - only enable for trusted internal IDPs or testing.
                             type: boolean
+                          jwksAuthTokenPath:
+                            description: |-
+                              JWKSAuthTokenPath is the absolute file path to a bearer token that the
+                              OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+                              Needed when the issuer requires authentication for those endpoints, such
+                              as the Kubernetes API server. Typically populated by the Kubernetes
+                              operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+                              pod's service-account token when using Kubernetes service-account auth.
+                            type: string
                           jwksUrl:
                             description: |-
                               JWKSURL is the explicit JWKS endpoint URL.
@@ -3074,6 +3613,18 @@ spec:
                               ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
                               Use with caution - only enable for trusted internal IDPs or testing
                             type: boolean
+                          requiredSubject:
+                            description: |-
+                              RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubjectPrefix is also set, both checks must pass.
+                            type: string
+                          requiredSubjectPrefix:
+                            description: |-
+                              RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubject is also set, both checks must pass.
+                            type: string
                           resource:
                             description: |-
                               Resource is the OAuth 2.0 resource indicator (RFC 8707).
@@ -3460,17 +4011,21 @@ spec:
                             obo:
                               description: |-
                                 OBO contains configuration for on-behalf-of (OBO) auth strategy.
-                                Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-                                an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                                Used when Type = "obo".
                               properties:
                                 audience:
-                                  description: Audience is the target audience (resource
-                                    URI) for the exchanged token.
+                                  description: |-
+                                    Audience is the backend resource (Application ID URI or client ID) for the
+                                    exchanged token. Used when Scopes is empty, sent to Entra as
+                                    <audience>/.default (see exchange.Target).
                                   type: string
                                 cacheSkewSeconds:
                                   description: |-
                                     CacheSkewSeconds is the number of seconds to subtract from a cached token's
-                                    expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                    expiry when deciding whether to refresh it. When nil or zero the token
+                                    cache's default skew (60 seconds) applies; negative values are rejected.
+                                    The int32 type caps it at math.MaxInt32, the bound the operator enforces
+                                    on the CRD's CacheSkew.
                                     The operator CRD stores this as CacheSkew *metav1.Duration and converts it
                                     to an integer-seconds value for the vMCP runtime contract.
                                   format: int32
@@ -3500,9 +4055,11 @@ spec:
                                     SubjectTokenProviderName selects which upstream provider's token to use as the
                                     subject (assertion) token for the OBO exchange. When set, the token is looked
                                     up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-                                    inbound end-user token (Identity.Token) is used directly.
-                                    Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-                                    converter maps both to the runtime contract without renaming.
+                                    inbound end-user token (Identity.Token) is used directly. Behind an embedded
+                                    auth server an omitted value defaults to its upstream provider, and is an
+                                    error when it has more than one (see DefaultSubjectProviderName).
+                                    Matches the operator CRD's SubjectTokenProviderName field; the OBO
+                                    converter maps it to the runtime contract without renaming.
                                   type: string
                                 tokenUrl:
                                   description: TokenURL is the Entra token endpoint
@@ -3764,17 +4321,21 @@ spec:
                           obo:
                             description: |-
                               OBO contains configuration for on-behalf-of (OBO) auth strategy.
-                              Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-                              an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                              Used when Type = "obo".
                             properties:
                               audience:
-                                description: Audience is the target audience (resource
-                                  URI) for the exchanged token.
+                                description: |-
+                                  Audience is the backend resource (Application ID URI or client ID) for the
+                                  exchanged token. Used when Scopes is empty, sent to Entra as
+                                  <audience>/.default (see exchange.Target).
                                 type: string
                               cacheSkewSeconds:
                                 description: |-
                                   CacheSkewSeconds is the number of seconds to subtract from a cached token's
-                                  expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                  expiry when deciding whether to refresh it. When nil or zero the token
+                                  cache's default skew (60 seconds) applies; negative values are rejected.
+                                  The int32 type caps it at math.MaxInt32, the bound the operator enforces
+                                  on the CRD's CacheSkew.
                                   The operator CRD stores this as CacheSkew *metav1.Duration and converts it
                                   to an integer-seconds value for the vMCP runtime contract.
                                 format: int32
@@ -3804,9 +4365,11 @@ spec:
                                   SubjectTokenProviderName selects which upstream provider's token to use as the
                                   subject (assertion) token for the OBO exchange. When set, the token is looked
                                   up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-                                  inbound end-user token (Identity.Token) is used directly.
-                                  Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-                                  converter maps both to the runtime contract without renaming.
+                                  inbound end-user token (Identity.Token) is used directly. Behind an embedded
+                                  auth server an omitted value defaults to its upstream provider, and is an
+                                  error when it has more than one (see DefaultSubjectProviderName).
+                                  Matches the operator CRD's SubjectTokenProviderName field; the OBO
+                                  converter maps it to the runtime contract without renaming.
                                 type: string
                               tokenUrl:
                                 description: TokenURL is the Entra token endpoint
@@ -3977,10 +4540,14 @@ spec:
                   passthroughHeaders:
                     description: |-
                       PassthroughHeaders is an allowlist of incoming client request header names
-                      forwarded verbatim to all backends. Captured at the vMCP incoming edge by
-                      headerforward.CaptureMiddleware and consumed once at session creation
-                      when the per-session backend client's HeaderForwardConfig is built. Names
-                      must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+                      forwarded verbatim to all backends. Captured per request at the vMCP
+                      incoming edge by headerforward.CaptureMiddleware: tool calls, resource
+                      reads and prompt gets carry the values from the request that triggered
+                      them, and a header absent on that request is not forwarded. Session-scoped
+                      work (the session's backend connections, its advertised capability list,
+                      and background capability resyncs) uses the values from the request that
+                      created the session. Names must not be in the restricted set (Host,
+                      hop-by-hop, X-Forwarded-*, etc.).
                     items:
                       type: string
                     type: array
@@ -4137,6 +4704,23 @@ spec:
                         - memory
                         - redis
                         type: string
+                      tls:
+                        description: |-
+                          TLS enables TLS for session storage and rate limiting. An empty
+                          configuration verifies the Redis server using system roots.
+                          On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+                          field from it and rejects a value set under spec.config.sessionStorage.
+                        properties:
+                          caCertFile:
+                            description: |-
+                              CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+                              bundle replaces the system roots used to verify the Redis server.
+                            type: string
+                          insecureSkipVerify:
+                            description: InsecureSkipVerify skips server certificate
+                              and hostname verification.
+                            type: boolean
+                        type: object
                     required:
                     - provider
                     type: object
@@ -4695,12 +5279,57 @@ spec:
                     - memory
                     - redis
                     type: string
+                  tls:
+                    description: |-
+                      TLS enables TLS for the Redis session storage connection and, when rate
+                      limiting is configured, for the rate-limit connection to the same Redis.
+                      When omitted, the connections are plaintext and the Redis password and
+                      session data cross the network unencrypted. An empty object enables TLS
+                      with server certificate verification against the system root CAs; set
+                      caCertSecretRef for a private CA. A failed handshake never falls back to
+                      plaintext. Only used when provider is redis.
+                    properties:
+                      caCertSecretRef:
+                        description: |-
+                          CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                          for verifying the server. When not specified, system root CAs are used.
+                          If the Secret or key does not exist, the pod cannot start (it stays in
+                          ContainerCreating) rather than connecting without verification.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        description: |-
+                          InsecureSkipVerify disables server certificate and hostname verification.
+                          The connection is encrypted but not authenticated, so anyone able to
+                          impersonate the server can read the credentials and data sent over it.
+                          Intended for testing only; for self-signed or private CAs set
+                          caCertSecretRef instead.
+                        type: boolean
+                    type: object
                 required:
                 - provider
                 type: object
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
+                - message: tls is only supported when provider is redis
+                  rule: '!has(self.tls) || self.provider == ''redis'''
+                - message: tls.insecureSkipVerify disables certificate verification,
+                    so tls.caCertSecretRef would be ignored; set only one
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
+                    || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -4736,12 +5365,22 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: config.sessionStorage.tls is ignored by the operator; set sessionStorage.tls
+                instead
+              rule: '!has(self.config) || !has(self.config.sessionStorage) || !has(self.config.sessionStorage.tls)'
             - message: embeddingServerRef provisions a managed TEI server and cannot
                 be combined with optimizer.embeddingProvider 'openai'; openai mode
                 uses embeddingService directly
               rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
                 && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
                 == ''openai'')'
+            - message: authServerUpstreamFilter requires authServerConfig to be set
+              rule: '!has(self.authServerUpstreamFilter) || has(self.authServerConfig)'
+            - message: authServerUpstreamFilter requires at least two configured upstream
+                providers
+              rule: '!has(self.authServerUpstreamFilter) || (has(self.authServerConfig)
+                && has(self.authServerConfig.upstreamProviders) && size(self.authServerConfig.upstreamProviders)
+                >= 2)'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
@@ -5117,7 +5756,18 @@ spec:
           metadata:
             type: object
           spec:
-            description: VirtualMCPServerSpec defines the desired state of VirtualMCPServer
+            description: |-
+              VirtualMCPServerSpec defines the desired state of VirtualMCPServer
+
+              Deeper cross-reference checks (every referenced upstream provider must
+              exist, and no reference to the mandatory first provider) were previously
+              expressed as CEL on this struct but were removed because they pushed the
+              cluster's x-kubernetes-validations cost budget over the per-schema limit
+              in realistic deployments where upstreamProviders is unbounded. The same
+              invariants are re-checked at reconciliation time by
+              validateAuthServerUpstreamFilter in the VirtualMCPServer controller, which
+              surfaces a terminal AuthServerConfigValidated=False condition — only the
+              kubectl-apply-time feedback is lost, not the safety.
             properties:
               authServerConfig:
                 description: |-
@@ -5390,11 +6040,43 @@ spec:
                               description: JWTBearerIssuerPolicyConfig binds RFC 7523
                                 policy to a named trusted issuer.
                               properties:
+                                acceptedAssertionTypes:
+                                  description: |-
+                                    AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                    jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                    are accepted, which is the behavior before this field existed. Set
+                                    ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                    Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                    be redeemed on the credential-free plain jwt-bearer path. Set
+                                    ["jwt_bearer"] to refuse ID-JAG.
+
+                                    When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                    include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                    draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                    token endpoint URL. When acceptedAudiences is empty the issuer is
+                                    accepted by default, unless it is also listed as an allowed audience
+                                    (resource), which fails startup. Subject bindings are shared between both forms, so
+                                    each binding also authorizes a plain jwt-bearer assertion from that
+                                    subject whenever "jwt_bearer" is accepted.
+                                  items:
+                                    description: |-
+                                      JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                      jwt-bearer grant may accept for a trusted issuer.
+                                    enum:
+                                    - jwt_bearer
+                                    - id_jag
+                                    type: string
+                                  maxItems: 2
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
-                                    assertion audiences. When omitted, runtime validation defaults to the
-                                    token endpoint.
+                                    assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                    the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                    this server's issuer identifier, unless the issuer is also an allowed
+                                    resource audience. A configured list replaces these defaults.
                                   items:
                                     maxLength: 2048
                                     minLength: 1
@@ -5475,24 +6157,24 @@ spec:
                           description: |-
                             SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
                             trust domain with an explicit OAuth client identity and permissions.
-                            Configuration is not authentication: configured SPIFFE clients remain
-                            non-public OAuth clients without a secret until live SPIFFE credential
-                            validation is implemented (see SPIFFETrustDomainConfig's doc comment).
-
-                            GrantTypes is deliberately not exposed here: the runtime only accepts
-                            exactly the RFC 8693 token-exchange grant for a SPIFFE client
-                            (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-                            always supplies it instead of letting it be configured.
+                            Declaring a client does not grant access by itself. SPIFFE clients
+                            authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
+                            Trust material comes from the declared bundle source (see
+                            SPIFFETrustDomainConfig's doc comment).
                           properties:
                             audiences:
-                              description: Audiences are RFC 8693 token audiences
-                                this association may request.
+                              description: |-
+                                Deprecated: ignored; use resources.
+
+                                The field was required in earlier releases and is still accepted so
+                                existing objects keep validating. A non-empty value is reported by the
+                                DeprecatedInboundGrantConfiguration condition and has no effect on token
+                                targeting.
                               items:
                                 maxLength: 2048
                                 minLength: 1
                                 type: string
                               maxItems: 50
-                              minItems: 1
                               type: array
                               x-kubernetes-list-type: set
                             clientId:
@@ -5502,6 +6184,27 @@ spec:
                               maxLength: 253
                               minLength: 1
                               type: string
+                            grantTypes:
+                              default:
+                              - urn:ietf:params:oauth:grant-type:token-exchange
+                              description: |-
+                                GrantTypes contains the OAuth grants permitted for this association.
+                                It defaults to the token-exchange grant when omitted, which is what the
+                                operator configured before this field existed. List client_credentials
+                                to opt in to the SPIFFE-bound client credentials grant. The list alone
+                                decides which grants the association may use: client authentication does
+                                not confer any grant, and there is no separate per-grant enable switch.
+                                Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token
+                                exchange.
+                              items:
+                                enum:
+                                - client_credentials
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             methods:
                               description: |-
                                 Methods are the credential types this association may authenticate
@@ -5535,9 +6238,10 @@ spec:
                                 which is derived at reconcile time and not available on this CRD, so
                                 allowlist membership is validated at reconcile time, not admission.
                                 Shape (a well-formed absolute HTTP(S) URI) is independent of that
-                                derived allowlist and is validated here. Distinct from Audiences: a
-                                resource permission does not imply the same value is also a permitted
-                                token audience, or vice versa.
+                                derived allowlist and is validated here. Required, with at least one
+                                entry, for every association: client_credentials and token exchange each
+                                take exactly one resource per request and grant it as the token
+                                audience.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -5564,7 +6268,6 @@ spec:
                               minLength: 1
                               type: string
                           required:
-                          - audiences
                           - clientId
                           - methods
                           - principalPattern
@@ -5576,6 +6279,8 @@ spec:
                               segments
                             rule: self.principalPattern.split('/').all(segment, segment
                               != '.' && segment != '..')
+                          - message: resources is required
+                            rule: has(self.resources) && size(self.resources) > 0
                         maxItems: 100
                         type: array
                         x-kubernetes-list-type: atomic
@@ -5723,9 +6428,12 @@ spec:
                     default: false
                     description: |-
                       InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-                      flag, that combination is rejected at reconcile time: a loopback http://
+                      Dynamic Client Registration (DCR), delegate clients and SPIFFE
+                      associations that have spiffe_jwt in methods and client_credentials in
+                      grantTypes on the same association, when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at admission, and reconcile additionally
+                      requires the issuer host to be loopback. A loopback http://
                       issuer is normally fine for local development since the traffic never
                       leaves the machine, but confidential clients send secrets over cleartext.
                       Forcing TLS onto every loopback deployment instead would just push
@@ -5756,8 +6464,10 @@ spec:
 
                       One combination is rejected at admission on all three CRDs regardless of the
                       above: setting this field alongside confidential client registration or
-                      delegate clients, which would issue or use client secrets in cleartext over
-                      an unauthenticated endpoint (see the XValidation rule on
+                      delegate clients, or a SPIFFE association that has spiffe_jwt in methods and
+                      client_credentials in grantTypes on the same association, which would issue
+                      or use client secrets or JWT-SVIDs in cleartext over an unauthenticated
+                      endpoint (see the XValidation rule on
                       EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
@@ -5788,6 +6498,41 @@ spec:
                     minLength: 1
                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
+                  registrationRateLimit:
+                    description: |-
+                      RegistrationRateLimit bounds the unauthenticated /oauth/register
+                      endpoint with a token bucket: up to maxTokens registrations at once,
+                      refilled at maxTokens per refillPeriod. For a sustained rate of R per
+                      second with a burst of B, set maxTokens to B and refillPeriod to B/R;
+                      for example, 10 per minute with a burst of 3 is maxTokens 3,
+                      refillPeriod 18s. If omitted, defaults to 1 registration per second
+                      with a burst of 5 (maxTokens 5, refillPeriod 5s). The limit is per
+                      replica, so the effective rate is the configured rate multiplied by the
+                      replica count. Every successful registration stores a client, so a
+                      higher rate fills storage.maxDCRClients sooner, and with maxDCRClients
+                      0 this limit is the only bound on stored clients.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                    x-kubernetes-validations:
+                    - message: registrationRateLimit.refillPeriod must be positive
+                      rule: duration(self.refillPeriod) > duration('0s')
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -5813,24 +6558,20 @@ spec:
                   spiffeTrustDomains:
                     description: |-
                       SPIFFETrustDomains declares SPIFFE trust domains for
-                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
-                      doc comment for why declaring a domain does not by itself enable
-                      authentication in this build.
+                      inboundGrants.spiffeClientAuth associations. Each declaration must be
+                      referenced by an inboundGrants.spiffeClientAuth entry.
                     items:
                       description: |-
                         SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-                        embedded authorization server. Configuration is not authentication: no
-                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-                        domain does not by itself let any workload authenticate — RunConfig.Validate
-                        (pkg/authserver/config.go) currently hard-rejects any non-empty
-                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-                        a deliberate placeholder until real SVID verification lands.
+                        embedded authorization server. A declared domain becomes usable only after
+                        the configured source supplies trust material during auth-server startup.
                       properties:
                         bundleSource:
                           description: |-
-                            BundleSource declares exactly one future trust-bundle source. It is
-                            validated for shape only; fetching or loading a bundle from it is a
-                            later step.
+                            BundleSource declares exactly one trust-bundle source and is validated for
+                            shape here. Only the file source is loaded in this build; bundle_endpoint
+                            and workload_api are rejected when the auth-server configuration is
+                            validated.
                           properties:
                             endpoint:
                               description: |-
@@ -5857,10 +6598,37 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document. It must not be "." or start with "..".
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - rule: self != '.' && !self.startsWith('..')
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -5876,6 +6644,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
@@ -5929,6 +6700,29 @@ spec:
                       Storage configures the storage backend for the embedded auth server.
                       If not specified, defaults to in-memory storage.
                     properties:
+                      maxDCRClients:
+                        description: |-
+                          MaxDCRClients caps the number of live clients created by Dynamic Client
+                          Registration (/oauth/register). At the cap, registration fails with HTTP
+                          503 until a client expires; no existing client is evicted. If omitted,
+                          defaults to 10000. Operator-configured and CIMD clients are not counted.
+                          On Redis the count is shared by every replica; with memory storage each
+                          replica keeps its own count.
+
+                          A client never used for a token exchange lives 24 hours, so a caller
+                          registering at the full registrationRateLimit keeps up to
+                          rate x replicas x 86400 unused clients alive; at the default rate one
+                          replica fills the default cap in about 2.8 hours.
+
+                          0 means unlimited. The endpoint is unauthenticated, so 0 leaves stored
+                          clients bounded only by the per-replica registrationRateLimit, about
+                          86400 per replica per day at the default rate. Use 0 only temporarily,
+                          for example while an existing client population above the cap drains;
+                          a large finite value, such as two to three times the observed live
+                          client count, keeps some protection.
+                        format: int32
+                        minimum: 0
+                        type: integer
                       redis:
                         description: |-
                           Redis configures the Redis storage backend.
@@ -6053,6 +6847,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -6066,8 +6862,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           tls:
@@ -6079,6 +6878,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -6092,8 +6893,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           writeTimeout:
@@ -6121,6 +6925,50 @@ spec:
                         - memory
                         - redis
                         type: string
+                    type: object
+                  tlsListener:
+                    description: |-
+                      TLSListener configures an additional TLS listener on port 8443 that
+                      serves the embedded authorization server's routes. MCP traffic, health
+                      probes and metrics stay on plain HTTP. Both certificateSecretRef and
+                      privateKeySecretRef are required. It is required when
+                      inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
+                      checked when the resource is reconciled and reported in status conditions;
+                      the API server does not reject it. The operator exposes the listener as an
+                      https-auth container port and Service port 8443. Updates to the referenced
+                      Secret contents are picked up without a pod restart.
+                    properties:
+                      certificateSecretRef:
+                        description: CertificateSecretRef references the PEM-encoded
+                          TLS certificate.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      privateKeySecretRef:
+                        description: PrivateKeySecretRef references the PEM-encoded
+                          TLS private key.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - certificateSecretRef
+                    - privateKeySecretRef
                     type: object
                   tokenLifespans:
                     description: |-
@@ -6321,11 +7169,43 @@ spec:
                             This legacy field is deprecated; configure RFC 7523 policy under
                             inboundGrants.jwtBearer.issuerPolicies.
                           properties:
+                            acceptedAssertionTypes:
+                              description: |-
+                                AcceptedAssertionTypes selects which assertion form(s) this issuer's
+                                jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+                                are accepted, which is the behavior before this field existed. Set
+                                ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+                                Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+                                be redeemed on the credential-free plain jwt-bearer path. Set
+                                ["jwt_bearer"] to refuse ID-JAG.
+
+                                When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+                                include this AS's own issuer identifier (the ID-JAG's "aud" per
+                                draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+                                token endpoint URL. When acceptedAudiences is empty the issuer is
+                                accepted by default, unless it is also listed as an allowed audience
+                                (resource), which fails startup. Subject bindings are shared between both forms, so
+                                each binding also authorizes a plain jwt-bearer assertion from that
+                                subject whenever "jwt_bearer" is accepted.
+                              items:
+                                description: |-
+                                  JWTBearerAssertionType identifies one assertion form the RFC 7523
+                                  jwt-bearer grant may accept for a trusted issuer.
+                                enum:
+                                - jwt_bearer
+                                - id_jag
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
-                                assertion audiences. When omitted, runtime validation defaults to the
-                                token endpoint.
+                                assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                this server's issuer identifier, unless the issuer is also an allowed
+                                resource audience. A configured list replaces these defaults.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -6435,8 +7315,10 @@ spec:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
                       When configured, the embedded auth server delegates interactive authentication
-                      to these providers. It may be omitted only when delegateClients or a trusted
-                      issuer with jwtBearerGrant enables token-only operation.
+                      to these providers. It may be omitted only when token-only operation is
+                      enabled by delegateClients (also under inboundGrants.tokenExchange),
+                      inboundGrants.spiffeClientAuth, or a trusted issuer with jwtBearerGrant
+                      (also under inboundGrants.jwtBearer).
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -6575,6 +7457,20 @@ spec:
                                 runtime rather than being pre-provisioned, and ClientID must be left empty.
                                 Mutually exclusive with ClientID.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -6621,6 +7517,68 @@ spec:
                                     cost) and matches the conventional URL length cap.
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
+                                  type: string
+                                registrationProbe:
+                                  description: |-
+                                    RegistrationProbe selects how ToolHive checks the cached upstream client
+                                    at start. tokenEndpoint (the default) redeems a random authorization
+                                    code with the cached client and reads invalid_client as "registration
+                                    gone"; it decides only for upstreams that authenticate the client
+                                    before validating the grant. authorizationEndpoint sends an
+                                    authorization request for the cached client without following
+                                    redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+                                    JSON error object (error invalid_client, unauthorized_client or
+                                    invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+                                    token endpoint answers invalid_grant for any client_id; an HTML page or
+                                    a bare gateway status is not a verdict. A false rejection re-registers
+                                    at every start and, when registration also fails, fails startup. none
+                                    skips the check: the upstream is not contacted, but a registration made
+                                    with another method than a configured tokenEndpointAuthMethod is still
+                                    replaced. Otherwise the registration is retired only through
+                                    RotationKey.
+                                  enum:
+                                  - tokenEndpoint
+                                  - authorizationEndpoint
+                                  - none
+                                  type: string
+                                registrationProbeInterval:
+                                  description: |-
+                                    RegistrationProbeInterval, when set, repeats the start-time check while
+                                    the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+                                    upstreams. ToolHive re-reads the cached registration, checks it with
+                                    RegistrationProbe, replaces a rejected one or registers a missing one,
+                                    and switches to the result in place when it differs from the client in
+                                    use, including when another replica replaced it. Without it, a
+                                    registration the upstream drops stays in use until the proxy restarts.
+                                    Each check sends at most one RegistrationProbe request to the upstream
+                                    from every replica (none with RegistrationProbe none), plus a
+                                    registration request when the probe rejects the client; the
+                                    tokenEndpoint probe appears in upstream logs as a failed code
+                                    redemption. A re-registration presents the initial access token the pod
+                                    read at start, so an upstream that issues single-use initial access
+                                    tokens still needs a restart to recover.
+                                  pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: registrationProbeInterval must be at
+                                      least 1m
+                                    rule: duration(self) >= duration('1m')
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream (see
+                                    RegistrationProbe) and registers a new one by itself when the upstream
+                                    rejects it. Where the configured probe cannot tell, the stale client_id
+                                    may only be rejected in the user's browser, and changing this key is
+                                    the remedy. The previous registration's row stays in storage, and
+                                    upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
                                   type: string
                                 softwareId:
                                   description: |-
@@ -6700,6 +7658,16 @@ spec:
                                 OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                                 available. Never set this in production.
                               type: boolean
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -6728,6 +7696,11 @@ spec:
                                 client_secret_post-shaped default). Set this to client_secret_basic explicitly
                                 for providers that require HTTP Basic auth. Public clients without a secret use
                                 the "none" method.
+                                With DCRConfig, it is the method the client registers with, in place of the one
+                                ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+                                client_secret_post, then none). Set it for an upstream whose token endpoint does
+                                not accept the method ToolHive picks. A cached registration made with another
+                                method is replaced with a new one at the next start.
                               enum:
                               - none
                               - client_secret_basic
@@ -6955,6 +7928,20 @@ spec:
                                 and ClientSecretRef must be omitted. If neither discoveryUrl nor
                                 registrationEndpoint is set, discovery is derived from issuerUrl.
                               properties:
+                                clientName:
+                                  description: |-
+                                    ClientName is the optional RFC 7591 "client_name" registration metadata
+                                    sent when ToolHive registers with the upstream. When empty, ToolHive
+                                    registers as "ToolHive MCP Client". It is display-only metadata: the
+                                    upstream shows it on its authorization screen, and it is never used as
+                                    a key. Changing it does not rename an already-registered client; the
+                                    new value applies only the next time ToolHive registers a fresh client,
+                                    for example after rotating via RotationKey, or when the upstream
+                                    rejects the cached registration. Names with leading or trailing
+                                    whitespace, or containing control or format characters, are rejected.
+                                  maxLength: 256
+                                  pattern: ^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$
+                                  type: string
                                 discoveryUrl:
                                   description: |-
                                     DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
@@ -7002,6 +7989,68 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                registrationProbe:
+                                  description: |-
+                                    RegistrationProbe selects how ToolHive checks the cached upstream client
+                                    at start. tokenEndpoint (the default) redeems a random authorization
+                                    code with the cached client and reads invalid_client as "registration
+                                    gone"; it decides only for upstreams that authenticate the client
+                                    before validating the grant. authorizationEndpoint sends an
+                                    authorization request for the cached client without following
+                                    redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+                                    JSON error object (error invalid_client, unauthorized_client or
+                                    invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+                                    token endpoint answers invalid_grant for any client_id; an HTML page or
+                                    a bare gateway status is not a verdict. A false rejection re-registers
+                                    at every start and, when registration also fails, fails startup. none
+                                    skips the check: the upstream is not contacted, but a registration made
+                                    with another method than a configured tokenEndpointAuthMethod is still
+                                    replaced. Otherwise the registration is retired only through
+                                    RotationKey.
+                                  enum:
+                                  - tokenEndpoint
+                                  - authorizationEndpoint
+                                  - none
+                                  type: string
+                                registrationProbeInterval:
+                                  description: |-
+                                    RegistrationProbeInterval, when set, repeats the start-time check while
+                                    the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+                                    upstreams. ToolHive re-reads the cached registration, checks it with
+                                    RegistrationProbe, replaces a rejected one or registers a missing one,
+                                    and switches to the result in place when it differs from the client in
+                                    use, including when another replica replaced it. Without it, a
+                                    registration the upstream drops stays in use until the proxy restarts.
+                                    Each check sends at most one RegistrationProbe request to the upstream
+                                    from every replica (none with RegistrationProbe none), plus a
+                                    registration request when the probe rejects the client; the
+                                    tokenEndpoint probe appears in upstream logs as a failed code
+                                    redemption. A re-registration presents the initial access token the pod
+                                    read at start, so an upstream that issues single-use initial access
+                                    tokens still needs a restart to recover.
+                                  pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: registrationProbeInterval must be at
+                                      least 1m
+                                    rule: duration(self) >= duration('1m')
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream (see
+                                    RegistrationProbe) and registers a new one by itself when the upstream
+                                    rejects it. Where the configured probe cannot tell, the stale client_id
+                                    may only be rejected in the user's browser, and changing this key is
+                                    the remedy. The previous registration's row stays in storage, and
+                                    upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -7040,6 +8089,16 @@ spec:
                                 Must be a valid HTTPS URL.
                               pattern: ^https://.*$
                               type: string
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
@@ -7261,27 +8320,36 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration or delegateClients; client secrets would be
-                    issued or used in cleartext over an unauthenticated endpoint
+                    client registration, delegateClients or JWT-SVID SPIFFE associations
+                    that grant client_credentials; client secrets or JWT-SVIDs would
+                    be issued or used in cleartext over an unauthenticated endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
                     || (has(self.delegateClients) && size(self.delegateClients) >
                     0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
                     && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0)))'
+                    > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes))))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration or delegateClients with
-                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
-                    to be explicitly enabled; the issuer must still be loopback
+                - message: confidential client registration, delegateClients or JWT-SVID
+                    SPIFFE associations that grant client_credentials with an HTTP
+                    issuer require insecureAllowConfidentialOverLoopbackHTTP to be
+                    explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
                     || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0)
+                    && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes)))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -7322,6 +8390,107 @@ spec:
                     || !has(self.inboundGrants.jwtBearer.issuerPolicies) || self.inboundGrants.jwtBearer.issuerPolicies.all(policy,
                     self.inboundGrants.jwtBearer.issuerPolicies.filter(other, other.issuerRef
                     == policy.issuerRef).size() == 1)'
+              authServerUpstreamFilter:
+                description: |-
+                  AuthServerUpstreamFilter optionally narrows the multi-upstream
+                  authorization chain per-request based on the first upstream's resolved
+                  identity, so principals only walk the upstream providers they are
+                  entitled to. Lives beside AuthServerConfig (rather than nested in it)
+                  because the shared EmbeddedAuthServerConfig type is also used by
+                  MCPExternalAuthConfig, where multi-upstream filtering has no meaning.
+
+                  When nil, every request walks the full upstream chain in configured
+                  order — the behavior from before the filter hook existed. The filter
+                  only controls which OAuth credentials are collected during login;
+                  backend and tool authorization remain Cedar's responsibility.
+                properties:
+                  claim:
+                    description: |-
+                      Claim is the exact top-level JWT/OIDC claim name to read group
+                      membership from on the first upstream's resolved principal. Defaults
+                      to "groups" when empty. Nested claims (e.g. Keycloak's
+                      realm_access.roles) are not supported and must be flattened to a
+                      top-level string array by the identity provider.
+
+                      The value is read from the identity the first upstream resolves: an
+                      OIDC upstream fills it from the validated ID token, a pure OAuth2
+                      upstream from the userinfo response. Groups carried only in an access
+                      token never reach it. Before enabling the filter, configure the first
+                      upstream to include the claim in its ID token or userinfo response,
+                      and request any required scopes. A missing claim fails the
+                      authorization (defaultUpstreams covers a valid-but-empty claim and
+                      unmatched groups, not an absent one), so enabling the filter before
+                      the provider emits the claim locks every principal out.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  defaultUpstreams:
+                    description: |-
+                      DefaultUpstreams is used when the claim is a valid empty array or
+                      when no rule matches. When omitted, no optional upstreams are added —
+                      the mandatory first upstream remains but the authorization walks no
+                      further. Every entry must name a configured
+                      authServerConfig.upstreamProviders provider other than the mandatory
+                      first provider; those cross-reference checks are enforced at
+                      reconciliation time rather than by CEL (CEL cost-budget constraints
+                      moved the check into the Go filter constructor; see the top-level CEL
+                      rules on VirtualMCPServerSpec for the shape invariants that remain at
+                      admission time).
+                    items:
+                      type: string
+                    maxItems: 100
+                    type: array
+                    x-kubernetes-list-type: set
+                  rules:
+                    description: |-
+                      Rules assigns groups to upstream provider subsets. A principal matches
+                      a rule if any of its groups appears in the rule's groups list
+                      (any-of / OR semantics). Multiple matching rules are combined by
+                      union — the effective chain contains every upstream from every
+                      matching rule, deduplicated and in configured order.
+                    items:
+                      description: |-
+                        UpstreamFilterGroupRule pairs a set of principal group names with the set
+                        of non-first upstream provider names those principals are entitled to walk.
+                      properties:
+                        groups:
+                          description: |-
+                            Groups is the set of principal group names this rule matches. Matching
+                            is case-sensitive and exact. Per-element emptiness and duplicate
+                            detection are enforced at reconciliation time by the Go filter
+                            constructor, which runs again before the auth server starts.
+                          items:
+                            type: string
+                          maxItems: 100
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        upstreamProviders:
+                          description: |-
+                            UpstreamProviders lists the non-first upstream provider names to
+                            include in the chain when this rule matches. Every entry must name a
+                            configured authServerConfig.upstreamProviders provider other than the
+                            mandatory first provider; these cross-reference checks are enforced at
+                            reconciliation time rather than by CEL (CEL cost-budget constraints
+                            moved the check into the Go filter constructor). Per-element emptiness
+                            and duplicates are also enforced at reconciliation time.
+                          items:
+                            type: string
+                          maxItems: 100
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                      required:
+                      - groups
+                      - upstreamProviders
+                      type: object
+                    maxItems: 100
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - rules
+                type: object
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
@@ -8113,6 +9282,15 @@ spec:
                               the OIDC middleware needs to fetch its JWKS from that address.
                               Use with caution - only enable for trusted internal IDPs or testing.
                             type: boolean
+                          jwksAuthTokenPath:
+                            description: |-
+                              JWKSAuthTokenPath is the absolute file path to a bearer token that the
+                              OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+                              Needed when the issuer requires authentication for those endpoints, such
+                              as the Kubernetes API server. Typically populated by the Kubernetes
+                              operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+                              pod's service-account token when using Kubernetes service-account auth.
+                            type: string
                           jwksUrl:
                             description: |-
                               JWKSURL is the explicit JWKS endpoint URL.
@@ -8124,6 +9302,18 @@ spec:
                               ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
                               Use with caution - only enable for trusted internal IDPs or testing
                             type: boolean
+                          requiredSubject:
+                            description: |-
+                              RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubjectPrefix is also set, both checks must pass.
+                            type: string
+                          requiredSubjectPrefix:
+                            description: |-
+                              RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+                              Tokens with a missing or empty "sub" claim are rejected.
+                              If RequiredSubject is also set, both checks must pass.
+                            type: string
                           resource:
                             description: |-
                               Resource is the OAuth 2.0 resource indicator (RFC 8707).
@@ -8510,17 +9700,21 @@ spec:
                             obo:
                               description: |-
                                 OBO contains configuration for on-behalf-of (OBO) auth strategy.
-                                Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-                                an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                                Used when Type = "obo".
                               properties:
                                 audience:
-                                  description: Audience is the target audience (resource
-                                    URI) for the exchanged token.
+                                  description: |-
+                                    Audience is the backend resource (Application ID URI or client ID) for the
+                                    exchanged token. Used when Scopes is empty, sent to Entra as
+                                    <audience>/.default (see exchange.Target).
                                   type: string
                                 cacheSkewSeconds:
                                   description: |-
                                     CacheSkewSeconds is the number of seconds to subtract from a cached token's
-                                    expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                    expiry when deciding whether to refresh it. When nil or zero the token
+                                    cache's default skew (60 seconds) applies; negative values are rejected.
+                                    The int32 type caps it at math.MaxInt32, the bound the operator enforces
+                                    on the CRD's CacheSkew.
                                     The operator CRD stores this as CacheSkew *metav1.Duration and converts it
                                     to an integer-seconds value for the vMCP runtime contract.
                                   format: int32
@@ -8550,9 +9744,11 @@ spec:
                                     SubjectTokenProviderName selects which upstream provider's token to use as the
                                     subject (assertion) token for the OBO exchange. When set, the token is looked
                                     up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-                                    inbound end-user token (Identity.Token) is used directly.
-                                    Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-                                    converter maps both to the runtime contract without renaming.
+                                    inbound end-user token (Identity.Token) is used directly. Behind an embedded
+                                    auth server an omitted value defaults to its upstream provider, and is an
+                                    error when it has more than one (see DefaultSubjectProviderName).
+                                    Matches the operator CRD's SubjectTokenProviderName field; the OBO
+                                    converter maps it to the runtime contract without renaming.
                                   type: string
                                 tokenUrl:
                                   description: TokenURL is the Entra token endpoint
@@ -8814,17 +10010,21 @@ spec:
                           obo:
                             description: |-
                               OBO contains configuration for on-behalf-of (OBO) auth strategy.
-                              Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
-                              an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                              Used when Type = "obo".
                             properties:
                               audience:
-                                description: Audience is the target audience (resource
-                                  URI) for the exchanged token.
+                                description: |-
+                                  Audience is the backend resource (Application ID URI or client ID) for the
+                                  exchanged token. Used when Scopes is empty, sent to Entra as
+                                  <audience>/.default (see exchange.Target).
                                 type: string
                               cacheSkewSeconds:
                                 description: |-
                                   CacheSkewSeconds is the number of seconds to subtract from a cached token's
-                                  expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                  expiry when deciding whether to refresh it. When nil or zero the token
+                                  cache's default skew (60 seconds) applies; negative values are rejected.
+                                  The int32 type caps it at math.MaxInt32, the bound the operator enforces
+                                  on the CRD's CacheSkew.
                                   The operator CRD stores this as CacheSkew *metav1.Duration and converts it
                                   to an integer-seconds value for the vMCP runtime contract.
                                 format: int32
@@ -8854,9 +10054,11 @@ spec:
                                   SubjectTokenProviderName selects which upstream provider's token to use as the
                                   subject (assertion) token for the OBO exchange. When set, the token is looked
                                   up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
-                                  inbound end-user token (Identity.Token) is used directly.
-                                  Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
-                                  converter maps both to the runtime contract without renaming.
+                                  inbound end-user token (Identity.Token) is used directly. Behind an embedded
+                                  auth server an omitted value defaults to its upstream provider, and is an
+                                  error when it has more than one (see DefaultSubjectProviderName).
+                                  Matches the operator CRD's SubjectTokenProviderName field; the OBO
+                                  converter maps it to the runtime contract without renaming.
                                 type: string
                               tokenUrl:
                                 description: TokenURL is the Entra token endpoint
@@ -9027,10 +10229,14 @@ spec:
                   passthroughHeaders:
                     description: |-
                       PassthroughHeaders is an allowlist of incoming client request header names
-                      forwarded verbatim to all backends. Captured at the vMCP incoming edge by
-                      headerforward.CaptureMiddleware and consumed once at session creation
-                      when the per-session backend client's HeaderForwardConfig is built. Names
-                      must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+                      forwarded verbatim to all backends. Captured per request at the vMCP
+                      incoming edge by headerforward.CaptureMiddleware: tool calls, resource
+                      reads and prompt gets carry the values from the request that triggered
+                      them, and a header absent on that request is not forwarded. Session-scoped
+                      work (the session's backend connections, its advertised capability list,
+                      and background capability resyncs) uses the values from the request that
+                      created the session. Names must not be in the restricted set (Host,
+                      hop-by-hop, X-Forwarded-*, etc.).
                     items:
                       type: string
                     type: array
@@ -9187,6 +10393,23 @@ spec:
                         - memory
                         - redis
                         type: string
+                      tls:
+                        description: |-
+                          TLS enables TLS for session storage and rate limiting. An empty
+                          configuration verifies the Redis server using system roots.
+                          On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+                          field from it and rejects a value set under spec.config.sessionStorage.
+                        properties:
+                          caCertFile:
+                            description: |-
+                              CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+                              bundle replaces the system roots used to verify the Redis server.
+                            type: string
+                          insecureSkipVerify:
+                            description: InsecureSkipVerify skips server certificate
+                              and hostname verification.
+                            type: boolean
+                        type: object
                     required:
                     - provider
                     type: object
@@ -9745,12 +10968,57 @@ spec:
                     - memory
                     - redis
                     type: string
+                  tls:
+                    description: |-
+                      TLS enables TLS for the Redis session storage connection and, when rate
+                      limiting is configured, for the rate-limit connection to the same Redis.
+                      When omitted, the connections are plaintext and the Redis password and
+                      session data cross the network unencrypted. An empty object enables TLS
+                      with server certificate verification against the system root CAs; set
+                      caCertSecretRef for a private CA. A failed handshake never falls back to
+                      plaintext. Only used when provider is redis.
+                    properties:
+                      caCertSecretRef:
+                        description: |-
+                          CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                          for verifying the server. When not specified, system root CAs are used.
+                          If the Secret or key does not exist, the pod cannot start (it stays in
+                          ContainerCreating) rather than connecting without verification.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        description: |-
+                          InsecureSkipVerify disables server certificate and hostname verification.
+                          The connection is encrypted but not authenticated, so anyone able to
+                          impersonate the server can read the credentials and data sent over it.
+                          Intended for testing only; for self-signed or private CAs set
+                          caCertSecretRef instead.
+                        type: boolean
+                    type: object
                 required:
                 - provider
                 type: object
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
+                - message: tls is only supported when provider is redis
+                  rule: '!has(self.tls) || self.provider == ''redis'''
+                - message: tls.insecureSkipVerify disables certificate verification,
+                    so tls.caCertSecretRef would be ignored; set only one
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
+                    || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -9786,12 +11054,22 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: config.sessionStorage.tls is ignored by the operator; set sessionStorage.tls
+                instead
+              rule: '!has(self.config) || !has(self.config.sessionStorage) || !has(self.config.sessionStorage.tls)'
             - message: embeddingServerRef provisions a managed TEI server and cannot
                 be combined with optimizer.embeddingProvider 'openai'; openai mode
                 uses embeddingService directly
               rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
                 && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
                 == ''openai'')'
+            - message: authServerUpstreamFilter requires authServerConfig to be set
+              rule: '!has(self.authServerUpstreamFilter) || has(self.authServerConfig)'
+            - message: authServerUpstreamFilter requires at least two configured upstream
+                providers
+              rule: '!has(self.authServerUpstreamFilter) || (has(self.authServerConfig)
+                && has(self.authServerConfig.upstreamProviders) && size(self.authServerConfig.upstreamProviders)
+                >= 2)'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

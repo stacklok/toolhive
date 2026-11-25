@@ -5,6 +5,8 @@ package authserver
 
 import (
 	"context"
+	"crypto/x509"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -30,7 +32,9 @@ type Server interface {
 	//   - /oauth/register (Dynamic Client Registration, RFC 7591)
 	//
 	// The handler uses internal routing - the consumer doesn't need to know
-	// about the endpoint structure.
+	// about the endpoint structure. Bodies with a declared Content-Length over
+	// 64 KiB are rejected early with HTTP 413. Bodies with unknown or understated
+	// lengths are limited to 64 KiB when downstream handlers read them.
 	Handler() http.Handler
 
 	// IDPTokenStorage returns storage for upstream IDP tokens.
@@ -53,16 +57,15 @@ type Server interface {
 	// secrets manager client. Intended for admin / diagnostic code paths and
 	// integration tests, not for general consumers.
 	//
-	// Lifecycle: the returned handle's lifetime is bound to Server.Close —
-	// methods invoked after Close have backend-specific behavior (a
-	// MemoryStorage continues to serve reads; a RedisStorage will error on
-	// its closed connection pool).
+	// Lifecycle: this is a borrowed handle. Its lifetime is controlled by the
+	// storage owner, not Server.Close.
 	DCRStore() storage.DCRCredentialStore
 
-	// Close releases resources held by the server. It drains the upstream idle
-	// connections (see the CloseIdleConnections function) and then closes
-	// storage. Do not call it on a server whose storage is shared with another
-	// live server; retire that one with CloseIdleConnections instead.
+	// Close releases instance-owned resources: upstream idle connections,
+	// handler metric callbacks, and SPIFFE bundle and trusted-issuer workers.
+	// It never closes borrowed storage. Stop serving and drain requests before
+	// calling Close, including when retiring an instance that shares storage.
+	// Concurrent and repeated calls return the same joined shutdown errors.
 	Close() error
 }
 
@@ -77,17 +80,32 @@ type idleConnectionCloser interface {
 	CloseIdleConnections()
 }
 
+// spiffeX509AuthorityLister is the capability SPIFFEX509Authorities detects.
+// It is deliberately not a method on Server so out-of-tree implementations and
+// test doubles are not forced to implement the optional operation.
+type spiffeX509AuthorityLister interface {
+	SPIFFEX509Authorities() []*x509.Certificate
+}
+
+// SPIFFEX509Authorities returns the current X.509 authorities of every trust
+// domain that enables spiffe_x509, and whether s supports the operation.
+// The result reflects live bundle rotation. It is used only as a TLS
+// certificate_authorities hint, never for verification.
+func SPIFFEX509Authorities(s Server) ([]*x509.Certificate, bool) {
+	lister, ok := s.(spiffeX509AuthorityLister)
+	if !ok {
+		return nil, false
+	}
+	return lister.SPIFFEX509Authorities(), true
+}
+
 // CloseIdleConnections releases the idle keep-alive connections pooled by s's
 // upstream IDP providers, without touching storage, and reports whether s
 // supported the operation. Only an implementation of Server that does not come
 // from New can report false; the production type is checked at compile time.
 //
-// An embedder that reconstructs the server to change its upstream set — passing
-// the same storage.Storage and keys.KeyProvider so token and JWKS continuity is
-// preserved — must retire the superseded server with this function rather than
-// Close, because Close would also close the storage the new server is now
-// serving through. That split is the whole point: without it there is no correct
-// call to make.
+// Use Close after stopping and draining a superseded server, even when its
+// replacement shares storage. This function is only for live-safe pool draining.
 //
 // Safe to call on a server that is still serving: only idle connections are
 // closed and in-flight requests are unaffected. See upstream.IdleConnectionCloser
@@ -98,9 +116,7 @@ type idleConnectionCloser interface {
 // holds one JWKS refresh worker pool per issuer; those are released by Close,
 // not by this function — draining them would stop the background key refresh a
 // still-serving server depends on, and this function is safe to call on a live
-// server. An embedder retiring a superseded server with this function therefore
-// keeps its JWKS workers until the storage it shares with the replacement can
-// be closed via Close.
+// server. Runner DCR re-check loops likewise stop only on Close, not here.
 func CloseIdleConnections(s Server) bool {
 	closer, ok := s.(idleConnectionCloser)
 	if ok {
@@ -109,11 +125,54 @@ func CloseIdleConnections(s Server) bool {
 	return ok
 }
 
-// New creates a new OAuth authorization server.
-// The storage parameter is required and determines where OAuth state is persisted.
-// Use storage.NewMemoryStorage() for single-instance deployments or provide
-// a distributed storage backend for production deployments.
+// UpstreamCredentialsUpdater is the optional capability of a Server to
+// replace an upstream provider's client registration while it serves. The
+// Server returned by New implements it; see UpdateUpstreamClientCredentials.
+type UpstreamCredentialsUpdater interface {
+	UpdateUpstreamClientCredentials(name string, creds upstream.ClientCredentials) error
+}
+
+// UpdateUpstreamClientCredentials replaces the client registration the named
+// upstream provider presents to its upstream, for an embedder that re-checks a
+// DCR registration while the server runs. An empty name is the single unnamed
+// upstream. It fails when s or the provider lacks the capability or the name
+// is unknown; the provider keeps its previous client then.
+func UpdateUpstreamClientCredentials(s Server, name string, creds upstream.ClientCredentials) error {
+	updater, ok := s.(UpstreamCredentialsUpdater)
+	if !ok {
+		return errors.New("server cannot replace upstream client registrations")
+	}
+	return updater.UpdateUpstreamClientCredentials(name, creds)
+}
+
+// New creates a new OAuth authorization server and initializes the upstream
+// identity-extraction modifiers before constructing providers.
+// The storage parameter is required; its unwrapped backend must also implement
+// storage.DCRCredentialStore. Use storage.NewMemoryStorage() for single-instance
+// deployments or provide a distributed storage backend for production deployments.
+//
+// Storage is borrowed on both success and failure; the caller must close it
+// after all servers and other users have stopped. Construction may already have
+// written to storage when it fails; it releases any upstream pools and validator
+// workers created by the server. Close releases only instance-owned resources.
+// HTTP clients injected into upstream providers remain caller-owned; the caller
+// is responsible for their connection pools and networking security policy.
+//
+// SPIFFE X.509 client authentication reads the client certificate from the TLS
+// connection that reaches the handler (http.Request.TLS). The embedder must
+// terminate TLS itself and request client certificates. Behind a TLS-terminating
+// proxy X.509-SVID authentication is unavailable; use JWT-SVIDs instead.
+// Identity is never read from forwarded headers such as X-Forwarded-Client-Cert.
+// The authenticated client is whichever peer completes the TLS handshake, so TLS
+// must reach the handler end to end from the workload. A proxy or gateway that
+// opens its own TLS connection to the handler is authenticated as itself, so
+// association principal patterns must not match proxy or gateway identities.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {
+	upstream.RegisterModifiers()
 	slog.Debug("creating new OAuth authorization server", "issuer", cfg.Issuer)
-	return newServer(ctx, cfg, stor)
+	srv, err := newServer(ctx, cfg, stor)
+	if err != nil {
+		return nil, err
+	}
+	return srv, nil
 }

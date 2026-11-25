@@ -143,7 +143,7 @@ func TestWriteK8sManifest(t *testing.T) {
 			},
 		},
 		{
-			name: "config with permission profile",
+			name: "config with permission profile omits unsupported field",
 			config: &runner.RunConfig{
 				Image:     "ghcr.io/stacklok/mcp-server:latest",
 				Name:      "test",
@@ -156,9 +156,7 @@ func TestWriteK8sManifest(t *testing.T) {
 			},
 			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
-				require.NotNil(t, mcpServer.Spec.PermissionProfile)
-				assert.Equal(t, v1beta1.PermissionProfileTypeBuiltin, mcpServer.Spec.PermissionProfile.Type)
-				assert.Equal(t, "none", mcpServer.Spec.PermissionProfile.Name)
+				assert.Nil(t, mcpServer.Spec.PermissionProfile)
 			},
 		},
 		{

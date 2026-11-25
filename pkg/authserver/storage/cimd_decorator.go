@@ -4,7 +4,9 @@
 package storage
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -14,19 +16,45 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/ory/fosite"
 	"golang.org/x/sync/singleflight"
+	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/oauthproto/cimd"
 )
 
+// ErrCIMDRateLimited is wrapped by the fosite.ErrNotFound error that GetClient
+// returns when resolving a CIMD client_id would exceed the decorator's outbound
+// fetch budget and no cached entry within MaxStale of its expiry can be served
+// instead.
+// On a request whose context carries WithPersistedClientFallback (the token
+// endpoint), it is also not returned when a persisted client row that still
+// matches the configuration exists; that row is served instead.
+// Handlers map it to HTTP 429 instead of invalid_client.
+var ErrCIMDRateLimited = errors.New("CIMD document fetch rate limit exceeded")
+
 // CIMDStorageDecorator wraps storage.Storage and intercepts GetClient calls
 // for HTTPS client_id values, fetching and caching the corresponding Client
 // ID Metadata Document instead of requiring prior DCR registration.
 //
-// All other Storage methods delegate to the underlying storage unchanged.
-// Only GetClient is overridden. DCR clients (opaque IDs) continue to work
-// exactly as before.
+// All other Storage methods delegate to the underlying storage unchanged,
+// except RenewClientTTL (CIMD ids are skipped), and ConsumeAssertionJWT and
+// Unwrap, which forward to the wrapped backend. GetClient is the main
+// override. DCR clients (opaque IDs) continue to work exactly as before.
+//
+// Every route that resolves a CIMD client_id (authorize, token, device
+// authorization) reaches the outbound fetch and write-through persistence
+// through GetClient, so fetchLimiter bounds both for all of them. When the
+// limiter refuses a fetch, or the fetch is attempted and fails transiently
+// (cimd.ErrDocumentUnavailable), an expired cache entry is served for up to
+// maxStale past its expiry so a known client is not locked out by traffic
+// that drains the shared budget or by a document host that is briefly
+// unreachable. A re-fetch that fails definitively evicts the entry, so
+// neither path serves a document the host withdrew or this server rejected
+// from the cache again; see fetchFailed for both rules. On the token endpoint
+// (WithPersistedClientFallback), a refused lookup with no servable cache entry
+// is answered from the persisted client row when one exists; that row is not
+// evicted, so it can still answer a refusal after a definitive failure.
 type CIMDStorageDecorator struct {
 	Storage                                 // embed full interface — all methods delegate
 	sf                   singleflight.Group // deduplicates concurrent fetches for the same URL
@@ -35,6 +63,16 @@ type CIMDStorageDecorator struct {
 	scopesSupported      []string // AS-configured scopes; nil means accept any
 	baselineClientScopes []string // unioned into every client's scope set, same as DCR
 	allowedAudiences     []string // AS-configured audiences granted to every CIMD client
+	// maxStale is how long past expiry a cached entry may be served when
+	// fetchLimiter refuses a fetch or the fetch fails transiently; zero
+	// disables stale serving.
+	maxStale time.Duration
+	// fetchLimiter bounds outbound document fetches (and therefore persisted
+	// rows) triggered by unauthenticated callers. Per-process, so N replicas
+	// allow N times the rate, like the handlers' registerLimiter. A refusal
+	// returns ErrCIMDRateLimited unless an entry within maxStale is cached or,
+	// for a WithPersistedClientFallback context, a matching persisted row exists.
+	fetchLimiter *rate.Limiter
 }
 
 type cimdCacheEntry struct {
@@ -51,6 +89,11 @@ type CIMDDecoratorConfig struct {
 	CacheMaxSize int
 	// FallbackTTL is the fixed TTL applied to every cache entry.
 	FallbackTTL time.Duration
+	// MaxStale is how long past its expiry a cached entry may still be served
+	// when the fetch rate limiter refuses a re-fetch or the re-fetch fails
+	// transiently (cimd.ErrDocumentUnavailable). Zero disables stale serving;
+	// negative values are rejected.
+	MaxStale time.Duration
 	// ScopesSupported is the AS scope allowlist; see pkg/authserver/config.go
 	// applyDefaults for production guarantees. Pass nil in tests only.
 	ScopesSupported []string
@@ -77,6 +120,10 @@ func NewCIMDStorageDecorator(base Storage, cfg CIMDDecoratorConfig) (Storage, er
 		return nil, fmt.Errorf("CIMD storage decorator cacheMaxSize must be >= 1, got %d", cfg.CacheMaxSize)
 	}
 
+	if cfg.MaxStale < 0 {
+		return nil, fmt.Errorf("CIMD storage decorator maxStale must be >= 0, got %s", cfg.MaxStale)
+	}
+
 	c, err := lru.New[string, *cimdCacheEntry](cfg.CacheMaxSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CIMD LRU cache: %w", err)
@@ -86,10 +133,39 @@ func NewCIMDStorageDecorator(base Storage, cfg CIMDDecoratorConfig) (Storage, er
 		Storage:              base,
 		cache:                c,
 		ttl:                  cfg.FallbackTTL,
+		maxStale:             cfg.MaxStale,
 		scopesSupported:      slices.Clone(cfg.ScopesSupported),
 		baselineClientScopes: slices.Clone(cfg.BaselineClientScopes),
 		allowedAudiences:     slices.Clone(cfg.AllowedAudiences),
+		// Same rate as the handlers' registerLimiter: both gate the same kind
+		// of unauthenticated persisted-state minting.
+		fetchLimiter: rate.NewLimiter(rate.Limit(1), 5),
 	}, nil
+}
+
+type persistedClientFallbackKey struct{}
+
+// WithPersistedClientFallback marks ctx as belonging to the token endpoint. It
+// must not be used anywhere else.
+//
+// fosite calls Storage.GetClient itself inside NewAccessRequest, so a context
+// value is the only seam the handler has. The mark permits
+// CIMDStorageDecorator.GetClient, when the fetch limiter refused and no stale
+// cache entry is servable, to answer from the persisted client row instead of
+// returning ErrCIMDRateLimited. It applies to any URL-shaped GetClient made
+// with the returned context. The fallback is read-only and serves a snapshot
+// that was validated when it was last fetched; it is not re-validated against
+// the document.
+func WithPersistedClientFallback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, persistedClientFallbackKey{}, true)
+}
+
+// PersistedClientFallbackAllowed reports whether ctx carries the mark set by
+// WithPersistedClientFallback. The decorator reads it, and tests use it to
+// check which endpoints set it.
+func PersistedClientFallbackAllowed(ctx context.Context) bool {
+	allowed, _ := ctx.Value(persistedClientFallbackKey{}).(bool)
+	return allowed
 }
 
 // GetClient intercepts HTTPS client_id values to resolve them via CIMD.
@@ -98,7 +174,74 @@ func (d *CIMDStorageDecorator) GetClient(ctx context.Context, id string) (fosite
 	if !oauthproto.IsClientIDMetadataDocumentURL(id) {
 		return d.Storage.GetClient(ctx, id)
 	}
-	return d.fetchOrCached(ctx, id)
+	client, err := d.fetchOrCached(ctx, id)
+	// Outside singleflight and with the caller's ctx on purpose: the mark is
+	// per request and must not leak to other callers sharing a flight. The
+	// row is deliberately neither cached nor renewed (a cached row would be
+	// served to /oauth/authorize as a fresh hit), and every failure returns
+	// the original rate-limit error, unlike handlers' callbackClient which
+	// returns the base lookup's error.
+	if errors.Is(err, ErrCIMDRateLimited) && PersistedClientFallbackAllowed(ctx) {
+		row, rowErr := d.Storage.GetClient(ctx, id)
+		if rowErr == nil && row != nil && d.persistedRowMatchesConfig(id, row) {
+			slog.DebugContext(ctx, "CIMD document fetch rate limited; serving persisted client row", "client_id", id)
+			return row, nil
+		}
+	}
+	return client, err
+}
+
+// persistedRowMatchesConfig reports whether the persisted row for id is a
+// snapshot this decorator wrote and still agrees with the current AS
+// configuration, failing closed. Only the CIMD fetch writes rows at URL-shaped
+// ids, so the row must carry that id, be a public client and carry the
+// DCR-issued marker; anything else at such an id was not validated by us.
+// Every grant type on the row must survive registration.FilterPublicGrantTypes
+// unchanged, i.e. be one the fetch path can still produce (a row may hold a
+// subset). That filter is static: the AS configuration cannot narrow it.
+//
+// A restart is the usual trigger for the persisted-row fallback and the
+// operator may have changed AllowedAudiences or ScopesSupported before
+// restarting; the row would carry the old values. The audience must equal
+// allowedAudiences (order-insensitive, which is all buildFositeClient puts
+// there) and, when scopesSupported is configured, every row scope must be in
+// scopesSupported or baselineClientScopes. It never mutates the row.
+func (d *CIMDStorageDecorator) persistedRowMatchesConfig(id string, client fosite.Client) bool {
+	if client.GetID() != id || !client.IsPublic() || !registration.DCRIssued(client) {
+		return false
+	}
+	rowGrants := client.GetGrantTypes()
+	allowed, dcrErr := registration.FilterPublicGrantTypes(rowGrants)
+	if dcrErr != nil || len(allowed) != len(rowGrants) {
+		return false
+	}
+	rowAud := slices.Sorted(slices.Values(client.GetAudience()))
+	wantAud := slices.Sorted(slices.Values(d.allowedAudiences))
+	if !slices.Equal(rowAud, wantAud) {
+		return false
+	}
+	if len(d.scopesSupported) == 0 {
+		return true
+	}
+	for _, scope := range client.GetScopes() {
+		if !slices.Contains(d.scopesSupported, scope) && !slices.Contains(d.baselineClientScopes, scope) {
+			return false
+		}
+	}
+	return true
+}
+
+// RenewClientTTL skips URL-shaped (CIMD) client ids and delegates every other
+// id to the wrapped storage. Renewal is redundant for CIMD rows because every
+// successful fetch upserts the row and resets its TTL. Not renewing keeps the
+// row TTL equal to the time since the last successful fetch, which is the age
+// bound for the persisted-row fallback on the token endpoint on both backends.
+// Opaque DCR and static ids are renewed as before.
+func (d *CIMDStorageDecorator) RenewClientTTL(ctx context.Context, client fosite.Client) error {
+	if client != nil && oauthproto.IsClientIDMetadataDocumentURL(client.GetID()) {
+		return nil
+	}
+	return d.Storage.RenewClientTTL(ctx, client)
 }
 
 // cimdShapeGuardStorage wraps storage.Storage and rejects URL-shaped
@@ -187,14 +330,42 @@ func (d *CIMDStorageDecorator) fetchOrCached(ctx context.Context, id string) (fo
 	// Deduplicate concurrent fetches for the same URL. The shared fetch uses a
 	// context detached from the caller so that one caller cancelling does not
 	// abort the in-flight request for other waiters. The HTTP client inside
-	// FetchClientMetadataDocument enforces its own 5-second timeout.
+	// FetchClientMetadataDocument enforces its own 5-second timeout. The detached
+	// context still carries context values such as the persisted-fallback mark;
+	// nothing inside fetch reads it, and fetch must not call this decorator's
+	// GetClient.
 	fetchCtx := context.WithoutCancel(ctx)
 	result, err, _ := d.sf.Do(id, func() (interface{}, error) {
-		// Re-check cache inside singleflight (another goroutine may have populated it)
-		if entry, ok := d.cache.Get(id); ok && time.Now().Before(entry.expires) {
+		// Re-check cache inside singleflight (another goroutine may have populated
+		// it). The entry is reused below for the stale fallback.
+		entry, ok := d.cache.Get(id)
+		if ok && time.Now().Before(entry.expires) {
 			return entry.client, nil
 		}
-		return d.fetch(fetchCtx, id)
+		// Allow, not Wait: fetchCtx is detached from the caller, so a waiting
+		// call could never be cancelled. Cache hits and callers sharing this
+		// singleflight call cost nothing; a failed fetch costs a token.
+		// The stale check sits after the limiter so that with budget left an
+		// expired entry is still re-fetched and re-validated; a refusal falls
+		// back to the expired entry within maxStale, and so does a fetch that
+		// is attempted and fails transiently (fetchFailed, which also evicts
+		// the entry on every other failure, so the pre-failure document cannot
+		// come back from the cache through a later refusal or blip).
+		if !d.fetchLimiter.Allow() {
+			if d.servableStale(entry, ok) {
+				// DEBUG: callers can trigger this at request rate.
+				slog.DebugContext(ctx, "CIMD document fetch rate limited; serving stale cache entry",
+					"client_id", id, "age_past_expiry", time.Since(entry.expires))
+				return entry.client, nil
+			}
+			slog.DebugContext(ctx, "CIMD document fetch rate limited", "client_id", id)
+			return nil, fosite.ErrNotFound.WithWrap(ErrCIMDRateLimited)
+		}
+		client, err := d.fetch(fetchCtx, id)
+		if err != nil {
+			return d.fetchFailed(ctx, id, err)
+		}
+		return client, nil
 	})
 	if err != nil {
 		return nil, err
@@ -206,16 +377,25 @@ func (d *CIMDStorageDecorator) fetchOrCached(ctx context.Context, id string) (fo
 	return client, nil
 }
 
+// servableStale reports whether entry, the cache entry found for an id (ok is
+// false when there is none), may still answer a lookup whose re-fetch the
+// limiter refused or that failed transiently: maxStale > 0 makes the zero
+// value explicit (stale serving disabled), and the entry must be less than
+// maxStale past its expiry. The window is anchored to the entry's original
+// expiry; a stale answer never moves it.
+func (d *CIMDStorageDecorator) servableStale(entry *cimdCacheEntry, ok bool) bool {
+	return ok && d.maxStale > 0 && time.Now().Before(entry.expires.Add(d.maxStale))
+}
+
 func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Client, error) {
 	doc, err := cimd.FetchClientMetadataDocument(ctx, id)
 	if err != nil {
-		// Log every rejection in fetch() at Warn: the errors returned here
-		// surface to the client as a generic invalid_client/invalid_request
-		// with the hint dropped by fosite's production error rendering, so
-		// without a server-side log line these failures are undiagnosable
-		// (see issue #6186).
-		slog.WarnContext(ctx, "CIMD document fetch failed",
-			"client_id", id, "error", err)
+		// Logged by fetchFailed once the stale decision is made. Every other
+		// rejection below is logged at Warn here: the errors returned from
+		// fetch surface to the client as a generic invalid_client with the
+		// hint dropped by fosite's production error rendering, so without a
+		// server-side log line these failures are undiagnosable (see issue
+		// #6186).
 		return nil, fosite.ErrNotFound.WithHint("CIMD fetch failed").WithWrap(err)
 	}
 
@@ -288,15 +468,20 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	// consults this decorator — find CIMD clients at the token endpoint (see
 	// issue #6187). The client carries the DCR-issued marker (above) so the
 	// row gets the same anti-bloat TTL as DCR registrations: unauthenticated
-	// /oauth/authorize traffic can mint these rows, so they must never be
-	// permanent. UpsertDCRIssuedClient (not RegisterClient) is used because
+	// traffic can mint these rows (fetchLimiter bounds the rate), so they must
+	// never be permanent. UpsertDCRIssuedClient (not RegisterClient) is used because
 	// RegisterClient is strictly create-only and would fail every fetch after
 	// the first for the same client_id -- this method re-persists on every
 	// fresh fetch, keeping the stored snapshot current with the document,
 	// while still refusing to clobber a configured/SPIFFE-reconciled client
 	// at the same ID. A persistence failure only degrades token-path
 	// rehydration, so it must not fail the resolution itself.
-	if err := d.UpsertDCRIssuedClient(ctx, client); err != nil {
+	// A backend at its CIMD row cap refuses new rows; unauthenticated
+	// callers set that volume, so it stays at Debug.
+	if err := d.UpsertDCRIssuedClient(ctx, client); errors.Is(err, ErrClientCapacity) {
+		slog.DebugContext(ctx, "CIMD client not persisted: storage at capacity",
+			"client_id", id, "error", err)
+	} else if err != nil {
 		slog.WarnContext(ctx, "failed to persist resolved CIMD client",
 			"client_id", id, "error", err)
 	}
@@ -307,6 +492,58 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	})
 
 	return client, nil
+}
+
+// fetchFailed answers a re-fetch of id that returned err. It runs inside the
+// singleflight call, so every caller sharing the flight gets one decision and
+// one log line, and no concurrent fetch for id can add a fresh entry between
+// the decision below and the eviction.
+//
+// A transient failure (cimd.ErrDocumentUnavailable: the host delivered no
+// usable response or answered 5xx, 408, or 429) is answered from the expired
+// cache entry while servableStale allows it, the same window the limiter's
+// refusal path uses. The entry is neither renewed nor re-persisted, so the
+// next lookup re-fetches again and the stale answer never outlives maxStale.
+//
+// Every other outcome evicts the entry and returns err: a definitive fetch
+// failure (a 3xx or any other 4xx whatever happened to its body, an
+// unexpected content type, a malformed body, a document that fails
+// validation), a document this server's policy rejects, and a transient
+// failure with no servable entry. The cache must not hand a document the host
+// withdrew or this server rejected back through a later limiter refusal or
+// transient failure, and an entry past the window can never answer again; the
+// next lookup needs a successful fetch. The persisted row is left in place
+// (Storage has no client delete): on a later limiter refusal the token
+// endpoint's fallback in GetClient can still answer from it for up to
+// DefaultDCRClientTTL after the last successful fetch, and handlers'
+// callbackClient reads it only to finish an authorization already in
+// progress, within the bounds docs/arch/11-auth-server-storage.md gives.
+// fosite renders the returned error as invalid_client exactly as before, so a
+// client this server has never resolved still fails closed.
+//
+// fetch logs a rejected document's cause itself (fosite.ErrInvalidClient). A
+// document that could not be fetched is logged here, once, after the
+// decision, so the line carries the cause and the outcome. fetch returns it
+// as fosite.ErrNotFound with the cause wrapped, and fosite renders that
+// wrapper as the bare code "not_found" and drops the hint in its production
+// error rendering, so the line names the wrapped cause (the status or the
+// transport error); without it the failure is undiagnosable (see issue
+// #6186).
+func (d *CIMDStorageDecorator) fetchFailed(ctx context.Context, id string, err error) (fosite.Client, error) {
+	cause := cmp.Or(errors.Unwrap(err), err)
+	entry, ok := d.cache.Get(id)
+	if errors.Is(err, cimd.ErrDocumentUnavailable) && d.servableStale(entry, ok) {
+		slog.WarnContext(ctx, "CIMD document fetch failed",
+			"client_id", id, "error", cause,
+			"fallback", "expired_cache", "age_past_expiry", time.Since(entry.expires))
+		return entry.client, nil
+	}
+	d.cache.Remove(id)
+	if !errors.Is(err, fosite.ErrInvalidClient) {
+		slog.WarnContext(ctx, "CIMD document fetch failed",
+			"client_id", id, "error", cause, "fallback", "none")
+	}
+	return nil, err
 }
 
 // resolveScopes computes and validates the client scope list consistent
@@ -387,8 +624,8 @@ const defaultCIMDTokenEndpointAuthMethod = "none"
 // The supported set this function negotiates against is deliberately the
 // defaultCIMDTokenEndpointAuthMethod constant alone, never the AS discovery
 // document's own token_endpoint_auth_methods_supported: discovery legitimately
-// advertises client_secret_basic/client_secret_post when confidential DCR or
-// static delegate clients are enabled, and the CIMD draft (§4.1) forbids those
+// advertises client_secret_basic/client_secret_post when confidential DCR is
+// enabled or a configured delegate client uses a secret, and the CIMD draft (§4.1) forbids those
 // symmetric methods in CIMD documents outright. Deriving the negotiated set
 // from discovery would let a CIMD document negotiate its way into a forbidden
 // method, so no such config plumbing is introduced.

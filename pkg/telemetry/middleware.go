@@ -325,8 +325,9 @@ func (m *HTTPMiddleware) addEnvironmentAttributes(span trace.Span) {
 	// Include environment variables from host machine as configured
 	// Only environment variables specified in the config will be read and included
 	for _, envVar := range m.config.EnvironmentVariables {
-		if envVar == "" {
-			continue // Skip empty environment variable names
+		// A "NAME=value" assignment must not become part of the span attribute key.
+		if envVar == "" || strings.Contains(envVar, "=") {
+			continue // Skip empty or assignment-style environment variable names
 		}
 
 		value := os.Getenv(envVar)

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -36,6 +35,14 @@ type ResponseFilteringWriter struct {
 	statusCode       int
 	annotationCache  *AnnotationCache
 	passThroughTools map[string]struct{}
+	// contentEncoding latches the backend's Content-Encoding value the first
+	// time any method observes one, because the header is rewritten before
+	// FlushAndFilter runs. Empty means the backend declared no encoding.
+	contentEncoding string
+	// rejected records that an encoded response was replaced by an error, so
+	// the rewrite and its log line happen once whether Flush or FlushAndFilter
+	// reaches it first.
+	rejected bool
 }
 
 // NewResponseFilteringWriter creates a new response filtering writer.
@@ -61,12 +68,16 @@ func NewResponseFilteringWriter(
 
 // Write captures the response body for filtering
 func (rfw *ResponseFilteringWriter) Write(data []byte) (int, error) {
+	// A handler may call Write without WriteHeader, which Go treats as an
+	// implicit 200, so the encoding must be observed here too.
+	rfw.recordContentEncoding()
 	return rfw.buffer.Write(data)
 }
 
 // WriteHeader captures the status code
 func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 	rfw.statusCode = statusCode
+	rfw.recordContentEncoding()
 }
 
 // FlushAndFilter processes the captured response and applies filtering if needed.
@@ -82,6 +93,17 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	}
 
 	rawResponse := rfw.buffer.Bytes()
+
+	// A body still carrying a Content-Encoding is opaque to every decode and
+	// sniff below, which would pass it through unfiltered. Callers withhold the
+	// client's Accept-Encoding from the backend so Go's transport decodes gzip
+	// itself, but a backend can compress unprompted. Fail closed rather than
+	// forward bytes that cannot be filtered. If Flush already committed the
+	// rejection's headers, the error body is owed even when nothing was buffered.
+	if rfw.shouldRejectEncoded() && (len(rawResponse) > 0 || rfw.rejected) {
+		rfw.rejectEncodedResponse()
+		return rfw.writeRejectionBody(rfw.requestID())
+	}
 
 	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
 	// before parsing, so strip it here too. Otherwise a BOM-prefixed list
@@ -152,6 +174,49 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	}
 }
 
+// recordContentEncoding latches the backend's Content-Encoding value. It never
+// clears the latch: later header rewrites must not hide an encoding already seen.
+func (rfw *ResponseFilteringWriter) recordContentEncoding() {
+	if rfw.contentEncoding == "" && mcpparser.HasContentEncoding(rfw.Header()) {
+		rfw.contentEncoding = strings.Join(rfw.Header().Values("Content-Encoding"), ", ")
+	}
+}
+
+// shouldRejectEncoded reports whether the buffered response must be replaced by
+// an error because it carries an encoding this filter cannot read.
+//
+// Only a 2xx response can carry a list, so an encoded non-2xx (a 404 from a
+// backend whose session expired, say) is forwarded untouched: replacing it with
+// an opaque 500 would cost the client the signal it needs to start a new
+// session, and there is no list in it to leak. Once a rejection is latched the
+// status has already been rewritten to 500, so the latch answers instead of the
+// status check.
+func (rfw *ResponseFilteringWriter) shouldRejectEncoded() bool {
+	if rfw.rejected {
+		return true
+	}
+	rfw.recordContentEncoding()
+	return rfw.contentEncoding != "" &&
+		rfw.statusCode >= http.StatusOK && rfw.statusCode < http.StatusMultipleChoices
+}
+
+// rejectEncodedResponse rewrites the response head for the plain JSON error that
+// replaces an encoded body: status 500, JSON media type, and none of the
+// backend's entity headers. It must run before the headers are committed, which
+// is why Flush calls it as well as FlushAndFilter. It is idempotent.
+func (rfw *ResponseFilteringWriter) rejectEncodedResponse() {
+	if rfw.rejected {
+		return
+	}
+	rfw.rejected = true
+	slog.Warn("dropping content-encoded response to a filtered method; its body cannot be filtered",
+		"method", rfw.method, "contentEncoding", truncateForLog(rfw.contentEncoding),
+		"backendStatus", rfw.statusCode)
+	mcpparser.DeleteEntityHeaders(rfw.Header())
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	rfw.statusCode = http.StatusInternalServerError
+}
+
 // Flush implements http.Flusher if the underlying ResponseWriter supports it.
 // This method is required for streaming support (SSE, streamable-http).
 //
@@ -171,17 +236,29 @@ func (rfw *ResponseFilteringWriter) Flush() {
 	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
 		rfw.applyResponseCachePolicy()
 		rfw.ResponseWriter.Header().Del("Content-Length")
+		// An encoded body to a filtered method is replaced by FlushAndFilter with
+		// a plain error, and headers cannot change once committed here, so the
+		// error's status and headers are fixed before the commit.
+		if requiresResponseFiltering(rfw.method) && rfw.shouldRejectEncoded() {
+			rfw.rejectEncodedResponse()
+		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		flusher.Flush()
 	}
 }
 
-// applyResponseCachePolicy prevents a caller-specific resource-template view
-// from being reused across authorization contexts. Flush calls this before an
-// SSE response commits its headers; FlushAndFilter covers buffered JSON.
+// applyResponseCachePolicy prevents a caller-specific tools, prompts,
+// resources, or resource-template view from being reused across authorization
+// contexts by an HTTP cache. It applies to every filtered list, including a
+// list result that carries no caching hints of its own. Flush calls this
+// before an SSE response commits its headers; FlushAndFilter covers buffered
+// JSON.
 func (rfw *ResponseFilteringWriter) applyResponseCachePolicy() {
-	if responseFilterForMethod(rfw.method) == responseFilterResourceTemplates {
+	switch responseFilterForMethod(rfw.method) {
+	case responseFilterTools, responseFilterPrompts, responseFilterResources, responseFilterResourceTemplates:
 		rfw.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
+	case responseFilterNone, responseFilterSkills, responseFilterFindTool:
+		// These filters set no private caching hints in the result.
 	}
 }
 
@@ -628,7 +705,8 @@ func valueCarriesResult(value json.RawMessage) bool {
 // whose payload carries a JSON-RPC result. It is a lightweight detector, used
 // only to decide whether a body with an unrecognized media type needs the
 // full SSE processing path (which applies its own event-based filtering and
-// fail-closed rules); it mirrors sniffSSEToolsList in pkg/mcp/tool_filter.go.
+// fail-closed rules). The tool filter's counterpart is
+// eventStreamMayCarryToolsList in pkg/mcp/tools_list_response.go.
 func sseCarriesResult(rawResponse []byte) bool {
 	normalized := bytes.ReplaceAll(rawResponse, []byte("\r\n"), []byte("\n"))
 	normalized = bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
@@ -703,14 +781,22 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 
 // filterToolsResponse filters tools based on call_tool authorization
 func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
-	if err := validateListResult(response.Result, "tools", "name"); err != nil {
+	members, rawTools, err := decodeFilterableListResult(response.Result, "tools", "name")
+	if err != nil {
+		return nil, fmt.Errorf("validating tools list response: %w", err)
+	}
+	if err := validateToolAnnotations(rawTools); err != nil {
 		return nil, fmt.Errorf("validating tools list response: %w", err)
 	}
 
-	// Parse the result as a ListToolsResult
+	// The typed descriptors feed policy evaluation and the annotation cache;
+	// the filtered result carries the backend's raw descriptors.
 	var listResult mcp.ListToolsResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
 		return nil, fmt.Errorf("decoding tools list response: %w", err)
+	}
+	if len(listResult.Tools) != len(rawTools) {
+		return nil, errors.New("decoded tools do not match the raw tools list")
 	}
 
 	// Populate annotation cache from tools/list response so that
@@ -725,61 +811,47 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 	// middleware: call_tool requests are intercepted and the inner tool_name
 	// argument is authorized against Cedar policy before the request is served.
 	// See: https://github.com/stacklok/toolhive/issues/4373
-	passThrough := []mcp.Tool{}
+	permitted := make([]json.RawMessage, 0, len(rawTools))
 	regular := []mcp.Tool{}
-	for _, t := range listResult.Tools {
+	regularIndexes := []int{}
+	for i, t := range listResult.Tools {
 		if _, ok := rfw.passThroughTools[t.Name]; ok {
-			passThrough = append(passThrough, t)
+			permitted = append(permitted, rawTools[i])
 		} else {
 			regular = append(regular, t)
+			regularIndexes = append(regularIndexes, i)
 		}
 	}
 
-	// filterToolsByPolicy checks each tool against the caller's Cedar policies
+	// authorizedToolIndexes checks each tool against the caller's Cedar policies
 	// (injecting annotations into context for when-clause evaluation) and returns
-	// only tools the caller is authorized to call.
-	policyFiltered := filterToolsByPolicy(rfw.request.Context(), rfw.authorizer, regular)
-	filteredTools := make([]mcp.Tool, 0, len(passThrough)+len(policyFiltered))
-	filteredTools = append(filteredTools, passThrough...)
-	filteredTools = append(filteredTools, policyFiltered...)
-
-	// Create a new result with filtered tools
-	filteredResult := mcp.ListToolsResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Tools:           filteredTools,
+	// the positions of the tools the caller is authorized to call.
+	for _, index := range authorizedToolIndexes(rfw.request.Context(), rfw.authorizer, regular) {
+		permitted = append(permitted, rawTools[regularIndexes[index]])
 	}
 
-	// Marshal the filtered result back
-	filteredResultData, err := json.Marshal(filteredResult)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a new response with the filtered result
-	filteredResponse := &jsonrpc2.Response{
-		ID:     response.ID,
-		Result: json.RawMessage(filteredResultData),
-	}
-
-	return filteredResponse, nil
+	return filteredListResponse(response.ID, members, "tools", permitted)
 }
 
 // filterPromptsResponse filters prompts based on get_prompt authorization
 func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
-	if err := validateListResult(response.Result, "prompts", "name"); err != nil {
+	members, rawPrompts, err := decodeFilterableListResult(response.Result, "prompts", "name")
+	if err != nil {
 		return nil, fmt.Errorf("validating prompts list response: %w", err)
 	}
 
-	// Parse the result as a ListPromptsResult
+	// The typed descriptors are validated and authorized; the filtered result
+	// carries the backend's raw descriptors.
 	var listResult mcp.ListPromptsResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
 		return nil, fmt.Errorf("decoding prompts list response: %w", err)
 	}
+	if len(listResult.Prompts) != len(rawPrompts) {
+		return nil, errors.New("decoded prompts do not match the raw prompts list")
+	}
 
-	// Note: instantiating the list ensures that no null value is sent over the wire.
-	// This is basically defensive programming, but for clients.
-	filteredPrompts := []mcp.Prompt{}
-	for _, prompt := range listResult.Prompts {
+	permitted := make([]json.RawMessage, 0, len(rawPrompts))
+	for i, prompt := range listResult.Prompts {
 		// Check if the user is authorized to get this prompt
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
 			rfw.request.Context(),
@@ -795,55 +867,40 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 		}
 
 		if authorized {
-			filteredPrompts = append(filteredPrompts, prompt)
+			permitted = append(permitted, rawPrompts[i])
 		} else {
 			slog.Debug("Prompt denied by authorization policy",
 				"prompt", prompt.Name)
 		}
 	}
 
-	if denied := len(listResult.Prompts) - len(filteredPrompts); denied > 0 {
+	if denied := len(listResult.Prompts) - len(permitted); denied > 0 {
 		slog.Debug("Authorization policy filtered prompts",
-			"total", len(listResult.Prompts), "allowed", len(filteredPrompts), "denied", denied)
+			"total", len(listResult.Prompts), "allowed", len(permitted), "denied", denied)
 	}
 
-	// Create a new result with filtered prompts
-	filteredResult := mcp.ListPromptsResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Prompts:         filteredPrompts,
-	}
-
-	// Marshal the filtered result back
-	filteredResultData, err := json.Marshal(filteredResult)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a new response with the filtered result
-	filteredResponse := &jsonrpc2.Response{
-		ID:     response.ID,
-		Result: json.RawMessage(filteredResultData),
-	}
-
-	return filteredResponse, nil
+	return filteredListResponse(response.ID, members, "prompts", permitted)
 }
 
 // filterResourcesResponse filters resources based on read_resource authorization
 func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
-	if err := validateListResult(response.Result, "resources", "uri"); err != nil {
+	members, rawResources, err := decodeFilterableListResult(response.Result, "resources", "uri")
+	if err != nil {
 		return nil, fmt.Errorf("validating resources list response: %w", err)
 	}
 
-	// Parse the result as a ListResourcesResult
+	// The typed descriptors are validated and authorized; the filtered result
+	// carries the backend's raw descriptors.
 	var listResult mcp.ListResourcesResult
 	if err := json.Unmarshal(response.Result, &listResult); err != nil {
 		return nil, fmt.Errorf("decoding resources list response: %w", err)
 	}
+	if len(listResult.Resources) != len(rawResources) {
+		return nil, errors.New("decoded resources do not match the raw resources list")
+	}
 
-	// Note: instantiating the list ensures that no null value is sent over the wire.
-	// This is basically defensive programming, but for clients.
-	filteredResources := []mcp.Resource{}
-	for _, resource := range listResult.Resources {
+	permitted := make([]json.RawMessage, 0, len(rawResources))
+	for i, resource := range listResult.Resources {
 		// Check if the user is authorized to read this resource
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
 			rfw.request.Context(),
@@ -859,37 +916,111 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 		}
 
 		if authorized {
-			filteredResources = append(filteredResources, resource)
+			permitted = append(permitted, rawResources[i])
 		} else {
 			slog.Debug("Resource denied by authorization policy",
 				"resource", resource.URI)
 		}
 	}
 
-	if denied := len(listResult.Resources) - len(filteredResources); denied > 0 {
+	if denied := len(listResult.Resources) - len(permitted); denied > 0 {
 		slog.Debug("Authorization policy filtered resources",
-			"total", len(listResult.Resources), "allowed", len(filteredResources), "denied", denied)
+			"total", len(listResult.Resources), "allowed", len(permitted), "denied", denied)
 	}
 
-	// Create a new result with filtered resources
-	filteredResult := mcp.ListResourcesResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Resources:       filteredResources,
+	return filteredListResponse(response.ID, members, "resources", permitted)
+}
+
+// cachingHintMembers are the MCP result members that tell a client or a shared
+// cache whether, and for how long, a list result may be reused.
+var cachingHintMembers = []string{"cacheScope", "ttlMs"}
+
+// decodeFilterableListResult decodes a tools, prompts, or resources list
+// result for filtering. On top of decodeListResult's checks it rejects
+// ambiguous spellings of the caching hints, because filteredListResponse
+// overrides them and a client must not be able to read the backend's value
+// under an alias instead.
+func decodeFilterableListResult(
+	data json.RawMessage,
+	listField, identifierField string,
+) ([]mcpparser.JSONObjectMember, []json.RawMessage, error) {
+	members, items, err := decodeListResult(data, listField, identifierField)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, hint := range cachingHintMembers {
+		if _, _, err := mcpparser.UniqueCanonicalMember(members, hint); err != nil {
+			return nil, nil, err
+		}
+	}
+	return members, items, nil
+}
+
+// toolAnnotationMembers are the annotation members that encoding/json binds
+// to the typed tool annotations used for policy evaluation and the annotation
+// cache.
+var toolAnnotationMembers = jsonMemberNames(reflect.TypeFor[mcp.ToolAnnotation]())
+
+// validateToolAnnotations rejects ambiguous spellings of a tool's annotations
+// member and of every member the typed annotations decode. encoding/json
+// resolves case-folded aliases and duplicate members, and merges a repeated
+// annotations object, so policies could otherwise evaluate hints that differ
+// from those in the raw descriptor a filter forwards to the client.
+func validateToolAnnotations(rawTools []json.RawMessage) error {
+	for i, rawTool := range rawTools {
+		toolMembers, err := mcpparser.DecodeJSONObjectMembers(rawTool)
+		if err != nil {
+			return fmt.Errorf("decoding tools item at index %d: %w", i, err)
+		}
+		rawAnnotations, ok, err := mcpparser.UniqueCanonicalMember(toolMembers, "annotations")
+		if err != nil {
+			return fmt.Errorf("tools item at index %d: %w", i, err)
+		}
+		if !ok || isJSONNull(rawAnnotations) {
+			continue
+		}
+		annotationMembers, err := mcpparser.DecodeJSONObjectMembers(rawAnnotations)
+		if err != nil {
+			return fmt.Errorf("decoding annotations of tools item at index %d: %w", i, err)
+		}
+		for _, name := range toolAnnotationMembers {
+			if _, _, err := mcpparser.UniqueCanonicalMember(annotationMembers, name); err != nil {
+				return fmt.Errorf("annotations of tools item at index %d: %w", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// filteredListResponse builds the response for a filtered tools, prompts, or
+// resources list. The list member is rewritten to the permitted raw
+// descriptors. The permitted list depends on the caller's authorization, so a
+// cacheScope or ttlMs member the backend sent is replaced with "private" or 0,
+// marking the result private and immediately stale in place of the backend's
+// caching hints for its unfiltered list. A caching hint the backend omitted
+// stays absent, so a result from a backend that predates these members keeps
+// its shape. Every other result member (resultType, _meta, nextCursor, and any
+// extension) is kept exactly as the backend sent it.
+func filteredListResponse(
+	id jsonrpc2.ID,
+	members []mcpparser.JSONObjectMember,
+	listField string,
+	permitted []json.RawMessage,
+) (*jsonrpc2.Response, error) {
+	replacements := map[string]json.RawMessage{
+		listField:    mcpparser.EncodeJSONArrayValues(nil, permitted),
+		"cacheScope": json.RawMessage(`"private"`),
+		"ttlMs":      json.RawMessage(`0`),
 	}
 
-	// Marshal the filtered result back
-	filteredResultData, err := json.Marshal(filteredResult)
+	filteredResult, err := mcpparser.EncodeJSONObjectMembers(nil, members, replacements)
 	if err != nil {
 		return nil, err
 	}
-
-	// Create a new response with the filtered result
-	filteredResponse := &jsonrpc2.Response{
-		ID:     response.ID,
-		Result: json.RawMessage(filteredResultData),
-	}
-
-	return filteredResponse, nil
+	return &jsonrpc2.Response{
+		ID:     id,
+		Result: json.RawMessage(filteredResult),
+	}, nil
 }
 
 // filterResourceTemplatesResponse filters resource templates based on
@@ -956,26 +1087,26 @@ func (rfw *ResponseFilteringWriter) filterResourceTemplatesResponse(
 func decodeResourceTemplatesListResult(
 	data json.RawMessage,
 ) (map[string]json.RawMessage, []json.RawMessage, []string, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("decoding resource templates list response: %w", err)
 	}
 	result := make(map[string]json.RawMessage, len(members)+2)
 	for _, member := range members {
-		result[member.name] = member.value
+		result[member.Name] = member.Value
 	}
 
-	rawTemplates, ok, err := uniqueCanonicalMember(members, "resourceTemplates")
+	rawTemplates, ok, err := mcpparser.UniqueCanonicalMember(members, "resourceTemplates")
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if !ok {
 		return nil, nil, nil, errors.New("resource templates list result is missing resourceTemplates")
 	}
-	if _, _, err := uniqueCanonicalMember(members, "cacheScope"); err != nil {
+	if _, _, err := mcpparser.UniqueCanonicalMember(members, "cacheScope"); err != nil {
 		return nil, nil, nil, err
 	}
-	if _, _, err := uniqueCanonicalMember(members, "ttlMs"); err != nil {
+	if _, _, err := mcpparser.UniqueCanonicalMember(members, "ttlMs"); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -999,46 +1130,57 @@ func decodeResourceTemplatesListResult(
 // which could make authorization inspect a different list or identifier than
 // a client consuming the response.
 func validateListResult(data json.RawMessage, listField, identifierField string) error {
-	members, err := decodeJSONObjectMembers(data)
+	_, _, err := decodeListResult(data, listField, identifierField)
+	return err
+}
+
+// decodeListResult applies validateListResult's checks and returns the
+// result's members in their original order along with the raw list items, so
+// a filter can drop items without re-encoding anything else in the result.
+func decodeListResult(
+	data json.RawMessage,
+	listField, identifierField string,
+) ([]mcpparser.JSONObjectMember, []json.RawMessage, error) {
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	rawItems, ok, err := uniqueCanonicalMember(members, listField)
+	rawItems, ok, err := mcpparser.UniqueCanonicalMember(members, listField)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if !ok {
-		return fmt.Errorf("result is missing %q", listField)
+		return nil, nil, fmt.Errorf("result is missing %q", listField)
 	}
 
 	var items []json.RawMessage
 	if err := json.Unmarshal(rawItems, &items); err != nil {
-		return fmt.Errorf("decoding %s: %w", listField, err)
+		return nil, nil, fmt.Errorf("decoding %s: %w", listField, err)
 	}
 	if items == nil {
-		return fmt.Errorf("field %q must be an array", listField)
+		return nil, nil, fmt.Errorf("field %q must be an array", listField)
 	}
 	for i, item := range items {
-		itemMembers, err := decodeJSONObjectMembers(item)
+		itemMembers, err := mcpparser.DecodeJSONObjectMembers(item)
 		if err != nil {
-			return fmt.Errorf("decoding %s item at index %d: %w", listField, i, err)
+			return nil, nil, fmt.Errorf("decoding %s item at index %d: %w", listField, i, err)
 		}
-		rawIdentifier, ok, err := uniqueCanonicalMember(itemMembers, identifierField)
+		rawIdentifier, ok, err := mcpparser.UniqueCanonicalMember(itemMembers, identifierField)
 		if err != nil {
-			return fmt.Errorf("%s item at index %d: %w", listField, i, err)
+			return nil, nil, fmt.Errorf("%s item at index %d: %w", listField, i, err)
 		}
 		if !ok {
-			return fmt.Errorf("%s item at index %d is missing %q", listField, i, identifierField)
+			return nil, nil, fmt.Errorf("%s item at index %d is missing %q", listField, i, identifierField)
 		}
 		var identifier *string
 		if err := json.Unmarshal(rawIdentifier, &identifier); err != nil {
-			return fmt.Errorf("%s item at index %d has an invalid %s: %w", listField, i, identifierField, err)
+			return nil, nil, fmt.Errorf("%s item at index %d has an invalid %s: %w", listField, i, identifierField, err)
 		}
 		if identifier == nil {
-			return fmt.Errorf("%s item at index %d is missing a string %s", listField, i, identifierField)
+			return nil, nil, fmt.Errorf("%s item at index %d is missing a string %s", listField, i, identifierField)
 		}
 	}
-	return nil
+	return members, items, nil
 }
 
 // decodeResourceTemplateURIs validates every descriptor before any
@@ -1047,11 +1189,11 @@ func validateListResult(data json.RawMessage, listField, identifierField string)
 func decodeResourceTemplateURIs(resourceTemplates []json.RawMessage) ([]string, error) {
 	uriTemplates := make([]string, len(resourceTemplates))
 	for i, rawTemplate := range resourceTemplates {
-		descriptorMembers, err := decodeJSONObjectMembers(rawTemplate)
+		descriptorMembers, err := mcpparser.DecodeJSONObjectMembers(rawTemplate)
 		if err != nil {
 			return nil, fmt.Errorf("decoding resource template at index %d: %w", i, err)
 		}
-		rawURITemplate, ok, err := uniqueCanonicalMember(descriptorMembers, "uriTemplate")
+		rawURITemplate, ok, err := mcpparser.UniqueCanonicalMember(descriptorMembers, "uriTemplate")
 		if err != nil {
 			return nil, fmt.Errorf("resource template at index %d: %w", i, err)
 		}
@@ -1070,82 +1212,39 @@ func decodeResourceTemplateURIs(resourceTemplates []json.RawMessage) ([]string, 
 	return uriTemplates, nil
 }
 
-type jsonObjectMember struct {
-	name  string
-	value json.RawMessage
-}
-
-// decodeJSONObjectMembers retains object member order and duplicates so
-// security-sensitive keys can be validated before encoding/json's usual
-// case-insensitive matching or last-value-wins behavior can hide them.
-func decodeJSONObjectMembers(data []byte) ([]jsonObjectMember, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	opening, err := decoder.Token()
-	if err != nil {
-		return nil, err
-	}
-	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
-		return nil, errors.New("value must be an object")
-	}
-
-	members := make([]jsonObjectMember, 0)
-	for decoder.More() {
-		nameToken, err := decoder.Token()
-		if err != nil {
-			return nil, err
-		}
-		name, ok := nameToken.(string)
-		if !ok {
-			return nil, errors.New("object member name must be a string")
-		}
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return nil, err
-		}
-		members = append(members, jsonObjectMember{name: name, value: value})
-	}
-
-	closing, err := decoder.Token()
-	if err != nil {
-		return nil, err
-	}
-	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
-		return nil, errors.New("unterminated object")
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("unexpected data after object")
-		}
-		return nil, err
-	}
-	return members, nil
-}
-
-// uniqueCanonicalMember returns the value of canonical when it occurs exactly
-// once. Case-folded aliases are rejected because common Go JSON decoders may
-// treat them as the canonical field and select a different value than the one
-// used for authorization or filtering.
-func uniqueCanonicalMember(
-	members []jsonObjectMember,
-	canonical string,
-) (json.RawMessage, bool, error) {
-	var value json.RawMessage
-	found := false
-	for _, member := range members {
-		if !strings.EqualFold(member.name, canonical) {
+// jsonMemberNames returns the object member names that encoding/json matches
+// to the fields of the struct type t: each field's json tag name, else its Go
+// field name, skipping unexported fields and fields tagged "-", with the fields
+// of untagged embedded structs promoted. It does not apply encoding/json's
+// fallback for invalid tag names or its precedence rules for conflicting
+// names, so it suits only struct types that use neither, such as
+// mcp.ToolAnnotation.
+func jsonMemberNames(t reflect.Type) []string {
+	var names []string
+	for i := range t.NumField() {
+		field := t.Field(i)
+		tag := field.Tag.Get("json")
+		if tag == "-" {
 			continue
 		}
-		if member.name != canonical {
-			return nil, false, fmt.Errorf("field %q has non-canonical alias %q", canonical, member.name)
+		name, _, _ := strings.Cut(tag, ",")
+		fieldType := field.Type
+		if fieldType.Kind() == reflect.Pointer {
+			fieldType = fieldType.Elem()
 		}
-		if found {
-			return nil, false, fmt.Errorf("field %q occurs more than once", canonical)
+		if field.Anonymous && name == "" && fieldType.Kind() == reflect.Struct {
+			names = append(names, jsonMemberNames(fieldType)...)
+			continue
 		}
-		value = member.value
-		found = true
+		if !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		names = append(names, name)
 	}
-	return value, found, nil
+	return names
 }
 
 // filterSkillsResponse filters skills/list entries by get_skill authorization.
@@ -1208,6 +1307,13 @@ func (rfw *ResponseFilteringWriter) filterSkillsResponse(response *jsonrpc2.Resp
 // correlate the error with its request.
 func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error) []byte {
 	slog.Error("error filtering response", "method", rfw.method, "error", err)
+	return encodeErrorBody(id)
+}
+
+// encodeErrorBody encodes the generic JSON-RPC internal error without logging.
+// Callers that have already reported the reason themselves use this, so one
+// rejection does not produce two log lines describing it.
+func encodeErrorBody(id jsonrpc2.ID) []byte {
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
 		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, "internal error"),
@@ -1235,6 +1341,20 @@ func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error)
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
 	_, writeErr := rfw.ResponseWriter.Write(rfw.errorResponseBody(id, err))
+	return writeErr
+}
+
+// writeRejectionBody writes the JSON-RPC error that replaces a content-encoded
+// body the filter refused. rejectEncodedResponse has already logged the reason
+// at WARN and named the encoding, so nothing is logged again here.
+//
+// Unlike writeErrorResponse this is safe to reach after Flush() has committed
+// the headers, which is the case for a flushed event stream: Flush calls
+// rejectEncodedResponse first, so the head it commits is already the 500 with
+// the JSON media type, and the WriteHeader below is the no-op it should be.
+func (rfw *ResponseFilteringWriter) writeRejectionBody(id jsonrpc2.ID) error {
+	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
+	_, writeErr := rfw.ResponseWriter.Write(encodeErrorBody(id))
 	return writeErr
 }
 
@@ -1309,15 +1429,15 @@ func (rfw *ResponseFilteringWriter) filterFindToolResponse(response *jsonrpc2.Re
 
 type findToolOutputCarrier struct {
 	contentIndex   int
-	contentMembers []jsonObjectMember
+	contentMembers []mcpparser.JSONObjectMember
 	rawOutput      json.RawMessage
-	outputMembers  []jsonObjectMember
+	outputMembers  []mcpparser.JSONObjectMember
 	rawTools       []json.RawMessage
 	output         optimizer.FindToolOutput
 }
 
 type decodedFindToolCallResult struct {
-	members           []jsonObjectMember
+	members           []mcpparser.JSONObjectMember
 	content           []json.RawMessage
 	isError           bool
 	outputs           []findToolOutputCarrier
@@ -1325,7 +1445,7 @@ type decodedFindToolCallResult struct {
 }
 
 type findToolCallResultEnvelope struct {
-	members       []jsonObjectMember
+	members       []mcpparser.JSONObjectMember
 	content       []json.RawMessage
 	isError       bool
 	rawStructured json.RawMessage
@@ -1374,23 +1494,23 @@ func decodeFindToolCallResult(data json.RawMessage) (*decodedFindToolCallResult,
 }
 
 func decodeFindToolCallResultEnvelope(data json.RawMessage) (*findToolCallResultEnvelope, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, err
 	}
 
-	rawContent, ok, err := uniqueCanonicalMember(members, "content")
+	rawContent, ok, err := mcpparser.UniqueCanonicalMember(members, "content")
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, errors.New("find_tool result is missing content")
 	}
-	rawIsError, hasIsError, err := uniqueCanonicalMember(members, "isError")
+	rawIsError, hasIsError, err := mcpparser.UniqueCanonicalMember(members, "isError")
 	if err != nil {
 		return nil, err
 	}
-	rawStructured, hasStructured, err := uniqueCanonicalMember(members, "structuredContent")
+	rawStructured, hasStructured, err := mcpparser.UniqueCanonicalMember(members, "structuredContent")
 	if err != nil {
 		return nil, err
 	}
@@ -1425,11 +1545,11 @@ func decodeFindToolCallResultEnvelope(data json.RawMessage) (*findToolCallResult
 }
 
 func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutputCarrier, bool, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, false, fmt.Errorf("decoding find_tool content at index %d: %w", index, err)
 	}
-	rawType, ok, err := uniqueCanonicalMember(members, "type")
+	rawType, ok, err := mcpparser.UniqueCanonicalMember(members, "type")
 	if err != nil {
 		return nil, false, fmt.Errorf("find_tool content at index %d: %w", index, err)
 	}
@@ -1444,7 +1564,7 @@ func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutput
 		return nil, false, nil
 	}
 
-	rawText, ok, err := uniqueCanonicalMember(members, "text")
+	rawText, ok, err := mcpparser.UniqueCanonicalMember(members, "text")
 	if err != nil {
 		return nil, false, fmt.Errorf("find_tool text content at index %d: %w", index, err)
 	}
@@ -1472,14 +1592,14 @@ func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutput
 // object or does not contain a tools member. A tools-bearing object is always
 // validated strictly and decoded into the concrete output type.
 func decodeFindToolOutput(data json.RawMessage) (*findToolOutputCarrier, bool, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		if trimmed := bytes.TrimSpace(data); len(trimmed) != 0 && trimmed[0] == '{' {
 			return nil, false, fmt.Errorf("decoding tools-bearing object: %w", err)
 		}
 		return nil, false, nil
 	}
-	rawToolsValue, ok, err := uniqueCanonicalMember(members, "tools")
+	rawToolsValue, ok, err := mcpparser.UniqueCanonicalMember(members, "tools")
 	if err != nil {
 		return nil, false, err
 	}
@@ -1492,6 +1612,9 @@ func decodeFindToolOutput(data json.RawMessage) (*findToolOutputCarrier, bool, e
 	var rawTools []json.RawMessage
 	if err := json.Unmarshal(rawToolsValue, &rawTools); err != nil {
 		return nil, false, fmt.Errorf("decoding raw find_tool tools: %w", err)
+	}
+	if err := validateToolAnnotations(rawTools); err != nil {
+		return nil, false, err
 	}
 
 	var output optimizer.FindToolOutput
@@ -1532,7 +1655,8 @@ func (result *decodedFindToolCallResult) withFilteredToolIndexes(indexes []int) 
 	if err != nil {
 		return nil, err
 	}
-	filteredTextContent, err := encodeJSONObjectMembers(
+	filteredTextContent, err := mcpparser.EncodeJSONObjectMembers(
+		nil,
 		textCarrier.contentMembers,
 		map[string]json.RawMessage{"text": textValue},
 	)
@@ -1553,7 +1677,7 @@ func (result *decodedFindToolCallResult) withFilteredToolIndexes(indexes []int) 
 		}
 		replacements["structuredContent"] = filteredStructuredOutput
 	}
-	return encodeJSONObjectMembers(result.members, replacements)
+	return mcpparser.EncodeJSONObjectMembers(nil, result.members, replacements)
 }
 
 func (carrier *findToolOutputCarrier) withFilteredToolIndexes(indexes []int) ([]byte, error) {
@@ -1564,48 +1688,9 @@ func (carrier *findToolOutputCarrier) withFilteredToolIndexes(indexes []int) ([]
 		}
 		filteredTools = append(filteredTools, carrier.rawTools[index])
 	}
-	return encodeJSONObjectMembers(
+	return mcpparser.EncodeJSONObjectMembers(
+		nil,
 		carrier.outputMembers,
-		map[string]json.RawMessage{"tools": encodeJSONArrayValues(filteredTools)},
+		map[string]json.RawMessage{"tools": mcpparser.EncodeJSONArrayValues(nil, filteredTools)},
 	)
-}
-
-func encodeJSONArrayValues(values []json.RawMessage) json.RawMessage {
-	var encoded bytes.Buffer
-	encoded.WriteByte('[')
-	for i, value := range values {
-		if i != 0 {
-			encoded.WriteByte(',')
-		}
-		encoded.Write(value)
-	}
-	encoded.WriteByte(']')
-	return encoded.Bytes()
-}
-
-// encodeJSONObjectMembers replaces canonical values while retaining raw extensions.
-func encodeJSONObjectMembers(
-	members []jsonObjectMember,
-	replacements map[string]json.RawMessage,
-) ([]byte, error) {
-	var encoded bytes.Buffer
-	encoded.WriteByte('{')
-	for i, member := range members {
-		if i != 0 {
-			encoded.WriteByte(',')
-		}
-		name, err := json.Marshal(member.name)
-		if err != nil {
-			return nil, err
-		}
-		encoded.Write(name)
-		encoded.WriteByte(':')
-		value := member.value
-		if replacement, ok := replacements[member.name]; ok {
-			value = replacement
-		}
-		encoded.Write(value)
-	}
-	encoded.WriteByte('}')
-	return encoded.Bytes(), nil
 }

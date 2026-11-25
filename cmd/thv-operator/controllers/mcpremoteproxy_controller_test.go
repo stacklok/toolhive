@@ -16,8 +16,10 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +39,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 // TestMCPRemoteProxyValidateSpec tests the spec validation logic
@@ -415,6 +418,7 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		externalAuth        *mcpv1beta1.MCPExternalAuthConfig
 		interceptorFuncs    *interceptor.Funcs
 		expectError         bool
+		expectValidationErr bool // the error must be a terminal *obo.ValidationError
 		errContains         string
 		expectCondition     bool
 		expectedCondStatus  metav1.ConditionStatus
@@ -529,11 +533,9 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			// Mirror added for #5347: when the referenced MCPExternalAuthConfig
-			// has Status.Conditions[Valid]=False (e.g. obo-typed configs that
-			// the default OBO handler rejected with Reason=EnterpriseRequired
-			// in upstream-only builds), the proxy reconciler must surface a
-			// parallel ExternalAuthConfigValidated=False with the same reason
-			// and message.
+			// has Status.Conditions[Valid]=False, the proxy reconciler must
+			// surface a parallel ExternalAuthConfigValidated=False with the
+			// same reason and message.
 			name: "referenced config Valid=False is mirrored onto the proxy",
 			proxy: v1beta1test.NewMCPRemoteProxy("obo-mirror-proxy", "default",
 				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-config"),
@@ -553,17 +555,54 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					Conditions: []metav1.Condition{{
 						Type:    mcpv1beta1.ConditionTypeValid,
 						Status:  metav1.ConditionFalse,
-						Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-						Message: "on-behalf-of (OBO) external auth type requires an enterprise build",
+						Reason:  testSourceInvalidReason,
+						Message: testSourceInvalidMessage,
 					}},
 				},
 			},
 			expectError:         true,
-			errContains:         "EnterpriseRequired",
+			errContains:         testSourceInvalidReason,
 			expectCondition:     true,
 			expectedCondStatus:  metav1.ConditionFalse,
-			expectedCondReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-			expectedCondMessage: "on-behalf-of (OBO) external auth type requires an enterprise build",
+			expectedCondReason:  testSourceInvalidReason,
+			expectedCondMessage: mirroredConditionMessage("obo-config", testSourceInvalidMessage),
+		},
+		{
+			name: "obo config without incoming OIDC is rejected as InvalidConfig",
+			proxy: v1beta1test.NewMCPRemoteProxy("obo-no-oidc-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-valid")),
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-valid", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
+				},
+			},
+			expectError:         true,
+			expectValidationErr: true,
+			errContains:         "requires incoming authentication",
+			expectCondition:     true,
+			expectedCondStatus:  metav1.ConditionFalse,
+			expectedCondReason:  mcpv1beta1.ConditionReasonInvalidConfig,
+			expectedCondMessage: ctrlutil.MsgOBORequiresIncomingAuth,
+		},
+		{
+			name: "obo config with incoming OIDC is accepted",
+			proxy: v1beta1test.NewMCPRemoteProxy("obo-oidc-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-valid"),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc"}
+				})),
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-valid", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
+				},
+			},
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
 		},
 		{
 			name: "embedded auth server with multiple upstreams rejected",
@@ -624,6 +663,11 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 				assert.Error(t, err)
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				if tt.expectValidationErr {
+					var validationErr *obo.ValidationError
+					require.ErrorAs(t, err, &validationErr,
+						"the rejection must be terminal so Reconcile does not requeue")
 				}
 
 				// Verify condition on in-memory object for error cases
@@ -1027,10 +1071,12 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		proxy         *mcpv1beta1.MCPRemoteProxy
-		pods          []corev1.Pod
-		expectedPhase mcpv1beta1.MCPRemoteProxyPhase
+		name                     string
+		proxy                    *mcpv1beta1.MCPRemoteProxy
+		pods                     []corev1.Pod
+		expectedPhase            mcpv1beta1.MCPRemoteProxyPhase
+		expectedMessage          string
+		expectedConditionMessage string
 	}{
 		{
 			name:  "running pod",
@@ -1044,10 +1090,222 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "proxy", Ready: true},
+						},
 					},
 				},
 			},
 			expectedPhase: mcpv1beta1.MCPRemoteProxyPhaseReady,
+		},
+		{
+			// The readiness probe is what tells us the proxy can serve traffic,
+			// and the pod stays in the Running phase while it keeps failing.
+			name:  "running pod with a container that is not ready",
+			proxy: v1beta1test.NewMCPRemoteProxy("not-ready-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "not-ready-proxy-pod",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("not-ready-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "proxy", Ready: false},
+						},
+					},
+				},
+			},
+			expectedPhase: mcpv1beta1.MCPRemoteProxyPhasePending,
+		},
+		{
+			name:  "running pod in CrashLoopBackOff",
+			proxy: v1beta1test.NewMCPRemoteProxy("crashloop-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "crashloop-proxy-pod",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("crashloop-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{
+										Reason: "CrashLoopBackOff",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedPhase:            mcpv1beta1.MCPRemoteProxyPhaseFailed,
+			expectedMessage:          "Remote proxy failed to start: CrashLoopBackOff",
+			expectedConditionMessage: "Remote proxy failed to start: CrashLoopBackOff",
+		},
+		{
+			// A Ready replica still serves traffic, so a second crash-looping
+			// replica does not take the proxy out of the routable set. This is
+			// the MCPServer verdict too (running is checked before failed).
+			name:  "ready pod next to a crash-looping pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("mixed-ready-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mixed-ready-proxy-pod",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("mixed-ready-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "proxy", Ready: true},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mixed-ready-proxy-crashloop",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("mixed-ready-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedPhase:   mcpv1beta1.MCPRemoteProxyPhaseReady,
+			expectedMessage: "Remote proxy is running",
+		},
+		{
+			// When no replica is ready, a failure outranks a starting pod, the
+			// same order applyMCPServerPhaseFromCounts uses.
+			name:  "pending pod next to a crash-looping pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("mixed-failed-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mixed-failed-proxy-pending",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("mixed-failed-proxy"),
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodPending},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mixed-failed-proxy-crashloop",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("mixed-failed-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedPhase:            mcpv1beta1.MCPRemoteProxyPhaseFailed,
+			expectedMessage:          "Remote proxy failed to start: CrashLoopBackOff",
+			expectedConditionMessage: "Remote proxy failed to start: CrashLoopBackOff",
+		},
+		{
+			// Every distinct failure reason is kept, sorted so the message does
+			// not depend on the order the API server returns the pods in.
+			name:  "multiple failing pods list every reason",
+			proxy: v1beta1test.NewMCPRemoteProxy("multi-failed-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "multi-failed-proxy-crashloop",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("multi-failed-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+								},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "multi-failed-proxy-create",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("multi-failed-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{Reason: "CreateContainerError"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedPhase:            mcpv1beta1.MCPRemoteProxyPhaseFailed,
+			expectedMessage:          "Remote proxy failed to start: CrashLoopBackOff, CreateContainerError",
+			expectedConditionMessage: "Remote proxy failed to start: CrashLoopBackOff, CreateContainerError",
+		},
+		{
+			// Terminating pods are excluded from the counts, the same way the
+			// MCPServer reconciler excludes them, so a rolling update does not
+			// report a proxy that no longer accepts traffic as ready.
+			name:  "terminating pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("terminating-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "terminating-proxy-pod",
+						Namespace:         "default",
+						Labels:            labelsForMCPRemoteProxy("terminating-proxy"),
+						DeletionTimestamp: &metav1.Time{Time: time.Now()},
+						// the fake client requires a finalizer on an object with a
+						// deletion timestamp
+						Finalizers: []string{"test-finalizer"},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "proxy", Ready: true},
+						},
+					},
+				},
+			},
+			expectedPhase: mcpv1beta1.MCPRemoteProxyPhasePending,
 		},
 		{
 			name:  "pending pod",
@@ -1123,6 +1381,14 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 			}, updatedProxy)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedPhase, updatedProxy.Status.Phase)
+			if tt.expectedMessage != "" {
+				assert.Equal(t, tt.expectedMessage, updatedProxy.Status.Message)
+			}
+			if tt.expectedConditionMessage != "" {
+				condition := meta.FindStatusCondition(updatedProxy.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+				require.NotNil(t, condition)
+				assert.Equal(t, tt.expectedConditionMessage, condition.Message)
+			}
 		})
 	}
 }
@@ -1197,6 +1463,203 @@ func TestMCPRemoteProxyReconciler_InvalidUpstreamCABundleIsTerminal(t *testing.T
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
 	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason)
+}
+
+// TestMCPRemoteProxyReconciler_OBOWithoutIncomingAuthIsTerminal drives
+// Reconcile for an MCPRemoteProxy that references a valid obo config but has no
+// oidcConfigRef. The rejection is a spec defect: Reconcile persists it on status
+// and returns an empty result with no error instead of requeueing with backoff.
+// Only a failure to persist that rejection is returned, so the write is retried.
+func TestMCPRemoteProxyReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	statusErr := stderrors.New("simulated status write failure")
+	// failRejectionWrite fails only the status write that records the obo
+	// rejection, so an unrelated earlier write cannot satisfy the assertion.
+	failRejectionWrite := interceptor.Funcs{
+		SubResourceUpdate: func(
+			ctx context.Context, c client.Client, subResource string, obj client.Object,
+			opts ...client.SubResourceUpdateOption,
+		) error {
+			if p, ok := obj.(*mcpv1beta1.MCPRemoteProxy); ok {
+				cond := meta.FindStatusCondition(p.Status.Conditions,
+					mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+				if cond != nil && cond.Reason == mcpv1beta1.ConditionReasonInvalidConfig {
+					return statusErr
+				}
+			}
+			return c.SubResource(subResource).Update(ctx, obj, opts...)
+		},
+	}
+
+	tests := []struct {
+		name        string
+		interceptor *interceptor.Funcs
+		wantErr     error
+	}{
+		{name: "rejection is persisted and not requeued"},
+		{name: "failed status write is retried", interceptor: &failRejectionWrite, wantErr: statusErr},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-config"),
+			)
+			authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  validOBOSpec(),
+				},
+			}
+			scheme := testutil.NewScheme(t)
+			builder := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(proxy, authConfig).
+				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{})
+			if tt.interceptor != nil {
+				builder = builder.WithInterceptorFuncs(*tt.interceptor)
+			}
+			fakeClient := builder.Build()
+			reconciler := &MCPRemoteProxyReconciler{
+				Client: fakeClient, Scheme: scheme, PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(proxy)})
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr, "an unpersisted rejection must be retried, not dropped")
+				return
+			}
+			require.NoError(t, err, "a spec defect must not be returned as an error (that requeues with backoff)")
+			assert.Equal(t, ctrl.Result{}, result)
+
+			actual := &mcpv1beta1.MCPRemoteProxy{}
+			require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(proxy), actual))
+			assert.Equal(t, mcpv1beta1.MCPRemoteProxyPhaseFailed, actual.Status.Phase)
+			ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+			require.NotNil(t, ready)
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			condition := meta.FindStatusCondition(actual.Status.Conditions,
+				mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+			require.NotNil(t, condition, "the rejection must be persisted, not only set in memory")
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, condition.Reason)
+			assert.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, condition.Message)
+		})
+	}
+}
+
+// TestMCPRemoteProxyReconciler_handleExternalAuthConfig_DoesNotFlapLastTransitionTime
+// is the MCPRemoteProxy analogue of the MCPServer guard of the same name:
+// mirrorInvalidOnRemoteProxy's clear branch must leave the healthy True
+// condition and the single-upstream check's failure in place, or
+// handleExternalAuthConfig re-adds them with a fresh LastTransitionTime on
+// every reconcile.
+func TestMCPRemoteProxyReconciler_handleExternalAuthConfig_DoesNotFlapLastTransitionTime(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authName   = "auth"
+		namespace  = "default"
+		configHash = "config-hash"
+		generation = int64(3)
+	)
+
+	healthySource := func() *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: authName, Namespace: namespace},
+			Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeUnauthenticated},
+			Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+				ConfigHash: configHash,
+				Conditions: []metav1.Condition{{
+					Type:   mcpv1beta1.ConditionTypeValid,
+					Status: metav1.ConditionTrue,
+					Reason: "ValidationSucceeded",
+				}},
+			},
+		}
+	}
+	multiUpstreamSource := func() *mcpv1beta1.MCPExternalAuthConfig {
+		source := healthySource()
+		source.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{Name: "first", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				{Name: "second", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+			}},
+		}
+		return source
+	}
+
+	tests := []struct {
+		name        string
+		source      *mcpv1beta1.MCPExternalAuthConfig
+		seeded      metav1.Condition
+		expectError bool
+	}{
+		{
+			name:   "healthy ExternalAuthConfigValid condition",
+			source: healthySource(),
+			seeded: metav1.Condition{
+				Status:  metav1.ConditionTrue,
+				Reason:  mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+				Message: "MCPExternalAuthConfig 'auth' is valid",
+			},
+		},
+		{
+			name:   "multi-upstream failure owned by the single-upstream check",
+			source: multiUpstreamSource(),
+			seeded: metav1.Condition{
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream,
+				Message: "MCPRemoteProxy supports only one upstream provider (found 2); use VirtualMCPServer for multi-upstream",
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Seeded well in the past: metav1.Time has second resolution, so a
+			// remove-then-re-add within one reconcile is only observable against a
+			// timestamp that predates the test run.
+			seeded := tt.seeded
+			seeded.Type = mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated
+			seeded.ObservedGeneration = generation
+			seeded.LastTransitionTime = metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+
+			proxy := v1beta1test.NewMCPRemoteProxy("proxy", namespace,
+				v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef(authName),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+					ExternalAuthConfigHash: configHash,
+					Conditions:             []metav1.Condition{seeded},
+				}),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Generation = generation
+				}),
+			)
+			reconciler, _ := newTestMCPRemoteProxyReconciler(t, proxy, tt.source)
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), proxy)
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			condition := meta.FindStatusCondition(proxy.Status.Conditions,
+				mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+			require.NotNil(t, condition)
+			assert.Equal(t, seeded, *condition,
+				"an unchanged condition must not be removed and re-added with a fresh LastTransitionTime")
+		})
+	}
 }
 
 func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {

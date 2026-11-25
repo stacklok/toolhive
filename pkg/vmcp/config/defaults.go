@@ -89,9 +89,10 @@ func (c *Config) EnsureOperationalDefaults() {
 	_ = mergo.Merge(c.Operational, DefaultOperationalConfig())
 }
 
-// InjectSubjectProviderNames auto-populates SubjectProviderName on every
-// token_exchange, aws_sts, or xaa strategy in cfg.OutgoingAuth that has it
-// unset, when an embedded auth server RunConfig is active.
+// InjectSubjectProviderNames auto-populates the subject provider name on every
+// token_exchange, aws_sts, xaa, or obo strategy in cfg.OutgoingAuth that has it
+// unset (SubjectProviderName, or SubjectTokenProviderName for obo), when an
+// embedded auth server RunConfig is active.
 //
 // This is a defaulting operation: it ensures YAML-based vMCP deployments
 // behave the same as the Kubernetes operator path. Without it a token_exchange
@@ -100,8 +101,8 @@ func (c *Config) EnsureOperationalDefaults() {
 //
 // When cfg or rc is nil, or rc has no upstreams, the call is a no-op. The
 // provider name is derived via authserver.ResolveFirstUpstreamName over
-// rc.Upstreams. For xaa, if more than
-// one upstream is configured and SubjectProviderName is empty, defaulting is
+// rc.Upstreams. For xaa and obo, if more than
+// one upstream is configured and the subject provider name is empty, defaulting is
 // ambiguous and this returns an error wrapping
 // authtypes.ErrAmbiguousSubjectProvider instead of silently defaulting;
 // processing stops at the first error. Strategy structs are replaced via

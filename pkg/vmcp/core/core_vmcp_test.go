@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,7 +84,9 @@ func requireNoOpenFDForPath(t *testing.T, path string) {
 	}
 }
 
-func closeErrorPathAuditConfig(t *testing.T) (*audit.Config, string) {
+// fileAuditConfig returns an audit config that writes to a log file in a
+// per-test temp dir, along with that file's path.
+func fileAuditConfig(t *testing.T) (*audit.Config, string) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "workflow-audit.log")
@@ -151,7 +154,7 @@ func TestNew_CloseReleasesWorkflowAuditLogFile(t *testing.T) {
 		t.Parallel()
 
 		cfg, _ := baseConfig(t)
-		cfg.AuditConfig, _ = closeErrorPathAuditConfig(t)
+		cfg.AuditConfig, _ = fileAuditConfig(t)
 
 		c, err := New(cfg)
 		require.NoError(t, err)
@@ -164,7 +167,7 @@ func TestNew_CloseReleasesWorkflowAuditLogFile(t *testing.T) {
 		t.Parallel()
 
 		cfg, _ := baseConfig(t)
-		cfg.AuditConfig, _ = closeErrorPathAuditConfig(t)
+		cfg.AuditConfig, _ = fileAuditConfig(t)
 
 		c, err := New(cfg)
 		require.NoError(t, err)
@@ -213,7 +216,7 @@ func TestNew_ErrorPathsCloseWorkflowAuditLogFile(t *testing.T) {
 			t.Parallel()
 			cfg, mocks := baseConfig(t)
 			var auditLogPath string
-			cfg.AuditConfig, auditLogPath = closeErrorPathAuditConfig(t)
+			cfg.AuditConfig, auditLogPath = fileAuditConfig(t)
 			tt.mutate(t, cfg, mocks)
 
 			c, err := New(cfg)
@@ -688,7 +691,7 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
 
-	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(6)
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(10)
 	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
 		Resources: []vmcp.Resource{{URI: "file://a", BackendID: "be1"}},
 		ResourceTemplates: []vmcp.ResourceTemplate{
@@ -700,7 +703,7 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 				BackendID:   "be1",
 			},
 		},
-	}, nil).Times(6)
+	}, nil).Times(10)
 
 	c, err := New(cfg)
 	require.NoError(t, err)
@@ -721,6 +724,20 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 	// A URI matching no concrete resource or template still misses.
 	_, err = c.LookupResource(ctx, nil, "db:///users/42")
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+
+	// A URI at the length cap still matches; one byte over is never
+	// template-matched (it would match otherwise) and is not echoed back.
+	atCap := "file:///logs/" + strings.Repeat("a", vmcp.MaxResourceURILength-len("file:///logs/.txt")) + ".txt"
+	require.Len(t, atCap, vmcp.MaxResourceURILength)
+	res, err = c.LookupResource(ctx, nil, atCap)
+	require.NoError(t, err)
+	assert.Equal(t, "be1", res.BackendID)
+
+	over := strings.TrimSuffix(atCap, ".txt") + "a.txt"
+	require.Len(t, over, vmcp.MaxResourceURILength+1)
+	_, err = c.LookupResource(ctx, nil, over)
+	require.ErrorIs(t, err, vmcp.ErrNotFound)
+	assert.Less(t, len(err.Error()), 256, "oversize URI must not be echoed in the error")
 }
 
 func TestClose_Idempotent(t *testing.T) {
@@ -890,4 +907,14 @@ func TestNew_HealthMonitorDisabledWhenNil(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 
 	assert.Nil(t, c.BackendHealth(), "nil HealthMonitorConfig must leave health monitoring disabled")
+}
+
+func TestTemplateMatches_URILengthCap(t *testing.T) {
+	t.Parallel()
+
+	const tmpl = "file:///{+path}"
+	prefix := "file:///"
+
+	assert.True(t, templateMatches(tmpl, prefix+strings.Repeat("a", vmcp.MaxResourceURILength-len(prefix))))
+	assert.False(t, templateMatches(tmpl, prefix+strings.Repeat("a", vmcp.MaxResourceURILength)))
 }

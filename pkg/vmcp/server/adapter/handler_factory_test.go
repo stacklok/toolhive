@@ -90,6 +90,29 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 			},
 		},
 		{
+			name:     "result without structuredContent leaves the field unset",
+			toolName: "test_tool",
+			setupMocks: func(mockRouter *routermocks.MockRouter, mockClient *vmcpmocks.MockBackendClient) {
+				target := &vmcp.BackendTarget{WorkloadID: "backend1", BaseURL: "http://backend1:8080"}
+				mockRouter.EXPECT().RouteTool(gomock.Any(), "test_tool").Return(target, nil)
+				mockClient.EXPECT().
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{}, gomock.Any(), gomock.Any()).
+					Return(&vmcp.ToolCallResult{
+						Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "plain"}},
+					}, nil)
+			},
+			request: mcp.CallToolRequest{
+				Params: mcp.CallToolParams{Name: "test_tool", Arguments: map[string]any{}},
+			},
+			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				// A typed nil map stored in the `any` field would be non-nil and
+				// encode as "structuredContent": null. Compare with == nil:
+				// assert.Nil treats a typed nil map as nil and would not catch it.
+				assert.True(t, result.StructuredContent == nil, "got %#v", result.StructuredContent)
+			},
+		},
+		{
 			name:     "routing error returns error result for tool not found",
 			toolName: "nonexistent_tool",
 			setupMocks: func(mockRouter *routermocks.MockRouter, _ *vmcpmocks.MockBackendClient) {

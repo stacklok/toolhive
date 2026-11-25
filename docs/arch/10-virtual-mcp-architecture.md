@@ -634,6 +634,31 @@ The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates
 
 The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.
 
+### Tool call results: `structuredContent` passthrough
+
+A backend tool call result reaches the client with the backend's `content`
+array and, only when the backend sent one, its `structuredContent` object, on
+both the Legacy and the Modern edge. vMCP does not synthesize
+`structuredContent` from `content`: a result without it is returned without
+it, and the member is omitted rather than sent as `null`. A `structuredContent`
+that is not a JSON object (the spec requires one) is dropped. The Modern edge
+also omits an empty object (`{}`); the Legacy edge forwards it. Clients therefore
+never see a shape the backend did not produce, such as `{"text": "<string>"}`
+for a text result or a second copy of a file's base64 payload. In code mode, an
+inner tool call that returns JSON text without `structuredContent` gives the
+script the parsed JSON.
+
+Composite tool workflows are unchanged. When a step's backend result has no
+`structuredContent`, the workflow engine builds the step output from `content`
+itself (`conversion.ContentArrayToMap`), so `{{.steps.<id>.output.text}}` and
+`{{.steps.<id>.content.text}}` keep working; that map stays internal to the
+workflow.
+
+**Implementation**: `pkg/vmcp/client/client.go` (`toolResultFromMCP`),
+`pkg/vmcp/session/internal/backend/mcp_session.go` (`CallTool`),
+`pkg/vmcp/conversion/content.go` (`ToMCPStructuredContent`),
+`pkg/vmcp/composer/workflow_engine.go` (step output fallback)
+
 ### Served MCP revisions: the Modern capability gate
 
 vMCP serves two client-facing MCP revisions: **Legacy** (2025-11-25, the SDK

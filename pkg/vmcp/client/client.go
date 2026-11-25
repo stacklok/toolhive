@@ -2028,26 +2028,20 @@ func toolResultFromMCP(
 	// Convert MCP content to vmcp.Content array.
 	contentArray := conversion.ConvertMCPContents(result.Content)
 
-	// Check for structured content first (preferred for composite tool step chaining).
-	// StructuredContent allows templates to access nested fields directly via {{.steps.stepID.output.field}}.
-	// Note: StructuredContent must be an object (map). Arrays or primitives are not supported.
+	// Keep structuredContent only when the backend sent one, and only when it is an
+	// object (the spec requires one; vmcp.ToolCallResult.StructuredContent is a map).
+	// Nothing is synthesized from Content here: this result also reaches clients on
+	// plain pass-through calls, and composite workflows build their own step-output
+	// map from Content when StructuredContent is nil.
 	var structuredContent map[string]any
 	if result.StructuredContent != nil {
 		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
-			slog.Debug("using structured content from tool", "tool", toolName, "backend", backendID)
+			logger.Debug("using structured content from tool", "tool", toolName, "backend", backendID)
 			structuredContent = structuredMap
 		} else {
-			// StructuredContent is not an object - fall through to Content processing
-			slog.Debug("structuredContent is not an object, falling back to Content",
+			logger.Debug("dropping structuredContent that is not an object",
 				"tool", toolName, "backend", backendID)
 		}
-	}
-
-	// If no structured content, convert result contents to a map for backward compatibility.
-	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.).
-	// Text content is stored under "text" key, accessible via {{.steps.stepID.output.text}}.
-	if structuredContent == nil {
-		structuredContent = conversion.ContentArrayToMap(contentArray)
 	}
 
 	return &vmcp.ToolCallResult{

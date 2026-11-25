@@ -502,6 +502,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.K8sPodTemplatePatch,
 			r.Config.IsolateNetwork,
 			r.Config.AllowDockerGateway,
+			r.Config.ReadOnlyRootfs,
 			r.Config.IgnoreConfig,
 			r.Config.Host,
 			r.Config.TargetPort,

@@ -5,22 +5,27 @@ package registration
 
 import (
 	"testing"
+	"time"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestNewSPIFFEClient(t *testing.T) {
 	t.Parallel()
 
 	scopes := []string{"openid"}
-	audiences := []string{"https://api.example.com"}
 	resources := []string{"https://resource.example.com"}
-	client, err := NewSPIFFEClient("spiffe-client", scopes, audiences, resources)
+	grants := []string{oauthproto.GrantTypeTokenExchange}
+	client, err := NewSPIFFEClient("spiffe-client", grants, scopes, resources)
 	require.NoError(t, err)
 
+	grants[0] = "changed"
 	scopes[0] = "changed"
-	audiences[0] = "changed"
 	resources[0] = "changed"
 
 	assert.Equal(t, "spiffe-client", client.GetID())
@@ -28,62 +33,97 @@ func TestNewSPIFFEClient(t *testing.T) {
 	assert.Nil(t, client.GetRedirectURIs())
 	assert.Nil(t, client.GetResponseTypes())
 	assert.False(t, client.IsPublic())
-	assert.Equal(t, "urn:ietf:params:oauth:grant-type:token-exchange", client.GetGrantTypes()[0])
+	assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, []string(client.GetGrantTypes()))
 	assert.Equal(t, "openid", client.GetScopes()[0])
-	assert.Equal(t, []string{"https://api.example.com"}, client.Audiences())
-	assert.Equal(t, []string{"https://api.example.com"}, []string(client.GetAudience()))
+	assert.Nil(t, client.GetAudience())
 	assert.Equal(t, []string{"https://resource.example.com"}, client.Resources())
 
+	client.GetGrantTypes()[0] = "mutated"
 	client.GetScopes()[0] = "mutated"
-	client.Audiences()[0] = "mutated"
-	client.GetAudience()[0] = "mutated"
 	client.Resources()[0] = "mutated"
+	assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, []string(client.GetGrantTypes()))
 	assert.Equal(t, "openid", client.GetScopes()[0])
-	assert.Equal(t, []string{"https://api.example.com"}, client.Audiences())
-	assert.Equal(t, []string{"https://api.example.com"}, []string(client.GetAudience()))
 	assert.Equal(t, []string{"https://resource.example.com"}, client.Resources())
 
-	_, err = NewSPIFFEClient("disabled-exchange", nil, nil, nil)
+	_, err = NewSPIFFEClient("disabled-exchange", []string{oauthproto.GrantTypeTokenExchange}, nil, nil)
 	require.Error(t, err)
 }
 
-// TestNewSPIFFEClient_DisjointAudiencesAndResources proves audiences and
-// resources are independently tracked, not aliases of the same underlying
-// field: a client configured with disjoint allowlists must return each list
-// unmodified by the other, and GetAudience (the RFC 8693 audience allowlist)
-// must never leak the RFC 8707 resource allowlist or vice versa.
-func TestNewSPIFFEClient_DisjointAudiencesAndResources(t *testing.T) {
+func TestNewSPIFFEClient_Validation(t *testing.T) {
 	t.Parallel()
 
-	client, err := NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		[]string{"https://audience.example.com"},
-		[]string{"https://resource.example.com"},
-	)
+	const tokenExchange = oauthproto.GrantTypeTokenExchange
+	tests := []struct {
+		name    string
+		id      string
+		grants  []string
+		scopes  []string
+		wantErr string
+	}{
+		{name: "missing ID", wantErr: "SPIFFE client ID is required"},
+		{
+			name: "missing grant types", id: "spiffe-client", scopes: []string{"openid"},
+			wantErr: "SPIFFE client grant types are required",
+		},
+		{
+			name: "missing scopes", id: "spiffe-client", grants: []string{tokenExchange},
+			wantErr: "SPIFFE client scopes are required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client, err := NewSPIFFEClient(tt.id, tt.grants, tt.scopes, nil)
+			require.EqualError(t, err, tt.wantErr)
+			assert.Nil(t, client)
+		})
+	}
+}
+
+func TestNewAuthenticatedSPIFFEClient(t *testing.T) {
+	t.Parallel()
+
+	static, err := NewSPIFFEClient("client", []string{oauthproto.GrantTypeTokenExchange},
+		[]string{"openid"}, []string{"https://resource.example.com"})
 	require.NoError(t, err)
+	id := spiffeid.RequireFromString("spiffe://example.org/workload/concrete")
+	expiry := time.Now().Add(time.Hour)
 
-	assert.Equal(t, []string{"https://audience.example.com"}, []string(client.GetAudience()))
-	assert.Equal(t, []string{"https://resource.example.com"}, client.Resources())
-	assert.NotContains(t, client.GetAudience(), "https://resource.example.com")
-	assert.NotContains(t, client.Resources(), "https://audience.example.com")
-}
-
-func TestNewSPIFFEClient_RequiresID(t *testing.T) {
-	t.Parallel()
-
-	_, err := NewSPIFFEClient("", nil, nil, nil)
-	require.Error(t, err)
-}
-
-func TestNewSPIFFEClient_RequiresAudiences(t *testing.T) {
-	t.Parallel()
-
-	_, err := NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		nil,
-		nil,
-	)
-	require.EqualError(t, err, "SPIFFE client scopes and audiences are required")
+	tests := []struct {
+		name    string
+		client  *SPIFFEClient
+		id      spiffeid.ID
+		method  spiffeauth.SPIFFEAuthenticationMethod
+		expiry  time.Time
+		wantErr string
+	}{
+		{name: "JWT", client: static, id: id, method: spiffeauth.SPIFFEAuthenticationMethodJWT, expiry: expiry},
+		{name: "X.509", client: static, id: id, method: spiffeauth.SPIFFEAuthenticationMethodX509, expiry: expiry},
+		{name: "nil client", id: id, method: spiffeauth.SPIFFEAuthenticationMethodJWT, expiry: expiry, wantErr: "SPIFFE client is required"},
+		{name: "zero ID", client: static, method: spiffeauth.SPIFFEAuthenticationMethodJWT, expiry: expiry, wantErr: "SPIFFE ID is required"},
+		{name: "unknown method", client: static, id: id, method: "unknown", expiry: expiry, wantErr: "unknown SPIFFE authentication method"},
+		{name: "zero expiry", client: static, id: id, method: spiffeauth.SPIFFEAuthenticationMethodJWT, wantErr: "credential expiry is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := NewAuthenticatedSPIFFEClient(tt.client, tt.id, tt.method, tt.expiry)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, id, got.SPIFFEID())
+			assert.Equal(t, tt.method, got.AuthenticationMethod())
+			assert.Equal(t, expiry, got.CredentialExpiry())
+			assert.Equal(t, static.GetID(), got.GetID())
+			assert.Equal(t, static.GetGrantTypes(), got.GetGrantTypes())
+			assert.Equal(t, static.GetScopes(), got.GetScopes())
+			assert.Equal(t, []string{"https://resource.example.com"}, got.Resources())
+			assert.Nil(t, got.GetAudience())
+			assert.False(t, got.IsPublic())
+			assert.True(t, BackChannelOnly(got))
+		})
+	}
 }

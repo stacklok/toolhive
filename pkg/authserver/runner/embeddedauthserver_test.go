@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1395,7 +1396,169 @@ func minimalRunnerConsentConfig(issuer string) *authserver.RunConfig {
 	}
 }
 
-func TestEmbeddedAuthServer_AuthorizationDetailsRegistryRequiresTokenExchange(t *testing.T) {
+func TestEmbeddedAuthServer_AuthorizationDetailsRegistryReachability(t *testing.T) {
+	t.Parallel()
+
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		"example": {
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	constructors := []struct {
+		name      string
+		construct func(*testing.T, context.Context, *authserver.RunConfig, ...EmbeddedAuthServerOption) (*EmbeddedAuthServer, error)
+	}{
+		{
+			name: "NewEmbeddedAuthServer",
+			construct: func(
+				_ *testing.T, ctx context.Context, cfg *authserver.RunConfig, opts ...EmbeddedAuthServerOption,
+			) (*EmbeddedAuthServer, error) {
+				return NewEmbeddedAuthServer(ctx, cfg, opts...)
+			},
+		},
+		{
+			name: "NewEmbeddedAuthServerWithStorage",
+			construct: func(
+				t *testing.T, ctx context.Context, cfg *authserver.RunConfig, opts ...EmbeddedAuthServerOption,
+			) (*EmbeddedAuthServer, error) {
+				t.Helper()
+				stor := storage.NewMemoryStorage()
+				t.Cleanup(func() { require.NoError(t, stor.Close()) })
+				return NewEmbeddedAuthServerWithStorage(ctx, cfg, stor, opts...)
+			},
+		},
+	}
+
+	cases := []struct {
+		name   string
+		grants *authserver.InboundGrantsRunConfig
+		// refused rows use an OIDC upstream whose discovery endpoint counts requests.
+		refused        bool
+		trustedIssuers []tokenexchange.TrustedIssuer
+	}{
+		{
+			// An explicit, empty inbound grants block leaves token exchange off.
+			name:    "token exchange off",
+			grants:  &authserver.InboundGrantsRunConfig{},
+			refused: true,
+		},
+		{
+			// No inbound grants block keeps the legacy default: token exchange on.
+			name:   "token exchange on by default",
+			grants: nil,
+		},
+		{
+			name: "token exchange on explicitly",
+			grants: &authserver.InboundGrantsRunConfig{
+				TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
+			},
+		},
+		{
+			// ID-JAG redemption reads the registry for the claim.
+			name:           "token exchange off, ID-JAG redemption on",
+			grants:         jwtBearerOnlyGrants(tokenexchange.JWTBearerAssertionTypeIDJAG),
+			trustedIssuers: jwtBearerTrustedIssuers(),
+		},
+		{
+			// The plain RFC 7523 grant refuses the claim and never reads the
+			// registry.
+			name:           "token exchange off, plain JWT-bearer grant only",
+			grants:         jwtBearerOnlyGrants(tokenexchange.JWTBearerAssertionTypeJWTBearer),
+			trustedIssuers: jwtBearerTrustedIssuers(),
+			refused:        true,
+		},
+	}
+
+	for _, ctor := range constructors {
+		for _, tc := range cases {
+			t.Run(ctor.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				var discoveryRequests atomic.Int32
+				upstreamServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					discoveryRequests.Add(1)
+				}))
+				t.Cleanup(upstreamServer.Close)
+
+				upstream := authserver.UpstreamRunConfig{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "http://localhost:8080/oauth/callback",
+					},
+				}
+				if tc.refused {
+					upstream = authserver.UpstreamRunConfig{
+						Name: "test-upstream",
+						Type: authserver.UpstreamProviderTypeOIDC,
+						OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+							IssuerURL:         upstreamServer.URL,
+							ClientID:          "test-client-id",
+							RedirectURI:       "http://localhost:8080/oauth/callback",
+							InsecureAllowHTTP: true,
+						},
+					}
+				}
+				cfg := &authserver.RunConfig{
+					SchemaVersion:    authserver.CurrentSchemaVersion,
+					Issuer:           "http://localhost:8080",
+					Upstreams:        []authserver.UpstreamRunConfig{upstream},
+					AllowedAudiences: []string{"https://mcp.example.com"},
+					InboundGrants:    tc.grants,
+					TrustedIssuers:   tc.trustedIssuers,
+				}
+
+				server, err := ctor.construct(t, context.Background(), cfg, WithAuthorizationDetailsRegistry(registry))
+				if !tc.refused {
+					require.NoError(t, err)
+					require.NotNil(t, server)
+					t.Cleanup(func() { _ = server.Close() })
+					return
+				}
+				require.ErrorIs(t, err, authserver.ErrAuthorizationDetailsRegistryUnreachable)
+				assert.Nil(t, server)
+				assert.ErrorContains(t, err, "authorization details registry requires token exchange or ID-JAG redemption to be enabled")
+				assert.Zero(t, discoveryRequests.Load(), "the check must run before upstream discovery")
+			})
+		}
+	}
+}
+
+// jwtBearerOnlyGrants enables the JWT-bearer grant for the trusted issuer
+// "idp", accepting the given assertion types, and leaves token exchange off.
+func jwtBearerOnlyGrants(types ...tokenexchange.JWTBearerAssertionType) *authserver.InboundGrantsRunConfig {
+	return &authserver.InboundGrantsRunConfig{
+		JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
+			IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+				IssuerRef:              "idp",
+				MaxAssertionAge:        "5m",
+				AcceptedAssertionTypes: types,
+				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+					Subject:          "workload",
+					AllowedResources: []string{"https://mcp.example.com"},
+				}},
+			}},
+		},
+	}
+}
+
+func jwtBearerTrustedIssuers() []tokenexchange.TrustedIssuer {
+	return []tokenexchange.TrustedIssuer{{Name: "idp", IssuerURL: "https://idp.example.com"}}
+}
+
+// TestValidateAuthorizationDetailsRegistryForRunConfig pins the early check in
+// NewEmbeddedAuthServer on its own: the constructor test above would still pass
+// without it, because newEmbeddedAuthServerWithStorage refuses the same config
+// later, after storage has been created.
+func TestValidateAuthorizationDetailsRegistryForRunConfig(t *testing.T) {
 	t.Parallel()
 
 	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
@@ -1409,55 +1572,60 @@ func TestEmbeddedAuthServer_AuthorizationDetailsRegistryRequiresTokenExchange(t 
 	require.NoError(t, err)
 
 	tests := []struct {
-		name      string
-		construct func(context.Context, *authserver.RunConfig, ...EmbeddedAuthServerOption) (*EmbeddedAuthServer, error)
+		name           string
+		registry       *authorizationdetails.Registry
+		grants         *authserver.InboundGrantsRunConfig
+		trustedIssuers []tokenexchange.TrustedIssuer
+		wantErr        error
 	}{
-		{name: "NewEmbeddedAuthServer", construct: NewEmbeddedAuthServer},
 		{
-			name: "NewEmbeddedAuthServerWithStorage",
-			construct: func(
-				ctx context.Context, cfg *authserver.RunConfig, opts ...EmbeddedAuthServerOption,
-			) (*EmbeddedAuthServer, error) {
-				stor := storage.NewMemoryStorage()
-				t.Cleanup(func() { require.NoError(t, stor.Close()) })
-				return NewEmbeddedAuthServerWithStorage(ctx, cfg, stor, opts...)
+			name:     "registry with token exchange off is refused",
+			registry: registry,
+			grants:   &authserver.InboundGrantsRunConfig{},
+			wantErr:  authserver.ErrAuthorizationDetailsRegistryUnreachable,
+		},
+		{
+			name:     "registry with token exchange on by default passes",
+			registry: registry,
+		},
+		{
+			name:     "registry with token exchange on explicitly passes",
+			registry: registry,
+			grants: &authserver.InboundGrantsRunConfig{
+				TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
 			},
 		},
+		{
+			name:           "registry with token exchange off and ID-JAG redemption on passes",
+			registry:       registry,
+			grants:         jwtBearerOnlyGrants(tokenexchange.JWTBearerAssertionTypeIDJAG),
+			trustedIssuers: jwtBearerTrustedIssuers(),
+		},
+		{
+			name:           "registry with token exchange off and only the plain JWT-bearer grant is refused",
+			registry:       registry,
+			grants:         jwtBearerOnlyGrants(tokenexchange.JWTBearerAssertionTypeJWTBearer),
+			trustedIssuers: jwtBearerTrustedIssuers(),
+			wantErr:        authserver.ErrAuthorizationDetailsRegistryUnreachable,
+		},
+		{
+			name:   "no registry with token exchange off passes",
+			grants: &authserver.InboundGrantsRunConfig{},
+		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			var discoveryRequests atomic.Int32
-			upstreamServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				discoveryRequests.Add(1)
-			}))
-			t.Cleanup(upstreamServer.Close)
-
-			cfg := &authserver.RunConfig{
-				SchemaVersion: authserver.CurrentSchemaVersion,
-				Issuer:        "http://localhost:8080",
-				Upstreams: []authserver.UpstreamRunConfig{{
-					Name: "test-upstream",
-					Type: authserver.UpstreamProviderTypeOIDC,
-					OIDCConfig: &authserver.OIDCUpstreamRunConfig{
-						IssuerURL:         upstreamServer.URL,
-						ClientID:          "test-client-id",
-						RedirectURI:       "http://localhost:8080/oauth/callback",
-						InsecureAllowHTTP: true,
-					},
-				}},
-				AllowedAudiences: []string{"https://mcp.example.com"},
-				// An explicit, empty inbound grants block leaves token exchange off.
-				InboundGrants: &authserver.InboundGrantsRunConfig{},
+			cfg := minimalRunnerConsentConfig("http://localhost:8080")
+			cfg.InboundGrants = tt.grants
+			cfg.TrustedIssuers = tt.trustedIssuers
+			err := validateAuthorizationDetailsRegistryForRunConfig(
+				cfg, embeddedAuthServerOptions{authorizationDetailsRegistry: tt.registry})
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
 			}
-
-			server, err := tt.construct(context.Background(), cfg, WithAuthorizationDetailsRegistry(registry))
-			require.Error(t, err)
-			assert.Nil(t, server)
-			assert.ErrorContains(t, err, "authorization details registry requires token exchange")
-			assert.Zero(t, discoveryRequests.Load(), "the check must run before upstream discovery")
+			require.NoError(t, err)
 		})
 	}
 }
@@ -2565,15 +2733,7 @@ func TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant(t *testing.T) {
 			},
 		}},
 		InboundGrants: &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")},
 		},
 		TrustedIssuers: []tokenexchange.TrustedIssuer{{
 			IssuerURL: "https://issuer.example.com",
@@ -2590,6 +2750,89 @@ func TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant(t *testing.T) {
 	srv, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("localhost"))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, srv.Close()) })
+}
+
+func TestNewEmbeddedAuthServer_SPIFFEGrantsDriveTokenExchangeDiscovery(t *testing.T) {
+	t.Parallel()
+
+	clientCredentials := authserver.SPIFFEClientAuthRunConfig{
+		TrustDomainRef:   "production",
+		PrincipalPattern: "spiffe://example.org/ns/default/cc",
+		ClientID:         "spiffe-cc",
+		Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+		Scopes:           []string{"openid"},
+		Resources:        []string{"https://mcp.example.com"},
+		GrantTypes:       []string{oauthproto.GrantTypeClientCredentials},
+	}
+	tokenExchange := testSPIFFEAssociation("spiffe-exchange", "spiffe://example.org/ns/default/exchange")
+
+	tests := []struct {
+		name         string
+		associations []authserver.SPIFFEClientAuthRunConfig
+		wantExchange bool
+	}{
+		{name: "client credentials only", associations: []authserver.SPIFFEClientAuthRunConfig{clientCredentials}},
+		{
+			name:         "token exchange only",
+			associations: []authserver.SPIFFEClientAuthRunConfig{tokenExchange},
+			wantExchange: true,
+		},
+		{
+			name:         "mixed",
+			associations: []authserver.SPIFFEClientAuthRunConfig{clientCredentials, tokenExchange},
+			wantExchange: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &authserver.RunConfig{
+				TLSListener:      writeTestSPIFFEListener(t),
+				SchemaVersion:    authserver.CurrentSchemaVersion,
+				Issuer:           "https://auth.example.com",
+				ScopesSupported:  []string{"openid", "profile"},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				Upstreams: []authserver.UpstreamRunConfig{{
+					Name: "static-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://upstream.example.com/authorize",
+						TokenEndpoint:         "https://upstream.example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "https://auth.example.com/oauth/callback",
+					},
+				}},
+				SPIFFETrustDomains: []authserver.SPIFFETrustDomainRunConfig{{
+					Name:        "production",
+					TrustDomain: "example.org",
+					Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+					BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+						Type: authserver.SPIFFEBundleSourceTypeFile,
+						File: &authserver.SPIFFEFileBundleSourceRunConfig{Path: writeTestSPIFFEBundleFile(t)},
+					},
+				}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: tt.associations},
+			}
+
+			srv, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("localhost"))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, srv.Close()) })
+
+			rec := httptest.NewRecorder()
+			srv.Routes()["/.well-known/oauth-authorization-server"].ServeHTTP(
+				rec, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var metadata struct {
+				GrantTypesSupported []string `json:"grant_types_supported"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &metadata))
+			assert.Equal(t, tt.wantExchange, slices.Contains(metadata.GrantTypesSupported, oauthproto.GrantTypeTokenExchange),
+				"grant_types_supported: %v", metadata.GrantTypesSupported)
+		})
+	}
 }
 
 // TestNewEmbeddedAuthServer_SPIFFEAndCIMD exercises the RunConfig conversion
@@ -2628,15 +2871,7 @@ func TestNewEmbeddedAuthServer_SPIFFEAndCIMD(t *testing.T) {
 			},
 		}},
 		InboundGrants: &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")},
 		},
 	}
 
@@ -2672,15 +2907,7 @@ func TestNewEmbeddedAuthServerWithStorage_SPIFFECollisionPrecedesDCR(t *testing.
 			},
 		}},
 		InboundGrants: &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")},
 		},
 		Upstreams: []authserver.UpstreamRunConfig{{
 			Name: "dcr-upstream",
@@ -2734,16 +2961,10 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 				File: &authserver.SPIFFEFileBundleSourceRunConfig{Path: writeTestSPIFFEBundleFile(t)},
 			},
 		}}
+		spiffeClient := testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")
+		spiffeClient.Scopes = []string{scope}
 		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{scope},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{spiffeClient},
 		}
 		return cfg
 	}
@@ -2807,7 +3028,7 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 			assert.Empty(t, trust.Associations())
 			registry, err := authserver.NewSPIFFEAssociationRegistry(trust)
 			require.NoError(t, err)
-			require.NotNil(t, registry)
+			assert.Nil(t, registry)
 			// Every restart uses fresh memory. The initial and changed shapes
 			// name listener certificate files that do not exist, so only the
 			// SPIFFE-removed configuration can build a full server here.
@@ -2886,6 +3107,8 @@ func TestEmbeddedAuthServer_SPIFFEClientIDAloneDoesNotAuthenticate(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			spiffeClient := testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")
+			spiffeClient.Methods = tt.methods
 			cfg := authserver.RunConfig{
 				SchemaVersion:    authserver.CurrentSchemaVersion,
 				Issuer:           "https://auth.example.com",
@@ -2910,16 +3133,7 @@ func TestEmbeddedAuthServer_SPIFFEClientIDAloneDoesNotAuthenticate(t *testing.T)
 						File: &authserver.SPIFFEFileBundleSourceRunConfig{Path: writeTestSPIFFEBundleFile(t)},
 					},
 				}},
-				InboundGrants: &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-					TrustDomainRef:   "production",
-					PrincipalPattern: "spiffe://example.org/ns/default/agent",
-					ClientID:         "spiffe-client",
-					Methods:          tt.methods,
-					GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-					Scopes:           []string{"openid"},
-					Resources:        []string{"https://mcp.example.com"},
-					Audiences:        []string{"https://mcp.example.com"},
-				}}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{spiffeClient}},
 			}
 			if tt.methods[0] == authserver.SPIFFEAuthenticationMethodX509 {
 				cfg.TLSListener = writeTestSPIFFEListener(t)
@@ -2939,7 +3153,7 @@ func TestEmbeddedAuthServer_SPIFFEClientIDAloneDoesNotAuthenticate(t *testing.T)
 				t.Parallel()
 
 				form := url.Values{
-					"grant_type":         {authserver.SPIFFEGrantTypeTokenExchange},
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
 					"subject_token":      {"unvalidated-subject-token"},
 					"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 					"client_id":          {"spiffe-client"},
@@ -4175,6 +4389,41 @@ func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {
 	assert.Equal(t, "720h", got[0].TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)
 }
 
+func TestResolveDelegateClients_AccessTokenLifespan(t *testing.T) {
+	t.Parallel()
+	secretFile := filepath.Join(t.TempDir(), "delegate-secret")
+	require.NoError(t, os.WriteFile(secretFile, []byte("0123456789abcdef0123456789abcdef"), 0600))
+
+	tests := []struct {
+		name     string
+		lifespan string
+		want     time.Duration
+		wantErr  string
+	}{
+		{name: "omitted keeps the server lifespan", want: 0},
+		{name: "parsed", lifespan: "30s", want: 30 * time.Second},
+		{name: "zero is refused", lifespan: "0s", wantErr: "access_token_lifespan must be at least 2s"},
+		{name: "sub-second is refused", lifespan: "100ms", wantErr: "access_token_lifespan must be at least 2s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveDelegateClients([]authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", ClientSecretFile: secretFile,
+				Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+				AccessTokenLifespan: tt.lifespan,
+			}})
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			assert.Equal(t, tt.want, got[0].AccessTokenLifespan)
+		})
+	}
+}
+
 func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	clients := []authserver.DelegateClientRunConfig{{
 		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_CLONE_SECRET",
@@ -4228,4 +4477,19 @@ func TestCloseIdleConnectionsWithoutCapability(t *testing.T) {
 
 	assert.NotPanics(t, eas.CloseIdleConnections)
 	assert.Zero(t, stub.closed.Load(), "must not fall back to Close")
+}
+
+// testSPIFFEAssociation returns a valid token-exchange association for the
+// "production" trust domain; callers override only the fields their case
+// cares about.
+func testSPIFFEAssociation(clientID, principal string) authserver.SPIFFEClientAuthRunConfig {
+	return authserver.SPIFFEClientAuthRunConfig{
+		TrustDomainRef:   "production",
+		PrincipalPattern: principal,
+		ClientID:         clientID,
+		Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+		Scopes:           []string{"openid"},
+		Resources:        []string{"https://mcp.example.com"},
+		GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
+	}
 }

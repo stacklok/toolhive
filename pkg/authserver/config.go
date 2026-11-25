@@ -5,6 +5,7 @@
 package authserver
 
 import (
+	"cmp"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -137,8 +139,8 @@ type RunConfig struct {
 	// When true, the embedded auth server handles OAuth flows for clients, but instead of
 	// injecting upstream IdP tokens the proxy strips the client's credential headers
 	// (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
-	// backend receives an unauthenticated request. Incompatible with token exchange
-	// and AWS STS, which would re-add credentials after the strip.
+	// backend receives an unauthenticated request. Incompatible with token exchange,
+	// AWS STS and OBO, which would re-add credentials after the strip.
 	//nolint:lll // field tags require full JSON+YAML names
 	DisableUpstreamTokenInjection bool `json:"disable_upstream_token_injection,omitempty" yaml:"disable_upstream_token_injection,omitempty"`
 
@@ -404,6 +406,64 @@ type DelegateClientRunConfig struct {
 	// and may exchange any self-issued token. A client that sets GrantTypes or
 	// uses private_key_jwt must declare the block.
 	TokenExchange *DelegateClientTokenExchange `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+
+	// AccessTokenLifespan is the lifetime of the access tokens this client
+	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+	// server's access_token_lifespan applies. When set it must be at least 2s
+	// and at most 24h. It is an upper bound: a token never outlives the
+	// assertion it was redeemed from, and a token that carries the
+	// delegated-access marker is capped further. Other grants ignore it.
+	AccessTokenLifespan string `json:"access_token_lifespan,omitempty" yaml:"access_token_lifespan,omitempty"`
+}
+
+// AccessTokenLifespanDuration parses AccessTokenLifespan. An omitted value
+// gives zero, which means the server lifespan applies; any set value must be in
+// [oauthserver.MinClientAccessTokenLifespan, oauthserver.MaxAccessTokenLifespan].
+func (c DelegateClientRunConfig) AccessTokenLifespanDuration() (time.Duration, error) {
+	if c.AccessTokenLifespan == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.AccessTokenLifespan)
+	if err != nil {
+		return 0, fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan %q: %w",
+			c.ClientID, c.AccessTokenLifespan, err)
+	}
+	if err := checkDelegateAccessTokenLifespan(c.ClientID, d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
+
+// validateDelegateAccessTokenLifespanGrant refuses an access_token_lifespan
+// that could never apply: the lifespan is used only by ID-JAG redemption, so
+// a trusted issuer must accept ID-JAG assertions (an enabled JWT-bearer grant
+// whose issuers all accept plain assertions only is not enough), and a client
+// that sets grant_types must list the JWT-bearer grant. It runs on the
+// resolved Config because both are decided from the resolved trusted issuers.
+func validateDelegateAccessTokenLifespanGrant(clients []DelegateClient, idJAGRedeemable bool) error {
+	for _, client := range clients {
+		if client.AccessTokenLifespan == 0 {
+			continue
+		}
+		if !idJAGRedeemable {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, errAccessTokenLifespanNeedsIDJAGIssuer)
+		}
+		if len(client.GrantTypes) > 0 && !slices.Contains(client.GrantTypes, oauthproto.GrantTypeJWTBearer) {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, errAccessTokenLifespanNeedsClientGrant)
+		}
+	}
+	return nil
+}
+
+// checkDelegateAccessTokenLifespan enforces
+// [MinClientAccessTokenLifespan, MaxAccessTokenLifespan] on a
+// set lifespan.
+func checkDelegateAccessTokenLifespan(clientID string, d time.Duration) error {
+	if d < oauthserver.MinClientAccessTokenLifespan || d > oauthserver.MaxAccessTokenLifespan {
+		return fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan must be at least %v and at most %v, got %v",
+			clientID, oauthserver.MinClientAccessTokenLifespan, oauthserver.MaxAccessTokenLifespan, d)
+	}
+	return nil
 }
 
 // SelfIssuedSubjectTokens selects which self-issued subject tokens a delegate
@@ -467,6 +527,14 @@ type DelegateClientTokenExchange struct {
 	// restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
 	// token exchange enabled.
 	IDJAG *DelegateClientIDJAG `json:"id_jag,omitempty" yaml:"id_jag,omitempty"`
+
+	// ActorProfile makes this client's ID-JAG issuance from an exchange grant
+	// require an actor token, which the named in-process validator checks. The
+	// embedder registers the validator in Config.ActorTokenValidators. Valid
+	// only with id_jag. It does not change plain token exchange. It is set only
+	// from Go (embedders), like RequiredSubjectClaims, so config files cannot
+	// set it.
+	ActorProfile *DelegateClientActorProfile `json:"-" yaml:"-"`
 }
 
 // DelegateClientIDJAG configures the ID-JAGs a delegate client may ask for.
@@ -517,6 +585,17 @@ type DelegateClientIDJAGTarget struct {
 	RequiredSubjectClaims []string `json:"-" yaml:"-"`
 }
 
+// DelegateClientActorProfile names the actor-token check that ID-JAG issuance
+// from an exchange grant requires for a delegate client.
+type DelegateClientActorProfile struct {
+	// Validator is the name of a validator in Config.ActorTokenValidators.
+	Validator string `json:"validator" yaml:"validator" binding:"required"`
+
+	// ActorTokenType is the actor_token_type the client must send, an absolute
+	// URI such as urn:ietf:params:oauth:token-type:jwt.
+	ActorTokenType string `json:"actor_token_type" yaml:"actor_token_type" binding:"required"`
+}
+
 // DelegateClientExchangeRefreshTokens holds the lifetime caps for refresh
 // tokens that a delegate client obtains through token exchange. Durations are
 // Go duration strings (e.g. "12h"), as in TokenLifespanRunConfig. Each cap must
@@ -559,6 +638,10 @@ func (t *DelegateClientTokenExchange) Clone() *DelegateClientTokenExchange {
 			targets = nil
 		}
 		cloned.IDJAG = &DelegateClientIDJAG{Targets: targets}
+	}
+	if t.ActorProfile != nil {
+		profile := *t.ActorProfile
+		cloned.ActorProfile = &profile
 	}
 	return &cloned
 }
@@ -605,6 +688,9 @@ func (c *RunConfig) Validate() error {
 	if err := validateTrustedIssuers(normalized.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
+	if err := c.validateResolveIssuers(normalized.TrustedIssuers); err != nil {
+		return err
+	}
 	if err := c.validateSPIFFEClientIDsNotDelegates(normalized.DelegateClients); err != nil {
 		return err
 	}
@@ -612,11 +698,16 @@ func (c *RunConfig) Validate() error {
 	// included. They send no secret, but unlike token-exchange-only DCR
 	// private_key_jwt clients they can hold authorization_code and refresh_token
 	// grants, so codes and long-lived tokens would cross plain HTTP. jti replay
-	// checks and the 5-minute assertion cap already limit a captured assertion;
-	// this is a conservative choice, matches the CRD CEL rules, and can be
-	// relaxed later (for example for an in-cluster HTTP issuer).
+	// checks and the 5-minute assertion cap already limit a captured assertion
+	// (neither applies to JWT-SVIDs: there is no jti check, and the cap is six
+	// minutes of remaining validity). This is a conservative choice, matches the
+	// CRD CEL rules, and can be relaxed later (for example for an in-cluster
+	// HTTP issuer). A SPIFFE association that allows the JWT-SVID method and
+	// grants client_credentials counts too: one captured JWT-SVID, a bearer
+	// credential, then mints access tokens directly. Token-exchange-only
+	// JWT-SVID associations do not count.
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0, c.InsecureAllowHTTP,
+		c.hasConfidentialClients(normalized), c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -636,6 +727,15 @@ func (c *RunConfig) Validate() error {
 		return err
 	}
 	return c.validateBaselineClientScopes()
+}
+
+// hasConfidentialClients reports whether any confidential client can exist:
+// DCR of confidential clients, at least one delegate client in the normalized
+// grants, or a SPIFFE association that allows the JWT-SVID method and grants
+// client_credentials.
+func (c *RunConfig) hasConfidentialClients(normalized *NormalizedInboundGrants) bool {
+	return c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0 ||
+		c.hasJWTClientCredentialsAssociation()
 }
 
 // validateSPIFFEX509Listener requires the TLS listener and an https issuer when
@@ -674,6 +774,36 @@ func (c *RunConfig) validateRuntimeSPIFFEBundleSources() error {
 		if err := ValidateRuntimeSPIFFEBundleSourceType(
 			fmt.Sprintf("spiffe_trust_domains[%d] %q bundle_source", i, domain.Name), domain.BundleSource.Type,
 		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateActorProfilesForRunConfig checks validators the way Config.Validate
+// does (no empty name, no nil validator, no reserved "toolhive." name, a valid
+// ActIssuer that is not cfg.Issuer) and refuses a delegate client in cfg whose
+// actor_profile names a validator that is not in validators. It does not check
+// a profile's shape; RunConfig.Validate does, so call that first. An embedder or
+// the runner uses it to fail before storage and upstream work. It does not
+// replace Config.Validate.
+func ValidateActorProfilesForRunConfig(
+	cfg *RunConfig,
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) error {
+	var serverIssuer string
+	if cfg != nil {
+		serverIssuer = cfg.Issuer
+	}
+	if err := validateActorTokenValidatorMap(validators, serverIssuer); err != nil {
+		return err
+	}
+	normalized, err := NormalizeInboundGrants(cfg)
+	if err != nil {
+		return fmt.Errorf("normalize inbound grants: %w", err)
+	}
+	for _, client := range normalized.DelegateClients {
+		if err := actorProfileNotRegistered(client.ClientID, client.TokenExchange, validators); err != nil {
 			return err
 		}
 	}
@@ -739,17 +869,33 @@ func (c *RunConfig) validateUpstreamFilter() error {
 // HasSPIFFEX509ClientAuth reports whether any SPIFFE client association
 // enables spiffe_x509. A nil *RunConfig returns false.
 func (c *RunConfig) HasSPIFFEX509ClientAuth() bool {
+	return c.hasSPIFFEMethod(SPIFFEAuthenticationMethodX509)
+}
+
+// hasSPIFFEMethod reports whether any SPIFFE client association in the
+// unvalidated run-config form allows method. A nil *RunConfig or nil
+// InboundGrants returns false.
+func (c *RunConfig) hasSPIFFEMethod(method SPIFFEAuthenticationMethod) bool {
 	if c == nil || c.InboundGrants == nil {
 		return false
 	}
-	for _, association := range c.InboundGrants.SPIFFEClientAuth {
-		for _, method := range association.Methods {
-			if method == SPIFFEAuthenticationMethodX509 {
-				return true
-			}
-		}
+	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientAuthRunConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.Methods, method)
+	})
+}
+
+// hasJWTClientCredentialsAssociation reports whether any SPIFFE client
+// association in the unvalidated run-config form allows the JWT-SVID method and
+// lists the client_credentials grant. A nil *RunConfig or nil InboundGrants
+// returns false.
+func (c *RunConfig) hasJWTClientCredentialsAssociation() bool {
+	if c == nil || c.InboundGrants == nil {
+		return false
 	}
-	return false
+	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientAuthRunConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.Methods, SPIFFEAuthenticationMethodJWT) &&
+			slices.Contains(a.GrantTypes, oauthproto.GrantTypeClientCredentials)
+	})
 }
 
 // validateBaselineClientScopes ensures every entry in BaselineClientScopes is
@@ -791,6 +937,9 @@ func validateDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if _, err := client.AccessTokenLifespanDuration(); err != nil {
+			return err
+		}
 		views[i] = delegateClientView{
 			ClientID:      client.ClientID,
 			Scopes:        client.Scopes,
@@ -890,6 +1039,9 @@ func validateDelegateClientViews(
 		if err := claimIDJAGTargets(idJAGTargetOwners, client.ClientID, client.TokenExchange); err != nil {
 			return err
 		}
+		if err := validateActorProfile(client); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -910,6 +1062,38 @@ func validateDelegateClientNarrowing(client delegateClientView, effectiveScopes,
 	}
 	if err := validateExchangeRefreshTokenScopes(client, effectiveScopes); err != nil {
 		return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
+	}
+	return nil
+}
+
+// validateActorProfile checks the actor_profile block: it needs an id_jag block,
+// a validator name and an absolute actor_token_type. A profile only affects
+// ID-JAG issuance, so a client without id_jag can never use it. validateIDJAG
+// runs first and requires token exchange to be enabled, the restricted mode and
+// exchange_refresh_tokens.id_jag_max_lifetime for any client with an id_jag
+// block, so they are not checked again here.
+func validateActorProfile(client delegateClientView) error {
+	if client.TokenExchange == nil || client.TokenExchange.ActorProfile == nil {
+		return nil
+	}
+	if client.TokenExchange.IDJAG == nil {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile requires id_jag.targets", client.ClientID)
+	}
+	profile := client.TokenExchange.ActorProfile
+	if profile.Validator == "" {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.validator is required", client.ClientID)
+	}
+	return validateActorTokenType(client.ClientID, profile.ActorTokenType)
+}
+
+// validateActorTokenType requires actor_token_type to be an absolute URI.
+func validateActorTokenType(clientID, actorTokenType string) error {
+	if actorTokenType == "" {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.actor_token_type is required", clientID)
+	}
+	if u, err := url.Parse(actorTokenType); err != nil || !u.IsAbs() {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.actor_token_type %q is not an absolute URI",
+			clientID, actorTokenType)
 	}
 	return nil
 }
@@ -1045,6 +1229,11 @@ func validateResolvedDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if client.AccessTokenLifespan != 0 {
+			if err := checkDelegateAccessTokenLifespan(client.ClientID, client.AccessTokenLifespan); err != nil {
+				return err
+			}
+		}
 		if client.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			if client.ClientSecret == "" {
 				return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
@@ -1430,6 +1619,22 @@ type OAuth2UpstreamRunConfig struct {
 // surface), this field becomes a confused-deputy SSRF vector. Hardening is
 // tracked in https://github.com/stacklok/toolhive/issues/5135.
 type DCRUpstreamConfig struct {
+	// ClientName is the optional RFC 7591 "client_name" registration metadata
+	// sent when ToolHive registers with the upstream. When empty, ToolHive
+	// registers as "ToolHive MCP Client". It is display-only metadata: the
+	// upstream shows it on its authorization screen, and it is never used as
+	// a key. It is capped at 256 characters, matching the client_name bound
+	// the authserver enforces on inbound registrations. Names with leading
+	// or trailing whitespace, or containing control or format characters,
+	// are rejected.
+	//
+	// Changing it does not rename an already-registered client: the cached
+	// registration is keyed without the client name, so the new value applies
+	// only the next time ToolHive registers a fresh client — for example
+	// after rotating via RotationKey, or when the upstream rejects the cached
+	// registration.
+	ClientName string `json:"client_name,omitempty" yaml:"client_name,omitempty"`
+
 	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
 	// fetch at runtime. The resolver issues a single GET against this URL
 	// (no well-known-path fallback) and reads registration_endpoint,
@@ -1437,7 +1642,10 @@ type DCRUpstreamConfig struct {
 	// token_endpoint_auth_methods_supported, and scopes_supported from the
 	// response. Per RFC 8414 §3.3, the document's "issuer" field must
 	// exactly match the upstream issuer configured on the parent
-	// run-config.
+	// run-config, except that an origin-only issuer may differ by a
+	// trailing "/" (for example https://idp.example.com and
+	// https://idp.example.com/ are treated as equal). Scheme, host, port
+	// and any path must still match exactly.
 	//
 	// Use this field when the upstream publishes discovery metadata at a
 	// path that differs from the issuer-derived well-known paths — for
@@ -1761,6 +1969,26 @@ type Config struct {
 	// DisableUpstreamRefreshGuard), so they see only grants it accepted.
 	RefreshGrantHandlers []fosite.TokenEndpointHandler
 
+	// ActorTokenValidators are the validators an embedder registers for ID-JAG
+	// issuance, keyed by name. Each entry also carries the issuer ToolHive
+	// writes as act.iss (see tokenexchange.ActorValidatorRegistration). Set them
+	// in process. There is no global registry and no YAML or JSON form. A client
+	// selects one by name in its actor profile.
+	//
+	// Issuance calls a validator from many requests at once, so each validator
+	// must be safe for concurrent use. The server reads the map only at startup,
+	// so changing it afterwards has no effect.
+	//
+	// Validate refuses an empty name, a nil Validator (including a nil pointer of
+	// a concrete type) and a name that starts with "toolhive.", which is reserved
+	// for built-in validators. It also refuses an ActIssuer that is empty, is not
+	// an absolute URI without query, userinfo or fragment, is not in canonical
+	// spelling, is an http(s) URL that is neither https nor on a loopback host,
+	// or is this server's own issuer. Registrations may share an ActIssuer. It
+	// also refuses a delegate client whose actor_profile names a validator that
+	// is not in this map.
+	ActorTokenValidators map[string]tokenexchange.ActorValidatorRegistration
+
 	// DisableUpstreamRefreshGuard turns off the built-in refresh-grant guard.
 	// When on (the default, with at least one upstream configured), a
 	// refresh_token grant is refused with invalid_grant when the token
@@ -1884,7 +2112,9 @@ type Config struct {
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
 	// AuthorizationDetailsRegistry validates RFC 9396 authorization_details on
-	// RFC 8693 token-exchange requests. It is Go-only and is not part of RunConfig.
+	// RFC 8693 token-exchange requests, and decides which entries of an
+	// ID-JAG's signed authorization_details claim a redemption grants into the
+	// issued token. It is Go-only and is not part of RunConfig.
 	AuthorizationDetailsRegistry *authorizationdetails.Registry
 
 	// AllowConfidentialClientRegistration permits DCR of confidential clients
@@ -1971,6 +2201,12 @@ type DelegateClient struct {
 
 	// TokenExchange carries the matching DelegateClientRunConfig field.
 	TokenExchange *DelegateClientTokenExchange
+
+	// AccessTokenLifespan is the parsed DelegateClientRunConfig field. Zero
+	// means unset: the server's access-token lifespan applies. A value below
+	// server.MinClientAccessTokenLifespan, or above
+	// server.MaxAccessTokenLifespan, is refused.
+	AccessTokenLifespan time.Duration
 }
 
 // Validate checks that the Config is valid.
@@ -2000,9 +2236,13 @@ func (c *Config) Validate() error {
 	}
 
 	for i, h := range c.RefreshGrantHandlers {
-		if isNilHandler(h) {
+		if isNilValue(h) {
 			return fmt.Errorf("refresh grant handler %d is nil", i)
 		}
+	}
+
+	if err := c.validateActorTokenValidators(); err != nil {
+		return err
 	}
 
 	if err := c.validateAudienceConfiguration(); err != nil {
@@ -2034,6 +2274,112 @@ func (c *Config) Validate() error {
 	return c.validateDelegationAndTrustConfig()
 }
 
+// validateActorTokenValidators checks the registered validators with
+// validateActorTokenValidatorMap.
+func (c *Config) validateActorTokenValidators() error {
+	return validateActorTokenValidatorMap(c.ActorTokenValidators, c.Issuer)
+}
+
+// validateActorTokenValidatorMap checks each registration in sorted name order,
+// so the first error is the same on every run. For each name, the checks run in
+// this order: the name is not empty, the name is not in the reserved "toolhive."
+// namespace, the validator is not nil, and the ActIssuer passes
+// validateActIssuer against serverIssuer.
+func validateActorTokenValidatorMap(
+	validators map[string]tokenexchange.ActorValidatorRegistration, serverIssuer string,
+) error {
+	for _, name := range slices.Sorted(maps.Keys(validators)) {
+		if name == "" {
+			return errors.New("actor token validator name must not be empty")
+		}
+		if strings.HasPrefix(name, "toolhive.") {
+			return fmt.Errorf("actor token validator name %q is reserved for built-in validators", name)
+		}
+		entry := validators[name]
+		if isNilValue(entry.Validator) {
+			return fmt.Errorf("actor token validator %q is nil", name)
+		}
+		if err := validateActIssuer(entry.ActIssuer, serverIssuer); err != nil {
+			return fmt.Errorf("actor token validator %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// validateActIssuer checks the issuer ToolHive writes as act.iss. It must be an
+// absolute URI (tokenexchange.ActIssuerProblem), spelled in canonical form, name
+// a host and use https or http on a loopback host when it is an http(s) URL, and differ from
+// the server's own issuer. Other schemes, such as spiffe and urn, are allowed.
+// The value is only an identifier, so it is not compared with the token
+// endpoint, the allowed audiences or the target issuers.
+//
+// The canonical-form rule is idJAGIssuerWellFormed, which also fits URIs with no
+// host: it lower-cases the scheme, and it looks at host, port and path only
+// where they exist. The comparison with the server's issuer folds case and a
+// trailing slash, but a non-canonical spelling is refused first.
+func validateActIssuer(actIssuer, serverIssuer string) error {
+	if actIssuer == "" {
+		return errors.New("ActIssuer is required")
+	}
+	if err := tokenexchange.ActIssuerProblem(actIssuer); err != nil {
+		return fmt.Errorf("ActIssuer %q is not an absolute URI: %w", actIssuer, err)
+	}
+	parsed, err := url.Parse(actIssuer)
+	if err != nil {
+		return fmt.Errorf("ActIssuer %q is not an absolute URI", actIssuer)
+	}
+	if !idJAGIssuerWellFormed(actIssuer, parsed) {
+		return fmt.Errorf("ActIssuer %q is not in canonical form: lower-case scheme and host, "+
+			"no default port, dot segments, empty path segments, unneeded percent-encoding, "+
+			"or an empty or zero-padded port", actIssuer)
+	}
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		if parsed.Opaque != "" || parsed.Hostname() == "" {
+			return fmt.Errorf("ActIssuer %q must name a host", actIssuer)
+		}
+		if validateIssuerScheme(parsed, false) != nil {
+			return fmt.Errorf("ActIssuer %q must use https, or http on a loopback host", actIssuer)
+		}
+	}
+	if foldIssuerForComparison(actIssuer) == foldIssuerForComparison(serverIssuer) {
+		return errors.New("ActIssuer must not be this server's issuer")
+	}
+	return nil
+}
+
+// validateActorProfilesRegistered refuses a delegate client whose actor_profile
+// names a validator that is not in ActorTokenValidators, in configured order. It
+// runs after validateResolvedDelegateClients, so each profile's shape is already
+// valid and the empty-name skip is only defensive.
+func (c *Config) validateActorProfilesRegistered() error {
+	for _, client := range c.DelegateClients {
+		if err := actorProfileNotRegistered(client.ClientID, client.TokenExchange, c.ActorTokenValidators); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// actorProfileNotRegistered returns an error when the client's actor_profile
+// names a validator missing from validators. It returns nil when there is no
+// token-exchange policy, no profile or an empty name.
+func actorProfileNotRegistered(
+	clientID string,
+	te *DelegateClientTokenExchange,
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) error {
+	if te == nil || te.ActorProfile == nil {
+		return nil
+	}
+	name := te.ActorProfile.Validator
+	if _, ok := validators[name]; !ok && name != "" {
+		return fmt.Errorf(
+			"delegate_clients: client_id %q: actor_profile.validator %q is not registered in ActorTokenValidators",
+			clientID, name)
+	}
+	return nil
+}
+
 // validateClientAdmission checks the bounds on how unauthenticated callers
 // can create clients: CIMD resolution and the /oauth/register rate.
 func (c *Config) validateClientAdmission() error {
@@ -2055,7 +2401,7 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
 		return err
 	}
-	if err := c.validateAuthorizationDetailsRequiresTokenExchange(); err != nil {
+	if err := c.validateAuthorizationDetailsRegistryReachable(); err != nil {
 		return err
 	}
 	if err := c.validateSPIFFEAssociationsRequireTokenExchange(); err != nil {
@@ -2125,13 +2471,13 @@ func (c *Config) validateRuntimeSPIFFEBundleSources() error {
 // runtime loader; bundle_endpoint and workload_api pass structural validation
 // but would fail at auth-server startup, so they are rejected here. The
 // operator calls it too, so the config CR and RunConfig.Validate agree.
-// subject is the full field path of the bundle_source, used as the error prefix.
-func ValidateRuntimeSPIFFEBundleSourceType(subject string, sourceType SPIFFEBundleSourceType) error {
+// fieldPath is the full field path of the bundle_source, used as the error prefix.
+func ValidateRuntimeSPIFFEBundleSourceType(fieldPath string, sourceType SPIFFEBundleSourceType) error {
 	if sourceType == SPIFFEBundleSourceTypeFile {
 		return nil
 	}
 	return fmt.Errorf("%s: type %q is not supported by this build; only %q is supported",
-		subject, sourceType, SPIFFEBundleSourceTypeFile)
+		fieldPath, sourceType, SPIFFEBundleSourceTypeFile)
 }
 
 // validateBaselineClientScopes ensures every baseline scope is advertised by
@@ -2155,6 +2501,9 @@ func (c *Config) validateDelegationConfig() error {
 	if err := ValidateIDJAGSubjectClaimAudiences(c.DelegateClients, c.SubjectIdentifierAudiences); err != nil {
 		return err
 	}
+	if err := validateDelegateAccessTokenLifespanGrant(c.DelegateClients, idJAGRedeemable(c.TrustedIssuers)); err != nil {
+		return err
+	}
 	spiffeIDs := make([]string, 0, len(c.SPIFFETrust.Associations()))
 	for _, association := range c.SPIFFETrust.Associations() {
 		spiffeIDs = append(spiffeIDs, association.ClientID())
@@ -2166,7 +2515,84 @@ func (c *Config) validateDelegationConfig() error {
 	if err := ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs); err != nil {
 		return err
 	}
-	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
+	if err := c.validateActorProfilesRegistered(); err != nil {
+		return err
+	}
+	if err := validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
+		return err
+	}
+	return validateResolveIssuerUpstream(c.TrustedIssuers, c.signInUpstream())
+}
+
+// signInUpstream returns the first upstream's issuer and subject claim, or nil
+// when it is not an OIDC upstream.
+func (c *Config) signInUpstream() *signInUpstream {
+	if len(c.Upstreams) == 0 || c.Upstreams[0].Type != UpstreamProviderTypeOIDC || c.Upstreams[0].OIDCConfig == nil {
+		return nil
+	}
+	oidc := c.Upstreams[0].OIDCConfig
+	return &signInUpstream{
+		issuer:       oidc.Issuer,
+		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
+	}
+}
+
+// validateResolveIssuers runs the resolve-issuer upstream check for the
+// run-config. Config.Validate also runs it, but this one fires first: it must
+// refuse before upstream registration, for the same reason as the delegate
+// clients in Validate. It runs before the upstream configs are validated, so a
+// missing oidc_config is refused here as not an OIDC identity provider.
+func (c *RunConfig) validateResolveIssuers(issuers []tokenexchange.TrustedIssuer) error {
+	if len(c.Upstreams) == 0 || c.Upstreams[0].Type != UpstreamProviderTypeOIDC || c.Upstreams[0].OIDCConfig == nil {
+		return validateResolveIssuerUpstream(issuers, nil)
+	}
+	oidc := c.Upstreams[0].OIDCConfig
+	return validateResolveIssuerUpstream(issuers, &signInUpstream{
+		issuer:       oidc.IssuerURL,
+		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
+	})
+}
+
+// signInUpstream is the first upstream's issuer and subject claim, which a
+// resolve issuer's subject is matched against. The claim has its default
+// applied.
+type signInUpstream struct {
+	issuer, subjectClaim string
+}
+
+// validateResolveIssuerUpstream refuses a resolve issuer unless the first
+// upstream is an OIDC identity provider (signIn is nil otherwise) whose
+// subject claim is stable. Only the first upstream writes
+// provider-identity rows, and only an OIDC upstream has the issuer URL and
+// subject claim the resolution matches against. A mutable claim such as email
+// would let a user rename themselves into another user's identity. The Okta
+// warning ValidateBindingClaim can return is logged once at startup, where the
+// resolver is built.
+func validateResolveIssuerUpstream(issuers []tokenexchange.TrustedIssuer, signIn *signInUpstream) error {
+	for _, issuer := range issuers {
+		if issuer.JWTBearerGrant == nil || issuer.JWTBearerGrant.SubjectMode != tokenexchange.SubjectModeResolve {
+			continue
+		}
+		if signIn == nil {
+			return fmt.Errorf(
+				"trusted_issuers: issuer_url %q: jwt_bearer_grant.subject_mode resolve needs an OIDC identity provider as the first upstream",
+				issuer.IssuerURL)
+		}
+		if _, err := subject.ValidateBindingClaim(signIn.issuer, signIn.subjectClaim); err != nil {
+			return fmt.Errorf(
+				"trusted_issuers: issuer_url %q: jwt_bearer_grant.subject_mode resolve "+
+					"needs a stable subject_claim on the first upstream: %w",
+				issuer.IssuerURL, err)
+		}
+	}
+	return nil
+}
+
+// hasStaticConfidentialClients reports whether any delegate client is
+// configured or a SPIFFE association allows the JWT-SVID method and grants
+// client_credentials.
+func (c *Config) hasStaticConfidentialClients() bool {
+	return len(c.DelegateClients) > 0 || c.SPIFFETrust.permitsJWTClientCredentials()
 }
 
 // validateConfidentialClientConfig groups cleartext-transport validation for
@@ -2175,7 +2601,7 @@ func (c *Config) validateDelegationConfig() error {
 // complexity down.
 func (c *Config) validateConfidentialClientConfig() error {
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
+		c.AllowConfidentialClientRegistration || c.hasStaticConfidentialClients(), c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -2200,22 +2626,46 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 	return nil
 }
 
-// validateAuthorizationDetailsRequiresTokenExchange rejects a registry combined
-// with a disabled token-exchange grant: authorization_details is only handled
-// on token exchange, so the registry could never be reached.
-func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
-	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+// ErrAuthorizationDetailsRegistryUnreachable is returned when an authorization
+// details registry is configured but no grant that handles it is enabled.
+var ErrAuthorizationDetailsRegistryUnreachable = errors.New(
+	"authorization details registry requires token exchange or ID-JAG redemption to be enabled")
+
+// AuthorizationDetailsRegistryReachable reports whether an authorization
+// details registry can be reached: token exchange reads the
+// authorization_details parameter, and ID-JAG redemption reads the claim of
+// the same name. The registry is reachable when token exchange is enabled or
+// a trusted issuer accepts ID-JAG assertions. A plain RFC 7523 assertion never
+// reaches it: that grant refuses an assertion that carries the claim.
+func AuthorizationDetailsRegistryReachable(
+	tokenExchangeEnabled bool, trustedIssuers []tokenexchange.TrustedIssuer,
+) bool {
+	return tokenExchangeEnabled || idJAGRedeemable(trustedIssuers)
+}
+
+// validateAuthorizationDetailsRegistryReachable rejects a registry that no
+// enabled grant could ever reach.
+func (c *Config) validateAuthorizationDetailsRegistryReachable() error {
+	if c.AuthorizationDetailsRegistry != nil &&
+		!AuthorizationDetailsRegistryReachable(!c.DisableTokenExchange, c.TrustedIssuers) {
+		return ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
 }
 
-// validateSPIFFEAssociationsRequireTokenExchange rejects SPIFFE client
-// associations combined with a disabled token-exchange grant. Every SPIFFE
-// client receives only the RFC 8693 grant, so an association could never be used.
+// validateSPIFFEAssociationsRequireTokenExchange rejects a SPIFFE client
+// association that grants token exchange while the token-exchange grant is
+// disabled, because that association could never be used. Associations that
+// grant only client_credentials do not depend on the token-exchange grant.
 func (c *Config) validateSPIFFEAssociationsRequireTokenExchange() error {
-	if len(c.SPIFFETrust.Associations()) > 0 && c.DisableTokenExchange {
-		return fmt.Errorf("SPIFFE client associations require token exchange to be enabled")
+	if !c.DisableTokenExchange {
+		return nil
+	}
+	for _, association := range c.SPIFFETrust.Associations() {
+		if slices.Contains(association.AuthorizationPolicy().GrantTypes(), oauthproto.GrantTypeTokenExchange) {
+			return fmt.Errorf("SPIFFE client association %q grants token exchange, "+
+				"but token exchange is disabled", association.ClientID())
+		}
 	}
 	return nil
 }
@@ -2465,10 +2915,8 @@ func (c *DCRUpstreamConfig) Validate() error {
 			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
 	}
 
-	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
-	// YAML and CLI run-config paths, which have no admission-time schema.
-	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
-		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	if err := c.validateRegistrationMetadata(); err != nil {
+		return err
 	}
 
 	// Mirrors the CRD's Enum marker on registrationProbe; the resolver owns
@@ -2481,6 +2929,27 @@ func (c *DCRUpstreamConfig) Validate() error {
 		return fmt.Errorf("dcr_config: %w", err)
 	}
 
+	return nil
+}
+
+// validateRegistrationMetadata checks the DCR registration metadata fields:
+// the rotation key shape and the client name length and character class.
+// Split out of Validate to keep that method's cyclomatic complexity down
+// instead of suppressing the linter.
+func (c *DCRUpstreamConfig) validateRegistrationMetadata() error {
+	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
+	// YAML and CLI run-config paths, which have no admission-time schema.
+	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
+		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
+	// Length and character class are enforced by registration.ValidateClientName,
+	// which mirrors the CRD's MaxLength marker on clientName and the inbound
+	// registration bound (registration.MaxClientNameLength). The length is
+	// counted in characters, matching the CRD's maxLength semantics.
+	if err := registration.ValidateClientName(c.ClientName); err != nil {
+		return fmt.Errorf("dcr_config: client_name: %w", err)
+	}
 	return nil
 }
 
@@ -2884,6 +3353,13 @@ const (
 
 var (
 	errIDJAGRequiresTokenExchange = errors.New("token_exchange.id_jag requires token exchange to be enabled")
+	// errAccessTokenLifespanNeedsIDJAGIssuer and
+	// errAccessTokenLifespanNeedsClientGrant refuse a per-client lifespan that
+	// ID-JAG redemption could never apply.
+	errAccessTokenLifespanNeedsIDJAGIssuer = errors.New(
+		"access_token_lifespan applies to ID-JAG redemption, which requires a trusted issuer that accepts ID-JAG assertions")
+	errAccessTokenLifespanNeedsClientGrant = errors.New(
+		"access_token_lifespan applies to ID-JAG redemption, so grant_types must include the JWT-bearer grant")
 	errIDJAGRequiresRestricted    = errors.New(`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`)
 	errIDJAGRequiresSubjectSource = errors.New("token_exchange.id_jag requires a subject source: " +
 		"set token_exchange.exchange_refresh_tokens.id_jag_max_lifetime")

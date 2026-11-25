@@ -691,7 +691,7 @@ func TestConfiguredClientPoliciesIDJAGTargets(t *testing.T) {
 	}
 	clients[1].TokenExchange.IDJAG = nil
 
-	policies, err := configuredClientPolicies(clients)
+	policies, err := configuredClientPolicies(clients, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]tokenexchange.IDJAGTarget{
@@ -776,7 +776,7 @@ func TestIDJAGGrantsWithoutTargetsLogOnce(t *testing.T) {
 		idJAGTestResolvedClient(targetsClient, withTargets),
 	)
 	require.NoError(t, cfg.Validate())
-	_, err := configuredClientPolicies(cfg.DelegateClients)
+	_, err := configuredClientPolicies(cfg.DelegateClients, nil)
 	require.NoError(t, err)
 
 	countLines := func(clientID string) int {

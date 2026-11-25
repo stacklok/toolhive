@@ -217,14 +217,15 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 			}
 			cfg := &fosite.Config{AccessTokenIssuer: assertionTestIssuer, TokenURL: assertionTestTokenURL}
 			provider := fosite.NewOAuth2Provider(store, newClientAssertionAudienceConfig(cfg))
-			strategy := newClientAssertionErrorStrategy(newClientAssertionClockSkewStrategy(
-				provider.DefaultClientAuthenticationStrategy, store, clientAssertionAudiences(cfg),
-				func() time.Time { return now }, true))
+			strategy := newClientAssertionErrorStrategy(newClientAssertionAudienceStrategy(
+				newClientAssertionClockSkewStrategy(provider.DefaultClientAuthenticationStrategy, store,
+					func() time.Time { return now }, true),
+				cfg.AccessTokenIssuer))
 
 			claims := jwt.Claims{
 				Issuer:   assertionTestClientID,
 				Subject:  assertionTestClientID,
-				Audience: jwt.Audience{assertionTestTokenURL},
+				Audience: jwt.Audience{assertionTestIssuer},
 				ID:       "jti-" + tt.name,
 				IssuedAt: jwt.NewNumericDate(now),
 				Expiry:   jwt.NewNumericDate(now.Add(time.Minute)),

@@ -5,6 +5,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -154,6 +155,7 @@ func TestService_GetTelemetryData(t *testing.T) {
 
 	tests := []struct {
 		name               string
+		startupID          string
 		existingConfigMap  *corev1.ConfigMap
 		expectedInstanceID string
 		expectNewID        bool
@@ -162,6 +164,11 @@ func TestService_GetTelemetryData(t *testing.T) {
 			name:              "no configmap creates new data",
 			existingConfigMap: nil,
 			expectNewID:       true,
+		},
+		{
+			name:               "no configmap reuses the ID resolved at startup",
+			startupID:          "startup-id",
+			expectedInstanceID: "startup-id",
 		},
 		{
 			name: "existing valid data",
@@ -205,8 +212,9 @@ func TestService_GetTelemetryData(t *testing.T) {
 				Build()
 
 			service := &Service{
-				client:    fakeClient,
-				namespace: configMapNamespace,
+				client:     fakeClient,
+				namespace:  configMapNamespace,
+				instanceID: tt.startupID,
 			}
 
 			data, err := service.getTelemetryData(context.Background())
@@ -222,4 +230,20 @@ func TestService_GetTelemetryData(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestService_SaveTelemetryData_KeepsStoredID(t *testing.T) {
+	t.Parallel()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(telemetryConfigMap(t, "stored-id")).Build()
+	service := NewService(c, testNamespace)
+
+	err := service.saveTelemetryData(context.Background(), &telemetryData{InstanceID: "other-id", LatestVersion: "v9.9.9"})
+	require.NoError(t, err)
+
+	cm := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Name: configMapName, Namespace: testNamespace}, cm))
+	stored := &telemetryData{}
+	require.NoError(t, json.Unmarshal([]byte(cm.Data[instanceIDKey]), stored))
+	assert.Equal(t, "stored-id", stored.InstanceID, "a stored ID is never replaced")
+	assert.Equal(t, "v9.9.9", stored.LatestVersion, "the rest of the data is saved")
 }

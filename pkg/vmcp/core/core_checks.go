@@ -75,6 +75,7 @@ func (c *coreVMCP) authorizeToolCall(
 	args map[string]any,
 	tool *vmcp.Tool,
 ) error {
+	advertised := tool != nil
 	if tool == nil {
 		tool = &vmcp.Tool{Name: name}
 	}
@@ -82,6 +83,9 @@ func (c *coreVMCP) authorizeToolCall(
 		return fmt.Errorf("%w: tool %q: %w", vmcp.ErrAuthorizationFailed, name, err)
 	} else if !allowed {
 		return fmt.Errorf("%w: tool %q", vmcp.ErrAuthorizationFailed, name)
+	}
+	if advertised {
+		return c.scopeAuthorization.Check(identity, name)
 	}
 	return nil
 }

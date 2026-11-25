@@ -62,6 +62,44 @@ var _ = Describe("Skills CLI", Label("api", "cli", "skills", "e2e"), func() {
 			_, _, err := thvSkillCmd("validate", emptyDir).Run()
 			Expect(err).To(HaveOccurred(), "validate should fail for directory without SKILL.md")
 		})
+
+		It("should report structured findings in JSON output", func() {
+			skillDir := filepath.Join(GinkgoT().TempDir(), "cli-findings")
+			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(
+				"---\nname: cli-findings\ndescription: test\nallowed-tools: Read, Grep\n---\n# Findings\n",
+			), 0o644)).To(Succeed())
+
+			stdout, _ := thvSkillCmd("validate", "--format", "json", skillDir).ExpectSuccess()
+
+			var result validationResultResponse
+			Expect(json.Unmarshal([]byte(stdout), &result)).To(Succeed())
+			Expect(result.Valid).To(BeTrue())
+			Expect(result.Findings).To(ConsistOf(validationFinding{
+				Severity: "warning",
+				Rule:     "allowed-tools-comma",
+				File:     "SKILL.md",
+				Message:  result.Warnings[0],
+			}))
+		})
+
+		It("should report error findings in JSON output for an invalid skill", func() {
+			emptyDir := GinkgoT().TempDir()
+
+			stdout, _, err := thvSkillCmd("validate", "--format", "json", emptyDir).Run()
+			Expect(err).To(HaveOccurred())
+
+			var result validationResultResponse
+			Expect(json.Unmarshal([]byte(stdout), &result)).To(Succeed())
+			Expect(result.Valid).To(BeFalse())
+			Expect(result.Findings).To(ConsistOf(validationFinding{
+				Severity: "error",
+				Rule:     "skill-md-missing",
+				File:     "SKILL.md",
+				Message:  "SKILL.md not found in skill directory",
+			}))
+			Expect(result.Errors).To(Equal([]string{"SKILL.md not found in skill directory"}))
+		})
 	})
 
 	Describe("thv skill build", func() {

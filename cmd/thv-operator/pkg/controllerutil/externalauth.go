@@ -5,6 +5,8 @@
 package controllerutil
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -66,6 +68,28 @@ func GenerateUniqueXAATargetSecretEnvVarName(configName string) string {
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	sanitized = envVarSanitizer.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_XAA_TARGET_CLIENT_SECRET_%s", sanitized)
+}
+
+// GenerateUniqueOBOSecretEnvVarName generates a unique environment variable name for
+// an OBO client secret mounted into the vMCP pod, incorporating the
+// ExternalAuthConfig name so several OBO backends in one vMCP never collide.
+// Used by both the converter enrichment and the deployment controller for
+// consistent naming. (The proxyrunner pod carries at most one OBO config and
+// uses the fixed obo.ClientSecretEnvVar.)
+//
+// The sanitized, upper-cased name keeps the env var readable, but sanitizing
+// is lossy ("my-cfg" and "my.cfg" both become MY_CFG), so the first 8 hex
+// characters (upper-cased) of the SHA-256 of the raw name are appended to keep
+// distinct config names on distinct env vars.
+//
+// Example: For an ExternalAuthConfig named "my-auth-config", this returns:
+// "TOOLHIVE_OBO_CLIENT_SECRET_MY_AUTH_CONFIG_EB7C1742"
+func GenerateUniqueOBOSecretEnvVarName(configName string) string {
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	sanitized = envVarSanitizer.ReplaceAllString(sanitized, "_")
+	sum := sha256.Sum256([]byte(configName))
+	suffix := strings.ToUpper(hex.EncodeToString(sum[:4]))
+	return fmt.Sprintf("TOOLHIVE_OBO_CLIENT_SECRET_%s_%s", sanitized, suffix)
 }
 
 // Header-forward env-var helpers (constants + name generators + the shared

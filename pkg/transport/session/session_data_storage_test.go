@@ -432,6 +432,19 @@ func TestRedisSessionDataStorage(t *testing.T) {
 		assert.ErrorIs(t, err, ErrSessionNotFound, "LoadMetadata must not have extended the TTL")
 	})
 
+	t.Run("a key holding something else is undecodable, not missing", func(t *testing.T) {
+		t.Parallel()
+		s, mr := newTestRedisDataStorage(t)
+		ctx := context.Background()
+
+		require.NoError(t, mr.Set("test:data:other:feature", "\x00\x01\x02\x03"))
+
+		_, err := s.LoadMetadata(ctx, "other:feature")
+		assert.ErrorIs(t, err, ErrUndecodableSessionData)
+		_, err = s.Load(ctx, "other:feature")
+		assert.ErrorIs(t, err, ErrUndecodableSessionData)
+	})
+
 	t.Run("Create uses SET NX — key format is {prefix}{id}", func(t *testing.T) {
 		t.Parallel()
 		s, mr := newTestRedisDataStorage(t)

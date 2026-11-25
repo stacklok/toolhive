@@ -37,6 +37,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -189,10 +190,22 @@ type Config struct {
 	// If nil, no telemetry is recorded.
 	TelemetryProvider *telemetry.Provider
 
+	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware.
+	// It is applied inside the MCP parsing middleware, which it depends on. If
+	// nil, no usage is reported. ToolHive's own entry points set it
+	// (pkg/vmcp/cli); embedders should leave it nil (see docs/arch/vmcp-library.md).
+	UsageMetricsMiddleware func(http.Handler) http.Handler
+
 	// AuditConfig is the optional audit configuration.
 	// If nil, no audit logging is performed.
 	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
 	AuditConfig *audit.Config
+
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to every
+	// audit event, both the per-request MCP events and the composite-tool
+	// workflow events. It is set from Go only and has no effect when
+	// AuditConfig is nil. See audit.SubjectEnricher.
+	AuditSubjectEnricher audit.SubjectEnricher
 
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
@@ -230,6 +243,9 @@ type Config struct {
 	// code mode may be combined with Authz: a script's inner tool calls are re-authorized
 	// by real name through the core admission seam, so Cedar remains the gate on everything
 	// a script can do. See the codemode.decorator doc for the full rationale.
+	//
+	// When TelemetryProvider is set, New attaches code mode OTel metrics and
+	// spans on a copy: the value passed in is not changed.
 	CodeModeConfig *codemode.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
@@ -264,6 +280,16 @@ type Config struct {
 	// from the HTTP middleware. When non-nil, Name must be non-empty (the Cedar resource
 	// entity name).
 	Authz *authz.Config
+
+	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// The vMCP always enforces a token that carries an authorization_details
+	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
+	// only the one tools/call its entry names, once. CallBinding adds the
+	// clients whose tokens must carry one, the maximum call duration, the
+	// single-use record, and the parameters of the 401 challenge. The zero
+	// value lists no client and keeps the record in memory, on this replica
+	// only. See callbinding.Config.
+	CallBinding callbinding.Config
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -285,6 +311,10 @@ type Server struct {
 	// cfg.Authz != nil after Serve builds the Server. It stays false for direct-Serve
 	// callers, which have no way to configure authorization and run allow-all cores.
 	authzGateEnabled bool
+
+	// callBinding enforces call-bound access tokens (call_binding.go). Serve
+	// always sets it.
+	callBinding *callBinding
 
 	// optimizerFactory builds a per-session optimizer over the core's advertised
 	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
@@ -393,28 +423,9 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		return nil, fmt.Errorf("unsupported session storage provider %q (supported: \"memory\", \"redis\")",
 			cfg.SessionStorage.Provider)
 	}
-	keyPrefix := cfg.SessionStorage.KeyPrefix
-	if keyPrefix == "" {
-		keyPrefix = "thv:vmcp:session:"
-	}
-	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
-	// A set-but-empty password is a misconfiguration (the operator injected the
-	// var from a passwordRef whose secret resolved empty), not a no-auth request.
-	// Fail loudly rather than silently downgrading a store that holds session data.
-	if passwordSet && password == "" {
-		return nil, fmt.Errorf(
-			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
-			vmcpconfig.RedisPasswordEnvVar)
-	}
-	tlsCfg, err := cfg.SessionStorage.TLS.Load()
+	redisCfg, keyPrefix, err := sessionRedisConfig(cfg.SessionStorage)
 	if err != nil {
-		return nil, fmt.Errorf("redis session storage TLS configuration: %w", err)
-	}
-	redisCfg := redisconn.Config{
-		Addr:     cfg.SessionStorage.Address,
-		Password: password,
-		DB:       int(cfg.SessionStorage.DB),
-		TLS:      tlsCfg,
+		return nil, err
 	}
 	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
 	// an unset password is an intended no-auth connection, but the downgrade
@@ -422,7 +433,9 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	// data, so name it either way. Both records carry a "store" attribute matching
 	// the embedded auth server's no-auth WARN (convertRedisRunConfig), so a single
 	// log-based alert can match one key across both Redis consumers.
-	if !passwordSet {
+	// sessionRedisConfig rejects a set-but-empty password, so an empty one here
+	// means the variable is unset.
+	if redisCfg.Password == "" {
 		slog.Warn("vMCP Redis session storage connecting without authentication "+
 			"(THV_SESSION_REDIS_PASSWORD is not set)",
 			"store", cfg.SessionStorage.Address,
@@ -439,6 +452,35 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		)
 	}
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
+}
+
+// sessionRedisConfig resolves the connection and key prefix of Redis session
+// storage, which the optimizer's shared embeddings reuse (withSharedEmbeddings).
+// The password comes from THV_SESSION_REDIS_PASSWORD.
+func sessionRedisConfig(storage *vmcpconfig.SessionStorageConfig) (redisconn.Config, string, error) {
+	keyPrefix := storage.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = "thv:vmcp:session:"
+	}
+	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
+	// A set-but-empty password is a misconfiguration (the operator injected the
+	// var from a passwordRef whose secret resolved empty), not a no-auth request.
+	// Fail loudly rather than silently downgrading a store that holds session data.
+	if passwordSet && password == "" {
+		return redisconn.Config{}, "", fmt.Errorf(
+			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
+			vmcpconfig.RedisPasswordEnvVar)
+	}
+	tlsCfg, err := storage.TLS.Load()
+	if err != nil {
+		return redisconn.Config{}, "", fmt.Errorf("redis session storage TLS configuration: %w", err)
+	}
+	return redisconn.Config{
+		Addr:     storage.Address,
+		Password: password,
+		DB:       int(storage.DB),
+		TLS:      tlsCfg,
+	}, keyPrefix, nil
 }
 
 // New creates a Virtual MCP Server by composing the domain core (core.New) with the
@@ -522,6 +564,16 @@ func New(
 	// never serves one caller's capability view to another.
 	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
+	// Code mode telemetry is built before the core, so a failure here has
+	// nothing to release.
+	codeModeCfg, err := withCodeModeTelemetry(cfg.CodeModeConfig, cfg.TelemetryProvider)
+	if err != nil {
+		return nil, err
+	}
+	if err := registerCodeModeEnabledGauge(cfg.TelemetryProvider, cfg.Name, codeModeCfg != nil); err != nil {
+		return nil, err
+	}
+
 	coreVMCP, err := core.New(deriveCoreConfig(
 		cfg, cachedAgg, rt, backendClient, backendRegistry, workflowDefs,
 		cfg.Authz, elicitation,
@@ -539,8 +591,8 @@ func New(
 	// Serve-layer optimizer (if enabled) indexes it like any other tool, and the script's
 	// inner calls route back through core.CallTool for admission. The decorator delegates
 	// Close to the inner core, so New can release it if Serve fails and srv.Stop owns it on success.
-	if cfg.CodeModeConfig != nil {
-		coreVMCP = codemode.NewDecorator(coreVMCP, cfg.CodeModeConfig)
+	if codeModeCfg != nil {
+		coreVMCP = codemode.NewDecorator(coreVMCP, codeModeCfg)
 	}
 
 	// On the New/Serve path the core is the single aggregator and the source of the
@@ -704,8 +756,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	//   recovery → body-limit → write-timeout → header-validation →
 	//   forwarded-header capture (if PassthroughHeaders is set) →
 	//   audit (if configured) → auth (if configured) → MCP-parsing →
-	//   telemetry (if configured) → host-guard → classification →
-	//   session ownership (Legacy only) → handler
+	//   telemetry (if configured) → host-guard → call binding →
+	//   classification → session ownership (Legacy only) → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
 	//
@@ -749,6 +801,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
 
+	// Enforce access tokens bound to one MCP call. It runs before
+	// classification, so Legacy and Modern requests both pass through it, and
+	// after auth and parsing, whose identity and parsed request it reads. It
+	// is installed whether or not authorization is configured, and runs before
+	// session ownership, the CallGate and Cedar: it can only refuse more. See
+	// call_binding.go.
+	mcpHandler = s.callBindingMiddleware(mcpHandler)
+
 	// DNS-rebinding protection for both MCP revisions. go-sdk's own localhost
 	// check only sees Legacy requests that reach StreamableHTTPHandler;
 	// classifyingHandler hands Modern requests to dispatchModern, and mcpcompat
@@ -760,6 +820,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
 		slog.Info("telemetry middleware enabled for MCP endpoints")
+	}
+
+	// Count tool calls for anonymous usage metrics. It reads the parsed request,
+	// so it sits inside the parsing middleware applied below.
+	if s.config.UsageMetricsMiddleware != nil {
+		mcpHandler = s.config.UsageMetricsMiddleware(mcpHandler)
 	}
 
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
@@ -787,6 +853,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		auditor, err := audit.NewAuditorWithTransport(
 			s.config.AuditConfig,
 			"streamable-http", // vMCP uses streamable HTTP transport
+			audit.WithSubjectEnricher(s.config.AuditSubjectEnricher),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create auditor: %w", err)
@@ -1420,12 +1487,10 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// removes this gate together with the fan-out's.
 	//
 	// Also gated on health monitoring being enabled: with no monitor there is
-	// no OnChange subscription (see Serve), so no fan-out would ever run the
-	// registry's lazy liveness prune — an entry for a session that ends
-	// without a server-observed Terminate (TTL expiry, node-local cache
-	// eviction, which only calls Close) would retain its worker closure (SDK
-	// session, captured identity and forwarded headers) forever. With no
-	// subscriber the registration could never be triggered anyway.
+	// no OnChange subscription (see Serve), so the registration could never be
+	// triggered. It would only retain its worker closure (SDK session, captured
+	// identity and forwarded headers), and with no fan-out the lazy liveness
+	// prune would never run for a session the cache sweep does not reclaim.
 	if s.optimizerFactory == nil && s.backendHealth() != nil {
 		s.healthResync.add(sessionID, toolsResyncWorker)
 	}

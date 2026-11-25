@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -33,7 +34,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -348,6 +348,14 @@ func WithNetworkIsolationExplicit(explicit bool) RunConfigBuilderOption {
 	}
 }
 
+// WithReadOnlyRootfs sets whether to mount the container's root filesystem as read-only
+func WithReadOnlyRootfs(readOnly bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.ReadOnlyRootfs = readOnly
+		return nil
+	}
+}
+
 // WithAllowDockerGateway sets whether to allow outbound connections to Docker gateway addresses
 func WithAllowDockerGateway(allow bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -605,6 +613,25 @@ func WithOIDCConfig(
 			}
 		}
 
+		return nil
+	}
+}
+
+// WithOIDCRequiredSubject restricts the token "sub" claim accepted by the OIDC
+// validator: subject requires an exact match, prefix requires a prefix match.
+// Empty values apply no restriction. It must be applied after WithOIDCConfig;
+// setting a restriction when no OIDC configuration exists is an error, so a
+// subject restriction is never silently dropped.
+func WithOIDCRequiredSubject(subject, prefix string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if subject == "" && prefix == "" {
+			return nil
+		}
+		if b.config.OIDCConfig == nil {
+			return errors.New("OIDC subject restriction requires an OIDC configuration")
+		}
+		b.config.OIDCConfig.RequiredSubject = subject
+		b.config.OIDCConfig.RequiredSubjectPrefix = prefix
 		return nil
 	}
 }

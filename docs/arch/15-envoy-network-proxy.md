@@ -125,16 +125,19 @@ set before they can be selected. Together they cover aliases, CNAMEs, and DNS
 refreshes that resolve to any snapshotted IPv4 gateway. Authority matching also
 blocks direct IPv4 and IPv6 gateway literals, including IPv4-mapped IPv6 forms:
 - Every gateway in a deployment-time snapshot of all daemon bridge networks,
-  plus every Podman host-alias address discovered from the running DNS sidecar.
-  Podman aliases can resolve to non-bridge addresses; no fixed IP is assumed.
+  plus every host-alias address discovered from the running DNS sidecar on
+  Docker and Podman. Aliases can resolve to non-bridge addresses, such as
+  Docker Desktop's VM host address; no fixed IP is assumed.
 - The hostnames `host.docker.internal`, `gateway.docker.internal`, and
   `host.containers.internal`, with an optional port.
 
-Podman discovery reads the running DNS sidecar's runtime-generated `/etc/hosts`
-archive before proxy or MCP setup. DNS and Envoy use bridge mode with the same
-endpoint map; workload mounts do not propagate to these sidecars. Discovery
-fails closed if `host.containers.internal` is missing, including when host
-access is opted in. The protected IP set feeds both authority RBAC and the
+Host discovery reads the running DNS sidecar's runtime-generated `/etc/hosts`
+archive before proxy or MCP setup; on Docker the sidecar carries a
+`host.docker.internal:host-gateway` entry so the daemon writes its host address
+there. DNS and Envoy use bridge mode with the same endpoint map; workload mounts
+do not propagate to these sidecars. Discovery fails closed if the runtime's own
+alias (`host.containers.internal` on Podman, `host.docker.internal` on Docker)
+is missing, including when host access is opted in. The protected IP set feeds both authority RBAC and the
 DFP resolved-address filter unchanged. See
 [host gateway protection](05-runconfig-and-permissions.md#host-gateway-protection-docker-and-podman)
 for the runtime-managed hosts prerequisite and deployment-time snapshot limitations.

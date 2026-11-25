@@ -273,10 +273,18 @@ func (h *Handler) completeDeviceLogin(
 	if !result.Synthetic {
 		user, resolveErr := h.userResolver.ResolveUser(ctx, pending.UpstreamProviderName, result.Subject)
 		if resolveErr != nil {
-			slog.Error("device verification: failed to resolve user", "error", resolveErr)
+			// A refused later upstream is a deliberate denial, not a server fault.
+			if errors.Is(resolveErr, ErrUpstreamCannotCreateUsers) {
+				slog.Warn("device verification: refused user creation through a later upstream", "error", resolveErr)
+			} else {
+				slog.Error("device verification: failed to resolve user", "error", resolveErr)
+			}
 			status, msg := http.StatusInternalServerError, "Something went wrong. Please try again."
-			if errors.Is(resolveErr, storage.ErrUserNotProvisioned) {
+			switch {
+			case errors.Is(resolveErr, storage.ErrUserNotProvisioned):
 				status, msg = http.StatusForbidden, "Your account is not provisioned to use this application."
+			case errors.Is(resolveErr, ErrUpstreamCannotCreateUsers):
+				status, msg = http.StatusForbidden, "This sign-in provider cannot create accounts for this application."
 			}
 			renderError(w, status, msg)
 			return

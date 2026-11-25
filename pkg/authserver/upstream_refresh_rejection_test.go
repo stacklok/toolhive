@@ -16,10 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 // TestUpstreamRefreshRejection_ReachesServiceCallers verifies that an IdP's

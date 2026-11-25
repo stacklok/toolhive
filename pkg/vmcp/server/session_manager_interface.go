@@ -48,8 +48,9 @@ type SessionManager interface {
 
 	// LookupOwner returns the identity binding persisted for sessionID without
 	// restoring the session or contacting backends. An absent or terminated
-	// session yields transportsession.ErrSessionNotFound; a session that has no
-	// owner yet yields an empty binding. Other errors are storage failures.
+	// session, or an ID naming a key that holds no session metadata, yields
+	// transportsession.ErrSessionNotFound; a session that has no owner yet
+	// yields an empty binding. Other errors are storage failures.
 	LookupOwner(ctx context.Context, sessionID string) (string, error)
 
 	// Terminate terminates the session with the given ID, closing all backend connections.

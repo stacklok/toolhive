@@ -35,6 +35,17 @@ func invalidCABundleError(err error) error {
 	return &InvalidCABundleError{err: err}
 }
 
+// InvalidCABundleMessage is the condition Message the workload controllers
+// write for a CA bundle failure. The message must not start with
+// "Referenced MCPExternalAuthConfig ", the prefix the controllers' external
+// auth mirror reserves for conditions copied from a referenced config;
+// isLocalValidationFailure relies on that to tell a local InvalidCABundle
+// condition from a mirrored one. Every writer goes through this helper so
+// there is one format to keep clear of that prefix.
+func InvalidCABundleMessage(err error) string {
+	return fmt.Sprintf("invalid CA bundle: %v", err)
+}
+
 // ResolveCABundle reads and validates a CA bundle referenced by a workload.
 // ConfigMapKeySelector is deliberately resolved here rather than left to pod
 // admission: an optional or malformed reference must never result in a

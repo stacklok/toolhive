@@ -87,9 +87,9 @@ jobs:
           echo "Extracted version: $VERSION from tag: $TAG"
 
       - name: Set up Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
-          version: 'v4.3.1'
+          version: 'v4.3.2'
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3

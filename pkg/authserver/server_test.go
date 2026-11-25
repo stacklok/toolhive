@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -417,6 +418,168 @@ func TestNewServer_TrustedIssuerWithBothGrantsDisabled(t *testing.T) {
 	})
 }
 
+// TestNewServer_JWTBearerGrantAssertionTypeGating pins that AS startup
+// succeeds for every accepted-assertion-types shape except an explicit id_jag
+// without this AS's issuer audience. Both factories are always registered when
+// the grant is enabled.
+func TestNewServer_JWTBearerGrantAssertionTypeGating(t *testing.T) {
+	t.Parallel()
+
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	newTrustedIssuer := func(acceptedAssertionTypes []tokenexchange.JWTBearerAssertionType) tokenexchange.TrustedIssuer {
+		return tokenexchange.TrustedIssuer{
+			IssuerURL:         "https://issuer.example.com",
+			JWKSURL:           jwksServer.URL,
+			InsecureAllowHTTP: true,
+			AllowPrivateIPs:   true,
+			JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+				MaxAssertionAge: "10m",
+				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+					Subject:          "external-subject",
+					AllowedResources: []string{"https://mcp.example.com"},
+				}},
+				AcceptedAssertionTypes: acceptedAssertionTypes,
+				AcceptedAudiences:      []string{"https://example.com"},
+			},
+		}
+	}
+	newConfig := func(issuer tokenexchange.TrustedIssuer) Config {
+		return Config{
+			Issuer:           "https://example.com",
+			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+			Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			TrustedIssuers:   []tokenexchange.TrustedIssuer{issuer},
+		}
+	}
+
+	withAudiences := func(issuer tokenexchange.TrustedIssuer, audiences ...string) tokenexchange.TrustedIssuer {
+		issuer.JWTBearerGrant.AcceptedAudiences = audiences
+		return issuer
+	}
+	idJAG := []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG}
+	plain := []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeJWTBearer}
+	const tokenEndpointOnly = "https://example.com/oauth/token"
+
+	tests := []struct {
+		name    string
+		issuer  tokenexchange.TrustedIssuer
+		wantErr string
+	}{
+		{name: "nil AcceptedAssertionTypes starts", issuer: newTrustedIssuer(nil)},
+		{
+			name:   "nil AcceptedAssertionTypes with only the token endpoint audience starts",
+			issuer: withAudiences(newTrustedIssuer(nil), tokenEndpointOnly),
+		},
+		{name: "id_jag-only AcceptedAssertionTypes starts", issuer: newTrustedIssuer(idJAG)},
+		{name: "jwt_bearer-only AcceptedAssertionTypes starts", issuer: newTrustedIssuer(plain)},
+		{
+			name:   "explicit id_jag with no accepted audiences starts, the issuer is the default",
+			issuer: withAudiences(newTrustedIssuer(idJAG)),
+		},
+		{
+			name:    "explicit id_jag without this AS's issuer audience fails",
+			issuer:  withAudiences(newTrustedIssuer(idJAG), tokenEndpointOnly),
+			wantErr: "accepted_audiences must include the authorization server issuer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv, err := newServer(context.Background(), newConfig(tt.issuer), storage.NewMemoryStorage())
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = srv.Close() })
+			assert.NotNil(t, srv.trustedIssuerValidator,
+				"the JWT-bearer grant consumes the shared trusted-issuer validator")
+		})
+	}
+}
+
+// TestBuildJWTBearerFactories_RegistersBothHandlers pins that the plain and
+// ID-JAG factories are both registered however acceptedAssertionTypes
+// restricts the issuers, so an excluded form is rejected precisely rather than
+// falling through to fosite's generic invalid_request.
+func TestBuildJWTBearerFactories_RegistersBothHandlers(t *testing.T) {
+	t.Parallel()
+
+	jwksURL := testJWKSURL(t)
+	tests := []struct {
+		name     string
+		accepted []tokenexchange.JWTBearerAssertionType
+	}{
+		{name: "unset accepted types", accepted: nil},
+		{name: "id_jag-only", accepted: []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issuers := []tokenexchange.TrustedIssuer{{
+				IssuerURL:         "https://issuer.example.com",
+				JWKSURL:           jwksURL,
+				InsecureAllowHTTP: true,
+				AllowPrivateIPs:   true,
+				JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+					MaxAssertionAge: "10m",
+					SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{
+						{Subject: "s", AllowedResources: []string{"https://mcp.example.com"}},
+					},
+					AcceptedAssertionTypes: tt.accepted,
+					AcceptedAudiences:      []string{"https://example.com"},
+				},
+			}}
+			shared := newTestSharedValidator(t, issuers)
+
+			factories, err := buildJWTBearerFactories(issuers, shared, nil, nil)
+			require.NoError(t, err)
+			assert.Len(t, factories, 2)
+		})
+	}
+}
+
+// testJWKSURL starts a JWKS endpoint with no keys and returns its URL, for
+// trusted issuers whose assertions the test never validates.
+func testJWKSURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// newTestSharedValidator builds the shared trusted-issuer validator for issuers
+// against a throwaway authorization server config.
+func newTestSharedValidator(t *testing.T, issuers []tokenexchange.TrustedIssuer) *tokenexchange.MultiIssuerTokenValidator {
+	t.Helper()
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	asConfig, err := oauthserver.NewAuthorizationServerConfig(&oauthserver.AuthorizationServerParams{
+		Issuer:               "https://example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: 24 * time.Hour,
+		AuthCodeLifespan:     10 * time.Minute,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+		AllowedAudiences:     []string{"https://mcp.example.com"},
+	})
+	require.NoError(t, err)
+	shared, err := tokenexchange.NewSharedTrustedIssuerValidator(asConfig, issuers)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = shared.Close() })
+	return shared
+}
+
 // capturingSlogHandler records log records for assertions. slog's default
 // handler is process-global, so tests using it must not run in parallel with
 // other slog-capturing tests.
@@ -631,7 +794,7 @@ func TestServer_TokenEndpoint_CIMDFetchesAreRateLimited(t *testing.T) {
 	unsignedAssertion := func(sub string) string {
 		enc := base64.RawURLEncoding
 		header := enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
-		claims, err := json.Marshal(map[string]any{"iss": sub, "sub": sub, "jti": "j", "exp": time.Now().Add(time.Hour).Unix()})
+		claims, err := json.Marshal(map[string]any{"iss": sub, "sub": sub, "aud": "https://example.com", "jti": "j", "exp": time.Now().Add(time.Hour).Unix()})
 		require.NoError(t, err)
 		return header + "." + enc.EncodeToString(claims) + "." + enc.EncodeToString([]byte("sig"))
 	}
@@ -727,6 +890,9 @@ func TestServer_TokenEndpoint_CIMDFetchesAreRateLimited(t *testing.T) {
 func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 	t.Parallel()
 
+	spiffeClient := testSPIFFEAssociation("spiffe-client", "openid")
+	spiffeClient.Audiences = []string{"https://mcp.example.com"}
+	spiffeClient.Resources = []string{"https://mcp.example.com"}
 	trust, err := NewSPIFFETrustConfig(
 		[]SPIFFETrustDomainRunConfig{{
 			Name:        "production",
@@ -737,15 +903,7 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 				WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
 			},
 		}},
-		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-			TrustDomainRef:   "production",
-			PrincipalPattern: "spiffe://example.org/ns/default/agent",
-			ClientID:         "spiffe-client",
-			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-			Scopes:           []string{"openid"},
-			Audiences:        []string{"https://mcp.example.com"},
-			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-		}}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{spiffeClient}},
 		[]string{"openid", "profile"},
 		[]string{"https://mcp.example.com"},
 	)
@@ -773,94 +931,6 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 	client, err := decorated.GetClient(context.Background(), "spiffe-client")
 	require.NoError(t, err)
 	assert.Equal(t, "spiffe-client", client.GetID())
-}
-
-func TestNewSPIFFEClientResolver(t *testing.T) {
-	t.Parallel()
-
-	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{
-		testSPIFFEAssociation("client", "openid"),
-	})
-	client, err := registration.NewSPIFFEClient(
-		"client", []string{"openid"}, []string{"https://audience.example.com"}, nil,
-	)
-	require.NoError(t, err)
-
-	tests := []struct {
-		name       string
-		registry   *SPIFFEAssociationRegistry
-		spiffeID   string
-		clientID   string
-		setupStore func(*storagemocks.MockStorage)
-		wantNil    bool
-		wantClient bool
-		wantErr    error
-	}{
-		{
-			name: "nil registry returns nil resolver", registry: nil,
-			wantNil: true,
-		},
-		{
-			name: "resolved association loads client", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "client",
-			setupStore: func(store *storagemocks.MockStorage) {
-				store.EXPECT().GetClient(gomock.Any(), "client").Return(client, nil)
-			},
-			wantClient: true,
-		},
-		{
-			name: "association rejection skips storage", registry: registry,
-			spiffeID: "spiffe://example.org/ns/other/agent", clientID: "client",
-		},
-		{
-			name: "empty client ID resolves via association", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "",
-			setupStore: func(store *storagemocks.MockStorage) {
-				store.EXPECT().GetClient(gomock.Any(), "client").Return(client, nil)
-			},
-			wantClient: true,
-		},
-		{
-			name: "storage error is propagated", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "client",
-			setupStore: func(store *storagemocks.MockStorage) {
-				store.EXPECT().GetClient(gomock.Any(), "client").Return(nil, assert.AnError)
-			},
-			wantErr: assert.AnError,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			store := storagemocks.NewMockStorage(gomock.NewController(t))
-			if tt.setupStore != nil {
-				tt.setupStore(store)
-			}
-			resolver := newSPIFFEClientResolver(tt.registry, store)
-			if tt.wantNil {
-				assert.Nil(t, resolver)
-				return
-			}
-
-			got, err := resolver(
-				context.Background(), tt.spiffeID, tt.clientID, SPIFFEAuthenticationMethodX509,
-			)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-				assert.Nil(t, got)
-				return
-			}
-			if tt.wantClient {
-				require.NoError(t, err)
-				assert.Same(t, client, got)
-				return
-			}
-			require.Error(t, err)
-			assert.Nil(t, got)
-		})
-	}
 }
 
 func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {
@@ -1505,8 +1575,7 @@ func TestStaticSPIFFEClientServedByRegistryIsSecretlessAndNonPublic(t *testing.T
 	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{
 		testSPIFFEAssociation("client", "openid"),
 	})
-	clients, err := registry.staticClients()
-	require.NoError(t, err)
+	clients := registry.staticClients()
 	served := clients["client"]
 	require.NotNil(t, served)
 	_, isOIDC := served.(fosite.OpenIDConnectClient)

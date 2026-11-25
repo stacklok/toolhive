@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ import (
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -1758,6 +1760,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 							TokenEndpoint:         "https://idp.example.com/token",
 							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
 							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
+								ClientName:        "Acme MCP Client",
 								DiscoveryURL:      "https://idp.example.com/.well-known/openid-configuration",
 								SoftwareID:        "toolhive",
 								SoftwareStatement: "jwt-statement",
@@ -1780,6 +1783,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Empty(t, upstream.OAuth2Config.ClientID,
 					"ClientID should be empty when DCRConfig is used")
 				require.NotNil(t, upstream.OAuth2Config.DCRConfig)
+				assert.Equal(t, "Acme MCP Client", upstream.OAuth2Config.DCRConfig.ClientName)
 				assert.Equal(t,
 					"https://idp.example.com/.well-known/openid-configuration",
 					upstream.OAuth2Config.DCRConfig.DiscoveryURL)
@@ -3600,6 +3604,26 @@ func TestBuildAuthServerRunConfig_RejectsNilJWTBearerMaxAssertionAge(t *testing.
 	}
 }
 
+func TestBuildTrustedIssuerRunConfigs_JWTBearerGrantUnsetAssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	configs := buildTrustedIssuerRunConfigs([]mcpv1beta1.TrustedIssuerConfig{{
+		IssuerURL: "https://issuer.example.com",
+		JWTBearerGrant: &mcpv1beta1.JWTBearerGrantConfig{
+			MaxAssertionAge: &metav1.Duration{Duration: 5 * time.Minute},
+			SubjectBindings: []mcpv1beta1.JWTBearerSubjectBinding{{
+				Subject:          "workload-123",
+				AllowedResources: []string{"https://mcp.example.com"},
+			}},
+		},
+	}})
+
+	require.Len(t, configs, 1)
+	require.NotNil(t, configs[0].JWTBearerGrant)
+	assert.Empty(t, configs[0].JWTBearerGrant.AcceptedAssertionTypes,
+		"an unset acceptedAssertionTypes must stay unset so the runtime default (both types) applies")
+}
+
 func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 	t.Parallel()
 
@@ -3612,7 +3636,8 @@ func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 				Subject:          "workload-123",
 				AllowedResources: []string{"https://mcp.example.com"},
 			}},
-			AcceptedAudiences: acceptedAudiences,
+			AcceptedAudiences:      acceptedAudiences,
+			AcceptedAssertionTypes: []mcpv1beta1.JWTBearerAssertionType{mcpv1beta1.JWTBearerAssertionTypeIDJAG},
 		},
 	}})
 
@@ -3624,6 +3649,9 @@ func TestBuildTrustedIssuerRunConfigs_JWTBearerGrant(t *testing.T) {
 		AllowedResources: []string{"https://mcp.example.com"},
 	}}, configs[0].JWTBearerGrant.SubjectBindings)
 	assert.Equal(t, []string{"https://auth.example.com/legacy-token"}, configs[0].JWTBearerGrant.AcceptedAudiences)
+	assert.Equal(t, []tokenexchange.JWTBearerAssertionType{tokenexchange.JWTBearerAssertionTypeIDJAG},
+		configs[0].JWTBearerGrant.AcceptedAssertionTypes,
+		"legacy trustedIssuers[*].jwtBearerGrant.acceptedAssertionTypes must thread through to the runtime policy")
 
 	// The runtime policy must not retain the CRD object's backing slice: the
 	// reconciler may reuse or mutate the source object after conversion.
@@ -3695,34 +3723,94 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 	t.Parallel()
 
-	audiences := []string{"https://mcp.example.com"}
-	scopes := []string{"openid"}
-	resources := []string{"https://backend.example.com"}
-	configs := buildSPIFFEClientAuthRunConfigs([]mcpv1beta1.SPIFFEClientConfig{{
-		TrustDomainRef:   "example",
-		PrincipalPattern: "spiffe://example.org/ns/default/agent",
-		ClientID:         "spiffe-client",
-		Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
-		Resources:        resources,
-		Audiences:        audiences,
-		Scopes:           scopes,
-	}})
+	const (
+		tokenExchange     = "urn:ietf:params:oauth:grant-type:token-exchange"
+		clientCredentials = "client_credentials"
+	)
+	tests := []struct {
+		name       string
+		grantTypes []string
+		resources  []string
+		audiences  []string
+		wantGrants []string
+	}{
+		{
+			name:       "token exchange only association",
+			grantTypes: []string{tokenExchange},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+		{
+			name:       "client credentials only association",
+			grantTypes: []string{clientCredentials},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeClientCredentials},
+		},
+		{
+			name:       "association with both grants",
+			grantTypes: []string{tokenExchange, clientCredentials},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials},
+		},
+		{
+			name:       "nil grantTypes falls back to token exchange",
+			grantTypes: nil,
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+		{
+			name:       "empty grantTypes falls back to token exchange",
+			grantTypes: []string{},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Len(t, configs, 1)
-	assert.Equal(t, "example", configs[0].TrustDomainRef)
-	assert.Equal(t, "spiffe://example.org/ns/default/agent", configs[0].PrincipalPattern)
-	assert.Equal(t, "spiffe-client", configs[0].ClientID)
-	assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, configs[0].Methods)
-	assert.Equal(t, []string{"https://backend.example.com"}, configs[0].Resources)
-	assert.Equal(t, []string{"https://mcp.example.com"}, configs[0].Audiences)
-	assert.Equal(t, []string{"openid"}, configs[0].Scopes)
-	// GrantTypes is not a CRD field; the converter always supplies exactly
-	// the RFC 8693 token-exchange grant.
-	assert.Equal(t, []string{authserver.SPIFFEGrantTypeTokenExchange}, configs[0].GrantTypes)
+			scopes := []string{"openid"}
+			source := mcpv1beta1.SPIFFEClientConfig{
+				TrustDomainRef:   "example",
+				PrincipalPattern: "spiffe://example.org/ns/default/agent",
+				ClientID:         "spiffe-client",
+				Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+				Resources:        slices.Clone(tt.resources),
+				Audiences:        tt.audiences, //nolint:staticcheck // Exercises the deprecated pass-through.
+				Scopes:           scopes,
+				GrantTypes:       tt.grantTypes,
+			}
+			configs := buildSPIFFEClientAuthRunConfigs([]mcpv1beta1.SPIFFEClientConfig{source})
 
-	// The runtime type must not retain the CRD object's backing slices.
-	audiences[0] = "https://mutated.example.com"
-	assert.Equal(t, "https://mcp.example.com", configs[0].Audiences[0])
+			require.Len(t, configs, 1)
+			got := configs[0]
+			assert.Equal(t, "example", got.TrustDomainRef)
+			assert.Equal(t, "spiffe://example.org/ns/default/agent", got.PrincipalPattern)
+			assert.Equal(t, "spiffe-client", got.ClientID)
+			assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, got.Methods)
+			assert.Equal(t, tt.wantGrants, got.GrantTypes)
+			assert.ElementsMatch(t, tt.resources, got.Resources)
+			assert.Equal(t, tt.audiences, got.Audiences)
+			assert.Equal(t, []string{"openid"}, got.Scopes)
+
+			// The runtime type must not retain the CRD object's backing slices.
+			if len(source.GrantTypes) > 0 {
+				source.GrantTypes[0] = "mutated"
+			}
+			scopes[0] = "mutated"
+			source.Audiences[0] = "https://mutated.example.com" //nolint:staticcheck // Exercises the deprecated pass-through.
+			source.Resources[0] = "https://mutated.example.com"
+			assert.Equal(t, tt.wantGrants, got.GrantTypes)
+			assert.ElementsMatch(t, tt.resources, got.Resources)
+			assert.Equal(t, []string{"openid"}, got.Scopes)
+			assert.NotEqual(t, "https://mutated.example.com", got.Audiences[0])
+		})
+	}
 }
 
 // TestBuildAuthServerRunConfigRejectsUnsupportedSPIFFEBundleSource covers the
@@ -3767,7 +3855,9 @@ func TestBuildAuthServerRunConfigRejectsUnsupportedSPIFFEBundleSource(t *testing
 						ClientID:         "spiffe-client",
 						Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
 						Audiences:        []string{"https://mcp.example.com"},
+						Resources:        []string{"https://mcp.example.com"},
 						Scopes:           []string{"openid"},
+						GrantTypes:       []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 					}},
 				},
 			}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
@@ -3819,7 +3909,8 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 					// A custom, non-default scope: rejected by
 					// registration.DefaultScopes but valid once the real
 					// ScopesSupported below is consulted.
-					Scopes: []string{"custom:scope"},
+					Scopes:     []string{"custom:scope"},
+					GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 				}},
 			},
 		}

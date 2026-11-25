@@ -71,6 +71,13 @@ func TestLogAccessError(t *testing.T) {
 			err:       fosite.ErrInvalidRequest,
 			wantLevel: slog.LevelDebug,
 		},
+		{
+			// The issuer-unavailable refusal is a 503 that an unauthenticated
+			// caller can trigger on every request; the validator logs the cause.
+			name:      "503 issuer-unavailable refusal logs at Debug",
+			err:       fosite.ErrTemporarilyUnavailable,
+			wantLevel: slog.LevelDebug,
+		},
 	}
 
 	//nolint:paralleltest // subtests serialize slog.SetDefault/slog.Default swaps; running them in parallel would race on the global default

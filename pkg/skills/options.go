@@ -251,6 +251,9 @@ type ValidationResult struct {
 	Errors []string `json:"errors,omitempty"`
 	// Warnings is a list of non-blocking validation warnings, if any.
 	Warnings []string `json:"warnings,omitempty"`
+	// Findings lists every error and warning with its rule ID and location.
+	// Each Errors or Warnings entry corresponds to exactly one finding.
+	Findings []Finding `json:"findings,omitempty"`
 }
 
 // BuildOptions configures the behavior of the Build operation.

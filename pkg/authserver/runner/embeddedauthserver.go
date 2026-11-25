@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -63,12 +64,33 @@ type embeddedAuthServerOptions struct {
 	accessTokenType              string
 	listenerHost                 string
 	authorizationDetailsRegistry *authorizationdetails.Registry
+	actorTokenValidators         map[string]tokenexchange.ActorValidatorRegistration
 }
 
 // WithAuthorizationDetailsRegistry configures the embedded authorization server
-// to pass the registry to its RFC 8693 token-exchange handler.
+// to pass the registry to its RFC 8693 token-exchange handler and to its
+// ID-JAG redemption handler, which processes an ID-JAG's signed
+// authorization_details claim with it.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) EmbeddedAuthServerOption {
 	return func(options *embeddedAuthServerOptions) { options.authorizationDetailsRegistry = registry }
+}
+
+// WithActorTokenValidators registers the actor-token validators an embedder
+// supplies for ID-JAG issuance, keyed by the name a delegate client's
+// actor_profile.validator selects. Each registration pairs a validator with the
+// ActIssuer ToolHive writes as act.iss for the agents it accepts. Each validator
+// must be safe for concurrent use. The map is copied into the server's Config;
+// names that start with "toolhive." are reserved, and an ActIssuer must pass the
+// checks of authserver.Config.ActorTokenValidators. The server reads the map
+// only at startup. The input is copied when the option is created; repeated
+// options replace the map.
+func WithActorTokenValidators(
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) EmbeddedAuthServerOption {
+	copied := maps.Clone(validators)
+	return func(options *embeddedAuthServerOptions) {
+		options.actorTokenValidators = maps.Clone(copied)
+	}
 }
 
 // WithListenerHost sets the address the TLS listener binds. Callers pass the
@@ -198,6 +220,9 @@ func NewEmbeddedAuthServer(
 	if err := validateAuthorizationDetailsRegistryForRunConfig(cfg, options); err != nil {
 		return nil, err
 	}
+	if err := validateActorProfilesForRunConfig(cfg, options); err != nil {
+		return nil, err
+	}
 	// Create the storage backend FIRST so the DCR resolver and the auth
 	// server share the same persistence. Both MemoryStorage and RedisStorage
 	// satisfy storage.DCRCredentialStore (verified by package-level var _
@@ -297,18 +322,7 @@ func prepareInboundGrantConfiguration(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build SPIFFE trust config: %w", err)
 	}
-	// SPIFFE client authentication exclusively uses the token-exchange grant
-	// (validateSPIFFEGrants enforces this), so configuring any SPIFFE
-	// association implies token-exchange capability independent of
-	// legacy/canonical token-exchange enablement.
-	normalized.Capabilities.TokenExchange = normalized.Capabilities.TokenExchange || hasSPIFFEClientAuth(cfg)
 	return normalized, delegateClients, spiffeTrust, nil
-}
-
-// hasSPIFFEClientAuth reports whether cfg declares any SPIFFE client-auth
-// association.
-func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
-	return cfg.InboundGrants != nil && len(cfg.InboundGrants.SPIFFEClientAuth) > 0
 }
 
 // buildUpstreamFilter constructs an upstreamfilter.UpstreamFilter from the RunConfig,
@@ -379,12 +393,16 @@ func newEmbeddedAuthServerWithStorage(
 	if err != nil {
 		return nil, err
 	}
-	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange {
-		return nil, fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if options.authorizationDetailsRegistry != nil &&
+		!authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
+		return nil, authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	// Refuse a required_subject_claims that cannot be satisfied before upstream
 	// resolution, which may register this server at an upstream via DCR.
 	if err := authserver.ValidateIDJAGSubjectClaimAudiences(delegateClients, options.subjectIdentifierAudiences); err != nil {
+		return nil, err
+	}
+	if err := validateActorProfilesForRunConfig(cfg, options); err != nil {
 		return nil, err
 	}
 
@@ -468,6 +486,7 @@ func newEmbeddedAuthServerWithStorage(
 		DelegationTokenLifespan:                   delegationLifespan,
 		Upstreams:                                 upstreams,
 		ConsentExemptClientIDs:                    slices.Clone(options.consentExemptClientIDs),
+		ActorTokenValidators:                      maps.Clone(options.actorTokenValidators),
 		ScopesSupported:                           slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:                      slices.Clone(cfg.BaselineClientScopes),
 		AllowedAudiences:                          slices.Clone(cfg.AllowedAudiences),
@@ -488,9 +507,8 @@ func newEmbeddedAuthServerWithStorage(
 		// authorization-critical data is protected without a deep copy here.
 		TrustedIssuers:  trustedIssuers,
 		DelegateClients: delegateClients,
-		// SPIFFE client authentication factors into Capabilities.TokenExchange
-		// already (see prepareInboundGrantConfiguration): it exclusively uses
-		// the token-exchange grant, independent of legacy/canonical enablement.
+		// Capabilities.TokenExchange already accounts for SPIFFE associations
+		// that list the token-exchange grant (see NormalizeInboundGrants).
 		DisableTokenExchange:         !normalized.Capabilities.TokenExchange,
 		AuthorizationDetailsRegistry: options.authorizationDetailsRegistry,
 		SPIFFETrust:                  spiffeTrust,
@@ -715,10 +733,17 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 	if err != nil {
 		return fmt.Errorf("normalize inbound grants: %w", err)
 	}
-	if !normalized.Capabilities.TokenExchange {
-		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	if !authserver.AuthorizationDetailsRegistryReachable(normalized.Capabilities.TokenExchange, normalized.TrustedIssuers) {
+		return authserver.ErrAuthorizationDetailsRegistryUnreachable
 	}
 	return nil
+}
+
+// validateActorProfilesForRunConfig runs authserver.ValidateActorProfilesForRunConfig
+// on the registered validators. It fails before upstream work in both constructors,
+// and in NewEmbeddedAuthServer also before storage creation.
+func validateActorProfilesForRunConfig(cfg *authserver.RunConfig, options embeddedAuthServerOptions) error {
+	return authserver.ValidateActorProfilesForRunConfig(cfg, options.actorTokenValidators)
 }
 
 func validateTLSListenerIssuer(cfg *authserver.RunConfig, leaf *x509.Certificate) error {
@@ -1251,6 +1276,10 @@ func loadJWKSFile(path string) (*jose.JSONWebKeySet, error) {
 func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]authserver.DelegateClient, error) {
 	resolved := make([]authserver.DelegateClient, len(clients))
 	for i, client := range clients {
+		lifespan, err := client.AccessTokenLifespanDuration()
+		if err != nil {
+			return nil, err
+		}
 		resolved[i] = authserver.DelegateClient{
 			ClientID:                    client.ClientID,
 			Scopes:                      slices.Clone(client.Scopes),
@@ -1260,6 +1289,7 @@ func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]aut
 			GrantTypes:                  slices.Clone(client.GrantTypes),
 			RedirectURIs:                slices.Clone(client.RedirectURIs),
 			TokenExchange:               client.TokenExchange.Clone(),
+			AccessTokenLifespan:         lifespan,
 		}
 		if client.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			jwks, err := loadJWKSFile(client.JWKSFile)

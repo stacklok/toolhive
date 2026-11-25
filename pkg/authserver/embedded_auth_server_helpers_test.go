@@ -21,12 +21,7 @@ import (
 )
 
 // startEmbeddedAuthServer starts an embedded auth server on a loopback listener
-// with a mock upstream. The issuer is derived from the listener address, so
-// mutate receives it to wire clients, audiences and redirect URIs. The returned
-// issuer is that listener address, not a cfg.Issuer that mutate may have
-// overridden. A nil stor argument lets the server choose its storage from
-// cfg.Storage. The returned stop func is idempotent and also registered with
-// t.Cleanup, so a test can stop the server mid-way to model a restart.
+// with a mock upstream. See startEmbeddedAuthServerOn.
 func startEmbeddedAuthServer(
 	t *testing.T,
 	mutate func(cfg *authserver.RunConfig, issuer string),
@@ -34,10 +29,31 @@ func startEmbeddedAuthServer(
 	opts ...authserverrunner.EmbeddedAuthServerOption,
 ) (server *httptest.Server, issuer string, embedded *authserverrunner.EmbeddedAuthServer, stop func()) {
 	t.Helper()
-
-	upstream := helpers.NewMockUpstreamIDP(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	return startEmbeddedAuthServerOn(t, listener, mutate, stor, opts...)
+}
+
+// startEmbeddedAuthServerOn starts an embedded auth server with a mock upstream
+// on a listener the caller has already bound, so a second server can be
+// configured with this server's issuer before this one starts. The issuer is
+// derived from the listener address, so mutate receives it to wire clients,
+// audiences and redirect URIs. The returned issuer is that listener address,
+// not a cfg.Issuer that mutate may have overridden. A nil stor argument lets the
+// server choose its storage from cfg.Storage. The server takes ownership of the
+// listener. The returned stop func is idempotent and also registered with
+// t.Cleanup, so a test can stop the server mid-way to model a restart.
+func startEmbeddedAuthServerOn(
+	t *testing.T,
+	listener net.Listener,
+	mutate func(cfg *authserver.RunConfig, issuer string),
+	stor storage.Storage,
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) (server *httptest.Server, issuer string, embedded *authserverrunner.EmbeddedAuthServer, stop func()) {
+	t.Helper()
+
+	upstream := helpers.NewMockUpstreamIDP(t)
+	var err error
 	issuer = "http://" + listener.Addr().String()
 
 	cfg := helpers.NewTestAuthServerConfig(t, upstream.URL())

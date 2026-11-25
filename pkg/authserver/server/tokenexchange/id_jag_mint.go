@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,10 +77,15 @@ var idJAGReservedClaims = map[string]struct{}{
 var errIDJAGPolicyDenied = errors.New("ID-JAG request denied by policy")
 
 // idJAGRequestShape is the target and resource of a request that passed
-// checkIDJAGRequest.
+// checkIDJAGRequest, and, for a client with an actor profile, the presented
+// actor token. checkIDJAGRequest checks only that the token is present once;
+// validateActor validates it later. The token type is not carried: checkActorParameters
+// forces it to equal the profile's. The actor token is empty for a client
+// without a profile.
 type idJAGRequestShape struct {
-	Target   IDJAGTarget
-	Resource string
+	Target     IDJAGTarget
+	Resource   string
+	ActorToken string
 }
 
 // idJAGSubject is the user an ID-JAG is minted for: the sub claim and the
@@ -145,8 +151,8 @@ type idJAGPolicyInput struct {
 //
 // The input is a deep copy: a policy may change it, and nothing it changes
 // reaches the minted token or the caller's values. The policy's own error,
-// for a denial or a failure, is wrapped as the cause of the returned error for
-// the caller to log. It is never sent to the client.
+// for a denial or a failure, is wrapped as the cause of the returned error. It
+// is never sent to the client.
 type idJAGPolicy func(ctx context.Context, in idJAGPolicyInput) error
 
 // allowAllIDJAGPolicy allows every request. A caller must pass it explicitly
@@ -160,11 +166,16 @@ func allowAllIDJAGPolicy(context.Context, idJAGPolicyInput) error { return nil }
 // checked: an empty value counts as absent, and a refused parameter is refused
 // if any of its values is non-empty, since fosite reads only the first.
 // audience and resource are read from the raw form, so a value with spaces is
-// one value. The audience must equal a configured target issuer exactly; it is
-// not normalized. A target the client has not
-// configured, whether unknown or configured for another client, and a resource
-// the target does not list all get the same invalid_target error. Unknown
-// parameters are ignored.
+// one value. More than one audience is invalid_request, as section 4.3.3 of
+// draft-ietf-oauth-identity-assertion-authz-grant requires. The audience must
+// equal a configured target issuer exactly; it is not normalized. A target the
+// client has not configured, whether unknown or configured for another client,
+// and a resource the target does not list all get the same invalid_target
+// error. Unknown parameters are ignored.
+//
+// A client with an actor profile must send actor_token and actor_token_type
+// instead of having them refused; see checkIDJAGExtraParameters. The target
+// check comes after them.
 //
 // Every refusal here carries a hint, never a stable reason, so it returns only
 // the error to send.
@@ -179,7 +190,7 @@ func checkIDJAGRequest(form url.Values, policy ConfiguredClientPolicy) (idJAGReq
 			"The 'audience' parameter is required when requesting an ID-JAG."))
 	}
 	if len(audiences) > 1 {
-		return idJAGRequestShape{}, errorsx.WithStack(server.ErrInvalidTarget.WithHint(
+		return idJAGRequestShape{}, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The 'audience' parameter must have exactly one value when requesting an ID-JAG."))
 	}
 	resources := nonEmptyValues(form["resource"])
@@ -187,7 +198,8 @@ func checkIDJAGRequest(form url.Values, policy ConfiguredClientPolicy) (idJAGReq
 		return idJAGRequestShape{}, errorsx.WithStack(server.ErrInvalidTarget.WithHint(
 			"The 'resource' parameter must have exactly one value when requesting an ID-JAG."))
 	}
-	if err := refuseIDJAGParameters(form); err != nil {
+	actorToken, err := checkIDJAGExtraParameters(form, policy.ActorProfile)
+	if err != nil {
 		return idJAGRequestShape{}, err
 	}
 	target, ok := policy.IDJAGTargets[audiences[0]]
@@ -195,31 +207,59 @@ func checkIDJAGRequest(form url.Values, policy ConfiguredClientPolicy) (idJAGReq
 		return idJAGRequestShape{}, errorsx.WithStack(server.ErrInvalidTarget.WithHint(
 			"The 'audience' and 'resource' parameters do not name a target this client may request an ID-JAG for."))
 	}
-	return idJAGRequestShape{Target: target, Resource: resources[0]}, nil
+	return idJAGRequestShape{Target: target, Resource: resources[0], ActorToken: actorToken}, nil
 }
 
-// refuseIDJAGParameters refuses the parameters an ID-JAG request may not carry
-// yet, checking every value of each.
-func refuseIDJAGParameters(form url.Values) error {
+// checkIDJAGExtraParameters checks the parameters beyond subject_token, audience
+// and resource, checking every value of each. scope and authorization_details
+// are refused for every client.
+//
+// Without a profile, actor_token and actor_token_type are refused too, and the
+// returned actor token is empty. With a profile they are required instead, by
+// checkActorParameters, and the actor token is returned.
+func checkIDJAGExtraParameters(form url.Values, profile *ActorProfile) (string, error) {
 	if len(nonEmptyValues(form["scope"])) > 0 {
-		return errorsx.WithStack(fosite.ErrInvalidScope.WithHint(
+		return "", errorsx.WithStack(fosite.ErrInvalidScope.WithHint(
 			"The 'scope' parameter is not supported when requesting an ID-JAG."))
 	}
 	if len(nonEmptyValues(form["authorization_details"])) > 0 {
-		return errorsx.WithStack(invalidAuthorizationDetailsError().WithHint(
+		return "", errorsx.WithStack(invalidAuthorizationDetailsError().WithHint(
 			"The 'authorization_details' parameter is not supported when requesting an ID-JAG."))
 	}
+	if profile != nil {
+		return checkActorParameters(form, profile)
+	}
 	if len(nonEmptyValues(form["actor_token"])) > 0 {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The 'actor_token' parameter is not supported when requesting an ID-JAG."))
 	}
 	// actor_token has no non-empty value here, so any actor_token_type is alone
 	// (RFC 8693 section 2.1).
 	if len(nonEmptyValues(form["actor_token_type"])) > 0 {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The 'actor_token_type' parameter must not be given without 'actor_token'."))
 	}
-	return nil
+	return "", nil
+}
+
+// checkActorParameters requires the actor token and its type for a client with
+// a profile. "Exactly one" counts every value, empty ones included: the
+// parameter must appear once, and that value must contain a character other
+// than white space. The value is passed on unchanged. A repeated
+// parameter is refused even when only one of its values is non-empty, since
+// fosite reads only the first. actor_token_type must also equal the profile's
+// type exactly. Nothing from the request is echoed.
+func checkActorParameters(form url.Values, profile *ActorProfile) (string, error) {
+	tokens := form["actor_token"]
+	if len(tokens) != 1 || strings.TrimSpace(tokens[0]) == "" {
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'actor_token' parameter is required, once, for this client."))
+	}
+	if types := form["actor_token_type"]; len(types) != 1 || types[0] != profile.ActorTokenType {
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'actor_token_type' parameter must name the token type configured for this client, once."))
+	}
+	return tokens[0], nil
 }
 
 // selectSubjectClaims picks the subject claims the target requires from the
@@ -236,7 +276,7 @@ func selectSubjectClaims(
 	for _, token := range target.RequiredSubjectClaims {
 		claim, ok := idJAGSubjectClaims[token]
 		if !ok {
-			return nil, refuseInternal, mintFailed(fmt.Errorf("unknown required subject claim %q", token))
+			return nil, refuseInternal, serverFailure(hintMintFailed, fmt.Errorf("unknown required subject claim %q", token))
 		}
 		value := bytes.TrimSpace(available[claim.wireKey])
 		if len(value) == 0 || bytes.Equal(value, []byte("null")) {
@@ -262,14 +302,14 @@ var _ idJAGSigner = (*server.Signer)(nil)
 // Claim selection and the policy always run before signing. It returns the
 // minted token, and on refusal the reason with the error to send: a stable
 // reason for a client refusal, refuseInternal for an internal failure. The
-// error wraps the cause for the caller to log once; respondWithIDJAG does not
-// log.
+// error of an internal failure carries the cause as its debug field, which the
+// token endpoint logs; respondWithIDJAG does not log.
 func respondWithIDJAG(
 	ctx context.Context, signer idJAGSigner, policy idJAGPolicy,
 	m idJAGMint, responder fosite.AccessResponder, now time.Time,
 ) (mintedIDJAG, string, error) {
 	if policy == nil {
-		return mintedIDJAG{}, refuseInternal, mintFailed(errors.New("ID-JAG policy not configured"))
+		return mintedIDJAG{}, refuseInternal, serverFailure(hintMintFailed, errors.New("ID-JAG policy not configured"))
 	}
 	selected, reason, err := selectSubjectClaims(m.Target, m.Subject.Claims)
 	if err != nil {
@@ -287,7 +327,7 @@ func respondWithIDJAG(
 		return mintedIDJAG{}, reasonPolicyDenied, errorsx.WithStack(
 			exactReason(fosite.ErrInvalidRequest.ErrorField, reasonPolicyDenied).WithWrap(err))
 	case err != nil:
-		return mintedIDJAG{}, refuseInternal, mintFailed(fmt.Errorf("ID-JAG policy failed: %w", err))
+		return mintedIDJAG{}, refuseInternal, serverFailure(hintMintFailed, fmt.Errorf("ID-JAG policy failed: %w", err))
 	}
 	if reason, err := checkIDJAGBoundsOpen(m, now); err != nil {
 		return mintedIDJAG{}, reason, err
@@ -312,7 +352,8 @@ func respondWithIDJAG(
 // subject_token.
 func checkIDJAGBoundsOpen(m idJAGMint, now time.Time) (string, error) {
 	if now.Add(m.Target.Lifetime).Unix() <= now.Unix() {
-		return refuseInternal, mintFailed(fmt.Errorf("target lifetime %s does not reach the next second", m.Target.Lifetime))
+		return refuseInternal, serverFailure(hintMintFailed,
+			fmt.Errorf("target lifetime %s does not reach the next second", m.Target.Lifetime))
 	}
 	if idJAGExpiry(now, m.Target.Lifetime, m.NotAfter) <= now.Unix() {
 		return reasonBoundElapsed, errorsx.WithStack(
@@ -327,7 +368,7 @@ func checkIDJAGBoundsOpen(m idJAGMint, now time.Time) (string, error) {
 // integers; exp is the floor of the earliest of now plus the target lifetime
 // and every non-zero NotAfter. There is no nbf, and act is present only when
 // set. Every error is a server_error with no detail for the client; the cause
-// is wrapped for the caller's log.
+// is its debug field, which the token endpoint logs.
 // It signs only the selected subject claims, never m.Subject.Claims. It checks
 // each claim's name against the allowlist and the reserved names, and its value
 // shape, but not that the claims match the target's RequiredSubjectClaims:
@@ -336,22 +377,22 @@ func mintIDJAG(
 	ctx context.Context, signer idJAGSigner, m idJAGMint, selected map[string]json.RawMessage, now time.Time,
 ) (mintedIDJAG, error) {
 	if err := checkIDJAGMint(m); err != nil {
-		return mintedIDJAG{}, mintFailed(err)
+		return mintedIDJAG{}, serverFailure(hintMintFailed, err)
 	}
 	claims, err := idJAGSubjectClaimSet(selected)
 	if err != nil {
-		return mintedIDJAG{}, mintFailed(err)
+		return mintedIDJAG{}, serverFailure(hintMintFailed, err)
 	}
 
 	issuedAt := now.Unix()
 	exp := idJAGExpiry(now, m.Target.Lifetime, m.NotAfter)
 	if !time.Unix(exp, 0).After(now) {
-		return mintedIDJAG{}, mintFailed(errors.New("exp is not after now"))
+		return mintedIDJAG{}, serverFailure(hintMintFailed, errors.New("exp is not after now"))
 	}
 
 	jti, err := randomJTI()
 	if err != nil {
-		return mintedIDJAG{}, mintFailed(fmt.Errorf("jti: %w", err))
+		return mintedIDJAG{}, serverFailure(hintMintFailed, fmt.Errorf("jti: %w", err))
 	}
 
 	claims["iss"] = m.Issuer
@@ -368,7 +409,7 @@ func mintIDJAG(
 
 	token, err := signer.SignIDJAG(ctx, claims)
 	if err != nil {
-		return mintedIDJAG{}, mintFailed(fmt.Errorf("signing: %w", err))
+		return mintedIDJAG{}, serverFailure(hintMintFailed, fmt.Errorf("signing: %w", err))
 	}
 	return mintedIDJAG{Token: token, JTI: jti, IssuedAt: time.Unix(issuedAt, 0), ExpiresAt: time.Unix(exp, 0)}, nil
 }
@@ -441,11 +482,8 @@ func idJAGExpiry(now time.Time, lifetime time.Duration, notAfter []time.Time) in
 	return expiresAt.Unix()
 }
 
-// mintFailed is the server_error for a failure the client cannot act on. The
-// cause is wrapped for the caller to log and is never sent.
-func mintFailed(cause error) error {
-	return errorsx.WithStack(fosite.ErrServerError.WithHint("The ID-JAG could not be minted.").WithWrap(cause))
-}
+// hintMintFailed is the client-visible hint when an ID-JAG could not be minted.
+const hintMintFailed = "The ID-JAG could not be minted."
 
 func randomJTI() (string, error) {
 	id, err := uuid.NewRandom()

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -60,8 +61,7 @@ func testDelegateClient(t *testing.T, id, secret string, scopes, audience []stri
 // claims for a static SPIFFE client, with the given association identity.
 func testPlaceholder(t *testing.T, id, identity string, scopes, resources []string) fosite.Client {
 	t.Helper()
-	spiffe, err := registration.NewSPIFFEClient(id, scopes, []string{"https://api.example.com"}, resources)
-	require.NoError(t, err)
+	spiffe := spiffetest.Client(t, spiffetest.WithID(id), spiffetest.WithScopes(scopes...), spiffetest.WithResources(resources...))
 	return staticClientPlaceholder(testIdentityClient{SPIFFEClient: spiffe, identityFingerprint: identity})
 }
 

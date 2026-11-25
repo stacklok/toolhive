@@ -56,6 +56,12 @@ type Handler struct {
 	config    *server.AuthorizationServerConfig
 	storage   storage.Storage
 	upstreams []NamedUpstream
+	// continuationFallback is the client store below the CIMD decorator (the
+	// client-admission layer when present, else the innermost store; see
+	// storage.ClientStoreBelowCIMD), selected once at construction.
+	// callbackClient reads it only when the CIMD fetch limiter refuses the
+	// ordinary lookup.
+	continuationFallback fosite.ClientManager
 	// tokenOnly is derived at construction from the absence of upstreams and is
 	// the single source of truth for token-only capability behavior.
 	tokenOnly    bool
@@ -243,15 +249,16 @@ func NewHandler(
 		seen[u.Name] = struct{}{}
 	}
 	h := &Handler{
-		provider:           provider,
-		config:             config,
-		storage:            stor,
-		upstreams:          upstreams,
-		tokenOnly:          len(upstreams) == 0,
-		userResolver:       NewUserResolver(stor),
-		registerLimiter:    rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
-		meterProvider:      otel.GetMeterProvider(),
-		deviceCodeInterval: deviceCodeInterval(config.DeviceCodeInterval),
+		provider:             provider,
+		config:               config,
+		storage:              stor,
+		upstreams:            upstreams,
+		tokenOnly:            len(upstreams) == 0,
+		userResolver:         newUserResolver(stor, upstreams),
+		continuationFallback: storage.ClientStoreBelowCIMD(stor),
+		registerLimiter:      rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
+		meterProvider:        otel.GetMeterProvider(),
+		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
 	}
 	if config.DeviceFlowEnabled {
 		// Same rate as registerLimiter's default: this gate protects the same kind of
@@ -390,6 +397,17 @@ func (h *Handler) initConsentExemptions() error {
 	}
 	h.consentExemptClientIDs = nil
 	return nil
+}
+
+// newUserResolver builds the resolver for the configured upstreams. Only the
+// first upstream creates users. Every login chain starts there, and later
+// upstreams carry the user it resolved, so a later upstream's identity may resolve
+// through an existing link but never creates a user or link.
+func newUserResolver(stor storage.UserStorage, upstreams []NamedUpstream) *UserResolver {
+	if len(upstreams) == 0 {
+		return NewUserResolver(stor)
+	}
+	return NewUserResolver(stor, WithCreateOnlyFor(upstreams[0].Name))
 }
 
 // limiterRetryAfterSeconds returns the Retry-After value for a request l

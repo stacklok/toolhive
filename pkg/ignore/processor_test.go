@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewProcessor(t *testing.T) {
@@ -386,6 +388,136 @@ func TestGetOverlayMounts(t *testing.T) {
 	}
 }
 
+func TestGetOverlayMountsConfinedToMount(t *testing.T) {
+	t.Parallel()
+
+	// Layout:
+	//   root/ws/sub/secret        inside the mount
+	//   root/ws/alias -> sub      symlink that stays inside the mount
+	//   root/ws/link  -> outside  symlink that leaves the mount
+	//   root/outside/secret       outside the mount
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	outside := filepath.Join(root, "outside")
+	require.NoError(t, os.MkdirAll(filepath.Join(ws, "sub"), 0o750))
+	require.NoError(t, os.MkdirAll(outside, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "sub", "secret"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), nil, 0o600))
+	require.NoError(t, os.Symlink("sub", filepath.Join(ws, "alias")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(ws, "link")))
+	require.NoError(t, os.Symlink("missing", filepath.Join(ws, "dangling")))
+
+	testCases := []struct {
+		name     string
+		pattern  string
+		expected []string
+	}{
+		{name: "path inside the mount", pattern: "sub/secret", expected: []string{"/app/sub/secret"}},
+		{name: "symlink inside the mount maps to its target", pattern: "alias/secret", expected: []string{"/app/sub/secret"}},
+		{name: "parent directory", pattern: "..", expected: nil},
+		{name: "mount root", pattern: ".", expected: nil},
+		{name: "mount root through a subdirectory", pattern: "sub/..", expected: nil},
+		{name: "dangling symlink inside the mount", pattern: "dangling", expected: nil},
+		{name: "sibling directory", pattern: "../outside", expected: nil},
+		{name: "file beyond the mount", pattern: "../outside/secret", expected: nil},
+		{name: "directory pattern beyond the mount", pattern: "../outside/", expected: nil},
+		{name: "glob beyond the mount", pattern: "../out*", expected: nil},
+		{name: "deep traversal clamped at root", pattern: "../../../../../../../../../../../../" + outside, expected: nil},
+		{name: "symlink leaving the mount", pattern: "link", expected: nil},
+		{name: "path through a symlink leaving the mount", pattern: "link/secret", expected: nil},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			processor := NewProcessor(&Config{})
+			t.Cleanup(func() { _ = processor.Cleanup() })
+			processor.LocalPatterns = []string{tc.pattern}
+
+			var got []string
+			for _, m := range processor.GetOverlayMounts(ws, "/app") {
+				got = append(got, m.ContainerPath)
+			}
+			require.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+func TestResolveWithin(t *testing.T) {
+	t.Parallel()
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	inside := filepath.Join(root, "ws")
+	require.NoError(t, os.Mkdir(inside, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(inside, "file"), nil, 0o600))
+	require.NoError(t, os.Symlink("missing", filepath.Join(inside, "dangling")))
+	require.NoError(t, os.Symlink(root, filepath.Join(inside, "up")))
+
+	testCases := []struct {
+		name      string
+		matchPath string
+		wantReal  string
+		wantRel   string
+		wantErr   error
+	}{
+		{name: "match inside the mount", matchPath: filepath.Join(inside, "file"),
+			wantReal: filepath.Join(inside, "file"), wantRel: "file"},
+		{name: "mount root itself", matchPath: inside, wantReal: inside, wantRel: "."},
+		{name: "symlink out of the mount", matchPath: filepath.Join(inside, "up"), wantErr: errOutsideMount},
+		{name: "dangling symlink", matchPath: filepath.Join(inside, "dangling"), wantErr: os.ErrNotExist},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			realMatch, rel, err := resolveWithin(inside, tc.matchPath)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantReal, realMatch)
+			require.Equal(t, tc.wantRel, rel)
+		})
+	}
+}
+
+func TestGetOverlayMountsMissingMount(t *testing.T) {
+	t.Parallel()
+	processor := NewProcessor(&Config{})
+	processor.LocalPatterns = []string{"file"}
+	require.Empty(t, processor.GetOverlayMounts(filepath.Join(t.TempDir(), "missing"), "/app"))
+}
+
+func TestRelWithin(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		dir     string
+		target  string
+		wantRel string
+		wantOK  bool
+	}{
+		{name: "child", dir: "/app", target: "/app/a/b", wantRel: "a/b", wantOK: true},
+		{name: "same directory", dir: "/app", target: "/app", wantRel: ".", wantOK: true},
+		{name: "name starting with dots", dir: "/app", target: "/app/..hidden", wantRel: "..hidden", wantOK: true},
+		{name: "parent", dir: "/app", target: "/"},
+		{name: "sibling", dir: "/app", target: "/apple"},
+		{name: "relative target against absolute dir", dir: "/app", target: "app/x"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rel, ok := relWithin(tc.dir, tc.target)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.wantRel, rel)
+		})
+	}
+}
+
 func TestProcessorCleanup(t *testing.T) {
 	t.Parallel()
 	// Create test directory structure
@@ -520,4 +652,44 @@ func TestGetOverlayMountsConcurrentCleanup(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestGetMatchingPathsWildcardDirectoryPattern(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	for _, name := range []string{"secrets-prod", "secrets-dev"} {
+		if err := os.Mkdir(filepath.Join(tmpDir, name), 0o755); err != nil {
+			t.Fatalf("Failed to create directory %s: %v", name, err)
+		}
+	}
+	// A same-prefix file must NOT match a directory-only pattern (trailing
+	// slash), so this also pins the directory-only filtering.
+	if err := os.WriteFile(filepath.Join(tmpDir, "secrets.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("Failed to create secrets.txt: %v", err)
+	}
+
+	processor := NewProcessor(&Config{LoadGlobal: false})
+
+	got := processor.getMatchingPaths(tmpDir, "secrets-*/")
+	want := []string{
+		filepath.Join(tmpDir, "secrets-prod"),
+		filepath.Join(tmpDir, "secrets-dev"),
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("getMatchingPaths(%q) returned %d paths, want %d: %v", "secrets-*/", len(got), len(want), got)
+	}
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			if g == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("getMatchingPaths(%q) missing %q; got %v", "secrets-*/", w, got)
+		}
+	}
 }

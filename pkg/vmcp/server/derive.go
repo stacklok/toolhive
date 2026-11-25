@@ -87,9 +87,12 @@ func deriveServerConfig(
 		BackendRegistry:         backendRegistry,
 		SessionStorage:          cfg.SessionStorage,
 		SessionManagerConfig:    sessionManagerConfig,
+		UsageMetricsMiddleware:  cfg.UsageMetricsMiddleware,
 		// Cross-cutting (also on core.Config) — R3, not a clean partition:
-		TelemetryProvider: cfg.TelemetryProvider,
-		AuditConfig:       cfg.AuditConfig,
+		TelemetryProvider:    cfg.TelemetryProvider,
+		AuditConfig:          cfg.AuditConfig,
+		AuditSubjectEnricher: cfg.AuditSubjectEnricher,
+		CallBinding:          cfg.CallBinding,
 	}
 }
 
@@ -103,8 +106,9 @@ func deriveServerConfig(
 //     legacy HTTP authz path threads through (cli/serve.go passes vmcpCfg.Name). The raw
 //     name is used (not the transport default) so authorization keys on the real
 //     VirtualMCPServer name rather than the synthetic "toolhive-vmcp" fallback.
-//   - TelemetryProvider / AuditConfig — the cross-cutting fields shared with the transport
-//     (R3, not a clean partition); deriveServerConfig copies the same two.
+//   - TelemetryProvider / AuditConfig / AuditSubjectEnricher — the cross-cutting fields
+//     shared with the transport (R3, not a clean partition); deriveServerConfig copies the
+//     same three.
 //
 // Everything else is a collaborator passed through rather than reached out of cfg: the
 // aggregator, router, backend client, backend registry, and workflow definitions that
@@ -133,9 +137,10 @@ func deriveCoreConfig(
 		Authz:           authzCfg,
 		ServerName:      cfg.Name,
 		// Cross-cutting (also on ServerConfig) — R3, not a clean partition:
-		TelemetryProvider:   cfg.TelemetryProvider,
-		AuditConfig:         cfg.AuditConfig,
-		HealthMonitorConfig: cfg.HealthMonitorConfig,
-		Elicitation:         elicitation,
+		TelemetryProvider:    cfg.TelemetryProvider,
+		AuditConfig:          cfg.AuditConfig,
+		AuditSubjectEnricher: cfg.AuditSubjectEnricher,
+		HealthMonitorConfig:  cfg.HealthMonitorConfig,
+		Elicitation:          elicitation,
 	}
 }

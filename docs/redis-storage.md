@@ -372,7 +372,7 @@ For how configured (delegate and SPIFFE) client rows behave across restarts and 
 
 A delegate client removed from config stops being served after the next restart. It gets `invalid_client` at the token endpoint. Its row is not deleted, and access tokens already issued to it stay valid until they expire. To delete the row, run `DEL {prefix}client:{client_id}`. A newly added delegate gets `invalid_client` on any replica that runs client admission but still has the old config. See "Client admission" in [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
 
-A pending consent or upstream callback for a removed client also gets `invalid_client`, and the device verification page refuses it. The same happens to any client whose lookup ends in not-found, including a CIMD client whose metadata document fetch fails transiently; storage and transport failures answer HTTP 500.
+A pending consent or upstream callback for a removed client also gets `invalid_client`, and the device verification page refuses it. The same happens to any client whose lookup ends in not-found, including a CIMD client whose metadata document fetch fails transiently with no servable cache entry; storage and transport failures answer HTTP 500.
 
 When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap before upgrading. Backfilled rows keep their existing TTL of up to 30 days. With the operator, `storage.maxDCRClients` exists only in the new CRDs, so upgrade in this order:
 
@@ -386,7 +386,7 @@ When upgrading to the release that adds the 60 second clock margin for `private_
 
 When upgrading to the release that adds upstream subject identifiers (`sub_id` and the `https://toolhive.dev/upstream_subject` claim), see [Storage and upgrades](arch/11-auth-server-storage.md#storage-and-upgrades): replicas running an older version drop the stored upstream identity during a rolling upgrade or after a rollback, and can issue a stored `sub_id` or upstream subject claim again without checking the disclosure setting.
 
-The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, so on Redis Cluster the key prefix must contain a `{...}` hash tag; a prefix without one fails every DCR registration with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
+The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, and a user's first login links the upstream identity with one Lua script that touches `{prefix}user:{user_id}`, `{prefix}provider:...` and `{prefix}user:providers:{user_id}`. On Redis Cluster the key prefix must therefore contain a `{...}` hash tag; a prefix without one fails every DCR registration and every first login with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
 ### Secondary Indexes
 
@@ -405,7 +405,7 @@ These indexes enable grant-wide operations like token revocation (finding all to
 
 The storage implementation uses different strategies depending on the consistency requirements of each operation:
 
-- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates
+- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates, provider identity linking (user check, set-if-absent link, and reverse-index entry)
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation. These operations use `SMEMBERS` + individual `DEL` calls, meaning partial failures are possible but safe (orphaned keys expire via TTL)
 

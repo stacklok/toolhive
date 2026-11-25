@@ -420,6 +420,12 @@ type PendingAuthorization struct {
 	// connect a single specific provider without other configured-but-tokenless
 	// upstreams hijacking the flow into a full chain walk. Defaults to false, which
 	// preserves the multi-upstream chaining behavior.
+	//
+	// Only the first upstream creates users. A SingleLeg authorization against a
+	// later upstream without ResolvedUserID is resolved by lookup: it succeeds when
+	// that upstream's identity is already linked to a user, and is refused with
+	// access_denied, creating nothing, when it is not. Callers that connect a
+	// downstream provider for a signed-in user should set ResolvedUserID.
 	SingleLeg bool
 
 	// ChainUpstreams is the ordered, effective set of upstream provider names this
@@ -1025,12 +1031,13 @@ type clientFingerprint struct {
 	// fosite.OpenIDConnectClient, including unpinned secret clients and
 	// reserved placeholders.
 	tokenEndpointAuthMethod string
-	// resources is the RFC 8707 resource allowlist, distinct from audience
-	// (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
+	// resources is the RFC 8707 resource allowlist, the only target list a
+	// SPIFFE client has (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
 	// carry it: buildStoredClient persists it for them alone.
 	resources []string
-	// identityFingerprint is the SPIFFE association hash. Like resources, it
-	// is only populated for reserved rows.
+	// identityFingerprint is the SPIFFE association hash, covering trust
+	// domain ref, principal, grant types and methods. Like resources, it is
+	// only populated for reserved rows.
 	identityFingerprint string
 	public              bool
 	// reserved marks a SPIFFE static-client placeholder, as opposed to an

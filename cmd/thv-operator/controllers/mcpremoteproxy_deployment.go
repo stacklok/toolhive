@@ -73,7 +73,11 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 		env = append(env, authServerEnvVars...)
 	}
-	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
+	resources, err := resourceRequirementsForRemoteProxy(proxy)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build resource requirements")
+		return nil
+	}
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
 	if configName != "" {
@@ -148,6 +152,19 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 		return nil
 	}
 	return dep
+}
+
+// resourceRequirementsForRemoteProxy returns effective container resources for
+// an MCPRemoteProxy: proxy-runner defaults, overridden per field by
+// spec.resources and then by any resources podTemplateSpec sets on the proxy
+// container.
+func resourceRequirementsForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) (corev1.ResourceRequirements, error) {
+	return ctrlutil.BuildContainerResourceRequirements(
+		ctrlutil.BuildDefaultProxyRunnerResourceRequirements(),
+		proxy.Spec.Resources,
+		proxy.Spec.PodTemplateSpec,
+		mcpRemoteProxyContainerName,
+	)
 }
 
 // buildContainerArgs builds the container arguments for the proxy
@@ -291,10 +308,9 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 			env = append(env, bearerTokenEnvVars...)
 		}
 
-		// Add OBO secret environment variables. Dispatched through the
-		// registered OBO handler; inert (no env vars) in builds without one.
-		// This function feeds both the deployment builder and containerNeedsUpdate,
-		// so builder/drift symmetry is automatic.
+		// Add OBO secret environment variables (none unless the referenced
+		// config is obo-typed). This function feeds both the deployment builder
+		// and containerNeedsUpdate, so builder/drift symmetry is automatic.
 		oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
 			ctx,
 			r.Client,

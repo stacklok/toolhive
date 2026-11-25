@@ -42,7 +42,9 @@ ToolHive supports five ways to run an MCP server:
    Automatically generates a container that runs the specified package
    using either uvx (Python with uv package manager), npx (Node.js),
    or go (Golang). For Go, you can also specify local paths starting
-   with './' or '../' to build and run local Go projects.
+   with './' or '../' to build and run local Go projects. Without
+   --transport or a registry entry, uvx:// packages use the stdio
+   transport, unless --target-port or --stateless is set.
 
 4. From an exported configuration:
 
@@ -162,6 +164,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-port int                                     Port for the HTTP proxy to listen on (host port)
       --proxy-read-timeout duration                        Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)
   -p, --publish stringArray                                Publish a container's port(s) to the host (format: hostPort:containerPort)
+      --read-only-rootfs[=true|false]                      Mount the MCP server container's root filesystem as read-only (Docker/Podman only). /tmp, /var/tmp and /run get a 64 MiB noexec tmpfs unless a volume already targets them; servers that write anywhere else outside their mounted volumes will fail.
       --remote-auth[=true|false]                           Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string                   OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-bearer-token string                    Bearer token for remote server authentication (alternative to OAuth)
@@ -199,7 +202,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --token-exchange-url string                          OAuth 2.0 token exchange endpoint URL (enables token exchange when provided)
       --tools stringArray                                  Filter MCP server tools (comma-separated list of tool names)
       --tools-override string                              Path to a JSON file containing overrides for MCP server tools names and descriptions
-      --transport string                                   Transport mode (sse, streamable-http or stdio)
+      --transport string                                   Transport mode (sse, streamable-http or stdio); defaults to the registry's transport, else stdio for uvx:// packages (unless --target-port or --stateless is set), else streamable-http
       --trust-proxy-headers[=true|false]                   Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) (default false)
   -v, --volume stringArray                                 Mount a volume into the container (format: host-path:container-path[:ro])
       --webhook-config stringArray                         Path to webhook configuration file (can be specified multiple times to merge configs)

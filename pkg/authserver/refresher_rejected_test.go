@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -666,4 +668,127 @@ func TestNewUpstreamTokenRefresher_RemembersRejections(t *testing.T) {
 	_, err = refresher.RefreshAndStore(ctx, "session", row)
 	require.ErrorIs(t, err, upstream.ErrGrantRejected)
 	assert.Equal(t, callsBefore, idp.calls.Load())
+}
+
+func TestUpstreamTokenRefresher_RememberedRejectionIsRecognisable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+	row := rejectedRefreshRow(time.Now().Add(-time.Minute), "dead-rt")
+	env.store(t, "session", row)
+	_, fresh := env.refresher.RefreshAndStore(ctx, "session", row)
+	require.ErrorIs(t, fresh, upstream.ErrGrantRejected)
+	assert.False(t, isRememberedRejection(fresh), "a rejection the IdP just gave is not remembered")
+
+	_, remembered := env.refresher.RefreshAndStore(ctx, "session", row)
+	require.ErrorIs(t, remembered, upstream.ErrGrantRejected)
+	assert.True(t, isRememberedRejection(remembered))
+	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](remembered)
+	require.True(t, ok)
+	assert.Equal(t, "invalid_grant", retrieveErr.ErrorCode)
+	assert.Equal(t, http.StatusBadRequest, retrieveErr.Response.StatusCode)
+	assert.Equal(t, "upstream token refresh failed: "+upstream.ErrGrantRejected.Error()+
+		" (remembered from an earlier rejection; provider not called): "+retrieveErr.Error(),
+		remembered.Error())
+}
+
+// joinedLeaderRefresher stands in for the refresher when the guard joins a
+// singleflight call led by a request that does not skip the memory: the first
+// call answers as an unmarked caller would, later calls pass the guard's
+// context through.
+func joinedLeaderRefresher(
+	t *testing.T, env *rejectedRefreshEnv, calls *atomic.Int32,
+) *mocks.MockUpstreamTokenRefresher {
+	t.Helper()
+	refresher := mocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+	refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).DoAndReturn(
+		func(ctx context.Context, sessionID string, expired *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+			// assert, not require: this runs on the guard's goroutine.
+			assert.True(t, skipsRememberedRejections(ctx), "the guard must mark its context")
+			if calls.Add(1) == 1 {
+				tokens, err := env.refresher.RefreshAndStore(context.WithoutCancel(context.Background()), sessionID, expired)
+				assert.True(t, isRememberedRejection(err))
+				return tokens, err
+			}
+			return env.refresher.RefreshAndStore(ctx, sessionID, expired)
+		}).Times(2)
+	return refresher
+}
+
+func TestUpstreamRefreshGuard_RetriesRememberedRejection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		idpStatus  int
+		idpBody    string
+		wantRefuse bool
+	}{
+		{name: "IdP still rejects", idpStatus: http.StatusBadRequest, idpBody: invalidGrantBody, wantRefuse: true},
+		{name: "IdP now accepts", idpStatus: http.StatusOK, idpBody: refreshOKBody},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
+			env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+			row := guardTestRow(time.Now().Add(-time.Minute), "dead-rt")
+			require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", row))
+			// A bearer request has already had its rejection remembered.
+			_, err := env.refresher.RefreshAndStore(ctx, guardTestTSID, row)
+			require.ErrorIs(t, err, upstream.ErrGrantRejected)
+			env.idp.set(tt.idpStatus, tt.idpBody)
+			callsBefore := env.idp.calls.Load()
+
+			var calls atomic.Int32
+			guard, err := newUpstreamRefreshGuard(env.stor, joinedLeaderRefresher(t, env, &calls), []string{"idp"})
+			require.NoError(t, err)
+			guard.recheckDelay = 0
+
+			err = guard.HandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token"))
+
+			assert.Equal(t, int32(2), calls.Load())
+			assert.Equal(t, callsBefore+1, env.idp.calls.Load(), "only the second call reaches the IdP")
+			got, getErr := env.stor.GetUpstreamTokens(ctx, guardTestTSID, "idp")
+			if tt.wantRefuse {
+				require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+				assert.ErrorIs(t, getErr, storage.ErrNotFound, "a rejection from the IdP drops the rows")
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, getErr)
+			assert.Equal(t, "new-access", got.AccessToken)
+		})
+	}
+}
+
+func TestUpstreamRefreshGuard_GrantsWhenOnlyRememberedRejections(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+	row := guardTestRow(time.Now().Add(-time.Minute), "dead-rt")
+	require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", row))
+	_, err := env.refresher.RefreshAndStore(ctx, guardTestTSID, row)
+	require.ErrorIs(t, err, upstream.ErrGrantRejected)
+	callsBefore := env.idp.calls.Load()
+
+	refresher := mocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+	refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).DoAndReturn(
+		func(_ context.Context, sessionID string, expired *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+			tokens, err := env.refresher.RefreshAndStore(context.Background(), sessionID, expired)
+			assert.True(t, isRememberedRejection(err))
+			return tokens, err
+		}).Times(2)
+	guard, err := newUpstreamRefreshGuard(env.stor, refresher, []string{"idp"})
+	require.NoError(t, err)
+	guard.recheckDelay = 0
+
+	require.NoError(t, guard.HandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token")))
+
+	assert.Equal(t, callsBefore, env.idp.calls.Load(), "no call reaches the IdP")
+	_, err = env.stor.GetUpstreamTokens(ctx, guardTestTSID, "idp")
+	assert.NotErrorIs(t, err, storage.ErrNotFound, "a remembered rejection must not delete the session's rows")
 }

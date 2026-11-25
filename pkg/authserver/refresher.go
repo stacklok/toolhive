@@ -181,7 +181,9 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 // A ctx marked with withoutRememberedRejections skips the lookup and asks the
 // IdP, and a fresh rejection is still remembered. A marked caller that joins a
 // singleflight call already in flight for the row gets that call's result,
-// which may come from the memory; see skipRememberedRejectionsKey.
+// which may be a remembered rejection; callers that act on a rejection must
+// check isRememberedRejection, as the refresh grant guard does. See
+// skipRememberedRejectionsKey.
 func (r *upstreamTokenRefresher) redeem(
 	ctx context.Context,
 	sessionID string,

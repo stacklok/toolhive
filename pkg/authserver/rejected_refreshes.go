@@ -43,11 +43,11 @@ const (
 //
 // The marker is read inside the singleflight call for the row, so a caller
 // that joins a call already in flight for the same row gets that call's
-// result, which may have come from the memory. That window lasts as long as
-// the leader's re-read of the row plus a memory lookup, and is accepted:
-// giving the marked caller its own
-// singleflight key would let two redemptions of the same refresh token run at
-// once.
+// result, which may be a remembered rejection (see isRememberedRejection). The
+// refresh grant guard handles that: it calls again once, and never treats a
+// remembered answer as proof that the credential is dead. Giving the marked
+// caller its own singleflight key instead would let two redemptions of the
+// same refresh token run at once.
 type skipRememberedRejectionsKey struct{}
 
 // withoutRememberedRejections returns a context that makes redeem ask the IdP
@@ -141,14 +141,32 @@ func (m *rejectedRefreshes) lookup(
 		m.cache.Remove(key)
 		return nil
 	}
-	return fmt.Errorf(
+	return &rememberedRejection{fmt.Errorf(
 		"upstream token refresh failed: %w (remembered from an earlier rejection; provider not called): %w",
 		upstream.ErrGrantRejected,
 		&oauth2.RetrieveError{
 			Response:  &http.Response{StatusCode: entry.statusCode, Status: entry.status},
 			ErrorCode: entry.errorCode,
 		},
-	)
+	)}
+}
+
+// errRememberedRejection marks an error that came from the memory instead of
+// the IdP. It is unexported so it is recognisable only inside this package.
+var errRememberedRejection = errors.New("rejection remembered from an earlier refresh")
+
+// rememberedRejection is the error lookup returns. It reads and unwraps like
+// the wrapped error, and also matches errRememberedRejection.
+type rememberedRejection struct{ error }
+
+func (e *rememberedRejection) Unwrap() []error {
+	return []error{e.error, errRememberedRejection}
+}
+
+// isRememberedRejection reports whether err is an answer from the memory of
+// rejected refreshes rather than a rejection the IdP just gave.
+func isRememberedRejection(err error) bool {
+	return errors.Is(err, errRememberedRejection)
 }
 
 // add remembers the rejection err for the row as stored in tokens until now+ttl. It

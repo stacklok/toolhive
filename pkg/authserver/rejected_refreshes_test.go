@@ -124,6 +124,7 @@ func TestRejectedRefreshes_LookupBuildsFreshError(t *testing.T) {
 
 	require.ErrorIs(t, first, upstream.ErrGrantRejected)
 	assert.Contains(t, first.Error(), "remembered")
+	assert.True(t, isRememberedRejection(first))
 	assert.True(t, oautherr.IsRejectedRefreshGrant(first))
 
 	got, ok := errors.AsType[*oauth2.RetrieveError](first)

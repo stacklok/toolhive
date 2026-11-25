@@ -707,8 +707,13 @@ up. The refresh succeeds and stores a new row, the remembered rejection stops
 matching it, and bearer requests work again. A fresh rejection that the guard
 receives is remembered like any other, so bearer requests after it do not
 call the IdP. A guard call that joins a refresh already in flight for the
-same row gets that call's result, which may come from the memory; that window
-lasts as long as a re-read of the row plus a memory lookup. Embedder handlers in
+same row gets that call's result, which may be a remembered rejection, because
+the call it joined was started by a request that does not skip the memory. The
+guard then refreshes once more, which reaches the IdP unless another such call
+is in flight again. If that answer is also remembered, the guard cannot tell
+whether the credential is dead and grants. The guard refuses and deletes rows
+only after a rejection the IdP just gave, never after a remembered one.
+Embedder handlers in
 `Config.RefreshGrantHandlers` that call the shared refresher do not skip the
 memory.
 

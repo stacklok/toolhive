@@ -77,8 +77,12 @@ const guardRevokeTimeout = 5 * time.Second
 // no rows, without another IdP call or recheck, on every replica.
 //
 // The guard refreshes through the shared refresher but skips its memory of
-// rejected refresh tokens, so it asks the IdP unless it joins a refresh of
-// the same row already in flight (see skipRememberedRejectionsKey).
+// rejected refresh tokens, so it asks the IdP. If it joins a refresh of the
+// same row already in flight, it can still be handed a remembered rejection;
+// it then refreshes once more, and if that answer is remembered too the
+// outcome is uncertain and the grant goes through. The guard deletes the
+// session's rows only after a rejection the IdP just gave (see
+// skipRememberedRejectionsKey).
 // If the IdP used invalid_grant for an account or policy state an
 // administrator has since fixed, the client's next refresh grant picks the fix
 // up: the refresh succeeds and stores a new row, the remembered rejection
@@ -242,7 +246,8 @@ func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid string) *r
 // expired. It returns a refusal when the row is dead. Otherwise usable reports
 // whether the row holds an access token or its state is uncertain (a transient
 // failure), which the guard does not refuse; a row that is neither is not
-// dead on its own.
+// dead on its own. A rejection that comes from the memory of rejected
+// refreshes is never proof of a dead credential; see rejectionConfirmed.
 func (g *upstreamRefreshGuard) checkRow(
 	ctx context.Context, tsid, name string, row *storage.UpstreamTokens,
 ) (usable bool, refused *refusal) {
@@ -268,6 +273,17 @@ func (g *upstreamRefreshGuard) checkRow(
 	}
 
 	refreshed, err := g.refresh(ctx, tsid, row)
+	if isRememberedRejection(err) {
+		// The guard joined a call led by a request that does not skip the
+		// memory. A second call leads or joins a new call, which now likely
+		// reaches the IdP.
+		refreshed, err = g.refresh(ctx, tsid, row)
+		if isRememberedRejection(err) {
+			slog.DebugContext(ctx, "refresh grant guard only got remembered rejections; granting",
+				"provider_id", name)
+			return true, nil
+		}
+	}
 	if err == nil {
 		return refreshed != nil && refreshed.AccessToken != "", nil
 	}

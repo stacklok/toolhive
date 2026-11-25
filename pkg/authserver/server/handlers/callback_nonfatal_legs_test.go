@@ -364,6 +364,33 @@ func TestCallback_NonFatalSecondaryLeg_BindingAndFirstLegFailuresStayFatal(t *te
 			},
 		},
 		{
+			name: "SingleLeg IdP error on a later upstream",
+			pending: func() *storage.PendingAuthorization {
+				p := laterLegPending("s", "provider-2")
+				p.SingleLeg, p.ChainUpstreams = true, nil
+				return p
+			},
+			query: "error=access_denied&state=leg",
+			check: func(t *testing.T, rec *httptest.ResponseRecorder, _ *testStorageState) {
+				t.Helper()
+				requireClientError(t, rec, "access_denied")
+			},
+		},
+		{
+			name: "SingleLeg exchange failure on a later upstream",
+			pending: func() *storage.PendingAuthorization {
+				p := laterLegPending("s", "provider-2")
+				p.SingleLeg, p.ChainUpstreams = true, nil
+				return p
+			},
+			exchangeErr: true,
+			query:       "code=c&state=leg",
+			check: func(t *testing.T, rec *httptest.ResponseRecorder, _ *testStorageState) {
+				t.Helper()
+				requireClientError(t, rec, "server_error")
+			},
+		},
+		{
 			name: "pending skipping the first upstream",
 			pending: func() *storage.PendingAuthorization {
 				return laterLegPending("s", "provider-2", "provider-1")

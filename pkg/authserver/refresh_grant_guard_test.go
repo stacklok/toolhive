@@ -30,6 +30,10 @@ import (
 const (
 	guardTestTSID      = "guard-tsid"
 	guardTestRequestID = "grant-request-id"
+	// guardTestUser is the owner of every row guardTestRow builds and the
+	// subject of the session guardTestRequest carries, which is what the
+	// guard hands to the session-keyed reads.
+	guardTestUser = "user"
 )
 
 func guardTestRow(expiresAt time.Time, refreshToken string) *storage.UpstreamTokens {
@@ -333,7 +337,7 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-			rows, rowsErr := stor.GetAllUpstreamTokens(ctx, guardTestTSID)
+			rows, rowsErr := stor.GetAllUpstreamTokens(ctx, guardTestTSID, guardTestUser)
 			require.NoError(t, rowsErr)
 			if tt.wantDropped {
 				assert.Empty(t, rows, "a confirmed rejection must drop every upstream row of the session")
@@ -465,25 +469,25 @@ func TestUpstreamRefreshGuard_StorageFailures(t *testing.T) {
 		{
 			name: "upstream token read failure grants",
 			setup: func(stor *mocks.MockStorage, _ *mocks.MockUpstreamTokenRefresher) {
-				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).Return(nil, storageErr)
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID, gomock.Any()).Return(nil, storageErr)
 			},
 		},
 		{
 			name: "recheck read failure after a rejection grants",
 			setup: func(stor *mocks.MockStorage, refresher *mocks.MockUpstreamTokenRefresher) {
-				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID, gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{"idp": expired}, nil)
 				refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).Return(nil, rejected)
-				stor.EXPECT().GetUpstreamTokens(gomock.Any(), guardTestTSID, "idp").Return(nil, storageErr)
+				stor.EXPECT().GetUpstreamTokens(gomock.Any(), guardTestTSID, "idp", gomock.Any()).Return(nil, storageErr)
 			},
 		},
 		{
 			name: "row deletion failure after a confirmed rejection still refuses",
 			setup: func(stor *mocks.MockStorage, refresher *mocks.MockUpstreamTokenRefresher) {
-				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID, gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{"idp": expired}, nil)
 				refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).Return(nil, rejected)
-				stor.EXPECT().GetUpstreamTokens(gomock.Any(), guardTestTSID, "idp").Return(expired, nil)
+				stor.EXPECT().GetUpstreamTokens(gomock.Any(), guardTestTSID, "idp", gomock.Any()).Return(expired, nil)
 				stor.EXPECT().DeleteUpstreamTokens(gomock.Any(), guardTestTSID).
 					Do(func(ctx context.Context, _ string) {
 						assert.NoError(t, ctx.Err(), "deletion must not run on the cancelled request context")
@@ -494,7 +498,7 @@ func TestUpstreamRefreshGuard_StorageFailures(t *testing.T) {
 		{
 			name: "revocation failure still refuses",
 			setup: func(stor *mocks.MockStorage, _ *mocks.MockUpstreamTokenRefresher) {
-				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID, gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{"idp": unrefreshable}, nil)
 				stor.EXPECT().RevokeRefreshToken(gomock.Any(), guardTestRequestID).Return(storageErr)
 				stor.EXPECT().RevokeAccessToken(gomock.Any(), guardTestRequestID).Return(storageErr)
@@ -504,7 +508,7 @@ func TestUpstreamRefreshGuard_StorageFailures(t *testing.T) {
 		{
 			name: "revocation runs detached from a cancelled request",
 			setup: func(stor *mocks.MockStorage, _ *mocks.MockUpstreamTokenRefresher) {
-				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID, gomock.Any()).
 					Return(map[string]*storage.UpstreamTokens{"idp": unrefreshable}, nil)
 				stor.EXPECT().RevokeRefreshToken(gomock.Any(), guardTestRequestID).Do(assertLiveRevokeCtx).Return(nil)
 				stor.EXPECT().RevokeAccessToken(gomock.Any(), guardTestRequestID).Do(assertLiveRevokeCtx).Return(nil)
@@ -608,27 +612,27 @@ func TestUpstreamRefreshGuard_RealIdPRejection(t *testing.T) {
 func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 	t.Parallel()
 
-	deleteRows := func(t *testing.T, ts *testServerWithUpstream, tsid string) {
+	deleteRows := func(t *testing.T, ts *testServerWithUpstream, tsid string, _ string) {
 		t.Helper()
 		require.NoError(t, ts.storage.DeleteUpstreamTokens(context.Background(), tsid))
 	}
 	// rejectRefresh swaps in a refresh token mockoidc signed but holds no
 	// session for, so mockoidc answers its refresh with invalid_grant.
-	rejectRefresh := func(t *testing.T, ts *testServerWithUpstream, tsid string) {
+	rejectRefresh := func(t *testing.T, ts *testServerWithUpstream, tsid, owner string) {
 		t.Helper()
 		unknown, err := ts.mockOIDC.Keypair.SignJWT(jwt.MapClaims{
 			"jti": "no-such-session",
 			"exp": time.Now().Add(time.Hour).Unix(),
 		})
 		require.NoError(t, err)
-		row := storedUpstreamRow(t, ts, tsid)
+		row := storedUpstreamRow(t, ts, tsid, owner)
 		row.ExpiresAt = time.Now().Add(-time.Minute)
 		row.RefreshToken = unknown
 		require.NoError(t, ts.storage.StoreUpstreamTokens(context.Background(), tsid, "default", row))
 	}
-	dropRefreshToken := func(t *testing.T, ts *testServerWithUpstream, tsid string) {
+	dropRefreshToken := func(t *testing.T, ts *testServerWithUpstream, tsid, owner string) {
 		t.Helper()
-		row := storedUpstreamRow(t, ts, tsid)
+		row := storedUpstreamRow(t, ts, tsid, owner)
 		row.ExpiresAt = time.Now().Add(-time.Minute)
 		row.RefreshToken = ""
 		require.NoError(t, ts.storage.StoreUpstreamTokens(context.Background(), tsid, "default", row))
@@ -637,7 +641,7 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 	tests := []struct {
 		name string
 		// mutate changes the session's upstream rows before the refresh grant.
-		mutate     func(t *testing.T, ts *testServerWithUpstream, tsid string)
+		mutate     func(t *testing.T, ts *testServerWithUpstream, tsid, owner string)
 		disable    bool
 		redis      bool
 		wantRefuse bool
@@ -649,13 +653,13 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 	}{
 		{
 			name:   "live upstream is granted",
-			mutate: func(*testing.T, *testServerWithUpstream, string) {},
+			mutate: func(*testing.T, *testServerWithUpstream, string, string) {},
 		},
 		{
 			name: "idle session whose upstream refresh succeeds is granted",
-			mutate: func(t *testing.T, ts *testServerWithUpstream, tsid string) {
+			mutate: func(t *testing.T, ts *testServerWithUpstream, tsid, owner string) {
 				t.Helper()
-				row := storedUpstreamRow(t, ts, tsid)
+				row := storedUpstreamRow(t, ts, tsid, owner)
 				row.ExpiresAt = time.Now().Add(-time.Minute)
 				require.NoError(t, ts.storage.StoreUpstreamTokens(context.Background(), tsid, "default", row))
 			},
@@ -665,7 +669,7 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 		{name: "absent upstream row is refused on Redis", mutate: deleteRows, redis: true, wantRefuse: true},
 		{
 			name: "unreadable upstream row on Redis is refused",
-			mutate: func(t *testing.T, ts *testServerWithUpstream, tsid string) {
+			mutate: func(t *testing.T, ts *testServerWithUpstream, tsid string, _ string) {
 				t.Helper()
 				key := "test:auth:{ns:test}:" + storage.KeyTypeUpstream + ":" + tsid + ":default"
 				mr := ts.Miniredis(t)
@@ -733,9 +737,10 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 			accessToken, ok := tokenData["access_token"].(string)
 			require.True(t, ok)
 			tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
-			original := storedUpstreamRow(t, ts, tsid)
+			owner := extractSubject(t, accessToken, ts.PrivateKey.Public())
+			original := storedUpstreamRow(t, ts, tsid, owner)
 
-			tt.mutate(t, ts, tsid)
+			tt.mutate(t, ts, tsid, owner)
 
 			refresh := func() (int, map[string]interface{}) {
 				resp := makeTokenRequest(t, ts.Server.URL, url.Values{
@@ -753,7 +758,7 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 				assert.NotEmpty(t, body["access_token"])
 				assert.Len(t, embedder.handledGrants(), 1)
 				if tt.wantRowRefreshed {
-					assert.False(t, storedUpstreamRow(t, ts, tsid).IsExpired(time.Now()),
+					assert.False(t, storedUpstreamRow(t, ts, tsid, owner).IsExpired(time.Now()),
 						"the guard must refresh the expired upstream row before granting")
 				}
 				return
@@ -764,7 +769,7 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 			assert.NotContains(t, body, "access_token")
 			assert.Empty(t, embedder.handledGrants(), "embedder handlers must not run after the guard refuses")
 			if tt.wantDropped {
-				rows, err := ts.storage.GetAllUpstreamTokens(context.Background(), tsid)
+				rows, err := ts.storage.GetAllUpstreamTokens(context.Background(), tsid, testOwner)
 				require.NoError(t, err)
 				assert.Empty(t, rows, "a confirmed IdP rejection must drop the session's upstream rows")
 			}
@@ -784,10 +789,11 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 }
 
 // storedUpstreamRow returns the session's stored row for the "default"
-// upstream, whatever its expiry.
-func storedUpstreamRow(t *testing.T, ts *testServerWithUpstream, tsid string) *storage.UpstreamTokens {
+// upstream, whatever its expiry. owner is the session's subject, which the
+// read compares against the stored row.
+func storedUpstreamRow(t *testing.T, ts *testServerWithUpstream, tsid, owner string) *storage.UpstreamTokens {
 	t.Helper()
-	rows, err := ts.storage.GetAllUpstreamTokens(context.Background(), tsid)
+	rows, err := ts.storage.GetAllUpstreamTokens(context.Background(), tsid, owner)
 	require.NoError(t, err)
 	row, ok := rows["default"]
 	require.True(t, ok, "session must have a row for the default upstream")

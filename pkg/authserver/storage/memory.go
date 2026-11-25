@@ -1539,12 +1539,17 @@ func cloneUpstreamTokens(t *UpstreamTokens) *UpstreamTokens {
 
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 // Returns a defensive copy to prevent aliasing issues.
-func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, providerName string) (*UpstreamTokens, error) {
+func (s *MemoryStorage) GetUpstreamTokens(
+	_ context.Context, sessionID, providerName, expectedUserID string,
+) (*UpstreamTokens, error) {
 	if sessionID == "" {
 		return nil, fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
 	}
 	if providerName == "" {
 		return nil, fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+	if expectedUserID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("expected user ID cannot be empty")
 	}
 
 	s.mu.RLock()
@@ -1562,6 +1567,12 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 		return nil, nil
 	}
 
+	// Before expiry, so a caller never gets a refresh token it could redeem
+	// for a row it does not own.
+	if err := upstreamRowBelongsTo(result, expectedUserID); err != nil {
+		return nil, err
+	}
+
 	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
 	// (storage TTL which includes DefaultRefreshTokenTTL buffer for refresh token survival).
 	// Return tokens along with ErrExpired so callers can use the refresh token.
@@ -1577,7 +1588,16 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 // Returns a map of providerName -> tokens with defensive copies.
 // Returns an empty map (not error) for unknown sessions.
 // Includes expired tokens (no expiry filtering at bulk-read level).
-func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string) (map[string]*UpstreamTokens, error) {
+func (s *MemoryStorage) GetAllUpstreamTokens(
+	_ context.Context, sessionID, expectedUserID string,
+) (map[string]*UpstreamTokens, error) {
+	if sessionID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if expectedUserID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("expected user ID cannot be empty")
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1587,7 +1607,11 @@ func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string
 			continue
 		}
 		// Defensive copy (cloneUpstreamTokens handles nil)
-		result[key.providerName] = cloneUpstreamTokens(entry.value)
+		row := cloneUpstreamTokens(entry.value)
+		if err := upstreamRowBelongsTo(row, expectedUserID); err != nil {
+			return nil, err
+		}
+		result[key.providerName] = row
 	}
 
 	return result, nil

@@ -112,7 +112,13 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 		defer cancel()
 
-		authoritative, readErr := r.storage.GetUpstreamTokens(refreshCtx, sessionID, expired.ProviderID)
+		// Every re-read below is checked against the owner of the row this
+		// refresh started from, so a row that changed hands mid-refresh is
+		// never redeemed, written or deleted on the strength of the session
+		// ID alone.
+		authoritative, readErr := r.storage.GetUpstreamTokens(
+			refreshCtx, sessionID, expired.ProviderID, expired.UserID,
+		)
 		if readErr == nil {
 			// Some storage implementations may return tokens without checking
 			// access-token expiry (the interface does not require it; see
@@ -242,7 +248,7 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 
 	if err := r.compareAndSwapWithRetry(ctx, sessionID, expired.ProviderID, expectedRefreshToken, updated); err != nil {
 		if errors.Is(err, storage.ErrConcurrentRefresh) {
-			return r.resolveConcurrentRefreshConflict(ctx, sessionID, expired.ProviderID)
+			return r.resolveConcurrentRefreshConflict(ctx, sessionID, expired.ProviderID, expired.UserID)
 		}
 
 		if !rotated {
@@ -315,12 +321,12 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 // in storage — so the caller must surface an error rather than retry the same
 // redemption.
 func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
-	ctx context.Context, sessionID, providerID string,
+	ctx context.Context, sessionID, providerID, expectedUserID string,
 ) (*storage.UpstreamTokens, error) {
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamConflictReadTimeout)
 	defer cancel()
 
-	winner, err := r.storage.GetUpstreamTokens(readCtx, sessionID, providerID)
+	winner, err := r.storage.GetUpstreamTokens(readCtx, sessionID, providerID, expectedUserID)
 	if err == nil && winner != nil && !winner.IsExpired(time.Now()) {
 		slog.Debug("lost concurrent upstream token refresh race; using winning replica's tokens",
 			"session_id", sessionID,
@@ -378,7 +384,7 @@ func (r *upstreamTokenRefresher) rotatedElsewhere(
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamConflictReadTimeout)
 	defer cancel()
 
-	stored, err := r.storage.GetUpstreamTokens(readCtx, sessionID, expired.ProviderID)
+	stored, err := r.storage.GetUpstreamTokens(readCtx, sessionID, expired.ProviderID, expired.UserID)
 	if err != nil {
 		// ErrExpired and ErrNotFound are ordinary outcomes here: the row is
 		// still the rejected one, or it is gone. Anything else is a storage

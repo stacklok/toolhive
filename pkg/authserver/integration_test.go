@@ -51,6 +51,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
+// testOwner is the user the mocked storage rows in this package belong to.
+// The session-keyed upstream reads take the expected owner explicitly, so the
+// tests have to name one; what they exercise is unaffected by its value.
+const testOwner = "test-owner"
+
 // idJAGClientID is the confidential client that redeems ID-JAGs signed by
 // setupJWTBearerGrantTestServer.
 const (
@@ -4059,6 +4064,7 @@ func TestIntegration_UpstreamTokenService_GetValidTokens(t *testing.T) {
 	accessToken, ok := tokenData["access_token"].(string)
 	require.True(t, ok)
 	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+	tsidOwner := extractSubject(t, accessToken, ts.PrivateKey.Public())
 
 	// Create the UpstreamTokenService using the auth server's storage and refresher.
 	// This mirrors how vMCP would compose these in production.
@@ -4068,7 +4074,7 @@ func TestIntegration_UpstreamTokenService_GetValidTokens(t *testing.T) {
 	)
 
 	// The service should return the upstream access token stored during callback.
-	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.NotEmpty(t, cred.AccessToken, "upstream access token should be present")
@@ -4100,11 +4106,12 @@ func TestIntegration_UpstreamTokenService_RefreshExpiredTokens(t *testing.T) {
 	accessToken, ok := tokenData["access_token"].(string)
 	require.True(t, ok)
 	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+	tsidOwner := extractSubject(t, accessToken, ts.PrivateKey.Public())
 
 	stor := ts.authServer.IDPTokenStorage()
 
 	// Read the stored tokens, then overwrite them with an expired ExpiresAt.
-	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, original)
 	originalAccessToken := original.AccessToken
@@ -4131,13 +4138,13 @@ func TestIntegration_UpstreamTokenService_RefreshExpiredTokens(t *testing.T) {
 	// The service should transparently refresh the expired tokens.
 	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
 
-	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.NotEmpty(t, cred.AccessToken, "refreshed upstream access token should be present")
 
 	// Verify storage was updated with non-expired tokens after refresh.
-	refreshed, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	refreshed, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err, "refreshed tokens should be retrievable without ErrExpired")
 	assert.True(t, refreshed.ExpiresAt.After(time.Now()),
 		"refreshed tokens should have a future expiry, got %v", refreshed.ExpiresAt)
@@ -4172,11 +4179,12 @@ func TestIntegration_UpstreamTokenService_NonExpiringToken(t *testing.T) {
 	accessToken, ok := tokenData["access_token"].(string)
 	require.True(t, ok)
 	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+	tsidOwner := extractSubject(t, accessToken, ts.PrivateKey.Public())
 
 	stor := ts.authServer.IDPTokenStorage()
 
 	// Read the tokens stored during the OAuth callback.
-	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, original)
 
@@ -4196,13 +4204,13 @@ func TestIntegration_UpstreamTokenService_NonExpiringToken(t *testing.T) {
 
 	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
 
-	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.NotEmpty(t, cred.AccessToken)
 
 	// Confirm the token in storage still has a zero ExpiresAt — no refresh occurred.
-	refreshed, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	refreshed, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	assert.True(t, refreshed.ExpiresAt.IsZero(),
 		"non-expiring token must not gain an ExpiresAt after GetValidTokens")
@@ -4240,9 +4248,10 @@ func TestIntegration_UpstreamTokenService_RefreshOnExpiredIDToken(t *testing.T) 
 	accessToken, ok := tokenData["access_token"].(string)
 	require.True(t, ok)
 	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+	tsidOwner := extractSubject(t, accessToken, ts.PrivateKey.Public())
 
 	stor := ts.authServer.IDPTokenStorage()
-	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, original)
 
@@ -4264,13 +4273,13 @@ func TestIntegration_UpstreamTokenService_RefreshOnExpiredIDToken(t *testing.T) 
 
 	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
 
-	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.NotEmpty(t, cred.IDToken)
 	assert.NotEqual(t, staleIDToken, cred.IDToken, "expired ID token must be rotated by a real upstream refresh")
 
-	persisted, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	persisted, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	assert.Equal(t, cred.IDToken, persisted.IDToken, "rotated ID token must be persisted")
 }
@@ -4288,7 +4297,7 @@ func TestIntegration_UpstreamTokenService_SessionNotFound(t *testing.T) {
 		ts.authServer.UpstreamTokenRefresher(),
 	)
 
-	cred, err := svc.GetValidTokens(context.Background(), "non-existent-session-id", "default")
+	cred, err := svc.GetValidTokens(context.Background(), "non-existent-session-id", "default", testOwner)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, upstreamtoken.ErrSessionNotFound)
 	assert.Nil(t, cred)
@@ -4319,7 +4328,7 @@ func TestIntegration_UpstreamTokenService_NoRefreshToken(t *testing.T) {
 
 	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
 
-	cred, err := svc.GetValidTokens(context.Background(), sessionID, "test")
+	cred, err := svc.GetValidTokens(context.Background(), sessionID, "test", "user-1")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, upstreamtoken.ErrNoRefreshToken)
 	assert.Nil(t, cred)
@@ -4341,6 +4350,26 @@ func extractTSID(t *testing.T, accessToken string, publicKey any) string {
 	require.NotEmpty(t, tsid)
 
 	return tsid
+}
+
+// extractSubject returns the access token's sub claim, which is the owner the
+// callback stored on this session's upstream rows and therefore what the
+// session-keyed reads must be given.
+func extractSubject(t *testing.T, accessToken string, publicKey any) string {
+	t.Helper()
+
+	parsed, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var claims map[string]interface{}
+	err = parsed.Claims(publicKey, &claims)
+	require.NoError(t, err)
+
+	sub, ok := claims["sub"].(string)
+	require.True(t, ok, "sub claim should be present in access token")
+	require.NotEmpty(t, sub)
+
+	return sub
 }
 
 // ============================================================================
@@ -4390,7 +4419,7 @@ func TestIntegration_UpstreamTokenStorage(t *testing.T) {
 
 	t.Run("tokens_retrievable_by_provider_name", func(t *testing.T) {
 		t.Parallel()
-		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
+		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default", sub)
 		require.NoError(t, err, "GetUpstreamTokens should not return error")
 		require.NotNil(t, tokens, "tokens should not be nil")
 		assert.NotEmpty(t, tokens.AccessToken, "upstream access token should not be empty")
@@ -4398,14 +4427,14 @@ func TestIntegration_UpstreamTokenStorage(t *testing.T) {
 
 	t.Run("provider_id_is_logical_name", func(t *testing.T) {
 		t.Parallel()
-		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
+		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default", sub)
 		require.NoError(t, err)
 		assert.Equal(t, "default", tokens.ProviderID, "ProviderID should be the logical name 'default', not 'oidc' or 'oauth2'")
 	})
 
 	t.Run("binding_fields_populated", func(t *testing.T) {
 		t.Parallel()
-		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default")
+		tokens, err := ts.storage.GetUpstreamTokens(ctx, tsid, "default", sub)
 		require.NoError(t, err)
 		assert.NotEmpty(t, tokens.UserID, "UserID should not be empty")
 		assert.NotEmpty(t, tokens.UpstreamSubject, "UpstreamSubject should not be empty")
@@ -4460,6 +4489,11 @@ func TestIntegration_RefreshPreservesUpstreamTokenBinding(t *testing.T) {
 	require.True(t, ok, "tsid claim should be a string")
 	require.NotEmpty(t, originalTSID, "tsid claim should not be empty")
 
+	// The row's owner is the token's subject; the session-keyed reads below
+	// are given it the same way the request path gives it.
+	tsidOwner, ok := claims["sub"].(string)
+	require.True(t, ok, "sub claim should be a string")
+
 	// Extract the refresh token
 	refreshToken, ok := tokenData["refresh_token"].(string)
 	require.True(t, ok, "refresh_token should be present when offline_access is requested")
@@ -4468,7 +4502,7 @@ func TestIntegration_RefreshPreservesUpstreamTokenBinding(t *testing.T) {
 	ctx := context.Background()
 
 	// Verify upstream tokens exist before refresh
-	tokens, err := ts.storage.GetUpstreamTokens(ctx, originalTSID, "default")
+	tokens, err := ts.storage.GetUpstreamTokens(ctx, originalTSID, "default", tsidOwner)
 	require.NoError(t, err, "upstream tokens should exist before refresh")
 	require.NotNil(t, tokens, "upstream tokens should not be nil before refresh")
 
@@ -4498,7 +4532,7 @@ func TestIntegration_RefreshPreservesUpstreamTokenBinding(t *testing.T) {
 	assert.Equal(t, originalTSID, newTSID, "tsid should be preserved across token refresh")
 
 	// Verify upstream tokens are still retrievable at (tsid, "default")
-	tokensAfterRefresh, err := ts.storage.GetUpstreamTokens(ctx, newTSID, "default")
+	tokensAfterRefresh, err := ts.storage.GetUpstreamTokens(ctx, newTSID, "default", tsidOwner)
 	require.NoError(t, err, "upstream tokens should still be retrievable after refresh")
 	require.NotNil(t, tokensAfterRefresh, "upstream tokens should not be nil after refresh")
 	assert.Equal(t, "default", tokensAfterRefresh.ProviderID, "ProviderID should still be 'default' after refresh")
@@ -4728,7 +4762,7 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 	ctx := context.Background()
 
 	// Provider-1 tokens should be stored
-	tokens1, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-1")
+	tokens1, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-1", sub)
 	require.NoError(t, err, "provider-1 tokens should be retrievable")
 	require.NotNil(t, tokens1, "provider-1 tokens should not be nil")
 	assert.NotEmpty(t, tokens1.AccessToken, "provider-1 access token should not be empty")
@@ -4737,7 +4771,7 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 	assert.Equal(t, sub, tokens1.UserID, "provider-1 UserID should match JWT sub claim")
 
 	// Provider-2 tokens should be stored
-	tokens2, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-2")
+	tokens2, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-2", sub)
 	require.NoError(t, err, "provider-2 tokens should be retrievable")
 	require.NotNil(t, tokens2, "provider-2 tokens should not be nil")
 	assert.NotEmpty(t, tokens2.AccessToken, "provider-2 access token should not be empty")
@@ -4838,14 +4872,16 @@ func TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter(t *testing.T) {
 	tsid, ok := claims["tsid"].(string)
 	require.True(t, ok)
 	require.NotEmpty(t, tsid)
+	sub, ok := claims["sub"].(string)
+	require.True(t, ok)
 
 	ctx := context.Background()
 
-	tokens1, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-1")
+	tokens1, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-1", sub)
 	require.NoError(t, err, "provider-1 tokens should be stored")
 	require.NotNil(t, tokens1)
 
-	_, err = ts.storage.GetUpstreamTokens(ctx, tsid, "provider-2")
+	_, err = ts.storage.GetUpstreamTokens(ctx, tsid, "provider-2", sub)
 	require.Error(t, err, "provider-2 should have been dropped from the chain by the filter")
 	assert.ErrorIs(t, err, storage.ErrNotFound)
 }
@@ -4984,13 +5020,14 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
 	accessToken, ok := tokenData["access_token"].(string)
 	require.True(t, ok)
 	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+	tsidOwner := extractSubject(t, accessToken, ts.PrivateKey.Public())
 
 	stor := ts.authServer.IDPTokenStorage()
 
 	// The upstream tokens written during /callback must carry a zero ExpiresAt:
 	// the upstream response had no expires_in, so convertOAuth2Token must
 	// preserve the zero value all the way into storage.
-	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, original)
 	require.NotEmpty(t, original.AccessToken)
@@ -5002,7 +5039,7 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
 	// token unchanged. No refresh user is queued — a refresh attempt would
 	// cause mockoidc to return an error and fail the assertion below.
 	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
-	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.Equal(t, original.AccessToken, cred.AccessToken,
@@ -5010,7 +5047,7 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
 
 	// Re-read storage: ExpiresAt must still be zero, confirming no refresh
 	// side effect rewrote the row.
-	after, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	after, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	assert.True(t, after.ExpiresAt.IsZero(),
 		"non-expiring token must keep zero ExpiresAt after GetValidTokens (got %v)",
@@ -5178,6 +5215,7 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings(t *testing.T) {
 			accessToken, ok := tokenData["access_token"].(string)
 			require.True(t, ok)
 			tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+			tsidOwner := extractSubject(t, accessToken, ts.PrivateKey.Public())
 
 			ctx := context.Background()
 			stor := ts.authServer.IDPTokenStorage()
@@ -5185,10 +5223,10 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings(t *testing.T) {
 			// Both providers' tokens must be in storage. The non-expiring
 			// one must have a zero ExpiresAt; the expiring one must have a
 			// future ExpiresAt. This pins the per-leg storage write path.
-			tokens1, err := stor.GetUpstreamTokens(ctx, tsid, "provider-1")
+			tokens1, err := stor.GetUpstreamTokens(ctx, tsid, "provider-1", tsidOwner)
 			require.NoError(t, err, "provider-1 tokens must be retrievable")
 			require.NotNil(t, tokens1)
-			tokens2, err := stor.GetUpstreamTokens(ctx, tsid, "provider-2")
+			tokens2, err := stor.GetUpstreamTokens(ctx, tsid, "provider-2", tsidOwner)
 			require.NoError(t, err, "provider-2 tokens must be retrievable")
 			require.NotNil(t, tokens2)
 
@@ -5210,7 +5248,7 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings(t *testing.T) {
 			// would have returned an empty or incomplete map for one
 			// ordering.
 			svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
-			all, _, err := svc.GetAllUpstreamCredentials(ctx, tsid)
+			all, _, err := svc.GetAllUpstreamCredentials(ctx, tsid, tsidOwner)
 			require.NoError(t, err)
 			require.Len(t, all, 2, "GetAllUpstreamCredentials must return both providers regardless of expiry ordering")
 			assert.NotEmpty(t, all["provider-1"].AccessToken, "provider-1 access token must be present")
@@ -5280,12 +5318,13 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken_Redis(t *testing.T) {
 	accessToken, ok := tokenData["access_token"].(string)
 	require.True(t, ok)
 	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+	tsidOwner := extractSubject(t, accessToken, ts.PrivateKey.Public())
 
 	stor := ts.authServer.IDPTokenStorage()
 
 	// Same invariants as the memory-backed twin: zero ExpiresAt in storage,
 	// no refresh on read, no rewrite of the stored row.
-	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, original)
 	require.NotEmpty(t, original.AccessToken)
@@ -5294,13 +5333,13 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken_Redis(t *testing.T) {
 		original.ExpiresAt)
 
 	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
-	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.Equal(t, original.AccessToken, cred.AccessToken,
 		"non-expiring access token must be returned unchanged (no refresh)")
 
-	after, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	after, err := stor.GetUpstreamTokens(context.Background(), tsid, "default", tsidOwner)
 	require.NoError(t, err)
 	assert.True(t, after.ExpiresAt.IsZero(),
 		"non-expiring token must keep zero ExpiresAt after GetValidTokens (got %v)",
@@ -5371,6 +5410,7 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis(t *testing.T)
 			accessToken, ok := tokenData["access_token"].(string)
 			require.True(t, ok)
 			tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+			tsidOwner := extractSubject(t, accessToken, ts.PrivateKey.Public())
 
 			ctx := context.Background()
 			stor := ts.authServer.IDPTokenStorage()
@@ -5380,10 +5420,10 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis(t *testing.T)
 			// the same per-leg storage invariant the memory-backed twin
 			// asserts; replicated here so a Redis-only divergence in the
 			// chain handler's storage write would surface.
-			tokens1, err := stor.GetUpstreamTokens(ctx, tsid, "provider-1")
+			tokens1, err := stor.GetUpstreamTokens(ctx, tsid, "provider-1", tsidOwner)
 			require.NoError(t, err, "provider-1 tokens must be retrievable")
 			require.NotNil(t, tokens1)
-			tokens2, err := stor.GetUpstreamTokens(ctx, tsid, "provider-2")
+			tokens2, err := stor.GetUpstreamTokens(ctx, tsid, "provider-2", tsidOwner)
 			require.NoError(t, err, "provider-2 tokens must be retrievable")
 			require.NotNil(t, tokens2)
 
@@ -5413,7 +5453,7 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis(t *testing.T)
 			// (commit 1b3bc81e2), the integration flow always produces ttlMs > 0 and
 			// the buggy Lua branch is unreachable from a real auth chain. The Lua
 			// invariant is exercised at unit level by pkg/authserver/storage/redis_test.go.
-			tokensMap, _, err := svc.GetAllUpstreamCredentials(ctx, tsid)
+			tokensMap, _, err := svc.GetAllUpstreamCredentials(ctx, tsid, tsidOwner)
 			require.NoError(t, err)
 			require.Len(t, tokensMap, 2, "GetAllUpstreamCredentials must return both providers after chain")
 			assert.NotEmpty(t, tokensMap["provider-1"].AccessToken, "provider-1 access token must be present")
@@ -5597,9 +5637,10 @@ func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
 	require.True(t, ok, "leg 1: access_token should be present")
 
 	sessionID1 := extractTSID(t, accessToken1, ts.PrivateKey.Public())
+	sessionID1Owner := extractSubject(t, accessToken1, ts.PrivateKey.Public())
 
 	// Verify the first leg stored a non-empty RT (mockoidc always issues one).
-	tokens1, err := ts.storage.GetUpstreamTokens(ctx, sessionID1, providerName)
+	tokens1, err := ts.storage.GetUpstreamTokens(ctx, sessionID1, providerName, sessionID1Owner)
 	require.NoError(t, err, "leg 1: upstream tokens should be stored")
 	require.NotEmpty(t, tokens1.RefreshToken, "leg 1: RT must be non-empty (sanity check)")
 
@@ -5638,13 +5679,14 @@ func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
 	require.True(t, ok, "leg 2: access_token should be present")
 
 	sessionID2 := extractTSID(t, accessToken2, ts.PrivateKey.Public())
+	sessionID2Owner := extractSubject(t, accessToken2, ts.PrivateKey.Public())
 
 	// The second authorize flow must create a new session (new TSID).
 	require.NotEqual(t, sessionID1, sessionID2, "leg 2: must use a distinct session ID")
 
 	// Canonical regression assertion: the new row's RT was carried forward from
 	// the prior session even though the IdP omitted it in the token response.
-	tokens2, err := ts.storage.GetUpstreamTokens(ctx, sessionID2, providerName)
+	tokens2, err := ts.storage.GetUpstreamTokens(ctx, sessionID2, providerName, sessionID2Owner)
 	require.NoError(t, err, "leg 2: upstream tokens should be stored")
 	assert.Equal(t, priorRT, tokens2.RefreshToken,
 		"leg 2: RT must be carried forward from the prior session (regression assertion)")
@@ -5685,6 +5727,7 @@ func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
 	require.True(t, ok, "leg 3: access_token should be present")
 
 	sessionID3 := extractTSID(t, accessToken3, ts.PrivateKey.Public())
+	sessionID3Owner := extractSubject(t, accessToken3, ts.PrivateKey.Public())
 	require.NotEqual(t, sessionID2, sessionID3, "leg 3: must use a distinct session ID from leg 2")
 	require.NotEqual(t, sessionID1, sessionID3, "leg 3: must use a distinct session ID from leg 1")
 
@@ -5692,7 +5735,7 @@ func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
 	// empty when we enter maybeCarryForwardRefreshToken. The new user has no prior
 	// row either, so GetLatestUpstreamTokensForUser returns ErrNotFound and the
 	// guard returns early — the stored RT stays empty (ErrNotFound branch).
-	tokens3, err := ts.storage.GetUpstreamTokens(ctx, sessionID3, providerName)
+	tokens3, err := ts.storage.GetUpstreamTokens(ctx, sessionID3, providerName, sessionID3Owner)
 	require.NoError(t, err, "leg 3: upstream tokens should be stored")
 	assert.Empty(t, tokens3.RefreshToken,
 		"leg 3: no RT carry-forward for a new user with no prior row (ErrNotFound path)")

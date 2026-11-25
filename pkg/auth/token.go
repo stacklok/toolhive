@@ -1370,7 +1370,18 @@ func (v *TokenValidator) loadUpstreamTokens(
 		return nil, nil, nil
 	}
 
-	creds, failed, err := v.upstreamTokenReader.GetAllUpstreamCredentials(ctx, tsid)
+	// The session ID says which rows; the subject says whose they are. A
+	// client can read the session ID out of its own token, so without the
+	// subject the read has no way to tell its owner from anyone who presents
+	// the same claim. A token carrying a session ID but no subject is refused
+	// rather than read without the comparison.
+	sub, ok := claims["sub"].(string)
+	if !ok || sub == "" {
+		slog.DebugContext(ctx, "refusing upstream credential read for a token with no subject", "tsid", tsid)
+		return nil, nil, errors.New("load upstream credentials: token carries no subject")
+	}
+
+	creds, failed, err := v.upstreamTokenReader.GetAllUpstreamCredentials(ctx, tsid, sub)
 	if err != nil {
 		// Log tsid at DEBUG only — it is credential-adjacent and must not
 		// leak into WARN-level logs or returned error strings.

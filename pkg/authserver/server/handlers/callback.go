@@ -299,9 +299,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	pending = carryFirstUpstreamIdentity(pending, h.recordedUpstreamIdentity(result))
 
 	// Place the resolved canonical user in the request context so callback storage
-	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
-	// consistency, DeleteUpstreamTokensForProvider on cleanup — can resolve the user
-	// from context. The authserver-owned helper does not create a ToolHive identity:
+	// calls that carry no user — DeleteUpstreamTokensForProvider on cleanup — can
+	// resolve it from context. The session-keyed reads take the expected owner as
+	// an argument instead, and are given this same subject directly.
+	// The authserver-owned helper does not create a ToolHive identity:
 	// no bearer has been issued, so there is no authenticated identity to assert —
 	// only the canonical user for storage keying. (StoreUpstreamTokens does not need
 	// this; it keys off tokens.UserID below.)
@@ -869,7 +870,7 @@ func (h *Handler) continueChainOrComplete(
 		return
 	}
 
-	nextProvider, err := h.nextMissingUpstream(ctx, sessionID, chain)
+	nextProvider, err := h.nextMissingUpstream(ctx, sessionID, subject, chain)
 	if err != nil {
 		slog.Error("failed to determine next upstream", "error", err)
 		// Preserve upstream tokens: a transient chain-state read failure does not
@@ -1018,7 +1019,7 @@ func (h *Handler) verifyChainIdentity(ctx context.Context, sessionID string, cha
 	if len(chain) <= 1 {
 		return nil
 	}
-	allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
+	allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID, subject)
 	if err != nil {
 		slog.Error("failed to load upstream tokens for chain identity check", "error", err)
 		return fmt.Errorf("failed to load upstream tokens for identity check: %w", err)

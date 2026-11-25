@@ -666,7 +666,7 @@ func TestDisplayNameChangeKeepsStoredRecordsValid(t *testing.T) {
 			loaded, err := s.LoadPendingAuthorization(ctx, "internal-state")
 			require.NoError(t, err)
 			assert.Equal(t, "test-upstream", loaded.UpstreamProviderName)
-			tokens, err := s.GetUpstreamTokens(ctx, "sid", "test-upstream")
+			tokens, err := s.GetUpstreamTokens(ctx, "sid", "test-upstream", "user")
 			require.NoError(t, err)
 			assert.Equal(t, "test-upstream", tokens.ProviderID)
 			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize", nil)

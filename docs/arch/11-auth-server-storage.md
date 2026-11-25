@@ -83,7 +83,7 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 
 **ToolHive extensions:**
 - `ClientRegistry` — Dynamic client registration (RFC 7591)
-- `UpstreamTokenStorage` — Upstream IDP token caching with user binding
+- `UpstreamTokenStorage` — Upstream IDP token caching with user binding. The session-keyed reads take the expected owner and compare it against the row's `UserID`; see [Upstream row ownership](#upstream-row-ownership).
 - `PendingAuthorizationStorage` — In-flight authorization tracking. Interactive requests have a single-use `awaiting` consent stage before upstream login; only an `approved` record can complete a callback. Each `PendingAuthorization` carries a `BrowserBindingHash`, the SHA-256 of a random cookie value set on the user agent. The consent POST and `/oauth/callback` require the matching cookie before consuming their respective records. Only the hash is stored; an older row without a binding or approval stage cannot complete the flow and must be restarted. `PendingDeviceLogin` carries the same browser binding for the separate device-flow verification-page login, which shares `/oauth/callback`.
 - `RememberedConsentStorage` — Optional server-side browser sessions and one approval per `(userID, clientID)`. The browser holds only a random `__Host-thv_consent_<sha256>` secret; storage holds its SHA-256 digest. Each approval records the redirect URI, scopes, and resource selected for that client. Memory and Redis implement this capability; decorators expose the underlying backend via `storage.Unwrap`. See [Interactive client approval](#interactive-client-approval).
 - `UserStorage` — Internal user accounts and provider identity linking
@@ -434,6 +434,51 @@ The implementation uses different strategies based on consistency requirements:
 - **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation — partial failures are safe since orphaned keys expire via TTL
+
+### Upstream Row Ownership
+
+Upstream rows are addressed by token session ID (`tsid`). That ID travels in
+the token as a claim, so a client can read its own, and presenting one is not
+evidence of owning the credentials filed under it. The session-keyed reads
+therefore take the owner the caller expects and compare it against the row's
+`UserID`:
+
+```go
+GetUpstreamTokens(ctx, sessionID, providerName, expectedUserID string) (*UpstreamTokens, error)
+GetAllUpstreamTokens(ctx, sessionID, expectedUserID string) (map[string]*UpstreamTokens, error)
+```
+
+`expectedUserID` is the subject of the validated token the request arrived
+with, exactly as issued — the same value the callback and the device flow
+store as the row's `UserID`, including the synthetic subject an OAuth 2.0
+upstream running in synthesis mode produces. Comparing synthetic to synthetic
+is a valid binding.
+
+The rules, identical on both backends and pinned by a shared contract suite
+(`upstream_token_contract_test.go`):
+
+- A row belonging to another user, or recording no owner at all, is
+  `ErrInvalidBinding` with a nil row. An unowned row is not a row everyone owns.
+- The comparison runs **before** the expiry check. `ErrExpired` hands the row
+  back so the caller can refresh it, and that row carries the refresh token, so
+  checking expiry first would give a non-owner the one credential that mints
+  new ones.
+- An empty `expectedUserID` is `ErrInvalidRequest`. It never means "skip the
+  comparison".
+- For the bulk read, one foreign row fails the whole read with a nil map.
+  Returning the rest would disclose that the session holds a row the caller may
+  not have, and that read feeds the live request path.
+- A null-marker row — written to record that a provider was offered and
+  declined — still returns `(nil, nil)`. It records no owner because it carries
+  no credentials.
+- An absent row is `ErrNotFound` whoever asks, never `ErrInvalidBinding`:
+  reporting it as foreign would confirm that it exists.
+
+This gives the session-keyed reads the property
+`GetLatestUpstreamTokensForUser` already had, so a caller cannot reach through
+one read what the other refuses. `ErrInvalidBinding` is a hard failure: a
+caller must not fall back to another read, treat it as "not found and therefore
+needs authorization", or prompt the user to connect.
 
 ### Refresh Coordination Scope
 

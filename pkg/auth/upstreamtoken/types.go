@@ -80,7 +80,13 @@ type TokenReader interface {
 	// are unaffected by expiry. See UpstreamCredential for both consumers.
 	//
 	// Returns an empty map and nil failed map (not error) for unknown sessions.
-	GetAllUpstreamCredentials(ctx context.Context, sessionID string) (
+	//
+	// expectedUserID is the subject of the validated token the request arrived
+	// with. The session ID addresses the rows; this is what establishes that
+	// the caller owns them. A session holding a row for another user fails the
+	// whole read with storage.ErrInvalidBinding — see that error. It must not
+	// be empty.
+	GetAllUpstreamCredentials(ctx context.Context, sessionID, expectedUserID string) (
 		creds map[string]UpstreamCredential, failed map[string]error, err error)
 }
 
@@ -107,5 +113,11 @@ type Service interface {
 	// exchange) must check its `exp` claim first or handle the resulting rejection;
 	// callers that only READ ITS CLAIMS are unaffected by expiry. See
 	// UpstreamCredential for details.
-	GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error)
+	// expectedUserID is the subject of the validated token the request arrived
+	// with, carried through to the storage read that compares it against the
+	// row's owner. It must not be empty. A row belonging to another user
+	// returns storage.ErrInvalidBinding and is never refreshed.
+	GetValidTokens(
+		ctx context.Context, sessionID, providerName, expectedUserID string,
+	) (*UpstreamCredential, error)
 }

@@ -1816,22 +1816,46 @@ func (s *RedisStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, p
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 // Returns a new UpstreamTokens struct deserialized from Redis, which acts as
 // a defensive copy - callers cannot modify the stored data by mutating the return value.
-func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*UpstreamTokens, error) {
+func (s *RedisStorage) GetUpstreamTokens(
+	ctx context.Context, sessionID, providerName, expectedUserID string,
+) (*UpstreamTokens, error) {
 	if sessionID == "" {
 		return nil, fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
 	}
 	if providerName == "" {
 		return nil, fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
 	}
+	if expectedUserID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("expected user ID cannot be empty")
+	}
 
 	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
-	return s.getUpstreamTokensFromKey(ctx, key)
+	tokens, err := s.getUpstreamTokensFromKey(ctx, key)
+	// ErrExpired carries the row back so the caller can refresh it. The owner
+	// comparison still has to run on that row, and run first, so a caller
+	// never reaches a refresh for a row it does not own.
+	if err != nil && !errors.Is(err, ErrExpired) {
+		return tokens, err
+	}
+	if ownerErr := upstreamRowBelongsTo(tokens, expectedUserID); ownerErr != nil {
+		return nil, ownerErr
+	}
+	return tokens, err
 }
 
 // GetAllUpstreamTokens retrieves all upstream IDP tokens for a session across all providers.
 // Uses SMEMBERS on the session index set to find all provider keys, then MGET to fetch them.
 // Returns a map of providerName -> tokens. Returns an empty map for unknown sessions.
-func (s *RedisStorage) GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*UpstreamTokens, error) {
+func (s *RedisStorage) GetAllUpstreamTokens(
+	ctx context.Context, sessionID, expectedUserID string,
+) (map[string]*UpstreamTokens, error) {
+	if sessionID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if expectedUserID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("expected user ID cannot be empty")
+	}
+
 	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
 	result := make(map[string]*UpstreamTokens)
 
@@ -1866,33 +1890,50 @@ func (s *RedisStorage) GetAllUpstreamTokens(ctx context.Context, sessionID strin
 			continue
 		}
 
-		data, ok := val.(string)
-		if !ok {
-			slog.Warn("skipping upstream token entry: unexpected type", "key", providerKeys[i])
+		providerName, tokens := decodeUpstreamIndexEntry(providerKeys[i], keyPrefix, val)
+		if providerName == "" {
 			continue
 		}
-
-		tokens, parseErr := unmarshalUpstreamTokens([]byte(data))
-		if parseErr != nil && !errors.Is(parseErr, ErrExpired) {
-			slog.Warn("skipping corrupt upstream token entry", "key", providerKeys[i], "error", parseErr)
-			continue
+		// One row belonging to someone else fails the whole read: returning
+		// the rest would hand back a partial view of another user's session.
+		if ownerErr := upstreamRowBelongsTo(tokens, expectedUserID); ownerErr != nil {
+			return nil, ownerErr
 		}
-
-		// Extract provider name from the key
-		providerName := ""
-		if len(providerKeys[i]) > len(keyPrefix) {
-			providerName = providerKeys[i][len(keyPrefix):]
-		}
-		if providerName == "" && tokens != nil {
-			providerName = tokens.ProviderID
-		}
-
-		if providerName != "" {
-			result[providerName] = tokens
-		}
+		result[providerName] = tokens
 	}
 
 	return result, nil
+}
+
+// decodeUpstreamIndexEntry turns one MGET result into the provider it belongs
+// to and the row it holds. An entry the backend cannot make sense of — an
+// unexpected type, or JSON that will not parse — is skipped with a warning and
+// reported as an empty provider name: it carries nothing to hand back, and one
+// unreadable row must not fail a session's whole read.
+// An expired row is a normal result here, since this read does not filter by
+// expiry.
+func decodeUpstreamIndexEntry(key, keyPrefix string, val any) (string, *UpstreamTokens) {
+	data, ok := val.(string)
+	if !ok {
+		slog.Warn("skipping upstream token entry: unexpected type", "key", key)
+		return "", nil
+	}
+
+	tokens, parseErr := unmarshalUpstreamTokens([]byte(data))
+	if parseErr != nil && !errors.Is(parseErr, ErrExpired) {
+		slog.Warn("skipping corrupt upstream token entry", "key", key, "error", parseErr)
+		return "", nil
+	}
+
+	// The per-provider key format is "{prefix}upstream:{sessionID}:{providerName}".
+	providerName := ""
+	if len(key) > len(keyPrefix) {
+		providerName = key[len(keyPrefix):]
+	}
+	if providerName == "" && tokens != nil {
+		providerName = tokens.ProviderID
+	}
+	return providerName, tokens
 }
 
 // DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).

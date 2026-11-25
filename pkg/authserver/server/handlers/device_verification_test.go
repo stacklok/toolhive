@@ -161,7 +161,7 @@ func TestDeviceVerificationFlow_ApproveHappyPath(t *testing.T) {
 	// the device grant's final session id -- otherwise any downstream
 	// consumer that looks up upstream tokens by session id (token
 	// injection, refresh) finds nothing for this session.
-	tokens, err := h.storage.GetUpstreamTokens(context.Background(), device.SessionID, "test-upstream")
+	tokens, err := h.storage.GetUpstreamTokens(context.Background(), device.SessionID, "test-upstream", device.ResolvedUserID)
 	require.NoError(t, err)
 	assert.Equal(t, "upstream-access-token", tokens.AccessToken)
 	assert.Equal(t, device.ResolvedUserID, tokens.UserID)

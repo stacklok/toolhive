@@ -86,18 +86,18 @@ func preflightDurableCollisions(ctx context.Context, base Storage, clients map[s
 
 // resourceScopedClient is implemented by fosite.Client types (e.g.
 // registration.SPIFFEClient) that maintain an RFC 8707 resource allowlist
-// independent of GetAudience's audience allowlist. This mirrors the
-// identically-shaped interface in pkg/authserver/server/tokenexchange -- both
-// packages match it structurally against the same concrete client types
-// without either importing the other's unexported interface.
+// independent of GetAudience's audience allowlist. It mirrors
+// server.ResourceScopedClient. This package keeps its own copy so storage does
+// not depend on the server package; both match the same concrete client types
+// structurally.
 type resourceScopedClient interface {
 	Resources() []string
 }
 
 // spiffeIdentityClient is implemented by fosite.Client types (e.g.
 // spiffeStaticClient) that carry a durable SPIFFE association identity
-// fingerprint independent of OAuth policy. Mirrors resourceScopedClient's
-// structural-matching pattern above.
+// fingerprint covering trust domain ref, principal, grant types and methods.
+// Mirrors resourceScopedClient's structural-matching pattern above.
 type spiffeIdentityClient interface {
 	IdentityFingerprint() string
 }
@@ -161,15 +161,16 @@ func isReservedPlaceholder(client fosite.Client) bool {
 // server registers, and it carries no secret. This guarantee holds on every
 // backend, including a bare read-back from Redis by a replica with no SPIFFE
 // overlay — see inertPlaceholderClient and storedClient.Reserved. It keeps
-// the real client's Scopes, Audience, (RFC 8707) Resources, and SPIFFE
-// association identity fingerprint so ReconcileConfiguredClient can tell
+// the real client's Scopes, Audience (nil for SPIFFE clients), (RFC 8707) Resources,
+// and SPIFFE association identity fingerprint (covering trust domain ref, principal,
+// grant types and methods) so ReconcileConfiguredClient can tell
 // "same association, restarted" (silent) from "changed association"
 // (replaced, with a WARN).
 // Scopes and Audience are taken directly from actual.GetScopes() /
 // GetAudience() without an extra defensive clone here: the only production
 // caller (registration.SPIFFEClient) already returns a fresh slice.Clone
-// from both getters (see its doc comments), so there is no live backing
-// array to alias. The same applies to Resources() when actual implements
+// of its scopes and nil audience (see its doc comments), so there is no live
+// backing array to alias. The same applies to Resources() when actual implements
 // resourceScopedClient; a client that doesn't (falls back to nil).
 func staticClientPlaceholder(actual fosite.Client) fosite.Client {
 	var resources []string

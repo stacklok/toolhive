@@ -412,7 +412,7 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 		"redirectURIs":            "placeholders carry no redirect URIs; one appearing is a different client",
 		"tokenEndpointAuthMethod": "placeholders never carry an auth method; one appearing is a different client",
 		"resources":               "a changed RFC 8707 resource allowlist is reported in the replacement WARN",
-		"identityFingerprint": "a different SPIFFE association identity (trust domain, principal, methods) " +
+		"identityFingerprint": "a different SPIFFE association identity (trust domain, principal, grant types, methods) " +
 			"behind the same placeholder ID is reported in the replacement WARN",
 		"public": "public vs. confidential is a different client class, refused for non-reserved clients",
 		"reserved": "a SPIFFE-reserved placeholder and an ordinary configured client at the same ID " +

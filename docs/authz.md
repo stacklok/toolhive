@@ -79,8 +79,46 @@ is a JSON-RPC error, not an HTTP 403.
 One ordering differs from the direct `thv run` proxies, where authorization runs
 first: vMCP checks session ownership before the authorization gate. A request that
 carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
-**HTTP 404** before any 403. A denied call on the caller's own session still gets
-403.
+**HTTP 404** before any Cedar 403. A denied call on the caller's own session still gets
+403. Two checks run before session ownership: the loopback `Host` guard, and call
+binding. A request with an access token bound to one MCP call that the token does not
+permit gets its 401 or 403 from call binding whatever session it names.
+
+Call binding is not a Cedar policy and runs whether or not Cedar is configured. An
+access token that carries an `authorization_details` entry of type
+`https://toolhive.dev/mcp_tool_call` may start only the one `tools/call` its entry
+names, once. A retried call, such as the retry after a URL elicitation, is a second
+call and needs a fresh token. Before its `exp`, such a token may also send, to the
+MCP endpoint:
+
+- the handshake (`initialize`, `notifications/initialized`), the Modern
+  `server/discover` probe and `ping`; `initialize` only until the token has started
+  its call;
+- `tools/list`, filtered by Cedar as usual; it does not use up the token;
+- GET and DELETE on sessions its principal owns, and once the token has started its
+  call, only on that call's session;
+- on the Legacy session of its call, while the call's request is open: a
+  `notifications/cancelled` for the call and any JSON-RPC response, such as an
+  elicitation answer.
+
+Call binding refuses everything else on the MCP endpoint. A refusal that describes the
+token gets **HTTP 401** with `WWW-Authenticate: Bearer error="invalid_token"` (with the
+same `realm` and `resource_metadata` as the token validator's challenges) and an RFC
+6750 error body: the token has expired (`token_expired`), has already started its call
+(`token_reused`), or its `authorization_details` or claims are unusable
+(`malformed_entry`, `single_entry_required`, `claims_required`). The client needs a
+new token. Any other refusal is about the request and gets **HTTP 403** with a JSON-RPC
+error and no `WWW-Authenticate`, like a Cedar denial. In both cases the message ends
+with the reason, and the request is audited as `denied` with
+`metadata.extra.denial_reason`.
+
+Two consequences are easy to miss. A token whose `authorization_details` claim is
+malformed is refused on every request, whatever its client, even one that never
+asked for call binding. And messages for a call are accepted only until the earlier of
+the token's `exp` and the end of the call's request: an elicitation answer or
+cancellation sent after `exp` gets 401, even while the call is still open, and a fresh
+token does not help because it has no call of its own. See
+[Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.
@@ -668,7 +706,7 @@ principal and the context, naming the trust root behind the claims:
 | Value | Meaning |
 | --- | --- |
 | `request` | No `primaryUpstreamProvider` is configured. Claims come from the request's token, and no provenance was ever demanded. |
-| `upstream:<provider>` | Claims come from that upstream's access token (with the profile-claim id_token supplement where it applies). |
+| `upstream:<provider>` | Claims come from that upstream's access token, with any claim it omits filled from the same upstream's id_token (see [Claims from the upstream id_token](#claims-from-the-upstream-id_token)). |
 | `request:no-upstream-session` | The validated embedded-auth-server token was proven to have been minted with no upstream login, so no upstream credential can exist for it. |
 | `request:upstream-opaque` | An upstream credential exists but is an opaque OAuth 2.0 access token whose claims cannot be read, so evaluation degraded to the request token's claims. |
 
@@ -688,6 +726,85 @@ permit(principal, action == Action::"call_tool", resource == Tool::"deploy") whe
 The attribute is written after claim prefixing and its name does not start with
 `claim_`, so a token carrying a claim named `thv_claim_source` becomes
 `claim_thv_claim_source` and cannot spoof its own provenance.
+
+##### Claims from the upstream id_token
+
+On the `upstream:<provider>` path, any claim the upstream's access token omits is
+filled from that same upstream's stored id_token. This includes group and role
+claims under any name, `email_verified`, `acr`, `amr` and custom claims. The
+ToolHive-issued token is never read on this path. This applies to every workload
+that uses the embedded authorization server (`MCPServer`, `MCPRemoteProxy` and
+`VirtualMCPServer`), and it cannot be turned off. The primary upstream is the
+first configured one; only a `VirtualMCPServer` can name another with
+`primaryUpstreamProvider`.
+
+**ToolHive's client registration is authoritative for what the access token
+omits.** Identity providers compute group and role claims per client or per
+audience: Entra ID builds each token from its app registration's group and
+app-role configuration, Okta configures group claims per authorization server
+and app, Auth0 Actions set each token's claims separately, and Keycloak resolves
+`realm_access`/`resource_access` through the requesting client's role scope
+mappings. A group or role claim filled from the id_token is therefore the answer
+for ToolHive's own client registration at the IdP, not the resource API's. When
+the access token carries no group or role claim, configure group filters, app
+roles and client scopes on that registration.
+
+- **Fill-only**: a claim the access token asserts is used as-is, never replaced
+  or unioned with the id_token's value.
+- **Never filled**: claims that describe the id_token itself (`iss`, `aud`,
+  `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
+  `sid`, `client_id`, `typ`, `token_use`, `uti`, `rh`, `idtyp`, `ver`, `cnf`,
+  `appid`, `appidacr`, `azpacr`, `cid`, `gty`, `allowed-origins`,
+  `session_state`, `xms_cc`, `acrs`), the delegated grant (`scope`, `scp`,
+  `act`, `may_act`, `authorization_details`), and `sub`.
+- **Group and role claims come from one token**: if the access token carries
+  a list under any claim group extraction reads (`group_claim_name`,
+  `role_claim_name` — `groupClaimName` and `roleClaimName` on the operator CRDs
+  — or one of the defaults `groups`, `roles` and `cognito:groups`), the
+  id_token fills none of them; a null or non-list value does not count. One
+  decision therefore never combines the resource API's `groups` with the client
+  registration's `roles`. A name that is not filled is also absent as a
+  `claim_<name>` attribute.
+- **Empty audience filters**: a provider that omits the group claim from the
+  access token because a per-audience filter matched nothing will have the
+  client registration's groups filled in. Apply the same filter to ToolHive's
+  client registration, emit an empty claim, or keep groups out of the id_token.
+- **Entra ID app roles**: the id_token's `roles` are the user's roles on
+  ToolHive's auth-server client, and Entra omits `roles` from the access token
+  when the user has none on the resource API. Assign app roles on the client
+  registration accordingly, or use one registration for both.
+- **Freshness**: the id_token is used even after it expires. An expired one
+  triggers an upstream refresh, and Entra ID, Okta, Auth0 and Keycloak return a
+  new id_token on refresh when `openid` was requested, so filled groups track
+  the provider at about the id_token's lifetime. A provider that does not rotate
+  it, or a refresh that fails, leaves the old one in place for as long as the
+  session is kept alive; the refresh-token lifespan is renewed on every refresh,
+  so it bounds only idle sessions.
+- **Revoking a user's last group**: Keycloak (and apparently Entra ID) omit
+  `groups` when the user has none instead of sending an empty list, so after
+  the last group is revoked the access token carries no group claim and the
+  id_token's list is consulted. Both return a new id_token on the same refresh,
+  which omits `groups` too, so no stale list is filled. A stale list survives
+  only when such a provider does not rotate the id_token or the refresh fails;
+  keeping groups out of the id_token closes that case. Microsoft also advises against relying on an id_token returned by a
+  refresh for authorization, so on Entra ID prefer group and role claims in the
+  access token.
+
+> **Upgrading: claims from the id_token**
+>
+> Releases v0.41.0 through v0.69.1 fill only `name` and `email` from the
+> id_token. Later releases fill every claim not listed above, so decisions can
+> change in both directions. Review `permit` and `forbid` rules before
+> upgrading:
+>
+> - A `permit` or `forbid` keyed on a group or claim the id_token now supplies
+>   can start matching.
+> - A condition such as `!(principal has claim_X)` or an `unless` clause can
+>   stop matching.
+> - A claim that arrives with an unexpected type can make a policy error, which
+>   denies the request.
+> - With `group_claim_name` set and no group or role claim in the access token,
+>   the id_token's list becomes the group set.
 
 ##### What the fallback claims actually are
 
@@ -740,6 +857,11 @@ has been validated for the configured embedded authorization-server issuer.
 A session-less token carries at most `sub`, `act`, `client_id` and `scope`, plus
 `name` and `email` when the grant supplies them (RFC 8693 delegation copies them
 from the subject token; RFC 7523 JWT-bearer has no end user and carries neither).
+A token redeemed from an ID-JAG that carries `authorization_details` also
+carries the entries the authorization server granted: whole entries the
+ID-JAG's issuer signed, possibly fewer of them. An ID-JAG whose types are not
+registered is refused rather than redeemed (see
+[Authorization details](arch/17-token-exchange-delegation.md#on-id-jag-redemption)).
 Nothing else crosses. In particular **no upstream attribute is carried** — no
 `groups`, no `roles`, no `department`, nothing the pinned IdP asserted about the
 subject.
@@ -754,6 +876,8 @@ permit(principal, action == Action::"call_tool", resource) when {
   principal.claim_scope like "*mcp:tools*"
 };
 ```
+
+For a SPIFFE client, `act.sub` is the workload's SPIFFE ID, including when the client exchanges a token without an `actor_token`. A policy that means "this client" should match `principal.claim_client_id` instead, because every workload that shares the client ID has the same `client_id` claim. See [Workloads that share a client ID](arch/18-spiffe-association-declarations.md).
 
 Policies keyed on upstream attributes do not. A rule guarded on
 `principal has claim_department` simply stops matching, so the request is denied

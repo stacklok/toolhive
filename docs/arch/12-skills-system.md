@@ -237,19 +237,35 @@ digest. This ordering predates keyless signing and is unchanged by it;
 consumers are protected by the install-side requirement for a valid
 signature, not by the publisher's ordering.
 
-**In CI:** release pushes (`.github/workflows/skills-publish.yml`, called
-only from `releaser.yml`) run `thv skill push` with no signing flags at all,
-so the ambient rung of the ladder signs them with the job's OIDC token. That
-needs `id-token: write` on both the reusable workflow's job *and* the calling
-job — GitHub caps a reusable workflow's permissions at what its caller
-declares, so granting it in only one place silently yields no token and fails
-the push.
+**In CI:** both skills workflows call the `skills-publish` action from
+[StacklokLabs/toolhive-actions](https://github.com/StacklokLabs/toolhive-actions),
+pinned by commit, with a `thv` built from the checkout. The action finds every
+directory under `skills/` with a `SKILL.md`. A directory without one is
+skipped with a warning annotation rather than failing the job, so a skill whose
+`SKILL.md` is missing or misnamed goes unpublished while the job stays green.
+The action validates each skill it finds (an error stops the job before
+anything is built), builds it once per tag, and with `push: 'true'` pushes and
+signs one tag at a time across all skills, so `latest` moves only after the
+release tag is published for every skill. Release pushes
+(`.github/workflows/skills-publish.yml`, called only from `releaser.yml`) pass
+no signing flags at all, so the ambient rung of the ladder signs them with the
+job's OIDC token. That needs `id-token: write` on both the reusable
+workflow's job *and* the calling job — GitHub caps a reusable workflow's
+permissions at what its caller declares, so granting it in only one place
+silently yields no token, and the action fails before building anything.
+
+The signer identity is the path of that reusable workflow, not of the action
+it calls, so the file must keep its name and location. The action also refuses
+to push unless `thv version` reports v0.48.0 or later; a plain `go build`
+reports a development version, so the publish workflow stamps the release tag
+into the binary with `-ldflags`, as the Taskfile and goreleaser do.
 
 Building is a separate workflow (`skills-build.yml`, called from
-`run-on-pr.yml` and `run-on-main.yml`) that publishes nothing and holds
-neither `packages: write` nor `id-token: write`. The split is the reason
-those permissions exist in one place only: the build executes repository
-code — `thv serve` and `thv skill build` — which on a pull request is code
+`run-on-pr.yml` and `run-on-main.yml`) that runs the same action with
+`push: 'false'`, publishes nothing, and holds neither `packages: write` nor
+`id-token: write`. The split is the reason those permissions exist in one
+place only: the build executes repository code — `thv serve`,
+`thv skill validate` and `thv skill build` — which on a pull request is code
 from the pull request itself, and GitHub validates a called workflow's
 permissions against its caller's statically, so a single workflow behind a
 `push:` input would have forced every caller to grant the union regardless.
@@ -593,7 +609,7 @@ Exit codes follow a CI-oriented contract distinct from the generic `1` used else
 | `POST` | `/` | Install a skill |
 | `GET` | `/{name}` | Get skill info |
 | `DELETE` | `/{name}` | Uninstall a skill |
-| `POST` | `/validate` | Validate a SKILL.md |
+| `POST` | `/validate` | Validate a SKILL.md (result format: [skills-validation.md](../skills-validation.md)) |
 | `POST` | `/build` | Build skill to OCI artifact |
 | `POST` | `/push` | Push built skill to registry |
 | `GET` | `/builds` | List local builds |

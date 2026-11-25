@@ -17,9 +17,35 @@ import (
 	"time"
 
 	mobyclient "github.com/moby/moby/client"
+
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
 var hostGatewayNames = [...]string{dockerGatewayHostname, dockerAltGatewayHostname, podmanGatewayHostname}
+
+// dockerHostGatewayMapping asks Docker to write its host-gateway address into
+// the DNS sidecar's hosts file. On Docker Desktop and similar VM runtimes that
+// address (for example 192.168.65.254) reaches host loopback services but is
+// not the gateway of any bridge network, so bridge discovery alone misses it.
+const dockerHostGatewayMapping = dockerGatewayHostname + ":host-gateway"
+
+// dnsExtraHosts returns the host mappings for the DNS sidecar. Podman writes
+// its host alias itself; Docker only does so when asked.
+func dnsExtraHosts(runtimeType runtime.Type) []string {
+	if runtimeType == runtime.TypePodman {
+		return nil
+	}
+	return []string{dockerHostGatewayMapping}
+}
+
+// requiredHostAlias is the alias the runtime must have written into the DNS
+// sidecar's hosts file. Its absence fails deployment closed.
+func requiredHostAlias(runtimeType runtime.Type) string {
+	if runtimeType == runtime.TypePodman {
+		return podmanGatewayHostname
+	}
+	return dockerGatewayHostname
+}
 
 // CopyFromContainer uses the runtime's archive endpoint, not the client's host
 // filesystem. Podman only exposes its generated hosts file after container start.
@@ -27,9 +53,11 @@ type hostDiscoveryAPI interface {
 	CopyFromContainer(context.Context, string, mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error)
 }
 
-// discoverHostAliases reads the running DNS sidecar's runtime-generated hosts.
-// ToolHive's DNS and proxy sidecars use bridge networking without hosts overrides;
-// all bridge gateways separately cover Podman's rootful gateway selection.
+// discoverHostAliases reads the running DNS sidecar's runtime-generated hosts
+// and returns the addresses of the runtime's host-access aliases. Podman writes
+// host.containers.internal itself; on Docker the sidecar is created with a
+// host-gateway mapping (see dnsExtraHosts). Bridge discovery separately covers
+// every bridge gateway, including Podman's rootful gateway selection.
 func (c *Client) discoverHostAliases(ctx context.Context, dnsContainerID string) (_ []netip.Addr, retErr error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -38,12 +66,12 @@ func (c *Client) discoverHostAliases(ctx context.Context, dnsContainerID string)
 		return nil, fmt.Errorf("read running DNS hosts: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, archive.Content.Close()) }()
-	return parseHostAliasArchive(archive.Content)
+	return parseHostAliasArchive(archive.Content, requiredHostAlias(c.runtimeType))
 }
 
 // Bound the entire archive as well as the member, so extended headers, padding,
 // and unexpected files cannot cause unbounded reads. Never extract to disk.
-func parseHostAliasArchive(r io.Reader) ([]netip.Addr, error) {
+func parseHostAliasArchive(r io.Reader, required string) ([]netip.Addr, error) {
 	const maxHostsSize = 1 << 20
 	const maxArchiveSize = 2 << 20
 	data, err := io.ReadAll(io.LimitReader(r, maxArchiveSize+1))
@@ -61,7 +89,7 @@ func parseHostAliasArchive(r io.Reader) ([]netip.Addr, error) {
 	if header.Name != "hosts" || header.Typeflag != tar.TypeReg || header.Size > maxHostsSize {
 		return nil, errors.New("hosts archive must contain one bounded regular hosts file")
 	}
-	addresses, err := parseHostAliases(tr)
+	addresses, err := parseHostAliases(tr, required)
 	if err != nil {
 		return nil, err
 	}
@@ -71,8 +99,8 @@ func parseHostAliasArchive(r io.Reader) ([]netip.Addr, error) {
 	return addresses, nil
 }
 
-func parseHostAliases(r io.Reader) ([]netip.Addr, error) {
-	var foundPodmanAlias bool
+func parseHostAliases(r io.Reader, required string) ([]netip.Addr, error) {
+	var foundRequired bool
 	var addresses []netip.Addr
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 4096), (1<<20)+1)
@@ -89,7 +117,7 @@ func parseHostAliases(r io.Reader) ([]netip.Addr, error) {
 		for _, name := range fields[1:] {
 			name = strings.TrimSuffix(strings.ToLower(name), ".")
 			if slices.Contains(hostGatewayNames[:], name) {
-				foundPodmanAlias = foundPodmanAlias || name == podmanGatewayHostname
+				foundRequired = foundRequired || name == required
 				addresses = append(addresses, addr.Unmap())
 			}
 		}
@@ -97,10 +125,10 @@ func parseHostAliases(r io.Reader) ([]netip.Addr, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read hosts: %w", err)
 	}
-	// Only Podman's own alias is required: older Podman releases do not write
-	// host.docker.internal, and an absent alias cannot resolve to the host.
-	if !foundPodmanAlias {
-		return nil, errors.New("hosts missing " + podmanGatewayHostname + "; check Podman hosts configuration")
+	// Only the runtime's own alias is required: older Podman releases do not
+	// write host.docker.internal, and an absent alias cannot resolve to the host.
+	if !foundRequired {
+		return nil, errors.New("hosts missing " + required + "; check the container runtime's hosts configuration")
 	}
 	slices.SortFunc(addresses, netip.Addr.Compare)
 	return slices.Compact(addresses), nil

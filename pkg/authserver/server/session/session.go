@@ -18,6 +18,8 @@
 package session
 
 import (
+	"encoding/json"
+
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/token/jwt"
@@ -202,6 +204,40 @@ func (s *Session) Clone() fosite.Session {
 	}
 }
 
+// UnmarshalJSON decodes a session as encoding/json would, except that the
+// authorization_details claim keeps its encoded bytes as a json.RawMessage
+// instead of being decoded into []any, which would round an integer above
+// 2^53. A session read back from storage then holds the claim in the same
+// form as the session that was stored.
+func (s *Session) UnmarshalJSON(data []byte) error {
+	// plain has Session's fields but not this method, so decoding into it
+	// does not recurse.
+	type plain Session
+	if err := json.Unmarshal(data, (*plain)(s)); err != nil {
+		return err
+	}
+	if s.JWTSession == nil || s.JWTClaims == nil {
+		return nil
+	}
+	if _, present := s.JWTClaims.Extra[claimnames.AuthorizationDetailsKey]; !present {
+		return nil
+	}
+	var raw struct {
+		JWTClaims *struct {
+			Extra map[string]json.RawMessage
+		}
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.JWTClaims != nil {
+		if details, present := raw.JWTClaims.Extra[claimnames.AuthorizationDetailsKey]; present {
+			s.JWTClaims.Extra[claimnames.AuthorizationDetailsKey] = details
+		}
+	}
+	return nil
+}
+
 // ClearSubjectIdentifier removes any persisted or source-token sub_id and
 // upstream subject claim before the current grant decides whether it is
 // eligible to issue them. It mutates the receiver's claims in place; a caller
@@ -216,8 +252,18 @@ func (s *Session) ClearSubjectIdentifier() {
 
 // SetSubjectIdentifier sets the RFC 9493 sub_id claim and the upstream subject
 // claim from the verified upstream identity. It does nothing unless the identity
-// is complete. It mutates the receiver's claims in place; a caller holding a
-// session loaded from storage must Clone it first.
+// is complete.
+//
+// The upstream identity is the one the first upstream verified, and that
+// upstream is the only one that creates users. The local user is found by the
+// link key (upstream name, subject_claim value). The sub_id is the raw (iss, sub)
+// and is not used to find users, so the two can drift apart: a changed link key
+// with the same (iss, sub) gives one person two users with the same sub_id, and
+// a same link key with a different issuer gives one user two sub_ids. See
+// docs/arch/11-auth-server-storage.md, "One upstream identity, one user".
+//
+// It mutates the receiver's claims in place; a caller holding a session loaded
+// from storage must Clone it first.
 func (s *Session) SetSubjectIdentifier(upstream UpstreamSubject) {
 	if s == nil || s.JWTSession == nil || s.JWTClaims == nil || !upstream.IsComplete() {
 		return

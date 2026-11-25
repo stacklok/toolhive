@@ -141,6 +141,12 @@ func (r tokenResult) str(t *testing.T, key string) string {
 
 func postToken(t *testing.T, serverURL string, auth clientAuth, values url.Values) tokenResult {
 	t.Helper()
+	return postTokenWithHeader(t, serverURL, auth, values, nil)
+}
+
+// postTokenWithHeader is postToken with extra request headers.
+func postTokenWithHeader(t *testing.T, serverURL string, auth clientAuth, values url.Values, header http.Header) tokenResult {
+	t.Helper()
 	form := url.Values{}
 	for k, v := range values {
 		form[k] = append([]string(nil), v...)
@@ -163,6 +169,11 @@ func postToken(t *testing.T, serverURL string, auth clientAuth, values url.Value
 	request, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/token", strings.NewReader(form.Encode()))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for name, values := range header {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
 	if auth.secret != "" || auth.emptyBasic {
 		request.SetBasicAuth(auth.clientID, auth.secret)
 	}

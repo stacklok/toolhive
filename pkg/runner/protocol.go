@@ -571,10 +571,14 @@ func writeAuthFiles(buildContextDir string, authFiles map[string]string, isLocal
 	return cleanupFunc, nil
 }
 
+// localImagePrefix starts the name of every image thv builds from a package.
+const localImagePrefix = "toolhivelocal/"
+
 // generateImageName generates a unique Docker image name based on the package and transport type.
+// Usage metrics read the transport type back from it (see packageBuildSource).
 func generateImageName(transportType templates.TransportType, packageName string) string {
 	tag := time.Now().Format("20060102150405")
-	return strings.ToLower(fmt.Sprintf("toolhivelocal/%s-%s:%s",
+	return strings.ToLower(fmt.Sprintf(localImagePrefix+"%s-%s:%s",
 		string(transportType),
 		PackageNameToImageName(packageName),
 		tag))

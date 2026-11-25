@@ -266,6 +266,10 @@ type VMCP interface {
 // configuration; the core builds, starts, and stops the monitor from it (a nil config
 // disables monitoring, including all backends — matching today's no-monitor behavior).
 type Config struct {
+	// ScopeAuthorization requires incoming scopes on direct calls without hiding
+	// otherwise permitted tools from discovery. Composite workflows are unsupported.
+	ScopeAuthorization *vmcp.ScopeAuthorizationConfig
+
 	// Aggregator discovers and merges backend capabilities into the advertised set.
 	Aggregator aggregator.Aggregator
 

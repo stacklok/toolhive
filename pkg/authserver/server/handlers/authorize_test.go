@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -250,13 +251,7 @@ func TestAuthorizeRoutes_MultipartBackChannelOnlyAndUnknownClientsMatch(t *testi
 	t.Parallel()
 
 	handler, state, _ := handlerTestSetup(t)
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		[]string{"https://mcp.example.com"},
-		nil,
-	)
-	require.NoError(t, err)
+	client := spiffetest.Client(t)
 	state.clients[client.GetID()] = client
 
 	configured := httptest.NewRecorder()
@@ -308,14 +303,7 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			name: "SPIFFE client",
 			client: func(t *testing.T) fosite.Client {
 				t.Helper()
-				client, err := registration.NewSPIFFEClient(
-					"spiffe-client",
-					[]string{"openid"},
-					[]string{"https://mcp.example.com"},
-					nil,
-				)
-				require.NoError(t, err)
-				return client
+				return spiffetest.Client(t)
 			},
 			explicitMarker: true,
 		},

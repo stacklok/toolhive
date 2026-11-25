@@ -2566,3 +2566,72 @@ func TestNewHandler_DefaultContinuationFallback(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, testAuthClientID, got.GetID())
 }
+
+func TestCallbackHandler_OnlyFirstUpstreamEstablishesUsers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		upstream  string
+		singleLeg bool
+		// linked seeds a user and an identity link for the upstream's subject.
+		linked bool
+		// wantRefused means the callback ends in access_denied and creates nothing.
+		wantRefused bool
+	}{
+		{name: "later upstream without a resolved user or link is refused", upstream: "provider-2", wantRefused: true},
+		{name: "single-leg later upstream without a resolved user or link is refused",
+			upstream: "provider-2", singleLeg: true, wantRefused: true},
+		{name: "single-leg later upstream with an existing link resolves it",
+			upstream: "provider-2", singleLeg: true, linked: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, storState, _, _ := multiUpstreamTestSetup(t)
+
+			state := "later-upstream-state"
+			pending := &storage.PendingAuthorization{
+				ClientID:             testAuthClientID,
+				RedirectURI:          testAuthRedirectURI,
+				State:                "client-state",
+				PKCEChallenge:        "challenge",
+				PKCEMethod:           "S256",
+				Scopes:               []string{"openid"},
+				InternalState:        state,
+				UpstreamPKCEVerifier: "verifier-123456789012345678901234567890",
+				UpstreamNonce:        "nonce",
+				UpstreamProviderName: tt.upstream,
+				SessionID:            "later-upstream-session",
+				SingleLeg:            tt.singleLeg,
+				CreatedAt:            time.Now(),
+			}
+			wantUsers := 0
+			if tt.linked {
+				// A link an earlier rename or reorder of the first upstream would have left.
+				storState.users["linked-user"] = &storage.User{ID: "linked-user"}
+				storState.providerIdentities[tt.upstream+":user-from-provider2"] = &storage.ProviderIdentity{
+					UserID: "linked-user", ProviderID: tt.upstream, ProviderSubject: "user-from-provider2",
+				}
+				wantUsers = 1
+			}
+			cookie := bindPending(t, storState, state, pending)
+
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+state, cookie))
+
+			assert.Len(t, storState.users, wantUsers, "no user may be created")
+			assert.Len(t, storState.providerIdentities, wantUsers, "no identity link may be created")
+			require.Equal(t, http.StatusSeeOther, rec.Code)
+			location := rec.Header().Get("Location")
+			if tt.wantRefused {
+				assert.Contains(t, location, "error=access_denied")
+				assert.NotContains(t, storState.upstreamTokens, "later-upstream-session:provider-2")
+				return
+			}
+			assert.NotContains(t, location, "error=")
+			assert.Contains(t, location, "code=")
+		})
+	}
+}

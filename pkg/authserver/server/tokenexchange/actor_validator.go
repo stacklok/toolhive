@@ -76,7 +76,8 @@ type ActorProfile struct {
 
 // ActorTokenValidator checks the actor token that a client presents during ID-JAG
 // issuance and reports which agent it belongs to. How a validator is registered and
-// selected is not part of this interface.
+// selected is not part of this interface. Authorizing the act claim of a token
+// presented to ToolHive is pkg/authserver/actor.
 //
 // ValidateActor is called once per issuance, after the grant checks and before the
 // ID-JAG is signed. ToolHive builds the act claim from the answer: sub is AgentID, and
@@ -98,8 +99,18 @@ type ActorProfile struct {
 // that is not ready yet, for example one bound late at startup. A plain error is
 // reported as a server error, never as a denial.
 //
+// ToolHive logs the text of every error the validator returns, refusals included,
+// at Warn, with the actor token replaced by "[redacted]". Keep user identifiers
+// (the user's sub, sub_id or upstream values) and other credentials out of it.
+//
 // # Requirements
 //
+//   - Refuse unless the actor may act for the user in ActorRequest.Grant through the
+//     client in ActorRequest.ClientID. ToolHive does not check how the actor, the
+//     client and the user relate: a validator that only checks the credential's
+//     signature lets a client pair any user's grant with any agent's credential.
+//     Use ActorDeniedReasonApprovalRequired when the user could still approve the
+//     agent, and ActorDeniedReasonDenied otherwise.
 //   - Refuse with ActorDeniedReasonActorTokenExpired when the actor credential has expired.
 //     If the validator accepts a credential within its own clock-skew allowance, it
 //     may return that credential's past expiry in ExpiresAt, as long as it is less
@@ -116,10 +127,12 @@ type ActorProfile struct {
 //     It holds the configured target, not text from the request.
 //   - Find the user by ActorRequest.Grant.Upstream when the validator binds
 //     users by a per-issuer claim. Check that StableClaim is the claim the validator
-//     expects for that Issuer, then look the user up by StableValue. A mismatch, or an
-//     issuer the validator does not know, is a configuration fault. Return a plain
-//     error for it, not a denial, because a denial is final for the client and would
-//     hide the fault from operators.
+//     expects for that Issuer, then look the user up by StableValue. Issuer,
+//     StableClaim and StableValue are the same key as subject.Ref in
+//     pkg/authserver/subject. A mismatch, or an issuer the validator does not
+//     know, is a configuration fault. Return a plain error for it, not a denial,
+//     because a denial is final for the client and would hide the fault from
+//     operators.
 //   - The whole validation, including the validator's own calls to remote services,
 //     has a budget of currently 5 seconds; ToolHive may raise it but will not lower
 //     it. The budget also covers any time the call waits for a free slot when many
@@ -338,6 +351,12 @@ func mapActorOutcome(res ActorResult, err error, checkedAt time.Time) (ActorResu
 // actorRefusal builds the client error for a refusal reason. The client sees only
 // the reason. A non-empty cause travels with WithWrap, which fosite does not
 // serialize, so the caller can log it.
+//
+// Every refusal is invalid_request, as RFC 8693 section 2.2.2 requires for an
+// actor_token that is unacceptable based on policy. The individual draft
+// draft-mcguinness-oauth-actor-profile-01 section 9 proposes an
+// actor_unauthorized code for policy refusals instead. Whether to follow it is
+// deferred while the draft is not adopted.
 func actorRefusal(reason ActorDeniedReason, cause string) error {
 	refusal := exactReason(fosite.ErrInvalidRequest.ErrorField, string(reason))
 	if cause != "" {

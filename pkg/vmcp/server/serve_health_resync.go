@@ -42,12 +42,15 @@ import (
 // path the server observes — registration failure, binding-failure
 // termination, and SDK-initiated termination (HTTP DELETE), the last via
 // pruneOnTerminateSessionIDManager. Sessions that end without any Terminate
-// call (TTL expiry) are pruned lazily by runListChangedResync when a
-// triggered resync finds them gone. Between fan-out events the registry can
-// therefore still hold entries for expired sessions; each such entry retains
-// the worker closure (the SDK ClientSession and the registration-time
-// identity + forwarded headers), is skipped harmlessly by the worker's
-// liveness guard, and is pruned on the next trigger.
+// call (TTL expiry, or termination on another replica) are pruned by the
+// session manager's background cache sweep, which Serve hooks up through
+// sessionmanager.WithSweptSessionHook, so cleanup does not depend on backend
+// activity. A session the sweep never sees (already evicted from the
+// node-local cache by LRU pressure, or the sweep disabled) is pruned lazily
+// by runListChangedResync when a triggered resync finds it gone. Until one of
+// those runs, an entry for an ended session retains the worker closure (the
+// SDK ClientSession and the registration-time identity + forwarded headers)
+// and is skipped harmlessly by the worker's liveness guard.
 type healthResyncRegistry struct {
 	mu      sync.Mutex
 	workers map[string]*listChangedResyncWorker

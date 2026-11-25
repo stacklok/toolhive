@@ -116,12 +116,16 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				ResourceURL:        "https://resource.example.com",
 				JWKSAllowPrivateIP: true, ProtectedResourceAllowPrivateIP: true,
 				JWKSURL: "https://issuer.example.com/jwks", IntrospectionURL: "https://issuer.example.com/introspect",
+				RequiredSubject:       "system:serviceaccount:clients:agent",
+				RequiredSubjectPrefix: "system:serviceaccount:clients:",
 			},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				require.NotNil(t, config.IncomingAuth.OIDC)
 				assert.Equal(t, "https://issuer.example.com", config.IncomingAuth.OIDC.Issuer)
+				assert.Equal(t, "system:serviceaccount:clients:agent", config.IncomingAuth.OIDC.RequiredSubject)
+				assert.Equal(t, "system:serviceaccount:clients:", config.IncomingAuth.OIDC.RequiredSubjectPrefix)
 				assert.Equal(t, "my-audience", config.IncomingAuth.OIDC.Audience)
 				assert.Equal(t, "https://resource.example.com", config.IncomingAuth.OIDC.Resource)
 				assert.Equal(t, "https://issuer.example.com/jwks", config.IncomingAuth.OIDC.JWKSURL)
@@ -229,6 +233,35 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, config.IncomingAuth.OIDC)
 				assert.Empty(t, config.IncomingAuth.OIDC.CABundlePath)
+			},
+		},
+		{
+			name:          "k8s service account JWKSAuthTokenPath maps to JWKSAuthTokenPath",
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:            "https://kubernetes.default.svc",
+				JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Equal(t,
+					"/var/run/secrets/kubernetes.io/serviceaccount/token",
+					config.IncomingAuth.OIDC.JWKSAuthTokenPath)
+			},
+		},
+		{
+			name:          "empty JWKSAuthTokenPath results in empty JWKSAuthTokenPath",
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeInline),
+			mockReturn:    &oidc.OIDCConfig{Issuer: "https://issuer.example.com"},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Empty(t, config.IncomingAuth.OIDC.JWKSAuthTokenPath)
 			},
 		},
 		{
@@ -2409,4 +2442,39 @@ func TestConvertSessionStorage_GlobalTLS(t *testing.T) {
 			assert.Equal(t, before, server.Spec.SessionStorage)
 		})
 	}
+}
+
+// TestConvertExternalAuthConfigToStrategy_OBOUsesPerConfigSecretEnv verifies
+// the inline outgoing-auth path points each OBO backend at its own client
+// secret env var, so two OBO backends in one vMCP pod never collide.
+func TestConvertExternalAuthConfigToStrategy_OBOUsesPerConfigSecretEnv(t *testing.T) {
+	t.Parallel()
+
+	newOBO := func(name string) *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeOBO,
+				OBO: &mcpv1beta1.OBOConfig{
+					TenantID:        "contoso.onmicrosoft.com",
+					ClientID:        "client-id",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: name + "-secret", Key: "client-secret"},
+					Audience:        "api://backend/.default",
+				},
+			},
+		}
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	first, err := converter.convertExternalAuthConfigToStrategy(t.Context(), newOBO("obo-a"))
+	require.NoError(t, err)
+	second, err := converter.convertExternalAuthConfigToStrategy(t.Context(), newOBO("obo-b"))
+	require.NoError(t, err)
+
+	require.NotNil(t, first.OBO)
+	require.NotNil(t, second.OBO)
+	assert.Equal(t, controllerutil.GenerateUniqueOBOSecretEnvVarName("obo-a"), first.OBO.ClientSecretEnv)
+	assert.Equal(t, controllerutil.GenerateUniqueOBOSecretEnvVarName("obo-b"), second.OBO.ClientSecretEnv)
+	assert.NotEqual(t, first.OBO.ClientSecretEnv, second.OBO.ClientSecretEnv)
+	assert.Empty(t, first.OBO.ClientSecret)
 }

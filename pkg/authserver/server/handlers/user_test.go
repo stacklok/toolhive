@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -165,58 +166,6 @@ func TestUserResolver_ResolveUser(t *testing.T) {
 			wantErr:         true,
 			wantErrContains: "failed to create user",
 		},
-		{
-			name:            "new user creation with rollback on identity link failure",
-			providerID:      testProviderID,
-			providerSubject: testProviderSubject,
-			setupMock: func(m *mocks.MockUserStorage) {
-				var createdUserID string
-
-				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				m.EXPECT().
-					CreateUser(gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, user *storage.User) error {
-						createdUserID = user.ID
-						return nil
-					})
-				m.EXPECT().
-					CreateProviderIdentity(gomock.Any(), gomock.Any()).
-					Return(errors.New("identity link failed"))
-				// Rollback should be attempted
-				m.EXPECT().
-					DeleteUser(gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, userID string) error {
-						require.Equal(t, createdUserID, userID)
-						return nil
-					})
-			},
-			wantErr:         true,
-			wantErrContains: "failed to link provider identity",
-		},
-		{
-			name:            "new user creation with rollback failure logs warning but still returns original error",
-			providerID:      testProviderID,
-			providerSubject: testProviderSubject,
-			setupMock: func(m *mocks.MockUserStorage) {
-				m.EXPECT().
-					GetProviderIdentity(gomock.Any(), testProviderID, testProviderSubject).
-					Return(nil, storage.ErrNotFound)
-				m.EXPECT().
-					CreateUser(gomock.Any(), gomock.Any()).
-					Return(nil)
-				m.EXPECT().
-					CreateProviderIdentity(gomock.Any(), gomock.Any()).
-					Return(errors.New("identity link failed"))
-				// Rollback fails but error should still be the original identity link error
-				m.EXPECT().
-					DeleteUser(gomock.Any(), gomock.Any()).
-					Return(errors.New("rollback also failed"))
-			},
-			wantErr:         true,
-			wantErrContains: "failed to link provider identity",
-		},
 	}
 
 	for _, tt := range tests {
@@ -324,4 +273,197 @@ func TestNewUserResolver(t *testing.T) {
 
 	require.NotNil(t, resolver)
 	require.NotNil(t, resolver.storage)
+}
+
+func TestUserResolver_CreateUserWithIdentity_LinkFailure(t *testing.T) {
+	t.Parallel()
+
+	const (
+		providerID      = "github"
+		providerSubject = "github-user-456"
+		winnerID        = "winner-user-id"
+	)
+	alreadyExists := fmt.Errorf("%w: provider identity already linked", storage.ErrAlreadyExists)
+	timeout := errors.New("i/o timeout")
+
+	tests := []struct {
+		name string
+		// linkErr is what CreateProviderIdentity returns.
+		linkErr error
+		// owner is who the link points at on re-read: "self", "winner" or "none"
+		// (no link exists).
+		owner       string
+		linkReadErr error
+		userReadErr error
+		// wantDelete is whether our own candidate must be rolled back.
+		wantDelete bool
+		deleteErr  error
+		// wantUser is "self" or "winner" when the call must succeed.
+		wantUser string
+		wantErr  string
+	}{
+		{
+			name:    "already exists returns the winner after rolling back own user",
+			linkErr: alreadyExists, owner: "winner", wantDelete: true, wantUser: "winner",
+		},
+		{
+			name:    "already exists still returns the winner when the rollback fails",
+			linkErr: alreadyExists, owner: "winner", wantDelete: true, deleteErr: errors.New("delete failed"),
+			wantUser: "winner",
+		},
+		{
+			// Ownership is unknown, so the candidate must not be deleted.
+			name:    "already exists but link read fails returns an error without deleting",
+			linkErr: alreadyExists, owner: "winner", linkReadErr: errors.New("read failed"),
+			wantErr: "re-reading the link also failed",
+		},
+		{
+			name:    "already exists but winner user read fails returns an error",
+			linkErr: alreadyExists, owner: "winner", wantDelete: true, userReadErr: storage.ErrNotFound,
+			wantErr: "re-read winner",
+		},
+		{
+			// The write committed but its reply was lost, so a retry saw
+			// "already exists". The candidate owns the link and must survive.
+			name:    "already exists with the link pointing at our own user keeps it",
+			linkErr: alreadyExists, owner: "self", wantUser: "self",
+		},
+		{
+			// No link does not prove the write failed: a timed-out write can
+			// still commit after the read, so the candidate is kept. An
+			// unlinked row is harmless: nothing resolves to it.
+			name:    "other link error with no link returns the link error without deleting",
+			linkErr: timeout, owner: "none", wantErr: "failed to link provider identity",
+		},
+		{
+			// The script committed but the reply timed out, so the error is not
+			// "already exists". The candidate owns the link and must survive.
+			name:    "other link error with the link pointing at our own user keeps it",
+			linkErr: timeout, owner: "self", wantUser: "self",
+		},
+		{
+			name:    "other link error with the link owned by another user adopts it",
+			linkErr: timeout, owner: "winner", wantDelete: true, wantUser: "winner",
+		},
+		{
+			// Ownership is unknown, so the candidate must not be deleted.
+			name:    "other link error and link read fails returns an error without deleting",
+			linkErr: timeout, owner: "winner", linkReadErr: errors.New("read failed"),
+			wantErr: "re-reading the link also failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			m := mocks.NewMockUserStorage(ctrl)
+
+			var ownID string
+			ownerID := func() string {
+				if tt.owner == "self" {
+					return ownID
+				}
+				return winnerID
+			}
+
+			linkRead := m.EXPECT().GetProviderIdentity(gomock.Any(), providerID, providerSubject)
+			switch {
+			case tt.linkReadErr != nil:
+				linkRead.Return(nil, tt.linkReadErr)
+			case tt.owner == "none":
+				linkRead.Return(nil, storage.ErrNotFound)
+			default:
+				linkRead.DoAndReturn(func(context.Context, string, string) (*storage.ProviderIdentity, error) {
+					return &storage.ProviderIdentity{UserID: ownerID(), ProviderID: providerID, ProviderSubject: providerSubject}, nil
+				})
+			}
+
+			calls := []any{
+				m.EXPECT().GetProviderIdentity(gomock.Any(), providerID, providerSubject).Return(nil, storage.ErrNotFound),
+				m.EXPECT().CreateUser(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, u *storage.User) error { ownID = u.ID; return nil }),
+				m.EXPECT().CreateProviderIdentity(gomock.Any(), gomock.Any()).Return(tt.linkErr),
+				linkRead,
+			}
+			if tt.wantDelete {
+				calls = append(calls, m.EXPECT().DeleteUser(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, id string) error {
+						require.Equal(t, ownID, id, "rollback must delete the user this call created")
+						return tt.deleteErr
+					}))
+			}
+			if tt.owner == "winner" && tt.linkReadErr == nil {
+				getUser := m.EXPECT().GetUser(gomock.Any(), winnerID)
+				if tt.userReadErr != nil {
+					getUser.Return(nil, tt.userReadErr)
+				} else {
+					getUser.Return(&storage.User{ID: winnerID}, nil)
+				}
+				calls = append(calls, getUser)
+			}
+			gomock.InOrder(calls...)
+
+			user, err := NewUserResolver(m).ResolveUser(context.Background(), providerID, providerSubject)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantErr)
+				require.Nil(t, user)
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantUser == "self" {
+				require.Equal(t, ownID, user.ID)
+			} else {
+				require.Equal(t, winnerID, user.ID)
+			}
+		})
+	}
+}
+
+func TestUserResolver_WithCreateOnlyFor(t *testing.T) {
+	t.Parallel()
+
+	const subject = "subject-1"
+
+	tests := []struct {
+		name     string
+		provider string
+		// linked is whether an identity link already exists for (provider, subject).
+		linked bool
+		// wantErr is the sentinel the call must return; nil means success.
+		wantErr   error
+		wantUsers int
+	}{
+		{name: "first provider with no link creates the user", provider: "first", wantUsers: 1},
+		{name: "first provider with a link resolves it", provider: "first", linked: true, wantUsers: 1},
+		{name: "later provider with a link resolves it", provider: "later", linked: true, wantUsers: 1},
+		{name: "later provider with no link is refused", provider: "later", wantErr: ErrUpstreamCannotCreateUsers},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { require.NoError(t, stor.Close()) })
+			ctx := context.Background()
+			if tt.linked {
+				// Seed a user and link through an unrestricted resolver.
+				_, err := NewUserResolver(stor).ResolveUser(ctx, tt.provider, subject)
+				require.NoError(t, err)
+			}
+
+			user, err := NewUserResolver(stor, WithCreateOnlyFor("first")).ResolveUser(ctx, tt.provider, subject)
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				require.Nil(t, user)
+			} else {
+				require.NoError(t, err)
+				require.NotEmpty(t, user.ID)
+			}
+			require.Equal(t, tt.wantUsers, stor.Stats().Users, "a refused call must create no user")
+			require.Equal(t, tt.wantUsers, stor.Stats().ProviderIdentities, "a refused call must create no link")
+		})
+	}
 }

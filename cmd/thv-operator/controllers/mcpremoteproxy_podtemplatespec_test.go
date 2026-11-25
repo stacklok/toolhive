@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -235,6 +237,122 @@ func TestMCPRemoteProxyPodTemplateSpecDriftDetection(t *testing.T) {
 
 	proxy.Spec.PodTemplateSpec = nil
 	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+}
+
+// Resources set through podTemplateSpec are layered over the defaults before
+// the strategic merge patch runs. Otherwise a podTemplateSpec that sets only
+// requests keeps the default limits and produces request > limit, which the
+// apiserver rejects.
+func TestMCPRemoteProxyPodTemplateSpecResources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		resources       mcpv1beta1.ResourceRequirements
+		podTemplateSpec string
+		wantRequests    corev1.ResourceList
+		wantLimits      corev1.ResourceList
+	}{
+		{
+			name: "requests above the default limits raise the defaulted limits",
+			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
+				`"resources":{"requests":{"cpu":"1","memory":"512Mi"}}}]}}`,
+			wantRequests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		},
+		{
+			// Kubernetes copies the limits into the missing requests at Pod
+			// creation, as it does without defaults.
+			name: "limits without requests drop the default requests",
+			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
+				`"resources":{"limits":{"cpu":"20m","memory":"2Gi"}}}]}}`,
+			wantRequests: nil,
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("20m"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
+			},
+		},
+		{
+			name: "podTemplateSpec wins over spec.resources",
+			resources: mcpv1beta1.ResourceRequirements{
+				Limits: mcpv1beta1.ResourceList{Memory: "1Gi"},
+			},
+			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
+				`"resources":{"limits":{"memory":"768Mi"}}}]}}`,
+			wantRequests: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("50m"),
+			},
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("200m"),
+				corev1.ResourceMemory: resource.MustParse("768Mi"),
+			},
+		},
+		{
+			name: "null removes the default limit",
+			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
+				`"resources":{"limits":{"memory":null}}}]}}`,
+			wantRequests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("200m"),
+			},
+		},
+		{
+			name: "resources on another container are ignored",
+			podTemplateSpec: `{"spec":{"containers":[{"name":"sidecar","image":"busybox:latest",` +
+				`"resources":{"requests":{"memory":"1Gi"}}}]}}`,
+			wantRequests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("200m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proxy := &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "template-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
+					RemoteURL:       "https://mcp.example.com",
+					Resources:       tt.resources,
+					PodTemplateSpec: rawPodTemplateSpecJSON(t, tt.podTemplateSpec),
+				},
+			}
+			reconciler := &MCPRemoteProxyReconciler{
+				Scheme:           testutil.NewScheme(t),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+			require.NotNil(t, deployment)
+
+			container, ok := findContainerByName(deployment.Spec.Template.Spec.Containers, mcpRemoteProxyContainerName)
+			require.True(t, ok)
+			assert.True(t, equality.Semantic.DeepEqual(tt.wantRequests, container.Resources.Requests),
+				"requests: want %v, got %v", tt.wantRequests, container.Resources.Requests)
+			assert.True(t, equality.Semantic.DeepEqual(tt.wantLimits, container.Resources.Limits),
+				"limits: want %v, got %v", tt.wantLimits, container.Resources.Limits)
+
+			assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+		})
+	}
 }
 
 // Scheduling can arrive from either resourceOverrides.proxyDeployment or

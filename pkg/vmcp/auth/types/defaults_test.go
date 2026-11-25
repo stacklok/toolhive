@@ -165,6 +165,49 @@ func TestDefaultSubjectProviderName(t *testing.T) {
 			},
 		},
 		{
+			name:         "obo nil sub-config returned unchanged",
+			strategy:     &BackendAuthStrategy{Type: StrategyTypeOBO},
+			providerName: "upstream1",
+			wantSame:     true,
+		},
+		{
+			name: "obo already-set not overridden",
+			strategy: &BackendAuthStrategy{
+				Type: StrategyTypeOBO,
+				OBO:  &OBOConfig{SubjectTokenProviderName: "explicit"},
+			},
+			providerName:         "upstream1",
+			hasMultipleUpstreams: true,
+			wantSame:             true,
+		},
+		{
+			name: "obo empty defaulted to provider",
+			strategy: &BackendAuthStrategy{
+				Type: StrategyTypeOBO,
+				OBO:  &OBOConfig{ClientID: "client"},
+			},
+			providerName: "entra",
+			checkResult: func(t *testing.T, result *BackendAuthStrategy) {
+				t.Helper()
+				assert.Equal(t, "entra", result.OBO.SubjectTokenProviderName)
+				assert.Equal(t, "client", result.OBO.ClientID)
+			},
+		},
+		{
+			name: "obo ambiguous with multiple upstreams returns error",
+			strategy: &BackendAuthStrategy{
+				Type: StrategyTypeOBO,
+				OBO:  &OBOConfig{},
+			},
+			providerName:         "upstream1",
+			hasMultipleUpstreams: true,
+			wantErr:              ErrAmbiguousSubjectProvider,
+			checkResult: func(t *testing.T, result *BackendAuthStrategy) {
+				t.Helper()
+				assert.Nil(t, result)
+			},
+		},
+		{
 			name: "non-applicable strategy type returned unchanged",
 			strategy: &BackendAuthStrategy{
 				Type:            StrategyTypeHeaderInjection,

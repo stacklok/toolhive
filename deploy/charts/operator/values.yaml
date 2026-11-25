@@ -62,17 +62,17 @@ operator:
         key: ca.crt
 
   # -- Container image for the operator.
-  image: ghcr.io/stacklok/toolhive/operator:v0.65.0
+  image: ghcr.io/stacklok/toolhive/operator:v0.69.1
   # -- Image pull policy for the operator container and image-discovery
   # containers.
   imagePullPolicy: IfNotPresent
 
   # -- Container image for ToolHive proxy runners created by the operator.
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.65.0
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.69.1
 
   # -- Container image for Virtual MCP Server (vMCP) deployments created by the
   # operator.
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.65.0
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.69.1
 
   # -- Image discovery settings for manifest scanners used to mirror images into
   # air-gapped environments.
@@ -94,8 +94,11 @@ operator:
 
   # -- Additional environment variables for the operator container.
   # Chart-managed variables take precedence for duplicate names. Set
-  # `TOOLHIVE_SKIP_UPDATE_CHECK` to `"true"` to disable periodic update
-  # checks and the usage metrics collected with them.
+  # `TOOLHIVE_SKIP_UPDATE_CHECK` to `"true"` to disable update checks and
+  # anonymous usage metrics, or `TOOLHIVE_USAGE_METRICS_ENABLED` to `"false"`
+  # to disable usage metrics only. The operator passes either setting to every
+  # MCPServer, MCPRemoteProxy and VirtualMCPServer it deploys; changing it rolls
+  # out those workloads once.
   env: []
 
   # -- Ports declared on the operator container. The default `metrics` and
@@ -275,4 +278,4 @@ operator:
 # -- Settings for the registry API workloads created by the operator.
 registryAPI:
   # -- Container image for registry API workloads created by the operator.
-  image: "ghcr.io/stacklok/thv-registry-api:v1.5.3"
+  image: "ghcr.io/stacklok/thv-registry-api:v1.5.4"

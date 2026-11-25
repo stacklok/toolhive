@@ -8,16 +8,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive-core/redisconn"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
@@ -1027,4 +1031,99 @@ func TestCallToolArgToolNameMatchesStructTag(t *testing.T) {
 	f, ok := reflect.TypeOf(CallToolInput{}).FieldByName("ToolName")
 	require.True(t, ok, "CallToolInput must have a ToolName field")
 	assert.Equal(t, callToolArgToolName, f.Tag.Get("json"))
+}
+
+// TestNewOptimizerFactory_SharedEmbeddings pins the startup side of the shared
+// embedding cache: an unreachable Redis fails loudly instead of silently
+// disabling reuse, and keyword-only search, with nothing to share, never
+// connects.
+func TestNewOptimizerFactory_SharedEmbeddings(t *testing.T) {
+	t.Parallel()
+
+	closed := miniredis.RunT(t)
+	closedAddr := closed.Addr()
+	closed.Close()
+
+	// Nothing listens on port 1, so the TEI client's startup probe fails fast
+	// and falls back to its defaults; no embedding call is made here.
+	const unreachableTEI = "http://127.0.0.1:1"
+
+	for _, tc := range []struct {
+		name             string
+		embeddingService string
+		wantErr          string
+	}{
+		{name: "unreachable redis fails startup", embeddingService: unreachableTEI,
+			wantErr: "failed to create shared embedding cache"},
+		{name: "keyword-only search needs no cache"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			factory, cleanup, err := NewOptimizerFactory(
+				&Config{EmbeddingService: tc.embeddingService},
+				WithSharedEmbeddings(redisconn.Config{Addr: closedAddr}, "thv:vmcp:session:"),
+			)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, factory)
+			require.NoError(t, cleanup(context.Background()))
+		})
+	}
+}
+
+// TestNewOptimizerFactory_SharedEmbeddingsReachTheStore pins that
+// WithSharedEmbeddings reaches the tool store: building an optimizer publishes
+// its tools' vectors to Redis. The stub TEI reports a model id, without which
+// the vectors would be unverified and never published.
+func TestNewOptimizerFactory_SharedEmbeddingsReachTheStore(t *testing.T) {
+	t.Parallel()
+
+	tei := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/info":
+			_ = json.NewEncoder(w).Encode(map[string]any{"model_id": "stub-model"})
+		case "/embed":
+			var req struct {
+				Inputs []string `json:"inputs"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			vectors := make([][]float32, len(req.Inputs))
+			for i := range vectors {
+				vectors[i] = []float32{1, 0, 0, float32(i)}
+			}
+			_ = json.NewEncoder(w).Encode(vectors)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(tei.Close)
+	mr := miniredis.RunT(t)
+
+	factory, cleanup, err := NewOptimizerFactory(
+		&Config{EmbeddingService: tei.URL},
+		WithSharedEmbeddings(redisconn.Config{Addr: mr.Addr()}, "thv:vmcp:session:"),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cleanup(context.Background()) })
+
+	_, err = factory(context.Background(), []server.ServerTool{
+		{Tool: mcp.Tool{Name: "read_file", Description: "Read a file"}},
+		{Tool: mcp.Tool{Name: "send_email", Description: "Send an email"}},
+	})
+	require.NoError(t, err)
+
+	var published []string
+	for _, key := range mr.Keys() {
+		if strings.HasPrefix(key, "thv:vmcp:session:optimizer:embedding:") {
+			published = append(published, key)
+		}
+	}
+	assert.Len(t, published, 2, "each tool's vector is published under the session prefix")
 }

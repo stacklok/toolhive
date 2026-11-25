@@ -98,6 +98,35 @@ the handler without it (not through net/http), the guard lets the request
 through, as go-sdk does. Embedders serving the handler some other way must
 provide their own Host check.
 
+### Anonymous Usage Metrics
+
+An embedded vMCP sends no anonymous usage metrics and no update checks. Only
+ToolHive's own entry points, `thv vmcp serve` and the `vmcp` binary (which the
+operator deploys), report them, through `pkg/vmcp/cli.Serve`; see the
+[usage metrics middleware](../middleware.md#6-usage-metrics-middleware) for
+what they send. `server.New` and `server.Serve` start no collector, and
+`ServerConfig.UsageMetricsMiddleware` is nil unless the embedder sets it.
+Embedders should leave it unset: reports from an embedding product would reach
+ToolHive under opt-outs that product's users have not been told about.
+
+### Call-bound access tokens
+
+The vMCP always enforces an access token that carries an `authorization_details`
+entry of type `https://toolhive.dev/mcp_tool_call`: such a token may start only the
+one `tools/call` its entry names, once; a retried call needs a fresh token.
+`server.Config.CallBinding` (a `callbinding.Config`) adds the clients whose tokens
+must carry an entry (matched on `client_id`, or `azp` when `client_id` is absent),
+the maximum call duration, the single-use record, and the `realm`,
+`resource_metadata` and `scope` of the 401 challenge. Set `Challenge` to what the
+token validator in front of the vMCP sends, so a refused token gets the same
+challenge from both: call binding answers a refusal that describes the token with
+401 and `invalid_token`, and a refusal of the request with 403 and no challenge. The
+default record is in memory and covers one replica; with sessions in Redis, supply a
+shared `Record`. List a client only once the authorization servers in front of the
+vMCP put the entry into that client's access tokens; otherwise every call from it is
+refused. See
+[Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
+
 ## `pkg/vmcp/` Stability Table
 
 The table below maps every sub-package to its stability level per RFC THV-0059. Verify against the merged RFC if there is a discrepancy.
@@ -116,6 +145,7 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/status` | Stable | `StatusReporter` interface; CLI and K8s reporter implementations |
 | `pkg/vmcp/optimizer` | Experimental | Optimizer interface and TEI integration; tier API may evolve |
 | `pkg/vmcp/cli` | Experimental | New in Phase 4; `Serve`, `Init`, `Validate` entry points may change before stabilisation |
+| `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, the `Record` interface and `MemoryRecord`, `FromClaims` and `Token`, the refusal reasons. `ArgumentsSHA256` is a wire contract shared with the clients that request these tokens: it changes only with a new entry type |
 | `pkg/vmcp/composer` | Experimental | Composite tool DAG executor; workflow API not yet stable |
 | `pkg/vmcp/cache` | Internal | Token cache; not intended for external use |
 | `pkg/vmcp/conversion` | Internal | CRD-to-config conversion; K8s-specific, not for local embedding |

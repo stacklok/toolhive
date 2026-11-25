@@ -12,7 +12,9 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // External auth configuration types
@@ -43,11 +45,9 @@ const (
 	// This injects an upstream IdP access token as the Authorization: Bearer header
 	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
 
-	// ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.
-	// This type requires a build with an OBO handler registered via
-	// controllerutil.RegisterOBOHandler; an upstream-only build surfaces
-	// status.conditions[Valid] = False with Reason: EnterpriseRequired
-	// when an obo-typed MCPExternalAuthConfig is applied.
+	// ExternalAuthTypeOBO is the type for Microsoft Entra on-behalf-of (OBO)
+	// flows: the proxy exchanges the authenticated user's token for a
+	// backend-scoped token issued for that same user.
 	ExternalAuthTypeOBO ExternalAuthType = "obo"
 
 	// ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.
@@ -77,10 +77,6 @@ type ExternalAuthType string
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure.
-	// When set to "obo", the cluster must run a build that has registered an
-	// OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
-	// surface status.conditions[Valid] = False with Reason: EnterpriseRequired
-	// for obo-typed configs.
 	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo;xaa
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
@@ -115,11 +111,8 @@ type MCPExternalAuthConfigSpec struct {
 	// +optional
 	UpstreamInject *UpstreamInjectSpec `json:"upstreamInject,omitempty"`
 
-	// OBO configures On-Behalf-Of (OBO) authentication.
-	// Only used when Type is "obo". Setting this field on an upstream-only build
-	// causes the MCPExternalAuthConfig to transition to
-	// status.conditions[Valid] = False with Reason: EnterpriseRequired, because
-	// no OBO handler is registered. See OBOConfig for the field-to-runtime
+	// OBO configures Microsoft Entra On-Behalf-Of (OBO) authentication.
+	// Only used when Type is "obo". See OBOConfig for the field-to-runtime
 	// contract mapping.
 	// +optional
 	OBO *OBOConfig `json:"obo,omitempty"`
@@ -133,27 +126,25 @@ type MCPExternalAuthConfigSpec struct {
 // OBOConfig holds configuration for the On-Behalf-Of (OBO) external auth type.
 // Only used when Type is "obo".
 //
-// This is the user-facing CRD surface for the Microsoft Entra OBO flow. It is
-// structurally valid in upstream (OSS) builds but inert: an upstream-only build
-// returns obo.ErrEnterpriseRequired at reconcile (Valid=False, Reason:
-// EnterpriseRequired) because no OBO handler is registered via
-// controllerutil.RegisterOBOHandler. A build with the enterprise OBO handler
-// translates these fields into the runtime wire contract obo.MiddlewareParameters,
-// so the field names and semantics here track that contract rather than the
-// upstream TokenExchangeConfig (which uses different names, e.g.
+// This is the user-facing CRD surface for the Microsoft Entra OBO flow. The
+// operator translates these fields into the runtime wire contract
+// obo.MiddlewareParameters (MCPServer, MCPRemoteProxy) or the vMCP OBOConfig
+// (VirtualMCPServer), so the field names and semantics here track that
+// contract rather than TokenExchangeConfig (which uses different names, e.g.
 // subjectProviderName / externalTokenHeaderName). In particular there is no
 // externalTokenHeaderName: the OBO subject is sourced from the authenticated
-// Identity, never from an inbound request header.
+// Identity, never from an inbound request header. An MCPServer or
+// MCPRemoteProxy that references an obo config must also set oidcConfigRef,
+// so it has an authenticated user token to exchange.
 //
-// Field-to-contract mapping performed by the operator's OBO handler:
+// Field-to-contract mapping performed by the operator:
 //   - tenantId (+ optional authority) → tokenUrl
 //     (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token, or the
 //     configured authority base joined with the tenant for sovereign clouds)
 //   - clientSecretRef → resolved into a pod env var; only the env var name
 //     travels in the contract, as clientSecretEnvVar
 //   - audience / scopes → collapsed to a single exchange target by
-//     obo.MiddlewareParameters.ExchangeTarget() (space-joined scopes win,
-//     otherwise audience)
+//     exchange.Target (space-joined scopes win, otherwise <audience>/.default)
 //   - cacheSkew → the contract's integer-seconds cacheSkewSeconds
 //
 // Every field is optional at the CRD level, and the schema deliberately carries
@@ -162,8 +153,8 @@ type MCPExternalAuthConfigSpec struct {
 // admission rule that rejects {} would be a backward-incompatible narrowing of
 // an already-stored, round-trippable object. Presence and combination
 // requirements — a tenant, a client-auth credential, and at least one of
-// audience/scopes — are therefore enforced by the registered OBO handler at
-// reconcile, which reports a violation as Valid=False / Reason=InvalidConfig.
+// audience/scopes — are therefore enforced by the operator at reconcile, which
+// reports a violation as Valid=False / Reason=InvalidConfig.
 // The per-field patterns below still apply, but only to a value that is present.
 //
 //nolint:lll // the tenantId GUID/domain pattern exceeds the line length limit
@@ -178,7 +169,7 @@ type OBOConfig struct {
 	// interpolates it into the token endpoint
 	// (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
 	// the GUID/domain shape (no path metacharacters); the pattern and 253-char
-	// cap mirror the enterprise exchanger's validateTenant, so any tenantId
+	// cap mirror the Entra exchanger's tenant validation, so any tenantId
 	// admitted here is one the runtime can consume.
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$`
@@ -225,10 +216,14 @@ type OBOConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// Audience is the backend target identifier requested in the exchanged
-	// token. Used as the exchange target when Scopes is empty. At least one of
-	// audience or scopes must be set; the operator enforces that at reconcile
-	// (it is not an admission-time rule — see the type doc).
+	// Audience is the backend resource the exchanged token is for: its
+	// Application ID URI (e.g. api://backend) or application (client) ID. Used
+	// when Scopes is empty, as the scope <audience>/.default (a trailing "/" is
+	// dropped, and a value already ending in /.default is sent as is), because
+	// the Entra v2.0 endpoint accepts only scopes. To request specific delegated
+	// permissions, use Scopes instead. At least one of audience or scopes must be
+	// set; the operator enforces that at reconcile (it is not an admission-time
+	// rule — see the type doc).
 	// +optional
 	Audience string `json:"audience,omitempty"`
 
@@ -246,9 +241,13 @@ type OBOConfig struct {
 
 	// SubjectTokenProviderName selects the source of the OBO subject (assertion)
 	// token from the request's authenticated Identity:
-	//   - Omitted: use the inbound end-user token the client presented
-	//     (Identity.Token) — the deployment with no embedded auth server, where
-	//     the client holds an Entra token directly.
+	//   - Omitted, with no embedded auth server: use the inbound end-user token
+	//     the client presented (Identity.Token), where the client holds an Entra
+	//     token directly.
+	//   - Omitted, behind an embedded auth server: defaults to its upstream
+	//     provider, since the inbound token is then the proxy's own session
+	//     token. A VirtualMCPServer whose embedded auth server has more than one
+	//     upstream must set it explicitly.
 	//   - Set: use the named upstream provider's token
 	//     (Identity.UpstreamTokens[<name>]) — the embedded-auth-server
 	//     deployment, where the inbound token is the proxy's own session token.
@@ -264,11 +263,10 @@ type OBOConfig struct {
 	// CacheSkew overrides the OBO token cache's default expiry skew (the margin
 	// by which a cached token is treated as expired before its real expiry),
 	// e.g. "30s". The operator converts it to the runtime contract's
-	// integer-seconds cacheSkewSeconds. Should not be negative, but the schema
-	// does not enforce that — metav1.Duration carries no numeric minimum — and
-	// upstream builds do not reject it. A negative value is rejected only by an
-	// enterprise build's OBO handler once that handler validates the converted
-	// parameters; it is not enforced at admission or in upstream-only builds.
+	// integer-seconds cacheSkewSeconds (truncated toward zero). Must be between
+	// zero and 2147483647 seconds (math.MaxInt32); metav1.Duration carries no
+	// numeric bounds, so the operator rejects a negative or larger value at
+	// reconcile (Valid=False, Reason: InvalidConfig) rather than at admission.
 	// When omitted, the cache default applies.
 	// +optional
 	CacheSkew *metav1.Duration `json:"cacheSkew,omitempty"`
@@ -277,7 +275,7 @@ type OBOConfig struct {
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 // This configuration is used to exchange incoming authentication tokens for tokens
 // that can be used with external services.
-// The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
+// The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
 type TokenExchangeConfig struct {
 	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange
 	// +kubebuilder:validation:Required
@@ -531,6 +529,20 @@ type TrustedIssuerConfig struct {
 	JWTBearerGrant *JWTBearerGrantConfig `json:"jwtBearerGrant,omitempty"`
 }
 
+// JWTBearerAssertionType identifies one assertion form the RFC 7523
+// jwt-bearer grant may accept for a trusted issuer.
+type JWTBearerAssertionType string
+
+const (
+	// JWTBearerAssertionTypeJWTBearer accepts plain RFC 7523 assertions
+	// (typ absent, empty, or "JWT") — e.g. service-account/machine credentials.
+	JWTBearerAssertionTypeJWTBearer JWTBearerAssertionType = "jwt_bearer"
+	// JWTBearerAssertionTypeIDJAG accepts Identity Assertion Authorization
+	// Grant assertions (typ: oauth-id-jag+jwt) — cross-app-access grants
+	// minted by this issuer acting as IdP for a different resource owner.
+	JWTBearerAssertionTypeIDJAG JWTBearerAssertionType = "id_jag"
+)
+
 // JWTBearerGrantConfig limits RFC 7523 JWT-bearer assertions for one trusted
 // issuer. Each assertion subject must have an exact binding and request exactly
 // one of that binding's allowed resources.
@@ -564,6 +576,29 @@ type JWTBearerGrantConfig struct {
 	// +listType=atomic
 	// +optional
 	AcceptedAudiences []string `json:"acceptedAudiences,omitempty"`
+
+	// AcceptedAssertionTypes selects which assertion form(s) this issuer's
+	// jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+	// are accepted, which is the behavior before this field existed. Set
+	// ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+	// Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+	// be redeemed on the credential-free plain jwt-bearer path. Set
+	// ["jwt_bearer"] to refuse ID-JAG.
+	//
+	// When "id_jag" is listed explicitly and acceptedAudiences is set, it must
+	// include this AS's own issuer identifier (the ID-JAG's "aud" per
+	// draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+	// token endpoint URL. When acceptedAudiences is empty the issuer is
+	// accepted by default, unless it is also listed as an allowed audience
+	// (resource), which fails startup. Subject bindings are shared between both forms, so
+	// each binding also authorizes a plain jwt-bearer assertion from that
+	// subject whenever "jwt_bearer" is accepted.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=jwt_bearer;id_jag
+	// +listType=set
+	// +optional
+	AcceptedAssertionTypes []JWTBearerAssertionType `json:"acceptedAssertionTypes,omitempty"`
 }
 
 // JWTBearerSubjectBinding configures the exact subject and allowed resources
@@ -742,12 +777,8 @@ type SPIFFETrustDomainConfig struct {
 // Trust material comes from the declared bundle source (see
 // SPIFFETrustDomainConfig's doc comment).
 //
-// GrantTypes is deliberately not exposed here: the runtime only accepts
-// exactly the RFC 8693 token-exchange grant for a SPIFFE client
-// (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-// always supplies it instead of letting it be configured.
-//
 // +kubebuilder:validation:XValidation:rule="self.principalPattern.split('/').all(segment, segment != '.' && segment != '..')",message="principalPattern path must not contain . or .. segments"
+// +kubebuilder:validation:XValidation:rule="has(self.resources) && size(self.resources) > 0",message="resources is required"
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type SPIFFEClientConfig struct {
@@ -787,25 +818,30 @@ type SPIFFEClientConfig struct {
 	// which is derived at reconcile time and not available on this CRD, so
 	// allowlist membership is validated at reconcile time, not admission.
 	// Shape (a well-formed absolute HTTP(S) URI) is independent of that
-	// derived allowlist and is validated here. Distinct from Audiences: a
-	// resource permission does not imply the same value is also a permitted
-	// token audience, or vice versa.
+	// derived allowlist and is validated here. Required, with at least one
+	// entry, for every association: client_credentials and token exchange each
+	// take exactly one resource per request and grant it as the token
+	// audience.
+	// +optional
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=2048
 	// +kubebuilder:validation:items:Pattern=`^https?://[^@#[:space:]]+$`
 	// +listType=set
-	// +optional
 	Resources []string `json:"resources,omitempty"`
 
-	// Audiences are RFC 8693 token audiences this association may request.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
+	// Deprecated: ignored; use resources.
+	//
+	// The field was required in earlier releases and is still accepted so
+	// existing objects keep validating. A non-empty value is reported by the
+	// DeprecatedInboundGrantConfiguration condition and has no effect on token
+	// targeting.
+	// +optional
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=2048
 	// +listType=set
-	Audiences []string `json:"audiences"`
+	Audiences []string `json:"audiences,omitempty"`
 
 	// Scopes are OAuth scopes granted to this association. Must be a subset
 	// of the server's effective supported scopes.
@@ -816,6 +852,22 @@ type SPIFFEClientConfig struct {
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=set
 	Scopes []string `json:"scopes"`
+
+	// GrantTypes contains the OAuth grants permitted for this association.
+	// It defaults to the token-exchange grant when omitted, which is what the
+	// operator configured before this field existed. List client_credentials
+	// to opt in to the SPIFFE-bound client credentials grant. The list alone
+	// decides which grants the association may use: client authentication does
+	// not confer any grant, and there is no separate per-grant enable switch.
+	// Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token
+	// exchange.
+	// +optional
+	// +kubebuilder:default={"urn:ietf:params:oauth:grant-type:token-exchange"}
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum={"client_credentials","urn:ietf:params:oauth:grant-type:token-exchange"}
+	// +listType=set
+	GrantTypes []string `json:"grantTypes,omitempty"`
 }
 
 // InboundGrantsConfig groups canonical inbound OAuth grant-family configuration.
@@ -923,8 +975,9 @@ type JWTBearerIssuerPolicyConfig struct {
 // This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
 // VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rules below are
 // enforced at admission for both CRDs. CEL only requires the explicit opt-in for
-// delegate clients using an HTTP issuer; the shared Go validator performs the
-// precise loopback-host security check.
+// delegate clients and JWT-SVID SPIFFE client_credentials associations using an
+// HTTP issuer; the shared Go validator performs the precise loopback-host
+// security check.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange) || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth) && size(self.inboundGrants.spiffeClientAuth) > 0)))",message="at least one upstream provider or inbound grant family is required"
 //
@@ -940,9 +993,9 @@ type JWTBearerIssuerPolicyConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith('synthetic:'))",message="spiffeClientAuth clientId must not use the reserved synthetic: prefix"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches('^[A-Za-z][A-Za-z0-9+.-]*://.+'))",message="spiffeClientAuth clientId must not be an absolute URL"
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0)))",message="insecureAllowHTTP cannot be combined with confidential client registration or delegateClients; client secrets would be issued or used in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && self.inboundGrants.spiffeClientAuth.exists(a, 'spiffe_jwt' in a.methods && has(a.grantTypes) && 'client_credentials' in a.grantTypes))))",message="insecureAllowHTTP cannot be combined with confidential client registration, delegateClients or JWT-SVID SPIFFE associations that grant client_credentials; client secrets or JWT-SVIDs would be issued or used in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
-// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0))",message="confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
+// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0) && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && self.inboundGrants.spiffeClientAuth.exists(a, 'spiffe_jwt' in a.methods && has(a.grantTypes) && 'client_credentials' in a.grantTypes)))",message="confidential client registration, delegateClients or JWT-SVID SPIFFE associations that grant client_credentials with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || ((!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors) || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients) || (has(issuer.allowMayAct) && issuer.allowMayAct))))",message="canonical tokenExchange conflicts with legacy delegateClients or RFC 8693 trusted issuer policy"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))",message="canonical jwtBearer conflicts with legacy jwtBearerGrant"
 // +kubebuilder:validation:XValidation:rule="!has(self.trustedIssuers) || self.trustedIssuers.all(issuer, !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name) && other.name == issuer.name).size() == 1)",message="trustedIssuers must not contain duplicate names"
@@ -1099,8 +1152,10 @@ type EmbeddedAuthServerConfig struct {
 	//
 	// One combination is rejected at admission on all three CRDs regardless of the
 	// above: setting this field alongside confidential client registration or
-	// delegate clients, which would issue or use client secrets in cleartext over
-	// an unauthenticated endpoint (see the XValidation rule on
+	// delegate clients, or a SPIFFE association that has spiffe_jwt in methods and
+	// client_credentials in grantTypes on the same association, which would issue
+	// or use client secrets or JWT-SVIDs in cleartext over an unauthenticated
+	// endpoint (see the XValidation rule on
 	// EmbeddedAuthServerConfig).
 	// +kubebuilder:default=false
 	// +optional
@@ -1163,9 +1218,12 @@ type EmbeddedAuthServerConfig struct {
 	AllowPrivateKeyJWTRegistration bool `json:"allowPrivateKeyJWTRegistration,omitempty"`
 
 	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-	// Dynamic Client Registration (DCR) and delegate clients when issuer is a
-	// plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-	// flag, that combination is rejected at reconcile time: a loopback http://
+	// Dynamic Client Registration (DCR), delegate clients and SPIFFE
+	// associations that have spiffe_jwt in methods and client_credentials in
+	// grantTypes on the same association, when issuer is a plain-HTTP loopback
+	// URL (e.g. "http://localhost:8080"). Without this
+	// flag, that combination is rejected at admission, and reconcile additionally
+	// requires the issuer host to be loopback. A loopback http://
 	// issuer is normally fine for local development since the traffic never
 	// leaves the machine, but confidential clients send secrets over cleartext.
 	// Forcing TLS onto every loopback deployment instead would just push
@@ -1395,9 +1453,17 @@ func applyEffectiveJWTBearer(
 			return err
 		}
 		seen[policy.IssuerRef] = i
-		result.trustedIssuers[issuerIndex].JWTBearerGrant = buildJWTBearerGrantPolicy(&policy.JWTBearerGrantConfig)
+		result.trustedIssuers[issuerIndex].JWTBearerGrant = BuildJWTBearerGrantPolicy(&policy.JWTBearerGrantConfig)
 	}
 	return nil
+}
+
+// hasConfidentialClients reports whether DCR of confidential clients is
+// enabled, the effective grants include a delegate client, or a SPIFFE
+// association allows the JWT-SVID method and grants client_credentials.
+func (c *EmbeddedAuthServerConfig) hasConfidentialClients(grants effectiveInboundGrants) bool {
+	return c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0 ||
+		c.hasSPIFFEJWTClientCredentials()
 }
 
 // ValidateInboundGrants validates the effective grant projection shared by
@@ -1408,7 +1474,7 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 		return err
 	}
 	if err := authserver.ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0,
+		c.hasConfidentialClients(grants),
 		c.InsecureAllowHTTP,
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -1418,7 +1484,7 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 	if err := tokenexchange.ValidateTrustedIssuers(grants.trustedIssuers, c.Issuer, nil); err != nil {
 		return fmt.Errorf("trustedIssuers: %w", err)
 	}
-	if c.hasSPIFFEX509ClientAuth() {
+	if c.hasSPIFFEMethod(SPIFFEAuthenticationMethodX509) {
 		if _, err := authserver.ValidateSPIFFEX509Issuer(c.Issuer); err != nil {
 			return err
 		}
@@ -1432,7 +1498,10 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 	for _, delegate := range grants.delegateClients {
 		delegateIDs = append(delegateIDs, delegate.ClientID)
 	}
-	return authserver.ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs)
+	if err := authserver.ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs); err != nil {
+		return err
+	}
+	return validateSPIFFEResourcesPresent(c.InboundGrants)
 }
 
 // ValidateTLSListener rejects a tlsListener whose certificate or private key
@@ -1463,22 +1532,32 @@ func (c *EmbeddedAuthServerConfig) ValidateTLSListener() error {
 		}
 		return nil
 	}
-	if c.hasSPIFFEX509ClientAuth() {
+	if c.hasSPIFFEMethod(SPIFFEAuthenticationMethodX509) {
 		return fmt.Errorf("tlsListener is required when SPIFFE X.509 client authentication is configured")
 	}
 	return nil
 }
 
-func (c *EmbeddedAuthServerConfig) hasSPIFFEX509ClientAuth() bool {
+// hasSPIFFEMethod reports whether any SPIFFE client association allows method.
+func (c *EmbeddedAuthServerConfig) hasSPIFFEMethod(method SPIFFEAuthenticationMethod) bool {
 	if c.InboundGrants == nil {
 		return false
 	}
-	for _, association := range c.InboundGrants.SPIFFEClientAuth {
-		if slices.Contains(association.Methods, SPIFFEAuthenticationMethodX509) {
-			return true
-		}
+	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientConfig) bool {
+		return slices.Contains(a.Methods, method)
+	})
+}
+
+// hasSPIFFEJWTClientCredentials reports whether any single SPIFFE association
+// allows the JWT-SVID method and lists the client_credentials grant.
+func (c *EmbeddedAuthServerConfig) hasSPIFFEJWTClientCredentials() bool {
+	if c.InboundGrants == nil {
+		return false
 	}
-	return false
+	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientConfig) bool {
+		return slices.Contains(a.Methods, SPIFFEAuthenticationMethodJWT) &&
+			slices.Contains(a.GrantTypes, oauthproto.GrantTypeClientCredentials)
+	})
 }
 
 func hasLegacyTokenExchangePolicy(issuer TrustedIssuerConfig) bool {
@@ -1937,6 +2016,20 @@ type OAuth2UpstreamConfig struct {
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type DCRUpstreamConfig struct {
+	// ClientName is the optional RFC 7591 "client_name" registration metadata
+	// sent when ToolHive registers with the upstream. When empty, ToolHive
+	// registers as "ToolHive MCP Client". It is display-only metadata: the
+	// upstream shows it on its authorization screen, and it is never used as
+	// a key. Changing it does not rename an already-registered client; the
+	// new value applies only the next time ToolHive registers a fresh client,
+	// for example after rotating via RotationKey, or when the upstream
+	// rejects the cached registration. Names with leading or trailing
+	// whitespace, or containing control or format characters, are rejected.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^[^\p{Cc}\p{Cf}\p{Z}]([^\p{Cc}\p{Cf}]*[^\p{Cc}\p{Cf}\p{Z}])?$`
+	ClientName string `json:"clientName,omitempty"`
+
 	// DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
 	// issues a single GET against this URL (no well-known-path fallback) and
 	// reads registration_endpoint, authorization_endpoint, token_endpoint,
@@ -2557,16 +2650,19 @@ const (
 // literals are part of the user-facing contract — external consumers and
 // downstream tooling pattern-match on them.
 const (
-	// ConditionReasonEnterpriseRequired: an obo-typed MCPExternalAuthConfig
-	// requires an enterprise build that has registered an OBO handler via
-	// controllerutil.RegisterOBOHandler. Upstream-only builds surface this
-	// reason for every obo-typed config.
+	// ConditionReasonEnterpriseRequired was set on obo-typed configs before OBO
+	// shipped in ToolHive itself. The operator no longer sets it.
+	//
+	// Deprecated: OBO is built in. Kept only so out-of-tree code that
+	// references it keeps compiling; it will be removed once out-of-tree users
+	// are gone, see stacklok/toolhive#7200.
 	ConditionReasonEnterpriseRequired = "EnterpriseRequired"
 
 	// ConditionReasonInvalidConfig: an obo-typed MCPExternalAuthConfig is
-	// well-formed at the CRD level but fails the registered OBO handler's
-	// Validate() with an error other than the enterprise-required sentinel.
-	// Used by out-of-tree handlers; unreachable in upstream-only builds.
+	// well-formed at the CRD level but fails the operator's OBO validation
+	// (for example a missing tenant, client ID, client secret reference, or
+	// both audience and scopes). Also used on a consuming MCPServer or
+	// MCPRemoteProxy that references an obo config without oidcConfigRef.
 	ConditionReasonInvalidConfig = "InvalidConfig"
 
 	// ConditionReasonInvalidCABundle: a referenced CA bundle ConfigMap is
@@ -2752,15 +2848,11 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// subjectTokenProviderName, scopes/cacheSkew bounds) at admission, and
 		// only for values that are present. All presence and combination
 		// requirements (a tenant, a client-auth credential, at least one of
-		// audience/scopes) and protocol-level checks are owned by the registered
-		// handler, not the upstream type. That handler runs at reconcile
-		// time via the controllerutil.OBOValidate function-pointer hook:
-		// upstream-only builds return obo.ErrEnterpriseRequired, which the
-		// reconciler maps to status.conditions[Valid] = False / Reason:
-		// EnterpriseRequired. Out-of-tree builds that register a handler via
-		// controllerutil.RegisterOBOHandler short-circuit the sentinel and
-		// run their own protocol-level checks. Splitting the tiers this way
-		// keeps the upstream CRD schema stable across builds.
+		// audience/scopes) and protocol-level checks are owned by the operator's
+		// reconcile-time OBO validation (controllerutil.OBOValidate), which maps
+		// a violation to status.conditions[Valid] = False / Reason:
+		// InvalidConfig. Splitting the tiers this way keeps the CRD schema
+		// backward compatible with the earlier empty placeholder.
 		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively
@@ -2860,12 +2952,13 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// needs the loopback-hostname helper, so it lives only in Go.
 	//
 	// The permission-shaped half of SPIFFE trust/client-auth config (grant
-	// types, scopes, resources, audiences) has no equivalent Go-level
-	// pre-check here, matching the DelegateClients precedent below — a
-	// meaningful check needs AllowedAudiences/ScopesSupported, which are only
-	// known once derived at reconcile time. controllerutil.
-	// validateDelegateClientsAndTrustedIssuers revalidates the full SPIFFE
-	// trust config (via RunConfig.Validate) once those derived values exist.
+	// types, scopes, resources) has no equivalent Go-level pre-check here,
+	// matching the DelegateClients precedent below — a meaningful check needs
+	// AllowedAudiences/ScopesSupported, which are only known once derived at
+	// reconcile time. controllerutil.validateDelegateClientsAndTrustedIssuers
+	// revalidates the full SPIFFE trust config (via RunConfig.Validate) once
+	// those derived values exist. Only the resources-present check runs
+	// earlier, inside ValidateInboundGrants.
 	//
 	// The checks below are admission-time-safe: they depend only on this
 	// object's own spec, so they run here instead of waiting for reconcile.
@@ -2999,6 +3092,25 @@ func validateSPIFFEPrincipalPatternOverlap(inboundGrants *InboundGrantsConfig) e
 	return nil
 }
 
+// validateSPIFFEResourcesPresent requires resources on every SPIFFE
+// association. The CRD rule already does at admission; this reports an object
+// stored by an earlier release, which may have no resources, as invalid. It
+// runs from ValidateInboundGrants, so MCPExternalAuthConfig and inline
+// VirtualMCPServer configuration both report it on their own validation
+// condition instead of failing later in the converter. Shape and allowlist
+// checks are left to the schema and to RunConfig.Validate.
+func validateSPIFFEResourcesPresent(inboundGrants *InboundGrantsConfig) error {
+	if inboundGrants == nil {
+		return nil
+	}
+	for i, association := range inboundGrants.SPIFFEClientAuth {
+		if len(association.Resources) == 0 {
+			return fmt.Errorf("inboundGrants.spiffeClientAuth[%d].resources is required", i)
+		}
+	}
+	return nil
+}
+
 func hasJWTBearerTrustedIssuer(issuers []TrustedIssuerConfig) bool {
 	return slices.ContainsFunc(issuers, func(issuer TrustedIssuerConfig) bool {
 		return issuer.JWTBearerGrant != nil
@@ -3022,15 +3134,16 @@ func buildTrustedIssuerConfigs(issuers []TrustedIssuerConfig) []tokenexchange.Tr
 			ActorMatcher:           issuer.ActorMatcher,
 			AllowedDelegateClients: slices.Clone(issuer.AllowedDelegateClients),
 			AllowMayAct:            issuer.AllowMayAct,
-			JWTBearerGrant:         buildJWTBearerGrantPolicy(issuer.JWTBearerGrant),
+			JWTBearerGrant:         BuildJWTBearerGrantPolicy(issuer.JWTBearerGrant),
 		}
 	}
 	return configs
 }
 
-// buildJWTBearerGrantPolicy converts the CRD's JWT-bearer grant config to the
-// runtime policy type without sharing caller-owned slices.
-func buildJWTBearerGrantPolicy(grant *JWTBearerGrantConfig) *tokenexchange.JWTBearerGrantPolicy {
+// BuildJWTBearerGrantPolicy converts the CRD's JWT-bearer grant config to the
+// runtime policy type without sharing caller-owned slices. It is the single
+// converter used by reconcile-time validation and RunConfig generation.
+func BuildJWTBearerGrantPolicy(grant *JWTBearerGrantConfig) *tokenexchange.JWTBearerGrantPolicy {
 	if grant == nil {
 		return nil
 	}
@@ -3041,11 +3154,20 @@ func buildJWTBearerGrantPolicy(grant *JWTBearerGrantConfig) *tokenexchange.JWTBe
 			AllowedResources: slices.Clone(binding.AllowedResources),
 		}
 	}
-	return &tokenexchange.JWTBearerGrantPolicy{
-		MaxAssertionAge:   grant.MaxAssertionAge.Duration.String(),
+	policy := &tokenexchange.JWTBearerGrantPolicy{
 		SubjectBindings:   bindings,
 		AcceptedAudiences: slices.Clone(grant.AcceptedAudiences),
 	}
+	if grant.MaxAssertionAge != nil {
+		policy.MaxAssertionAge = grant.MaxAssertionAge.Duration.String()
+	}
+	if grant.AcceptedAssertionTypes != nil {
+		policy.AcceptedAssertionTypes = make([]tokenexchange.JWTBearerAssertionType, len(grant.AcceptedAssertionTypes))
+		for i, assertionType := range grant.AcceptedAssertionTypes {
+			policy.AcceptedAssertionTypes[i] = tokenexchange.JWTBearerAssertionType(assertionType)
+		}
+	}
+	return policy
 }
 
 // validateUpstreamProvider validates a single upstream provider configuration.
@@ -3127,6 +3249,10 @@ const (
 	// MaxSoftwareStatementLength matches the MaxLength marker on
 	// DCRUpstreamConfig.SoftwareStatement.
 	MaxSoftwareStatementLength = 16384
+
+	// MaxDCRClientNameLength matches the MaxLength marker on
+	// DCRUpstreamConfig.ClientName.
+	MaxDCRClientNameLength = 256
 )
 
 // validateUpstreamCABundleRef validates the source shape shared by OIDC and
@@ -3173,6 +3299,9 @@ func ValidateOIDCDCRConfig(cfg *OIDCUpstreamConfig) error {
 	}
 	if l := len(cfg.DCRConfig.SoftwareStatement); l > MaxSoftwareStatementLength {
 		return fmt.Errorf("oidcConfig.dcrConfig.softwareStatement: length %d exceeds maximum %d", l, MaxSoftwareStatementLength)
+	}
+	if err := registration.ValidateClientName(cfg.DCRConfig.ClientName); err != nil {
+		return fmt.Errorf("oidcConfig.dcrConfig.clientName: %w", err)
 	}
 	return nil
 }
@@ -3227,6 +3356,9 @@ func ValidateOAuth2DCRConfig(cfg *OAuth2UpstreamConfig) error {
 		return fmt.Errorf(
 			"oauth2Config.dcrConfig.softwareStatement: length %d exceeds maximum %d",
 			l, MaxSoftwareStatementLength)
+	}
+	if err := registration.ValidateClientName(cfg.DCRConfig.ClientName); err != nil {
+		return fmt.Errorf("oauth2Config.dcrConfig.clientName: %w", err)
 	}
 	return nil
 }

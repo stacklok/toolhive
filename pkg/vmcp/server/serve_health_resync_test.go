@@ -5,18 +5,22 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -36,7 +40,7 @@ func TestResyncSessionsOnBackendHealthChange_ResyncsLiveSession(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "kept"}, {Name: "recovered"}}}
 	srv := &Server{
 		core:           fc,
-		vmcpSessionMgr: &stubSessionManager{alive: true},
+		vmcpSessionMgr: &stubSessionManager{},
 		resyncBaseCtx:  context.Background(),
 	}
 
@@ -70,7 +74,7 @@ func TestResyncSessionsOnBackendHealthChange_PurgesOncePerDelivery(t *testing.T)
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
 	srv := &Server{
 		core:           fc,
-		vmcpSessionMgr: &stubSessionManager{alive: true},
+		vmcpSessionMgr: &stubSessionManager{},
 		resyncBaseCtx:  context.Background(),
 	}
 
@@ -100,20 +104,20 @@ func (f *fakeToolsSession) setToolsCalls() int {
 	return f.setSessionToolsCalls
 }
 
-// gatedSessionManager is a stubSessionManager whose GetMultiSession blocks on
-// gate (a closed channel unblocks all callers), letting the coalescing test
-// deterministically hold the first resync in flight while further deliveries
-// arrive.
+// gatedSessionManager is a stubSessionManager whose LookupOwner (the resync
+// liveness guard) blocks on gate (a closed channel unblocks all callers),
+// letting the coalescing test deterministically hold the first resync in
+// flight while further deliveries arrive.
 type gatedSessionManager struct {
 	stubSessionManager
 	gate  chan struct{}
 	calls atomic.Int32
 }
 
-func (m *gatedSessionManager) GetMultiSession(context.Context, string) (vmcpsession.MultiSession, bool) {
+func (m *gatedSessionManager) LookupOwner(context.Context, string) (string, error) {
 	m.calls.Add(1)
 	<-m.gate
-	return nil, true
+	return "", nil
 }
 
 // TestResyncSessionsOnBackendHealthChange_CoalescesBurst verifies a burst of
@@ -124,7 +128,7 @@ func TestResyncSessionsOnBackendHealthChange_CoalescesBurst(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
-	mgr := &gatedSessionManager{stubSessionManager: stubSessionManager{alive: true}, gate: make(chan struct{})}
+	mgr := &gatedSessionManager{gate: make(chan struct{})}
 	srv := &Server{
 		core:           fc,
 		vmcpSessionMgr: mgr,
@@ -166,7 +170,7 @@ func TestResyncSessionsOnBackendHealthChange_OptimizerModeIsNoOp(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
 	srv := &Server{
 		core:           fc,
-		vmcpSessionMgr: &stubSessionManager{alive: true},
+		vmcpSessionMgr: &stubSessionManager{},
 		resyncBaseCtx:  context.Background(),
 		optimizerFactory: func(context.Context, []server.ServerTool) (optimizer.Optimizer, error) {
 			panic("optimizer factory must not be invoked by the health-change fan-out")
@@ -194,7 +198,7 @@ func TestResyncSessionsOnBackendHealthChange_PrunesDeadSession(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
 	srv := &Server{
 		core:           fc,
-		vmcpSessionMgr: &stubSessionManager{alive: false},
+		vmcpSessionMgr: &stubSessionManager{lookupErr: transportsession.ErrSessionNotFound},
 		resyncBaseCtx:  context.Background(),
 	}
 	sess := &fakeToolsSession{id: "sess-1"}
@@ -207,6 +211,55 @@ func TestResyncSessionsOnBackendHealthChange_PrunesDeadSession(t *testing.T) {
 		2*time.Second, 10*time.Millisecond, "dead session must be pruned from the registry")
 	assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "no re-derivation for a dead session")
 	assert.Equal(t, 0, sess.setToolsCalls())
+}
+
+// TestResyncSessionsOnBackendHealthChange_DoesNotExtendSessionLifetime is a
+// regression test against the real session manager and in-memory storage: a
+// client that abandons its session must not have it kept alive by backend
+// health flaps. Each fan-out runs the resync liveness guard, which must not
+// refresh the session TTL, so the session expires on schedule and is then
+// pruned from the fan-out.
+func TestResyncSessionsOnBackendHealthChange_DoesNotExtendSessionLifetime(t *testing.T) {
+	t.Parallel()
+
+	const ttl = 300 * time.Millisecond
+	storage, err := transportsession.NewLocalSessionDataStorage(ttl)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Close() })
+
+	ctrl := gomock.NewController(t)
+	factory, _ := newToolSessionFactory(t, ctrl, []vmcp.Tool{{Name: "t"}})
+	sm, cleanup, err := sessionmanager.New(
+		storage,
+		// Disable the background cache sweep so only the resync touches the session.
+		&sessionmanager.FactoryConfig{Base: factory, SweepInterval: -1},
+		vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cleanup(context.Background()) })
+
+	sessionID := sm.Generate()
+	require.NotEmpty(t, sessionID)
+	_, err = sm.CreateSession(context.Background(), sessionID, nil)
+	require.NoError(t, err)
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
+	srv := &Server{core: fc, vmcpSessionMgr: sm, resyncBaseCtx: context.Background()}
+	sess := &fakeToolsSession{id: sessionID}
+	_, toolsWorker := srv.buildListChangedSink(sessionID, sess, nil, nil)
+	srv.healthResync.add(sessionID, toolsWorker)
+
+	// Flap far more often than the TTL. A liveness guard that refreshes the
+	// TTL would keep the session alive for as long as the flapping lasts.
+	require.Eventually(t, func() bool {
+		srv.resyncSessionsOnBackendHealthChange(1)
+		_, lookupErr := sm.LookupOwner(context.Background(), sessionID)
+		return errors.Is(lookupErr, transportsession.ErrSessionNotFound)
+	}, 10*ttl, ttl/10, "health-driven resyncs must not keep an abandoned session alive")
+
+	require.Eventually(t, func() bool { return len(srv.healthResync.snapshot()) == 0 },
+		2*time.Second, 10*time.Millisecond, "the expired session must be pruned from the fan-out")
+	assert.Positive(t, fc.listToolsCalls.Load(), "resyncs must have run while the session was live")
 }
 
 // fakeSessionIDManager is a minimal server.SessionIdManager whose Terminate

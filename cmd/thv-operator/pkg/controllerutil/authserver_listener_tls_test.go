@@ -114,7 +114,9 @@ func TestBuildAuthServerRunConfigTLSListener(t *testing.T) {
 			ClientID:         "spiffe-client",
 			Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{method},
 			Audiences:        []string{"https://mcp.example.com"},
+			Resources:        []string{"https://mcp.example.com"},
 			Scopes:           []string{"openid"},
+			GrantTypes:       []string{"client_credentials"},
 		}}}
 	}
 

@@ -926,20 +926,20 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				{
 					Context:     "default",
 					BackendName: "",
-					Error:       fmt.Errorf("on-behalf-of (OBO) external auth type requires an enterprise build"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 				{
 					Context:     "discovered:discovered-backend",
 					BackendName: "discovered-backend",
-					Error:       fmt.Errorf("obo enterprise required"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 				{
 					Context:     "backend:inline-backend",
 					BackendName: "inline-backend",
-					Error:       fmt.Errorf("obo enterprise required"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 			},
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
@@ -953,7 +953,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"DefaultAuthConfig",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).
@@ -961,7 +961,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"DiscoveredAuthConfig-discovered-backend",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).
@@ -969,7 +969,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"BackendAuthConfig-inline-backend",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).
@@ -2721,6 +2721,68 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 	var specErr *SpecValidationError
 	require.True(t, stderrors.As(err, &specErr), "expected a *SpecValidationError, got %T: %v", err, err)
 	assert.Contains(t, specErr.Message, "invalid auth server integration")
+}
+
+// TestEnsureVmcpConfigConfigMap_InvalidOIDCFilePath verifies that a relative
+// jwksAuthTokenPath from an inline MCPOIDCConfig is reported as a terminal spec
+// error on the VirtualMCPServer status and never written to the ConfigMap.
+func TestEnsureVmcpConfigConfigMap_InvalidOIDCFilePath(t *testing.T) {
+	t.Parallel()
+
+	testVmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type:          "oidc",
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "vmcp"},
+		}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) { v.Generation = 4 }),
+	)
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+	}
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+				Issuer:            "https://issuer.example.com",
+				JWKSAuthTokenPath: "token",
+			},
+		},
+	}
+
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(testVmcp, mcpGroup, oidcConfig).
+		Build()
+	r := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
+
+	mockCtrl := gomock.NewController(t)
+	mockStatus := statusmocks.NewMockStatusManager(mockCtrl)
+	mockStatus.EXPECT().SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed).Times(1)
+	mockStatus.EXPECT().SetMessage(gomock.Any()).Times(1).Do(func(message string) {
+		assert.Contains(t, message, "jwksAuthTokenPath must be an absolute path")
+	})
+	mockStatus.EXPECT().SetAuthConfiguredCondition(
+		mcpv1beta1.ConditionReasonAuthInvalid,
+		gomock.Any(),
+		metav1.ConditionFalse,
+	).Times(1)
+	mockStatus.EXPECT().SetObservedGeneration(testVmcp.Generation).Times(1)
+
+	ctx := context.Background()
+	err := r.ensureVmcpConfigConfigMap(ctx, testVmcp, nil, nil, mockStatus)
+
+	var specErr *SpecValidationError
+	require.True(t, stderrors.As(err, &specErr), "expected a *SpecValidationError, got %T: %v", err, err)
+	assert.Contains(t, specErr.Message, "jwksAuthTokenPath must be an absolute path")
+
+	configMap := &corev1.ConfigMap{}
+	getErr := fakeClient.Get(ctx, types.NamespacedName{
+		Name: vmcpConfigMapName(testVmcp.Name), Namespace: testVmcp.Namespace,
+	}, configMap)
+	require.Error(t, getErr, "ConfigMap must not be written for an invalid OIDC file path")
 }
 
 func TestEnsureVmcpConfigConfigMap_DelegateClientValidationError(t *testing.T) {

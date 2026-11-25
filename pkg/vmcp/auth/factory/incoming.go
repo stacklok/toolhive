@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"slices"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -229,6 +231,10 @@ func newOIDCAuthMiddleware(
 		slog.Warn("no Resource defined in OIDC configuration")
 	}
 
+	if err := checkJWKSAuthTokenFile(oidcCfg.JWKSAuthTokenPath); err != nil {
+		return nil, nil, err
+	}
+
 	oidcConfig, err := oidcTokenValidatorConfig(oidcCfg, &env.OSReader{})
 	if err != nil {
 		return nil, nil, err
@@ -275,18 +281,56 @@ func oidcTokenValidatorConfig(oidcCfg *config.OIDCConfig, envReader env.Reader) 
 	}
 
 	return &auth.TokenValidatorConfig{
-		Issuer:            oidcCfg.Issuer,
-		ClientID:          oidcCfg.ClientID,
-		Audience:          oidcCfg.Audience,
-		ResourceURL:       oidcCfg.Resource,
-		JWKSURL:           oidcCfg.JWKSURL,
-		IntrospectionURL:  oidcCfg.IntrospectionURL,
-		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
-		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
-		Scopes:            oidcCfg.Scopes,
-		CACertPath:        oidcCfg.CABundlePath,
-		ClientSecret:      clientSecret,
+		Issuer:                oidcCfg.Issuer,
+		ClientID:              oidcCfg.ClientID,
+		Audience:              oidcCfg.Audience,
+		RequiredSubject:       oidcCfg.RequiredSubject,
+		RequiredSubjectPrefix: oidcCfg.RequiredSubjectPrefix,
+		ResourceURL:           oidcCfg.Resource,
+		JWKSURL:               oidcCfg.JWKSURL,
+		IntrospectionURL:      oidcCfg.IntrospectionURL,
+		AllowPrivateIP:        oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
+		InsecureAllowHTTP:     oidcCfg.InsecureAllowHTTP,
+		Scopes:                oidcCfg.Scopes,
+		CACertPath:            oidcCfg.CABundlePath,
+		AuthTokenFile:         oidcCfg.JWKSAuthTokenPath,
+		ClientSecret:          clientSecret,
 	}, nil
+}
+
+// IncomingBearerChallenge returns the parameters of the WWW-Authenticate
+// challenges the incoming token validator sends: its issuer as realm, its
+// resource URL for the RFC 9728 metadata, and its scopes. Another vMCP
+// component that refuses a token with 401, such as call binding, sends them
+// too. It returns the zero value for incoming auth without OIDC.
+func IncomingBearerChallenge(cfg *config.IncomingAuthConfig) auth.BearerChallenge {
+	if cfg == nil || cfg.Type != config.IncomingAuthTypeOIDC || cfg.OIDC == nil {
+		return auth.BearerChallenge{}
+	}
+	return auth.BearerChallenge{
+		Realm:       cfg.OIDC.Issuer,
+		ResourceURL: cfg.OIDC.Resource,
+		Scopes:      slices.Clone(cfg.OIDC.Scopes),
+	}
+}
+
+// checkJWKSAuthTokenFile fails when jwksAuthTokenPath is set but does not name
+// a readable regular file. The token validator would fail on the same file a
+// few layers down; this error names the setting and how to fix it.
+func checkJWKSAuthTokenFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	const fix = "mount the token file into the vMCP pod (for a kubernetesServiceAccount MCPOIDCConfig, " +
+		"the service-account token), or unset jwksAuthTokenPath (useClusterAuth: false)"
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("incomingAuth.oidc.jwksAuthTokenPath %q is not accessible: %w; %s", path, err, fix)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("incomingAuth.oidc.jwksAuthTokenPath %q is not a regular file; %s", path, fix)
+	}
+	return nil
 }
 
 // newLocalAuthMiddleware creates local OS user authentication middleware.

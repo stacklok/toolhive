@@ -159,4 +159,19 @@ const (
 	// DexImage is used as an in-cluster OIDC provider for E2E tests requiring
 	// the embedded auth server OAuth2 flow (upstreamInject authentication).
 	DexImage = dexImageURL + ":" + dexImageTag
+
+	spireServerImageURL = "ghcr.io/spiffe/spire-server"
+	spireServerImageTag = "1.15.0"
+	// SPIREServerImage is used by the SPIRE E2E harness to issue SPIFFE identities.
+	SPIREServerImage = spireServerImageURL + ":" + spireServerImageTag
+
+	spireAgentImageURL = "ghcr.io/spiffe/spire-agent"
+	spireAgentImageTag = "1.15.0"
+	// SPIREAgentImage is used by the SPIRE E2E harness to attest workloads.
+	SPIREAgentImage = spireAgentImageURL + ":" + spireAgentImageTag
+
+	// SPIFFEClientImage is the SPIFFE E2E client workload. It is built locally
+	// and loaded into kind by `task build-load-spiffe-e2e-client-image`, never
+	// pulled.
+	SPIFFEClientImage = "kind.local/toolhive-spiffe-e2e-client/spiffe-client:latest"
 )

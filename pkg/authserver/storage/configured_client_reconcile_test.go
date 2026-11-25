@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -60,8 +61,7 @@ func testDelegateClient(t *testing.T, id, secret string, scopes, audience []stri
 // claims for a static SPIFFE client, with the given association identity.
 func testPlaceholder(t *testing.T, id, identity string, scopes, resources []string) fosite.Client {
 	t.Helper()
-	spiffe, err := registration.NewSPIFFEClient(id, scopes, []string{"https://api.example.com"}, resources)
-	require.NoError(t, err)
+	spiffe := spiffetest.Client(t, spiffetest.WithID(id), spiffetest.WithScopes(scopes...), spiffetest.WithResources(resources...))
 	return staticClientPlaceholder(testIdentityClient{SPIFFEClient: spiffe, identityFingerprint: identity})
 }
 
@@ -340,6 +340,25 @@ func (c *capturedLogs) Handle(_ context.Context, r slog.Record) error {
 	defer c.mu.Unlock()
 	c.records = append(c.records, r)
 	return nil
+}
+
+// recordsAt returns the attributes of every record at the given level.
+func (c *capturedLogs) recordsAt(level slog.Level) []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []map[string]any
+	for _, r := range c.records {
+		if r.Level != level {
+			continue
+		}
+		attrs := map[string]any{}
+		r.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.Any()
+			return true
+		})
+		out = append(out, attrs)
+	}
+	return out
 }
 
 // warnsFor returns the attributes of every WARN record keyed on clientID.

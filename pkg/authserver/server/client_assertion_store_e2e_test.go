@@ -89,7 +89,7 @@ func signE2EAssertion(t *testing.T, key *ecdsa.PrivateKey, jti string, exp any) 
 		(&josev4.SignerOptions{}).WithType("JWT").WithHeader(josev4.HeaderKey("kid"), e2eKeyID))
 	require.NoError(t, err)
 	token, err := jwt.Signed(signer).Claims(map[string]any{
-		"iss": e2eClientID, "sub": e2eClientID, "aud": e2eTokenURL, "jti": jti, "exp": exp,
+		"iss": e2eClientID, "sub": e2eClientID, "aud": e2eIssuer, "jti": jti, "exp": exp,
 	}).Serialize()
 	require.NoError(t, err)
 	return token

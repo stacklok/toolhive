@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -320,6 +322,12 @@ type stubSubjectValidator struct {
 	err    error
 }
 
+// signedByThisServer reports that the stub signs nothing, so opaque actor
+// tokens flow on to the client's actor validator.
+func (*stubSubjectValidator) signedByThisServer(string) (*ValidatedClaims, error) {
+	return nil, errors.New("stub validator signs nothing")
+}
+
 func (v *stubSubjectValidator) Validate(context.Context, string) (*ValidatedClaims, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -337,7 +345,13 @@ func newRefreshHandlerForTest(t *testing.T, v *stubSubjectValidator, store *fake
 	t.Helper()
 	registry, err := newExchangeGrantRegistry()
 	require.NoError(t, err)
+	defaults := resolveRefreshTokenOptions(nil)
+	limiter, err := newActorLimiter(defaults.actorCapacity)
+	require.NoError(t, err)
 	return &RefreshTokenHandler{
+		actorLimiter:  limiter,
+		actorTimeout:  defaults.actorTimeout,
+		clock:         defaults.clock,
 		strategy:      fakeRefreshStrategy{},
 		store:         store,
 		selfValidator: v,
@@ -504,6 +518,89 @@ func TestRefreshTokenHandlerInternalFailureIsGeneric(t *testing.T) {
 	}
 }
 
+// TestRefreshTokenHandlerHookSubject covers the Subject and Request the
+// exchange-grant hook receives when a grant is opened.
+func TestRefreshTokenHandlerHookSubject(t *testing.T) {
+	t.Parallel()
+
+	claims := validLoginClaims()
+	claims.IssuedAt = time.Now().Add(-5 * time.Minute)
+	claims.Audience = []string{testRefreshAPIAud, "https://other.example.com"}
+	claims.Claims = map[string]any{
+		"nested": map[string]any{"k": "v"},
+		"list":   []any{"a", "b"},
+	}
+	wantClaims := map[string]any{
+		"nested": map[string]any{"k": "v"},
+		"list":   []any{"a", "b"},
+	}
+	wantAudience := slices.Clone(claims.Audience)
+
+	var recorded []authorizationdetails.Request
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		exchangeGrantType: {
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Grant: func(ctx context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				recorded = append(recorded, req)
+				return grantExchangeGrantShape(ctx, req)
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: claims}, &fakeGrantStore{})
+	h.registry = registry
+	require.NoError(t, h.HandleTokenEndpointRequest(t.Context(), refreshRequestForTest(brokerClientForTest())))
+
+	require.Len(t, recorded, 1)
+	got := recorded[0]
+	assert.Equal(t, testRefreshClient, got.ClientID)
+	require.NotNil(t, got.Exchange)
+	assert.Nil(t, got.Redemption)
+	assert.Equal(t, testRefreshClient, got.Exchange.Actor)
+	assert.Equal(t, oauthproto.TokenTypeRefreshToken, got.Exchange.RequestedTokenType)
+
+	subject := got.Subject
+	assert.Equal(t, claims.Issuer, subject.Issuer)
+	assert.Equal(t, claims.Subject, subject.Subject)
+	assert.Equal(t, claims.ClientID, subject.ClientID)
+	assert.Equal(t, claims.JWTID, subject.JWTID)
+	assert.Equal(t, wantAudience, subject.Audience)
+	assert.Equal(t, claims.IssuedAt, subject.IssuedAt)
+	assert.Equal(t, claims.Expiry, subject.Expiry)
+	assert.False(t, subject.External)
+	assert.Equal(t, wantClaims, subject.Claims)
+
+	subject.Claims["nested"].(map[string]any)["k"] = "changed"
+	subject.Claims["list"].([]any)[0] = "changed"
+	subject.Claims["added"] = true
+	subject.Audience[0] = "changed"
+	assert.Equal(t, wantClaims, claims.Claims, "the hook gets a copy of the claims")
+	assert.Equal(t, wantAudience, claims.Audience, "the hook gets a copy of the audience")
+}
+
+// A refused exchange-grant shape is logged once at WARN with its reason.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestRefreshTokenHandlerShapeRefusalLog(t *testing.T) {
+	logs := captureLogs(t)
+	h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: validLoginClaims()}, &fakeGrantStore{})
+	req := refreshRequestForTest(brokerClientForTest())
+	req.Form["authorization_details"] = []string{"", ""}
+
+	err := h.HandleTokenEndpointRequest(t.Context(), req)
+
+	var oauthErr *fosite.RFC6749Error
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, http.StatusBadRequest, oauthErr.CodeField)
+	assert.Equal(t, "invalid_request", oauthErr.ErrorField)
+	assert.Equal(t, "The authorization_details parameter must not be repeated.", oauthErr.GetDescription())
+	out := logs.String()
+	assert.Equal(t, 1, strings.Count(out, `msg="Exchange grant refused"`))
+	assert.Contains(t, out, "level=WARN")
+	assert.Contains(t, out, "reason="+refuseDetailsInvalid)
+}
+
 // TestRefreshTokenHandlerDecidesAgainBeforeIssuing covers a subject token that
 // stops being acceptable, or is consumed, between handling and the response.
 func TestRefreshTokenHandlerDecidesAgainBeforeIssuing(t *testing.T) {
@@ -630,6 +727,8 @@ func TestRefreshTokenFactoryValidatesTargets(t *testing.T) {
 				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimSubID, IDJAGSubjectClaimSubID}
 			},
 			wantErr: `lists required subject claim "sub_id" twice`},
+		{name: "sub-second lifetime", key: key,
+			mutate: func(t *IDJAGTarget) { t.Lifetime = 500 * time.Millisecond }, wantErr: "lifetime must be a whole number of seconds"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -712,6 +811,76 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 			assert.Equal(t, "https://issuer.example.com", handler.issuer)
 		})
 	}
+}
+
+// buildRefreshTokenHandler builds a handler through RefreshTokenFactory and its
+// closure, with a test signer, hmacStrategy and the given store.
+func buildRefreshTokenHandler(
+	t *testing.T, policies map[string]ConfiguredClientPolicy, store storage.ExchangeGrantStorage,
+	options ...RefreshTokenOption,
+) *RefreshTokenHandler {
+	t.Helper()
+	factory, err := RefreshTokenFactory(policies, newTestSigner(t), append(
+		[]RefreshTokenOption{WithExchangeGrantStorage(store)}, options...)...)
+	require.NoError(t, err)
+	return invokeRefreshTokenFactory(t, factory)
+}
+
+// invokeRefreshTokenFactory builds a handler from factory with the test
+// config and hmacStrategy.
+func invokeRefreshTokenFactory(t *testing.T, factory server.Factory) *RefreshTokenHandler {
+	t.Helper()
+	got, err := factory(&server.AuthorizationServerConfig{
+		Config:      &fosite.Config{AccessTokenIssuer: testIssuer},
+		SigningJWKS: newTestJWKS(t).jwks,
+	}, nil, hmacStrategy{})
+	require.NoError(t, err)
+	handler, ok := got.(*RefreshTokenHandler)
+	require.True(t, ok, "got %T", got)
+	return handler
+}
+
+func TestRefreshTokenFactoryActorLimiter(t *testing.T) {
+	t.Parallel()
+
+	invalid := []struct {
+		name    string
+		option  RefreshTokenOption
+		wantErr string
+	}{
+		{name: "a capacity below 1", option: withActorValidatorCapacity(0),
+			wantErr: "tokenexchange: actor validator capacity must be at least 1, got 0"},
+		{name: "a zero timeout", option: withActorValidationTimeout(0),
+			wantErr: "tokenexchange: the actor validation timeout must be positive, got 0s"},
+		{name: "a negative timeout", option: withActorValidationTimeout(-time.Second),
+			wantErr: "tokenexchange: the actor validation timeout must be positive, got -1s"},
+		{name: "a nil clock", option: withClock(nil),
+			wantErr: "tokenexchange: the clock must not be nil"},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name+" fails the factory", func(t *testing.T) {
+			t.Parallel()
+			_, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, newTestSigner(t), tc.option)
+			require.EqualError(t, err, tc.wantErr)
+		})
+	}
+
+	t.Run("the limiter has the default or the given capacity", func(t *testing.T) {
+		t.Parallel()
+		def := buildRefreshTokenHandler(t, map[string]ConfiguredClientPolicy{}, nil)
+		assert.Equal(t, defaultActorValidatorCapacity, cap(def.actorLimiter.slots))
+		three := buildRefreshTokenHandler(t, map[string]ConfiguredClientPolicy{}, nil, withActorValidatorCapacity(3))
+		assert.Equal(t, 3, cap(three.actorLimiter.slots))
+	})
+
+	t.Run("handlers from one factory share one limiter", func(t *testing.T) {
+		t.Parallel()
+		factory, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, newTestSigner(t))
+		require.NoError(t, err)
+		first := invokeRefreshTokenFactory(t, factory)
+		second := invokeRefreshTokenFactory(t, factory)
+		assert.Same(t, first.actorLimiter, second.actorLimiter)
+	})
 }
 
 func newBufferLogger() (*slog.Logger, *strings.Builder) {

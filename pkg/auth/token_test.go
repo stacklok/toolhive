@@ -4,18 +4,25 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2572,10 +2579,40 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		return s
 	}
 
+	serve := func(t *testing.T, v *TokenValidator, token string) (*Identity, *httptest.ResponseRecorder) {
+		t.Helper()
+		var captured *Identity
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured, _ = IdentityFromContext(r.Context())
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return captured, rr
+	}
+
 	claimsWithTsid := jwt.MapClaims{
 		"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
 		"exp":                        time.Now().Add(time.Hour).Unix(),
 		claimnames.TokenSessionIDKey: "session-xyz",
+	}
+
+	// embeddedKeys stands in for the embedded authorization server's in-process
+	// key provider, serving pub under kid.
+	embeddedKeys := func(t *testing.T, kid string, pub *rsa.PublicKey) TokenValidatorOption {
+		t.Helper()
+		provider := keysmocks.NewMockPublicKeyProvider(gomock.NewController(t))
+		provider.EXPECT().PublicKeys(gomock.Any()).
+			Return([]*keys.PublicKeyData{{KeyID: kid, Algorithm: "RS256", PublicKey: pub}}, nil).AnyTimes()
+		return WithKeyProvider(provider)
+	}
+	boundOpts := func(t *testing.T) []TokenValidatorOption {
+		t.Helper()
+		return []TokenValidatorOption{
+			WithEmbeddedAuthServerIssuer("test-issuer"),
+			embeddedKeys(t, testKeyID, &privateKey.PublicKey),
+		}
 	}
 
 	t.Run("enriches identity with upstream tokens", func(t *testing.T) {
@@ -2894,7 +2931,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 
 	// SessionlessGrant is provenance established by this middleware after JWT
 	// validation; Cedar must not derive it from raw claims.
-	t.Run("establishes session-less grant provenance", func(t *testing.T) {
+	t.Run("establishes session-less grant provenance and admission route", func(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
@@ -2902,7 +2939,9 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 			embeddedIssuer       string
 			claims               jwt.MapClaims
 			loadUpstreamTokens   bool
+			noAudience           bool
 			wantSessionlessGrant bool
+			wantRoute            AdmissionRoute
 		}{
 			{
 				name:           "matching embedded issuer with valid delegation chain",
@@ -2911,6 +2950,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 					"act": map[string]any{"sub": "delegated-agent"},
 				},
 				wantSessionlessGrant: true,
+				wantRoute:            AdmissionRouteUnspecified,
 			},
 			{
 				name:           "matching embedded issuer with no upstream session marker",
@@ -2919,11 +2959,13 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 					claimnames.NoUpstreamSessionKey: true,
 				},
 				wantSessionlessGrant: true,
+				wantRoute:            AdmissionRouteUnspecified,
 			},
 			{
 				name:           "matching embedded issuer without grant evidence",
 				embeddedIssuer: "test-issuer",
 				claims:         jwt.MapClaims{},
+				wantRoute:      AdmissionRouteUnspecified,
 			},
 			{
 				name:           "foreign embedded issuer with valid delegation chain",
@@ -2931,6 +2973,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				claims: jwt.MapClaims{
 					"act": map[string]any{"sub": "delegated-agent"},
 				},
+				wantRoute: AdmissionRouteUnspecified,
 			},
 			{
 				name:           "foreign embedded issuer with no upstream session marker",
@@ -2938,6 +2981,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				claims: jwt.MapClaims{
 					claimnames.NoUpstreamSessionKey: true,
 				},
+				wantRoute: AdmissionRouteUnspecified,
 			},
 			{
 				name:               "upstream credentials loaded",
@@ -2946,6 +2990,45 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				claims: jwt.MapClaims{
 					claimnames.NoUpstreamSessionKey: true,
 				},
+				wantRoute: AdmissionRouteUnspecified,
+			},
+			{
+				name:               "tsid token without audience is served with no route and the reader called",
+				embeddedIssuer:     "test-issuer",
+				loadUpstreamTokens: true,
+				claims:             jwt.MapClaims{},
+				noAudience:         true,
+				wantRoute:          AdmissionRouteUnspecified,
+			},
+			{
+				name:           "marked token with audience is delegated",
+				embeddedIssuer: "test-issuer",
+				claims: jwt.MapClaims{
+					claimnames.DelegatedAccessKey:   true,
+					claimnames.NoUpstreamSessionKey: true,
+				},
+				wantSessionlessGrant: true,
+				wantRoute:            AdmissionRouteDelegated,
+			},
+			{
+				name:           "marked token without audience is unspecified",
+				embeddedIssuer: "test-issuer",
+				claims: jwt.MapClaims{
+					claimnames.DelegatedAccessKey:   true,
+					claimnames.NoUpstreamSessionKey: true,
+				},
+				noAudience:           true,
+				wantSessionlessGrant: true,
+				wantRoute:            AdmissionRouteUnspecified,
+			},
+			{
+				name:           "foreign embedded issuer with marker",
+				embeddedIssuer: "foreign-issuer",
+				claims: jwt.MapClaims{
+					claimnames.DelegatedAccessKey:   true,
+					claimnames.NoUpstreamSessionKey: true,
+				},
+				wantRoute: AdmissionRouteUnspecified,
 			},
 		}
 
@@ -2968,26 +3051,80 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 						Return(map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-token"}}, nil, nil)
 					opts = append(opts, WithUpstreamTokenReader(reader))
 				}
-				opts = append(opts, WithEmbeddedAuthServerIssuer(tt.embeddedIssuer))
+				opts = append(opts, WithEmbeddedAuthServerIssuer(tt.embeddedIssuer),
+					embeddedKeys(t, testKeyID, &privateKey.PublicKey))
 				v := makeValidator(t, opts...)
+				if tt.noAudience {
+					v.audience = ""
+				}
 
-				var captured *Identity
-				handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-					captured, _ = IdentityFromContext(r.Context())
-				}))
-				req := httptest.NewRequest(http.MethodGet, "/", nil)
-				req.Header.Set("Authorization", "Bearer "+signToken(claims))
-				rr := httptest.NewRecorder()
-				handler.ServeHTTP(rr, req)
+				captured, rr := serve(t, v, signToken(claims))
 
 				require.Equal(t, http.StatusOK, rr.Code)
 				require.NotNil(t, captured)
 				require.Equal(t, tt.wantSessionlessGrant, captured.SessionlessGrant)
+				require.Equal(t, tt.wantRoute, captured.AdmissionRoute)
+				require.NotContains(t, captured.Claims, claimnames.DelegatedAccessKey)
 				if tt.loadUpstreamTokens {
 					require.NotNil(t, captured.UpstreamTokens)
 				} else {
 					require.Nil(t, captured.UpstreamTokens)
 				}
+			})
+		}
+	})
+
+	// An introspection response is the endpoint's word, not a token the embedded
+	// authorization server signed, so it never earns session-less provenance even
+	// when it carries every claim a signed token would.
+	t.Run("introspected claims never establish session-less grant or a route, signed ones still do", func(t *testing.T) {
+		t.Parallel()
+
+		const opaque = "opaque-token"
+		introspection := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active": true, "sub": "test-user", "iss": "test-issuer", "aud": "test-audience",
+				"exp":                           time.Now().Add(time.Hour).Unix(),
+				claimnames.DelegatedAccessKey:   true,
+				claimnames.NoUpstreamSessionKey: true,
+			})
+		}))
+		t.Cleanup(introspection.Close)
+
+		v := makeValidator(t, boundOpts(t)...)
+		v.introspectURL = introspection.URL
+		v.registry = NewRegistry()
+		v.registry.AddProvider(NewRFC7662Provider(introspection.URL))
+
+		tests := []struct {
+			name                 string
+			token                string
+			wantSessionlessGrant bool
+			wantRoute            AdmissionRoute
+		}{
+			{name: "opaque token via introspection", token: opaque, wantRoute: AdmissionRouteUnspecified},
+			{
+				name: "signed JWT through the same validator",
+				token: signToken(jwt.MapClaims{
+					"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
+					"exp":                           time.Now().Add(time.Hour).Unix(),
+					claimnames.NoUpstreamSessionKey: true,
+				}),
+				wantSessionlessGrant: true,
+				wantRoute:            AdmissionRouteUnspecified,
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				captured, rr := serve(t, v, tt.token)
+
+				require.Equal(t, http.StatusOK, rr.Code)
+				require.NotNil(t, captured)
+				require.Equal(t, tt.wantSessionlessGrant, captured.SessionlessGrant)
+				require.Equal(t, tt.wantRoute, captured.AdmissionRoute)
 			})
 		}
 	})
@@ -3030,6 +3167,194 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		require.NotNil(t, captured)
 		require.False(t, captured.SessionlessGrant,
 			"an unverified iss claim must not establish session-less grant provenance")
+		require.Equal(t, AdmissionRouteUnspecified, captured.AdmissionRoute)
+	})
+
+	t.Run("interactive token differs from an unbound validator only in the route", func(t *testing.T) {
+		t.Parallel()
+		newReader := func(t *testing.T) upstreamtoken.TokenReader {
+			t.Helper()
+			reader := upstreamtokenmocks.NewMockTokenReader(gomock.NewController(t))
+			reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
+				Return(map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-tok"}}, nil, nil)
+			return reader
+		}
+		token := signToken(jwt.MapClaims{
+			"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
+			"exp":                        time.Now().Add(time.Hour).Unix(),
+			claimnames.TokenSessionIDKey: "session-xyz",
+		})
+
+		bound, rr := serve(t, makeValidator(t,
+			append(boundOpts(t), WithUpstreamTokenReader(newReader(t)))...), token)
+		require.Equal(t, http.StatusOK, rr.Code)
+		unbound, rr := serve(t, makeValidator(t, WithUpstreamTokenReader(newReader(t))), token)
+		require.Equal(t, http.StatusOK, rr.Code)
+
+		require.Equal(t, AdmissionRouteInteractive, bound.AdmissionRoute)
+		require.Equal(t, AdmissionRouteUnspecified, unbound.AdmissionRoute)
+		require.Equal(t, map[string]string{"github": "gh-tok"}, unbound.UpstreamTokens)
+		bound.AdmissionRoute = AdmissionRouteUnspecified
+		require.Equal(t, unbound, bound)
+	})
+
+	// A key found only through the HTTP JWKS is not proof the embedded server
+	// signed the token: the same claims get a route only when verified with the
+	// in-process key.
+	t.Run("route requires the in-process key, not the HTTP JWKS fallback", func(t *testing.T) {
+		t.Parallel()
+
+		embeddedKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		const embeddedKID = "embedded-kid"
+		sign := func(claims jwt.MapClaims, kid string, k *rsa.PrivateKey) string {
+			tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+			tok.Header["kid"] = kid
+			signed, sErr := tok.SignedString(k)
+			require.NoError(t, sErr)
+			return signed
+		}
+		base := func(extra jwt.MapClaims) jwt.MapClaims {
+			c := jwt.MapClaims{
+				"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
+				"exp": time.Now().Add(time.Hour).Unix(),
+			}
+			maps.Copy(c, extra)
+			return c
+		}
+		marked := jwt.MapClaims{claimnames.DelegatedAccessKey: true, claimnames.NoUpstreamSessionKey: true}
+		interactive := jwt.MapClaims{claimnames.TokenSessionIDKey: "session-xyz"}
+
+		tests := []struct {
+			name                 string
+			claims               jwt.MapClaims
+			signedWithEmbedded   bool
+			providerFails        bool
+			wantRoute            AdmissionRoute
+			wantSessionlessGrant bool
+		}{
+			{name: "marked token when the in-process provider errors and the HTTP JWKS has the key", claims: marked,
+				providerFails: true, wantRoute: AdmissionRouteUnspecified, wantSessionlessGrant: true},
+			{name: "marked token signed with the HTTP JWKS key", claims: marked,
+				wantRoute: AdmissionRouteUnspecified, wantSessionlessGrant: true},
+			{name: "tsid token signed with the HTTP JWKS key", claims: interactive,
+				wantRoute: AdmissionRouteUnspecified},
+			{name: "marked token signed with the in-process key", claims: marked, signedWithEmbedded: true,
+				wantRoute: AdmissionRouteDelegated, wantSessionlessGrant: true},
+			{name: "tsid token signed with the in-process key", claims: interactive, signedWithEmbedded: true,
+				wantRoute: AdmissionRouteInteractive},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				opts := []TokenValidatorOption{
+					WithEmbeddedAuthServerIssuer("test-issuer"),
+					embeddedKeys(t, embeddedKID, &embeddedKey.PublicKey),
+				}
+				if tt.providerFails {
+					provider := keysmocks.NewMockPublicKeyProvider(gomock.NewController(t))
+					provider.EXPECT().PublicKeys(gomock.Any()).Return(nil, errors.New("provider down")).AnyTimes()
+					opts = []TokenValidatorOption{WithEmbeddedAuthServerIssuer("test-issuer"), WithKeyProvider(provider)}
+				}
+				if _, ok := tt.claims[claimnames.TokenSessionIDKey]; ok {
+					reader := upstreamtokenmocks.NewMockTokenReader(gomock.NewController(t))
+					reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
+						Return(map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-tok"}}, nil, nil)
+					opts = append(opts, WithUpstreamTokenReader(reader))
+				}
+				token := sign(base(tt.claims), testKeyID, privateKey)
+				if tt.signedWithEmbedded {
+					token = sign(base(tt.claims), embeddedKID, embeddedKey)
+				}
+
+				captured, rr := serve(t, makeValidator(t, opts...), token)
+
+				require.Equal(t, http.StatusOK, rr.Code)
+				require.NotNil(t, captured)
+				require.Equal(t, tt.wantRoute, captured.AdmissionRoute)
+				require.Equal(t, tt.wantSessionlessGrant, captured.SessionlessGrant)
+			})
+		}
+	})
+
+	t.Run("tsid and marker is served with no route and the reader still called", func(t *testing.T) {
+		t.Parallel()
+		for _, bound := range []bool{false, true} {
+			t.Run(fmt.Sprintf("bound=%t", bound), func(t *testing.T) {
+				t.Parallel()
+				reader := upstreamtokenmocks.NewMockTokenReader(gomock.NewController(t))
+				reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
+					Return(map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-tok"}}, nil, nil)
+				opts := []TokenValidatorOption{WithUpstreamTokenReader(reader)}
+				if bound {
+					opts = append(opts, boundOpts(t)...)
+				}
+				captured, rr := serve(t, makeValidator(t, opts...), signToken(jwt.MapClaims{
+					"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
+					"exp":                         time.Now().Add(time.Hour).Unix(),
+					claimnames.TokenSessionIDKey:  "session-xyz",
+					claimnames.DelegatedAccessKey: true,
+				}))
+
+				require.Equal(t, http.StatusOK, rr.Code)
+				require.NotNil(t, captured)
+				require.Equal(t, AdmissionRouteUnspecified, captured.AdmissionRoute)
+				require.Equal(t, map[string]string{"github": "gh-tok"}, captured.UpstreamTokens)
+			})
+		}
+	})
+
+	t.Run("unbound validator never writes the canonical-user key", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name   string
+			claims jwt.MapClaims
+		}{
+			{name: "interactive-shaped token", claims: jwt.MapClaims{claimnames.TokenSessionIDKey: "session-xyz"}},
+			{name: "marked token", claims: jwt.MapClaims{claimnames.DelegatedAccessKey: true}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				claims := maps.Clone(tt.claims)
+				claims["iss"] = "test-issuer"
+				claims["aud"] = "test-audience"
+				claims["sub"] = "test-user"
+				claims["exp"] = time.Now().Add(time.Hour).Unix()
+
+				var opts []TokenValidatorOption
+				if _, ok := claims[claimnames.TokenSessionIDKey]; ok {
+					reader := upstreamtokenmocks.NewMockTokenReader(gomock.NewController(t))
+					reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
+						DoAndReturn(func(ctx context.Context, _ string) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
+							_, stored := PlatformUserFromContext(ctx)
+							require.False(t, stored, "load context must not carry a stored canonical user")
+							return map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-tok"}}, nil, nil
+						})
+					opts = append(opts, WithUpstreamTokenReader(reader))
+				}
+
+				var identity *Identity
+				var storedOK, canonicalOK bool
+				var canonical string
+				handler := makeValidator(t, opts...).Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+					identity, _ = IdentityFromContext(r.Context())
+					_, storedOK = PlatformUserFromContext(r.Context())
+					canonical, canonicalOK = CanonicalUserFromContext(r.Context())
+				}))
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				req.Header.Set("Authorization", "Bearer "+signToken(claims))
+				rr := httptest.NewRecorder()
+				handler.ServeHTTP(rr, req)
+
+				require.Equal(t, http.StatusOK, rr.Code)
+				require.NotNil(t, identity)
+				require.False(t, storedOK, "nothing may be stored under the canonical-user key")
+				require.True(t, canonicalOK)
+				require.Equal(t, "test-user", canonical)
+			})
+		}
 	})
 }
 
@@ -3473,6 +3798,554 @@ func TestNewTokenValidator_GoogleTokeninfoRequiresAudience(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValidateClaimsSubject(t *testing.T) {
+	t.Parallel()
+
+	const (
+		saSubject = "system:serviceaccount:team-a:agent"
+		saPrefix  = "system:serviceaccount:team-a:"
+	)
+
+	baseClaims := func(sub any) jwt.MapClaims {
+		c := jwt.MapClaims{
+			"iss": issuer,
+			"aud": "test-audience",
+			"exp": float64(time.Now().Add(time.Hour).Unix()),
+		}
+		if sub != nil {
+			c["sub"] = sub
+		}
+		return c
+	}
+
+	tests := []struct {
+		name          string
+		subject       string
+		subjectPrefix string
+		sub           any
+		wantErr       error
+	}{
+		{name: "no restriction accepts any subject", sub: "anyone"},
+		{name: "no restriction accepts missing subject", sub: nil},
+		{name: "exact match", subject: saSubject, sub: saSubject},
+		{name: "exact mismatch", subject: saSubject, sub: "system:serviceaccount:team-a:other", wantErr: ErrInvalidSubject},
+		{name: "exact rejects prefix-extended subject", subject: saSubject, sub: saSubject + "x", wantErr: ErrInvalidSubject},
+		{name: "exact rejects missing subject", subject: saSubject, sub: nil, wantErr: ErrInvalidSubject},
+		{name: "exact rejects empty subject", subject: saSubject, sub: "", wantErr: ErrInvalidSubject},
+		{name: "exact rejects non-string subject", subject: saSubject, sub: 42, wantErr: ErrInvalidSubject},
+		{name: "prefix match", subjectPrefix: saPrefix, sub: "system:serviceaccount:team-a:anything"},
+		{name: "prefix mismatch", subjectPrefix: saPrefix, sub: "system:serviceaccount:team-b:agent", wantErr: ErrInvalidSubject},
+		{name: "prefix rejects namespace with shared leading text", subjectPrefix: saPrefix,
+			sub: "system:serviceaccount:team-ab:agent", wantErr: ErrInvalidSubject},
+		{name: "prefix rejects missing subject", subjectPrefix: saPrefix, sub: nil, wantErr: ErrInvalidSubject},
+		{name: "both set and both hold", subject: saSubject, subjectPrefix: saPrefix, sub: saSubject},
+		{name: "both set and prefix fails", subject: saSubject, subjectPrefix: "system:serviceaccount:team-b:",
+			sub: saSubject, wantErr: ErrInvalidSubject},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			v := &TokenValidator{
+				issuer:            issuer,
+				audience:          "test-audience",
+				requiredSubject:   tt.subject,
+				requiredSubPrefix: tt.subjectPrefix,
+			}
+			err := v.validateClaims(baseClaims(tt.sub))
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestSubjectRejectionWarnIsBoundedPerSubject checks that a caller cannot set
+// WARN volume: repeated rejections of one subject log a single WARN, while a
+// different subject gets its own.
+//
+// Not run in parallel: slog.SetDefault is process-wide.
+//
+//nolint:paralleltest // mutates slog default, mirrors TestMonitor_DCRWarnEmittedAfterZeroExpiryExit
+func TestSubjectRejectionWarnIsBoundedPerSubject(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	v, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+		JWKSURL:         "https://issuer.example.com/jwks",
+		RequiredSubject: "system:serviceaccount:ns:allowed",
+	})
+	require.NoError(t, err)
+
+	claims := func(sub string) jwt.MapClaims {
+		return jwt.MapClaims{"sub": sub, "exp": float64(time.Now().Add(time.Hour).Unix())}
+	}
+	for range 5 {
+		require.ErrorIs(t, v.validateClaims(claims("system:serviceaccount:attacker:default")), ErrInvalidSubject)
+	}
+	require.ErrorIs(t, v.validateClaims(claims("system:serviceaccount:ns:other")), ErrInvalidSubject)
+	require.NoError(t, v.validateClaims(claims("system:serviceaccount:ns:allowed")))
+
+	warns := 0
+	for _, line := range strings.Split(logBuf.String(), "\n") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "token subject rejected") {
+			warns++
+		}
+	}
+	require.Equal(t, 2, warns, "one WARN per distinct rejected subject:\n%s", logBuf.String())
+	require.Contains(t, logBuf.String(), "level=DEBUG msg=\"token subject rejected")
+}
+
+// newSubjectTestJWKS serves a JWKS for a fresh RS256 key over TLS and returns
+// a function that signs a token for the given subject with that key.
+func newSubjectTestJWKS(t *testing.T) (jwksURL, caCertPath string, sign func(sub string) string) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
+	require.NoError(t, err)
+	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
+	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))
+	keySet := jwk.NewSet()
+	require.NoError(t, keySet.AddKey(key))
+
+	server, caCertPath := createTestJWKSServer(t, keySet)
+	t.Cleanup(server.Close)
+
+	return server.URL, caCertPath, func(sub string) string {
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+			"iss": "https://kubernetes.default.svc.cluster.local",
+			"aud": "aud-pinned",
+			"sub": sub,
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		token.Header["kid"] = testKeyID
+		signed, err := token.SignedString(privateKey)
+		require.NoError(t, err)
+		return signed
+	}
+}
+
+// TestMiddlewareEnforcesRequiredSubject pins the subject restriction at the
+// HTTP boundary with real signed tokens: the configured service account is
+// let through and any other subject gets 401 invalid_token / invalid subject.
+func TestMiddlewareEnforcesRequiredSubject(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	jwksURL, caCertPath, sign := newSubjectTestJWKS(t)
+
+	validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
+		Issuer:          "https://kubernetes.default.svc.cluster.local",
+		Audience:        "aud-pinned",
+		JWKSURL:         jwksURL,
+		CACertPath:      caCertPath,
+		AllowPrivateIP:  true,
+		RequiredSubject: "system:serviceaccount:trusted:allowed",
+	})
+	require.NoError(t, err)
+
+	handler := validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	tests := []struct {
+		sub  string
+		want int
+	}{
+		{sub: "system:serviceaccount:trusted:allowed", want: http.StatusOK},
+		{sub: "system:serviceaccount:trusted:other", want: http.StatusUnauthorized},
+		{sub: "system:serviceaccount:attacker:default", want: http.StatusUnauthorized},
+	}
+	for _, tc := range tests {
+		t.Run(tc.sub, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			req.Header.Set("Authorization", "Bearer "+sign(tc.sub))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			require.Equal(t, tc.want, rec.Code)
+			if tc.want == http.StatusUnauthorized {
+				wwwAuth := rec.Header().Get("WWW-Authenticate")
+				require.Contains(t, wwwAuth, `error="invalid_token"`)
+				require.Contains(t, wwwAuth, `error_description="invalid subject"`)
+			}
+		})
+	}
+}
+
+// TestIntrospectionEnforcesRequiredSubjectPrefix pins the subject restriction
+// on the opaque-token path, where claims come from an RFC 7662 introspection
+// response rather than a signed JWT.
+func TestIntrospectionEnforcesRequiredSubjectPrefix(t *testing.T) {
+	t.Parallel()
+
+	introspection := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// The opaque token is the subject the introspection endpoint reports.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"active": true,
+			"sub":    r.FormValue("token"),
+			"iss":    "opaque-issuer",
+			"aud":    "opaque-audience",
+			"exp":    time.Now().Add(time.Hour).Unix(),
+		})
+	}))
+	t.Cleanup(introspection.Close)
+
+	registry := NewRegistry()
+	registry.AddProvider(NewRFC7662Provider(introspection.URL))
+	validator := &TokenValidator{
+		introspectURL:     introspection.URL,
+		client:            http.DefaultClient,
+		issuer:            "opaque-issuer",
+		audience:          "opaque-audience",
+		jwksURL:           "https://placeholder/jwks", // prevents lazy OIDC discovery
+		registry:          registry,
+		requiredSubPrefix: "system:serviceaccount:trusted:",
+	}
+
+	tests := []struct {
+		name    string
+		sub     string
+		wantErr error
+	}{
+		{name: "service account in the allowed namespace", sub: "system:serviceaccount:trusted:any"},
+		{name: "service account in another namespace", sub: "system:serviceaccount:attacker:default", wantErr: ErrInvalidSubject},
+		{name: "lookalike namespace", sub: "system:serviceaccount:trusted-evil:sa", wantErr: ErrInvalidSubject},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			claims, err := validator.ValidateToken(context.Background(), tc.sub)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.sub, claims["sub"])
+		})
+	}
+}
+
+// TestTokenValidator_SigningAlgorithms checks every accepted signing algorithm
+// (RS256, ES256, EdDSA) on both key lookup paths, and that a key of the wrong
+// type for the header's alg, or alg none, is refused.
+func TestTokenValidator_SigningAlgorithms(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	edPub, edKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	const (
+		rsaKID = "rsa-key"
+		ecKID  = "ec-key"
+		edKID  = "ed-key"
+	)
+	publicKeys := []*keys.PublicKeyData{
+		{KeyID: rsaKID, Algorithm: "RS256", PublicKey: &rsaKey.PublicKey},
+		{KeyID: ecKID, Algorithm: "ES256", PublicKey: &ecKey.PublicKey},
+		{KeyID: edKID, Algorithm: "EdDSA", PublicKey: edPub},
+	}
+
+	keySet := jwk.NewSet()
+	for _, pk := range publicKeys {
+		key, err := jwk.Import[jwk.Key](pk.PublicKey)
+		require.NoError(t, err)
+		require.NoError(t, key.Set(jwk.KeyIDKey, pk.KeyID))
+		require.NoError(t, key.Set(jwk.KeyUsageKey, "sig"))
+		require.NoError(t, keySet.AddKey(key))
+	}
+	// The Ed25519 key must be served as an OKP key, as the embedded auth server does.
+	edJWK, found := keySet.LookupKeyID(edKID)
+	require.True(t, found)
+	require.Equal(t, "OKP", edJWK.KeyType().String())
+	jwksServer, caCertPath := createTestJWKSServer(t, keySet)
+	t.Cleanup(jwksServer.Close)
+
+	newValidator := func(t *testing.T, withKeyProvider bool) *TokenValidator {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+		opts := []TokenValidatorOption{WithEnvReader(mockEnv)}
+		if withKeyProvider {
+			provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+			provider.EXPECT().PublicKeys(gomock.Any()).Return(publicKeys, nil).AnyTimes()
+			opts = append(opts, WithKeyProvider(provider))
+		}
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		}, opts...)
+		require.NoError(t, err)
+		return validator
+	}
+
+	cases := []struct {
+		name       string
+		method     jwt.SigningMethod
+		kid        string
+		signingKey any
+		wantErr    string
+	}{
+		{name: "RS256 with RSA key", method: jwt.SigningMethodRS256, kid: rsaKID, signingKey: rsaKey},
+		{name: "ES256 with ECDSA key", method: jwt.SigningMethodES256, kid: ecKID, signingKey: ecKey},
+		{name: "EdDSA with Ed25519 key", method: jwt.SigningMethodEdDSA, kid: edKID, signingKey: edKey},
+		{
+			name: "EdDSA header resolving to an RSA key", method: jwt.SigningMethodEdDSA,
+			kid: rsaKID, signingKey: edKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "RS256 header resolving to an Ed25519 key", method: jwt.SigningMethodRS256,
+			kid: edKID, signingKey: rsaKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "ES256 header resolving to an Ed25519 key", method: jwt.SigningMethodES256,
+			kid: edKID, signingKey: ecKey, wantErr: jwt.ErrInvalidKeyType.Error(),
+		},
+		{
+			name: "alg none", method: jwt.SigningMethodNone, kid: edKID,
+			signingKey: jwt.UnsafeAllowNoneSignatureType, wantErr: "unexpected signing method: none",
+		},
+	}
+
+	lookups := []struct {
+		name            string
+		withKeyProvider bool
+	}{
+		{name: "JWKS lookup"},
+		{name: "local key provider", withKeyProvider: true},
+	}
+	for _, lookup := range lookups {
+		for _, tc := range cases {
+			t.Run(lookup.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				validator := newValidator(t, lookup.withKeyProvider)
+
+				token := jwt.NewWithClaims(tc.method, jwt.MapClaims{
+					"iss": "test-issuer",
+					"sub": "test-user",
+					"exp": time.Now().Add(time.Hour).Unix(),
+				})
+				token.Header["kid"] = tc.kid
+				tokenString, err := token.SignedString(tc.signingKey)
+				require.NoError(t, err)
+
+				claims, err := validator.ValidateToken(context.Background(), tokenString)
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+					require.Nil(t, claims)
+				} else {
+					require.NoError(t, err)
+					require.Equal(t, "test-user", claims["sub"])
+				}
+
+				handler := validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				req.Header.Set("Authorization", "Bearer "+tokenString)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				wantStatus := http.StatusOK
+				if tc.wantErr != "" {
+					wantStatus = http.StatusUnauthorized
+				}
+				require.Equal(t, wantStatus, rec.Code)
+			})
+		}
+	}
+}
+
+// TestAuthTokenFileClientsRefuseCrossHostRedirects checks that the clients
+// built with AuthTokenFile (OIDC discovery and JWKS, RFC 7662 introspection)
+// never carry the bearer token to a host a redirect names.
+func TestAuthTokenFileClientsRefuseCrossHostRedirects(t *testing.T) {
+	t.Parallel()
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("sa-token"), 0o600))
+
+	tests := []struct {
+		name string
+		call func(t *testing.T, originURL, caCertPath string) error
+	}{
+		{
+			name: "OIDC discovery",
+			call: func(t *testing.T, originURL, caCertPath string) error {
+				t.Helper()
+				v, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+					Issuer:         originURL,
+					Audience:       "test-audience",
+					CACertPath:     caCertPath,
+					AuthTokenFile:  tokenFile,
+					AllowPrivateIP: true,
+				})
+				require.NoError(t, err)
+				_, err = discoverOIDCConfiguration(context.Background(), originURL, v.client, false)
+				return err
+			},
+		},
+		{
+			name: "RFC 7662 introspection",
+			call: func(t *testing.T, originURL, caCertPath string) error {
+				t.Helper()
+				p, err := NewRFC7662ProviderWithAuth(
+					originURL+"/introspect", "client", "secret", caCertPath, tokenFile, true)
+				require.NoError(t, err)
+				_, err = p.IntrospectToken(context.Background(), "opaque-token")
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var sinkHits atomic.Int32
+			sink := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				sinkHits.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(sink.Close)
+
+			// 307 keeps the method and body, so the introspection POST would be replayed too.
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, sink.URL+r.URL.Path, http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(origin.Close)
+
+			// httptest TLS servers share one certificate, so this trusts both.
+			err := tt.call(t, origin.URL, writeTestServerCert(t, origin))
+			require.ErrorIs(t, err, networking.ErrRedirectRefused)
+			require.Zero(t, sinkHits.Load(), "token-bearing request must not reach the redirect target")
+		})
+	}
+}
+
+func TestBearerChallengeWriteInvalidToken(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	BearerChallenge{Realm: "https://as.example.com", ResourceURL: "https://rs.example.com/mcp"}.
+		WriteInvalidToken(rec, "token reused")
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, `Bearer realm="https://as.example.com", `+
+		`resource_metadata="https://rs.example.com/.well-known/oauth-protected-resource/mcp", `+
+		`error="invalid_token", error_description="token reused"`, rec.Header().Get("WWW-Authenticate"))
+	require.JSONEq(t, `{"error":"invalid_token","error_description":"token reused"}`, rec.Body.String())
+}
+
+func TestClassifyRoute(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "test-issuer"
+	marker := claimnames.DelegatedAccessKey
+	tsid := claimnames.TokenSessionIDKey
+	noSession := claimnames.NoUpstreamSessionKey
+	act := map[string]any{"sub": "delegated-agent"}
+
+	bound := func(audience string) *TokenValidator {
+		return &TokenValidator{issuer: issuer, embeddedAuthServerIssuer: issuer, audience: audience}
+	}
+
+	tests := []struct {
+		name       string
+		validator  *TokenValidator
+		claims     jwt.MapClaims
+		want       AdmissionRoute
+		provenance *tokenProvenance // nil means provenanceSignedEmbeddedKey
+	}{
+		{name: "tsid only", validator: bound("aud"), claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteInteractive},
+		{name: "tsid without audience is unspecified", validator: bound(""),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
+		{name: "tsid with whitespace audience is unspecified", validator: bound("  "),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
+		{name: "tsid and marker is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1", marker: true}, want: AdmissionRouteUnspecified},
+		{name: "tsid with no_upstream_session is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1", noSession: true}, want: AdmissionRouteUnspecified},
+		{name: "tsid with no_upstream_session false is interactive", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1", noSession: false}, want: AdmissionRouteInteractive},
+		{name: "tsid with act chain is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1", "act": act}, want: AdmissionRouteUnspecified},
+		{name: "empty tsid, no marker is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: ""}, want: AdmissionRouteUnspecified},
+		{name: "no tsid, no marker is unspecified", validator: bound("aud"),
+			claims: jwt.MapClaims{}, want: AdmissionRouteUnspecified},
+
+		{name: "marker only", validator: bound("aud"), claims: jwt.MapClaims{marker: true}, want: AdmissionRouteDelegated},
+		{name: "marker false counts by presence", validator: bound("aud"),
+			claims: jwt.MapClaims{marker: false}, want: AdmissionRouteDelegated},
+		{name: "marker with act chain", validator: bound("aud"),
+			claims: jwt.MapClaims{marker: true, "act": act}, want: AdmissionRouteDelegated},
+		{name: "empty tsid and marker is delegated", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "", marker: true}, want: AdmissionRouteDelegated},
+		{name: "non-string tsid and marker is delegated", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: 7, marker: true}, want: AdmissionRouteDelegated},
+		{name: "marker without audience is unspecified", validator: bound(""),
+			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified},
+		{name: "marker with whitespace audience is unspecified", validator: bound("  "),
+			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified},
+
+		{name: "introspected claims with tsid", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified, provenance: new(provenanceUnverified)},
+		{name: "introspected claims with marker", validator: bound("aud"),
+			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified, provenance: new(provenanceUnverified)},
+		{name: "signed with another key set, tsid", validator: bound("aud"),
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified, provenance: new(provenanceSignedOther)},
+		{name: "signed with another key set, marker and audience", validator: bound("aud"),
+			claims: jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified, provenance: new(provenanceSignedOther)},
+		{name: "unbound: no embedded issuer", validator: &TokenValidator{issuer: issuer, audience: "aud"},
+			claims: jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
+		{name: "unbound: embedded issuer != issuer",
+			validator: &TokenValidator{issuer: issuer, embeddedAuthServerIssuer: "foreign-issuer", audience: "aud"},
+			claims:    jwt.MapClaims{marker: true}, want: AdmissionRouteUnspecified},
+		{name: "unbound: embedded issuer, no issuer",
+			validator: &TokenValidator{embeddedAuthServerIssuer: issuer, audience: "aud"},
+			claims:    jwt.MapClaims{tsid: "s1"}, want: AdmissionRouteUnspecified},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			claims := maps.Clone(tt.claims)
+			claims["sub"] = "test-user"
+			identity, err := claimsToIdentity(claims, "token")
+			require.NoError(t, err)
+
+			provenance := provenanceSignedEmbeddedKey
+			if tt.provenance != nil {
+				provenance = *tt.provenance
+			}
+			require.Equal(t, tt.want, tt.validator.classifyRoute(identity, claims, provenance))
 		})
 	}
 }

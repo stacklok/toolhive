@@ -154,6 +154,12 @@ func publicSchemaName(name string) string {
 	}
 
 	name = strings.TrimPrefix(name, "github_com_stacklok_toolhive_pkg_")
+	for short, full := range shortSchemaPackages {
+		if rest, ok := strings.CutPrefix(name, short); ok {
+			name = full + rest
+			break
+		}
+	}
 	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '.' || r == '_' })
 	var builder strings.Builder
 	for _, part := range parts {
@@ -167,6 +173,16 @@ func canonicalSchemaWord(value string) string {
 		return canonical
 	}
 	return exportName(value)
+}
+
+// shortSchemaPackages maps a package-qualified schema prefix that swag may
+// emit in short form ("awssts.Config") to the path form it emits when two
+// parsed packages share a name ("github_com_stacklok_toolhive_pkg_auth_awssts.Config",
+// already trimmed to "auth_awssts."). Swag picks between the two depending on
+// which packages are in the import graph, so without this the public SDK type
+// names would change whenever an unrelated import is added.
+var shortSchemaPackages = map[string]string{
+	"awssts.": "auth_awssts.",
 }
 
 var canonicalSchemaWords = map[string]string{

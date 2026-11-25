@@ -199,7 +199,10 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 	// Filter internal claims that should not be externalized (e.g., in
 	// webhook payloads or audit logs). The tsid is a session identifier
 	// used to look up upstream tokens in storage; exposing it widens the
-	// attack surface if a webhook receiver is compromised.
+	// attack surface if a webhook receiver is compromised. The delegated-access
+	// marker is stripped the same way. A check that needs the marker (or the
+	// tsid) must read the raw validated jwt.MapClaims before this point, not
+	// Identity.Claims, which never contains them.
 	filteredClaims := filterInternalClaims(claims)
 
 	identity := &Identity{
@@ -238,8 +241,10 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 
 // internalClaims are JWT claim keys used internally by the auth server
 // that must not be externalized in webhook payloads, audit logs, etc.
-// The token session ID is used to look up upstream tokens in storage.
-var internalClaims = []string{claimnames.TokenSessionIDKey}
+// The token session ID is used to look up upstream tokens in storage. The
+// delegated-access marker gates credential lookup in the gateway, which reads
+// it from the validated raw claims.
+var internalClaims = []string{claimnames.TokenSessionIDKey, claimnames.DelegatedAccessKey}
 
 // filterInternalClaims returns a copy of claims with internal keys removed.
 func filterInternalClaims(claims jwt.MapClaims) jwt.MapClaims {

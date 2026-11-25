@@ -254,7 +254,7 @@ func NewHandler(
 		storage:              stor,
 		upstreams:            upstreams,
 		tokenOnly:            len(upstreams) == 0,
-		userResolver:         NewUserResolver(stor),
+		userResolver:         newUserResolver(stor, upstreams),
 		continuationFallback: storage.ClientStoreBelowCIMD(stor),
 		registerLimiter:      rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
 		meterProvider:        otel.GetMeterProvider(),
@@ -397,6 +397,17 @@ func (h *Handler) initConsentExemptions() error {
 	}
 	h.consentExemptClientIDs = nil
 	return nil
+}
+
+// newUserResolver builds the resolver for the configured upstreams. Only the
+// first upstream creates users. Every login chain starts there, and later
+// upstreams carry the user it resolved, so a later upstream's identity may resolve
+// through an existing link but never creates a user or link.
+func newUserResolver(stor storage.UserStorage, upstreams []NamedUpstream) *UserResolver {
+	if len(upstreams) == 0 {
+		return NewUserResolver(stor)
+	}
+	return NewUserResolver(stor, WithCreateOnlyFor(upstreams[0].Name))
 }
 
 // limiterRetryAfterSeconds returns the Retry-After value for a request l

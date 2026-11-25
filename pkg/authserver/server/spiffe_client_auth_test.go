@@ -37,7 +37,7 @@ const testIssuer = "https://auth.example.com"
 // stubResolver is a SPIFFEClientResolver that is never called by these tests;
 // it exists only to make "resolver configured" distinguishable from "resolver
 // nil" for the client-authentication strategy under test.
-func stubResolver(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+func stubResolver(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod, time.Time) (fosite.Client, error) {
 	panic("not called")
 }
 
@@ -291,7 +291,7 @@ func TestSPIFFEJWTClientAuthentication(t *testing.T) {
 					return nil, nil
 				},
 				testIssuer, tt.source, nil,
-				func(_ context.Context, gotSPIFFEID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+				func(_ context.Context, gotSPIFFEID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod, _ time.Time) (fosite.Client, error) {
 					called = true
 					assert.Equal(t, id.String(), gotSPIFFEID)
 					assert.Equal(t, spiffeauth.SPIFFEAuthenticationMethodJWT, method)
@@ -360,7 +360,7 @@ func TestSPIFFEJWTClientAuthenticationAlgorithms(t *testing.T) {
 					return nil, nil
 				},
 				testIssuer, source, nil,
-				func(_ context.Context, gotSPIFFEID, _ string, method spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+				func(_ context.Context, gotSPIFFEID, _ string, method spiffeauth.SPIFFEAuthenticationMethod, _ time.Time) (fosite.Client, error) {
 					assert.Equal(t, id.String(), gotSPIFFEID)
 					assert.Equal(t, spiffeauth.SPIFFEAuthenticationMethodJWT, method)
 					return &fosite.DefaultClient{ID: "client"}, nil
@@ -374,6 +374,34 @@ func TestSPIFFEJWTClientAuthenticationAlgorithms(t *testing.T) {
 			assert.False(t, defaultCalled)
 		})
 	}
+}
+
+func TestSPIFFEJWTClientAuthPassesSVIDExpiryToResolver(t *testing.T) {
+	t.Parallel()
+
+	id := spiffeid.RequireFromString("spiffe://example.org/workload/my-service")
+	key := mustRSAKey(t)
+	claims := claimsExpiringIn(id, 5*time.Minute)
+	token := signedJWT(t, jose.RS256, key, "key-1", "JWT", claims)
+	source := jwtbundle.NewSet(jwtbundle.FromJWTAuthorities(id.TrustDomain(), map[string]crypto.PublicKey{"key-1": key.Public()}))
+
+	var gotExpiry time.Time
+	strategy := newSPIFFEClientAuthenticationStrategy(
+		func(context.Context, *http.Request, url.Values) (fosite.Client, error) {
+			t.Fatal("default strategy called")
+			return nil, nil
+		},
+		testIssuer, source, nil,
+		func(_ context.Context, _, _ string, _ spiffeauth.SPIFFEAuthenticationMethod, expiry time.Time) (fosite.Client, error) {
+			gotExpiry = expiry
+			return &fosite.DefaultClient{ID: "client"}, nil
+		},
+		nil,
+	)
+
+	_, err := strategy(context.Background(), httptest.NewRequest(http.MethodPost, "/", nil), jwtForm(token))
+	require.NoError(t, err)
+	assert.True(t, gotExpiry.Equal(claims.Expiry.Time()), "got %s, want the assertion's exp %s", gotExpiry, claims.Expiry.Time())
 }
 
 func TestSPIFFEJWTDispatchRejectsDuplicateAssertionType(t *testing.T) {

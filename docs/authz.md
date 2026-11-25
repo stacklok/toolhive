@@ -740,9 +740,10 @@ has been validated for the configured embedded authorization-server issuer.
 A session-less token carries at most `sub`, `act`, `client_id` and `scope`, plus
 `name` and `email` when the grant supplies them (RFC 8693 delegation copies them
 from the subject token; RFC 7523 JWT-bearer has no end user and carries neither).
-A token redeemed from an ID-JAG also carries the `authorization_details` entries
-the ID-JAG's issuer signed, when the authorization server has the type
-registered (see
+A token redeemed from an ID-JAG that carries `authorization_details` also
+carries the entries the authorization server granted: whole entries the
+ID-JAG's issuer signed, possibly fewer of them. An ID-JAG whose types are not
+registered is refused rather than redeemed (see
 [Authorization details](arch/17-token-exchange-delegation.md#on-id-jag-redemption)).
 Nothing else crosses. In particular **no upstream attribute is carried** — no
 `groups`, no `roles`, no `department`, nothing the pinned IdP asserted about the

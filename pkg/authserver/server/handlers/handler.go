@@ -530,12 +530,20 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 // succeeds. If refresh is impossible or fails, the leg is reported as missing so
 // the user is re-prompted up front, rather than the stale token surfacing as a
 // runtime auth error later at MCP-request token-swap time.
-func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, chain []string) (string, error) {
+//
+// skipped names legs that failed earlier in this walk and were skipped under
+// NonFatalSecondaryLegs (see PendingAuthorization.SkippedUpstreams). They are
+// never returned, so a skipped leg is not prompted again in the same walk even
+// though it still has no satisfying token.
+func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, chain, skipped []string) (string, error) {
 	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}
 	for _, name := range chain {
+		if slices.Contains(skipped, name) {
+			continue
+		}
 		tokens, ok := stored[name]
 		if !ok || tokens == nil {
 			// No token stored for this leg — prompt.
@@ -621,22 +629,62 @@ func (h *Handler) computeChain(ctx context.Context, principal FilterPrincipal) (
 // principal is the identity resolved by the leg that just completed; it is passed
 // to computeChain (and thus the filter) only on the first leg, where it reflects
 // the identity provider. Subsequent legs reuse the stored chain and ignore it.
+//
+// Either way, pending.SkippedUpstreams is validated against the chain the pending
+// carried (see validateSkipped). A first-leg pending carries no chain, so one
+// that already names a skipped leg is rejected.
 func (h *Handler) resolveChain(
 	ctx context.Context,
 	pending *storage.PendingAuthorization,
 	principal FilterPrincipal,
 ) ([]string, error) {
-	if pending.ResolvedUserID == "" {
-		// True first leg — compute with this (the first) leg's request context.
-		return h.computeChain(ctx, principal)
+	chain, err := func() ([]string, error) {
+		if pending.ResolvedUserID == "" {
+			// True first leg — compute with this (the first) leg's request context.
+			return h.computeChain(ctx, principal)
+		}
+		if len(pending.ChainUpstreams) == 0 {
+			return nil, fmt.Errorf("subsequent chain leg is missing its computed upstream chain (stale pending authorization)")
+		}
+		if err := h.validateChain(pending.ChainUpstreams); err != nil {
+			return nil, fmt.Errorf("stored upstream chain is invalid: %w", err)
+		}
+		return pending.ChainUpstreams, nil
+	}()
+	if err != nil {
+		return nil, err
 	}
-	if len(pending.ChainUpstreams) == 0 {
-		return nil, fmt.Errorf("subsequent chain leg is missing its computed upstream chain (stale pending authorization)")
+	// Validate against the chain the pending carried, not the one just resolved:
+	// a first leg carries none, so any skipped leg there is outside it.
+	if err := validateSkipped(pending.ChainUpstreams, pending.SkippedUpstreams); err != nil {
+		return nil, fmt.Errorf("stored skipped upstreams are invalid: %w", err)
 	}
-	if err := h.validateChain(pending.ChainUpstreams); err != nil {
-		return nil, fmt.Errorf("stored upstream chain is invalid: %w", err)
+	return chain, nil
+}
+
+// validateSkipped rejects a skipped-leg set loaded from storage that the chain
+// does not admit: every entry must be a member of chain other than its first
+// (identity) upstream, with no duplicates. A pending that breaks this is stale or
+// tampered; honouring it could skip the identity leg or a leg the walk never tried.
+func validateSkipped(chain, skipped []string) error {
+	if len(skipped) == 0 {
+		return nil
 	}
-	return pending.ChainUpstreams, nil
+	if len(chain) == 0 {
+		return fmt.Errorf("skipped upstreams set on an empty chain")
+	}
+	for i, name := range skipped {
+		if name == chain[0] {
+			return fmt.Errorf("the first upstream %q cannot be skipped", name)
+		}
+		if !slices.Contains(chain[1:], name) {
+			return fmt.Errorf("skipped upstream %q is not a non-first member of the chain", name)
+		}
+		if slices.Contains(skipped[:i], name) {
+			return fmt.Errorf("skipped upstream %q is duplicated", name)
+		}
+	}
+	return nil
 }
 
 // validateChain rejects an upstream chain loaded from storage that does not agree

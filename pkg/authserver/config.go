@@ -2130,6 +2130,31 @@ type Config struct {
 	// RunConfig.DeviceFlowEnabled for the full semantics.
 	DeviceFlowEnabled bool
 
+	// NonFatalSecondaryLegs makes a failed non-first leg of a multi-upstream
+	// authorization chain non-fatal. When false (the default), any failed leg ends
+	// the authorization with an error to the client, as before.
+	//
+	// When true, these failures on a leg after the first record that leg as
+	// skipped, continue the walk to the next missing leg, and issue the
+	// authorization code without it: an error the upstream IdP returns in place of
+	// a code (for example the user cancelling consent with access_denied), a failed
+	// code exchange or ID-token validation on the leg's callback, and a failure to
+	// build the leg's authorization URL. The skipped leg gets no stored token and is
+	// not prompted again in the same walk; tokens stored by earlier legs are kept.
+	// Each skipped leg is logged once at WARN with the provider name and failure
+	// class.
+	//
+	// These stay fatal whatever this says: every failure on the first (identity)
+	// leg; a missing, unknown, expired or replayed state; a failed browser-binding
+	// check; and a storage failure loading or storing the pending authorization.
+	// Skipping past those would let a forwarded callback URL complete an
+	// authorization in the wrong browser.
+	//
+	// Enable it only when the embedder can present a missing upstream to the user
+	// later (for example by answering a tool call with a connect link). SingleLeg
+	// authorizations are unaffected. Not exposed through RunConfig.
+	NonFatalSecondaryLegs bool
+
 	// DeviceCodeInterval is the minimum time a device-flow client must wait
 	// between polls of the token endpoint. If zero, defaults to
 	// oauthserver.DefaultDeviceCodeInterval.

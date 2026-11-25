@@ -173,6 +173,12 @@ more upstream providers:
   storing each provider's tokens under the same user session.
 - Accepts an optional `UpstreamFilter` so the host application can narrow which
   secondary upstreams a user authorizes once the first login resolves.
+- By default any failed leg ends the authorization. With the opt-in
+  `Config.NonFatalSecondaryLegs`, a failed leg after the first (the user
+  cancels consent, the IdP errors, the code exchange fails, or the leg's
+  authorization URL cannot be built) is skipped, logged once at WARN, and the
+  authorization code is issued without it. First-leg failures and
+  browser-binding or state failures always stay fatal.
 
 ### Keys and tokens
 

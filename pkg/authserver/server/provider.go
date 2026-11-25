@@ -250,6 +250,11 @@ type AuthorizationServerConfig struct {
 	// urn:ietf:params:oauth:grant-type:device_code in grant_types_supported,
 	// and POST /oauth/device_authorization is mounted, only when this is true.
 	DeviceFlowEnabled bool
+	// NonFatalSecondaryLegs makes a failed non-first leg of a multi-upstream
+	// authorization chain non-fatal: the callback records the leg as skipped,
+	// continues the walk, and issues the authorization code without it. The first
+	// leg, and every check that ties a callback to its browser, stay fatal.
+	NonFatalSecondaryLegs bool
 	// DeviceCodeInterval is the minimum time a device-flow client must wait
 	// between polls of the token endpoint (RFC 8628 Section 3.5), and the
 	// value advertised in the device authorization response's "interval"
@@ -384,6 +389,9 @@ type AuthorizationServerParams struct {
 	// grant should be registered and advertised. See AuthorizationServerConfig's
 	// field of the same name.
 	DeviceFlowEnabled bool
+	// NonFatalSecondaryLegs makes a failed non-first chain leg non-fatal. See
+	// AuthorizationServerConfig's field of the same name.
+	NonFatalSecondaryLegs bool
 	// DeviceCodeInterval is the minimum time a device-flow client must wait
 	// between polls of the token endpoint. See AuthorizationServerConfig's
 	// field of the same name.
@@ -684,6 +692,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     cfg.JWTBearerGrantEnabled,
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
+		NonFatalSecondaryLegs:                     cfg.NonFatalSecondaryLegs,
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      cfg.SPIFFEClientResolver,
 		SPIFFEX509BundleSource:                    cfg.SPIFFEX509BundleSource,

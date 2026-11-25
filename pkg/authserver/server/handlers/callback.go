@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/ory/fosite"
@@ -227,6 +228,14 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This ensures OIDC nonce validation cannot be accidentally skipped.
 	result, err := upstreamProvider.ExchangeCodeForIdentity(ctx, code, pending.UpstreamPKCEVerifier, pending.UpstreamNonce)
 	if err != nil {
+		if h.canSkipCallbackLeg(pending) {
+			// The detail may echo the upstream's response, so it stays at DEBUG; the
+			// skip itself is the operator-visible WARN.
+			slog.Debug("skippable chain leg failed to exchange code or resolve identity",
+				"provider", pending.UpstreamProviderName, "error", err)
+			h.skipFailedCallbackLeg(ctx, w, req, ar, pending, legFailureCodeExchange)
+			return
+		}
 		slog.Error("failed to exchange code or resolve identity",
 			"error", err,
 		)
@@ -770,6 +779,10 @@ func (h *Handler) handleUpstreamError(
 				writePendingClientError(w, pending.ClientID, clientErr)
 				return
 			}
+			if ar != nil && h.canSkipCallbackLeg(pending) {
+				h.skipFailedCallbackLeg(ctx, w, req, ar, pending, legFailureIdPError)
+				return
+			}
 			if ar != nil {
 				// Use generic error hint to avoid exposing upstream IDP details to clients.
 				// Detailed error information is logged above for server-side diagnostics.
@@ -846,7 +859,9 @@ func (h *Handler) cleanupUpstreamTokens(ctx context.Context, sessionID string, p
 // continueChainOrComplete checks whether all upstream providers in the authorization
 // chain have been satisfied. If so, it issues the authorization code and redirects
 // to the client. If not, it redirects to the next upstream provider to continue
-// the chain. Called after StoreUpstreamTokens succeeds for each leg.
+// the chain. Called after StoreUpstreamTokens succeeds for each leg, and, under
+// NonFatalSecondaryLegs, after a non-first leg fails and is skipped (see
+// skipFailedCallbackLeg). Legs in pending.SkippedUpstreams count as done.
 func (h *Handler) continueChainOrComplete(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -898,44 +913,101 @@ func (h *Handler) continueChainOrComplete(
 		return
 	}
 
-	nextProvider, err := h.nextMissingUpstream(ctx, sessionID, chain)
-	if err != nil {
-		slog.Error("failed to determine next upstream", "error", err)
-		// Preserve upstream tokens: a transient chain-state read failure does not
-		// invalidate the credentials collected so far. Fail authorization without deleting.
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to check authorization chain state"))
-		return
-	}
-
-	if nextProvider == "" {
-		if err := h.verifyChainIdentity(ctx, sessionID, chain, subject); err != nil {
-			// verifyChainIdentity already logged the specific cause. It fails for two very
-			// different reasons, and only one warrants deleting tokens:
-			//   - a CONFIRMED identity mismatch: the session's stored state is no longer
-			//     trustworthy, so fail closed and tear down the whole chain. This is the
-			//     ONLY path in the callback that deletes upstream tokens.
-			//   - a transient GetAllUpstreamTokens read failure: nothing is proven wrong,
-			//     so preserve every credential and just fail this authorization.
-			if errors.Is(err, errChainIdentityMismatch) {
-				h.cleanupUpstreamTokens(ctx, sessionID, chain)
-			}
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
+	// Walk to the next missing leg. A leg whose authorization URL cannot be built is
+	// skipped when canSkipLeg allows it, and the walk moves on to the leg after it;
+	// skipped only grows by distinct chain members, so the loop ends.
+	skipped := slices.Clone(pending.SkippedUpstreams)
+	for {
+		nextProvider, err := h.nextMissingUpstream(ctx, sessionID, chain, skipped)
+		if err != nil {
+			slog.Error("failed to determine next upstream", "error", err)
+			// Preserve upstream tokens: a transient chain-state read failure does not
+			// invalidate the credentials collected so far. Fail authorization without deleting.
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to check authorization chain state"))
 			return
 		}
-
-		// All upstreams satisfied — issue authorization code
-		if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
-			slog.Error("failed to create authorization response", "error", err)
-			// Preserve upstream tokens: the chain is complete and identity-verified, so the
-			// credentials are valid. Only the downstream response write failed (client
-			// lookup / redirect parse / code generation), which does not invalidate them —
-			// matching the SingleLeg branch, which preserves tokens for this same class.
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
+		if nextProvider == "" {
+			h.completeChain(ctx, w, ar, pending, sessionID, chain, subject, name, email)
+			return
 		}
+		if h.redirectToNextLeg(ctx, w, req, ar, pending, nextLeg{
+			provider:  nextProvider,
+			sessionID: sessionID,
+			chain:     chain,
+			skipped:   skipped,
+			subject:   subject,
+			name:      name,
+			email:     email,
+		}) {
+			return
+		}
+		logSkippedLeg(nextProvider, legFailureAuthorizationURL)
+		skipped = append(skipped, nextProvider)
+	}
+}
+
+// completeChain runs once every leg of the chain is satisfied or skipped: it
+// cross-checks the first leg's identity and issues the authorization code.
+func (h *Handler) completeChain(
+	ctx context.Context,
+	w http.ResponseWriter,
+	ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization,
+	sessionID string,
+	chain []string,
+	subject, name, email string,
+) {
+	if err := h.verifyChainIdentity(ctx, sessionID, chain, subject); err != nil {
+		// verifyChainIdentity already logged the specific cause. It fails for two very
+		// different reasons, and only one warrants deleting tokens:
+		//   - a CONFIRMED identity mismatch: the session's stored state is no longer
+		//     trustworthy, so fail closed and tear down the whole chain. This is the
+		//     ONLY path in the callback that deletes upstream tokens.
+		//   - a transient GetAllUpstreamTokens read failure: nothing is proven wrong,
+		//     so preserve every credential and just fail this authorization.
+		if errors.Is(err, errChainIdentityMismatch) {
+			h.cleanupUpstreamTokens(ctx, sessionID, chain)
+		}
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
 		return
 	}
 
-	// Chain continues — redirect to next upstream.
+	// All upstreams satisfied — issue authorization code
+	if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
+		slog.Error("failed to create authorization response", "error", err)
+		// Preserve upstream tokens: the chain is complete and identity-verified, so the
+		// credentials are valid. Only the downstream response write failed (client
+		// lookup / redirect parse / code generation), which does not invalidate them —
+		// matching the SingleLeg branch, which preserves tokens for this same class.
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
+	}
+}
+
+// nextLeg is the chain state redirectToNextLeg carries into the next leg's
+// pending authorization.
+type nextLeg struct {
+	provider  string
+	sessionID string
+	chain     []string
+	skipped   []string
+	subject   string
+	name      string
+	email     string
+}
+
+// redirectToNextLeg stores the pending authorization for next.provider and
+// redirects the browser to that upstream. It returns true when it has written a
+// response, either the redirect or an error. It returns false, having written
+// nothing and left no pending behind, only when the leg's authorization URL could
+// not be built and canSkipLeg allows skipping it; the caller then moves on.
+func (h *Handler) redirectToNextLeg(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req *http.Request,
+	ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization,
+	next nextLeg,
+) bool {
 	// TODO: If the user abandons the flow here (closes browser), upstream tokens from
 	// completed legs remain in storage until their TTL expires. Add cascading cleanup
 	// when pending authorizations expire to also delete associated upstream tokens.
@@ -962,15 +1034,17 @@ func (h *Handler) continueChainOrComplete(
 		UpstreamNonce:        secrets.Nonce,
 		BrowserBindingHash:   binding.hash,
 		// Chain state
-		UpstreamProviderName: nextProvider,
-		SessionID:            sessionID,
+		UpstreamProviderName: next.provider,
+		SessionID:            next.sessionID,
 		// Carry the effective chain forward so the filter is computed once, on the
 		// first leg, and reused for every subsequent leg.
-		ChainUpstreams: chain,
+		ChainUpstreams: next.chain,
+		// Carry the legs skipped so far so they are not prompted again.
+		SkippedUpstreams: slices.Clone(next.skipped),
 		// Carry resolved identity from first leg
-		ResolvedUserID:    subject,
-		ResolvedUserName:  name,
-		ResolvedUserEmail: email,
+		ResolvedUserID:    next.subject,
+		ResolvedUserName:  next.name,
+		ResolvedUserEmail: next.email,
 		VerifiedUpstream:  pending.VerifiedUpstream,
 		CreatedAt:         pending.CreatedAt,
 	}
@@ -980,7 +1054,7 @@ func (h *Handler) continueChainOrComplete(
 		// Preserve upstream tokens: failing to persist the next leg's pending does not
 		// invalidate the credentials collected so far. Fail authorization without deleting.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to continue authorization chain"))
-		return
+		return true
 	}
 
 	// Build authorization URL for next upstream
@@ -988,23 +1062,30 @@ func (h *Handler) continueChainOrComplete(
 	if secrets.Nonce != "" {
 		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
 	}
-	nextUpstream, ok := h.upstreamByName(nextProvider)
+	nextUpstream, ok := h.upstreamByName(next.provider)
 	if !ok {
-		slog.Error("next upstream provider not found", "provider", nextProvider)
+		slog.Error("next upstream provider not found", "provider", next.provider)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
 		// Preserve upstream tokens: a next-provider configuration error does not invalidate
 		// the credentials collected so far. Fail authorization without deleting.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider configuration error"))
-		return
+		return true
 	}
 	nextURL, err := nextUpstream.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
-		slog.Error("failed to build next upstream authorization URL", "error", err)
+		// Best effort: the pending is unreachable without the URL that carries its
+		// state, and storage expires it at its TTL if this delete fails.
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
+		if h.canSkipLeg(pending, next.provider) {
+			slog.Debug("skippable chain leg failed to build its authorization URL",
+				"provider", next.provider, "error", err)
+			return false
+		}
+		slog.Error("failed to build next upstream authorization URL", "error", err)
 		// Preserve upstream tokens: failing to build the next leg's authorization URL does
 		// not invalidate the credentials collected so far. Fail authorization without deleting.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
-		return
+		return true
 	}
 
 	// Fresh binding for the fresh state: the same browser must also complete
@@ -1013,6 +1094,66 @@ func (h *Handler) continueChainOrComplete(
 	// left to expire.
 	h.setBrowserBindingCookie(w, secrets.State, binding.value)
 	http.Redirect(w, req, nextURL, http.StatusFound)
+	return true
+}
+
+// Failure classes logged when a non-first chain leg is skipped under
+// NonFatalSecondaryLegs.
+const (
+	// legFailureIdPError is an error the upstream IdP returned in place of a code.
+	legFailureIdPError = "idp_error"
+	// legFailureCodeExchange is a failed code exchange or ID-token validation.
+	legFailureCodeExchange = "code_exchange"
+	// legFailureAuthorizationURL is a failure to build the leg's authorization URL.
+	legFailureAuthorizationURL = "authorization_url"
+)
+
+// canSkipLeg reports whether a failure of provider may be skipped in the walk
+// pending belongs to: NonFatalSecondaryLegs is set, the authorization is a chain
+// walk rather than a SingleLeg one, and provider is not the first (identity)
+// upstream. Checks that tie a callback to its browser run before any caller asks.
+func (h *Handler) canSkipLeg(pending *storage.PendingAuthorization, provider string) bool {
+	return h.config.NonFatalSecondaryLegs && !pending.SingleLeg && provider != h.upstreams[0].Name
+}
+
+// canSkipCallbackLeg reports whether a failure on the callback for pending's own
+// leg may be skipped. On top of canSkipLeg, the pending must belong to a
+// subsequent leg (the first leg has resolved the user), so a callback that would
+// establish the user is always fatal.
+func (h *Handler) canSkipCallbackLeg(pending *storage.PendingAuthorization) bool {
+	return pending.ResolvedUserID != "" && h.canSkipLeg(pending, pending.UpstreamProviderName)
+}
+
+// skipFailedCallbackLeg records pending's own leg as skipped and continues the
+// walk from it, as a successful callback for that leg would, minus the token. The
+// pending has already been loaded, bound to this browser, and consumed.
+func (h *Handler) skipFailedCallbackLeg(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req *http.Request,
+	ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization,
+	failureClass string,
+) {
+	logSkippedLeg(pending.UpstreamProviderName, failureClass)
+	next := *pending
+	next.SkippedUpstreams = append(slices.Clone(pending.SkippedUpstreams), pending.UpstreamProviderName)
+	// Mirror CallbackHandler: chain-state storage reads resolve the user from context.
+	ctx = serveridentity.WithCanonicalUser(ctx, pending.ResolvedUserID)
+	h.continueChainOrComplete(ctx, w, req, ar, &next, pending.SessionID, filterPrincipal{
+		canonicalUserID: pending.ResolvedUserID,
+		name:            pending.ResolvedUserName,
+		email:           pending.ResolvedUserEmail,
+	})
+}
+
+// logSkippedLeg is the one WARN line for a skipped leg. It names the provider and
+// the failure class only: never a token, code, or user value.
+func logSkippedLeg(provider, failureClass string) {
+	slog.Warn("skipping failed upstream chain leg", //nolint:gosec // G706 - provider name from server-side chain state
+		"provider", provider,
+		"failure_class", failureClass,
+	)
 }
 
 // errChainIdentityMismatch marks the defense-in-depth failure where a chain's first

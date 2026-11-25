@@ -438,6 +438,15 @@ type PendingAuthorization struct {
 	// than recomputed, so the filter is never re-run against a later leg's context.
 	ChainUpstreams []string
 
+	// SkippedUpstreams names the non-first legs of ChainUpstreams that failed earlier
+	// in this walk and were skipped because the authorization server is configured
+	// with NonFatalSecondaryLegs. The walk does not prompt for them again, even
+	// though they still have no satisfying token. It is always a subset of
+	// ChainUpstreams that never contains the first upstream; a pending that breaks
+	// that rule is rejected as stale or tampered. Empty when no leg was skipped,
+	// including every pending written before this field existed.
+	SkippedUpstreams []string
+
 	// CreatedAt is when the pending authorization was created. It must be set on
 	// the first leg and preserved across subsequent legs; storage expires the
 	// request at CreatedAt + DefaultPendingAuthorizationTTL.

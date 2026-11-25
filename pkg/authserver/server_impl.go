@@ -237,6 +237,7 @@ func authorizationServerParams(
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
+		NonFatalSecondaryLegs:                     cfg.NonFatalSecondaryLegs,
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry),
 		SPIFFEX509BundleSource:                    spiffeX509BundleSource(bundleSource),

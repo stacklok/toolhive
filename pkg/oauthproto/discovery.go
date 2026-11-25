@@ -212,7 +212,9 @@ func buildDiscoveryHTTPClient(client *http.Client) *http.Client {
 // discovery document URL (for example a multi-tenant IdP that does not
 // advertise the tenant-aware path at {issuer}/.well-known/...). The same
 // RFC 8414 §3.3 issuer-equality check is enforced: the returned metadata's
-// issuer field must exactly match the caller-supplied expectedIssuer.
+// issuer field must match the caller-supplied expectedIssuer byte for byte,
+// except that an origin-only issuer may differ by a trailing "/" (see
+// issuersEqual).
 //
 // If client is nil, the same bounded default client used by
 // FetchAuthorizationServerMetadata is constructed. A 10 s per-call timeout
@@ -313,12 +315,35 @@ func fetchDiscoveryDocument(
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	// RFC 8414 §3.3: the issuer in the metadata MUST exactly match the caller's expected issuer.
-	if metadata.Issuer != expectedIssuer {
+	// RFC 8414 §3.3: the issuer in the metadata MUST match the caller's expected issuer.
+	if !issuersEqual(expectedIssuer, metadata.Issuer) {
 		return nil, fmt.Errorf("issuer mismatch (RFC 8414 §3.3): expected %q, got %q", expectedIssuer, metadata.Issuer)
 	}
 
 	return &metadata, nil
+}
+
+// issuersEqual reports whether expected and got are the same issuer under
+// RFC 8414 §3.3. The comparison is byte-exact except that an origin-only issuer
+// may be written with an empty path or "/" (RFC 3986 §6.2.3), because servers
+// built on FastMCP's OAuth proxy publish "https://host/" for a root deployment.
+// Scheme, host and port must still match exactly, and an issuer with a path
+// keeps byte-exact equality, including any trailing slash, so the relaxation
+// does not weaken mix-up protection.
+func issuersEqual(expected, got string) bool {
+	if expected == got {
+		return true
+	}
+	e, errE := url.Parse(expected)
+	g, errG := url.Parse(got)
+	if errE != nil || errG != nil {
+		return false
+	}
+	originOnly := func(u *url.URL) bool {
+		return u.Host != "" && (u.Path == "" || u.Path == "/") &&
+			u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.User == nil && u.Opaque == ""
+	}
+	return originOnly(e) && originOnly(g) && e.Scheme == g.Scheme && e.Host == g.Host
 }
 
 // AuthorizationServerMetadata represents the OAuth 2.0 Authorization Server Metadata

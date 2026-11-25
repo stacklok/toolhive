@@ -2081,7 +2081,12 @@ under JSON case folding (the folding `encoding/json` uses to match struct
 fields), values over 64 KiB, and nesting deeper than 64 containers.
 
 Each type's `Grant` hook runs once per request, with all of that type's entries
-and the request context. Token issuance comes last, so hooks are decide-only: a
+and the request context. The `Request` holds what every grant has (`Entries`,
+`GrantType`, `ClientID`, `GrantedAudience`, `Subject`) at the top level. What
+only one grant has is in its own part, nil on the other grant: `Exchange`
+(`Actor`, `ActorTokenPresent`, `RequestedTokenType`, `RequestedScopes`) on
+token exchange, and `Redemption` (`ResolvedUser`) on ID-JAG redemption. A hook
+checks that a part is not nil before reading it. Token issuance comes last, so hooks are decide-only: a
 hook may read state but must not commit it, because the request can still fail
 after a hook returns. On ID-JAG redemption the ID-JAG is consumed after the
 hooks run, so a hook can run again for the same ID-JAG when a later redemption
@@ -2162,11 +2167,10 @@ steps:
    fit the generic shape above is `malformed_entry`.
 4. **The hooks decide.** The hook `Request` holds the authenticated client in
    `ClientID`, the granted resource in `GrantedAudience`, and the ID-JAG in
-   `Subject`: `Subject.Subject` is the ID-JAG's `sub`, `External` is true, and
-   `ResolvedUser` is the local user for a `resolve` issuer (empty for a
-   namespaced one, and not reachable while the gate is closed; see "The
-   gate"). The token-exchange fields (`Actor`, `ActorTokenPresent`,
-   `RequestedTokenType`, `RequestedScopes`) are empty. A hook's
+   `Subject`: `Subject.Subject` is the ID-JAG's `sub` and `External` is true.
+   `Redemption` is set and `Exchange` is nil. `Redemption.ResolvedUser` is the
+   local user for a `resolve` issuer (empty for a namespaced one, and not
+   reachable while the gate is closed; see "The gate"). A hook's
    `authorizationdetails.Error` passes through with its code and reason.
 5. **Hooks keep or drop whole signed entries.** The entries come from
    `Pending.GrantSubset`. A hook returns the entries it keeps exactly as it
@@ -2282,7 +2286,9 @@ the arguments are absent or `null`. Nothing registers it by default; an embedder
 adds it with `toolcalldetails.Register` to the types passed to
 `authorizationdetails.New`. It is registered for token exchange and JWT-bearer.
 On token exchange its hook refuses any request whose `requested_token_type` is
-not the ID-JAG type, with `invalid_request` and `id_jag_required`. Requests for
+not the ID-JAG type, with `invalid_request` and `id_jag_required`; it refuses
+the same way a request that carries neither the `Exchange` nor the
+`Redemption` part. Requests for
 an ID-JAG still refuse the parameter, so ToolHive does not yet sign the entry
 into an ID-JAG it issues. On ID-JAG redemption, an entry signed by a trusted
 issuer goes through the same hook and, once granted, is in the issued access

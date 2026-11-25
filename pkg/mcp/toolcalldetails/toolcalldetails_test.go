@@ -38,15 +38,22 @@ func replace(entry, old, replacement string) string {
 func TestRegister_Validation(t *testing.T) {
 	t.Parallel()
 	registry := newRegistry(t)
-	idJAG := authorizationdetails.Request{RequestedTokenType: oauthproto.TokenTypeIDJAG}
+	exchange := func(tokenType string) authorizationdetails.Request {
+		return authorizationdetails.Request{Exchange: &authorizationdetails.ExchangeContext{RequestedTokenType: tokenType}}
+	}
+	idJAG := exchange(oauthproto.TokenTypeIDJAG)
+	redemption := authorizationdetails.Request{Redemption: &authorizationdetails.RedemptionContext{}}
 
 	tests := []struct {
 		name      string
 		value     string
 		grantType string
-		req       authorizationdetails.Request
-		code      authorizationdetails.ErrorCode
-		reason    string
+		// req is the hook request; on JWT-bearer rows it defaults to an ID-JAG
+		// redemption unless bare is set.
+		req    authorizationdetails.Request
+		bare   bool
+		code   authorizationdetails.ErrorCode
+		reason string
 	}{
 		{name: "tool call on JWT-bearer", value: "[" + toolCall + "]"},
 		{name: "list call on JWT-bearer", value: "[" + listCall + "]"},
@@ -66,7 +73,7 @@ func TestRegister_Validation(t *testing.T) {
 			name:      "token exchange for an access token",
 			value:     "[" + toolCall + "]",
 			grantType: oauthproto.GrantTypeTokenExchange,
-			req:       authorizationdetails.Request{RequestedTokenType: oauthproto.TokenTypeAccessToken},
+			req:       exchange(oauthproto.TokenTypeAccessToken),
 			code:      authorizationdetails.CodeInvalidRequest,
 			reason:    ReasonIDJAGRequired,
 		},
@@ -74,7 +81,7 @@ func TestRegister_Validation(t *testing.T) {
 			name:      "token exchange for a refresh token",
 			value:     "[" + listCall + "]",
 			grantType: oauthproto.GrantTypeTokenExchange,
-			req:       authorizationdetails.Request{RequestedTokenType: oauthproto.TokenTypeRefreshToken},
+			req:       exchange(oauthproto.TokenTypeRefreshToken),
 			code:      authorizationdetails.CodeInvalidRequest,
 			reason:    ReasonIDJAGRequired,
 		},
@@ -82,8 +89,23 @@ func TestRegister_Validation(t *testing.T) {
 			name:      "token exchange without requested_token_type",
 			value:     "[" + toolCall + "]",
 			grantType: oauthproto.GrantTypeTokenExchange,
+			req:       exchange(""),
 			code:      authorizationdetails.CodeInvalidRequest,
 			reason:    ReasonIDJAGRequired,
+		},
+		{
+			name:      "token exchange without its exchange part",
+			value:     "[" + toolCall + "]",
+			grantType: oauthproto.GrantTypeTokenExchange,
+			code:      authorizationdetails.CodeInvalidRequest,
+			reason:    ReasonIDJAGRequired,
+		},
+		{
+			name:   "JWT-bearer without its redemption part",
+			value:  "[" + toolCall + "]",
+			bare:   true,
+			code:   authorizationdetails.CodeInvalidRequest,
+			reason: ReasonIDJAGRequired,
 		},
 		{name: "second entry", value: "[" + listCall + "," + listCall + "]", reason: ReasonSingleEntry},
 		{
@@ -138,12 +160,16 @@ func TestRegister_Validation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			grantType := tt.grantType
+			req := tt.req
 			if grantType == "" {
 				grantType = oauthproto.GrantTypeJWTBearer
+				if !tt.bare {
+					req = redemption
+				}
 			}
 			pending, err := registry.Parse(tt.value, grantType)
 			require.NoError(t, err)
-			granted, err := pending.Grant(context.Background(), tt.req)
+			granted, err := pending.Grant(context.Background(), req)
 			if tt.reason == "" {
 				require.NoError(t, err)
 				assert.JSONEq(t, tt.value, string(granted), "the entry must be granted unchanged")

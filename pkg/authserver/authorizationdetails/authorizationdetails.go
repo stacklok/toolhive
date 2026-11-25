@@ -64,54 +64,71 @@ type Type struct {
 // Request is the context a Grant hook receives. The caller supplies every
 // field except Entries and GrantType, which the package fills.
 //
-// All hooks of one request share the same Request values: the slices, Subject
-// and Subject.Claims are not copied per hook, so a hook must not modify them.
-// Only Entries is specific to the hook's type.
+// The fields every grant fills are at the top level. What only one grant has
+// is in its own part: Exchange on token exchange and Redemption on ID-JAG
+// redemption, each nil on the other grant. A hook reads a grant's fields only
+// after checking that its part is not nil, so an empty field is never mistaken
+// for one that does not apply.
+//
+// All hooks of one request share the same Request values: the slices, the
+// parts, Subject and Subject.Claims are not copied per hook, so a hook must not
+// modify them. Only Entries is specific to the hook's type.
 type Request struct {
 	// Entries holds this type's entries in request order.
 	Entries []json.RawMessage
 	// GrantType is the grant type of the token request.
 	GrantType string
-	// ClientID is the authenticated client on token exchange and on ID-JAG
-	// redemption.
+	// ClientID is the authenticated client.
 	ClientID string
-	// Actor is the resolved actor. Without an actor_token it equals ClientID, or
-	// the verified SPIFFE ID for a SPIFFE client. Token exchange only: empty on
-	// ID-JAG redemption.
-	Actor string
-	// ActorTokenPresent reports whether the request carried an actor_token.
-	// Token exchange only.
-	ActorTokenPresent bool
-	// RequestedTokenType is the requested_token_type of the request. Token
-	// exchange only: empty on ID-JAG redemption, so a hook registered for both
-	// grants branches on GrantType before reading it.
-	RequestedTokenType string
-	// RequestedScopes are the scopes the client asked for. Token exchange only.
-	RequestedScopes []string
-	// GrantedAudience is the audience the server has already decided to grant.
-	// On ID-JAG redemption it is the granted resource.
+	// GrantedAudience is the audience the server has already decided to grant:
+	// on token exchange the audience of the token being issued, and on ID-JAG
+	// redemption the one resource the issued token is for.
 	GrantedAudience []string
-	// Subject describes the validated subject token.
+	// Subject describes the validated token the request is about: the
+	// subject_token on token exchange, and the ID-JAG on ID-JAG redemption.
 	Subject Subject
+	// Exchange holds what only token exchange has. It is set on token exchange
+	// and nil otherwise.
+	Exchange *ExchangeContext
+	// Redemption holds what only ID-JAG redemption has. It is set on ID-JAG
+	// redemption, which rides the JWT-bearer grant, and nil otherwise.
+	Redemption *RedemptionContext
 }
 
-// Subject describes a validated subject token. On ID-JAG redemption it
-// describes the validated ID-JAG.
+// ExchangeContext is the part of a Request only RFC 8693 token exchange has.
+type ExchangeContext struct {
+	// Actor is the resolved actor. Without an actor_token it equals the
+	// client ID, or the verified SPIFFE ID for a SPIFFE client.
+	Actor string
+	// ActorTokenPresent reports whether the request carried an actor_token.
+	ActorTokenPresent bool
+	// RequestedTokenType is the requested_token_type of the request.
+	RequestedTokenType string
+	// RequestedScopes are the scopes the client asked for.
+	RequestedScopes []string
+}
+
+// RedemptionContext is the part of a Request only ID-JAG redemption has.
+type RedemptionContext struct {
+	// ResolvedUser is the local user the redemption resolved the ID-JAG's
+	// subject to. It is set for an issuer with subject_mode resolve and empty
+	// for a namespaced one, whose token subject is <issuer>#<sub>.
+	ResolvedUser string
+}
+
+// Subject describes a validated token: the subject_token on token exchange,
+// the ID-JAG on ID-JAG redemption.
 type Subject struct {
 	Issuer string
 	// Subject is the token's sub claim, on every grant. It is never replaced by
-	// a resolved local user; see ResolvedUser.
-	Subject string
-	// ResolvedUser is the local user this request resolved the subject to. It
-	// is set only on an ID-JAG redemption from an issuer with subject_mode
-	// resolve, and is empty otherwise, including on token exchange.
-	ResolvedUser string
-	ClientID     string
-	JWTID        string
-	Audience     []string
-	IssuedAt     time.Time
-	Expiry       time.Time
-	External     bool // validated through a trusted issuer
+	// a resolved local user; see RedemptionContext.ResolvedUser.
+	Subject  string
+	ClientID string
+	JWTID    string
+	Audience []string
+	IssuedAt time.Time
+	Expiry   time.Time
+	External bool // validated through a trusted issuer
 	// Claims holds the verified claims, passed to hooks as given, except
 	// authorization_details: a hook reads the entries from Request.Entries,
 	// which keep every digit of a number.

@@ -70,7 +70,7 @@ type redemption struct {
 	carryAct bool
 	// resolvedUser is the local user a resolve issuer's subject resolved to,
 	// empty for a namespaced redemption. Grant hooks see it as
-	// Subject.ResolvedUser.
+	// Redemption.ResolvedUser.
 	resolvedUser string
 	// delegatedAccess is set only for a resolved redemption from a resolve
 	// issuer. The session builder stamps the delegated-access marker and the

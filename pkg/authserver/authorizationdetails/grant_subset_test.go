@@ -238,3 +238,32 @@ func TestPending_GrantSubset_PlainHookErrorIsInternal(t *testing.T) {
 	var typed Error
 	assert.False(t, errors.As(err, &typed))
 }
+
+// TestPending_GrantSubset_Request pins what a hook receives: the caller's
+// request with the grant type and its own entries filled in, the redemption
+// part included.
+func TestPending_GrantSubset_Request(t *testing.T) {
+	t.Parallel()
+
+	var got Request
+	registry, err := New(map[string]Type{"a": {
+		GrantTypes: []string{grantTypeRedemption},
+		Grant: func(_ context.Context, req Request) (Result, error) {
+			got = req
+			return Result{Entries: req.Entries}, nil
+		},
+	}})
+	require.NoError(t, err)
+	pending, err := registry.Parse(`[{"type":"a"}]`, grantTypeRedemption)
+	require.NoError(t, err)
+
+	redemption := &RedemptionContext{ResolvedUser: "local-user"}
+	_, err = pending.GrantSubset(context.Background(), Request{ClientID: "client", Redemption: redemption})
+	require.NoError(t, err)
+
+	assert.Equal(t, grantTypeRedemption, got.GrantType)
+	assert.Equal(t, "client", got.ClientID)
+	assert.Equal(t, []json.RawMessage{json.RawMessage(`{"type":"a"}`)}, got.Entries)
+	assert.Nil(t, got.Exchange)
+	assert.Same(t, redemption, got.Redemption)
+}

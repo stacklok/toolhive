@@ -657,10 +657,12 @@ func decideChildEntry(
 	source *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
 ) (json.RawMessage, string, time.Time, error) {
 	granted, err := pending.Grant(ctx, authorizationdetails.Request{
-		ClientID:           clientID,
-		Actor:              clientID,
-		RequestedTokenType: oauthproto.TokenTypeRefreshToken,
-		Subject:            authorizationdetails.Subject{Subject: source.Subject, ClientID: source.ClientID},
+		ClientID: clientID,
+		Subject:  authorizationdetails.Subject{Subject: source.Subject, ClientID: source.ClientID},
+		Exchange: &authorizationdetails.ExchangeContext{
+			Actor:              clientID,
+			RequestedTokenType: oauthproto.TokenTypeRefreshToken,
+		},
 	})
 	if err != nil {
 		return nil, "", time.Time{}, err
@@ -689,10 +691,12 @@ func decideEntry(
 	claims *ValidatedClaims, policy ConfiguredClientPolicy, now time.Time,
 ) (json.RawMessage, string, time.Time, error) {
 	granted, err := pending.Grant(ctx, authorizationdetails.Request{
-		ClientID:           clientID,
-		Actor:              clientID,
-		RequestedTokenType: oauthproto.TokenTypeRefreshToken,
-		Subject:            detailsSubject(claims, ""),
+		ClientID: clientID,
+		Subject:  detailsSubject(claims),
+		Exchange: &authorizationdetails.ExchangeContext{
+			Actor:              clientID,
+			RequestedTokenType: oauthproto.TokenTypeRefreshToken,
+		},
 	})
 	if err != nil {
 		return nil, "", time.Time{}, err

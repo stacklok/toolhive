@@ -129,12 +129,13 @@ func (h *IDJAGHandler) grantSignedDetails(
 		return nil, detailsRefusal(reasonDetailsMalformedEntry)
 	}
 
-	subject := detailsSubject(claims, resolvedUser)
+	subject := detailsSubject(claims)
 	subject.External = true
 	subset, err := pending.GrantSubset(ctx, authorizationdetails.Request{
 		ClientID:        clientID,
 		GrantedAudience: []string{resource},
 		Subject:         subject,
+		Redemption:      &authorizationdetails.RedemptionContext{ResolvedUser: resolvedUser},
 	})
 	if err != nil {
 		return nil, errorsx.WithStack(grantFailure(ctx, clientID, err, level))

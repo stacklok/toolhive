@@ -397,13 +397,15 @@ func TestPending_Grant(t *testing.T) {
 	}
 
 	wantReq := Request{
-		GrantType:          grantTypeExchange,
-		ClientID:           "client",
-		Actor:              "actor",
-		ActorTokenPresent:  true,
-		RequestedTokenType: "urn:ietf:params:oauth:token-type:access_token",
-		RequestedScopes:    []string{"openid"},
-		GrantedAudience:    []string{"https://mcp.example.com"},
+		GrantType:       grantTypeExchange,
+		ClientID:        "client",
+		GrantedAudience: []string{"https://mcp.example.com"},
+		Exchange: &ExchangeContext{
+			Actor:              "actor",
+			ActorTokenPresent:  true,
+			RequestedTokenType: "urn:ietf:params:oauth:token-type:access_token",
+			RequestedScopes:    []string{"openid"},
+		},
 		Subject: Subject{
 			Issuer:   "https://issuer.example.com",
 			Subject:  "user",

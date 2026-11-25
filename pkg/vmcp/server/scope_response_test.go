@@ -4,14 +4,17 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -63,6 +66,10 @@ func TestScopeResponseConfigOwnership(t *testing.T) {
 
 func TestScopeResponseStartupValidation(t *testing.T) {
 	t.Parallel()
+	var optimizerFactoryCalls atomic.Int32
+	t.Cleanup(func() {
+		require.Zero(t, optimizerFactoryCalls.Load(), "startup validation must not invoke the optimizer factory")
+	})
 	for _, tc := range []struct {
 		name    string
 		change  func(*ServerConfig)
@@ -76,6 +83,12 @@ func TestScopeResponseStartupValidation(t *testing.T) {
 		{"invalid resource", func(c *ServerConfig) { c.ScopeChallenge.ResourceURL = "opaque-audience" }, "canonical HTTP(S)"},
 		{"invalid mode", func(c *ServerConfig) { c.ScopeChallenge.ResponseMode = "guess" }, "response mode"},
 		{"optimizer", func(c *ServerConfig) { c.SessionManagerConfig.OptimizerConfig = &optimizer.Config{} }, "optimizer"},
+		{"optimizer factory", func(c *ServerConfig) {
+			c.SessionManagerConfig.OptimizerFactory = func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error) {
+				optimizerFactoryCalls.Add(1)
+				return nil, nil
+			}
+		}, "optimizer"},
 		{"invalid profile", func(c *ServerConfig) { c.ScopeChallenge.ToolResultClients = []ScopeClientProfile{{Name: "fixture"}} }, "profiles"},
 		{"duplicate profile", func(c *ServerConfig) {
 			c.ScopeChallenge.ToolResultClients = []ScopeClientProfile{{Name: "fixture", Version: "1"}, {Name: "fixture", Version: "1"}}

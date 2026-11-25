@@ -24,7 +24,7 @@ import (
 func TestScopeChallengeMixedClientsHTTPIntegration(t *testing.T) {
 	t.Parallel()
 	var backendCalls atomic.Int32
-	backendURL := startRealMCPBackendWithToolDelay(t, 0, func() { backendCalls.Add(1) })
+	backendURL := startEchoPingBackend(t, func() { backendCalls.Add(1) })
 	known := server.ScopeClientProfile{Name: "compat-fixture", Version: "1.2.3"}
 	unknown := server.ScopeClientProfile{Name: "standard-fixture", Version: "1.2.3"}
 	// These headers model an already validated identity. This test exercises
@@ -35,8 +35,16 @@ func TestScopeChallengeMixedClientsHTTPIntegration(t *testing.T) {
 			if principal == "" {
 				principal = "user-123"
 			}
+			// Encode fixture claims as JSON so malformed claim types can also be tested.
+			var scopeClaim any
+			if encoded := r.Header.Get("X-Test-Scope"); encoded != "" {
+				if err := json.Unmarshal([]byte(encoded), &scopeClaim); err != nil {
+					http.Error(w, "invalid fixture scope claim", http.StatusBadRequest)
+					return
+				}
+			}
 			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: principal, Claims: map[string]any{
-				"iss": "https://issuer.example.com", "sub": principal, "scope": r.Header.Get("X-Test-Scope"),
+				"iss": "https://issuer.example.com", "sub": principal, "scope": scopeClaim,
 			}}}
 			next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), identity)))
 		})
@@ -49,7 +57,7 @@ func TestScopeChallengeMixedClientsHTTPIntegration(t *testing.T) {
 		cfg.AuthInfoHandler = auth.NewAuthInfoHandler("https://issuer.example.com", cfg.ScopeChallenge.ResourceURL, nil)
 	})
 	client := &http.Client{Timeout: 10 * time.Second}
-	request := func(t *testing.T, method string, params map[string]any, sessionID, scope, principal string, modern bool) (int, http.Header, string) {
+	request := func(t *testing.T, method string, params map[string]any, sessionID string, scope any, principal string, modern bool) (int, http.Header, string) {
 		t.Helper()
 		body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 19, "method": method, "params": params})
 		require.NoError(t, err)
@@ -57,7 +65,9 @@ func TestScopeChallengeMixedClientsHTTPIntegration(t *testing.T) {
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
-		req.Header.Set("X-Test-Scope", scope)
+		encodedScope, err := json.Marshal(scope)
+		require.NoError(t, err)
+		req.Header.Set("X-Test-Scope", string(encodedScope))
 		req.Header.Set("X-Test-Principal", principal)
 		if modern {
 			req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
@@ -128,6 +138,55 @@ func TestScopeChallengeMixedClientsHTTPIntegration(t *testing.T) {
 		require.Equal(t, http.StatusOK, status, body)
 		require.Contains(t, body, `"echo"`, "missing upgradeable scopes must not hide the tool")
 		require.Contains(t, body, "securitySchemes", "discovery is independent of the client's encoding")
+	}
+	// Modern discovery must annotate mapped tools at the wire boundary, even
+	// before the caller has the required grants, without annotating other tools.
+	for _, profile := range []server.ScopeClientProfile{known, unknown} {
+		status, _, body := request(t, "tools/list", map[string]any{"_meta": map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    mcpparser.MCPVersionModern,
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+			"io.modelcontextprotocol/clientInfo": map[string]any{
+				"name": profile.Name, "version": profile.Version,
+			},
+		}}, "", "", "", true)
+		require.Equal(t, http.StatusOK, status, body)
+		var envelope struct {
+			Result struct {
+				Tools []struct {
+					Name string                     `json:"name"`
+					Meta map[string]json.RawMessage `json:"_meta"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &envelope))
+		require.Len(t, envelope.Result.Tools, 2)
+		var names []string
+		for _, tool := range envelope.Result.Tools {
+			names = append(names, tool.Name)
+			if tool.Name == "echo" {
+				var schemes []struct {
+					Type   string   `json:"type"`
+					Scopes []string `json:"scopes"`
+				}
+				require.NoError(t, json.Unmarshal(tool.Meta["securitySchemes"], &schemes))
+				require.Len(t, schemes, 1)
+				require.Equal(t, "oauth2", schemes[0].Type)
+				require.Equal(t, []string{"mcp.write"}, schemes[0].Scopes)
+			} else {
+				require.Equal(t, "ping", tool.Name)
+				require.NotContains(t, tool.Meta, "securitySchemes")
+			}
+		}
+		require.ElementsMatch(t, []string{"echo", "ping"}, names)
+	}
+	// No Cedar policy is configured: ordinary scope-claim failures must still
+	// be HTTP 403, including for a client that uses tool-result scope upgrades.
+	for _, id := range []string{knownSession, unknownSession} {
+		status, headers, body := request(t, "tools/call", callParams(nil, false), id, 17, "", false)
+		require.Equal(t, http.StatusForbidden, status, body)
+		require.Contains(t, body, vmcp.DenyMessageToolCall)
+		require.Empty(t, headers.Get("WWW-Authenticate"))
+		require.NotContains(t, body, "mcp/www_authenticate")
 	}
 	require.Zero(t, backendCalls.Load(), "scope refusals must not execute backend tools")
 	for _, tc := range []struct {

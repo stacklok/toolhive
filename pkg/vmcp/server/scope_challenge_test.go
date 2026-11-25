@@ -4,7 +4,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -137,30 +136,121 @@ func TestScopeChallengeMetadataAndDiscovery(t *testing.T) {
 	require.NotPanics(t, func() { (&Server{}).annotateScopeTool(&mcp.Tool{}) })
 }
 
+func TestScopeChallengeLegacyOrdinaryDenial(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"http", "tool-result", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			fc := &modernFakeCore{checkToolErr: fmt.Errorf("wrapped: %w", vmcp.ErrAuthorizationFailed)}
+			s := &Server{core: fc, config: scopeChallengeFixture(mode)}
+			nextCalled := false
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true })
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+				`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`))
+			rec := httptest.NewRecorder()
+			mcpparser.ParsingMiddleware(s.scopeChallengeMiddleware(next)).ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusForbidden, rec.Code)
+			require.Empty(t, rec.Header().Get("WWW-Authenticate"))
+			require.NotContains(t, rec.Body.String(), "mcp/www_authenticate")
+			require.True(t, fc.checkCalled)
+			require.False(t, fc.callCalled)
+			require.False(t, nextCalled, "ordinary denial must be rendered before SDK dispatch")
+			var envelope struct {
+				ID    int `json:"id"`
+				Error struct {
+					Code int `json:"code"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &envelope))
+			require.Equal(t, 1, envelope.ID)
+			require.Equal(t, http.StatusForbidden, envelope.Error.Code)
+		})
+	}
+}
+
 func TestScopeChallengeProtocolValidationPrecedesChallenge(t *testing.T) {
 	t.Parallel()
-	for _, body := range []string{
-		`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo"}}`,
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":[]}}`,
+	const toolCall = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
+	for _, tc := range []struct {
+		name       string
+		method     string
+		body       string
+		disabled   bool
+		skipParser bool
+		wantStatus int
+		wantNext   bool
+	}{
+		{
+			name: "disabled scope policy", method: http.MethodPost, body: toolCall,
+			disabled: true, wantStatus: http.StatusAccepted, wantNext: true,
+		},
+		{
+			name: "GET", method: http.MethodGet,
+			wantStatus: http.StatusAccepted, wantNext: true,
+		},
+		{
+			name: "tools/list", method: http.MethodPost,
+			body:       `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`,
+			wantStatus: http.StatusAccepted, wantNext: true,
+		},
+		{
+			name: "no parsed request", method: http.MethodPost, body: toolCall,
+			skipParser: true, wantStatus: http.StatusAccepted, wantNext: true,
+		},
+		{
+			name: "notification without id", method: http.MethodPost,
+			body:       `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo"}}`,
+			wantStatus: http.StatusAccepted, wantNext: true,
+		},
+		{
+			name: "non-object arguments", method: http.MethodPost,
+			body:       `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":[]}}`,
+			wantStatus: http.StatusAccepted, wantNext: true,
+		},
+		{
+			name: "batch rejected by parser", method: http.MethodPost,
+			body: "[" + toolCall + "]", wantStatus: http.StatusBadRequest,
+		},
 	} {
-		fc := &modernFakeCore{checkToolErr: &vmcp.InsufficientScopeError{RequiredScopes: []string{"write"}}}
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := &modernFakeCore{checkToolErr: &vmcp.InsufficientScopeError{RequiredScopes: []string{"write"}}}
+			cfg := scopeChallengeFixture("auto")
+			if tc.disabled {
+				cfg.ScopeAuthorization = nil
+			}
+			s := &Server{core: fc, config: cfg}
+			nextCalled := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusAccepted)
+			})
+			var handler http.Handler = s.scopeChallengeMiddleware(next)
+			if !tc.skipParser {
+				handler = mcpparser.ParsingMiddleware(handler)
+			}
+			req := httptest.NewRequest(tc.method, "/mcp", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.Equal(t, tc.wantStatus, rec.Code)
+			require.Equal(t, tc.wantNext, nextCalled)
+			require.Empty(t, rec.Header().Get("WWW-Authenticate"))
+			require.NotContains(t, rec.Body.String(), "mcp/www_authenticate")
+			require.False(t, fc.checkCalled)
+			require.False(t, fc.callCalled)
+		})
+	}
+	t.Run("Modern non-object arguments", func(t *testing.T) {
+		t.Parallel()
+		fc := &modernFakeCore{checkToolErr: vmcp.ErrAuthorizationFailed}
 		s := &Server{core: fc, config: scopeChallengeFixture("auto")}
 		rec := httptest.NewRecorder()
-		next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
-		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
-		mcpparser.ParsingMiddleware(s.scopeChallengeMiddleware(next)).ServeHTTP(rec, req)
-		require.Equal(t, http.StatusAccepted, rec.Code)
-		require.Empty(t, rec.Body.String())
+		s.dispatchModernToolCall(t.Context(), rec, &mcpparser.ParsedMCPRequest{
+			Method: "tools/call", ResourceID: "echo", ID: 1, Params: json.RawMessage(`{"name":"echo","arguments":[]}`),
+		}, nil)
 		require.False(t, fc.checkCalled)
 		require.False(t, fc.callCalled)
-	}
-	// Modern argument validation also happens before the core preflight.
-	fc := &modernFakeCore{checkToolErr: vmcp.ErrAuthorizationFailed}
-	s := &Server{core: fc, config: scopeChallengeFixture("auto")}
-	rec := httptest.NewRecorder()
-	s.dispatchModernToolCall(context.Background(), rec, &mcpparser.ParsedMCPRequest{
-		Method: "tools/call", ResourceID: "echo", ID: 1, Params: json.RawMessage(`{"name":"echo","arguments":[]}`),
-	}, nil)
-	require.False(t, fc.checkCalled)
-	require.NotContains(t, rec.Body.String(), "mcp/www_authenticate")
+		require.NotContains(t, rec.Body.String(), "mcp/www_authenticate")
+	})
 }

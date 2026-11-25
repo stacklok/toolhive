@@ -70,8 +70,9 @@ func startRealMCPBackendWithToolDelay(t *testing.T, toolDelay time.Duration, obs
 // session to register its own permitted tool (proving registration completed
 // and the principal resolved) before asserting the ABSENCE of the other
 // principal's tool — closing the "empty list because filtered" vs "empty list
-// because registration still pending" ambiguity. Returns the /mcp URL.
-func startEchoPingBackend(t *testing.T) string {
+// because registration still pending" ambiguity. Optional observers record echo
+// tool execution. Returns the /mcp URL.
+func startEchoPingBackend(t *testing.T, echoObservers ...func()) string {
 	t.Helper()
 
 	mcpSrv := mcpserver.NewMCPServer("real-backend", "1.0.0")
@@ -81,6 +82,9 @@ func startEchoPingBackend(t *testing.T) string {
 			mcpmcp.WithString("input", mcpmcp.Required()),
 		),
 		func(_ context.Context, req mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			for _, observe := range echoObservers {
+				observe()
+			}
 			args, _ := req.Params.Arguments.(map[string]any)
 			input, _ := args["input"].(string)
 			return &mcpmcp.CallToolResult{

@@ -216,8 +216,18 @@ func (s *Session) ClearSubjectIdentifier() {
 
 // SetSubjectIdentifier sets the RFC 9493 sub_id claim and the upstream subject
 // claim from the verified upstream identity. It does nothing unless the identity
-// is complete. It mutates the receiver's claims in place; a caller holding a
-// session loaded from storage must Clone it first.
+// is complete.
+//
+// The upstream identity is the one the first upstream verified, and that
+// upstream is the only one that creates users. The local user is found by the
+// link key (upstream name, subject_claim value). The sub_id is the raw (iss, sub)
+// and is not used to find users, so the two can drift apart: a changed link key
+// with the same (iss, sub) gives one person two users with the same sub_id, and
+// a same link key with a different issuer gives one user two sub_ids. See
+// docs/arch/11-auth-server-storage.md, "One upstream identity, one user".
+//
+// It mutates the receiver's claims in place; a caller holding a session loaded
+// from storage must Clone it first.
 func (s *Session) SetSubjectIdentifier(upstream UpstreamSubject) {
 	if s == nil || s.JWTSession == nil || s.JWTClaims == nil || !upstream.IsComplete() {
 		return

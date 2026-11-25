@@ -4169,6 +4169,16 @@ func TestMemoryStorage_ExchangeGrantContract(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_UserIdentityContract(t *testing.T) {
+	t.Parallel()
+	runUserIdentityStorageContract(t, func(t *testing.T) UserStorage {
+		t.Helper()
+		s := NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
 func TestMemoryStorage_ExchangeGrantCleanup(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

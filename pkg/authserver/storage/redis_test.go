@@ -6165,3 +6165,35 @@ func TestRedisStorage_ReconcileConfiguredClient_WarnsOnceAcrossWatchRetry(t *tes
 	assert.Equal(t, []string{"a", "c"}, warns[0]["old_scopes"], "the WARN reports the row the winning attempt replaced")
 	assert.Equal(t, []string{"a", "b"}, warns[0]["new_scopes"])
 }
+
+func TestRedisStorage_UserIdentityContract(t *testing.T) {
+	t.Parallel()
+	runUserIdentityStorageContract(t, func(t *testing.T) UserStorage {
+		t.Helper()
+		s, _ := newTestRedisStorage(t)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+func TestRedisStorage_CreateProviderIdentity_FailedUserSetWriteLeavesNoLink(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-1", CreatedAt: now, UpdatedAt: now}))
+
+	// A string at the user's provider-set key makes SADD fail with WRONGTYPE.
+	require.NoError(t, mr.Set(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-1"), "not-a-set"))
+
+	err := s.CreateProviderIdentity(ctx, contractIdentity("user-1", "provider-a", "subject-1"))
+	require.Error(t, err)
+
+	_, err = s.GetProviderIdentity(ctx, "provider-a", "subject-1")
+	assert.True(t, errors.Is(err, ErrNotFound), "got %v", err)
+
+	// The identity can be linked once the set is healthy again.
+	mr.Del(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-1"))
+	require.NoError(t, s.CreateProviderIdentity(ctx, contractIdentity("user-1", "provider-a", "subject-1")))
+}

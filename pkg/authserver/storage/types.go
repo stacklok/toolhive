@@ -420,6 +420,12 @@ type PendingAuthorization struct {
 	// connect a single specific provider without other configured-but-tokenless
 	// upstreams hijacking the flow into a full chain walk. Defaults to false, which
 	// preserves the multi-upstream chaining behavior.
+	//
+	// Only the first upstream creates users. A SingleLeg authorization against a
+	// later upstream without ResolvedUserID is resolved by lookup: it succeeds when
+	// that upstream's identity is already linked to a user, and is refused with
+	// access_denied, creating nothing, when it is not. Callers that connect a
+	// downstream provider for a signed-in user should set ResolvedUserID.
 	SingleLeg bool
 
 	// ChainUpstreams is the ordered, effective set of upstream provider names this

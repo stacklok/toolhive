@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -171,12 +172,20 @@ func CheckRuntimeAvailable() error {
 		for _, r := range registered {
 			names = append(names, r.Name)
 		}
-		return fmt.Errorf("no container runtime available. ToolHive requires a Docker-compatible container runtime "+
-			"(Docker, Podman, or Colima) or Kubernetes to run MCP servers. Registered runtimes: [%s]",
-			strings.Join(names, ", "))
+		return formatNoRuntimeAvailableError(goruntime.GOOS, names)
 	}
 
 	return nil
+}
+
+func formatNoRuntimeAvailableError(goos string, registeredNames []string) error {
+	appleHint := ""
+	if goos == "darwin" {
+		appleHint = "Apple container (run `container system start` on macOS Apple Silicon), "
+	}
+	return fmt.Errorf("no container runtime available. ToolHive requires a Docker-compatible container runtime "+
+		"(Docker, Podman, or Colima), %sor Kubernetes to run MCP servers. Registered runtimes: [%s]",
+		appleHint, strings.Join(registeredNames, ", "))
 }
 
 // autoDetectRuntime returns the first available runtime based on auto-detection.

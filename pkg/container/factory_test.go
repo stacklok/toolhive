@@ -115,3 +115,45 @@ func TestAutoDetectRuntime_NoneAvailable(t *testing.T) {
 	assert.Nil(t, info)
 	assert.Empty(t, name)
 }
+
+func TestCreateWithRuntimeName_UnavailableDoesNotCallInitializer(t *testing.T) {
+	t.Parallel()
+
+	initializerCalled := false
+	reg := runtime.NewRegistry()
+	reg.Register(&runtime.Info{
+		Name:     "unavailable",
+		Priority: 100,
+		AutoDetector: func() bool {
+			return false
+		},
+		Initializer: func(_ context.Context) (runtime.Runtime, error) {
+			initializerCalled = true
+			return nil, nil
+		},
+	})
+
+	f := NewFactoryFromRegistry(reg)
+	rt, err := f.CreateWithRuntimeName(context.Background(), "unavailable")
+
+	require.Error(t, err)
+	assert.Nil(t, rt)
+	assert.False(t, initializerCalled, "Initializer must not be called when AutoDetector reports unavailable")
+	assert.Contains(t, err.Error(), `runtime "unavailable" is not available`)
+}
+
+func TestFormatNoRuntimeAvailableError_DarwinOnlyAppleHint(t *testing.T) {
+	t.Parallel()
+
+	darwinErr := formatNoRuntimeAvailableError("darwin", []string{"docker", "apple", "kubernetes"})
+	assert.Contains(t, darwinErr.Error(), "Apple container")
+	assert.Contains(t, darwinErr.Error(), "container system start")
+
+	for _, goos := range []string{"linux", "windows"} {
+		otherErr := formatNoRuntimeAvailableError(goos, []string{"docker", "kubernetes"})
+		assert.NotContains(t, otherErr.Error(), "Apple container")
+		assert.NotContains(t, otherErr.Error(), "container system start")
+		assert.Contains(t, otherErr.Error(), "Docker-compatible")
+		assert.Contains(t, otherErr.Error(), "Kubernetes")
+	}
+}

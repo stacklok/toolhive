@@ -310,3 +310,42 @@ func (mr *MockMonitorMockRecorder) StopMonitoring() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopMonitoring", reflect.TypeOf((*MockMonitor)(nil).StopMonitoring))
 }
+
+// MockHostGatewayResolver is a mock of HostGatewayResolver interface.
+type MockHostGatewayResolver struct {
+	ctrl     *gomock.Controller
+	recorder *MockHostGatewayResolverMockRecorder
+	isgomock struct{}
+}
+
+// MockHostGatewayResolverMockRecorder is the mock recorder for MockHostGatewayResolver.
+type MockHostGatewayResolverMockRecorder struct {
+	mock *MockHostGatewayResolver
+}
+
+// NewMockHostGatewayResolver creates a new mock instance.
+func NewMockHostGatewayResolver(ctrl *gomock.Controller) *MockHostGatewayResolver {
+	mock := &MockHostGatewayResolver{ctrl: ctrl}
+	mock.recorder = &MockHostGatewayResolverMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockHostGatewayResolver) EXPECT() *MockHostGatewayResolverMockRecorder {
+	return m.recorder
+}
+
+// HostGateway mocks base method.
+func (m *MockHostGatewayResolver) HostGateway(ctx context.Context) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "HostGateway", ctx)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// HostGateway indicates an expected call of HostGateway.
+func (mr *MockHostGatewayResolverMockRecorder) HostGateway(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HostGateway", reflect.TypeOf((*MockHostGatewayResolver)(nil).HostGateway), ctx)
+}

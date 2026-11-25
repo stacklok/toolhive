@@ -107,7 +107,7 @@ var (
 		ValueBuiltin, RegistrySourceCustomRemote, RegistrySourceCustomAPI, RegistrySourceCustomLocal,
 		RegistrySourcePackageUVX, RegistrySourcePackageNPX, RegistrySourcePackageGo, ValueNone,
 	}
-	allowedRuntimes  = []string{"docker", "podman", "colima", RuntimeKubernetes, ValueNone}
+	allowedRuntimes  = []string{"docker", "podman", "colima", "apple", RuntimeKubernetes, ValueNone}
 	allowedAuthModes = []string{ValueNone, AuthModeOIDC, AuthModeLocal, AuthModeEmbedded}
 	allowedAuthz     = []string{ValueOn, ValueOff}
 	allowedFeatures  = []string{FeatureOptimizer, FeatureCodeMode, FeatureCompositeTools, FeatureOutgoingAuth}

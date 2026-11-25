@@ -86,6 +86,9 @@ func (m *rejectedRefreshes) lookup(row storage.UpstreamTokenRowID, refreshToken 
 	}
 	return entry.err
 }
+
+// add records err for the row and refresh token until now+ttl. It does nothing
+// on a nil or zero value, or when err is nil.
 func (m *rejectedRefreshes) add(row storage.UpstreamTokenRowID, refreshToken string, err error) {
 	if m == nil || m.cache == nil || err == nil {
 		return

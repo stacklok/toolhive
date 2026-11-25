@@ -190,17 +190,6 @@ func TestUpstreamTokenRefresher_RemembersRejectedRefresh(t *testing.T) {
 		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 		require.ErrorIs(t, err, upstream.ErrGrantRejected)
 		assert.Greater(t, env.idp.calls.Load(), unit)
-	})
-
-	t.Run("the remembered error holds no response body", func(t *testing.T) {
-		t.Parallel()
-		env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
-		row := rejectedRefreshRow(past, "dead-rt")
-		env.store(t, "session", row)
-		_, err := env.refresher.RefreshAndStore(ctx, "session", row)
-		require.ErrorIs(t, err, upstream.ErrGrantRejected)
-
-		_, err = env.refresher.RefreshAndStore(ctx, "session", row)
 		assertRetrieveErrorInChain(t, err, http.StatusBadRequest)
 	})
 
@@ -286,6 +275,26 @@ func TestUpstreamTokenRefresher_DoesNotRememberOtherFailures(t *testing.T) {
 			assert.Greater(t, env.idp.calls.Load(), unit, "the IdP must be called every time")
 		})
 	}
+}
+
+func TestUpstreamTokenRefresher_DoesNotRememberNetworkFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+	env.idp.server.Close()
+	row := rejectedRefreshRow(time.Now().Add(-time.Minute), "rt")
+	env.store(t, "session", row)
+
+	_, err := env.refresher.RefreshAndStore(ctx, "session", row)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, upstream.ErrGrantRejected)
+	// The server is closed, so nothing is counted; the second call must fail
+	// the same way rather than return a remembered error.
+	_, err = env.refresher.RefreshAndStore(ctx, "session", row)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, upstream.ErrGrantRejected)
+	assert.Zero(t, env.refresher.rejected.cache.Len())
 }
 
 func TestUpstreamRefreshRejection_ServiceUsesMemory(t *testing.T) {

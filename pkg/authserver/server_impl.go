@@ -1152,7 +1152,7 @@ func newUpstreamTokenRefresher(
 	}
 	rejected, err := newRejectedRefreshes(rejectedRefreshesMaxEntries, rejectedRefreshesTTL, time.Now)
 	if err != nil {
-		// Only reachable if the constants above are changed to invalid values.
+		// Only reachable if the rejectedRefreshes* constants are changed to invalid values.
 		panic(err)
 	}
 	return &upstreamTokenRefresher{

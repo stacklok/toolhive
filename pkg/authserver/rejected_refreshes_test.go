@@ -11,8 +11,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // fakeClock is a settable clock for tests that must not sleep.
@@ -40,13 +38,20 @@ func (c *fakeClock) Advance(d time.Duration) {
 func TestRejectedRefreshes_NilAndZeroValuesMiss(t *testing.T) {
 	t.Parallel()
 
-	var nilMemory *rejectedRefreshes
-	nilMemory.add(storage.UpstreamTokenRowID("row"), "rt", errors.New("rejected"))
-	assert.Nil(t, nilMemory.lookup(storage.UpstreamTokenRowID("row"), "rt"))
-
-	zero := &rejectedRefreshes{}
-	zero.add(storage.UpstreamTokenRowID("row"), "rt", errors.New("rejected"))
-	assert.Nil(t, zero.lookup(storage.UpstreamTokenRowID("row"), "rt"))
+	tests := []struct {
+		name   string
+		memory *rejectedRefreshes
+	}{
+		{name: "nil", memory: nil},
+		{name: "zero", memory: &rejectedRefreshes{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.memory.add("row", "rt", errors.New("rejected"))
+			assert.Nil(t, tt.memory.lookup("row", "rt"))
+		})
+	}
 }
 
 func TestRejectedRefreshes_AddAndLookup(t *testing.T) {
@@ -97,10 +102,20 @@ func TestRejectedRefreshes_EvictsOldestAtCapacity(t *testing.T) {
 func TestNewRejectedRefreshes_RejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
-	for _, size := range []int{0, -1} {
-		_, err := newRejectedRefreshes(size, time.Minute, time.Now)
-		require.Error(t, err, "size %d", size)
+	tests := []struct {
+		name string
+		size int
+		ttl  time.Duration
+	}{
+		{name: "zero size", size: 0, ttl: time.Minute},
+		{name: "negative size", size: -1, ttl: time.Minute},
+		{name: "zero ttl would remember nothing", size: 1, ttl: 0},
 	}
-	_, err := newRejectedRefreshes(1, 0, time.Now)
-	require.Error(t, err, "a zero TTL would remember nothing")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := newRejectedRefreshes(tt.size, tt.ttl, time.Now)
+			require.Error(t, err)
+		})
+	}
 }

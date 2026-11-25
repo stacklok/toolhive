@@ -540,8 +540,9 @@ definitive `invalid_grant` for 10 minutes (at most 10,000 entries). While an
 entry exists, the refresher answers a refresh of that token with the original
 error and does not call the IdP. Without it, a row that holds an expired access
 token and a dead refresh token would cost one IdP call on every request that
-reads it. After the first rejection, the repeated refresh-failure WARN lines
-are answered from this memory and do not reach the IdP; a DEBUG line says so.
+reads it. After the first rejection, the refresh failures behind the repeated
+WARN lines are answered from this memory and do not reach the IdP; a DEBUG
+line says so.
 
 An entry is keyed on the storage row and a SHA-256 digest of the refresh
 token, so it stops matching as soon as another replica or a new sign-in stores
@@ -564,7 +565,8 @@ Trade-offs:
 - Losing an entry (eviction, restart, another replica) costs one more IdP
   call, which remembers the rejection again.
 - Each bearer request in this state still logs two WARN lines for the failed
-  refresh, one in the token service and one in the caller, because a remembered
+  refresh, both from the token service (one where it refreshes, one where it
+  collects credentials), because a remembered
   rejection looks the same as a new one at that level.
 - GitHub answers a dead refresh token with HTTP 200 and `bad_refresh_token`,
   which is not a definitive rejection, so nothing is remembered there.

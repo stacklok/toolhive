@@ -254,7 +254,7 @@ This order is critical because:
 - Extract resource IDs and arguments based on method type
 - Store parsed data in request context
 
-**POST compatibility**: Every transparent proxy POST routed to the backend-forwarding MCP handler requires an MCP envelope, regardless of path or Content-Type. Locally handled routes sit outside that handler's MCP admission and middleware chain and retain their own method, body, and authentication behavior. See [POST compatibility in the transport architecture](arch/03-transport-architecture.md#post-compatibility) for the full contract and local route scope.
+**POST compatibility**: Every transparent proxy POST routed to the backend-forwarding MCP handler requires an MCP envelope, regardless of path or Content-Type. Locally handled routes sit outside that handler's MCP admission and middleware chain and retain their own method, body, and authentication behavior. See [POST compatibility in the transport architecture](arch/03-transport-architecture.md#post-compatibility) for the full contract and local route scope. Where it forwards to the backend (innermost, so the middleware see the result), the transparent proxy also checks the backend's `200 application/json` answer to an id-bearing request and replaces a structurally invalid one with `502 Bad Gateway` and a JSON-RPC error; see [Upstream response validation](arch/03-transport-architecture.md#upstream-response-validation).
 
 **Context Data Added**:
 - `ParsedMCPRequest` containing:

@@ -296,7 +296,6 @@ func TestCallback_NonFatalSecondaryLeg_SkippedLegKeepsItsStoredToken(t *testing.
 //
 //nolint:paralleltest // mutates the process-global slog default
 func TestCallback_NonFatalSecondaryLeg_AuthorizeURLFailureSkips(t *testing.T) {
-
 	tests := []struct {
 		name        string
 		failURLFor  []string
@@ -544,7 +543,10 @@ func TestResolveChain_RejectsInvalidSkippedUpstreams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			handler := newChainTestHandler(t, threeUpstreamChain)
+			// The filter keeps every upstream; it records calls so a rejected
+			// first-leg pending can be shown never to reach it.
+			filter := &stubUpstreamFilter{keep: threeUpstreamChain[1:]}
+			handler := newChainTestHandler(t, threeUpstreamChain, WithUpstreamFilter(filter))
 			pending := firstLegPending("s")
 			pending.SkippedUpstreams = tt.skipped
 			if tt.resolved {
@@ -553,7 +555,8 @@ func TestResolveChain_RejectsInvalidSkippedUpstreams(t *testing.T) {
 
 			chain, err := handler.resolveChain(context.Background(), pending, filterPrincipal{})
 			if tt.wantErr {
-				require.Error(t, err)
+				require.ErrorContains(t, err, "stored skipped upstreams are invalid")
+				assert.Zero(t, filter.calls, "an invalid skipped set is rejected before the filter runs")
 				return
 			}
 			require.NoError(t, err)

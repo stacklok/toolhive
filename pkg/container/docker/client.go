@@ -122,9 +122,9 @@ type deployOps interface {
 	) error
 	getContainerNetworkIP(ctx context.Context, containerName, networkName string) (string, error)
 	discoverBridgeGateways(ctx context.Context) ([]netip.Addr, error)
-	// cleanupFailedIsolation best-effort removes the auxiliary containers and
-	// the internal network created for a workload whose setup failed.
-	cleanupFailedIsolation(ctx context.Context, name, networkName string)
+	// cleanupFailedIsolation best-effort removes the given sidecars and the
+	// internal network of a workload whose setup failed.
+	cleanupFailedIsolation(ctx context.Context, name, networkName string, sidecars []string)
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -283,7 +283,11 @@ func (c *Client) DeployWorkload(
 		if err != nil {
 			return 0, fmt.Errorf("failed to create internal network: %w", err)
 		}
-		// The internal network and the dns/egress/ingress containers are not
+		// sidecars lists the auxiliary containers this attempt has started
+		// to create. Ingress is only set up after the MCP container exists,
+		// so it is never part of a rollback.
+		var sidecars []string
+		// The internal network and the dns/egress containers are not
 		// tied to the MCP container yet, so `thv rm` cannot find them if setup
 		// fails before the MCP container is created. Remove them in that case,
 		// but only for a new workload (see mcpExisted above).
@@ -293,12 +297,13 @@ func (c *Client) DeployWorkload(
 				// still cleans up, but bound the cleanup so it cannot hang.
 				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 				defer cancel()
-				c.ops.cleanupFailedIsolation(cleanupCtx, name, networkName)
+				c.ops.cleanupFailedIsolation(cleanupCtx, name, networkName, sidecars)
 			}
 		}()
 
 		// Start or reuse DNS normally before reading Podman's generated hosts.
 		dnsContainerName := fmt.Sprintf("%s-dns", name)
+		sidecars = append(sidecars, "dns")
 		dnsContainerID, dnsContainerIP, err := c.ops.createDnsContainer(
 			ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig,
 		)
@@ -334,6 +339,7 @@ func (c *Client) DeployWorkload(
 
 		// SetupEgress runs before createMcpContainer so its env vars can be
 		// injected into the workload and the egress proxy has a head start.
+		sidecars = append(sidecars, "egress")
 		egress, err = c.proxy.SetupEgress(ctx, pspec)
 		if err != nil {
 			return 0, fmt.Errorf("failed to set up egress proxy: %w", err)
@@ -947,13 +953,23 @@ func (c *Client) getPermissionConfigFromProfile(
 // findExistingContainer finds a container with the exact name
 // Uses container runtime's name filter for efficiency but then verifies exact match to prevent partial matching
 func (c *Client) findExistingContainer(ctx context.Context, name string) (string, error) {
+	found, err := c.findContainerByName(ctx, name)
+	if err != nil || found == nil {
+		return "", err
+	}
+	return found.ID, nil
+}
+
+// findContainerByName returns the container with the exact name, or nil when
+// there is none.
+func (c *Client) findContainerByName(ctx context.Context, name string) (*container.Summary, error) {
 	// Use name filter to narrow results, then verify exact match
 	listResult, err := c.api.ContainerList(ctx, mobyclient.ContainerListOptions{
 		All:     true, // Include stopped containers
 		Filters: mobyclient.Filters{}.Add("name", name),
 	})
 	if err != nil {
-		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+		return nil, NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
 
 	// Verify exact name match from the filtered results (name filter does partial matching)
@@ -961,12 +977,12 @@ func (c *Client) findExistingContainer(ctx context.Context, name string) (string
 		for _, containerName := range cont.Names {
 			// Container names in the API have a leading slash
 			if containerName == "/"+name || containerName == name {
-				return cont.ID, nil
+				return &cont, nil
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 // compareBasicConfig compares basic container configuration (image, command, env vars, labels, stdio settings)
@@ -1423,24 +1439,25 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 	return nil
 }
 
-// cleanupFailedIsolation best-effort removes the egress, ingress and dns
-// containers and the internal network of a workload whose setup failed. Every
-// sidecar is attempted and the network is always deleted, even when an earlier
-// step fails. Failures are logged: the original setup error is what the caller
-// needs.
-func (c *Client) cleanupFailedIsolation(ctx context.Context, name, networkName string) {
+// cleanupFailedIsolation best-effort removes the given sidecars and the internal
+// network of a workload whose setup failed. A container is only removed when it
+// carries the auxiliary label, because a user workload may be named like a
+// sidecar (e.g. "app-egress"). Every sidecar is attempted and the network is
+// always deleted, even when an earlier step fails. Failures are logged: the
+// original setup error is what the caller needs.
+func (c *Client) cleanupFailedIsolation(ctx context.Context, name, networkName string, sidecars []string) {
 	var errs []error
-	for _, suffix := range []string{"egress", "ingress", "dns"} {
+	for _, suffix := range sidecars {
 		sidecarName := fmt.Sprintf("%s-%s", name, suffix)
-		id, err := c.findExistingContainer(ctx, sidecarName)
+		found, err := c.findContainerByName(ctx, sidecarName)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("find %s container: %w", suffix, err))
 			continue
 		}
-		if id == "" {
+		if found == nil || found.Labels[ToolhiveAuxiliaryWorkloadLabel] != LabelValueTrue {
 			continue
 		}
-		if err := c.removeContainer(ctx, id); err != nil {
+		if err := c.removeContainer(ctx, found.ID); err != nil {
 			errs = append(errs, fmt.Errorf("remove %s container: %w", suffix, err))
 		}
 	}

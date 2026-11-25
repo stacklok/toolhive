@@ -19,6 +19,7 @@ import (
 type fakeDaemon struct {
 	mu         sync.Mutex
 	containers map[string]bool // container names that exist
+	foreign    map[string]bool // container names lacking the auxiliary label
 	networks   map[string]bool // network names that exist
 	failRemove map[string]bool // container IDs whose removal returns 500
 	removed    []string        // "container/<id>" or "network/<id>"
@@ -44,7 +45,11 @@ func (d *fakeDaemon) handler(t *testing.T) http.HandlerFunc {
 			name := nameFilter(r)
 			list := []map[string]any{}
 			if d.containers[name] {
-				list = append(list, map[string]any{"Id": "id-" + name, "Names": []string{"/" + name}})
+				labels := map[string]string{}
+				if !d.foreign[name] {
+					labels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
+				}
+				list = append(list, map[string]any{"Id": "id-" + name, "Names": []string{"/" + name}, "Labels": labels})
 			}
 			assert.NoError(t, json.NewEncoder(w).Encode(list))
 		case r.Method == http.MethodDelete && strings.HasPrefix(path, "/containers/"):
@@ -79,24 +84,43 @@ func TestCleanupFailedIsolation(t *testing.T) {
 	tests := []struct {
 		name        string
 		daemon      *fakeDaemon
+		sidecars    []string // nil means dns and egress
 		wantRemoved []string
 	}{
 		{
-			name: "removes all sidecars and the network",
+			name: "removes the attempted sidecars and the network",
 			daemon: &fakeDaemon{
 				containers: map[string]bool{"app-egress": true, "app-ingress": true, "app-dns": true},
 				networks:   map[string]bool{network: true},
 			},
-			wantRemoved: []string{"container/id-app-egress", "container/id-app-ingress", "container/id-app-dns", "network/net-" + network},
+			wantRemoved: []string{"container/id-app-dns", "container/id-app-egress", "network/net-" + network},
+		},
+		{
+			name: "a sidecar that was never attempted is left alone",
+			daemon: &fakeDaemon{
+				containers: map[string]bool{"app-egress": true, "app-dns": true},
+				networks:   map[string]bool{network: true},
+			},
+			sidecars:    []string{"dns"},
+			wantRemoved: []string{"container/id-app-dns", "network/net-" + network},
+		},
+		{
+			name: "a container that is not an auxiliary sidecar is left alone",
+			daemon: &fakeDaemon{
+				containers: map[string]bool{"app-egress": true, "app-dns": true},
+				foreign:    map[string]bool{"app-egress": true},
+				networks:   map[string]bool{network: true},
+			},
+			wantRemoved: []string{"container/id-app-dns", "network/net-" + network},
 		},
 		{
 			name: "a sidecar that fails to remove does not stop the network deletion",
 			daemon: &fakeDaemon{
 				containers: map[string]bool{"app-egress": true, "app-ingress": true, "app-dns": true},
 				networks:   map[string]bool{network: true},
-				failRemove: map[string]bool{"id-app-egress": true},
+				failRemove: map[string]bool{"id-app-dns": true},
 			},
-			wantRemoved: []string{"container/id-app-egress", "container/id-app-ingress", "container/id-app-dns", "network/net-" + network},
+			wantRemoved: []string{"container/id-app-dns", "container/id-app-egress", "network/net-" + network},
 		},
 		{
 			name: "absent network is not an error",
@@ -113,7 +137,11 @@ func TestCleanupFailedIsolation(t *testing.T) {
 			api := discoveryHTTPClient(t, tt.daemon.handler(t))
 			client := &Client{client: api, api: api}
 
-			client.cleanupFailedIsolation(t.Context(), "app", network)
+			sidecars := tt.sidecars
+			if sidecars == nil {
+				sidecars = []string{"dns", "egress"}
+			}
+			client.cleanupFailedIsolation(t.Context(), "app", network, sidecars)
 
 			assert.Equal(t, tt.wantRemoved, tt.daemon.removed)
 		})

@@ -69,6 +69,8 @@ type fakeDeployOps struct {
 
 	// cleanupCalls records cleanupFailedIsolation invocations as "workload/network".
 	cleanupCalls []string
+	// cleanupSidecars records which sidecars cleanup was asked to remove.
+	cleanupSidecars []string
 	// cleanupCtxErr and cleanupHasDeadline describe the context cleanup ran with.
 	cleanupCtxErr      error
 	cleanupHasDeadline bool
@@ -127,7 +129,8 @@ func (f *fakeDeployOps) createDnsContainer(_ context.Context, _ string, _ bool, 
 	return f.dnsID, f.dnsIP, f.errDNS
 }
 
-func (f *fakeDeployOps) cleanupFailedIsolation(ctx context.Context, name, networkName string) {
+func (f *fakeDeployOps) cleanupFailedIsolation(ctx context.Context, name, networkName string, sidecars []string) {
+	f.cleanupSidecars = sidecars
 	f.cleanupCalls = append(f.cleanupCalls, name+"/"+networkName)
 	f.cleanupCtxErr = ctx.Err()
 	_, f.cleanupHasDeadline = ctx.Deadline()
@@ -730,14 +733,14 @@ func TestDeployWorkload_SetupFailureCleanup(t *testing.T) {
 		opts        func() *runtime.DeployWorkloadOptions // nil means defaults
 		existing    *existingLookup                       // nil means no existing MCP container
 		wantErr     error
-		wantCleanup bool
+		wantCleanup []string // sidecars cleanup removes; nil means no cleanup
 		wantMcp     bool
 	}{
-		{name: "dns container creation fails", fops: &fakeDeployOps{errDNS: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: true},
-		{name: "gateway discovery fails", fops: &fakeDeployOps{errGateways: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: true},
-		{name: "egress setup fails", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{err: errBoom}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: true},
-		{name: "port binding is invalid", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, opts: badPortBinding, wantErr: strconv.ErrSyntax, wantCleanup: true},
-		{name: "mcp container creation fails", fops: &fakeDeployOps{errMcp: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: true, wantMcp: true},
+		{name: "dns container creation fails", fops: &fakeDeployOps{errDNS: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: []string{"dns"}},
+		{name: "gateway discovery fails", fops: &fakeDeployOps{errGateways: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: []string{"dns"}},
+		{name: "egress setup fails", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{err: errBoom}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: []string{"dns", "egress"}},
+		{name: "port binding is invalid", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, opts: badPortBinding, wantErr: strconv.ErrSyntax, wantCleanup: []string{"dns", "egress"}},
+		{name: "mcp container creation fails", fops: &fakeDeployOps{errMcp: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: []string{"dns", "egress"}, wantMcp: true},
 		{name: "internal network creation fails", fops: &fakeDeployOps{errCreateNetwork: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom},
 		{name: "success keeps resources", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantMcp: true},
 		{name: "mcp ip lookup fails after mcp container exists", fops: &fakeDeployOps{errMcpIP: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "sse", isolate: true, opts: ingressOpts, wantErr: errBoom, wantMcp: true},
@@ -769,8 +772,9 @@ func TestDeployWorkload_SetupFailureCleanup(t *testing.T) {
 				require.NoError(t, err)
 			}
 			assert.Equal(t, tt.wantMcp, tt.fops.mcpCalled)
-			if tt.wantCleanup {
+			if tt.wantCleanup != nil {
 				assert.Equal(t, []string{"app/toolhive-app-internal"}, tt.fops.cleanupCalls)
+				assert.Equal(t, tt.wantCleanup, tt.fops.cleanupSidecars)
 			} else {
 				assert.Empty(t, tt.fops.cleanupCalls)
 			}

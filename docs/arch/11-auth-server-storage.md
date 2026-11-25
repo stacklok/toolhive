@@ -684,7 +684,8 @@ the bearer validator answers those with 503 or a retryable 401 anyway:
 
 To tolerate the lost-race window described above, the guard does not refuse
 on the first rejection. It waits briefly (500ms) and re-reads the row, and a
-row now holding any different refresh token counts as live. This is a
+row now holding a different refresh token or a different access token
+counts as live. This is a
 heuristic: a winner whose write lands after the wait is missed. The client is
 refused and its rows deleted, so the winner's write fails, but it keeps its
 refresh token. A recheck that cannot
@@ -694,8 +695,11 @@ session without a `tsid` (a session-less grant) is not checked.
 Because the guard refreshes through the shared refresher, it is answered from
 the [remembered rejections](#remembered-rejections) too. After a rejection on
 the bearer path, the guard gets the remembered error without an IdP call, still
-runs its recheck, and refuses and drops the session's rows if the row still
-holds the same refresh token. The guard can therefore act on a rejection up to
+runs its recheck, and refuses and drops the session's rows only if the row
+still holds the same refresh token and the same access token. If another
+replica refreshed successfully during the recheck without rotating the refresh
+token, the row has the same refresh token but a new access token; the IdP
+accepted that refresh, so the guard grants and keeps the row. The guard can therefore act on a rejection up to
 10 minutes old. If the IdP used `invalid_grant` for an account or policy state
 that an administrator fixed in that time, the client has to sign in again where
 it would otherwise have been granted. This is accepted.

@@ -481,6 +481,45 @@ func TestUpstreamRefreshGuard_RefusesOnRememberedRejection(t *testing.T) {
 	assert.ErrorIs(t, err, storage.ErrNotFound, "the confirmed rejection drops the session's rows")
 }
 
+func TestUpstreamRefreshGuard_GrantsOnNonRotatingRefreshDuringRecheck(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	env := newRejectedRefreshEnv(t, http.StatusBadRequest, invalidGrantBody)
+	row := guardTestRow(time.Now().Add(-time.Minute), "same-rt")
+	require.NoError(t, env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", row))
+	_, err := env.refresher.RefreshAndStore(ctx, guardTestTSID, row)
+	require.ErrorIs(t, err, upstream.ErrGrantRejected)
+	callsBefore := env.idp.calls.Load()
+	require.Positive(t, callsBefore)
+
+	guard, err := newUpstreamRefreshGuard(env.stor, env.refresher, []string{"idp"})
+	require.NoError(t, err)
+	guard.recheckDelay = 300 * time.Millisecond
+
+	// Another replica refreshes without rotating while the guard waits: the
+	// same refresh token and a new, unexpired access token.
+	winner := guardTestRow(time.Now().Add(time.Hour), "same-rt")
+	winner.AccessToken = "other-replica-access"
+	stored := make(chan error, 1)
+	time.AfterFunc(20*time.Millisecond, func() {
+		stored <- env.stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", winner)
+	})
+
+	require.NoError(t, guard.HandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token")))
+	select {
+	case err := <-stored:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the winner's row to be stored")
+	}
+
+	assert.Equal(t, callsBefore, env.idp.calls.Load(), "the guard must be answered from the memory")
+	got, err := env.stor.GetUpstreamTokens(ctx, guardTestTSID, "idp")
+	require.NoError(t, err, "the winner's row must not be deleted")
+	assert.Equal(t, "other-replica-access", got.AccessToken)
+}
+
 func TestNewUpstreamTokenRefresher_RemembersRejections(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

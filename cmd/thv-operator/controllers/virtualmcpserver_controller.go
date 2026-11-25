@@ -367,6 +367,10 @@ func (r *VirtualMCPServerReconciler) validateSpec(
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
+	// Defaulting is controller-side and deliberately not persisted to the API
+	// server; it must run before validation (#4628).
+	vmcp.ApplyDefaults()
+
 	if err := vmcp.Validate(); err != nil {
 		ctxLogger.Error(err, "VirtualMCPServer spec validation failed")
 		statusManager.SetObservedGeneration(vmcp.Generation)

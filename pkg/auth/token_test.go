@@ -2420,7 +2420,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                        "user123",
 			claimnames.TokenSessionIDKey: "session-abc",
-		})
+		}, AdmissionRouteUnspecified)
 		require.NoError(t, err)
 		require.Nil(t, failed)
 		require.Equal(t, map[string]upstreamtoken.UpstreamCredential{
@@ -2436,7 +2436,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		// No EXPECT — reader should not be called
 
 		v := &TokenValidator{upstreamTokenReader: reader}
-		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{"sub": "user123"})
+		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{"sub": "user123"}, AdmissionRouteUnspecified)
 		require.NoError(t, err)
 		require.Nil(t, creds)
 		require.Nil(t, failed)
@@ -2451,7 +2451,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                        "user123",
 			claimnames.TokenSessionIDKey: "",
-		})
+		}, AdmissionRouteUnspecified)
 		require.NoError(t, err)
 		require.Nil(t, creds)
 		require.Nil(t, failed)
@@ -2466,7 +2466,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                        "user123",
 			claimnames.TokenSessionIDKey: 12345,
-		})
+		}, AdmissionRouteUnspecified)
 		require.NoError(t, err)
 		require.Nil(t, creds)
 		require.Nil(t, failed)
@@ -2483,7 +2483,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                        "user123",
 			claimnames.TokenSessionIDKey: "session-abc",
-		})
+		}, AdmissionRouteUnspecified)
 		require.Error(t, err)
 		require.Nil(t, creds)
 		require.Nil(t, failed)
@@ -2500,7 +2500,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                        "user123",
 			claimnames.TokenSessionIDKey: "session-abc",
-		})
+		}, AdmissionRouteUnspecified)
 		require.NoError(t, err)
 		require.Equal(t, map[string]upstreamtoken.UpstreamCredential{}, creds)
 		require.Equal(t, map[string]error{"github": upstreamtoken.ErrRefreshFailed}, failed)
@@ -2517,7 +2517,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                        "user123",
 			claimnames.TokenSessionIDKey: "session-abc",
-		})
+		}, AdmissionRouteUnspecified)
 		require.NoError(t, err)
 		require.Equal(t, map[string]upstreamtoken.UpstreamCredential{}, creds)
 		require.Nil(t, failed)

@@ -3434,6 +3434,10 @@ an audience, and validation through introspection or HTTP JWKS fallback rather
 than the in-process keys. The middleware returns HTTP 401 `invalid_token` before
 loading any upstream credentials.
 
+When the validator has an upstream token reader, a token that carries a
+non-empty `tsid` is never `SessionlessGrant`, even if it also carries a proof of
+a session-less mint. The authorization server never issues that combination.
+
 Consumers that grant anything must compare for one exact value, such as
 `delegated`. They must never test for a non-empty route or against the empty
 value, because new values may be added and `AdmissionRouteUnspecified` also

@@ -530,6 +530,30 @@ func TestInstructionsMiddleware_EventStream(t *testing.T) {
 			want: "event: message\rdata: " + notification + "\r\r" + "data: {\"result\":{\"server",
 		},
 		{
+			name:    "POST stream that starts with a byte order mark reads the first event's type as clients do",
+			request: initializeRequest,
+			response: "\xEF\xBB\xBFevent: foo\ndata: " + initializeWithInstructions + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: "event: foo\ndata: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				"data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+		},
+		{
+			name:    "byte order marks split across writes are dropped",
+			request: initializeRequest,
+			response: "\xEF\xBB|\xBF\xC3\xAF\xC2\xBB\xC2\xBFevent: foo\ndata: " + initializeWithInstructions + "\n\n" +
+				"|data: " + initializeWithInstructions + "\n\n",
+			want: "event: foo\ndata: " + rewrittenInitialize("server text\n\npolicy") + "\n\n" +
+				"data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
+		},
+		{
+			name:     "GET stream that starts with a byte order mark is forwarded without it",
+			request:  "",
+			response: "\xEF\xBB\xBFevent: endpoint\ndata: /messages\n\n" + "data: " + initializeWithInstructions + "\n\n",
+			want:     "event: endpoint\ndata: /messages\n\n" + "data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
+		},
+		{
 			name:     "compressed GET stream is withheld",
 			request:  "",
 			headers:  []string{"Content-Encoding", "gzip"},
@@ -555,6 +579,13 @@ func TestInstructionsMiddleware_Bound(t *testing.T) {
 	t.Parallel()
 
 	bound := len(initializeWithInstructions) - 1
+	// largeToolResult is a result over the bound that no client could read
+	// as an initialize or server/discover result.
+	largeToolResult := `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"` +
+		strings.Repeat("x", 3*bound) + `"}]}}`
+	// smallResult is a result under the bound that the middleware rewrites.
+	smallResult := `{"jsonrpc":"2.0","id":3,"result":{"serverInfo":{}}}`
+	smallRewritten := `{"jsonrpc":"2.0","id":3,"result":{"serverInfo":{},"instructions":"policy"}}`
 	tests := []struct {
 		name        string
 		request     string
@@ -579,6 +610,20 @@ func TestInstructionsMiddleware_Bound(t *testing.T) {
 		{name: "named event on a GET stream is dropped", request: "", contentType: "text/event-stream",
 			response: "event: foo\ndata: " + initializeWithInstructions + "|\n\n" + "data: {}\n\n",
 			want:     "data: {}\n\n"},
+		{name: "oversized GET event that names no result member is forwarded intact in one write",
+			request: "", contentType: "text/event-stream",
+			response: "data: " + largeToolResult + "\n\n" + "data: " + smallResult + "\n\n",
+			want:     "data: " + largeToolResult + "\n\n" + "data: " + smallRewritten + "\n\n"},
+		{name: "oversized GET event that names no result member is forwarded intact in many writes",
+			request: "", contentType: "text/event-stream",
+			response: "data: " + largeToolResult[:250] + "|" + largeToolResult[250:300] + "|" + largeToolResult[300:] + "\n|\n" +
+				"data: " + smallResult + "\n\n",
+			want: "data: " + largeToolResult + "\n\n" + "data: " + smallRewritten + "\n\n"},
+		{name: "oversized GET event forwarded in part that then names a result member ends the stream",
+			request: "", contentType: "text/event-stream",
+			response: "data: " + largeToolResult[:250] + "|" + `","serverInfo":{}}}` + "\n\n" +
+				"data: " + smallResult + "\n\n",
+			want: "data: " + largeToolResult[:250]},
 		{name: "line split clients read differently while an event is skipped ends a GET stream",
 			request: "", contentType: "text/event-stream",
 			response: "data: " + initializeWithInstructions + "|\r\rdata: {}\n\n",

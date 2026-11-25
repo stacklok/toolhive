@@ -150,6 +150,14 @@ type MemoryStorage struct {
 	// upstreamTokens maps (sessionID, providerName) -> timedEntry for multi-provider support.
 	upstreamTokens map[upstreamKey]*timedEntry[*UpstreamTokens]
 
+	// upstreamRefreshLeases holds the live UpstreamRefreshLocker leases, keyed
+	// by the row identity ResolveUpstreamTokenRowID returns. An entry is
+	// removed when its holder releases it, so in the normal path the map holds
+	// only rows being refreshed right now; a holder that never releases is
+	// bounded by the lease's own expiry, which both AcquireUpstreamRefreshLock
+	// and cleanupExpired treat as absent.
+	upstreamRefreshLeases map[UpstreamTokenRowID]*memoryUpstreamRefreshLease
+
 	// pendingAuthorizations tracks authorization requests awaiting upstream IDP callback
 	pendingAuthorizations map[string]*timedEntry[*PendingAuthorization]
 	consentSessions       map[string]*timedEntry[*ConsentSession]
@@ -288,6 +296,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		refreshTokens:              make(map[string]*timedEntry[fosite.Requester]),
 		pkceRequests:               make(map[string]*timedEntry[fosite.Requester]),
 		upstreamTokens:             make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
+		upstreamRefreshLeases:      make(map[UpstreamTokenRowID]*memoryUpstreamRefreshLease),
 		pendingAuthorizations:      make(map[string]*timedEntry[*PendingAuthorization]),
 		consentSessions:            make(map[string]*timedEntry[*ConsentSession]),
 		clientApprovals:            make(map[[2]string]*timedEntry[*ClientApproval]),
@@ -411,6 +420,13 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredRefreshLeases []UpstreamTokenRowID
+	for k, v := range s.upstreamRefreshLeases {
+		if now.After(v.expiresAt) {
+			expiredRefreshLeases = append(expiredRefreshLeases, k)
+		}
+	}
+
 	var expiredPendingAuthorizations []string
 	for k, v := range s.pendingAuthorizations {
 		if now.After(v.expiresAt) {
@@ -501,6 +517,7 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredRefreshTokens) == 0 &&
 		len(expiredPKCERequests) == 0 &&
 		len(expiredUpstreamTokens) == 0 &&
+		len(expiredRefreshLeases) == 0 &&
 		len(expiredPendingAuthorizations) == 0 &&
 		len(expiredConsentSessions) == 0 &&
 		len(expiredClientApprovals) == 0 &&
@@ -548,6 +565,8 @@ func (s *MemoryStorage) cleanupExpired() {
 	for _, k := range expiredPKCERequests {
 		delete(s.pkceRequests, k)
 	}
+
+	s.deleteExpiredRefreshLeasesLocked(now, expiredRefreshLeases)
 
 	for _, k := range expiredUpstreamTokens {
 		delete(s.upstreamTokens, k)
@@ -1432,8 +1451,8 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 // Upstream Token Storage
 // -----------------------
 
-// ResolveUpstreamTokenRowID returns an opaque ID for process-local refresh
-// coordination of a logical upstream-token row.
+// ResolveUpstreamTokenRowID implements UpstreamTokenStorage, which defines
+// what the ID identifies and what may be done with it.
 func (*MemoryStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, providerName string) (UpstreamTokenRowID, error) {
 	if sessionID == "" {
 		return "", fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
@@ -1459,6 +1478,80 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 
 	s.storeUpstreamTokensLocked(upstreamKey{sessionID, providerName}, tokens)
 	return nil
+}
+
+// deleteExpiredRefreshLeasesLocked drops the leases cleanupExpired collected as
+// expired. It must be called with s.mu held for writing.
+//
+// Each one is re-checked against the map, because the collection ran under the
+// read lock: a lease that expired then may since have been released and
+// re-acquired by a new holder, and deleting that live lease would let a second
+// replica start redeeming alongside it — the race the lease exists to prevent.
+func (s *MemoryStorage) deleteExpiredRefreshLeasesLocked(now time.Time, expired []UpstreamTokenRowID) {
+	for _, k := range expired {
+		if lease, ok := s.upstreamRefreshLeases[k]; ok && now.After(lease.expiresAt) {
+			delete(s.upstreamRefreshLeases, k)
+		}
+	}
+}
+
+// memoryUpstreamRefreshLease is a held lease from AcquireUpstreamRefreshLock.
+// It keeps a pointer back to the storage so Release can drop the entry, and
+// its own expiry so a holder that outlives the lease cannot release a lease a
+// later holder now owns.
+type memoryUpstreamRefreshLease struct {
+	storage   *MemoryStorage
+	rowID     UpstreamTokenRowID
+	expiresAt time.Time
+}
+
+// Release implements UpstreamRefreshLease. It deletes the entry only when this
+// lease is still the one stored, so a holder whose lease already expired and
+// was taken over cannot free the new holder's lease. It never returns an
+// error; the write it performs cannot fail.
+func (l *memoryUpstreamRefreshLease) Release(_ context.Context) error {
+	l.storage.mu.Lock()
+	defer l.storage.mu.Unlock()
+
+	if current, ok := l.storage.upstreamRefreshLeases[l.rowID]; ok && current == l {
+		delete(l.storage.upstreamRefreshLeases, l.rowID)
+	}
+	return nil
+}
+
+// AcquireUpstreamRefreshLock implements UpstreamRefreshLocker for the
+// in-memory backend. See the interface doc for the coordination contract.
+//
+// This backend is reachable from exactly one process, where the auth server's
+// singleflight group already deduplicates concurrent refreshes of one row, so
+// the lease could simply always be granted. It is implemented for real
+// instead — mutual exclusion with the same expiry and ownership rules — so
+// that what a caller relies on does not depend on which backend it was wired
+// against, and so one contract test covers both. The cost is a map operation
+// under the mutex every other write already takes.
+func (s *MemoryStorage) AcquireUpstreamRefreshLock(
+	_ context.Context, rowID UpstreamTokenRowID, ttl time.Duration,
+) (UpstreamRefreshLease, error) {
+	if rowID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("upstream token row ID cannot be empty")
+	}
+	if ttl <= 0 {
+		return nil, fosite.ErrInvalidRequest.WithHint("upstream refresh lock TTL must be positive")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	if held, ok := s.upstreamRefreshLeases[rowID]; ok && !now.After(held.expiresAt) {
+		return nil, ErrUpstreamRefreshLockHeld
+	}
+
+	// Either no lease exists or the stored one expired; take it over. The
+	// previous holder's Release compares identity, so it cannot delete this one.
+	lease := &memoryUpstreamRefreshLease{storage: s, rowID: rowID, expiresAt: now.Add(ttl)}
+	s.upstreamRefreshLeases[rowID] = lease
+	return lease, nil
 }
 
 // CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
@@ -2541,6 +2634,7 @@ var (
 	_ PendingDeviceConfirmationStorage = (*MemoryStorage)(nil)
 	_ ClientRegistry                   = (*MemoryStorage)(nil)
 	_ UpstreamTokenStorage             = (*MemoryStorage)(nil)
+	_ UpstreamRefreshLocker            = (*MemoryStorage)(nil)
 	_ UserStorage                      = (*MemoryStorage)(nil)
 	_ DCRCredentialStore               = (*MemoryStorage)(nil)
 	_ AssertionJWTConsumer             = (*MemoryStorage)(nil)

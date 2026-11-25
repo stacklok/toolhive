@@ -1138,6 +1138,8 @@ func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 // newUpstreamTokenRefresher builds a refresher over the given upstreams, or nil
 // when there are none. Called once during newServer so the returned instance
 // can be shared between the handler and the UpstreamTokenRefresher() accessor.
+// It also resolves the storage backend's optional cross-process refresh lease
+// (see upstreamTokenRefresher's doc) so every refresh path shares one.
 func newUpstreamTokenRefresher(
 	upstreams []handlers.NamedUpstream,
 	stor storage.UpstreamTokenStorage,
@@ -1150,9 +1152,18 @@ func newUpstreamTokenRefresher(
 	for _, u := range upstreams {
 		providers[u.Name] = u.Provider
 	}
+	// Resolved once here rather than per refresh: by this point stor is
+	// wrapped in the decorators UpstreamRefreshLockerFrom has to peel.
+	locker := storage.UpstreamRefreshLockerFrom(stor)
+	if locker == nil {
+		slog.Debug("upstream token storage provides no cross-process refresh lock; " +
+			"concurrent refreshes are coordinated by compare-and-swap on the stored row only")
+	}
+
 	return &upstreamTokenRefresher{
 		providers:            providers,
 		storage:              stor,
+		locker:               locker,
 		refreshTokenLifespan: refreshTokenLifespan,
 	}
 }

@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,ExchangeGrantStorage
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamRefreshLocker,UpstreamRefreshLease,UpstreamTokenRefresher,UserStorage,ExchangeGrantStorage
 
 //go:generate mockgen -destination=mocks/mock_dcr_store.go -package=mocks github.com/stacklok/toolhive/pkg/authserver/storage DCRCredentialStore
 
@@ -98,6 +98,14 @@ var (
 	// (ErrNotFound means there was no race to lose — see
 	// CompareAndSwapUpstreamTokens for the full coordination contract).
 	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
+
+	// ErrUpstreamRefreshLockHeld is returned by
+	// UpstreamRefreshLocker.AcquireUpstreamRefreshLock when another holder
+	// already holds the lease for that row. It is an ordinary outcome, not a
+	// fault: the caller waits and re-reads the row rather than redeeming the
+	// refresh token itself. Every other error from that method is a backend
+	// fault, where the caller must fail closed instead.
+	ErrUpstreamRefreshLockHeld = errors.New("storage: upstream refresh lock held by another holder")
 
 	// ErrDCRCredentialsChanged is returned by
 	// DCRCredentialStore.UpdateDCRCredentialsIfUnchanged when the stored row
@@ -1232,8 +1240,10 @@ type ClientRegistry interface {
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 
-// UpstreamTokenRowID is an opaque, process-local coordination key for one
-// logical upstream token row. Callers must not persist, log, or expose it.
+// UpstreamTokenRowID is an opaque coordination key for one logical upstream
+// token row. Callers must not log it or expose it outside the refresh
+// coordination path; the only place it may be written is a backend's own
+// UpstreamRefreshLocker lease key, which lives no longer than the lease.
 type UpstreamTokenRowID string
 
 // upstreamTokenRowID returns a SHA-256 digest of the supplied row-key components.
@@ -1272,8 +1282,9 @@ type UpstreamTokenStorage interface {
 	// Resolution must be local and side-effect-free (no I/O): it is called
 	// before the singleflight joins, so any I/O here gives every concurrent
 	// caller its own round-trip and partially defeats the deduplication. This
-	// ID is solely for process-local refresh coordination: callers must not
-	// persist, log, or expose it.
+	// ID is solely for refresh coordination — the in-process singleflight
+	// group and the UpstreamRefreshLocker lease over the same row — and must
+	// not be logged or exposed outside it.
 	ResolveUpstreamTokenRowID(ctx context.Context, sessionID, providerName string) (UpstreamTokenRowID, error)
 
 	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
@@ -1393,6 +1404,54 @@ type UpstreamTokenStorage interface {
 	//
 	// Returns ErrNotFound if no record exists for the (userID, providerID) pair.
 	GetLatestUpstreamTokensForUser(ctx context.Context, userID, providerID string) (*UpstreamTokens, error)
+}
+
+// UpstreamRefreshLocker is an OPTIONAL capability of an UpstreamTokenStorage
+// backend: a mutual-exclusion lease over one logical upstream token row,
+// honoured by every process sharing that backend.
+//
+// It exists on top of CompareAndSwapUpstreamTokens because CAS only makes the
+// STORED row deterministic; both replicas still CALL the upstream provider
+// before either one writes, which an IdP enforcing strict single-use rotation
+// can read as a replay. Closing that gap means serializing the whole
+// read-redeem-write sequence, which is what this lease provides. See
+// docs/arch/11-auth-server-storage.md's "Refresh Coordination Scope".
+//
+// Acquisition is non-blocking: it either takes the lease or reports
+// ErrUpstreamRefreshLockHeld immediately, leaving waiting and re-reading to
+// the caller, which can therefore stop as soon as the holder has refreshed
+// the row it wanted. The lease is advisory and bounded by ttl, so a holder
+// that crashes cannot block the row forever and a caller must still write
+// through CompareAndSwapUpstreamTokens. Implementations must make expiry and
+// release safe against a stale holder: releasing must only delete the
+// caller's own lease, never one a later holder acquired after this one
+// expired.
+//
+// Like DeviceCodeStorage and ExchangeGrantStorage, it is deliberately not
+// embedded in UpstreamTokenStorage, so a backend that cannot be shared
+// between processes need not provide it. Obtain it with
+// UpstreamRefreshLockerFrom, which also peels storage decorators; a backend
+// without it degrades to CAS-only coordination.
+type UpstreamRefreshLocker interface {
+	// AcquireUpstreamRefreshLock tries to take the lease for rowID for at most
+	// ttl. It returns the lease on success, ErrUpstreamRefreshLockHeld when
+	// another holder has it, and any other error when the backend could not be
+	// consulted at all.
+	AcquireUpstreamRefreshLock(
+		ctx context.Context, rowID UpstreamTokenRowID, ttl time.Duration,
+	) (UpstreamRefreshLease, error)
+}
+
+// UpstreamRefreshLease is a held lock from
+// UpstreamRefreshLocker.AcquireUpstreamRefreshLock.
+type UpstreamRefreshLease interface {
+	// Release gives up the lease so a waiter can proceed without waiting out
+	// the TTL. It must be idempotent, and must not release a lease a later
+	// holder acquired after this one expired. It takes its own context,
+	// because the one that governed the refresh is typically already cancelled
+	// by the time the caller unwinds. An error only delays the next waiter
+	// until the TTL expires; it is not a correctness failure.
+	Release(ctx context.Context) error
 }
 
 // UpstreamTokenRefresher can refresh expired upstream tokens using their stored refresh token.

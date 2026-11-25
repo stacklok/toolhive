@@ -90,6 +90,7 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 - `DCRCredentialStore` — DCR client metadata and credential persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion). Secret-based clients store hashed secrets; `private_key_jwt` clients store their inline public JWKS and signing algorithm. Outbound (upstream) registrations resolved by `pkg/auth/dcr` are keyed by `(Issuer, UpstreamID, RedirectURI, ScopesHash)` plus the optional operator-set `dcrConfig.rotationKey`. `dcrConfig.clientName` sets the RFC 7591 `client_name` sent at registration; when empty, ToolHive registers as "ToolHive MCP Client". It is display-only metadata shown on the upstream's authorization screen and is never part of the registration's cache key, so changing it does not rename an already-registered client: the new value applies only the next time ToolHive registers a fresh client, for example after rotating via `rotationKey`. It is capped at 256 characters. Names with leading or trailing whitespace, or containing control or format characters, are rejected. Changing the rotation key addresses a new row, so the next start registers a fresh upstream client; the previous row stays in place and carries no TTL unless the upstream asserted `client_secret_expires_at`. The client registers with the token endpoint auth method the resolver prefers among those the upstream advertises (`client_secret_basic`, then `client_secret_post`, then `none`), or with the OAuth2 upstream's `tokenEndpointAuthMethod` when it is set, for an upstream whose token endpoint does not accept the preferred method. A registration response that names another method than the configured one is refused, and so is a resolution that still names one, such as a row a replica on an older configuration stored first; the next start or recheck replaces that row. On a cache hit the resolver also checks the cached client against the upstream and replaces the row when the upstream rejects it, or when the row was registered with another method than the configured `tokenEndpointAuthMethod`, provided the store implements `dcr.Replacer`. `dcrConfig.registrationProbe` selects the check: `tokenEndpoint` (default) redeems a random authorization code and reads `invalid_client` as "gone"; `authorizationEndpoint` sends an authorization request without following redirects and reads a direct 400/401/403 carrying an RFC 6749 JSON error object with `error` `invalid_client`, `unauthorized_client` or `invalid_request` as "gone" (RFC 6749 §4.1.2.1); `none` skips the upstream check but not the method check above. Each setting has a blind spot the rotation key covers: `tokenEndpoint` misses an upstream that validates the grant before authenticating a public client (it then answers `invalid_grant` for any client_id) and skips `private_key_jwt` clients, which it cannot sign for; `authorizationEndpoint` misses an upstream that renders its unknown-client error with 200, a redirect, or a page rather than a JSON error object; with `none` only the rotation key, or a change of the configured method, retires a registration. A false rejection by either probe re-registers at every start and, when registration also fails, fails startup. The check runs at start; `dcrConfig.registrationProbeInterval` (a Go duration of at least `1m`) repeats it while the server runs. Each tick re-runs the resolution against the stored row: a rejected registration is replaced, a missing one is registered, and when the result names a different client than the one in use, including a row another replica replaced, the upstream provider switches to it in place (`upstream.ClientCredentialsUpdater`; OIDC providers also replace their ID token verifier). A failed tick is logged and leaves the provider on its current client. An authorization started under the previous client and completed after the switch redeems its code with the new client, and upstream refresh tokens bound to the previous client stop refreshing, as with a restart. Each tick sends at most one probe request to the upstream from every replica (none with `registrationProbe: none`), plus a registration request when the probe rejects the client; the `tokenEndpoint` probe appears in upstream logs as a failed code redemption, so an interval of 5m to 15m suits most upstreams. Endpoints the run config leaves to discovery follow the new registration, and each replica waits a random part of the interval before its first tick and the interval ±10% after that.
 - `AssertionJWTConsumer` — atomic single-use consumption for validated JWT assertions. It is deliberately separate from `Storage`, so only assertion-grant composition requires replay protection.
 - `ExchangeGrantStorage` — optional server-side records behind refresh tokens issued through RFC 8693 token exchange. A callable discovers it with `storage.Unwrap(stor).(ExchangeGrantStorage)`. Memory and Redis implement it. See [Exchange grant storage](#exchange-grant-storage).
+- `UpstreamRefreshLocker` — optional mutual-exclusion lease over one upstream token row, so only one replica redeems a single-use upstream refresh token. A callable discovers it with `storage.UpstreamRefreshLockerFrom(stor)`. Memory and Redis implement it; a backend without it falls back to compare-and-swap ordering alone. See [Redemption lease](#redemption-lease-upstreamrefreshlocker).
 
 **Implementation:**
 - Interface definitions: `pkg/authserver/storage/types.go`
@@ -410,6 +411,13 @@ thv:auth:{default:my-server}:reqid:access:{request-id}  → {sig1, sig2}
 thv:auth:{default:my-server}:user:upstream:{user-id}     → {session1, session2}
 ```
 
+The upstream refresh lease is a plain string key, not an index, holding the
+current holder's random owner token for the lease TTL:
+
+```
+thv:auth:{default:my-server}:upstream-lock:{row-id}      → {owner-token}
+```
+
 ### Exchange grant storage
 
 `ExchangeGrantStorage` keeps one record per refresh token issued through token exchange, found by the token's HMAC signature. Time decisions for records (live, expired, revoked) are made in Go against the store clock; the record's Redis TTL is only garbage collection. The replay marker is different: its window follows Redis's own TTL. The create script checks whether the marker key exists, and Go only skips the marker once its window has already passed. `ExchangeGrantMarkerMargin` absorbs clock skew and the time between reading the clock and running the script. Both effects can only lengthen the window, which is the safe direction.
@@ -443,16 +451,18 @@ Redis, that representation is its row-key format, so two `(sessionID,
 providerName)` pairs that happen to produce the same Redis key resolve to the
 same identity — that's safe because they're the same physical row. What's
 not allowed is aliasing two pairs that are genuinely different rows: the
-auth server uses this identity only as the key for its in-process
-`singleflight` group, then its leader re-reads the row before redeeming its
-refresh token, and it reads/writes under its own sessionID — aliasing
-distinct rows would cross credentials between sessions. This prevents
-duplicate redemption from stale concurrent callers served by the same
-process; the identity is not persisted, logged, or exposed.
+auth server uses this identity as the key for its in-process `singleflight`
+group and for the cross-process redemption lease described below, then its
+leader re-reads the row before redeeming its refresh token, and it
+reads/writes under its own sessionID — aliasing distinct rows would cross
+credentials between sessions. This prevents duplicate redemption from stale
+concurrent callers served by the same process; the identity is never logged
+or returned to a client, and the only place it is written is the lease key a
+backend derives from it, which lives no longer than the lease.
 
 This is deliberately narrower than #4122's original in-process-only scope: it
-does not by itself provide distributed coordination across replicas. That
-coordination now exists as a second, independent layer:
+does not by itself provide distributed coordination across replicas. Two
+further layers do, and both run. The first:
 `UpstreamTokenStorage.CompareAndSwapUpstreamTokens` conditions a refresh write
 on the refresh token currently stored still matching the value the caller
 redeemed with, failing the write (`ErrConcurrentRefresh`) instead of
@@ -467,22 +477,68 @@ across processes: whichever replica's write lands first wins, and every
 losing replica's write fails instead of silently clobbering it.
 
 This is a storage-ordering guarantee, not a guarantee that concurrent
-redemption is safe at the upstream provider. Both replicas still call
-`provider.RefreshTokens` before either one's CAS write runs, so for a
-provider enforcing strict single-use rotation (RFC 9700 §4.14.2 replay
-detection), two concurrent redemptions of the same refresh token can still
-be indistinguishable from a replay at the IdP, which may revoke the grant
-regardless of which replica's write wins here. CAS is fully sufficient only
-where the provider tolerates a short grace/leeway window in which more than
-one redeemed child stays valid (e.g. Read.ai's stated behavior) — outside
-that window, closing the gap requires serializing the *redemption* itself
-(a distributed lock around the read-redeem-write sequence), not just the
-write. That lock is a deliberate follow-up, not implemented here: this layer
-only prevents storage corruption from a lost write race, and its own log
-distinguishes a genuine lost race (an unexpired row on re-read) from a row
-that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
-re-read) — the latter is expected behavior, not a race, and refuses to
-resurrect the deleted row.
+redemption is safe at the upstream provider. Without the second layer below,
+both replicas call `provider.RefreshTokens` before either one's CAS write
+runs, so for a provider enforcing strict single-use rotation (RFC 9700
+§4.14.2 replay detection), two concurrent redemptions of the same refresh
+token can be indistinguishable from a replay at the IdP, which may revoke the
+grant regardless of which replica's write wins. CAS alone is therefore
+sufficient only where the provider tolerates a grace/leeway window in which
+more than one redeemed child stays valid (e.g. Read.ai's stated behavior).
+Closing the gap outside that window requires serializing the *redemption*,
+which is the second layer.
+
+The refresher's `resolveConcurrentRefreshConflict` distinguishes a genuine
+lost race (an unexpired row on re-read) from a row that is simply gone
+(deleted by logout or evicted by TTL, `ErrNotFound` on re-read) — the latter
+is expected behavior, not a race, and the row is not resurrected.
+
+#### Redemption lease (`UpstreamRefreshLocker`)
+
+`UpstreamRefreshLocker` is an optional capability of an
+`UpstreamTokenStorage` backend — segregated from the interface for the same
+reason as `DeviceCodeStorage` and `ExchangeGrantStorage` — that hands out a
+mutual-exclusion lease over one upstream token row, honoured by every process
+sharing the backend. `upstreamTokenRefresher` resolves it once at
+construction via `storage.UpstreamRefreshLockerFrom`, which peels the storage
+decorators (they embed `Storage` and so do not carry the backend's optional
+capabilities), and holds that lease across the whole read-redeem-write
+sequence. Only the holder calls `provider.RefreshTokens`.
+
+A replica that cannot take the lease never falls through to the provider. It
+waits on a capped exponential backoff, re-reading the row after each wait, and
+returns the holder's row as soon as that row satisfies the same test the
+leader uses on its own re-read: unexpired *and* different from the row the
+caller arrived with. If no usable updated row is available, the waiter retries
+lease acquisition. After acquiring the lease, it re-reads the row before
+deciding whether an upstream refresh is still needed. If `refreshTimeout` runs
+out first, the refresh fails; running out of time is not a licence to redeem
+uncoordinated. An acquisition that fails for any reason
+other than "held by someone else" also fails closed, because a replica that
+cannot reach the backend cannot know whether another one is redeeming.
+
+The lease is advisory and bounded by a TTL set above `refreshTimeout`, so a
+holder that dies mid-refresh blocks the row for at most that long. The holder
+redeems on a fresh `refreshTimeout` budget starting at acquisition rather than
+on whatever the caller had left, so a waiter that wins the lease late does not
+run a rotation on a deadline that could cut it off between the IdP accepting
+the redemption and the CAS write landing; the TTL margin covers the
+best-effort per-provider delete that may follow. It does not
+replace CAS: both layers run, and the CAS write is what stays correct if a
+lease expires early under load. Redis implements acquisition as `SET NX PX` of
+a random owner token under `{prefix}upstream-lock:{rowID}` — the same row
+identity the in-process `singleflight` group is keyed by, so the two layers
+cover exactly the same set of rows by construction — and release as a Lua
+compare-and-delete on that owner token, so a stale holder can never delete the
+lease a later holder legitimately acquired. The key name deliberately does not
+match the `upstream:*` scan pattern walked by the legacy-key migration.
+`MemoryStorage` implements the same semantics in-process under its existing
+mutex; it is reachable from one process only, where `singleflight` already
+deduplicates, but implementing it for real keeps a caller's behaviour
+independent of which backend it was wired against. A backend that does not
+provide the capability degrades to the CAS-only coordination described above,
+which is also what happens across a rolling upgrade while replicas on the
+older version are still running.
 
 ### Upstream Refresh Rejections and the Refresh Grant
 
@@ -1112,6 +1168,7 @@ The storage decorators (`CIMDStorageDecorator`, the CIMD shape guard, `SPIFFESto
 - **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration.
 - **`DeviceCodeStorage` assertion** (`buildDeviceFlowFactory` and `handlers.NewHandler`): The device flow reaches the device-code store on the concrete backend.
 - **`RememberedConsentStorage` assertion** (`handlers.NewHandler`): Remembered consent is only offered when the concrete backend implements it.
+- **`UpstreamRefreshLocker` discovery** (`newUpstreamTokenRefresher`): `storage.UpstreamRefreshLockerFrom` resolves the optional redemption lease once at construction. Unlike the assertions above it walks the chain and tests every layer, not only the base, so a decorator that provides the capability itself is honoured; it returns nil when no layer does.
 - **Continuation fallback** (`handlers.NewHandler`, used by `callbackClient` in `handlers/callback.go`): deliberately bypasses the CIMD decorator. When the CIMD fetch limiter refuses a lookup during callback, consent, or device verification, it reads the persisted client row through the admitted below-CIMD view (`storage.ClientStoreBelowCIMD`, which stops at `ClientAdmissionStorage`). That view is selected once by `NewHandler` and kept on the handler, not found by walking the decorators during the request, so the fallback still passes client admission and never reaches the raw backend.
 
 The `AssertionJWTConsumer` capability is separate: `CIMDStorageDecorator` implements `ConsumeAssertionJWT` and forwards it to a capable backend. If the backend lacks the capability, the decorator returns an error instead of accepting an assertion with unknown replay status; replay protection therefore fails closed.

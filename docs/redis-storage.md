@@ -358,6 +358,7 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}user:{user_id}` | User account | None |
 | `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
 | `{prefix}upstream:{session_id}` | Upstream IDP tokens | Matches token lifetime |
+| `{prefix}upstream-lock:{row_id}` | Mutual-exclusion lease held by the one replica refreshing an upstream token row. Value is a random owner token; `row_id` is a SHA-256 digest that carries no session ID | 45 seconds; deleted when the holder finishes |
 | `{prefix}pending:{handle_or_state}` | Browser-bound consent handle or upstream callback state | Remaining time until the initial `CreatedAt` + 10 minutes; deadline checked before consent/callback consumption |
 | `{prefix}consent:session:{digest}` | SHA-256 digest of the browser session cookie secret (never the raw secret) | Remaining fixed lifetime, at most 7 days |
 | `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
@@ -410,6 +411,25 @@ The storage implementation uses different strategies depending on the consistenc
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation. These operations use `SMEMBERS` + individual `DEL` calls, meaning partial failures are possible but safe (orphaned keys expire via TTL)
 
 Secondary index cleanup is best-effort: stale entries may remain temporarily but are cleaned up on the next write or by TTL expiration.
+
+### Upstream Refresh Serialization
+
+Upstream refresh tokens are usually single-use: redeeming one returns a replacement and invalidates it. With more than one auth server replica sharing this Redis, two replicas can find the same expired upstream access token at the same time. Both would redeem the same refresh token, and an IdP that enforces strict rotation can treat the second redemption as a replay and revoke the whole grant.
+
+To prevent that, a replica takes `{prefix}upstream-lock:{row_id}` before refreshing one row and holds it until the refreshed tokens are stored. Only the holder calls the upstream provider. This changes how refresh requests behave:
+
+- **A replica that is not the holder waits.** It polls the row while the holder works and returns the refreshed tokens as soon as they are stored, so the request succeeds — it is just slower, typically by the length of one upstream refresh. Waiting is bounded at 30 seconds, after which the request fails rather than redeeming on its own.
+- **A Redis fault during the refresh fails the request.** A replica that cannot reach Redis cannot tell whether another replica is redeeming, so it fails closed with `could not acquire upstream refresh lock` instead of risking the replay. This is the same dependency the stored row already has; it does not affect requests that need no refresh.
+- **A replica that crashes mid-refresh blocks its row for up to 45 seconds**, the lease TTL. Only that one session's upstream refreshes are affected, and only until the lease expires. Requests arriving in the first 15 seconds of that window wait out their 30 seconds and fail; later ones take the lease over and refresh normally.
+- **During a rolling upgrade**, replicas still on the older version do not take the lease, so for the length of the rollout two replicas can still redeem the same refresh token, exactly as before the upgrade. No migration is needed, and rolling back simply removes the coordination; `upstream-lock:*` keys expire on their own.
+
+The lease is advisory. A Redis failover that promotes a replica before the acquisition replicated, or a holder whose host paused it past the TTL, can leave two holders. The compare-and-swap on the stored row still orders their writes, which is the behavior described in [Auth Server Storage](arch/11-auth-server-storage.md#refresh-coordination-scope).
+
+To see the lease while a refresh is in flight:
+
+```bash
+redis-cli --scan --pattern '*upstream-lock*'
+```
 
 ## Troubleshooting
 

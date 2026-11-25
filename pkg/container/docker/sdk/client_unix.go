@@ -50,7 +50,7 @@ func newPlatformClient(socketPath string) (*http.Client, []mobyclient.Opt) {
 // caller can fall back to the next candidate when an earlier one is found but
 // cannot be connected to (e.g. /var/run/docker.sock present but EACCES, while
 // Docker Desktop's per-user socket would have worked).
-func findPlatformContainerSocket(rt runtime.Type) ([]string, runtime.Type, error) {
+func findPlatformContainerSocket(rt runtime.Type, overrides runtime.SocketConfig) ([]string, runtime.Type, error) {
 	// First check for custom socket paths via environment variables. The
 	// override is explicit, so we don't add other fallbacks alongside it.
 	if customSocketPath := os.Getenv(PodmanSocketEnv); customSocketPath != "" {
@@ -78,6 +78,19 @@ func findPlatformContainerSocket(rt runtime.Type) ([]string, runtime.Type, error
 			return nil, runtime.TypeColima, fmt.Errorf("invalid Colima socket path: %w", err)
 		}
 		return []string{customSocketPath}, runtime.TypeColima, nil
+	}
+
+	// Next, the config file override for this runtime. Like the env vars it is
+	// explicit, so it replaces auto-detection for this runtime rather than
+	// joining the candidate list. Unlike the env vars it only applies to its
+	// own runtime, so a stale podman_socket does not stop Docker discovery.
+	if configSocketPath := overrides.SocketFor(rt); configSocketPath != "" {
+		//nolint:gosec // G706: socket path from the user's own config file
+		slog.Debug("using socket from config", "runtime", rt, "path", configSocketPath)
+		if _, err := os.Stat(configSocketPath); err != nil {
+			return nil, rt, fmt.Errorf("invalid %s socket path from config: %w", rt, err)
+		}
+		return []string{configSocketPath}, rt, nil
 	}
 
 	if rt == runtime.TypePodman {

@@ -7,13 +7,14 @@ grant wiring, upstream identity-provider clients, key management, and storage
 backends to compose your own.
 
 Although it lives in the ToolHive repository and powers ToolHive's MCP proxy
-and virtual MCP server, it has no dependency on MCP or ToolHive's proxy runtime.
-Any Go service that needs to issue OAuth 2.0 tokens, federate sign-in to
-upstream identity providers, or broker delegated tokens can embed it. Today it
-still imports a few shared ToolHive utility packages (such as `pkg/oauthproto`
-and `pkg/networking`) inside the `toolhive` Go module; making it fully
-self-contained and eventually extracting it into its own repository is an active
-goal.
+and virtual MCP server, it has no code dependency on MCP or ToolHive's proxy
+runtime (though some defaults and validation rules follow MCP conventions—most
+notably, `AllowedAudiences` is required). Any Go service that needs to issue
+OAuth 2.0 tokens, federate sign-in to upstream identity providers, or broker
+delegated tokens can embed it. Today it still imports several shared utility
+packages inside the `toolhive` Go module (such as `pkg/oauthproto`,
+`pkg/networking`, and `pkg/auth/dcr`); making it fully self-contained and
+eventually extracting it into its own repository is an active goal.
 
 ## Why use `pkg/authserver`
 
@@ -86,9 +87,15 @@ func mountAuthServer(ctx context.Context, mux *http.ServeMux) (func() error, err
 		return nil, err
 	}
 
-	// Mount all OAuth and discovery endpoints alongside your application routes.
-	mux.Handle("/oauth/", srv.Handler())
-	mux.Handle("/.well-known/", srv.Handler())
+	// Mount OAuth and discovery endpoints explicitly so sibling well-known
+	// routes (such as /.well-known/oauth-protected-resource) stay reachable.
+	h := srv.Handler()
+	mux.Handle("/oauth/", h)
+	mux.Handle("/.well-known/oauth-authorization-server", h)
+	mux.Handle("/.well-known/oauth-authorization-server/", h)
+	mux.Handle("/.well-known/openid-configuration", h)
+	mux.Handle("/.well-known/openid-configuration/", h)
+	mux.Handle("/.well-known/jwks.json", h)
 
 	// Read and refresh stored upstream tokens in your application middleware:
 	//   tokens, err := srv.IDPTokenStorage().GetUpstreamTokens(ctx, sessionID, "corp")
@@ -123,9 +130,9 @@ Two entry points assemble a complete server:
   secrets are referenced by file path or environment variable, resolves them at
   startup, and exposes route registration and an optional TLS listener.
 
-If you prefer to assemble the HTTP surface yourself, the underlying handlers can
-also be registered directly on a `chi.Router` via `OAuthRoutes` and
-`WellKnownRoutes`.
+If you prefer to assemble the HTTP surface yourself, construct a
+`handlers.Handler` (`pkg/authserver/server/handlers`) and register its
+`OAuthRoutes` and `WellKnownRoutes` directly on a `chi.Router`.
 
 ### Storage and upstream credential custody
 
@@ -148,9 +155,11 @@ process retrieves and refreshes the corresponding upstream credentials through
 
 Because `storage.Storage` is an interface, embedders commonly wrap
 `MemoryStorage` or `RedisStorage` with decorators for encryption at rest, tenant
-scoping, or external directory resolution. See the
-[storage architecture](../../docs/arch/11-auth-server-storage.md) for backend
-and lifecycle details.
+scoping, or external directory resolution; decorators must expose
+`Unwrap() storage.Storage`, and custom backends must implement the optional
+capability interfaces (such as `DCRCredentialStore`) for the features they
+enable. See the [storage architecture](../../docs/arch/11-auth-server-storage.md)
+for backend and lifecycle details.
 
 ### Upstream identity providers
 
@@ -197,8 +206,8 @@ in two independent, opt-in roles—you can run either side or pair two instances
   and configured subject bindings while preserving `act`.
 
 ID-JAG support is a partial draft implementation: sender-constrained ID-JAGs
-(DPoP/`cnf`) are not yet issued or enforced on redemption. See
-[external subject-token exchange & delegation](../../docs/arch/17-token-exchange-delegation.md)
+(DPoP/`cnf`) are not supported and are rejected at both issuance and redemption.
+See [external subject-token exchange & delegation](../../docs/arch/17-token-exchange-delegation.md)
 for details.
 
 ### SPIFFE workload authentication
@@ -216,6 +225,27 @@ client IDs with per-association scopes, RFC 8707 resources, and grant types:
 
 See [SPIFFE association declarations](../../docs/arch/18-spiffe-association-declarations.md)
 for details.
+
+### Package layout
+
+Supporting packages (`storage`, `upstream`, `upstreamfilter`,
+`authorizationdetails`) can be imported independently. The grant packages under
+`server/` are Fosite grant factories wired through `pkg/authserver/server`, so
+you can compose a custom subset of grants on top of Fosite, though they are not
+framework-agnostic standalone handlers.
+
+| Package | Role |
+| --- | --- |
+| `pkg/authserver` | Ready-to-use server (`authserver.New`), `Config`, and `RunConfig`. |
+| `pkg/authserver/runner` | File/env-driven `EmbeddedAuthServer`, secret resolution, and optional TLS listener. |
+| `pkg/authserver/storage` | `Storage` interface, `MemoryStorage`, `RedisStorage`, and built-in decorators (CIMD, SPIFFE, client admission). |
+| `pkg/authserver/upstream` | OIDC and OAuth 2.0 upstream provider clients and token refresh. |
+| `pkg/authserver/upstreamfilter` | `UpstreamFilter` interface and group-based multi-upstream chain filter. |
+| `pkg/authserver/authorizationdetails` | RFC 9396 `authorization_details` parser and policy hook registry. |
+| `pkg/authserver/server` | Fosite provider wiring, JWT signing (`server/keys`, `server/crypto`), client registration (`server/registration`), and HTTP handlers (`server/handlers`). |
+| `pkg/authserver/server/tokenexchange` | Fosite grant factories for RFC 8693 token exchange, RFC 7523 JWT-bearer, and ID-JAG issuance/redemption. |
+| `pkg/authserver/server/clientcredentials` | Fosite grant factory for SPIFFE `client_credentials`. |
+| `pkg/authserver/server/deviceflow` | Fosite grant factory for RFC 8628 device authorization. |
 
 ## How applications use it
 
@@ -241,11 +271,11 @@ full conformance with each specification.
 | --- | --- | --- |
 | Authorization Code + PKCE (S256) | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636.html) | Enabled in interactive mode (public and confidential clients; PKCE S256 enforced). |
 | Refresh Token | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html) | Enabled in interactive mode; login refresh tokens rotate. |
-| Device Authorization | [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628.html) | Opt-in; requires a single upstream. |
+| Device Authorization | [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628.html) | Opt-in; requires a single upstream (multi-upstream deployments fail at verification). |
 | Client Credentials | [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html) | Opt-in for SPIFFE-authenticated workloads only (bound to the workload's SPIFFE ID and SVID lifetime). |
 | Token Exchange | [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html) | Delegation for authenticated clients (delegate clients, opt-in `private_key_jwt` DCR clients, or SPIFFE workloads), using self-issued or trusted external subject tokens, plus opt-in non-rotating exchange-grant refresh tokens. |
 | JWT-Bearer Authorization Grant | [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523.html) | Opt-in per trusted issuer; supports plain assertions and bound ID-JAG redemption. |
-| Identity Assertion JWT Authorization Grant (ID-JAG) | [Internet-Draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/) | Opt-in, partial draft implementation: issuing from exchange grants and redeeming via JWT-bearer. Sender constraint (`cnf`) is not yet enforced; see [delegation docs](../../docs/arch/17-token-exchange-delegation.md#bound-id-jag-assertions). |
+| Identity Assertion JWT Authorization Grant (ID-JAG) | [Internet-Draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/) | Opt-in, partial draft implementation: issuing from exchange grants and redeeming via JWT-bearer. Sender-constrained ID-JAGs (`cnf`/DPoP) are not supported; see [delegation docs](../../docs/arch/17-token-exchange-delegation.md#bound-id-jag-assertions). |
 
 Implicit and Resource Owner Password grants are not registered by the
 ready-to-use server. Public token introspection, revocation, and userinfo HTTP

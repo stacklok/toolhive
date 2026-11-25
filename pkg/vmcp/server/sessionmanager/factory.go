@@ -51,7 +51,8 @@ type FactoryConfig struct {
 	OptimizerConfig *optimizer.Config
 
 	// OptimizerOptions are passed to optimizer.NewOptimizerFactory when the
-	// factory is built from OptimizerConfig. Ignored with OptimizerFactory.
+	// factory is built from OptimizerConfig. New rejects them with
+	// OptimizerFactory or without OptimizerConfig, where nothing would use them.
 	OptimizerOptions []optimizer.FactoryOption
 
 	// OptimizerFactory is an optional pre-built optimizer factory.
@@ -116,6 +117,16 @@ type FactoryConfig struct {
 	// A value of 0 uses defaultSweepInterval. A negative value disables the
 	// sweep entirely (the pre-#6932 behaviour).
 	SweepInterval time.Duration
+}
+
+// checkOptimizerOptions rejects FactoryConfig.OptimizerOptions that nothing
+// would use: they reach only an optimizer built from OptimizerConfig.
+func checkOptimizerOptions(cfg *FactoryConfig) error {
+	if len(cfg.OptimizerOptions) > 0 && (cfg.OptimizerFactory != nil || cfg.OptimizerConfig == nil) {
+		return fmt.Errorf("sessionmanager.New: FactoryConfig.OptimizerOptions apply only to " +
+			"an optimizer built from OptimizerConfig, so they need OptimizerConfig and no OptimizerFactory")
+	}
+	return nil
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry

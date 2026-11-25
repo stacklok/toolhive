@@ -152,6 +152,9 @@ func New(
 		return nil, nil, fmt.Errorf("sessionmanager.New: the optimizer requires " +
 			"FactoryConfig.AdvertiseFromCore (the Serve layer builds it over the core's tools)")
 	}
+	if err := checkOptimizerOptions(cfg); err != nil {
+		return nil, nil, err
+	}
 	capacity := cfg.CacheCapacity
 	if capacity == 0 {
 		capacity = defaultCacheCapacity

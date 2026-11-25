@@ -54,6 +54,12 @@ func rejectionErr(code string, status int) error {
 		})
 }
 
+var testTokenExpiry = time.Unix(1_700_000_000, 0)
+
+func tok(refreshToken, accessToken string) *storage.UpstreamTokens {
+	return &storage.UpstreamTokens{RefreshToken: refreshToken, AccessToken: accessToken, ExpiresAt: testTokenExpiry}
+}
+
 func TestRejectedRefreshes_NilAndZeroValuesMiss(t *testing.T) {
 	t.Parallel()
 
@@ -67,8 +73,8 @@ func TestRejectedRefreshes_NilAndZeroValuesMiss(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tt.memory.add(0, "row", "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
-			assert.Nil(t, tt.memory.lookup(0, "row", "rt", "at"))
+			tt.memory.add(0, "row", tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
+			assert.Nil(t, tt.memory.lookup(0, "row", tok("rt", "at")))
 		})
 	}
 }
@@ -79,14 +85,17 @@ func TestRejectedRefreshes_AddAndLookup(t *testing.T) {
 	clock := newFakeClock()
 	memory, err := newRejectedRefreshes(10, time.Minute, clock.Now)
 	require.NoError(t, err)
-	memory.add(1, "row-a", "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
+	memory.add(1, "row-a", tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
 
-	require.ErrorIs(t, memory.lookup(1, "row-a", "rt", "at"), upstream.ErrGrantRejected)
+	require.ErrorIs(t, memory.lookup(1, "row-a", tok("rt", "at")), upstream.ErrGrantRejected)
 
-	assert.Nil(t, memory.lookup(1, "row-a", "other-rt", "at"), "a different refresh token must not match")
-	assert.Nil(t, memory.lookup(1, "row-a", "rt", "other-at"), "a different access token must not match")
-	assert.Nil(t, memory.lookup(1, "row-b", "rt", "at"), "a different row must not match")
-	assert.Nil(t, memory.lookup(2, "row-a", "rt", "at"), "a different generation must not match")
+	assert.Nil(t, memory.lookup(1, "row-a", tok("other-rt", "at")), "a different refresh token must not match")
+	assert.Nil(t, memory.lookup(1, "row-a", tok("rt", "other-at")), "a different access token must not match")
+	sameTokensNewExpiry := tok("rt", "at")
+	sameTokensNewExpiry.ExpiresAt = sameTokensNewExpiry.ExpiresAt.Add(time.Second)
+	assert.Nil(t, memory.lookup(1, "row-a", sameTokensNewExpiry), "a different access token expiry must not match")
+	assert.Nil(t, memory.lookup(1, "row-b", tok("rt", "at")), "a different row must not match")
+	assert.Nil(t, memory.lookup(2, "row-a", tok("rt", "at")), "a different generation must not match")
 }
 
 func TestRejectedRefreshes_DigestSeparatesTokens(t *testing.T) {
@@ -94,10 +103,10 @@ func TestRejectedRefreshes_DigestSeparatesTokens(t *testing.T) {
 
 	memory, err := newRejectedRefreshes(10, time.Minute, newFakeClock().Now)
 	require.NoError(t, err)
-	memory.add(0, "row", "ab", "c", rejectionErr("invalid_grant", http.StatusBadRequest))
+	memory.add(0, "row", tok("ab", "c"), rejectionErr("invalid_grant", http.StatusBadRequest))
 
-	assert.Nil(t, memory.lookup(0, "row", "a", "bc"), "moving a byte between the tokens must not match")
-	assert.NotNil(t, memory.lookup(0, "row", "ab", "c"))
+	assert.Nil(t, memory.lookup(0, "row", tok("a", "bc")), "moving a byte between the tokens must not match")
+	assert.NotNil(t, memory.lookup(0, "row", tok("ab", "c")))
 }
 
 func TestRejectedRefreshes_LookupBuildsFreshError(t *testing.T) {
@@ -105,10 +114,10 @@ func TestRejectedRefreshes_LookupBuildsFreshError(t *testing.T) {
 
 	memory, err := newRejectedRefreshes(10, time.Minute, newFakeClock().Now)
 	require.NoError(t, err)
-	memory.add(0, "row", "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
+	memory.add(0, "row", tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
 
-	first := memory.lookup(0, "row", "rt", "at")
-	second := memory.lookup(0, "row", "rt", "at")
+	first := memory.lookup(0, "row", tok("rt", "at"))
+	second := memory.lookup(0, "row", tok("rt", "at"))
 	require.Error(t, first)
 	require.Error(t, second)
 	assert.NotSame(t, first, second)
@@ -133,10 +142,10 @@ func TestRejectedRefreshes_DoesNotRememberWithoutRetrieveError(t *testing.T) {
 	memory, err := newRejectedRefreshes(10, time.Minute, newFakeClock().Now)
 	require.NoError(t, err)
 
-	memory.add(0, "row", "rt", "at", fmt.Errorf("plain: %w", upstream.ErrGrantRejected))
-	memory.add(0, "row", "rt2", "at", fmt.Errorf("no response: %w",
+	memory.add(0, "row", tok("rt", "at"), fmt.Errorf("plain: %w", upstream.ErrGrantRejected))
+	memory.add(0, "row", tok("rt2", "at"), fmt.Errorf("no response: %w",
 		&oauth2.RetrieveError{ErrorCode: "invalid_grant"}))
-	memory.add(0, "row", "rt3", "at", nil)
+	memory.add(0, "row", tok("rt3", "at"), nil)
 
 	assert.Zero(t, memory.cache.Len())
 }
@@ -147,13 +156,13 @@ func TestRejectedRefreshes_ExpiresOnLookup(t *testing.T) {
 	clock := newFakeClock()
 	memory, err := newRejectedRefreshes(10, time.Minute, clock.Now)
 	require.NoError(t, err)
-	memory.add(0, "row", "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
+	memory.add(0, "row", tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
 
 	clock.Advance(time.Minute - time.Second)
-	assert.NotNil(t, memory.lookup(0, "row", "rt", "at"))
+	assert.NotNil(t, memory.lookup(0, "row", tok("rt", "at")))
 
 	clock.Advance(time.Second)
-	assert.Nil(t, memory.lookup(0, "row", "rt", "at"), "entry must expire once the TTL has passed")
+	assert.Nil(t, memory.lookup(0, "row", tok("rt", "at")), "entry must expire once the TTL has passed")
 	assert.Zero(t, memory.cache.Len(), "an expired entry is removed on lookup")
 }
 
@@ -163,11 +172,11 @@ func TestRejectedRefreshes_EvictsOldestAtCapacity(t *testing.T) {
 	memory, err := newRejectedRefreshes(2, time.Minute, newFakeClock().Now)
 	require.NoError(t, err)
 	for _, row := range []storage.UpstreamTokenRowID{"row-1", "row-2", "row-3"} {
-		memory.add(0, row, "rt", "at", rejectionErr("invalid_grant", http.StatusBadRequest))
+		memory.add(0, row, tok("rt", "at"), rejectionErr("invalid_grant", http.StatusBadRequest))
 	}
 
-	assert.Nil(t, memory.lookup(0, "row-1", "rt", "at"))
-	assert.NotNil(t, memory.lookup(0, "row-3", "rt", "at"))
+	assert.Nil(t, memory.lookup(0, "row-1", tok("rt", "at")))
+	assert.NotNil(t, memory.lookup(0, "row-3", tok("rt", "at")))
 }
 
 func TestNewRejectedRefreshes_RejectsInvalidInput(t *testing.T) {

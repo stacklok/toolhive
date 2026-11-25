@@ -546,12 +546,13 @@ the first rejection, the refresh failures behind the repeated WARN lines are
 answered from this memory and do not reach the IdP; a DEBUG line says so.
 
 An entry is keyed on the storage row, a client registration generation, and a
-SHA-256 digest of the row's refresh token and access token. It stops matching
-when:
+SHA-256 digest of the row's refresh token, access token and access token
+expiry. It stops matching when:
 
 - another replica or a new sign-in stores a different refresh token in the row;
 - another replica refreshes successfully without rotating the refresh token,
-  which stores a new access token next to the same refresh token;
+  which stores a new access token, or the same access token with a new expiry,
+  next to the same refresh token;
 - the upstream's client registration is replaced through the server
   (`UpdateUpstreamClientCredentials`, used by the DCR recheck), because an IdP
   may answer `invalid_grant` for a refresh token issued to another client.
@@ -685,26 +686,30 @@ the bearer validator answers those with 503 or a retryable 401 anyway:
   completes in the background and stores its result.
 
 To tolerate the lost-race window described above, the guard does not refuse
-on the first rejection. It waits briefly (500ms) and re-reads the row, and a
-row now holding a different refresh token or a different access token
-counts as live. This is a
+on the first rejection. It waits briefly (500ms) and re-reads the row. If the
+row has changed (a different refresh token, access token, ID token or access
+token expiry), it counts as live and the grant goes through. This is a
 heuristic: a winner whose write lands after the wait is missed. The client is
 refused and its rows deleted, so the winner's write fails, but it keeps its
-refresh token. A recheck that cannot
-complete (the request is cancelled, or the read fails) is uncertain too. A
-session without a `tsid` (a session-less grant) is not checked.
+refresh token. A recheck that cannot complete (the request is cancelled, or
+the read fails) is uncertain too. A session without a `tsid` (a session-less
+grant) is not checked.
 
 Because the guard refreshes through the shared refresher, it is answered from
 the [remembered rejections](#remembered-rejections) too. After a rejection on
-the bearer path, the guard gets the remembered error without an IdP call, still
-runs its recheck, and refuses and drops the session's rows only if the row
-still holds the same refresh token and the same access token. If another
-replica refreshed successfully during the recheck without rotating the refresh
-token, the row has the same refresh token but a new access token; the IdP
-accepted that refresh, so the guard grants and keeps the row. The guard can therefore act on a rejection up to
-10 minutes old. If the IdP used `invalid_grant` for an account or policy state
-that an administrator fixed in that time, the client has to sign in again where
-it would otherwise have been granted. This is accepted.
+the bearer path, the guard gets the remembered error without an IdP call and
+can therefore act on a rejection up to 10 minutes old. If the IdP used
+`invalid_grant` for an account or policy state that an administrator fixed in
+that time, the client has to sign in again where it would otherwise have been
+granted. This is accepted.
+
+The recheck narrows this. The guard still re-reads the row, and it refuses and
+drops the session's rows only if the row is unchanged. If another replica
+refreshed successfully without rotating the refresh token (for example once an
+administrator cleared an IdP-side block), the row keeps its refresh token but
+holds a new access token or expiry. Every write to a session's row is a
+successful IdP refresh, so the IdP accepted that refresh token, and the guard
+grants and keeps the row.
 
 **Upgrade impact.** The guard is on by default. After an upgrade, a session
 whose upstream credential is already dead is refused on its first refresh

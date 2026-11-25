@@ -37,10 +37,11 @@ type rejectedRefreshKey struct {
 	// generation is the refresher's client registration generation when the
 	// rejection was received; see upstreamTokenRefresher.bumpClientGeneration.
 	generation uint64
-	// digest covers the refresh token and the access token stored with it. A
-	// non-rotating refresh by another replica stores a new access token with
-	// the same refresh token, so the entry stops matching and the IdP is asked
-	// again.
+	// digest covers the refresh token, the access token stored with it and
+	// that access token's expiry. A non-rotating refresh elsewhere stores a
+	// new access token, or the same access token string with a new expiry,
+	// under the same refresh token, so the entry stops matching and the IdP is
+	// asked again.
 	digest [sha256.Size]byte
 }
 
@@ -56,9 +57,9 @@ type rejectedRefresh struct {
 // rejectedRefreshes remembers, per process, refresh tokens the IdP rejected
 // with invalid_grant, so a row holding a dead refresh token does not cost an
 // IdP call on every request. An entry is keyed on the row ID, the client
-// registration generation, and a digest of the row's refresh and access
-// tokens, so it stops matching as soon as another process or a new sign-in
-// stores different tokens in the row, or the upstream's client registration
+// registration generation, and a digest of the row's refresh token, access
+// token and access token expiry, so it stops matching as soon as another
+// process or a new sign-in stores different tokens or a new expiry in the row, or the upstream's client registration
 // is replaced through the server's UpdateUpstreamClientCredentials. Replacing
 // a registration directly on a provider bypasses the generation, and the
 // memory keeps answering until the entry expires.
@@ -94,12 +95,12 @@ func newRejectedRefreshes(size int, ttl time.Duration, now func() time.Time) (*r
 // lookup returns a new error describing the remembered rejection, or nil when
 // there is none. Every call builds its own error.
 func (m *rejectedRefreshes) lookup(
-	generation uint64, row storage.UpstreamTokenRowID, refreshToken, accessToken string,
+	generation uint64, rowID storage.UpstreamTokenRowID, tokens *storage.UpstreamTokens,
 ) error {
-	if m == nil || m.cache == nil {
+	if m == nil || m.cache == nil || tokens == nil {
 		return nil
 	}
-	key := newRejectedRefreshKey(generation, row, refreshToken, accessToken)
+	key := newRejectedRefreshKey(generation, rowID, tokens)
 	entry, ok := m.cache.Get(key)
 	if !ok {
 		return nil
@@ -118,20 +119,20 @@ func (m *rejectedRefreshes) lookup(
 	)
 }
 
-// add remembers the rejection err for the row and tokens until now+ttl. It
+// add remembers the rejection err for the row as stored in tokens until now+ttl. It
 // does nothing on a nil or zero value, or when err holds no
 // *oauth2.RetrieveError with a response to take the code and status from.
 func (m *rejectedRefreshes) add(
-	generation uint64, row storage.UpstreamTokenRowID, refreshToken, accessToken string, err error,
+	generation uint64, rowID storage.UpstreamTokenRowID, tokens *storage.UpstreamTokens, err error,
 ) {
-	if m == nil || m.cache == nil || err == nil {
+	if m == nil || m.cache == nil || tokens == nil || err == nil {
 		return
 	}
 	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
 	if !ok || retrieveErr.Response == nil {
 		return
 	}
-	m.cache.Add(newRejectedRefreshKey(generation, row, refreshToken, accessToken), rejectedRefresh{
+	m.cache.Add(newRejectedRefreshKey(generation, rowID, tokens), rejectedRefresh{
 		errorCode:  retrieveErr.ErrorCode,
 		statusCode: retrieveErr.Response.StatusCode,
 		status:     retrieveErr.Response.Status,
@@ -140,15 +141,16 @@ func (m *rejectedRefreshes) add(
 }
 
 func newRejectedRefreshKey(
-	generation uint64, row storage.UpstreamTokenRowID, refreshToken, accessToken string,
+	generation uint64, rowID storage.UpstreamTokenRowID, tokens *storage.UpstreamTokens,
 ) rejectedRefreshKey {
 	h := sha256.New()
 	// Length prefixes keep ("ab", "c") and ("a", "bc") apart.
-	for _, v := range []string{refreshToken, accessToken} {
+	for _, v := range []string{tokens.RefreshToken, tokens.AccessToken} {
 		_ = binary.Write(h, binary.BigEndian, uint64(len(v)))
 		_, _ = h.Write([]byte(v))
 	}
-	key := rejectedRefreshKey{row: row, generation: generation}
+	_ = binary.Write(h, binary.BigEndian, tokens.ExpiresAt.UnixNano())
+	key := rejectedRefreshKey{row: rowID, generation: generation}
 	h.Sum(key.digest[:0])
 	return key
 }

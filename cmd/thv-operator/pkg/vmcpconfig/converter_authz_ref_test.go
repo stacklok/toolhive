@@ -62,7 +62,8 @@ func newAuthzVmcpForRef(refName string) *mcpv1beta1.VirtualMCPServer {
 func cedarRefPayload() string {
 	return `{"policies":["permit(principal in ClaimGroup::\"engineering\", action == Action::\"call_tool\", resource);"],` +
 		`"entities_json":"[{\"uid\":{\"type\":\"ClaimGroup\",\"id\":\"engineering\"}}]",` +
-		`"group_claim_name":"groups","role_claim_name":"roles","group_entity_type":"ClaimGroup"}`
+		`"group_claim_name":"groups","role_claim_name":"roles","group_entity_type":"ClaimGroup",` +
+		`"multi_valued_claims":["scope"]}`
 }
 
 // TestConvertAuthzConfigRef_CedarSuccess verifies a cedarv1 MCPAuthzConfig
@@ -89,6 +90,7 @@ func TestConvertAuthzConfigRef_CedarSuccess(t *testing.T) {
 	assert.Equal(t, "groups", authz.GroupClaimName)
 	assert.Equal(t, "roles", authz.RoleClaimName)
 	assert.Equal(t, "ClaimGroup", authz.GroupEntityType)
+	assert.Equal(t, []string{"scope"}, authz.MultiValuedClaims)
 }
 
 // TestConvertAuthzConfigRef_NonCedarFailsFast verifies a non-Cedar

@@ -6,6 +6,7 @@ package factory
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -231,4 +232,51 @@ func TestNewCedarAuthzMiddleware_PropagatesPrimaryUpstreamProvider(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, providerName, extracted.Options.PrimaryUpstreamProvider,
 		"PrimaryUpstreamProvider must be preserved through authorizers.NewConfig round-trip")
+}
+
+// TestBuildCedarAuthzConfig_MapsEveryCedarOption is the guard test for #6737:
+// buildCedarAuthzConfig must forward every field of config.AuthzConfig into
+// cedar.ConfigOptions. The reflection check fails when a new
+// cedar.ConfigOptions field is added without a same-named field on
+// config.AuthzConfig (or without being copied here), so the next option cannot
+// be silently dropped the way multi_valued_claims was.
+func TestBuildCedarAuthzConfig_MapsEveryCedarOption(t *testing.T) {
+	t.Parallel()
+
+	authzCfg := &config.AuthzConfig{
+		Type:                    "cedar",
+		Policies:                []string{`permit(principal, action, resource);`},
+		EntitiesJSON:            `[]`,
+		PrimaryUpstreamProvider: "my-idp",
+		GroupClaimName:          "groups",
+		RoleClaimName:           "roles",
+		GroupEntityType:         "ClaimGroup",
+		MultiValuedClaims:       []string{"scope"},
+	}
+
+	built, err := buildCedarAuthzConfig(authzCfg)
+	require.NoError(t, err)
+
+	extracted, err := cedar.ExtractConfig(built)
+	require.NoError(t, err)
+	require.NotNil(t, extracted.Options)
+
+	assert.Equal(t, []string{"scope"}, extracted.Options.MultiValuedClaims,
+		"MultiValuedClaims must reach cedar.ConfigOptions (issue #6737)")
+
+	authzVal := reflect.ValueOf(authzCfg).Elem()
+	optsVal := reflect.ValueOf(extracted.Options).Elem()
+	optsType := optsVal.Type()
+	for i := range optsType.NumField() {
+		field := optsType.Field(i)
+		src := authzVal.FieldByName(field.Name)
+		require.True(t, src.IsValid(),
+			"config.AuthzConfig has no field %q to carry cedar.ConfigOptions.%s; "+
+				"add it to config.AuthzConfig and plumb it through buildCedarAuthzConfig",
+			field.Name, field.Name)
+		assert.True(t, reflect.DeepEqual(src.Interface(), optsVal.Field(i).Interface()),
+			"cedar.ConfigOptions.%s (%v) does not match config.AuthzConfig.%s (%v); "+
+				"buildCedarAuthzConfig must forward it",
+			field.Name, optsVal.Field(i).Interface(), field.Name, src.Interface())
+	}
 }

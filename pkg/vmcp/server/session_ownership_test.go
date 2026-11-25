@@ -72,6 +72,59 @@ func ownershipBearerMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+const (
+	delegatedOwnerBinding = ownershipTestIssuer + "\x00alice\x00delegated\x00owner-client\x00actor-issuer\x00owner-actor"
+	delegatedOwnerToken   = "delegated-owner"
+)
+
+func delegatedOwnershipIdentity(token, clientID, actorIssuer, actorSubject string) *auth.Identity {
+	claims := map[string]any{
+		"iss": ownershipTestIssuer, "sub": "alice", "client_id": clientID,
+		"jti": "original", "exp": int64(2_000_000_000),
+		"authorization_details": []any{map[string]any{"type": "mcp", "actions": []any{"list"}}},
+	}
+	if actorIssuer != "" || actorSubject != "" {
+		claims["act"] = map[string]any{"iss": actorIssuer, "sub": actorSubject}
+	}
+	return &auth.Identity{
+		PrincipalInfo:  auth.PrincipalInfo{Subject: "alice", Claims: claims},
+		AdmissionRoute: auth.AdmissionRouteDelegated,
+		Token:          token,
+	}
+}
+
+func delegatedOwnershipIdentities() map[string]*auth.Identity {
+	renewed := delegatedOwnershipIdentity("renewed", "owner-client", "actor-issuer", "owner-actor")
+	renewed.Claims["jti"] = "renewed"
+	renewed.Claims["exp"] = int64(2_000_003_600)
+	renewed.Claims["authorization_details"] = []any{map[string]any{"type": "mcp", "actions": []any{"list", "call"}}}
+	return map[string]*auth.Identity{
+		delegatedOwnerToken:  delegatedOwnershipIdentity(delegatedOwnerToken, "owner-client", "actor-issuer", "owner-actor"),
+		"renewed":            renewed,
+		"other-client":       delegatedOwnershipIdentity("other-client", "foreign-client", "actor-issuer", "owner-actor"),
+		"other-actor-issuer": delegatedOwnershipIdentity("other-actor-issuer", "owner-client", "other-issuer", "owner-actor"),
+		"other-actor":        delegatedOwnershipIdentity("other-actor", "owner-client", "actor-issuer", "foreign-actor"),
+		"interactive": {
+			PrincipalInfo:  auth.PrincipalInfo{Subject: "alice", Claims: map[string]any{"iss": ownershipTestIssuer, "sub": "alice"}},
+			AdmissionRoute: auth.AdmissionRouteInteractive,
+			Token:          "interactive",
+		},
+	}
+}
+
+func delegatedOwnershipMiddleware(next http.Handler) http.Handler {
+	identities := delegatedOwnershipIdentities()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		identity := identities[token]
+		if identity == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), identity)))
+	})
+}
+
 // newOwnershipTestServer starts a Serve-built vMCP server over the real session
 // factory, so sessions carry the real persisted identity binding. A nil
 // authMiddleware leaves authentication disabled. A non-empty redisAddr makes the
@@ -366,6 +419,62 @@ func TestSessionOwnership_ForeignCallerRejectedOnEveryRoute(t *testing.T) {
 	}
 }
 
+func TestSessionOwnership_DelegatedRequests(t *testing.T) {
+	t.Parallel()
+
+	baseURL := newOwnershipTestServer(t, delegatedOwnershipMiddleware, "")
+	type requestCase struct {
+		name, method, owner, caller string
+		body                        map[string]any
+	}
+	tests := []requestCase{
+		{"GET stream", http.MethodGet, delegatedOwnerToken, "other-client", nil},
+		{"DELETE", http.MethodDelete, delegatedOwnerToken, "other-client", nil},
+		{"tools/call", http.MethodPost, delegatedOwnerToken, "other-client",
+			jsonRPCRequest("tools/call", map[string]any{"name": ownershipTestTool, "arguments": map[string]any{}})},
+	}
+	for _, lc := range listCases {
+		tests = append(tests, requestCase{
+			lc.method, http.MethodPost, delegatedOwnerToken, "other-client", jsonRPCRequest(lc.method, nil),
+		})
+	}
+	listBody := jsonRPCRequest("tools/list", nil)
+	for _, pair := range []struct{ owner, caller string }{
+		{delegatedOwnerToken, "other-actor"},
+		{delegatedOwnerToken, "interactive"},
+		{"interactive", delegatedOwnerToken},
+	} {
+		tests = append(tests, requestCase{
+			"tools/list " + pair.caller + " on " + pair.owner, http.MethodPost, pair.owner, pair.caller, listBody,
+		})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sessionID := initializeOwnedSession(t, baseURL, tc.owner)
+			resp := ownedRequest(t, baseURL, tc.method, tc.caller, sessionID, tc.body)
+			require.Equal(t, http.StatusNotFound, resp.status)
+			assert.Equal(t, "Session terminated\n", resp.body)
+
+			list := ownedRequest(t, baseURL, http.MethodPost, tc.owner, sessionID, listBody)
+			require.Equal(t, http.StatusOK, list.status, "owner's session must stay usable; body: %s", list.body)
+			assert.Contains(t, list.body, ownershipTestTool)
+			stream := ownedRequest(t, baseURL, http.MethodGet, tc.owner, sessionID, nil)
+			assert.Equal(t, http.StatusOK, stream.status, "owner must still be able to open the stream")
+		})
+	}
+}
+
+func TestSessionOwnership_DelegatedRenewedToken(t *testing.T) {
+	t.Parallel()
+
+	baseURL := newOwnershipTestServer(t, delegatedOwnershipMiddleware, "")
+	sessionID := initializeOwnedSession(t, baseURL, delegatedOwnerToken)
+	list := ownedRequest(t, baseURL, http.MethodPost, "renewed", sessionID, jsonRPCRequest("tools/list", nil))
+	require.Equal(t, http.StatusOK, list.status, "body: %s", list.body)
+	assert.Contains(t, listedItems(t, list.body, listCases[0]), ownershipTestTool)
+}
+
 // TestSessionOwnership_OwnerRequests pins the positive cases: the owner, and the
 // owner presenting a refreshed token for the same issuer and subject, keep full
 // use of the session.
@@ -592,6 +701,12 @@ func TestSessionOwnershipMiddleware_Decisions(t *testing.T) {
 		return &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Claims: c}, Token: token}
 	}
 
+	identities := delegatedOwnershipIdentities()
+	missingClient := delegatedOwnershipIdentity("missing-client", "", "actor-issuer", "owner-actor")
+	delete(missingClient.Claims, "client_id")
+	nonObjectActor := delegatedOwnershipIdentity("bad-act", "owner-client", "", "")
+	nonObjectActor.Claims["act"] = "malformed"
+
 	tests := []struct {
 		name       string
 		noSession  bool
@@ -627,6 +742,14 @@ func TestSessionOwnershipMiddleware_Decisions(t *testing.T) {
 			wantStatus: http.StatusNotFound, wantReason: "stored_binding_invalid"},
 		{name: "corrupt stored owner, no identity", owner: "alice", wantStatus: http.StatusNotFound,
 			wantReason: "stored_binding_invalid"},
+		{name: "delegated caller with another client", owner: delegatedOwnerBinding, identity: identities["other-client"],
+			wantStatus: http.StatusNotFound, wantReason: "principal_mismatch"},
+		{name: "delegated caller on interactive session", owner: bound, identity: identities[delegatedOwnerToken],
+			wantStatus: http.StatusNotFound, wantReason: "principal_mismatch"},
+		{name: "delegated caller missing client", owner: delegatedOwnerBinding, identity: missingClient,
+			wantStatus: http.StatusNotFound, wantReason: "caller_identity_malformed"},
+		{name: "delegated caller with non-object actor", owner: delegatedOwnerBinding, identity: nonObjectActor,
+			wantStatus: http.StatusNotFound, wantReason: "caller_identity_malformed"},
 		{name: "unknown session", lookupErr: sessionbinding.ErrNotFound, wantStatus: http.StatusNotFound},
 		{name: "storage failure", lookupErr: errors.New("redis down"), wantStatus: http.StatusServiceUnavailable},
 		{name: "storage failure after the client went away", lookupErr: context.Canceled, cancelled: true,
@@ -664,16 +787,12 @@ func TestSessionOwnershipMiddleware_Decisions(t *testing.T) {
 
 			assert.Equal(t, tc.wantStatus, rec.Code, "body: %s", rec.Body.String())
 			assert.Equal(t, tc.wantStatus == http.StatusOK, reached, "only an owned or sessionless request may reach the transport")
-			assert.NotContains(t, logs.String(), "sess-1", "the session ID must not be logged")
-			if tc.identity != nil {
-				if sub, ok := tc.identity.Claims["sub"].(string); ok {
-					assert.NotContains(t, logs.String(), sub, "the caller's subject must not be logged")
-				}
-			}
+			assertOwnershipLogPrivacy(t, logs.String(), "sess-1", ownershipPrivateValues...)
 			if tc.wantReason == "" {
 				assert.NotContains(t, logs.String(), "reason=", "only a rejected caller is logged with a reason")
 			} else {
 				assert.Contains(t, logs.String(), "reason="+tc.wantReason)
+				assert.Equal(t, 1, strings.Count(logs.String(), "reason="), "only one rejection reason should be logged")
 				assert.Contains(t, logs.String(), "level=WARN")
 				if tc.identity != nil {
 					assert.Contains(t, logs.String(), "token_present="+strconv.FormatBool(tc.identity.Token != ""))
@@ -683,5 +802,20 @@ func TestSessionOwnershipMiddleware_Decisions(t *testing.T) {
 				assert.NotContains(t, logs.String(), "level=WARN", "an abandoned lookup is not an operator problem")
 			}
 		})
+	}
+}
+
+// ownershipPrivateValues are the subjects, client IDs and actor subjects used
+// by the decision cases; none may appear in the logs.
+var ownershipPrivateValues = []string{"alice", "bob", "owner-client", "foreign-client", "owner-actor", "foreign-actor"}
+
+func assertOwnershipLogPrivacy(t *testing.T, logs, sessionID string, private ...string) {
+	t.Helper()
+	assert.NotContains(t, logs, sessionID, "the session ID must not be logged")
+	for _, key := range []string{"sub=", "client_id=", "act.sub="} {
+		assert.NotContains(t, logs, key)
+	}
+	for _, value := range private {
+		assert.NotContains(t, logs, value, "private values must not be logged")
 	}
 }

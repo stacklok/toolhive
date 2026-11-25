@@ -162,6 +162,106 @@ func TestOwnerConditionalMutationsPreserveRacedRecord(t *testing.T) {
 	}
 }
 
+func TestDelegatedStorageOwnership(t *testing.T) {
+	t.Parallel()
+	for _, backend := range []string{"memory", "redis"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			var storage Storage
+			var store func(*ProxySession)
+			var age, expire func()
+			if backend == "redis" {
+				redisStorage, mr := newTestRedisStorage(t)
+				t.Cleanup(func() { require.NoError(t, redisStorage.Close()) })
+				storage = redisStorage
+				store = func(sess *ProxySession) { require.NoError(t, storage.Store(t.Context(), sess)) }
+				age = func() { mr.FastForward(29 * time.Minute) }
+				expire = func() { mr.FastForward(2 * time.Minute) }
+			} else {
+				local := NewLocalStorage()
+				storage = local
+				store = func(sess *ProxySession) { storeAged(local, sess) }
+				age = func() {}
+				expire = func() { require.NoError(t, storage.DeleteExpired(t.Context(), time.Now().Add(-time.Hour))) }
+			}
+			checkExactDelegatedOwner(t, storage)
+			original := newDelegatedStorageSession()
+			store(original)
+			age()
+			checkDelegatedPrefixRejected(t, storage, original)
+			expire()
+			_, err := storage.LoadMetadata(t.Context(), original.ID())
+			require.ErrorIs(t, err, ErrSessionNotFound, "a rejected prefix must not refresh last access or the TTL")
+		})
+	}
+}
+
+const delegatedStorageBinding = "issuer\x00subject\x00delegated\x00client\x00actor-iss\x00actor-sub"
+
+func newDelegatedStorageSession() *ProxySession {
+	sess := NewProxySession(uuid.NewString())
+	sess.SetMetadata(MetadataKeyIdentityBinding, delegatedStorageBinding)
+	sess.SetMetadata("version", "original")
+	return sess
+}
+
+func checkExactDelegatedOwner(t *testing.T, storage Storage) {
+	t.Helper()
+	ctx := t.Context()
+	// LookupOwner only reads storage; no session manager lifecycle is needed here.
+	manager := &Manager{storage: storage}
+	original := newDelegatedStorageSession()
+	id := original.ID()
+	require.NoError(t, storage.Store(ctx, original))
+	owner, err := manager.LookupOwner(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, delegatedStorageBinding, owner)
+
+	loaded, err := storage.LoadIfOwner(ctx, id, delegatedStorageBinding)
+	require.NoError(t, err)
+	require.Equal(t, original.GetMetadata(), loaded.GetMetadata())
+
+	updated := NewProxySession(id)
+	updated.SetMetadata(MetadataKeyIdentityBinding, delegatedStorageBinding)
+	updated.SetMetadata("version", "updated")
+	stored, err := storage.StoreIfOwner(ctx, updated, delegatedStorageBinding)
+	require.NoError(t, err)
+	require.True(t, stored)
+	metadata, err := storage.LoadMetadata(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, updated.GetMetadata(), metadata)
+
+	deleted, err := storage.DeleteIfOwner(ctx, id, delegatedStorageBinding)
+	require.NoError(t, err)
+	require.True(t, deleted)
+	_, err = manager.LookupOwner(ctx, id)
+	require.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+func checkDelegatedPrefixRejected(t *testing.T, storage Storage, original *ProxySession) {
+	t.Helper()
+	const prefix = "issuer\x00subject"
+	ctx := t.Context()
+	id := original.ID()
+	want := original.GetMetadata()
+	_, err := storage.LoadIfOwner(ctx, id, prefix)
+	require.ErrorIs(t, err, ErrSessionNotFound)
+
+	// Make the replacement match the supplied prefix so the stored owner is the deciding check.
+	update := NewProxySession(id)
+	update.SetMetadata(MetadataKeyIdentityBinding, prefix)
+	update.SetMetadata("version", "foreign-update")
+	stored, err := storage.StoreIfOwner(ctx, update, prefix)
+	require.NoError(t, err)
+	require.False(t, stored)
+	deleted, err := storage.DeleteIfOwner(ctx, id, prefix)
+	require.NoError(t, err)
+	require.False(t, deleted)
+	metadata, err := storage.LoadMetadata(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, want, metadata)
+}
+
 func TestConditionalCreationPreservesOwner(t *testing.T) {
 	t.Parallel()
 	for _, backend := range []string{"memory", "redis"} {

@@ -66,7 +66,7 @@ func TestNewBackendWatcher(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			mgr, err := k8s.NewBackendWatcher(tc.cfg, tc.namespace, tc.groupRef, tc.registry)
+			mgr, err := k8s.NewBackendWatcher(tc.cfg, tc.namespace, tc.groupRef, tc.registry, nil)
 
 			if tc.expectedError != "" {
 				require.Error(t, err)
@@ -98,7 +98,7 @@ func TestNewBackendWatcher_ValidInputs(t *testing.T) {
 		},
 	})
 
-	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, mgr)
 }
@@ -113,7 +113,7 @@ func TestBackendWatcher_WaitForCacheSync_NotStarted(t *testing.T) {
 	}
 
 	registry := vmcp.NewDynamicRegistry([]vmcp.Backend{})
-	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group", registry, nil)
 	require.NoError(t, err)
 
 	// Try to wait for cache sync without starting manager
@@ -133,7 +133,7 @@ func TestBackendWatcher_StartValidation(t *testing.T) {
 	}
 
 	registry := vmcp.NewDynamicRegistry([]vmcp.Backend{})
-	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group-validation", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group-validation", registry, nil)
 	require.NoError(t, err)
 
 	// Start watcher in background with a short timeout
@@ -213,7 +213,7 @@ func TestBackendWatcher_Lifecycle(t *testing.T) {
 		// Create watcher
 		cfg, _ := rest.InClusterConfig()
 		registry := vmcp.NewDynamicRegistry(backends)
-		watcher, _ := k8s.NewBackendWatcher(cfg, "default", "default/my-group", registry)
+		watcher, _ := k8s.NewBackendWatcher(cfg, "default", "default/my-group", registry, nil)
 
 		// Start in background
 		ctx, cancel := context.WithCancel(context.Background())
@@ -245,7 +245,7 @@ func TestBackendWatcher_ContextCancellation(t *testing.T) {
 	}
 
 	registry := vmcp.NewDynamicRegistry([]vmcp.Backend{})
-	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group-cancellation", registry)
+	mgr, err := k8s.NewBackendWatcher(cfg, "default", "default/test-group-cancellation", registry, nil)
 	require.NoError(t, err)
 
 	// Create a context that's already cancelled

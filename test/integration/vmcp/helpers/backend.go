@@ -10,8 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 )
 
 // BackendTool defines a tool for MCP backend servers.
@@ -180,7 +180,7 @@ func WithCaptureHeaders() BackendServerOption {
 	}
 }
 
-// CreateBackendServer creates an MCP backend server using the mark3labs/mcp-go SDK.
+// CreateBackendServer creates an MCP backend server using the stacklok/toolhive-core/mcpcompat SDK.
 // It returns an *httptest.Server ready to accept streamable-HTTP connections.
 //
 // The server automatically registers all provided tools with proper closure handling

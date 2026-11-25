@@ -5,6 +5,7 @@ package runner
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -245,12 +246,13 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name          string
-		serverOrImage string
-		caCertPath    string
-		buildArgs     []string
-		wantContains  []string
-		wantErr       bool
+		name            string
+		serverOrImage   string
+		caCertPath      string
+		buildArgs       []string
+		runtimeOverride *templates.RuntimeConfig
+		wantContains    []string
+		wantErr         bool
 	}{
 		{
 			name:          "NPX with buildArgs in dry-run",
@@ -290,6 +292,22 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 			buildArgs:     []string{"start"},
 			wantErr:       true,
 		},
+		{
+			// Motivating case: the Okta MCP server needs a non-default keyring
+			// backend baked into the runtime image since the default backend
+			// requires a desktop session that isn't available in a container.
+			name:          "UVX with RuntimeEnv override in dry-run (Okta case)",
+			serverOrImage: "uvx://okta-mcp-server@1.1.3",
+			runtimeOverride: &templates.RuntimeConfig{
+				RuntimeEnv: map[string]string{
+					"PYTHON_KEYRING_BACKEND": "keyrings.alt.file.PlaintextKeyring",
+				},
+			},
+			wantContains: []string{
+				`ENV PYTHON_KEYRING_BACKEND="keyrings.alt.file.PlaintextKeyring"`,
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -299,7 +317,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 
 			// Call BuildFromProtocolSchemeWithName with dry-run=true
 			dockerfileContent, err := BuildFromProtocolSchemeWithName(
-				ctx, nil, tt.serverOrImage, tt.caCertPath, "", tt.buildArgs, nil, true)
+				ctx, nil, tt.serverOrImage, tt.caCertPath, "", tt.buildArgs, tt.runtimeOverride, true)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("BuildFromProtocolSchemeWithName() error = %v, wantErr %v", err, tt.wantErr)
@@ -317,24 +335,26 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 	}
 }
 
-func TestMergeRuntimeConfig(t *testing.T) {
+func TestLoadRuntimeConfigMergesPerTransportDefaults(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name         string
-		transport    templates.TransportType
-		override     *templates.RuntimeConfig
-		wantImage    string
-		wantPackages []string
+		name           string
+		transport      templates.TransportType
+		override       *templates.RuntimeConfig
+		wantImage      string
+		wantPackages   []string
+		wantRuntimeEnv map[string]string
 	}{
 		{
-			name:      "only packages override, no image — image falls back to default",
+			name:      "only packages override, no image (--runtime-add-package without --runtime-image) — image falls back to default",
 			transport: templates.TransportTypeNPX,
 			override: &templates.RuntimeConfig{
 				BuilderImage:       "",
 				AdditionalPackages: []string{"curl"},
 			},
-			wantImage:    "node:24-alpine",
-			wantPackages: []string{"git", "ca-certificates", "curl"},
+			wantImage:      "node:24-alpine",
+			wantPackages:   []string{"git", "ca-certificates", "curl"},
+			wantRuntimeEnv: nil,
 		},
 		{
 			name:      "both image and packages override — image from override, packages merged",
@@ -343,8 +363,9 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "node:20-alpine",
 				AdditionalPackages: []string{"curl"},
 			},
-			wantImage:    "node:20-alpine",
-			wantPackages: []string{"git", "ca-certificates", "curl"},
+			wantImage:      "node:20-alpine",
+			wantPackages:   []string{"git", "ca-certificates", "curl"},
+			wantRuntimeEnv: nil,
 		},
 		{
 			name:      "duplicate package in override — not added twice",
@@ -353,8 +374,9 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"git"},
 			},
-			wantImage:    "node:24-alpine",
-			wantPackages: []string{"git", "ca-certificates"},
+			wantImage:      "node:24-alpine",
+			wantPackages:   []string{"git", "ca-certificates"},
+			wantRuntimeEnv: nil,
 		},
 		{
 			name:      "empty override — all defaults",
@@ -363,8 +385,9 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: nil,
 			},
-			wantImage:    "node:24-alpine",
-			wantPackages: []string{"git", "ca-certificates"},
+			wantImage:      "node:24-alpine",
+			wantPackages:   []string{"git", "ca-certificates"},
+			wantRuntimeEnv: nil,
 		},
 		{
 			name:      "go transport — defaults apply",
@@ -373,8 +396,9 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"make"},
 			},
-			wantImage:    "golang:1.26-alpine",
-			wantPackages: []string{"ca-certificates", "git", "make"},
+			wantImage:      "golang:1.27-alpine",
+			wantPackages:   []string{"ca-certificates", "git", "make"},
+			wantRuntimeEnv: nil,
 		},
 		{
 			name:      "uvx transport — defaults apply",
@@ -383,15 +407,37 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"curl"},
 			},
-			wantImage:    "python:3.14-slim",
-			wantPackages: []string{"ca-certificates", "git", "curl"},
+			wantImage:      "python:3.14-slim",
+			wantPackages:   []string{"ca-certificates", "git", "curl"},
+			wantRuntimeEnv: nil,
+		},
+		{
+			name:      "override sets RuntimeEnv — passes through",
+			transport: templates.TransportTypeNPX,
+			override: &templates.RuntimeConfig{
+				RuntimeEnv: map[string]string{"NODE_ENV": "production"},
+			},
+			wantImage:      "node:24-alpine",
+			wantPackages:   []string{"git", "ca-certificates"},
+			wantRuntimeEnv: map[string]string{"NODE_ENV": "production"},
+		},
+		{
+			name:      "override RuntimeEnv nil — result nil since defaults never set RuntimeEnv",
+			transport: templates.TransportTypeNPX,
+			override: &templates.RuntimeConfig{
+				RuntimeEnv: nil,
+			},
+			wantImage:      "node:24-alpine",
+			wantPackages:   []string{"git", "ca-certificates"},
+			wantRuntimeEnv: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := mergeRuntimeConfig(tt.transport, tt.override)
+			got, err := loadRuntimeConfig(tt.transport, tt.override)
+			require.NoError(t, err)
 
 			if got.BuilderImage != tt.wantImage {
 				t.Errorf("BuilderImage = %q, want %q", got.BuilderImage, tt.wantImage)
@@ -405,29 +451,10 @@ func TestMergeRuntimeConfig(t *testing.T) {
 					}
 				}
 			}
+			if !reflect.DeepEqual(got.RuntimeEnv, tt.wantRuntimeEnv) {
+				t.Errorf("RuntimeEnv = %v, want %v", got.RuntimeEnv, tt.wantRuntimeEnv)
+			}
 		})
-	}
-}
-
-func TestLoadRuntimeConfigMergesOverrideWithDefaults(t *testing.T) {
-	t.Parallel()
-
-	// Simulate the bug: --runtime-add-package without --runtime-image
-	override := &templates.RuntimeConfig{
-		BuilderImage:       "",
-		AdditionalPackages: []string{"curl"},
-	}
-
-	got, err := loadRuntimeConfig(templates.TransportTypeNPX, override)
-	if err != nil {
-		t.Fatalf("loadRuntimeConfig() error = %v", err)
-	}
-
-	if got.BuilderImage == "" {
-		t.Error("loadRuntimeConfig() returned empty BuilderImage — should fall back to default")
-	}
-	if got.BuilderImage != "node:24-alpine" {
-		t.Errorf("BuilderImage = %q, want %q", got.BuilderImage, "node:24-alpine")
 	}
 }
 
@@ -593,19 +620,121 @@ func TestLoadRuntimeConfig_MergesBaseConfigWithOverride(t *testing.T) {
 	assert.Equal(t, expectedPackages, got.AdditionalPackages)
 }
 
-func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
+func TestLoadRuntimeConfigCarriesBuildWith(t *testing.T) {
 	t.Parallel()
 
-	base, err := loadRuntimeConfig(templates.TransportTypeGO, nil)
-	require.NoError(t, err)
-	require.NotNil(t, base)
-
-	customImage := "golang:1.24-alpine"
-	got, err := loadRuntimeConfig(templates.TransportTypeGO, &templates.RuntimeConfig{
-		BuilderImage: customImage,
+	got, err := loadRuntimeConfig(templates.TransportTypeUVX, &templates.RuntimeConfig{
+		BuildWith: []string{"mcp<2"},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, got)
-	assert.Equal(t, customImage, got.BuilderImage)
-	assert.Equal(t, base.AdditionalPackages, got.AdditionalPackages)
+	if len(got.BuildWith) != 1 || got.BuildWith[0] != "mcp<2" {
+		t.Errorf("BuildWith = %v, want [mcp<2]", got.BuildWith)
+	}
+
+	// No override specifiers: merged config must not invent any.
+	got, err = loadRuntimeConfig(templates.TransportTypeUVX, &templates.RuntimeConfig{})
+	require.NoError(t, err)
+	if len(got.BuildWith) != 0 {
+		t.Errorf("BuildWith = %v, want empty", got.BuildWith)
+	}
+}
+
+func TestCreateTemplateDataRejectsBuildWithForNonUVX(t *testing.T) {
+	t.Parallel()
+
+	for _, transport := range []templates.TransportType{
+		templates.TransportTypeNPX, templates.TransportTypeGO,
+	} {
+		_, err := createTemplateData(transport, "some-package", "", nil,
+			&templates.RuntimeConfig{BuildWith: []string{"mcp<2"}})
+		if err == nil {
+			t.Errorf("createTemplateData(%s) with BuildWith should error, got nil", transport)
+		}
+	}
+
+	// uvx accepts constraints.
+	_, err := createTemplateData(templates.TransportTypeUVX, "some-package", "", nil,
+		&templates.RuntimeConfig{BuildWith: []string{"mcp<2"}})
+	if err != nil {
+		t.Errorf("createTemplateData(uvx) with BuildWith should succeed, got %v", err)
+	}
+}
+
+func TestValidatePackageName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		packageName string
+		wantErr     bool
+	}{
+		// Valid names across all three ecosystems.
+		{"npm plain", "package-name", false},
+		{"npm scoped", "@launchdarkly/mcp-server", false},
+		{"npm scoped with version", "@org/package@1.2.3", false},
+		{"pypi with pin", "okta-mcp-server==1.1.3", false},
+		{"pypi with extra", "package[extra]==1.0", false},
+		{"go module path", "github.com/example/package@v1.2.3", false},
+		{"go module with port", "example.com:8443/mod/cmd", false},
+		{"go local path", "./cmd/server", false},
+		{"go parent path", "../server", false},
+		{"go current dir", ".", false},
+
+		// Shell metacharacters that must not reach a RUN instruction.
+		{"empty", "", true},
+		{"semicolon", "foo; echo INJECTED > /tmp/pwned; #", true},
+		{"double quote break", `foo"; echo INJECTED; echo "`, true},
+		{"command substitution", "foo$(id)", true},
+		{"backtick substitution", "foo`id`", true},
+		{"pipe", "foo|id", true},
+		{"background", "foo&", true},
+		{"redirect", "foo>/tmp/x", true},
+		{"logical and", "foo&&id", true},
+		{"space", "foo bar", true},
+		{"newline", "foo\nRUN id", true},
+		{"single quote", "foo'", true},
+		{"backslash", `foo\`, true},
+		{"variable expansion", "foo$HOME", true},
+		{"comment", "foo#bar", true},
+		{"glob", "foo*", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validatePackageName(tt.packageName)
+			if tt.wantErr {
+				require.Error(t, err, "expected %q to be rejected", tt.packageName)
+				return
+			}
+			require.NoError(t, err, "expected %q to be accepted", tt.packageName)
+		})
+	}
+}
+
+// TestCreateTemplateDataRejectsInjectedPackageName checks the guard is wired
+// into the single chokepoint both the CLI and the API path go through, for
+// every transport type.
+func TestCreateTemplateDataRejectsInjectedPackageName(t *testing.T) {
+	t.Parallel()
+	transports := []templates.TransportType{
+		templates.TransportTypeNPX,
+		templates.TransportTypeUVX,
+		templates.TransportTypeGO,
+	}
+	payloads := []string{
+		"foo; echo INJECTED > /tmp/pwned; #",
+		`foo"; echo INJECTED > /tmp/pwned2; echo "`,
+		"foo$(cat /root/.netrc)",
+	}
+
+	for _, transport := range transports {
+		for _, payload := range payloads {
+			t.Run(string(transport)+"/"+payload, func(t *testing.T) {
+				t.Parallel()
+				_, err := createTemplateData(transport, payload, "", nil, nil)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid package name")
+			})
+		}
+	}
 }

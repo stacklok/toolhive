@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,12 +23,25 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// defaultReadTimeout bounds reading the entire request (headers + body) on the
+// proxy http.Server, mitigating slow-upload connection exhaustion. It does not
+// affect SSE responses, which stream on the response side. Matches the vMCP
+// server default. WriteTimeout is intentionally not set: it would sever
+// long-lived SSE response streams, and the request-read side (the DoS vector) is
+// already bounded by ReadTimeout.
+const defaultReadTimeout = 30 * time.Second
 
 // Proxy defines the interface for proxying messages between clients and destinations.
 type Proxy interface {
@@ -46,7 +60,9 @@ type Proxy interface {
 	// SendMessageToDestination sends a message to the destination.
 	SendMessageToDestination(msg jsonrpc2.Message) error
 
-	// ForwardResponseToClients forwards a response from the destination to clients.
+	// ForwardResponseToClients delivers a message from the destination to the
+	// client session(s) it belongs to. Implementations must never deliver a
+	// message to a session that did not originate it.
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 
 	// SendResponseMessage sends a message to the response channel.
@@ -74,19 +90,42 @@ type HTTPSSEProxy struct {
 	// Session manager for SSE clients
 	sessionManager *session.Manager
 
+	// sessionTTL is the resolved inactivity timeout for the session manager.
+	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
+	sessionTTL time.Duration
+
+	// readTimeout is the resolved http.Server.ReadTimeout for this proxy.
+	// Defaults to defaultReadTimeout; overridable via WithReadTimeout.
+	readTimeout time.Duration
+
+	// sessionStorage is the optional custom storage backend for the session manager.
+	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
+	sessionStorage session.Storage
+
+	// authInfoHandler is the optional RFC 9728 OAuth protected resource discovery handler.
+	// When nil, /.well-known/ returns a clean JSON 404. Set via WithAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers contains additional HTTP handlers mounted outside the middleware chain.
+	// Keys are URL path prefixes. Set via WithPrefixHandlers.
+	prefixHandlers map[string]http.Handler
+
 	// liveSSESessions tracks active SSE connections local to this instance.
 	// Keys are clientID strings; values are *session.SSESession.
 	// This is separate from sessionManager so that distributed storage backends
-	// (e.g. Redis) can be used for session metadata without breaking SSE fan-out,
-	// which must iterate live in-memory connections regardless of storage backend.
+	// (e.g. Redis) can be used for session metadata without breaking response
+	// routing and notification broadcast, which must reach the live in-memory
+	// connection regardless of storage backend.
 	liveSSESessions sync.Map
 
-	// Pending messages for SSE clients
-	pendingMessages []*ssecommon.PendingSSEMessage
-	pendingMutex    sync.Mutex
+	// warnedKeys records which fail-closed drop or rejection events have
+	// already been logged at Warn (see warnOnce). Guarded by warnedMutex.
+	warnedKeys  map[string]struct{}
+	warnedMutex sync.Mutex
 
 	// Message channel
-	messageCh chan jsonrpc2.Message
+	messageCh      chan jsonrpc2.Message
+	messageHandler http.Handler
 
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
@@ -104,7 +143,7 @@ type Option func(*HTTPSSEProxy)
 // share the same session store.
 //
 // Architectural note: HTTPSSEProxy is used by StdioTransport for stdio-backed MCP
-// servers. SSE fan-out (ForwardResponseToClients) and POST handling are both local
+// servers. Response routing (ForwardResponseToClients) and POST handling are both local
 // to the instance holding the live SSE connection, so Redis storage enables
 // cross-replica session metadata sharing but does NOT solve cross-replica message
 // delivery — a POST accepted on replica B won't reach a client whose SSE connection
@@ -114,18 +153,53 @@ type Option func(*HTTPSSEProxy)
 // Prefer Streamable HTTP (ProxyModeStreamableHTTP), also supported on StdioTransport,
 // which does not have this affinity constraint.
 //
-// Note: SSE fan-out and graceful disconnect use a separate in-memory liveSSESessions
+// Note: response routing and graceful disconnect use a separate in-memory liveSSESessions
 // registry, not the session manager, so any Storage implementation is safe to inject here.
 func WithSessionStorage(storage session.Storage) Option {
 	return func(p *HTTPSSEProxy) {
 		if storage == nil {
 			return
 		}
-		if p.sessionManager != nil {
-			_ = p.sessionManager.Stop()
+		p.sessionStorage = storage
+	}
+}
+
+// WithSessionTTL overrides the session inactivity timeout used by this proxy.
+// Zero or negative values are ignored so the constructor's default is preserved.
+func WithSessionTTL(ttl time.Duration) Option {
+	return func(p *HTTPSSEProxy) {
+		if ttl <= 0 {
+			return
 		}
-		sseFactory := func(id string) session.Session { return session.NewSSESession(id) }
-		p.sessionManager = session.NewManagerWithStorage(session.DefaultSessionTTL, sseFactory, storage)
+		p.sessionTTL = ttl
+	}
+}
+
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *HTTPSSEProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
+	}
+}
+
+// WithAuthInfoHandler sets the RFC 9728 OAuth protected resource discovery handler.
+// When nil (the default), requests to /.well-known/ return a clean JSON 404.
+func WithAuthInfoHandler(h http.Handler) Option {
+	return func(p *HTTPSSEProxy) {
+		p.authInfoHandler = h
+	}
+}
+
+// WithPrefixHandlers sets additional HTTP handlers that are mounted outside the
+// middleware chain, keyed by URL path prefix.
+func WithPrefixHandlers(handlers map[string]http.Handler) Option {
+	return func(p *HTTPSSEProxy) {
+		p.prefixHandlers = maps.Clone(handlers)
 	}
 }
 
@@ -138,11 +212,6 @@ func NewHTTPSSEProxy(
 	middlewares []types.NamedMiddleware,
 	opts ...Option,
 ) *HTTPSSEProxy {
-	// Create a factory for SSE sessions
-	sseFactory := func(id string) session.Session {
-		return session.NewSSESession(id)
-	}
-
 	proxy := &HTTPSSEProxy{
 		middlewares:       middlewares,
 		host:              host,
@@ -150,14 +219,35 @@ func NewHTTPSSEProxy(
 		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, sseFactory),
-		pendingMessages:   []*ssecommon.PendingSSEMessage{},
+		sessionTTL:        session.DefaultSessionTTL,
+		readTimeout:       defaultReadTimeout,
+		warnedKeys:        make(map[string]struct{}),
 		prometheusHandler: prometheusHandler,
 	}
 
 	for _, opt := range opts {
 		opt(proxy)
 	}
+
+	// Construct the session manager once, after options have resolved sessionTTL and sessionStorage.
+	sseFactory := func(id string) session.Session { return session.NewSSESession(id) }
+	if proxy.sessionStorage != nil {
+		proxy.sessionManager = session.NewManagerWithStorage(proxy.sessionTTL, sseFactory, proxy.sessionStorage)
+	} else {
+		proxy.sessionManager = session.NewManager(proxy.sessionTTL, sseFactory)
+	}
+
+	ownership, err := sessionbinding.NewMiddleware(
+		func(r *http.Request) (string, error) { return sessionbinding.RequestID(r, "session_id") },
+		proxy.sessionManager.LookupOwner,
+		func(w http.ResponseWriter, _ *http.Request, err error) {
+			sessionbinding.WriteOwnershipError(w, nil, err)
+		},
+	)
+	if err != nil {
+		panic(err) // All required callbacks above are constructor invariants.
+	}
+	proxy.messageHandler = ownership(http.HandlerFunc(proxy.handleOwnedPostRequest))
 
 	// Create MCP pinger and health checker
 	mcpPinger := NewMCPPinger(proxy)
@@ -180,9 +270,27 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Create a new HTTP server
 	mux := http.NewServeMux()
 
+	// Mount prefix handlers (e.g. embedded auth server routes) outside the middleware chain.
+	// RFC 9728 requires discovery endpoints to be reachable without authentication.
+	for prefix, h := range p.prefixHandlers {
+		mux.Handle(prefix, h)
+		slog.Debug("mounted prefix handler", "prefix", prefix)
+	}
+
+	// Mount RFC 9728 OAuth protected resource discovery endpoint (no middlewares).
+	// Always register so OAuth discovery gets a clean JSON 404 when auth is off.
+	wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if p.authInfoHandler != nil {
+		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
+	}
+
 	// Add handlers for SSE and JSON-RPC with middlewares
 	// At some point we should add support for Streamable HTTP transport here
 	// https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
+	// The SSE endpoint serves a long-lived GET stream. No http.Server.WriteTimeout
+	// is set on this proxy, so the stream is not bounded on the write side; the
+	// request-read phase is bounded by ReadTimeout.
 	mux.Handle(ssecommon.HTTPSSEEndpoint, applyMiddlewares(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
@@ -199,10 +307,16 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Add health check endpoint with MCP status (no middlewares)
 	mux.Handle("/health", p.healthChecker)
 
-	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
+	// Add Prometheus metrics endpoint if handler is provided (no middlewares),
+	// otherwise return 404 so /metrics is not proxied to the backend. The runner
+	// serves metrics on a separate diagnostics listener instead (see
+	// pkg/diagnostics) so access can be restricted by port rather than by HTTP
+	// path.
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
 		slog.Debug("prometheus metrics endpoint enabled at /metrics")
+	} else {
+		mux.Handle(diagnostics.MetricsPath, diagnostics.NotServedHereHandler())
 	}
 
 	// Create a listener to get the actual port when using port 0
@@ -221,6 +335,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	p.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
+		ReadTimeout:       p.readTimeout,    // Bound slow body uploads
 	}
 
 	// Store the actual address
@@ -318,35 +433,34 @@ func (p *HTTPSSEProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 	}
 }
 
-// ForwardResponseToClients forwards a response from the destination to all connected SSE clients.
+// ForwardResponseToClients routes one message from the shared backend to the
+// SSE session(s) it belongs to. Every message the backend emits arrives here
+// untagged, so delivery is decided by JSON-RPC shape (see routing.go):
+//   - a *jsonrpc2.Response goes only to the session encoded in its routed ID,
+//     with the client's original ID restored (routeResponse);
+//   - a notification is broadcast if it is global, otherwise dropped
+//     (routeNotification);
+//   - a server-initiated ping is answered (answerBackendPing); any other
+//     server-initiated request is rejected back to the backend
+//     (rejectServerRequest).
+//
+// It never delivers a message to a session that did not originate it.
 func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.Message) error {
-	// Serialize the message to JSON
-	data, err := jsonrpc2.EncodeMessage(msg)
-	if err != nil {
-		return fmt.Errorf("failed to encode JSON-RPC message: %w", err)
+	switch m := msg.(type) {
+	case *jsonrpc2.Response:
+		return p.routeResponse(m)
+	case *jsonrpc2.Request:
+		if !m.ID.IsValid() {
+			return p.routeNotification(m)
+		}
+		if m.Method == methodPing {
+			return p.answerBackendPing(m)
+		}
+		return p.rejectServerRequest(m)
+	default:
+		slog.Warn("dropping backend message of unknown JSON-RPC type", "type", fmt.Sprintf("%T", msg))
+		return nil
 	}
-
-	// Create an SSE message
-	sseMsg := ssecommon.NewSSEMessage("message", string(data))
-
-	// Check if there are any connected clients
-	hasClients := false
-	p.liveSSESessions.Range(func(_, _ interface{}) bool {
-		hasClients = true
-		return false // Stop iteration after finding first session
-	})
-
-	if hasClients {
-		// Send the message to all connected clients
-		return p.sendSSEEvent(sseMsg)
-	}
-
-	// Queue the message for later delivery
-	p.pendingMutex.Lock()
-	p.pendingMessages = append(p.pendingMessages, ssecommon.NewPendingSSEMessage(sseMsg))
-	p.pendingMutex.Unlock()
-
-	return nil
 }
 
 // handleSSEConnection handles an SSE connection.
@@ -355,7 +469,10 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// CORS headers deliberately omitted: the origin middleware
+	// (pkg/transport/middleware/origin) enforces Origin validation per
+	// MCP 2025-11-25 §"Security Warning". Reflecting Origin or emitting
+	// `*` here would bypass that protection.
 
 	// Create a unique client ID
 	clientID := uuid.New().String()
@@ -371,15 +488,16 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 
 	// Create and register the SSE session
 	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+	if err := sessionbinding.BindOwner(r.Context(), sseSession); err != nil {
+		http.Error(w, "Invalid identity", http.StatusUnauthorized)
+		return
+	}
 	if err := p.sessionManager.AddSession(sseSession); err != nil {
 		slog.Error("failed to add SSE session", "error", err)
-		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		http.Error(w, "Failed to create session", http.StatusServiceUnavailable)
 		return
 	}
 	p.liveSSESessions.Store(clientID, sseSession)
-
-	// Process any pending messages for this client
-	p.processPendingMessages(clientID, messageCh)
 
 	// Create a flusher for SSE
 	flusher, ok := w.(http.Flusher)
@@ -429,7 +547,9 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 			}
 			flusher.Flush()
 		case <-keepAliveTicker.C:
-			// Send SSE comment as keep-alive
+			// Refresh session TTL while the SSE socket is open so the cleanup
+			// goroutine does not evict clients that haven't sent a POST recently.
+			p.sessionManager.Get(clientID)
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
 				slog.Debug("failed to write keep-alive", "error", err)
 				return
@@ -455,16 +575,17 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Check if the session exists in the distributed store.
-	_, exists := p.sessionManager.Get(sessionID)
-	if !exists {
-		session.WriteNotFound(w, nil)
-		return
-	}
+	p.messageHandler.ServeHTTP(w, r)
+}
+
+// handleOwnedPostRequest runs only after authentication and ownership middleware.
+func (p *HTTPSSEProxy) handleOwnedPostRequest(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
 
 	// Verify the live SSE connection for this session is held by this instance.
 	// With a distributed storage backend (e.g. Redis), sessionManager.Get succeeds
-	// on any replica, but fan-out only reaches clients connected locally. Rejecting
+	// on any replica, but response delivery only reaches the live connection held
+	// by this instance. Rejecting
 	// here with 503 surfaces the affinity failure explicitly instead of silently
 	// dropping the response after forwarding to the backend.
 	if _, local := p.liveSSESessions.Load(sessionID); !local {
@@ -475,18 +596,60 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error reading request body: %v", err), http.StatusInternalServerError)
+		// A body that exceeds the configured limit without a Content-Length
+		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
+		// early Content-Length check. Surface it as 413, not 500.
+		if bodylimit.IsRequestTooLarge(err) {
+			slog.Warn("rejected unreadable MCP request body", "reason", "body_too_large")
+			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		slog.Warn("rejected unreadable MCP request body", "reason", "read_error")
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	// Parse the JSON-RPC message
-	msg, err := jsonrpc2.DecodeMessage(body)
+	msg, err := mcp.DecodeMessage(body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error parsing JSON-RPC message: %v", err), http.StatusBadRequest)
+		mcp.WriteClassificationError(w, nil, err)
 		return
 	}
 
 	slog.Debug("received JSON-RPC message", "type", fmt.Sprintf("%T", msg))
+
+	// Tag each call's wire ID with the session that issued it, so the shared
+	// backend's echoed response can be routed back to this session alone (see
+	// routing.go). sessionID is the same value the ownership middleware just
+	// validated for this request. Shared admission preserves exact numeric IDs.
+	// A notifications/cancelled names its target request by id in params, so
+	// that id is rewritten the same way; other notifications pass through
+	// unchanged. A *jsonrpc2.Response from a client is refused: the proxy
+	// answers or rejects every server-initiated request itself before any
+	// client sees it, so a client response can only be an attempt to answer
+	// backend work on behalf of some other session.
+	switch m := msg.(type) {
+	case *jsonrpc2.Response:
+		http.Error(w, "JSON-RPC responses from clients are not accepted by the SSE proxy", http.StatusBadRequest)
+		return
+	case *jsonrpc2.Request:
+		switch {
+		case m.ID.IsValid():
+			routed, err := encodeRoutedID(sessionID, m.ID)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
+				return
+			}
+			msg = &jsonrpc2.Request{ID: jsonrpc2.StringID(routed), Method: m.Method, Params: m.Params}
+		case m.Method == methodCancelled:
+			rewritten, err := rewriteCancelledRequestID(sessionID, m)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Unsupported JSON-RPC id: %v", err), http.StatusBadRequest)
+				return
+			}
+			msg = rewritten
+		}
+	}
 
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(msg); err != nil {
@@ -501,7 +664,10 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-// sendSSEEvent sends an SSE event to all connected clients.
+// sendSSEEvent broadcasts one SSE event to every live client. It is reserved
+// for global notifications with no session-specific payload (see
+// routeNotification); responses are delivered to a single session by
+// routeResponse and must never pass through here.
 func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 	// Convert the message to an SSE-formatted string
 	sseString := msg.ToSSEString()
@@ -554,38 +720,6 @@ func (p *HTTPSSEProxy) removeClient(clientID string) {
 	if err := p.sessionManager.Delete(clientID); err != nil {
 		slog.Debug("failed to delete session", "client_id", clientID, "error", err)
 	}
-}
-
-// processPendingMessages processes any pending messages for a new client.
-func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- string) {
-	p.pendingMutex.Lock()
-	defer p.pendingMutex.Unlock()
-
-	if len(p.pendingMessages) == 0 {
-		return
-	}
-
-	// Find messages for this client (all messages for now)
-	for i, pendingMsg := range p.pendingMessages {
-		// Convert to SSE string
-		sseString := pendingMsg.Message.ToSSEString()
-
-		// Send to the client
-		select {
-		case messageCh <- sseString:
-			// Message sent successfully
-		default:
-			// Channel is full, stop sending
-			slog.Error("client channel full after sending pending messages",
-				"client_id", clientID, "sent", i, "total", len(p.pendingMessages))
-			// Remove successfully sent messages and keep the rest
-			p.pendingMessages = p.pendingMessages[i:]
-			return
-		}
-	}
-
-	// Clear the pending messages
-	p.pendingMessages = nil
 }
 
 // buildEndpointURL constructs the endpoint URL from request headers and proxy configuration.

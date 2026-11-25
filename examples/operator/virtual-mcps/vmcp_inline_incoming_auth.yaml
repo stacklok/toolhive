@@ -1,4 +1,4 @@
-# DEPRECATED: Inline oidcConfig in incomingAuth will be removed in v1beta1.
+# DEPRECATED: Inline oidcConfig in incomingAuth will be removed in a future API version.
 # Prefer using a shared MCPOIDCConfig with oidcConfigRef instead.
 # See vmcp_with_oidcconfig_ref.yaml for the recommended pattern.
 #
@@ -40,7 +40,7 @@ stringData:
 
 ---
 # Create MCPGroup
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: my-services
@@ -50,7 +50,7 @@ spec:
 
 ---
 # Create backend MCPServer: yardstick with SSE transport
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick-sse
@@ -75,7 +75,7 @@ spec:
 
 ---
 # Create backend MCPServer: fetch with streamable-http transport
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: fetch
@@ -97,7 +97,7 @@ spec:
 
 ---
 # Create backend MCPServer: yardstick with streamable-http transport
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick-streamable
@@ -121,7 +121,7 @@ spec:
       memory: "64Mi"
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: inline-auth-vmcp

@@ -11,24 +11,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const (
 	timeout  = time.Second * 30
 	interval = time.Millisecond * 250
+
+	// deletionUnblockTimeout is far below the 30s requeue so a regression to
+	// requeue-only unblocking fails the spec.
+	deletionUnblockTimeout = time.Second * 10
 )
 
 var _ = Describe("MCPOIDCConfig Controller", func() {
 	It("should set Ready condition and config hash on creation", func() {
-		oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+		oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-oidc-creation",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			Spec: mcpv1beta1.MCPOIDCConfigSpec{
+				Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+				Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 					Issuer:   "https://accounts.google.com",
 					ClientID: "test-client",
 				},
@@ -39,7 +43,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 
 		// Verify config hash is set
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPOIDCConfig{}
+			fetched := &mcpv1beta1.MCPOIDCConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      oidcConfig.Name,
 				Namespace: oidcConfig.Namespace,
@@ -52,7 +56,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 
 		// Verify Ready condition is set to True
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPOIDCConfig{}
+			fetched := &mcpv1beta1.MCPOIDCConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      oidcConfig.Name,
 				Namespace: oidcConfig.Namespace,
@@ -61,7 +65,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 				return false
 			}
 			for _, cond := range fetched.Status.Conditions {
-				if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
+				if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 					return true
 				}
 			}
@@ -70,14 +74,14 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 	})
 
 	It("should update config hash when spec changes", func() {
-		oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+		oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-oidc-hash-change",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			Spec: mcpv1beta1.MCPOIDCConfigSpec{
+				Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+				Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 					Issuer:   "https://accounts.google.com",
 					ClientID: "original-client",
 				},
@@ -89,7 +93,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 		// Wait for initial hash
 		var firstHash string
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPOIDCConfig{}
+			fetched := &mcpv1beta1.MCPOIDCConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      oidcConfig.Name,
 				Namespace: oidcConfig.Namespace,
@@ -102,7 +106,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 
 		// Update the spec
-		fetched := &mcpv1alpha1.MCPOIDCConfig{}
+		fetched := &mcpv1beta1.MCPOIDCConfig{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      oidcConfig.Name,
 			Namespace: oidcConfig.Namespace,
@@ -113,7 +117,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 
 		// Verify hash changed
 		Eventually(func() bool {
-			updated := &mcpv1alpha1.MCPOIDCConfig{}
+			updated := &mcpv1beta1.MCPOIDCConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      oidcConfig.Name,
 				Namespace: oidcConfig.Namespace,
@@ -126,14 +130,14 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 	})
 
 	It("should allow deletion by removing finalizer", func() {
-		oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+		oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-oidc-deletion",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-				KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			Spec: mcpv1beta1.MCPOIDCConfigSpec{
+				Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+				KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 					Issuer: "https://kubernetes.default.svc",
 				},
 			},
@@ -143,7 +147,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 
 		// Wait for finalizer to be added
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPOIDCConfig{}
+			fetched := &mcpv1beta1.MCPOIDCConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      oidcConfig.Name,
 				Namespace: oidcConfig.Namespace,
@@ -164,7 +168,7 @@ var _ = Describe("MCPOIDCConfig Controller", func() {
 
 		// Verify it's actually deleted (finalizer removed, object gone)
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPOIDCConfig{}
+			fetched := &mcpv1beta1.MCPOIDCConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      oidcConfig.Name,
 				Namespace: oidcConfig.Namespace,

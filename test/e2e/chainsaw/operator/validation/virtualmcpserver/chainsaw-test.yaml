@@ -17,7 +17,7 @@ spec:
       try:
         - apply:
             resource:
-              apiVersion: toolhive.stacklok.dev/v1alpha1
+              apiVersion: toolhive.stacklok.dev/v1beta1
               kind: VirtualMCPServer
               metadata:
                 name: test-invalid-oidc-missing-config
@@ -38,7 +38,7 @@ spec:
       try:
         - apply:
             resource:
-              apiVersion: toolhive.stacklok.dev/v1alpha1
+              apiVersion: toolhive.stacklok.dev/v1beta1
               kind: VirtualMCPServer
               metadata:
                 name: test-valid-minimal
@@ -51,7 +51,7 @@ spec:
                   name: test-group
         - assert:
             resource:
-              apiVersion: toolhive.stacklok.dev/v1alpha1
+              apiVersion: toolhive.stacklok.dev/v1beta1
               kind: VirtualMCPServer
               metadata:
                 name: test-valid-minimal

@@ -231,4 +231,4 @@ If pods are pending due to insufficient resources:
 
 - [HuggingFace Text Embeddings Inference](https://github.com/huggingface/text-embeddings-inference)
 - [ToolHive Documentation](https://docs.toolhive.dev)
-- [MCPGroup Documentation](../virtual-mcps/README.md)
+- [MCPGroup Documentation](../../../docs/operator/virtualmcpserver-kubernetes-guide.md)

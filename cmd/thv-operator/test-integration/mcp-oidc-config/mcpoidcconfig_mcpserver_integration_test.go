@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const (
@@ -27,8 +27,8 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			namespace  string
 			configName string
 			serverName string
-			oidcConfig *mcpv1alpha1.MCPOIDCConfig
-			mcpServer  *mcpv1alpha1.MCPServer
+			oidcConfig *mcpv1beta1.MCPOIDCConfig
+			mcpServer  *mcpv1beta1.MCPServer
 			ns         *corev1.Namespace
 		)
 
@@ -46,14 +46,14 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			serverName = testServerName
 
 			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -63,7 +63,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 
 			// Wait for Ready condition and ConfigHash to be set
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -75,7 +75,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -83,14 +83,14 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			}, timeout, interval).Should(BeTrue())
 
 			// Create MCPServer with OIDCConfigRef
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: testServerImage,
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
 						Name:     configName,
 						Audience: "test-audience",
 						Scopes:   []string{"openid"},
@@ -109,7 +109,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 
 		It("should set OIDCConfigRefValidated condition to True", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPServer{}
+				updated := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      serverName,
 					Namespace: namespace,
@@ -117,7 +117,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 				if err != nil {
 					return false
 				}
-				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 				if condition == nil {
 					return false
 				}
@@ -127,7 +127,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 
 		It("should set OIDCConfigHash in MCPServer status", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPServer{}
+				updated := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      serverName,
 					Namespace: namespace,
@@ -139,138 +139,6 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		It("should track MCPServer in MCPOIDCConfig ReferencingWorkloads", func() {
-			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: serverName}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-		})
-	})
-
-	Context("When MCPServer is deleted, should clean up ReferencingWorkloads", Ordered, func() {
-		var (
-			namespace  string
-			configName string
-			serverName string
-			oidcConfig *mcpv1alpha1.MCPOIDCConfig
-			mcpServer  *mcpv1alpha1.MCPServer
-			ns         *corev1.Namespace
-		)
-
-		BeforeAll(func() {
-			// Create a unique namespace for this test context
-			ns = &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					GenerateName: "test-oidcref-cleanup-",
-				},
-			}
-			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
-			namespace = ns.Name
-
-			configName = testOIDCConfigName
-			serverName = testServerName
-
-			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      configName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
-						Issuer:   "https://accounts.google.com",
-						ClientID: "test-client",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, oidcConfig)).Should(Succeed())
-
-			// Wait for ready
-			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				return updated.Status.ConfigHash != ""
-			}, timeout, interval).Should(BeTrue())
-
-			// Create MCPServer with OIDCConfigRef
-			mcpServer = &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      serverName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: testServerImage,
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
-						Name:     configName,
-						Audience: "test-audience",
-						Scopes:   []string{"openid"},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
-
-			// Wait for ReferencingWorkloads to contain the server
-			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: serverName}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-		})
-
-		AfterAll(func() {
-			_ = k8sClient.Delete(ctx, oidcConfig)
-			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
-		})
-
-		It("should remove server from ReferencingWorkloads after MCPServer deletion", func() {
-			// Delete the MCPServer
-			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
-
-			// Eventually the referencing workloads list should be empty
-			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
-					Namespace: namespace,
-				}, updated)
-				if err != nil {
-					return false
-				}
-				return len(updated.Status.ReferencingWorkloads) == 0
-			}, timeout, interval).Should(BeTrue())
-		})
 	})
 
 	Context("When deleting MCPOIDCConfig with active references", Ordered, func() {
@@ -278,8 +146,8 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			namespace  string
 			configName string
 			serverName string
-			oidcConfig *mcpv1alpha1.MCPOIDCConfig
-			mcpServer  *mcpv1alpha1.MCPServer
+			oidcConfig *mcpv1beta1.MCPOIDCConfig
+			mcpServer  *mcpv1beta1.MCPServer
 			ns         *corev1.Namespace
 		)
 
@@ -297,14 +165,14 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			serverName = testServerName
 
 			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -314,7 +182,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 
 			// Wait for ready
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -326,14 +194,14 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			}, timeout, interval).Should(BeTrue())
 
 			// Create MCPServer with OIDCConfigRef
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: testServerImage,
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
 						Name:     configName,
 						Audience: "test-audience",
 						Scopes:   []string{"openid"},
@@ -342,23 +210,18 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			}
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			// Wait for ReferencingWorkloads to be populated
+			// Wait for the server to be wired to the config (OIDCConfigHash populated)
+			// so the config is observably referenced before we attempt deletion.
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configName,
+					Name:      serverName,
 					Namespace: namespace,
 				}, updated)
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: serverName}
-				for _, ref := range updated.Status.ReferencingWorkloads {
-					if ref == expectedRef {
-						return true
-					}
-				}
-				return false
+				return updated.Status.OIDCConfigHash != ""
 			}, timeout, interval).Should(BeTrue())
 
 			// Attempt to delete the MCPOIDCConfig (should be blocked by finalizer)
@@ -372,7 +235,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 
 			// Wait for MCPOIDCConfig to be fully removed
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -383,10 +246,11 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should not be deleted while referenced", func() {
-			// The object should still exist because the finalizer blocks deletion
+		It("should not be deleted while referenced and should set DeletionBlocked condition", func() {
+			// The object should still exist (finalizer blocks deletion) with a
+			// pending deletion timestamp and a DeletionBlocked=True condition.
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -394,7 +258,11 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 				if err != nil {
 					return false
 				}
-				return !updated.DeletionTimestamp.IsZero()
+				if updated.DeletionTimestamp.IsZero() {
+					return false
+				}
+				cond := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
+				return cond != nil && cond.Status == metav1.ConditionTrue
 			}, timeout, interval).Should(BeTrue())
 		})
 
@@ -402,15 +270,15 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			// Delete the MCPServer to remove the reference
 			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
 
-			// The MCPOIDCConfig should eventually be fully deleted
+			// The MCPOIDCConfig should be deleted, unblocked by the workload watch rather than the 30s requeue.
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
 				}, updated)
 				return errors.IsNotFound(err)
-			}, timeout, interval).Should(BeTrue())
+			}, deletionUnblockTimeout, interval).Should(BeTrue())
 		})
 	})
 
@@ -418,7 +286,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 		var (
 			namespace  string
 			serverName string
-			mcpServer  *mcpv1alpha1.MCPServer
+			mcpServer  *mcpv1beta1.MCPServer
 			ns         *corev1.Namespace
 		)
 
@@ -435,14 +303,14 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 			serverName = testServerName
 
 			// Create MCPServer with OIDCConfigRef pointing to a non-existent config
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: testServerImage,
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
 						Name:     "does-not-exist",
 						Audience: "test-audience",
 						Scopes:   []string{"openid"},
@@ -459,7 +327,7 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 
 		It("should set OIDCConfigRefValidated condition to False with NotFound reason", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPServer{}
+				updated := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      serverName,
 					Namespace: namespace,
@@ -467,12 +335,12 @@ var _ = Describe("MCPOIDCConfig and MCPServer Cross-Resource Integration Tests",
 				if err != nil {
 					return false
 				}
-				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 				if condition == nil {
 					return false
 				}
 				return condition.Status == metav1.ConditionFalse &&
-					condition.Reason == mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound
+					condition.Reason == mcpv1beta1.ConditionReasonOIDCConfigRefNotFound
 			}, timeout, interval).Should(BeTrue())
 		})
 	})

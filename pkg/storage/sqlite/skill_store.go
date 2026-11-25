@@ -39,10 +39,20 @@ var _ storage.SkillStore = (*SkillStore)(nil)
 // skillColumns is the SELECT column list shared by Get and List queries.
 const skillColumns = `is_.id, e.name, is_.scope, is_.project_root, is_.reference, is_.tag,
 			is_.digest, is_.version, is_.description, is_.author, json(is_.tags),
-			json(is_.client_apps), is_.status, is_.installed_at`
+			json(is_.client_apps), is_.status, is_.installed_at, is_.managed,
+			is_.sigstore_bundle`
+
+// errManagedRequiresProjectScope is returned by Create/Update when a
+// user-scoped skill has Managed set. Managed pins a skill in a project's
+// lock file, which only exists for project-scoped installs.
+var errManagedRequiresProjectScope = errors.New("managed skill must be project-scoped")
 
 // Create stores a new installed skill.
 func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) error {
+	if skill.Managed && skill.Scope != skills.ScopeProject {
+		return errManagedRequiresProjectScope
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -54,13 +64,13 @@ func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) er
 	// if it already exists.
 	var entryID int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM entries WHERE entry_type = 'skill' AND name = ?`,
-		skill.Metadata.Name,
+		`SELECT id FROM entries WHERE entry_type = ? AND name = ?`,
+		string(storage.EntryTypeSkill), skill.Metadata.Name,
 	).Scan(&entryID)
 	if errors.Is(err, sql.ErrNoRows) {
 		res, insertErr := tx.ExecContext(ctx,
-			`INSERT INTO entries (entry_type, name) VALUES ('skill', ?)`,
-			skill.Metadata.Name,
+			`INSERT INTO entries (entry_type, name) VALUES (?, ?)`,
+			string(storage.EntryTypeSkill), skill.Metadata.Name,
 		)
 		if insertErr != nil {
 			return fmt.Errorf("inserting entry: %w", insertErr)
@@ -85,8 +95,9 @@ func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) er
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO installed_skills (
 			entry_id, scope, project_root, reference, tag, digest,
-			version, description, author, tags, client_apps, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?)`,
+			version, description, author, tags, client_apps, status, managed,
+			sigstore_bundle
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, ?, ?)`,
 		entryID,
 		string(skill.Scope),
 		skill.ProjectRoot,
@@ -99,6 +110,8 @@ func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) er
 		tagsJSON,
 		clientsJSON,
 		string(skill.Status),
+		boolToInt(skill.Managed),
+		skill.SigstoreBundle,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -132,9 +145,9 @@ func (s *SkillStore) Get(
 		`SELECT `+skillColumns+`
 		FROM entries e
 		JOIN installed_skills is_ ON is_.entry_id = e.id
-		WHERE e.entry_type = 'skill'
+		WHERE e.entry_type = ?
 		  AND e.name = ? AND is_.scope = ? AND is_.project_root = ?`,
-		name, string(scope), projectRoot,
+		string(storage.EntryTypeSkill), name, string(scope), projectRoot,
 	)
 
 	sk, installedSkillID, err := scanSkillFields(row)
@@ -156,9 +169,9 @@ func (s *SkillStore) List(ctx context.Context, filter storage.ListFilter) ([]ski
 	query := `SELECT ` + skillColumns + `
 		FROM entries e
 		JOIN installed_skills is_ ON is_.entry_id = e.id
-		WHERE e.entry_type = 'skill'`
+		WHERE e.entry_type = ?`
 
-	var args []any
+	args := []any{string(storage.EntryTypeSkill)}
 
 	if filter.Scope != "" {
 		query += ` AND is_.scope = ?`
@@ -221,6 +234,10 @@ func (s *SkillStore) List(ctx context.Context, filter storage.ListFilter) ([]ski
 
 // Update modifies an existing installed skill.
 func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) error {
+	if skill.Managed && skill.Scope != skills.ScopeProject {
+		return errManagedRequiresProjectScope
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -233,11 +250,11 @@ func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) er
 		SELECT e.id, is_.id
 		FROM entries e
 		JOIN installed_skills is_ ON is_.entry_id = e.id
-		WHERE e.entry_type = 'skill'
+		WHERE e.entry_type = ?
 		  AND e.name = ?
 		  AND is_.scope = ?
 		  AND is_.project_root = ?`,
-		skill.Metadata.Name, string(skill.Scope), skill.ProjectRoot,
+		string(storage.EntryTypeSkill), skill.Metadata.Name, string(skill.Scope), skill.ProjectRoot,
 	).Scan(&entryID, &installedSkillID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -266,7 +283,8 @@ func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) er
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE installed_skills SET
 			reference = ?, tag = ?, digest = ?, version = ?, description = ?,
-			author = ?, tags = jsonb(?), client_apps = jsonb(?), status = ?
+			author = ?, tags = jsonb(?), client_apps = jsonb(?), status = ?, managed = ?,
+			sigstore_bundle = ?
 		WHERE id = ?`,
 		skill.Reference,
 		skill.Tag,
@@ -277,6 +295,8 @@ func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) er
 		tagsJSON,
 		clientsJSON,
 		string(skill.Status),
+		boolToInt(skill.Managed),
+		skill.SigstoreBundle,
 		installedSkillID,
 	); err != nil {
 		return fmt.Errorf("updating installed skill: %w", err)
@@ -315,12 +335,12 @@ func (s *SkillStore) Delete(ctx context.Context, name string, scope skills.Scope
 		DELETE FROM installed_skills WHERE id IN (
 			SELECT is_.id FROM installed_skills is_
 			JOIN entries e ON is_.entry_id = e.id
-			WHERE e.entry_type = 'skill'
+			WHERE e.entry_type = ?
 			  AND e.name = ?
 			  AND is_.scope = ?
 			  AND is_.project_root = ?
 		)`,
-		name, string(scope), projectRoot,
+		string(storage.EntryTypeSkill), name, string(scope), projectRoot,
 	)
 	if err != nil {
 		return fmt.Errorf("deleting installed skill: %w", err)
@@ -336,9 +356,9 @@ func (s *SkillStore) Delete(ctx context.Context, name string, scope skills.Scope
 
 	// Clean up the parent entry if no installed_skills remain for it.
 	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM entries WHERE entry_type = 'skill' AND name = ?
+		DELETE FROM entries WHERE entry_type = ? AND name = ?
 		  AND NOT EXISTS (SELECT 1 FROM installed_skills WHERE entry_id = entries.id)`,
-		name,
+		string(storage.EntryTypeSkill), name,
 	); err != nil {
 		return fmt.Errorf("cleaning up orphaned entry: %w", err)
 	}
@@ -370,12 +390,14 @@ func scanSkillFields(sc scanner) (skills.InstalledSkill, int64, error) {
 		clientsBlob      []byte
 		status           string
 		installedAtStr   string
+		managed          int
+		sigstoreBundle   []byte
 	)
 
 	err := sc.Scan(
 		&installedSkillID, &name, &scope, &projectRoot, &reference, &tag,
 		&digest, &version, &description, &author, &tagsBlob,
-		&clientsBlob, &status, &installedAtStr,
+		&clientsBlob, &status, &installedAtStr, &managed, &sigstoreBundle,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -404,14 +426,16 @@ func scanSkillFields(sc scanner) (skills.InstalledSkill, int64, error) {
 			Author:      author,
 			Tags:        tags,
 		},
-		Scope:       skills.Scope(scope),
-		ProjectRoot: projectRoot,
-		Reference:   reference,
-		Tag:         tag,
-		Digest:      digest,
-		Status:      skills.InstallStatus(status),
-		InstalledAt: installedAt,
-		Clients:     clients,
+		Scope:          skills.Scope(scope),
+		ProjectRoot:    projectRoot,
+		Reference:      reference,
+		Tag:            tag,
+		Digest:         digest,
+		Status:         skills.InstallStatus(status),
+		InstalledAt:    installedAt,
+		Clients:        clients,
+		Managed:        managed != 0,
+		SigstoreBundle: sigstoreBundle,
 	}
 
 	return sk, installedSkillID, nil
@@ -495,3 +519,11 @@ func isUniqueViolation(err error) bool {
 
 // rollback rolls back tx, ignoring errors (tx may already be committed).
 func rollback(tx *sql.Tx) { _ = tx.Rollback() }
+
+// boolToInt converts a bool to SQLite's 0/1 INTEGER representation.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

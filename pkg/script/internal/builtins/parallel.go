@@ -10,10 +10,14 @@ import (
 	"go.starlark.net/starlark"
 
 	"github.com/stacklok/toolhive/pkg/foreach"
+	"github.com/stacklok/toolhive/pkg/script/internal/core"
 )
 
 // newParallel creates a parallel() Starlark builtin that executes a list
 // of zero-arg callables concurrently and returns results in order.
+//
+// The list is snapshotted at call time, so later changes to it (including
+// by the callables themselves) do not affect which callables run.
 //
 // Uses a bounded worker pool (via foreach.Concurrent) so the goroutine
 // count matches maxConcurrency, not the task count. The step budget is
@@ -27,24 +31,36 @@ func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *sta
 			return nil, err
 		}
 
-		n := fns.Len()
+		// This snapshot closes the index race on fns only; children sharing
+		// other mutable values is tracked separately.
+		callables := make([]starlark.Callable, fns.Len())
+		for i := range callables {
+			v := fns.Index(i)
+			c, ok := v.(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("parallel: element %d is not callable (got %s)", i, v.Type())
+			}
+			callables[i] = c
+		}
+
+		n := len(callables)
 		if n == 0 {
 			return starlark.NewList(nil), nil
 		}
 
 		// Divide step budget evenly across children to prevent amplification.
-		// With N children, each gets stepLimit/N steps.
-		childStepLimit := stepLimit / uint64(n) //nolint:gosec // n is from starlark.List.Len(), always non-negative
+		// With N children, each gets stepLimit/N steps. Floor at 1: when n > stepLimit
+		// the division truncates to 0, which would skip SetMaxExecutionSteps and leave
+		// child threads unbounded — the opposite of the intended cap.
+		childStepLimit := max(1, stepLimit/uint64(n)) //nolint:gosec // n is from starlark.List.Len(), always non-negative
 
 		childLogs := make([][]string, n)
+		stats := core.StatsFrom(thread)
+		stats.AddParallel(n)
 
 		results, err := foreach.Concurrent(ctx, n, maxConcurrency,
 			func(_ context.Context, idx int) (starlark.Value, error) {
-				callable, ok := fns.Index(idx).(starlark.Callable)
-				if !ok {
-					return nil, fmt.Errorf("parallel: element %d is not callable (got %s)",
-						idx, fns.Index(idx).Type())
-				}
+				callable := callables[idx]
 
 				// Each child gets its own log buffer to avoid data races
 				var logs []string
@@ -53,12 +69,17 @@ func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *sta
 					Print: func(_ *starlark.Thread, msg string) {
 						logs = append(logs, msg)
 					},
+					// Inherit the parent's step-limit handler so the executor
+					// can tell when a child ran out of steps.
+					OnMaxSteps: thread.OnMaxSteps,
 				}
+				core.SetStats(childThread, stats)
 				if childStepLimit > 0 {
 					childThread.SetMaxExecutionSteps(childStepLimit)
 				}
 
 				result, callErr := starlark.Call(childThread, callable, nil, nil)
+				stats.AddSteps(childThread.ExecutionSteps())
 				childLogs[idx] = logs
 				return result, callErr
 			},

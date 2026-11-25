@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
@@ -186,7 +186,7 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 
 	tests := []struct {
 		name                string
-		spec                *v1alpha1.MCPTelemetryConfigSpec
+		spec                *v1beta1.MCPTelemetryConfigSpec
 		serviceNameOverride string
 		defaultServiceName  string
 		expected            *telemetry.Config
@@ -200,8 +200,8 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		},
 		{
 			name: "service name override takes precedence",
-			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "https://otel-collector:4317",
 				},
@@ -215,8 +215,8 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		},
 		{
 			name: "empty override falls through to defaultServiceName",
-			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "otel-collector:4317",
 				},
@@ -230,11 +230,11 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		},
 		{
 			name: "endpoint normalization strips http:// prefix",
-			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "http://collector.monitoring:4317",
-					Tracing:  &v1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+					Tracing:  &v1beta1.OpenTelemetryTracingConfig{Enabled: true},
 				},
 			},
 			serviceNameOverride: "my-service",
@@ -247,8 +247,8 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		},
 		{
 			name: "endpoint normalization strips https:// prefix",
-			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "https://secure-collector:4317",
 				},
@@ -262,8 +262,8 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		},
 		{
 			name: "default service name used when no override",
-			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "collector:4317",
 				},
@@ -277,12 +277,12 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		},
 		{
 			name: "enabled false skips OTel config entirely",
-			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 					Enabled:  false,
 					Endpoint: "https://otel-collector:4317",
-					Tracing:  &v1alpha1.OpenTelemetryTracingConfig{Enabled: true},
-					Metrics:  &v1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+					Tracing:  &v1beta1.OpenTelemetryTracingConfig{Enabled: true},
+					Metrics:  &v1beta1.OpenTelemetryMetricsConfig{Enabled: true},
 				},
 			},
 			serviceNameOverride: "my-service",
@@ -293,8 +293,8 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 		},
 		{
 			name: "endpoint with nil tracing and metrics produces no tracing or metrics",
-			spec: &v1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "otel-collector:4317",
 					// Tracing and Metrics are nil
@@ -305,6 +305,44 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 			expected: &telemetry.Config{
 				Endpoint:    "otel-collector:4317",
 				ServiceName: "test-server",
+			},
+		},
+		{
+			name: "prometheus config with unset MetricsOnTransportPort stays unset",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				ServiceName:                 "test-server",
+				EnablePrometheusMetricsPath: true,
+			},
+		},
+		{
+			name: "prometheus config with MetricsOnTransportPort true",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true, MetricsOnTransportPort: boolPtr(true)},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				ServiceName:                 "test-server",
+				EnablePrometheusMetricsPath: true,
+				MetricsOnTransportPort:      boolPtr(true),
+			},
+		},
+		{
+			name: "prometheus config with MetricsOnTransportPort false",
+			spec: &v1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &v1beta1.PrometheusConfig{Enabled: true, MetricsOnTransportPort: boolPtr(false)},
+			},
+			serviceNameOverride: "",
+			defaultServiceName:  "test-server",
+			expected: &telemetry.Config{
+				ServiceName:                 "test-server",
+				EnablePrometheusMetricsPath: true,
+				MetricsOnTransportPort:      boolPtr(false),
 			},
 		},
 	}
@@ -324,11 +362,36 @@ func TestNormalizeMCPTelemetryConfig(t *testing.T) {
 	}
 }
 
+// TestNormalizeMCPTelemetryConfig_ClonesMetricsOnTransportPort guards against the
+// pointer aliasing NormalizeTelemetryConfig's shallow copy ("Create a copy to avoid
+// modifying the input") cannot catch on its own: MetricsOnTransportPort is a *bool
+// copied from the CRD spec, so if the converter ever assigns the spec's pointer
+// directly instead of cloning the value, a write through the result would reach
+// back into the caller's spec object.
+func TestNormalizeMCPTelemetryConfig_ClonesMetricsOnTransportPort(t *testing.T) {
+	t.Parallel()
+
+	original := boolPtr(true)
+	spec := &v1beta1.MCPTelemetryConfigSpec{
+		Prometheus: &v1beta1.PrometheusConfig{Enabled: true, MetricsOnTransportPort: original},
+	}
+
+	result := NormalizeMCPTelemetryConfig(spec, "", "test-server")
+	require.NotNil(t, result)
+	require.NotNil(t, result.MetricsOnTransportPort)
+
+	assert.NotSame(t, original, result.MetricsOnTransportPort,
+		"the result must not alias the spec's pointer")
+
+	*result.MetricsOnTransportPort = false
+	assert.True(t, *original, "mutating the result must not affect the input spec")
+}
+
 func TestNormalizeMCPTelemetryConfig_DoesNotModifyInput(t *testing.T) {
 	t.Parallel()
 
-	spec := &v1alpha1.MCPTelemetryConfigSpec{
-		OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+	spec := &v1beta1.MCPTelemetryConfigSpec{
+		OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: "https://otel-collector:4317",
 		},
@@ -376,11 +439,11 @@ func TestNormalizeMCPTelemetryConfig_ClampsSamplingRate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			spec := &v1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+			spec := &v1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "otel-collector:4317",
-					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
+					Tracing: &v1beta1.OpenTelemetryTracingConfig{
 						Enabled:      true,
 						SamplingRate: tt.samplingRate,
 					},
@@ -392,3 +455,5 @@ func TestNormalizeMCPTelemetryConfig_ClampsSamplingRate(t *testing.T) {
 		})
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }

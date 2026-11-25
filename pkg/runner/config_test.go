@@ -6,8 +6,11 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -15,16 +18,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -174,6 +179,22 @@ func TestRunConfig_NormalizeProxyMode(t *testing.T) {
 // Note: This test uses actual port finding logic, so it may fail if ports are in use
 func TestRunConfig_WithPorts(t *testing.T) {
 	t.Parallel()
+	// Find available ports dynamically to avoid flaky failures
+	port1 := networking.FindAvailable()
+	require.NotZero(t, port1, "should find an available proxy port for SSE")
+	targetPort1 := networking.FindAvailable()
+	require.NotZero(t, targetPort1, "should find an available target port for SSE")
+
+	port2 := networking.FindAvailable()
+	require.NotZero(t, port2, "should find an available proxy port for HTTP")
+	targetPort2 := networking.FindAvailable()
+	require.NotZero(t, targetPort2, "should find an available target port for HTTP")
+
+	port3 := networking.FindAvailable()
+	require.NotZero(t, port3, "should find an available proxy port for Stdio")
+	targetPort3 := networking.FindAvailable()
+	require.NotZero(t, targetPort3, "should find an available target port for Stdio")
+
 	testCases := []struct {
 		name        string
 		config      *RunConfig
@@ -184,8 +205,8 @@ func TestRunConfig_WithPorts(t *testing.T) {
 		{
 			name:        "SSE transport with specific ports",
 			config:      &RunConfig{Transport: types.TransportTypeSSE},
-			port:        8001,
-			targetPort:  9001,
+			port:        port1,
+			targetPort:  targetPort1,
 			expectError: false,
 		},
 		{
@@ -198,15 +219,15 @@ func TestRunConfig_WithPorts(t *testing.T) {
 		{
 			name:        "Streamable HTTP transport with specific ports",
 			config:      &RunConfig{Transport: types.TransportTypeStreamableHTTP},
-			port:        8002,
-			targetPort:  9002,
+			port:        port2,
+			targetPort:  targetPort2,
 			expectError: false,
 		},
 		{
 			name:        "Stdio transport with specific port",
 			config:      &RunConfig{Transport: types.TransportTypeStdio},
-			port:        8003,
-			targetPort:  9003, // This should be ignored for stdio
+			port:        port3,
+			targetPort:  targetPort3, // This should be ignored for stdio
 			expectError: false,
 		},
 	}
@@ -240,6 +261,26 @@ func TestRunConfig_WithPorts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRunConfig_WithPorts_TargetPortIgnoresHostAvailability ensures container target
+// ports are not validated against host availability.
+//
+//nolint:tparallel,paralleltest // Subtests share a listener occupying the target port on the host
+func TestRunConfig_WithPorts_TargetPortIgnoresHostAvailability(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "Should be able to occupy a port on host")
+	defer listener.Close()
+
+	targetPort := listener.Addr().(*net.TCPAddr).Port
+	config := &RunConfig{Transport: types.TransportTypeSSE}
+	result, err := config.WithPorts(0, targetPort)
+
+	require.NoError(t, err)
+	assert.Equal(t, config, result)
+	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should remain the requested container port")
 }
 
 func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
@@ -597,6 +638,12 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 
 			// Set the secrets in the config
 			tc.config.Secrets = tc.secrets
+			originalClientSecret := ""
+			originalBearerToken := ""
+			if tc.config.RemoteAuthConfig != nil {
+				originalClientSecret = tc.config.RemoteAuthConfig.ClientSecret
+				originalBearerToken = tc.config.RemoteAuthConfig.BearerToken
+			}
 
 			// Call the function
 			result, err := tc.config.WithSecrets(context.Background(), secretManager, secretManager)
@@ -612,37 +659,84 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 					assert.Equal(t, value, tc.config.EnvVars[key], "Environment variable %s should be set correctly", key)
 				}
 
-				// Check bearer token resolution if RemoteAuthConfig is present
-				if tc.config.RemoteAuthConfig != nil && tc.config.RemoteAuthConfig.BearerToken != "" {
-					// Check if bearer token was in CLI format
-					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.BearerToken); err == nil {
-						// It was in CLI format, should be resolved to the actual value
-						if expectedToken, exists := tc.mockSecrets[secretParam.Name]; exists {
-							assert.Equal(t, expectedToken, tc.config.RemoteAuthConfig.BearerToken, "Bearer token should be resolved from CLI format")
-						}
-					} else {
-						// It was plain text, should remain unchanged
-						// We need to check against the original value from the test case
-						originalToken := "plain-text-bearer-token" // Default for the plain text test case
-						if tc.name == "Bearer token in plain text remains unchanged" {
-							assert.Equal(t, originalToken, tc.config.RemoteAuthConfig.BearerToken, "Plain text bearer token should remain unchanged")
-						}
-					}
-				}
+				if tc.config.RemoteAuthConfig != nil {
+					assert.Equal(t, originalBearerToken, tc.config.RemoteAuthConfig.BearerToken,
+						"bearer token persistence value should remain unchanged")
+					assert.Equal(t, originalClientSecret, tc.config.RemoteAuthConfig.ClientSecret,
+						"client secret persistence value should remain unchanged")
 
-				// Check OAuth client secret resolution if RemoteAuthConfig is present
-				if tc.config.RemoteAuthConfig != nil && tc.config.RemoteAuthConfig.ClientSecret != "" {
-					// Check if client secret was in CLI format
-					if secretParam, err := secrets.ParseSecretParameter(tc.config.RemoteAuthConfig.ClientSecret); err == nil {
-						// It was in CLI format, should be resolved to the actual value
-						if expectedSecret, exists := tc.mockSecrets[secretParam.Name]; exists {
-							assert.Equal(t, expectedSecret, tc.config.RemoteAuthConfig.ClientSecret, "OAuth client secret should be resolved from CLI format")
+					if secretParam, parseErr := secrets.ParseSecretParameter(originalBearerToken); parseErr == nil {
+						if expectedToken, exists := tc.mockSecrets[secretParam.Name]; exists {
+							tokenSource, authErr := remote.NewHandler(tc.config.RemoteAuthConfig).
+								Authenticate(context.Background(), "https://example.com/mcp")
+							require.NoError(t, authErr)
+							require.NotNil(t, tokenSource)
+							token, tokenErr := tokenSource.Token()
+							require.NoError(t, tokenErr)
+							assert.Equal(t, expectedToken, token.AccessToken)
 						}
 					}
 				}
 			}
 		})
 	}
+}
+
+func TestRunConfig_WithEnvironmentBackedRemoteSecret(t *testing.T) {
+	const (
+		secretReference = "operator-token,target=bearer_token"
+		resolvedToken   = "operator-token-value"
+	)
+	t.Setenv("TOOLHIVE_SECRET_operator-token", resolvedToken)
+
+	config := &RunConfig{RemoteAuthConfig: &remote.Config{BearerToken: secretReference}}
+	_, err := config.WithSecrets(context.Background(), secrets.NewEnvironmentProvider(), secrets.NewEnvironmentProvider())
+	require.NoError(t, err)
+	assert.Equal(t, secretReference, config.RemoteAuthConfig.BearerToken)
+
+	tokenSource, err := remote.NewHandler(config.RemoteAuthConfig).Authenticate(context.Background(), "https://example.com/mcp")
+	require.NoError(t, err)
+	require.NotNil(t, tokenSource)
+	token, err := tokenSource.Token()
+	require.NoError(t, err)
+	assert.Equal(t, resolvedToken, token.AccessToken)
+
+	var encoded bytes.Buffer
+	require.NoError(t, config.WriteJSON(&encoded))
+	assert.Contains(t, encoded.String(), secretReference)
+	assert.NotContains(t, encoded.String(), resolvedToken)
+}
+
+func TestRunConfig_WithSecretsReplacesResolvedBearerToken(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	secretManager := secretsmocks.NewMockProvider(ctrl)
+	secretManager.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_SECRET").Return("first-token", nil)
+	secretManager.EXPECT().GetSecret(gomock.Any(), "BEARER_TOKEN_SECRET").Return("", nil)
+
+	config := &RunConfig{RemoteAuthConfig: &remote.Config{
+		BearerToken: "BEARER_TOKEN_SECRET,target=bearer_token",
+	}}
+	_, err := config.WithSecrets(context.Background(), secretManager, secretManager)
+	require.NoError(t, err)
+
+	tokenSource, err := remote.NewHandler(config.RemoteAuthConfig).Authenticate(context.Background(), "https://example.com/mcp")
+	require.NoError(t, err)
+	require.NotNil(t, tokenSource)
+	token, err := tokenSource.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "first-token", token.AccessToken)
+
+	_, err = config.WithSecrets(context.Background(), secretManager, secretManager)
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(server.Close)
+	tokenSource, err = remote.NewHandler(config.RemoteAuthConfig).Authenticate(context.Background(), server.URL)
+	require.NoError(t, err)
+	assert.Nil(t, tokenSource, "an empty resolved token must not fall back to its persisted reference")
+	assert.Equal(t, "BEARER_TOKEN_SECRET,target=bearer_token", config.RemoteAuthConfig.BearerToken)
 }
 
 func TestRunConfig_WithContainerName(t *testing.T) {
@@ -1060,6 +1154,78 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 	require.NotNil(t, readConfig.HeaderForward, "HeaderForward should not be nil")
 	assert.Equal(t, originalConfig.HeaderForward.AddPlaintextHeaders, readConfig.HeaderForward.AddPlaintextHeaders, "AddPlaintextHeaders should match")
 	assert.Equal(t, originalConfig.HeaderForward.AddHeadersFromSecret, readConfig.HeaderForward.AddHeadersFromSecret, "AddHeadersFromSecret should match")
+}
+
+func TestReadJSON_OIDCMiddlewareConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		fixture   string
+		populate  bool
+		wantErr   string
+		assertion func(*testing.T, *RunConfig)
+	}{
+		{
+			name:    "repairs legacy middleware",
+			fixture: "testdata/legacy_oidc_middleware.json",
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				require.NotNil(t, config.OIDCConfig)
+
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(config.MiddlewareConfigs[0].Parameters, &params))
+				assert.Equal(t, config.OIDCConfig, params.OIDCConfig)
+				assert.Equal(t, "https://embedded.example.com", params.EmbeddedAuthServerIssuer)
+			},
+		},
+		{
+			name:    "rejects null authentication parameters",
+			fixture: "testdata/oidc_null_middleware_parameters.json",
+			wantErr: "invalid OIDC middleware configuration: authentication middleware parameters cannot be null",
+		},
+		{
+			name:     "populates empty middleware chain",
+			fixture:  "testdata/oidc_empty_middleware.json",
+			populate: true,
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				for _, middlewareConfig := range config.MiddlewareConfigs {
+					if middlewareConfig.Type != auth.MiddlewareType {
+						continue
+					}
+
+					var params auth.MiddlewareParams
+					require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+					assert.Equal(t, config.OIDCConfig, params.OIDCConfig)
+					return
+				}
+				t.Fatal("authentication middleware configuration not found")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, err := os.Open(tt.fixture) // #nosec G304 -- fixed test fixture
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, file.Close()) })
+
+			config, err := ReadJSON(file)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			if tt.populate {
+				require.NoError(t, PopulateMiddlewareConfigs(config))
+			}
+			tt.assertion(t, config)
+		})
+	}
 }
 
 func TestCommaSeparatedEnvVars(t *testing.T) {
@@ -2154,6 +2320,50 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 				},
 				ScopesSupported:  []string{"openid", "profile", "email"},
 				AllowedAudiences: []string{"https://api.example.com", "https://mcp.example.com"},
+				SPIFFETrustDomains: []authserver.SPIFFETrustDomainRunConfig{
+					{
+						Name:        "production",
+						TrustDomain: "example.org",
+						Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+						BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+							Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+							WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+						},
+					},
+					{
+						Name:        "development",
+						TrustDomain: "dev.example.org",
+						Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT},
+						BundleSource: authserver.SPIFFEBundleSourceRunConfig{
+							Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
+							WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+						},
+					},
+				},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{
+						{
+							TrustDomainRef:   "production",
+							PrincipalPattern: "spiffe://example.org/ns/default/agent",
+							ClientID:         "spiffe-client",
+							Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+							Scopes:           []string{"openid"},
+							Audiences:        []string{"https://mcp.example.com"},
+							Resources:        []string{"https://mcp.example.com"},
+							GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
+						},
+						{
+							TrustDomainRef:   "development",
+							PrincipalPattern: "spiffe://dev.example.org/ns/default/agent",
+							ClientID:         "development-spiffe-client",
+							Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT},
+							Scopes:           []string{"profile"},
+							Audiences:        []string{"https://api.example.com"},
+							Resources:        []string{"https://api.example.com"},
+							GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
+						},
+					},
+				},
 			},
 		}
 
@@ -2218,6 +2428,14 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 		// Verify scopes and audiences
 		assert.Equal(t, []string{"openid", "profile", "email"}, authConfig.ScopesSupported, "ScopesSupported should match")
 		assert.Equal(t, []string{"https://api.example.com", "https://mcp.example.com"}, authConfig.AllowedAudiences, "AllowedAudiences should match")
+		require.Len(t, authConfig.SPIFFETrustDomains, 2)
+		assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, authConfig.SPIFFETrustDomains[0].Methods)
+		assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT}, authConfig.SPIFFETrustDomains[1].Methods)
+		require.NotNil(t, authConfig.InboundGrants)
+		spiffeClients := authConfig.InboundGrants.SPIFFEClientAuth
+		require.Len(t, spiffeClients, 2)
+		assert.Equal(t, []string{"https://mcp.example.com"}, spiffeClients[0].Audiences)
+		assert.Equal(t, []string{"https://api.example.com"}, spiffeClients[1].Audiences)
 	})
 
 	t.Run("serializes and deserializes with OIDC upstream", func(t *testing.T) {
@@ -2531,4 +2749,103 @@ func TestRunConfig_SessionRedis(t *testing.T) {
 		require.NotNil(t, got.ScalingConfig.SessionRedis)
 		assert.Equal(t, "redis:6379", got.ScalingConfig.SessionRedis.Address)
 	})
+}
+
+func TestRunConfig_MCPServerGenerationJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserves non-zero value", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "generation-server"
+		cfg.MCPServerGeneration = 42
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		assert.Equal(t, int64(42), got.MCPServerGeneration,
+			"MCPServerGeneration not preserved: got %d, want 42", got.MCPServerGeneration)
+	})
+
+	t.Run("missing field decodes as zero", func(t *testing.T) {
+		t.Parallel()
+		minimalJSON := `{"schema_version":"v0.1.0","image":"img","name":"n","transport":"stdio","host":"127.0.0.1","port":8080,"permission_profile":null}` //nolint:lll
+
+		got, err := ReadJSON(strings.NewReader(minimalJSON))
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), got.MCPServerGeneration,
+			"MCPServerGeneration should be zero when missing, got %d", got.MCPServerGeneration)
+	})
+
+	t.Run("omitempty omits zero value", func(t *testing.T) {
+		t.Parallel()
+		// With the int64 type and `omitempty`, a zero MCPServerGeneration must not
+		// appear in the marshaled JSON. This is the key property that makes ConfigMap
+		// checksums deterministic across reconciles for unversioned (CLI) callers.
+		cfg := NewRunConfig()
+		cfg.Name = "zero-generation"
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		assert.False(t, bytes.Contains(buf.Bytes(), []byte("mcpserver_generation")),
+			"zero MCPServerGeneration should be omitted from JSON output; got:\n%s", buf.String())
+
+		// Round-trip: absent field decodes back to zero.
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), got.MCPServerGeneration,
+			"decoded missing field should be zero, got %d", got.MCPServerGeneration)
+	})
+}
+
+// TestReadJSON_DegradesNetworkIsolation verifies that ReadJSON self-heals legacy
+// on-disk configs that persisted isolate_network=true with a non-bridge network
+// mode, so status/list reflect reality. See issue #5775.
+func TestReadJSON_DegradesNetworkIsolation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		mode            string
+		omitProfile     bool // omit permission_profile entirely (nil-guard case)
+		expectIsolation bool
+	}{
+		{name: "host mode degrades", mode: "host", expectIsolation: false},
+		{name: "none mode degrades", mode: "none", expectIsolation: false},
+		{name: "bridge mode untouched", mode: "bridge", expectIsolation: true},
+		{name: "empty mode untouched", mode: "", expectIsolation: true},
+		{name: "no permission profile is nil-safe and untouched", omitProfile: true, expectIsolation: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			profileJSON := fmt.Sprintf(`,
+				"permission_profile": {
+					"network": {
+						"mode": "%s"
+					}
+				}`, tt.mode)
+			if tt.omitProfile {
+				profileJSON = ""
+			}
+
+			configJSON := fmt.Sprintf(`{
+				"schema_version": "v1",
+				"name": "degrade-test",
+				"image": "test:latest",
+				"transport": "stdio",
+				"isolate_network": true%s
+			}`, profileJSON)
+
+			config, err := ReadJSON(strings.NewReader(configJSON))
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.expectIsolation, config.IsolateNetwork,
+				"IsolateNetwork should reflect reconciled value for mode %q", tt.mode)
+		})
+	}
 }

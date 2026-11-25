@@ -5,11 +5,14 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,6 +24,13 @@ func TestParseUnixSocketPath_Valid(t *testing.T) {
 	path, err := ParseUnixSocketPath("unix:///var/run/thv.sock")
 	require.NoError(t, err)
 	assert.Equal(t, "/var/run/thv.sock", path)
+}
+
+func TestParseUnixSocketPath_WindowsDriveLetter(t *testing.T) {
+	t.Parallel()
+	path, err := ParseUnixSocketPath(`unix:///C:%5Cpath%5Cthv.sock`)
+	require.NoError(t, err)
+	assert.Equal(t, `C:\path\thv.sock`, path)
 }
 
 func TestParseUnixSocketPath_RelativePathRejected(t *testing.T) {
@@ -42,6 +52,75 @@ func TestParseUnixSocketPath_Empty(t *testing.T) {
 	_, err := ParseUnixSocketPath("unix://")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
+}
+
+func TestParseNamedPipeURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		raw       string
+		expect    string
+		wantErr   bool
+		errSubstr string
+	}{
+		{name: "valid", raw: "npipe://thv-api", expect: `\\.\pipe\thv-api`},
+		{name: "valid with hyphen and digits", raw: "npipe://thv-api-1", expect: `\\.\pipe\thv-api-1`},
+		{name: "valid with dot dot in name", raw: "npipe://my..api", expect: `\\.\pipe\my..api`},
+		{name: "mixed-case scheme normalized", raw: "NPIPE://thv-api", expect: `\\.\pipe\thv-api`},
+		{name: "mixed-case name normalized", raw: "npipe://Thv-API", expect: `\\.\pipe\thv-api`},
+		{name: "missing scheme", raw: "thv-api", wantErr: true, errSubstr: "must start with npipe://"},
+		{name: "wrong scheme", raw: "unix://thv-api", wantErr: true, errSubstr: "must start with npipe://"},
+		{name: "empty name", raw: "npipe://", wantErr: true, errSubstr: "empty"},
+		{name: "forward slash rejected", raw: "npipe://thv/api", wantErr: true, errSubstr: "form npipe://<name>"},
+		{name: "backslash rejected by url.Parse", raw: `npipe://thv\api`, wantErr: true, errSubstr: "invalid"},
+		{name: "with port rejected", raw: "npipe://thv-api:1234", wantErr: true, errSubstr: "form npipe://<name>"},
+		{name: "with userinfo rejected", raw: "npipe://user:pass@thv-api", wantErr: true, errSubstr: "form npipe://<name>"},
+		{name: "with query rejected", raw: "npipe://thv-api?x=1", wantErr: true, errSubstr: "form npipe://<name>"},
+		{name: "with fragment rejected", raw: "npipe://thv-api#x", wantErr: true, errSubstr: "form npipe://<name>"},
+		{name: "invalid charset rejected", raw: "npipe://thv$api", wantErr: true, errSubstr: "invalid characters"},
+		{name: "reserved name CON rejected", raw: "npipe://CON", wantErr: true, errSubstr: "reserved Windows device name"},
+		{name: "reserved name com1 rejected", raw: "npipe://com1", wantErr: true, errSubstr: "reserved Windows device name"},
+		{
+			name:      "name exceeds length cap",
+			raw:       "npipe://" + strings.Repeat("a", maxNamedPipeNameLen+1),
+			wantErr:   true,
+			errSubstr: fmt.Sprintf("exceeds %d characters", maxNamedPipeNameLen),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseNamedPipeURL(tt.raw)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errSubstr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expect, got)
+		})
+	}
+}
+
+// TestHTTPClientForURL_SchemeDispatchCaseInsensitive pins that the dispatcher
+// in HTTPClientForURL routes UNIX:// the same as unix:// because url.Parse
+// lowercases the scheme. Without the migration this case fell through to the
+// default "unsupported URL scheme" arm.
+func TestHTTPClientForURL_SchemeDispatchCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	_, baseURL, err := HTTPClientForURL("UNIX:///tmp/thv.sock")
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost", baseURL)
+}
+
+func TestCheckHealth_NamedPipe_Unsupported_OnNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows guard test")
+	}
+	t.Parallel()
+	err := CheckHealth(context.Background(), "npipe://thv-api", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Windows")
 }
 
 func TestCheckHealth_TCP_Success(t *testing.T) {
@@ -105,7 +184,7 @@ func TestCheckHealth_UnixSocket_Success(t *testing.T) {
 	go func() { _ = srv.Serve(listener) }()
 	defer srv.Close()
 
-	err = CheckHealth(context.Background(), "unix://"+socketPath, expectedNonce)
+	err = CheckHealth(context.Background(), UnixSocketURL(socketPath), expectedNonce)
 	require.NoError(t, err)
 }
 
@@ -170,6 +249,6 @@ func TestValidateLoopbackURL(t *testing.T) {
 func TestCheckHealth_UnixSocket_NotFound(t *testing.T) {
 	t.Parallel()
 	socketPath := filepath.Join(os.TempDir(), "nonexistent-test.sock")
-	err := CheckHealth(context.Background(), "unix://"+socketPath, "")
+	err := CheckHealth(context.Background(), UnixSocketURL(socketPath), "")
 	require.Error(t, err)
 }

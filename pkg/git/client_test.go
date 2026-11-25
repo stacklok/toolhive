@@ -104,7 +104,7 @@ func TestDefaultGitClient_GetFileContent_PathTraversal(t *testing.T) {
 	}
 }
 
-func TestDefaultGitClient_HeadCommitHash_NilInputs(t *testing.T) {
+func TestDefaultGitClient_HeadCommit_NilInputs(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
 
@@ -119,14 +119,14 @@ func TestDefaultGitClient_HeadCommitHash_NilInputs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			hash, err := client.HeadCommitHash(tt.repoInfo)
+			head, err := client.HeadCommit(tt.repoInfo)
 			require.ErrorIs(t, err, ErrNilRepository)
-			assert.Empty(t, hash)
+			assert.Empty(t, head)
 		})
 	}
 }
 
-func TestDefaultGitClient_HeadCommitHash_Valid(t *testing.T) {
+func TestDefaultGitClient_HeadCommit_UnsignedCommit(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
 
@@ -135,10 +135,12 @@ func TestDefaultGitClient_HeadCommitHash_Valid(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Cleanup(t.Context(), repoInfo) })
 
-	hash, err := client.HeadCommitHash(repoInfo)
+	head, err := client.HeadCommit(repoInfo)
 	require.NoError(t, err)
-	assert.Len(t, hash, 40, "commit hash should be 40 hex chars")
-	assert.True(t, isAllHex(hash), "commit hash should be all hex")
+	assert.Len(t, head.Hash, 40, "commit hash should be 40 hex chars")
+	assert.True(t, isAllHex(head.Hash), "commit hash should be all hex")
+	assert.Empty(t, head.Signature, "an unsigned commit must yield an empty signature, not an error")
+	assert.Contains(t, string(head.Payload), "tree ", "the payload is present even for unsigned commits")
 }
 
 // isAllHex checks if s is a non-empty lowercase hex string.

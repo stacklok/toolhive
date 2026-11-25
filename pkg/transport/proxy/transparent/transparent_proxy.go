@@ -8,7 +8,6 @@ package transparent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strconv"
@@ -30,7 +30,11 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -78,6 +82,18 @@ type TransparentProxy struct {
 	// Sessions for tracking state
 	sessionManager *session.Manager
 
+	// sessionTTL is the resolved inactivity timeout for the session manager.
+	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
+	sessionTTL time.Duration
+
+	// readTimeout is the resolved http.Server.ReadTimeout for this proxy.
+	// Defaults to defaultReadTimeout; overridable via WithReadTimeout.
+	readTimeout time.Duration
+
+	// sessionStorage is the optional custom storage backend for the session manager.
+	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
+	sessionStorage session.Storage
+
 	// If mcp server has been initialized (atomic access)
 	isServerInitialized atomic.Bool
 
@@ -92,6 +108,9 @@ type TransparentProxy struct {
 
 	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
+
+	// stripConsentCookie prevents remembered-consent cookies (__Host-thv_consent_*) from reaching the backend.
+	stripConsentCookie bool
 
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
@@ -152,6 +171,12 @@ const (
 	// defaultIdleTimeout is the maximum time to wait for the next request on a
 	// keep-alive connection. Matches the value used by the vMCP server.
 	defaultIdleTimeout = 120 * time.Second
+
+	// defaultReadTimeout bounds reading the entire request (headers + body) on
+	// the proxy http.Server, mitigating slow-upload connection exhaustion. It
+	// does not affect responses, so streamed backend responses are unaffected.
+	// Matches the value used by the vMCP server.
+	defaultReadTimeout = 30 * time.Second
 
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
@@ -239,8 +264,17 @@ func WithRemoteRawQuery(rawQuery string) Option {
 	}
 }
 
+// WithStripConsentCookie removes the embedded auth server's remembered-consent
+// cookie family (__Host-thv_consent_*) from outbound backend requests, not all
+// auth server browser cookies. Enable only when that server is mounted.
+func WithStripConsentCookie() Option {
+	return func(p *TransparentProxy) {
+		p.stripConsentCookie = true
+	}
+}
+
 // WithStateless configures the proxy for stateless streamable-HTTP servers.
-// In stateless mode, incoming GET and DELETE requests receive 405 Method Not Allowed
+// In stateless mode, incoming GET, HEAD, and DELETE requests receive 405 Method Not Allowed
 // instead of being forwarded, and health checks use POST ping instead of GET.
 func WithStateless() Option {
 	return func(p *TransparentProxy) {
@@ -290,14 +324,30 @@ func WithSessionStorage(storage session.Storage) Option {
 		if storage == nil {
 			return
 		}
-		if p.sessionManager != nil {
-			_ = p.sessionManager.Stop()
+		p.sessionStorage = storage
+	}
+}
+
+// WithSessionTTL overrides the session inactivity timeout used by this proxy.
+// Zero or negative values are ignored so the constructor's default is preserved.
+func WithSessionTTL(ttl time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if ttl <= 0 {
+			return
 		}
-		p.sessionManager = session.NewManagerWithStorage(
-			session.DefaultSessionTTL,
-			func(id string) session.Session { return session.NewProxySession(id) },
-			storage,
-		)
+		p.sessionTTL = ttl
+	}
+}
+
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
 	}
 }
 
@@ -426,7 +476,8 @@ func NewTransparentProxyWithOptions(
 		prometheusHandler:           prometheusHandler,
 		authInfoHandler:             authInfoHandler,
 		prefixHandlers:              prefixHandlers,
-		sessionManager:              session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		sessionTTL:                  session.DefaultSessionTTL,
+		readTimeout:                 defaultReadTimeout,
 		isRemote:                    isRemote,
 		transportType:               transportType,
 		onHealthCheckFailed:         onHealthCheckFailed,
@@ -445,6 +496,14 @@ func NewTransparentProxyWithOptions(
 		opt(proxy)
 	}
 
+	// Construct the session manager once, after options have resolved sessionTTL and sessionStorage.
+	proxyFactory := func(id string) session.Session { return session.NewProxySession(id) }
+	if proxy.sessionStorage != nil {
+		proxy.sessionManager = session.NewManagerWithStorage(proxy.sessionTTL, proxyFactory, proxy.sessionStorage)
+	} else {
+		proxy.sessionManager = session.NewManager(proxy.sessionTTL, proxyFactory)
+	}
+
 	// Create appropriate response processor based on transport type
 	proxy.responseProcessor = createResponseProcessor(
 		transportType,
@@ -455,22 +514,28 @@ func NewTransparentProxyWithOptions(
 
 	// Create health checker always for Kubernetes probes
 	var mcpPinger healthcheck.MCPPinger
+	var healthCheckerOpts []healthcheck.Option
 	if enableHealthCheck {
 		if proxy.stateless {
 			mcpPinger = NewStatelessMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
 		} else {
 			mcpPinger = NewMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
 		}
+		// monitorHealth pings the backend on its own schedule, and /health answers
+		// from its last result, so a slow backend cannot hold a probe past its timeout.
+		healthCheckerOpts = append(healthCheckerOpts, healthcheck.WithLastResult())
 	}
-	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
+	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger, healthCheckerOpts...)
 
 	return proxy
 }
 
 // recoverySessionStore is the subset of session.Manager that backendRecovery needs.
 type recoverySessionStore interface {
-	Get(id string) (session.Session, bool)
-	UpsertSession(sess session.Session) error
+	sessionbinding.Store
+	LoadIfOwner(id, expectedOwner string) (session.Session, error)
+	UpsertSessionIfOwner(sess session.Session, expectedOwner string) error
+	DeleteIfOwner(id, expectedOwner string) error
 }
 
 // backendRecovery handles transparent re-initialization of backend sessions when the
@@ -522,60 +587,98 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.Host = req.URL.Host
 	}
 
-	reqBody := readRequestBody(req)
+	slog.Debug("outbound request to upstream",
+		"method", req.Method,
+		"url", req.URL.String(),
+		"host", req.Host,
+		"accept", req.Header.Get("Accept"),
+		"content_type", req.Header.Get("Content-Type"),
+	)
 
-	// thv proxy does not provide the transport type, so we need to detect it from the request
-	path := req.URL.Path
-	isMCP := strings.HasPrefix(path, "/mcp")
-	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
-	sawInitialize := false
-
-	if len(reqBody) > 0 &&
-		((isMCP && isJSON) ||
-			t.p.transportType == types.TransportTypeStreamableHTTP.String()) {
-		sawInitialize = t.detectInitialize(reqBody)
+	reqBody, err := readRequestBody(req)
+	if err != nil {
+		// Never forward a partial body, even on non-size read errors.
+		if bodylimit.IsRequestTooLarge(err) {
+			slog.Warn("rejected unreadable MCP request body", "reason", "body_too_large")
+			return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
+		}
+		slog.Warn("rejected unreadable MCP request body", "reason", "read_error")
+		return plainResponse(req, http.StatusBadRequest, "Invalid request body"), nil
 	}
 
-	// Guard: reject non-initialize requests with unknown session IDs.
-	// When multiple proxyrunner replicas share a Redis session store,
-	// a valid session will always be found. If it isn't, the session
-	// has expired or the request carries a stale/forged session ID.
-	if sid := req.Header.Get("Mcp-Session-Id"); sid != "" && !sawInitialize {
-		if _, err := t.p.sessionManager.GetWithError(normalizeSessionID(sid)); err != nil {
-			if !errors.Is(err, session.ErrSessionNotFound) {
-				// Storage error (e.g. Redis timeout) — client should retry.
-				slog.Error("session store lookup failed", "error", err)
-				hdr := make(http.Header)
-				hdr.Set("Content-Type", "text/plain; charset=utf-8")
-				return &http.Response{
-					StatusCode: http.StatusServiceUnavailable,
-					Status:     fmt.Sprintf("%d %s", http.StatusServiceUnavailable, http.StatusText(http.StatusServiceUnavailable)),
-					Proto:      "HTTP/1.1",
-					ProtoMajor: 1,
-					ProtoMinor: 1,
-					Header:     hdr,
-					Body:       io.NopCloser(strings.NewReader("session store unavailable\n")),
-					Request:    req,
-				}, nil
+	sawInitialize := false
+	revision := mcp.RevisionLegacy
+	// Only ID-bearing requests are classified and supply an ID for local errors.
+	// Notifications, client responses and bodiless GET/DELETE leave it absent.
+	var requestID any
+
+	if req.Method == http.MethodPost {
+		msg, err := mcp.DecodeMessage(reqBody)
+		if err != nil {
+			return mcp.ClassificationErrorResponse(req, nil, err), nil
+		}
+		if rpcRequest, ok := msg.(*jsonrpc2.Request); ok {
+			sawInitialize = rpcRequest.Method == "initialize"
+			if rpcRequest.ID.IsValid() {
+				requestID = rpcRequest.ID.Raw()
+				meta := mcp.ExtractMeta(rpcRequest.Params)
+				rev, cerr := mcp.ClassifyRevision(rpcRequest.Method, meta, req.Header.Get("MCP-Protocol-Version"))
+				if cerr != nil {
+					// Malformed Modern request: reject before the backend is ever contacted.
+					return mcp.ClassificationErrorResponse(req, requestID, cerr), nil
+				}
+				revision = rev
 			}
-			return session.NotFoundResponse(req), nil
+		}
+	}
+	//nolint:gosec // G706: logging target URI from config
+	slog.Debug("classified request revision", "modern", revision == mcp.RevisionModern, "target", t.p.targetURI)
+
+	// Transparent requests forward backend session authority even for Modern MCP.
+	clientSID, carrierErr := requestSessionID(req)
+	if carrierErr != nil {
+		return session.NotFoundResponse(req, requestID), nil
+	}
+	// Legacy SSE establishes its session through an endpoint event before initialize.
+	// An unspecified transport (thv proxy) uses the endpoint's query carrier; it
+	// must pass the same ownership check below, not start a streamable session.
+	legacySSE := t.p.transportType == types.TransportTypeSSE.String()
+	if t.p.transportType == "" {
+		for _, key := range sessionQueryKeys {
+			legacySSE = legacySSE || req.URL.Query().Has(key)
+		}
+	}
+	startsSession := sawInitialize && !legacySSE
+	var (
+		routedSession session.Session
+		expectedOwner string
+	)
+	if startsSession {
+		clientSID = ""
+		req.Header.Del("Mcp-Session-Id")
+		rewriteSessionQuery(req.URL, "")
+	} else if clientSID != "" {
+		identity, _ := auth.IdentityFromContext(req.Context())
+		expectedOwner, err = sessionbinding.FromIdentity(identity)
+		if err != nil {
+			return session.NotFoundResponse(req, requestID), nil
+		}
+		routedSession, err = t.p.sessionManager.LoadIfOwner(normalizeSessionID(clientSID), expectedOwner)
+		if err != nil {
+			return ownershipErrorResponse(req, requestID, err), nil
 		}
 	}
 
-	// Capture the client-facing session ID before the backend SID rewrite below.
-	// Recovery and session cleanup paths must look up sessions by the client SID
-	// (the store key), not the backend SID that is written into the header.
-	clientSID := req.Header.Get("Mcp-Session-Id")
-
-	// Rewrite the outbound Mcp-Session-Id to the backend's assigned session ID when
-	// the proxy transparently re-initialized the backend session. This is done here
-	// (after the guard check above) so the guard always sees the original client
-	// session ID and can look it up correctly in the session store.
 	if clientSID != "" {
-		if sess, ok := t.p.sessionManager.Get(normalizeSessionID(clientSID)); ok {
-			if backendSID, exists := sess.GetMetadataValue(sessionMetadataBackendSID); exists && backendSID != "" {
-				req.Header.Set("Mcp-Session-Id", backendSID)
+		// Route only from the same snapshot whose ownership was atomically validated.
+		if backendURL, exists := routedSession.GetMetadataValue(sessionMetadataBackendURL); exists {
+			if parsed, err := url.Parse(backendURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+				req.URL.Scheme, req.URL.Host, req.Host = parsed.Scheme, parsed.Host, parsed.Host
 			}
+		}
+		if backendSID, exists := routedSession.GetMetadataValue(sessionMetadataBackendSID); exists && backendSID != "" {
+			req.Header.Set("Mcp-Session-Id", backendSID)
+			rewriteSessionQuery(req.URL, backendSID)
 		}
 	}
 
@@ -599,9 +702,9 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			// Expected during shutdown or client disconnect—silently ignore
 			return nil, err
 		}
-		// Dial error against a stored pod IP means the pod has been replaced.
-		// Attempt transparent re-initialization so the client sees no error.
-		if isDialError(err) {
+		// Never recover during initialize: streamable HTTP has discarded the
+		// supplied SID, and legacy SSE is still completing its first handshake.
+		if isDialError(err) && !sawInitialize {
 			req.Header.Set("Mcp-Session-Id", clientSID)
 			if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
 				return reInitResp, reInitErr
@@ -610,6 +713,13 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		slog.Error("failed to forward request", "error", err)
 		return nil, err
 	}
+
+	slog.Debug("upstream response received",
+		"status", resp.StatusCode,
+		"url", req.URL.String(),
+		"content_type", resp.Header.Get("Content-Type"),
+		"mcp_session_id", resp.Header.Get("Mcp-Session-Id"),
+	)
 
 	// Check for 401 Unauthorized response (bearer token authentication failure)
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -629,9 +739,10 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if req.Method == http.MethodDelete &&
 		(resp.StatusCode >= 200 && resp.StatusCode < 300 || resp.StatusCode == http.StatusNotFound) {
 		if clientSID != "" {
-			if err := t.p.sessionManager.Delete(normalizeSessionID(clientSID)); err != nil {
-				slog.Debug("failed to delete session from transparent proxy",
-					"session_id", clientSID, "error", err)
+			if err := t.p.sessionManager.DeleteIfOwner(normalizeSessionID(clientSID), expectedOwner); err != nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				return ownershipErrorResponse(req, requestID, err), nil
 			}
 		}
 	}
@@ -659,22 +770,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			//nolint:gosec // G706: logging session ID from HTTP response header
 			slog.Debug("detected Mcp-Session-Id header", "session_id", ct)
 			internalID := normalizeSessionID(ct)
-			if _, ok := t.p.sessionManager.Get(internalID); !ok {
-				sess := session.NewProxySession(internalID)
-				// Store the actual pod IP (captured via GotConn) as backend_url so that
-				// after a proxy runner restart the session is routed to the same backend
-				// pod that handled initialize, not a random pod via ClusterIP.
-				sess.SetMetadata(sessionMetadataBackendURL, t.recovery.podBackendURL(capturedPodAddr))
-				// Store the initialize body so we can transparently re-initialize the
-				// backend session if the pod is later replaced or loses session state.
-				if len(reqBody) > 0 {
-					sess.SetMetadata(sessionMetadataInitBody, string(reqBody))
-				}
-				if err := t.p.sessionManager.AddSession(sess); err != nil {
-					//nolint:gosec // G706: session ID from HTTP response header
-					slog.Error("failed to create session from header",
-						"session_id", ct, "error", err)
-				}
+			sess := session.NewProxySession(internalID)
+			sess.SetMetadata(sessionMetadataBackendURL, t.recovery.podBackendURL(capturedPodAddr))
+			if sawInitialize && len(reqBody) > 0 {
+				sess.SetMetadata(sessionMetadataInitBody, string(reqBody))
+			}
+			if err := sessionbinding.AddOwnedSession(req.Context(), t.p.sessionManager, sess); err != nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				return ownershipErrorResponse(req, requestID, err), nil
 			}
 			t.p.setServerInitialized()
 			return resp, nil
@@ -684,55 +788,54 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			t.p.setServerInitialized()
 			return resp, nil
 		}
+
+		// Modern (2026-07-28, stateless) has no initialize handshake, so use the
+		// first successful (HTTP 200) Modern request as the readiness signal: it
+		// lets the background health monitor's failures count toward shutdown,
+		// which otherwise never happens for a pure-Modern server. See #5831.
+		if revision == mcp.RevisionModern && !t.p.serverInitialized() {
+			t.p.setServerInitialized()
+		}
 	}
 
 	return resp, nil
 }
 
-func readRequestBody(req *http.Request) []byte {
+func ownershipErrorResponse(req *http.Request, requestID any, err error) *http.Response {
+	if errors.Is(err, sessionbinding.ErrNotFound) {
+		return session.NotFoundResponse(req, requestID)
+	}
+	return plainResponse(req, http.StatusServiceUnavailable, "Session store unavailable")
+}
+
+// plainResponse builds a minimal text/plain *http.Response for the given status,
+// used to synthesize error responses from within RoundTrip.
+func plainResponse(req *http.Request, status int, body string) *http.Response {
+	hdr := make(http.Header)
+	hdr.Set("Content-Type", "text/plain; charset=utf-8")
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     hdr,
+		Body:       io.NopCloser(strings.NewReader(body + "\n")),
+		Request:    req,
+	}
+}
+
+func readRequestBody(req *http.Request) ([]byte, error) {
 	reqBody := []byte{}
 	if req.Body != nil {
 		buf, err := io.ReadAll(req.Body)
 		if err != nil {
-			slog.Warn("failed to read request body", "error", err)
-		} else {
-			reqBody = buf
+			return nil, err
 		}
+		reqBody = buf
 		req.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
-	return reqBody
-}
-
-func (t *tracingTransport) detectInitialize(body []byte) bool {
-	type rpcMethod struct {
-		Method string `json:"method"`
-	}
-
-	// Single JSON-RPC object.
-	var single rpcMethod
-	if err := json.Unmarshal(body, &single); err == nil {
-		if single.Method == "initialize" {
-			//nolint:gosec // G706: logging target URI from config
-			slog.Debug("detected initialize method call", "target", t.p.targetURI)
-			return true
-		}
-		return false
-	}
-
-	// JSON-RPC batch: array of objects. Return true if any member is initialize.
-	var batch []rpcMethod
-	if err := json.Unmarshal(body, &batch); err != nil {
-		slog.Debug("failed to parse JSON-RPC body", "error", err)
-		return false
-	}
-	for _, rpc := range batch {
-		if rpc.Method == "initialize" {
-			//nolint:gosec // G706: logging target URI from config
-			slog.Debug("detected initialize method call in batch", "target", t.p.targetURI)
-			return true
-		}
-	}
-	return false
+	return reqBody, nil
 }
 
 // podBackendURL constructs a backend URL that targets the specific pod IP captured
@@ -854,6 +957,19 @@ func isRedirectStatus(code int) bool {
 	}
 }
 
+func (r *backendRecovery) loadOwnedSession(req *http.Request, id string) (session.Session, string, error) {
+	identity, _ := auth.IdentityFromContext(req.Context())
+	expectedOwner, err := sessionbinding.FromIdentity(identity)
+	if err != nil {
+		return nil, "", sessionbinding.ErrNotFound
+	}
+	stored, err := r.sessions.LoadIfOwner(id, expectedOwner)
+	if err != nil {
+		return nil, "", err
+	}
+	return stored, expectedOwner, nil
+}
+
 // reinitializeAndReplay is called when the proxy detects that the backend pod
 // that owned a session is no longer reachable (dial error) or has lost its
 // in-memory session state (backend returned 404). It transparently:
@@ -863,17 +979,23 @@ func isRedirectStatus(code int) bool {
 //  3. Maps the client's original session ID to the new backend session ID.
 //  4. Replays the original client request so the client sees no error.
 //
-// Returns (nil, nil) when re-initialization is not applicable (session unknown
-// to the proxy, or no stored init body for the session).
+// Returns (nil, nil) when there is no SID or no stored initialize body. Missing,
+// unowned, or foreign sessions fail closed before any backend work.
 func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []byte) (*http.Response, error) {
 	sid := req.Header.Get("Mcp-Session-Id")
 	if sid == "" {
 		return nil, nil
 	}
 	internalSID := normalizeSessionID(sid)
-	sess, ok := r.sessions.Get(internalSID)
-	if !ok {
-		return nil, nil
+	stored, expectedOwner, err := r.loadOwnedSession(req, internalSID)
+	if err != nil {
+		return ownershipErrorResponse(req, nil, err), nil
+	}
+	// Do not mutate a value returned by the authoritative store before the
+	// replacement has been persisted successfully.
+	sess := session.NewProxySession(internalSID)
+	for key, value := range stored.GetMetadata() {
+		sess.SetMetadata(key, value)
 	}
 
 	initBody, hasInit := sess.GetMetadataValue(sessionMetadataInitBody)
@@ -882,7 +1004,9 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 		// Reset backend_url to ClusterIP so the next request goes through
 		// kube-proxy and lets the client receive a clean 404 to re-initialize.
 		sess.SetMetadata(sessionMetadataBackendURL, r.targetURI)
-		_ = r.sessions.UpsertSession(sess)
+		if err := r.sessions.UpsertSessionIfOwner(sess, expectedOwner); err != nil {
+			return ownershipErrorResponse(req, nil, err), nil
+		}
 		return nil, nil
 	}
 
@@ -907,6 +1031,7 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 	initURL := *req.URL
 	initURL.Scheme = parsedTarget.Scheme
 	initURL.Host = parsedTarget.Host
+	rewriteSessionQuery(&initURL, "")
 
 	initReq, err := http.NewRequestWithContext(initCtx, http.MethodPost, initURL.String(), bytes.NewReader([]byte(initBody)))
 	if err != nil {
@@ -936,8 +1061,21 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 	if newBackendSID == "" {
 		slog.Debug("re-initialize response contained no Mcp-Session-Id; falling back to ClusterIP")
 		sess.SetMetadata(sessionMetadataBackendURL, r.targetURI)
-		_ = r.sessions.UpsertSession(sess)
+		if err := r.sessions.UpsertSessionIfOwner(sess, expectedOwner); err != nil {
+			return ownershipErrorResponse(req, nil, err), nil
+		}
 		return nil, nil
+	}
+
+	// Reserve the backend ID before routing to it, so recovery cannot adopt an
+	// ID already owned by another principal. Preserve the original owner record.
+	backendInternalSID := normalizeSessionID(newBackendSID)
+	reservedBackend := backendInternalSID != internalSID
+	if reservedBackend {
+		backendSession := session.NewProxySession(backendInternalSID)
+		if err := sessionbinding.AddOwnedSession(req.Context(), r.sessions, backendSession); err != nil {
+			return ownershipErrorResponse(req, nil, err), nil
+		}
 	}
 
 	// Update session: point backend_url at the newly-discovered pod and record
@@ -948,24 +1086,42 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 	// uses this value verbatim as the outbound Mcp-Session-Id header. Normalizing
 	// would change non-UUID IDs to a UUID v5 hash the backend never issued.
 	sess.SetMetadata(sessionMetadataBackendSID, newBackendSID)
-	if upsertErr := r.sessions.UpsertSession(sess); upsertErr != nil {
-		slog.Debug("failed to update session after re-initialize", "error", upsertErr)
+	if upsertErr := r.sessions.UpsertSessionIfOwner(sess, expectedOwner); upsertErr != nil {
+		return r.failedRecoveryResponse(req, upsertErr, reservedBackend, backendInternalSID, expectedOwner)
 	}
 
-	// Replay the original client request to the new pod with the new backend SID.
-	// Use the captured pod address directly so we bypass the Rewrite closure
-	// (which still holds the old backend_url until the next session load).
-	// For HTTPS targets, keep the original hostname: IP-literal HTTPS requests
-	// fail TLS verification because server certs are issued for hostnames, not pod IPs.
-	replayHost := capturedPodAddr
-	if replayHost == "" || parsedTarget.Scheme == "https" {
-		replayHost = parsedTarget.Host
+	return r.replay(req, origBody, newBackendSID, newPodURL)
+}
+
+func (r *backendRecovery) failedRecoveryResponse(
+	req *http.Request,
+	upsertErr error,
+	reservedBackend bool,
+	backendInternalSID, expectedOwner string,
+) (*http.Response, error) {
+	if reservedBackend {
+		if cleanupErr := r.sessions.DeleteIfOwner(backendInternalSID, expectedOwner); cleanupErr != nil {
+			slog.Warn("failed to remove backend session reservation after recovery failure", "error", cleanupErr)
+		}
+		// The backend-created session is left for backend expiry. Terminating it
+		// cannot be made atomic with releasing and potentially reusing its ID.
+	}
+	return ownershipErrorResponse(req, nil, upsertErr), nil
+}
+
+// replay uses only the newly reserved backend SID. podBackendURL preserves the
+// original hostname for HTTPS, where an IP literal would fail TLS verification.
+func (r *backendRecovery) replay(req *http.Request, origBody []byte, backendSID, backendURL string) (*http.Response, error) {
+	target, err := url.Parse(backendURL)
+	if err != nil {
+		return nil, err
 	}
 	replayReq := req.Clone(req.Context())
-	replayReq.URL.Scheme = parsedTarget.Scheme
-	replayReq.URL.Host = replayHost
-	replayReq.Host = replayHost // keep Host header consistent with URL to avoid backend validation errors
-	replayReq.Header.Set("Mcp-Session-Id", newBackendSID)
+	replayReq.URL.Scheme = target.Scheme
+	replayReq.URL.Host = target.Host
+	replayReq.Host = target.Host
+	replayReq.Header.Set("Mcp-Session-Id", backendSID)
+	rewriteSessionQuery(replayReq.URL, backendSID)
 	replayReq.Body = io.NopCloser(bytes.NewReader(origBody))
 	replayReq.ContentLength = int64(len(origBody))
 	// origBody is fully buffered, so chunked encoding is unnecessary and would
@@ -973,15 +1129,91 @@ func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []by
 	// the original request so net/http sends Content-Length instead.
 	replayReq.TransferEncoding = nil
 
-	slog.Debug("replaying original request after transparent re-initialization",
-		"new_pod_url", newPodURL, "new_backend_sid", newBackendSID)
-	return r.forward(replayReq)
+	slog.Debug("replaying original request after transparent re-initialization")
+	resp, err := r.forward(replayReq)
+	if err != nil {
+		return nil, err
+	}
+	if returnedSID := resp.Header.Get("Mcp-Session-Id"); returnedSID != "" {
+		returnedSession := session.NewProxySession(normalizeSessionID(returnedSID))
+		if err := sessionbinding.AddOwnedSession(req.Context(), r.sessions, returnedSession); err != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			return ownershipErrorResponse(req, nil, err), nil
+		}
+	}
+	return resp, nil
 }
 
 // modifyResponse modifies HTTP responses based on transport-specific requirements.
 // Delegates to the appropriate ResponseProcessor based on transport type.
 func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 	return p.responseProcessor.ProcessResponse(resp)
+}
+
+// setXForwardedHeaders populates the standard X-Forwarded-* headers on the
+// outbound request. For remote upstreams X-Forwarded-Host is removed: a
+// third-party server may use it to construct redirect URLs pointing back at
+// the proxy, producing 307 redirect loops. X-Forwarded-For is kept so remote
+// backends can still log the client IP. Client-supplied X-Forwarded-* values
+// never pass through either way — httputil strips them from the outbound
+// request before Rewrite runs.
+//
+// For remote upstreams X-Forwarded-Proto is also rewritten to the scheme of
+// the actual upstream connection. SetXForwarded derives it from the inbound
+// connection, which behind a TLS-terminating load balancer is plain HTTP even
+// though the upstream is reached over HTTPS. Upstreams that redirect when
+// X-Forwarded-Proto != https would otherwise 301-loop forever. The upstream
+// scheme is supplied by the caller (parsed once from targetURI in Start) to
+// avoid re-parsing on every request.
+func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest, upstreamScheme string) {
+	pr.SetXForwarded()
+	if p.isRemote {
+		pr.Out.Header.Del("X-Forwarded-Host")
+		if upstreamScheme != "" {
+			pr.Out.Header.Set("X-Forwarded-Proto", upstreamScheme)
+			slog.Debug("set X-Forwarded-Proto for remote upstream",
+				"scheme", upstreamScheme, "target", p.targetURI)
+		}
+	}
+}
+
+// stripConsentCookie removes only remembered-consent cookies (__Host-thv_consent_*),
+// retaining other cookie pairs across all Cookie header lines.
+// The caller supplies the outbound header.
+func stripConsentCookie(header http.Header) {
+	var kept []string
+	removed := false
+	for key, values := range header {
+		if !strings.EqualFold(key, "Cookie") {
+			continue
+		}
+		for _, value := range values {
+			var pairs []string
+			for _, pair := range strings.Split(value, ";") {
+				name, _, ok := strings.Cut(strings.TrimSpace(pair), "=")
+				if ok && strings.HasPrefix(strings.TrimSpace(name), "__Host-thv_consent_") {
+					removed = true
+					continue
+				}
+				pairs = append(pairs, pair)
+			}
+			if len(pairs) > 0 {
+				kept = append(kept, strings.Join(pairs, ";"))
+			}
+		}
+	}
+	if !removed {
+		return
+	}
+	for key := range header {
+		if strings.EqualFold(key, "Cookie") {
+			delete(header, key)
+		}
+	}
+	if len(kept) > 0 {
+		header["Cookie"] = kept
+	}
 }
 
 // Start starts the transparent proxy.
@@ -1006,28 +1238,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
-			pr.SetXForwarded()
-
-			// Route to the originating backend pod when session metadata contains backend_url.
-			// Falls back to static targetURL when the session doesn't exist or has no backend_url.
-			if sid := pr.In.Header.Get("Mcp-Session-Id"); sid != "" {
-				if sess, ok := p.sessionManager.Get(normalizeSessionID(sid)); ok {
-					if backendURLStr, exists := sess.GetMetadataValue(sessionMetadataBackendURL); exists && backendURLStr != "" {
-						parsed, parseErr := url.Parse(backendURLStr)
-						switch {
-						case parseErr != nil:
-							slog.Debug("failed to parse backend_url from session metadata; using static target",
-								sessionMetadataBackendURL, backendURLStr, "error", parseErr)
-						case parsed.Scheme == "" || parsed.Host == "":
-							slog.Debug("backend_url from session metadata is not an absolute URL; using static target",
-								sessionMetadataBackendURL, backendURLStr)
-						default:
-							pr.Out.URL.Scheme = parsed.Scheme
-							pr.Out.URL.Host = parsed.Host
-						}
-					}
-				}
+			if p.stripConsentCookie {
+				stripConsentCookie(pr.Out.Header)
 			}
+			p.setXForwardedHeaders(pr, targetURL.Scheme)
 
 			// Stash the original inbound request in the outbound request's
 			// context so that ModifyResponse (SSE response processor) can
@@ -1103,10 +1317,19 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.HandleFunc("/health", http.NotFound)
 	}
 
-	// 3. Mount Prometheus metrics endpoint if handler is provided (no middlewares)
+	// 3. Mount Prometheus metrics endpoint if handler is provided (no middlewares),
+	// otherwise return 404 (prevents /metrics from being proxied to the backend).
+	//
+	// The runner no longer supplies a handler here: metrics are served on a
+	// separate diagnostics listener (see pkg/diagnostics) so access can be
+	// restricted by port, which NetworkPolicy can express and a shared port
+	// cannot. Registering "/metrics" on this mux would also outrank the "/"
+	// catch-all below and so sit outside the middleware chain.
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
 		slog.Debug("prometheus metrics endpoint enabled at /metrics")
+	} else {
+		mux.Handle(diagnostics.MetricsPath, diagnostics.NotServedHereHandler())
 	}
 
 	// 4. Mount RFC 9728 OAuth Protected Resource discovery endpoint (no middlewares)
@@ -1122,10 +1345,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// 5. Catch-all proxy handler (least specific - ServeMux routing handles precedence)
 	// Note: No manual path checking needed - ServeMux longest-match routing ensures
 	// more specific paths registered above take precedence over this catch-all.
-	// In stateless mode, wrap with a method gate that rejects GET/DELETE with 405.
-	if p.stateless {
-		finalHandler = statelessMethodGate(finalHandler)
-	}
+	finalHandler = rejectConnectionNamedHeaders(p.methodGate(finalHandler))
 	mux.Handle("/", finalHandler)
 
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
@@ -1142,6 +1362,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,   // Prevent Slowloris attacks
+		ReadTimeout:       p.readTimeout,      // Bound slow body uploads
 		IdleTimeout:       defaultIdleTimeout, // Prevent idle keep-alive connections from blocking Shutdown()
 	}
 
@@ -1245,6 +1466,10 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	ticker := time.NewTicker(p.healthCheckInterval)
 	defer ticker.Stop()
 
+	// With health checks enabled, each check records the result /health answers
+	// from, so check once before the first tick.
+	p.healthChecker.CheckHealth(parentCtx)
+
 	consecutiveFailures := 0
 
 	for {
@@ -1258,14 +1483,16 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			slog.Debug("shutdown initiated, stopping health monitor", "target", p.targetURI)
 			return
 		case <-ticker.C:
+			alive := p.healthChecker.CheckHealth(parentCtx)
+
+			// Failures count toward shutdown only once the MCP server is initialized.
 			if !p.serverInitialized() {
 				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("mcp server not initialized yet, skipping health check",
-					"target", p.targetURI)
+				slog.Debug("mcp server not initialized yet, not counting health check",
+					"target", p.targetURI, "status", alive.Status)
 				continue
 			}
 
-			alive := p.healthChecker.CheckHealth(parentCtx)
 			if alive.Status != healthcheck.StatusHealthy {
 				var shouldContinue bool
 				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)
@@ -1381,15 +1608,96 @@ func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
 }
 
-// statelessMethodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405.
-// Used in stateless mode where the server only supports POST.
-// HEAD is blocked alongside GET because HEAD is semantically a GET without a response body;
-// a server that cannot handle GET will not handle HEAD either.
-func statelessMethodGate(next http.Handler) http.Handler {
+// connectionHopByHopTokens are the only values a client may list in its
+// Connection header: "close" and the standard hop-by-hop header names
+// (RFC 9110 §7.6.1, plus HTTP2-Settings for h2c upgrades). Keys are in
+// canonical form (http.CanonicalHeaderKey).
+var connectionHopByHopTokens = map[string]bool{
+	"Close":               true,
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Http2-Settings":      true,
+}
+
+// maxLoggedConnectionToken caps how much of a rejected Connection token is
+// written to the log.
+const maxLoggedConnectionToken = 64
+
+// rejectConnectionNamedHeaders rejects with 400 any request whose Connection
+// header names something other than a hop-by-hop header.
+//
+// httputil.ReverseProxy removes every header named in Connection from the
+// outbound request, after the middleware chain has run. Middlewares that
+// inject headers (the upstream token, operator-configured headers) set them
+// on the inbound request, so a client sending "Connection: X-Tenant-ID" or
+// "Connection: Authorization" could otherwise have those injected headers
+// removed before the request reaches the upstream.
+//
+// Rejecting is used instead of removing the named headers before the chain
+// runs, because removal would also hide headers from middlewares that
+// validate them only when present: "Origin: <disallowed>" together with
+// "Connection: Origin" would then pass Origin validation. MCP clients and
+// common intermediaries do not name end-to-end headers in Connection. Header
+// forwarding cannot inject any of the allowed names (see
+// middleware.RestrictedHeaders).
+//
+// This runs outermost, before any middleware.
+func rejectConnectionNamedHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete {
+		for _, value := range r.Header["Connection"] {
+			for token := range strings.SplitSeq(value, ",") {
+				token = textproto.TrimString(token)
+				if token == "" || connectionHopByHopTokens[http.CanonicalHeaderKey(token)] {
+					continue
+				}
+				// The token is caller-controlled and can be up to the
+				// server's header size limit, so cap what is logged.
+				logged := token
+				if len(logged) > maxLoggedConnectionToken {
+					logged = logged[:maxLoggedConnectionToken] + "..."
+				}
+				slog.Warn("rejecting request that names an end-to-end header in Connection",
+					"header", logged,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"remote", r.RemoteAddr,
+				)
+				http.Error(w, "Connection header may only name hop-by-hop headers", http.StatusBadRequest)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// methodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405
+// when the proxy is running stateless (--stateless) or the request is tagged
+// with the Modern (stateless-only) MCP-Protocol-Version: neither has any
+// protocol use for GET/HEAD/DELETE, since Modern is unary request/response
+// over POST only.
+//
+// This check runs outermost, before auth and any other middleware: a method
+// rejection needs no identity and reveals nothing auth-gated. It is
+// deliberately header-only and never reads or otherwise touches r.Body, so it
+// must not call mcp.ClassifyRevision (which requires a body) or consume the
+// body in any way — doing so would break the body for downstream handlers.
+//
+// HEAD is blocked alongside GET because HEAD is semantically a GET without a
+// response body; a server that cannot handle GET will not handle HEAD either.
+func (p *TransparentProxy) methodGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		isGateableMethod := r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete
+		isModern := r.Header.Get("MCP-Protocol-Version") == mcp.MCPVersionModern
+		if isGateableMethod && (p.stateless || isModern) {
 			w.Header().Set("Allow", "POST, OPTIONS")
-			http.Error(w, "method not allowed: server is stateless (POST only)", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed: server is stateless / stateless MCP revision (POST only)", http.StatusMethodNotAllowed)
 			return
 		}
 		next.ServeHTTP(w, r)

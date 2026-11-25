@@ -5,7 +5,6 @@ package helpers
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
@@ -16,13 +15,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	vmcpcore "github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -69,10 +69,12 @@ type VMCPServerOption func(*vmcpServerConfig)
 
 // vmcpServerConfig holds configuration for creating a test vMCP server.
 type vmcpServerConfig struct {
-	conflictStrategy  string
-	prefixFormat      string
-	workflowDefs      map[string]*composer.WorkflowDefinition
-	telemetryProvider *telemetry.Provider
+	conflictStrategy   string
+	prefixFormat       string
+	workflowDefs       map[string]*composer.WorkflowDefinition
+	telemetryProvider  *telemetry.Provider
+	passthroughHeaders []string
+	sessionTTL         time.Duration
 }
 
 // WithPrefixConflictResolution configures prefix-based conflict resolution.
@@ -97,62 +99,63 @@ func WithTelemetryProvider(provider *telemetry.Provider) VMCPServerOption {
 	}
 }
 
-// getFreePort returns an available TCP port on localhost.
-// This is used for parallel test execution to avoid port conflicts.
-func getFreePort(tb testing.TB) int {
-	tb.Helper()
-
-	// Listen on port 0 to get a random available port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(tb, err, "failed to get free port")
-	defer func() {
-		// Error ignored in test cleanup
-		_ = listener.Close()
-	}()
-
-	// Extract the port number from the listener's address
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		tb.Fatalf("failed to get TCP address from listener")
+// WithPassthroughHeaders sets the vMCP server's PassthroughHeaders allowlist,
+// matching the production wiring in pkg/vmcp/cli/serve.go.
+//
+// When this option is used, NewVMCPServer passes the header names to
+// vmcpserver.ServerConfig.PassthroughHeaders, which installs
+// headerforward.CaptureMiddleware so allowlisted headers are captured into the
+// request context and forwarded to backends.
+func WithPassthroughHeaders(headers ...string) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.passthroughHeaders = headers
 	}
-	return addr.Port
 }
 
-// NewVMCPServer creates a vMCP server for testing with sensible defaults.
-// The server is automatically started and will be ready when this function returns.
+// WithSessionTTL overrides the server's session time-to-live (default 30m).
+// A short TTL is useful for sliding-TTL / eviction regression tests. A zero
+// value leaves the default in place.
+func WithSessionTTL(ttl time.Duration) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.sessionTTL = ttl
+	}
+}
+
+// NewVMCPServer creates a vMCP server for testing using the Serve path (core.New +
+// Serve). The server is automatically started and ready when this function returns.
 // Use functional options to customize behavior.
 //
-// Example:
+// The server binds an OS-assigned port (ServerConfig.Port is 0) and holds that
+// listener for its lifetime, so callers MUST read the address back from the
+// returned server's Address() rather than assuming a port. Address() reports the
+// bound port only once the server is ready, which this function waits for before
+// returning. Do not preselect a port here by binding and closing a probe
+// listener: that releases the port, and any of the parallel tests in this suite
+// can claim it before the server rebinds (#6034).
 //
-//	server := testkit.NewVMCPServer(ctx, t, backends,
-//	    testkit.WithPrefixConflictResolution("{workload}_"),
-//	)
-//	defer server.Shutdown(ctx)
+// The Serve path is used (rather than the legacy server.New path) so that
+// integration tests exercise the production code path that routes tool/resource
+// calls through core.VMCP. This is required for testing per-request
+// passthrough header forwarding (#5560).
 func NewVMCPServer(
 	ctx context.Context, tb testing.TB, backends []vmcptypes.Backend, opts ...VMCPServerOption,
 ) *vmcpserver.Server {
 	tb.Helper()
 
-	// Default configuration
 	config := &vmcpServerConfig{
 		conflictStrategy: "prefix",
 		prefixFormat:     "{workload}_",
 	}
-
-	// Apply options
 	for _, opt := range opts {
 		opt(config)
 	}
 
-	// Create outgoing auth registry with all strategies registered
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
+	outgoingRegistry, err := vmcpauth.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
 	require.NoError(tb, err)
 
-	// Create backend client
 	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
 	require.NoError(tb, err)
 
-	// Create conflict resolver based on strategy
 	var conflictResolver aggregator.ConflictResolver
 	switch config.conflictStrategy {
 	case "prefix":
@@ -161,50 +164,59 @@ func NewVMCPServer(
 		conflictResolver = aggregator.NewPrefixConflictResolver(config.prefixFormat)
 	}
 
-	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, nil)
-
-	// Create discovery manager
-	discoveryMgr, err := discovery.NewManager(agg)
-	require.NoError(tb, err)
-
-	// Create router
-	rtr := router.NewDefaultRouter()
-
-	// Create immutable backend registry for tests (backends don't change during test execution)
+	rtr := router.NewSessionRouter(&vmcptypes.RoutingTable{})
 	backendRegistry := vmcptypes.NewImmutableRegistry(backends)
 
-	// Create session factory with the same aggregator so tool names in the
-	// session routing table are consistent with the server's conflict-resolution
-	// strategy (e.g. prefix format applied by the aggregator).
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, vmcpsession.WithAggregator(agg))
-
-	// Create vMCP server with test-specific defaults
-	vmcpServer, err := vmcpserver.New(ctx, &vmcpserver.Config{
-		Name:              "test-vmcp",
-		Version:           "1.0.0",
-		Host:              "127.0.0.1",
-		Port:              getFreePort(tb), // Get a random available port for parallel test execution
-		AuthMiddleware:    auth.AnonymousMiddleware,
+	// Build the core VMCP — the single authoritative aggregation on the Serve path.
+	coreVMCP, err := vmcpcore.New(&vmcpcore.Config{
+		Aggregator:        agg,
+		Router:            rtr,
+		BackendRegistry:   backendRegistry,
+		BackendClient:     backendClient,
+		WorkflowDefs:      config.workflowDefs,
 		TelemetryProvider: config.telemetryProvider,
-		SessionFactory:    sessionFactory,
-	}, rtr, backendClient, discoveryMgr, backendRegistry, config.workflowDefs)
+	})
+	require.NoError(tb, err, "failed to create core VMCP")
+
+	// The session factory must NOT use WithAggregator on the Serve path: the core
+	// is the single source of truth for capability aggregation. A factory with its
+	// own aggregator would produce a second, divergent capability set that the Serve
+	// path discards — exactly the double-aggregation AC2 forbids.
+	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry)
+
+	serverCfg := &vmcpserver.ServerConfig{
+		Name:               "test-vmcp",
+		Version:            "1.0.0",
+		Host:               "127.0.0.1",
+		Port:               0, // OS-assigned; see the note on NewVMCPServer
+		EndpointPath:       "/mcp",
+		SessionTTL:         30 * time.Minute,
+		AuthMiddleware:     auth.AnonymousMiddleware,
+		PassthroughHeaders: config.passthroughHeaders,
+		BackendRegistry:    backendRegistry,
+		TelemetryProvider:  config.telemetryProvider,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{
+			Base: sessionFactory,
+		},
+	}
+	if config.sessionTTL > 0 {
+		serverCfg.SessionTTL = config.sessionTTL
+	}
+
+	vmcpServer, err := vmcpserver.Serve(ctx, coreVMCP, serverCfg)
 	require.NoError(tb, err, "failed to create vMCP server")
 
-	// Start server automatically
-	// Use the passed-in context to ensure proper cancellation propagation
 	go func() {
 		if err := vmcpServer.Start(ctx); err != nil {
 			select {
 			case <-ctx.Done():
-				// Context cancelled, ignore error
 			default:
 				tb.Errorf("vMCP server error: %v", err)
 			}
 		}
 	}()
 
-	// Wait for server to be ready (with 5 second timeout)
 	select {
 	case <-vmcpServer.Ready():
 		tb.Logf("vMCP server ready at: http://%s/mcp", vmcpServer.Address())

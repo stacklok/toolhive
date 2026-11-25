@@ -25,71 +25,132 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
 
 ### Detailed Component Documentation
 
-4. **[Core Concepts](02-core-concepts.md)**
-   - Nouns: Workloads, Transports, Proxy, Middleware, RunConfig, Permissions, Groups, Registry, Sessions
+1. **[Core Concepts](02-core-concepts.md)**
+   - Nouns: Workloads, Transports, Proxy, Middleware, RunConfig, Permissions, Groups, Registry, Sessions, Skills, AI-tool Plugins
    - Verbs: Deploy, Proxy, Attach, Parse, Filter, Authorize, Audit, Export, Import, Monitor
    - Terminology quick reference
 
-5. **[Secrets Management](04-secrets-management.md)**
+2. **[Secrets Management](04-secrets-management.md)**
    - Provider types (encrypted, 1password, environment)
    - OS keyring integration
    - Fallback chain
    - Security model
 
-6. **[RunConfig and Permission Profiles](05-runconfig-and-permissions.md)**
+3. **[RunConfig and Permission Profiles](05-runconfig-and-permissions.md)**
    - RunConfig schema and versioning
    - Permission profiles (read, write, network)
    - Built-in profiles and custom profiles
    - Mount declarations and resource URIs
    - Security best practices
 
-7. **[Registry System](06-registry-system.md)**
+4. **[Registry System](06-registry-system.md)**
    - Built-in curated registry
    - Custom registries (file and remote)
    - Registry API server architecture
    - MCPRegistry CRD
    - Image and remote server metadata
 
-8. **[Groups](07-groups.md)**
+5. **[Groups](07-groups.md)**
    - Group concept and use cases
    - Registry groups
    - Client configuration
 
-9. **[Workloads Lifecycle Management](08-workloads-lifecycle.md)**
+6. **[Workloads Lifecycle Management](08-workloads-lifecycle.md)**
    - Workloads API interface
    - Lifecycle: deploy, stop, restart, delete, update
    - State management
    - Container vs remote workloads
    - Async operations
 
-10. **[Kubernetes Operator Architecture](09-operator-architecture.md)**
-    - CRD design (MCPServer, MCPRegistry, MCPToolConfig, MCPExternalAuthConfig, VirtualMCPServer)
-    - Two-binary architecture (operator + proxy-runner)
-    - Deployment pattern
-    - Status management
-    - Design principles
+7. **[Kubernetes Operator Architecture](09-operator-architecture.md)**
+   - CRD design (MCPServer, MCPRegistry, MCPToolConfig, MCPExternalAuthConfig, VirtualMCPServer)
+   - Two-binary architecture (operator + proxy-runner)
+   - Deployment pattern
+   - Status management
+   - Design principles
 
-11. **[Virtual MCP Server Architecture](10-virtual-mcp-architecture.md)**
-    - MCP Gateway for aggregating multiple backends
-    - Backend discovery and capability aggregation
-    - Conflict resolution strategies
-    - Two-boundary authentication model
-    - Composite tool workflows
+8. **[Virtual MCP Server Architecture](10-virtual-mcp-architecture.md)**
+   - MCP Gateway for aggregating multiple backends
+   - Backend discovery and capability aggregation
+   - Conflict resolution strategies
+   - Two-boundary authentication model
+   - Composite tool workflows
 
-12. **[Auth Server Storage Architecture](11-auth-server-storage.md)**
-    - Storage interface design (fosite + ToolHive extensions)
-    - Memory and Redis Sentinel backends
-    - Multi-tenancy via key prefixes
-    - Atomic operations with Lua scripts
-    - Configuration and security model
+9. **[Auth Server Storage Architecture](11-auth-server-storage.md)**
+   - Storage interface design (fosite + ToolHive extensions)
+   - Memory and Redis Sentinel backends
+   - Multi-tenancy via key prefixes
+   - Atomic operations with Lua scripts
+   - Configuration and security model
+   - Upstream subject identifiers (RFC 9493 `sub_id`) in access tokens
+   - Access token type (`typ`: `JWT` or `at+jwt`) in JWT access tokens
 
-13. **[Skills System](12-skills-system.md)**
+10. **[Skills System](12-skills-system.md)**
     - Agent Skills lifecycle (discover, build, publish, install)
     - SKILL.md format and validation
     - OCI-based distribution and git resolution
     - Installation scopes (user, project) and multi-client support
     - Security model (archive safety, SSRF prevention, supply chain)
     - Skills vs MCP servers design rationale
+
+11. **[vMCP Scalability Limits and Constraints](13-vmcp-scalability.md)**
+    - Per-pod session cache cap (1,000 sessions, LRU eviction)
+    - Session TTL and Redis sliding-window behavior
+    - File descriptor constraints and estimation
+    - Redis sizing, eviction policy, and persistence guidance
+    - Stateful backend data loss on pod restart
+
+12. **[Local vMCP CLI Mode](vmcp-local.md)**
+    - `thv vmcp` CLI surface (`serve`, `validate`, `init`)
+    - Zero-config quick mode and config-file workflow
+    - Optimizer tier table (Tier 0–3: none, FTS5, TEI semantic, external service)
+    - TEI container lifecycle (naming, idempotent reuse, health polling, graceful shutdown)
+    - ARM64/Apple Silicon Rosetta 2 emulation note
+    - Migration guide from StacklokLabs/mcp-optimizer
+
+13. **[vMCP Library Embedding](vmcp-library.md)**
+    - Library embedding pattern and `brood-box` reference implementation
+    - `pkg/vmcp/` stability table (Stable, Experimental, Internal per sub-package)
+    - Stability declaration convention and how to use the table as a reviewer
+    - Compatibility guarantees and semver-aligned deprecation policy
+    - Guidance for downstream embedders on pinning and upgrading
+
+14. **[Plugins System](14-plugins-system.md)**
+    - AI-tool plugin lifecycle (discover, build, push, install, sync, upgrade)
+    - Client materialization: Claude Code settings and Codex marketplace files
+    - Project lock-file trust, including keyless and pinned public-key verification
+    - Complete component inventory and boundaries with MCP workloads
+
+15. **[Envoy Network Proxy](15-envoy-network-proxy.md)**
+    - Experimental Envoy backend (`TOOLHIVE_NETWORK_PROXY=envoy`) replacing two Squid containers with one
+    - Egress forward proxy and ingress reverse proxy as separate listeners in a single process
+    - L7 `:authority`-based RBAC allow/deny and `dstdomain` parity (incl. Docker-gateway blocking)
+    - Dynamic forward proxy with per-request DNS and native HTTPS CONNECT tunnelling
+    - Squid-vs-Envoy comparison and known limitations (`AllowPort` gap, V4_ONLY DNS, deny-all on empty profile)
+
+16. **[vMCP Multi Round-Trip Requests (MRTR)](16-vmcp-mrtr.md)**
+    - MRTR (SEP-2322) design for the Modern (2026-07-28) elicitation/sampling path through vMCP
+    - The four client×backend bridge cells: stateless Modern↔Modern pass-through, in-request Legacy-client bridge
+    - Per-request capability mirroring and verbatim `requestState` relay
+    - Composite-workflow suspend/resume as the sole durable-state trigger (RFC-0083 D5 handles, owner binding, TTL)
+    - Sampling's deprecated-pass-through-only disposition (SEP-2577) and the go-sdk/mcpcompat gap list
+
+17. **[External Subject-Token Exchange and JWT-bearer Grants](17-token-exchange-delegation.md)**
+    - `trustedIssuers`: accepting subject tokens from an external OIDC issuer during RFC 8693 token exchange
+    - RFC 7523 JWT-bearer assertions, audience configuration, and replay protection
+    - Confused-deputy trust model and the `may_act` / allowlist consent signals
+    - Accepted limitations: client-set equivalence, disjoint subject namespaces, partial provenance
+    - Minting ID-JAGs from exchange grants: roles and conformance, request and error contract, target configuration, claims, redeemer guidance, known gaps
+    - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
+    - RFC 9396 `authorization_details`: Go-only type registry; validation and echo on token exchange; the signed ID-JAG claim processed at redemption, granted whole entries copied into the token and the response, the redemption parameter refused
+
+18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
+    - SPIFFE client authentication is enforced for trust domains with a `file` bundle source; `bundle_endpoint` and `workload_api` fail validation
+    - Auth-server TLS listener runs on the proxy runner and vMCP at fixed port 8443; the operator configures its certificate (`tlsListener`) and exposes the port
+    - JWT-SVID and X.509-SVID client authentication (fail closed, certificate leaf profile, no fallback)
+    - Per-association `grant_types` (`grantTypes` in the CRD): `client_credentials`, token exchange, or both, with the `client_credentials` request rules (exact `resource`, no `audience`, no refresh token)
+    - Fail-closed policy validation and durable, restart-safe static-client reservation
+    - Endpoint/Workload API loading and RFC 8705 discovery metadata remain pending
 
 ### Existing Documentation
 
@@ -136,8 +197,9 @@ graph TB
         AuthStorage[11: Auth Server Storage<br/>Memory & Redis backends]
     end
 
-    subgraph "Agent Skills"
-        Skills[12: Skills System<br/>Build, publish, install]
+    subgraph "AI Extensions"
+        Skills[12: Skills System<br/>Single instruction components]
+        Plugins[14: Plugins System<br/>Multi-component AI-tool bundles]
     end
 
     %% Navigation paths
@@ -162,8 +224,10 @@ graph TB
     Groups --> Workloads
     Groups --> vMCP
     Groups --> Skills
+    Groups --> Plugins
 
     Registry --> Skills
+    Registry --> Plugins
 
     Workloads --> Operator
     vMCP --> Operator
@@ -184,6 +248,7 @@ graph TB
     style vMCP fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style AuthStorage fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style Skills fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    style Plugins fill:#e8eaf6,stroke:#283593,stroke-width:2px
 ```
 
 **Color Legend:**
@@ -193,7 +258,7 @@ graph TB
 - 🟠 **Orange (Configuration & Security)**: Security model and configuration management
 - 🔴 **Pink (Distribution & Organization)**: How servers are cataloged and organized
 - 🟦 **Teal (Runtime Management)**: Lifecycle and cluster management
-- 🔷 **Indigo (Agent Skills)**: Skills lifecycle and distribution system
+- 🔷 **Indigo (AI Extensions)**: Skill and AI-tool plugin lifecycle and distribution
 
 **Navigation Paths:**
 - **For first-time readers**: Follow the arrows from Overview → Concepts → your area of interest
@@ -315,7 +380,7 @@ RunConfig is part of ToolHive's API contract because:
 - Portable across deployments
 - Reproducible configurations
 
-**Reference**: [Architecture Overview](00-overview.md#runconfig)
+**Reference**: [RunConfig and Permissions](05-runconfig-and-permissions.md)
 
 ## Implementation Patterns
 

@@ -11,11 +11,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	exchange "github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -24,8 +25,8 @@ func GenerateTokenExchangeEnvVars(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
-	getExternalAuthConfig func(context.Context, client.Client, string, string) (*mcpv1alpha1.MCPExternalAuthConfig, error),
+	externalAuthConfigRef *mcpv1beta1.ExternalAuthConfigRef,
+	getExternalAuthConfig func(context.Context, client.Client, string, string) (*mcpv1beta1.MCPExternalAuthConfig, error),
 ) ([]corev1.EnvVar, error) {
 	var envVars []corev1.EnvVar
 
@@ -42,7 +43,7 @@ func GenerateTokenExchangeEnvVars(
 		return nil, fmt.Errorf("MCPExternalAuthConfig %s not found", externalAuthConfigRef.Name)
 	}
 
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeTokenExchange {
 		return envVars, nil
 	}
 
@@ -83,7 +84,7 @@ func AddExternalAuthConfigOptions(
 	c client.Client,
 	namespace string,
 	mcpServerName string,
-	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	externalAuthConfigRef *mcpv1beta1.ExternalAuthConfigRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
@@ -99,21 +100,32 @@ func AddExternalAuthConfigOptions(
 
 	// Handle different auth types
 	switch externalAuthConfig.Spec.Type {
-	case mcpv1alpha1.ExternalAuthTypeTokenExchange:
+	case mcpv1beta1.ExternalAuthTypeTokenExchange:
 		return addTokenExchangeConfig(ctx, c, namespace, externalAuthConfig, options)
-	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
+	case mcpv1beta1.ExternalAuthTypeHeaderInjection:
 		return addHeaderInjectionConfig(ctx, c, namespace, externalAuthConfig, options)
-	case mcpv1alpha1.ExternalAuthTypeBearerToken:
+	case mcpv1beta1.ExternalAuthTypeBearerToken:
 		return addBearerTokenConfig(ctx, c, namespace, externalAuthConfig, options)
-	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
+	case mcpv1beta1.ExternalAuthTypeUnauthenticated:
 		// No config to add for unauthenticated
 		return nil
-	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
+	case mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer:
 		return AddEmbeddedAuthServerConfigOptions(ctx, c, namespace, mcpServerName, externalAuthConfigRef, oidcConfig, options)
-	case mcpv1alpha1.ExternalAuthTypeAWSSts:
+	case mcpv1beta1.ExternalAuthTypeAWSSts:
 		return addAWSStsConfig(externalAuthConfig, options)
-	case mcpv1alpha1.ExternalAuthTypeUpstreamInject:
+	case mcpv1beta1.ExternalAuthTypeUpstreamInject:
 		// Upstream inject is handled by the vMCP converter at runtime
+		return nil
+	case mcpv1beta1.ExternalAuthTypeOBO:
+		// The consuming reconcilers reject this earlier with a status
+		// condition (ValidateOBOIncomingAuth); this guard keeps a RunConfig
+		// from ever being emitted for a proxy with no user token to exchange.
+		if err := ValidateOBOIncomingAuth(externalAuthConfig, oidcConfig != nil); err != nil {
+			return err
+		}
+		return OBOApplyRunConfig(ctx, c, namespace, externalAuthConfig, options)
+	case mcpv1beta1.ExternalAuthTypeXAA:
+		// XAA is handled by the vMCP converter at runtime
 		return nil
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
@@ -124,7 +136,7 @@ func addTokenExchangeConfig(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
 	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
@@ -156,7 +168,7 @@ func addTokenExchangeConfig(
 	}
 
 	// Normalize SubjectTokenType to full URN (accepts both short forms and full URNs)
-	normalizedTokenType, err := tokenexchange.NormalizeTokenType(tokenExchangeSpec.SubjectTokenType)
+	normalizedTokenType, err := exchange.NormalizeTokenType(tokenExchangeSpec.SubjectTokenType)
 	if err != nil {
 		return fmt.Errorf("invalid subject token type: %w", err)
 	}
@@ -188,7 +200,7 @@ func addHeaderInjectionConfig(
 	_ context.Context,
 	_ client.Client,
 	_ string,
-	_ *mcpv1alpha1.MCPExternalAuthConfig,
+	_ *mcpv1beta1.MCPExternalAuthConfig,
 	_ *[]runner.RunConfigBuilderOption,
 ) error {
 	// Header injection for MCPServer is not yet implemented
@@ -203,7 +215,7 @@ func addBearerTokenConfig(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
 	bearerTokenSpec := externalAuthConfig.Spec.BearerToken
@@ -250,8 +262,8 @@ func GenerateBearerTokenEnvVar(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
-	getExternalAuthConfig func(context.Context, client.Client, string, string) (*mcpv1alpha1.MCPExternalAuthConfig, error),
+	externalAuthConfigRef *mcpv1beta1.ExternalAuthConfigRef,
+	getExternalAuthConfig func(context.Context, client.Client, string, string) (*mcpv1beta1.MCPExternalAuthConfig, error),
 ) ([]corev1.EnvVar, error) {
 	var envVars []corev1.EnvVar
 
@@ -268,7 +280,7 @@ func GenerateBearerTokenEnvVar(
 		return nil, fmt.Errorf("MCPExternalAuthConfig %s not found", externalAuthConfigRef.Name)
 	}
 
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeBearerToken {
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeBearerToken {
 		return envVars, nil
 	}
 
@@ -298,7 +310,7 @@ func GenerateBearerTokenEnvVar(
 // addAWSStsConfig adds AWS STS configuration to runner options
 // This enables OIDC token exchange for AWS credentials using AssumeRoleWithWebIdentity
 func addAWSStsConfig(
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
 	awsStsSpec := externalAuthConfig.Spec.AWSSts

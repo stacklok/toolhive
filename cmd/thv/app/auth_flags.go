@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	exchange "github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -129,7 +130,7 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 	normalizedTokenType := f.TokenExchangeSubjectTokenType
 	if normalizedTokenType != "" {
 		var err error
-		normalizedTokenType, err = tokenexchange.NormalizeTokenType(normalizedTokenType)
+		normalizedTokenType, err = exchange.NormalizeTokenType(normalizedTokenType)
 		if err != nil {
 			return nil, fmt.Errorf("invalid subject token type: %w", err)
 		}

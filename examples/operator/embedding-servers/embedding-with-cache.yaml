@@ -1,6 +1,6 @@
 # EmbeddingServer with persistent model caching
 # This configuration caches downloaded models in a PVC for faster restarts
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: EmbeddingServer
 metadata:
   name: embedding-with-cache

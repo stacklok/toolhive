@@ -15,6 +15,7 @@ import (
 
 	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry/legacyhint"
 )
 
 // RemoteRegistryProvider provides registry data from a remote HTTP endpoint
@@ -24,6 +25,8 @@ type RemoteRegistryProvider struct {
 	allowPrivateIp bool
 	skillsMu       sync.RWMutex
 	skills         []types.Skill
+	pluginsMu      sync.RWMutex
+	plugins        []types.Plugin
 }
 
 // NewRemoteRegistryProvider creates a new remote registry provider.
@@ -80,29 +83,17 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 		return fmt.Errorf("failed to read registry response: %w", err)
 	}
 
-	// Try upstream format first, fall back to legacy
-	if isUpstreamFormat(data) {
-		var upstream types.UpstreamRegistry
-		if err := json.Unmarshal(data, &upstream); err != nil {
-			return fmt.Errorf("registry returned invalid upstream JSON from %s: %w", p.registryURL, err)
-		}
-		if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
-			return fmt.Errorf("registry at %s returned upstream format with no servers or groups", p.registryURL)
-		}
-		return nil
+	if legacyhint.Looks(data) {
+		return &LegacyFormatError{URL: p.registryURL}
 	}
 
-	registry := &types.Registry{}
-	if err := json.Unmarshal(data, registry); err != nil {
-		return fmt.Errorf("registry returned invalid JSON from %s: %w", p.registryURL, err)
+	var upstream types.UpstreamRegistry
+	if err := json.Unmarshal(data, &upstream); err != nil {
+		return fmt.Errorf("registry returned invalid upstream JSON from %s: %w", p.registryURL, err)
 	}
-
-	// Validate the registry has at least the required structure
-	if registry.Servers == nil && registry.RemoteServers == nil && registry.Groups == nil {
-		return fmt.Errorf("registry at %s returned invalid structure: "+
-			"missing servers, remote_servers, and groups fields", p.registryURL)
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 && len(upstream.Data.Plugins) == 0 {
+		return fmt.Errorf("registry at %s returned upstream format with no servers, skills, or plugins", p.registryURL)
 	}
-
 	return nil
 }
 
@@ -140,16 +131,12 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 		return nil, fmt.Errorf("failed to read registry data from response body: %w", err)
 	}
 
-	registry, skills, isLegacy, err := parseRegistryAutoDetect(data)
+	registry, skills, plugins, err := parseRegistryData(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse registry data from %s: %w", p.registryURL, err)
 	}
 	p.setSkills(skills)
-	if isLegacy {
-		slog.Warn("Remote registry uses legacy format; please migrate to the upstream MCP format. "+
-			"Legacy format support will be removed in a future release.",
-			"url", p.registryURL)
-	}
+	p.setPlugins(plugins)
 
 	// Set name field on each server based on map key
 	for name, server := range registry.Servers {
@@ -227,8 +214,66 @@ func (p *RemoteRegistryProvider) SearchSkills(query string) ([]types.Skill, erro
 	return results, nil
 }
 
+// ListAvailablePlugins returns plugins discovered from the remote registry data.
+// Triggers a registry load if plugins haven't been populated yet.
+func (p *RemoteRegistryProvider) ListAvailablePlugins() ([]types.Plugin, error) {
+	p.pluginsMu.RLock()
+	plugins := p.plugins
+	p.pluginsMu.RUnlock()
+
+	if plugins == nil {
+		// Plugins are populated as a side effect of GetRegistry
+		if _, err := p.GetRegistry(); err != nil {
+			return nil, err
+		}
+		p.pluginsMu.RLock()
+		plugins = p.plugins
+		p.pluginsMu.RUnlock()
+	}
+
+	return plugins, nil
+}
+
+// GetPlugin returns a specific plugin by namespace and name.
+func (p *RemoteRegistryProvider) GetPlugin(namespace, name string) (*types.Plugin, error) {
+	plugins, err := p.ListAvailablePlugins()
+	if err != nil {
+		return nil, err
+	}
+	for i := range plugins {
+		if plugins[i].Namespace == namespace && plugins[i].Name == name {
+			return &plugins[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// SearchPlugins searches for plugins matching the query in name, namespace, or description.
+func (p *RemoteRegistryProvider) SearchPlugins(query string) ([]types.Plugin, error) {
+	plugins, err := p.ListAvailablePlugins()
+	if err != nil {
+		return nil, err
+	}
+	query = strings.ToLower(query)
+	var results []types.Plugin
+	for _, pl := range plugins {
+		if strings.Contains(strings.ToLower(pl.Name), query) ||
+			strings.Contains(strings.ToLower(pl.Description), query) ||
+			strings.Contains(strings.ToLower(pl.Namespace), query) {
+			results = append(results, pl)
+		}
+	}
+	return results, nil
+}
+
 func (p *RemoteRegistryProvider) setSkills(skills []types.Skill) {
 	p.skillsMu.Lock()
 	defer p.skillsMu.Unlock()
 	p.skills = skills
+}
+
+func (p *RemoteRegistryProvider) setPlugins(plugins []types.Plugin) {
+	p.pluginsMu.Lock()
+	defer p.pluginsMu.Unlock()
+	p.plugins = plugins
 }

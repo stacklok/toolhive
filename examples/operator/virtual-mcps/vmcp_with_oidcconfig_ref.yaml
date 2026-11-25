@@ -1,14 +1,14 @@
 # VirtualMCPServer using oidcConfigRef for incoming authentication.
 #
 # This is the preferred pattern — the inline oidcConfig field is deprecated
-# and will be removed in v1beta1.
+# and will be removed in a future API version.
 #
 # The oidcConfigRef references a shared MCPOIDCConfig resource, allowing
 # multiple VirtualMCPServers (and MCPServers) to share the same provider config.
 
 ---
 # Shared MCPOIDCConfig for incoming auth
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPOIDCConfig
 metadata:
   name: corporate-idp
@@ -24,7 +24,7 @@ spec:
 
 ---
 # MCPGroup for backend discovery
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: my-services
@@ -34,7 +34,7 @@ spec:
 
 ---
 # VirtualMCPServer with oidcConfigRef in incomingAuth
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: shared-auth-vmcp

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -22,6 +23,15 @@ type ClientManager struct {
 	groupManager       groups.Manager
 	clientIntegrations []clientAppConfig
 	configProvider     config.Provider
+	lookPath           func(string) (string, error)
+}
+
+// HomeDir returns the home directory this ClientManager is rooted at. Exported
+// so plugin adapters can resolve user-scoped config-file paths (e.g. Claude
+// Code's ~/.claude/settings.json) under the manager's home — which, for tests,
+// is a temp dir injected via NewTestClientManagerWithHome.
+func (cm *ClientManager) HomeDir() string {
+	return cm.homeDir
 }
 
 // NewClientManager creates a new ClientManager with default dependencies
@@ -37,15 +47,29 @@ func NewClientManager() (*ClientManager, error) {
 		groupManager = nil
 	}
 
+	// Copy the static integration list so we can wire per-client detectors
+	// without mutating the shared supportedClientIntegrations slice.
+	integrations := make([]clientAppConfig, len(supportedClientIntegrations))
+	copy(integrations, supportedClientIntegrations)
+	codexDetector := newCodexDesktopDetector(home, runtime.GOOS).installed
+	for i := range integrations {
+		if integrations[i].ClientType == Codex {
+			integrations[i].LLMInstalledDetector = codexDetector
+			break
+		}
+	}
+
 	return &ClientManager{
 		homeDir:            home,
 		groupManager:       groupManager,
-		clientIntegrations: supportedClientIntegrations,
+		clientIntegrations: integrations,
 		configProvider:     config.NewDefaultProvider(),
+		lookPath:           exec.LookPath,
 	}, nil
 }
 
-// NewTestClientManager creates a new ClientManager with test dependencies
+// NewTestClientManager creates a ClientManager with test dependencies. Native
+// Codex desktop detection is intentionally omitted to keep tests deterministic.
 func NewTestClientManager(
 	homeDir string,
 	groupManager groups.Manager,
@@ -57,6 +81,7 @@ func NewTestClientManager(
 		groupManager:       groupManager,
 		clientIntegrations: clientIntegrations,
 		configProvider:     configProvider,
+		lookPath:           exec.LookPath,
 	}
 }
 
@@ -75,22 +100,28 @@ type ClientAppStatus struct {
 
 	// SupportsSkills indicates whether ToolHive can install skills for this client
 	SupportsSkills bool `json:"supports_skills"`
+	// SupportsPlugins indicates whether ToolHive can install plugins for this client
+	SupportsPlugins bool `json:"supports_plugins"`
 }
 
 // IsClientInstalled reports whether the given client appears to be installed on
 // the current system. Detection is based on the presence of the client's
-// configuration directory (or settings file when no relative path is defined).
+// configuration directory (or settings file when neither a relative path nor a
+// platform prefix is defined).
 func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
-	if cfg == nil {
+	if cfg == nil || cfg.LLMGatewayOnly {
 		return false
 	}
-	var pathToCheck string
-	if len(cfg.RelPath) == 0 {
-		pathToCheck = filepath.Join(cm.homeDir, cfg.SettingsFile)
-	} else {
-		pathToCheck = buildConfigDirectoryPath(cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})
-	}
+	pathToCheck := func() string {
+		if dir := cm.configDirOverride(cfg); dir != "" {
+			return dir
+		}
+		if len(cfg.RelPath) == 0 && len(cfg.PlatformPrefix) == 0 {
+			return filepath.Join(cm.homeDir, cfg.SettingsFile)
+		}
+		return buildConfigDirectoryPath(cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})
+	}()
 	_, err := os.Stat(pathToCheck)
 	return err == nil
 }
@@ -122,11 +153,15 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]ClientAppStatus
 	}
 
 	for _, cfg := range cm.clientIntegrations {
+		if cfg.LLMGatewayOnly {
+			continue
+		}
 		status := ClientAppStatus{
-			ClientType:     cfg.ClientType,
-			Installed:      cm.IsClientInstalled(cfg.ClientType),
-			Registered:     registeredClients[string(cfg.ClientType)],
-			SupportsSkills: cfg.SupportsSkills,
+			ClientType:      cfg.ClientType,
+			Installed:       cm.IsClientInstalled(cfg.ClientType),
+			Registered:      registeredClients[string(cfg.ClientType)],
+			SupportsSkills:  cfg.SupportsSkills,
+			SupportsPlugins: cfg.SupportsPlugins,
 		}
 		statuses = append(statuses, status)
 	}

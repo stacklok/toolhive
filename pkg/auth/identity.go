@@ -7,6 +7,10 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/stacklok/toolhive-core/audit"
 )
 
 // PrincipalInfo contains the non-sensitive identity fields safe for external consumption.
@@ -20,6 +24,29 @@ type PrincipalInfo struct {
 	// Subject is the unique identifier for the principal (from 'sub' claim).
 	// This is always required per OIDC Core 1.0 spec § 5.1.
 	Subject string `json:"sub,omitempty"`
+
+	// PlatformUserID is the platform's canonical user identifier.
+	//
+	// It defaults to the sub claim (see claimsToIdentity). That default is
+	// correct for standalone OSS use (where sub IS the canonical local User.ID)
+	// and for AS-bearer paths under an enterprise directory binding (where the
+	// AS-minted sub equals the directory user_id). It is INCORRECT for any
+	// middleware that validates a JWT issued by a different IdP whose sub is not
+	// the platform-canonical user identifier (e.g. a corporate IdP whose sub
+	// rotates per-application). Such middleware MUST override PlatformUserID
+	// (typically via a resolution call into a directory service) before calling
+	// WithIdentity. On request-serving paths storage reads this value via
+	// CanonicalUserFromContext (which falls back to this field when no dedicated
+	// platform-user key is set); an unresolved PlatformUserID from a corporate-IdP
+	// bearer will silently mis-key writes.
+	//
+	// Only claimsToIdentity populates this field today. Other Identity
+	// constructors in this repo (local.go, anonymous.go) intentionally leave it
+	// unset for now: standalone OSS keys upstream-token storage on the session,
+	// not PlatformUserID, so those paths have no canonical-user reader to
+	// satisfy. Populating them is deferred until a storage layer that reads
+	// PlatformUserID on those paths exists.
+	PlatformUserID string `json:"platform_user_id,omitempty"`
 
 	// Name is the human-readable name (from 'name' claim).
 	Name string `json:"name,omitempty"`
@@ -37,13 +64,54 @@ type PrincipalInfo struct {
 	// Claims contains additional claims from the auth token.
 	// This preserves all JWT claims for authorization policies.
 	Claims map[string]any `json:"claims,omitempty"`
+
+	// DelegationChain is the parsed RFC 8693 "act" claim: the ordered list of
+	// parties that acted on behalf of this identity's subject (outermost/most
+	// recent first). Nil when the token carries no act claim. The "delegation"
+	// tag matches the audit-event wire key so webhook payloads and audit logs
+	// share one spelling of the same structure.
+	DelegationChain *audit.DelegationChain `json:"delegation,omitempty"`
 }
+
+// AdmissionRoute identifies how TokenValidator admitted a token minted by the
+// embedded authorization server.
+type AdmissionRoute string
+
+const (
+	// AdmissionRouteUnspecified is the zero value: the token is neither
+	// interactive nor delegated, so it carries no route.
+	AdmissionRouteUnspecified AdmissionRoute = ""
+	// AdmissionRouteInteractive is a token minted from an interactive login
+	// session: it carries a token session ID and neither the delegated-access
+	// marker nor proof of a session-less mint, and it was validated with a
+	// configured audience (so its "aud" was checked).
+	AdmissionRouteInteractive AdmissionRoute = "interactive"
+	// AdmissionRouteDelegated is a token carrying the delegated-access marker and
+	// no usable tsid, validated with a configured audience (so its "aud" was
+	// checked).
+	AdmissionRouteDelegated AdmissionRoute = "delegated"
+)
 
 // Identity represents an authenticated user or service account.
 // This is the primary type for representing authenticated principals throughout ToolHive.
 //
 // It embeds PrincipalInfo (the credential-free subset) and adds sensitive fields
 // (Token, TokenType) and internal metadata that must never be externalized.
+//
+// # Field-completeness contract
+//
+// A non-nil *Identity is always COMPLETE: all credential fields that are relevant
+// for its authentication path are populated by the constructor that created it.
+// Anonymous and "no principal known" states are represented by nil, not by a
+// struct with empty credential fields. Code that receives a non-nil *Identity is
+// entitled to assume it is fully initialized for its session-binding semantics.
+//
+// In particular, do NOT construct &Identity{Subject: …} with Token and
+// UpstreamTokens unset as a substitute for nil when no live bearer token is
+// available (e.g. during session restore). Pass nil instead and let downstream
+// consumers read the identity from the per-request context, where
+// TokenValidator.Middleware places a fully-populated identity on every incoming
+// request.
 type Identity struct {
 	PrincipalInfo
 
@@ -57,12 +125,110 @@ type Identity struct {
 	// Metadata stores additional identity information.
 	Metadata map[string]string
 
+	// SessionlessGrant is true only when TokenValidator validated this token as a
+	// signed JWT (never an introspection response) for the configured embedded
+	// authorization-server issuer, no upstream session credentials were loaded,
+	// and the token affirmatively proves that it was minted by a session-less
+	// grant. It is internal runtime provenance and is intentionally not included
+	// in PrincipalInfo or MarshalJSON.
+	SessionlessGrant bool
+
+	// AdmissionRoute records how TokenValidator admitted this token. It is set
+	// only by TokenValidator, and only when the validator is bound to the
+	// embedded authorization server and the JWT was verified with the
+	// in-process key provider (WithKeyProvider). A key found only through the
+	// HTTP JWKS fallback, or an introspection response, gets no route, so a
+	// validator bound without WithKeyProvider never assigns one.
+	// Both routes also require a configured audience. It is internal
+	// provenance and is intentionally not included in PrincipalInfo,
+	// SafeIdentity, or MarshalJSON. Consumers that grant anything must compare
+	// for equality with AdmissionRouteDelegated (or AdmissionRouteInteractive),
+	// never with != AdmissionRouteUnspecified.
+	AdmissionRoute AdmissionRoute
+
 	// UpstreamTokens maps upstream provider names to their access tokens.
 	// This is populated by the auth middleware when an embedded auth server
 	// is active and the JWT contains a token session ID (tsid claim).
 	// Redacted in MarshalJSON() to prevent token leakage.
-	// MUST NOT be mutated after the Identity is placed in the request context.
+	//
+	// State semantics:
+	//   - nil            — no upstream credentials were loaded for this identity.
+	//                      Either the incoming JWT carried no tsid claim, or the
+	//                      Identity came from a constructor that has no upstream
+	//                      session at all: local.go, anonymous.go, or middleware
+	//                      validating a JWT from an IdP other than the embedded
+	//                      auth server (see the PlatformUserID note above).
+	//   - empty map      — never produced by TokenValidator, which answers 401
+	//                      when a tsid session holds no usable access token;
+	//                      a consumer that meets one denies it like a session
+	//                      lacking the pinned provider's credential.
+	//   - populated map  — keys are upstream provider names; values are the
+	//                      stored access token strings.
+	//
+	// A nil map therefore says only that no credential was loaded, never why.
+	// Authorization code must use SessionlessGrant or AdmissionRoute, which
+	// TokenValidator sets only for a signed embedded-auth-server token, from the
+	// claims it carries.
+	//
+	// MUST NOT be mutated after the Identity is placed in the publicly-reachable
+	// request context. It MAY be mutated while the Identity is reachable only via
+	// a load-scoped ctx, provided the loader does not share that ctx with
+	// concurrent code. See TokenValidator.Middleware for the canonical pattern.
 	UpstreamTokens map[string]string
+
+	// UpstreamIDTokens maps upstream provider names to their ID tokens.
+	// This is populated by the auth middleware when an embedded auth server
+	// is active and the JWT contains a token session ID (tsid claim).
+	// Each value is the rotated ID token when a refresh produced one
+	// (OIDC Core 1.0 §12.2), otherwise the original JWT captured at the initial
+	// OIDC login.
+	//
+	// State semantics:
+	//   - nil            — no tsid claim was present on the incoming JWT
+	//                      (middleware did not attempt to load credentials).
+	//   - empty map      — tsid claim was valid but no providers had an
+	//                      ID token stored for the session.
+	//   - populated map  — keys are upstream provider names; values are the
+	//                      stored ID token JWTs, which may be expired.
+	//
+	// Whether `exp` matters depends on what the caller does with the token. Nothing
+	// in this package enforces it; the two current consumers use the token
+	// differently and neither validates it locally:
+	//
+	//   - PRESENTING it as a credential — e.g. as the subject_token of an RFC 8693
+	//     exchange (pkg/vmcp/auth/strategies) — is subject to expiry, because the
+	//     party receiving it will reject an expired assertion. That consumer
+	//     deliberately does not pre-check `exp` either: it lets the IdP reject the
+	//     exchange and surfaces the resulting `invalid_grant`. So such a caller must
+	//     either check `exp` first or be prepared to handle that failure.
+	//   - READING identity claims out of it — as the Cedar authorizer does for the
+	//     claims an upstream access token omits, profile and group alike — is not
+	//     subject to expiry at all. The token is evidence that the upstream asserted
+	//     something at login, and expiry says nothing about whether that assertion
+	//     happened. Rejecting it once expired would flip an authorization decision
+	//     mid-session, since sessions outlive ID tokens by days — and it would do so
+	//     for every user at once, which is worse than the staleness it would avoid.
+	//     Read the claims as facts the upstream asserted when it issued the token:
+	//     a group revoked upstream keeps evaluating as granted until the stored ID
+	//     token is replaced, which happens on a refresh that rotates it (see
+	//     below). For a provider that never rotates it, that lasts as long as the
+	//     session is kept alive, since each refresh renews the session.
+	//
+	// Either way the token is NOT re-validated for signature or freshness here, so
+	// treat its claims as facts the upstream asserted when it issued the token
+	// rather than current state.
+	//
+	// When populated by upstreamtoken.InProcessService (see NewInProcessService),
+	// an expired ID token triggers a refresh even while the access token is still
+	// valid, so a provider that rotates the ID token on refresh yields a currently
+	// valid one here. It can still be expired when the provider omits id_token on
+	// refresh (OIDC Core 1.0 §12.2) and the old one is carried forward, when that
+	// refresh failed and the stored token was returned, or when the row has no
+	// refresh token; a consumer that needs a fresh token must check `exp` itself.
+	//
+	// Redacted in MarshalJSON() to prevent token leakage.
+	// MUST NOT be mutated after the Identity is placed in the request context.
+	UpstreamIDTokens map[string]string
 }
 
 // String returns a string representation of the Identity with sensitive fields redacted.
@@ -84,21 +250,35 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 
 	// Create a safe representation with lowercase field names and redacted token
 	type SafeIdentity struct {
-		Subject        string            `json:"subject"`
-		Name           string            `json:"name"`
-		Email          string            `json:"email"`
-		Groups         []string          `json:"groups"`
-		Claims         map[string]any    `json:"claims"`
-		Token          string            `json:"token"`
-		TokenType      string            `json:"tokenType"`
-		Metadata       map[string]string `json:"metadata"`
-		UpstreamTokens map[string]string `json:"upstreamTokens,omitempty"`
+		Subject          string                 `json:"subject"`
+		PlatformUserID   string                 `json:"platformUserId,omitempty"`
+		Name             string                 `json:"name"`
+		Email            string                 `json:"email"`
+		Groups           []string               `json:"groups"`
+		Claims           map[string]any         `json:"claims"`
+		DelegationChain  *audit.DelegationChain `json:"delegation,omitempty"`
+		Token            string                 `json:"token"`
+		TokenType        string                 `json:"tokenType"`
+		Metadata         map[string]string      `json:"metadata"`
+		UpstreamTokens   map[string]string      `json:"upstreamTokens,omitempty"`
+		UpstreamIDTokens map[string]string      `json:"upstreamIDTokens,omitempty"`
 	}
+
+	const redacted = "REDACTED"
 
 	token := i.Token
 	if token != "" {
-		token = "REDACTED"
+		token = redacted
 	}
+
+	// Strip internal claims (tsid, delegated-access marker) from the copy.
+	// filterInternalClaims never mutates i.Claims.
+	claims := func() map[string]any {
+		if i.Claims == nil {
+			return nil
+		}
+		return filterInternalClaims(jwt.MapClaims(i.Claims))
+	}()
 
 	// Redact upstream tokens: preserve keys, replace non-empty values
 	var redactedUpstreamTokens map[string]string
@@ -108,23 +288,39 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		redactedUpstreamTokens = make(map[string]string, len(i.UpstreamTokens))
 		for k, v := range i.UpstreamTokens {
 			if v != "" {
-				redactedUpstreamTokens[k] = "REDACTED"
+				redactedUpstreamTokens[k] = redacted
 			} else {
 				redactedUpstreamTokens[k] = ""
 			}
 		}
 	}
 
+	// Redact upstream ID tokens with the same pattern as access tokens.
+	var redactedUpstreamIDTokens map[string]string
+	if len(i.UpstreamIDTokens) > 0 {
+		redactedUpstreamIDTokens = make(map[string]string, len(i.UpstreamIDTokens))
+		for k, v := range i.UpstreamIDTokens {
+			if v != "" {
+				redactedUpstreamIDTokens[k] = redacted
+			} else {
+				redactedUpstreamIDTokens[k] = ""
+			}
+		}
+	}
+
 	return json.Marshal(&SafeIdentity{
-		Subject:        i.Subject,
-		Name:           i.Name,
-		Email:          i.Email,
-		Groups:         i.Groups,
-		Claims:         i.Claims,
-		Token:          token,
-		TokenType:      i.TokenType,
-		Metadata:       i.Metadata,
-		UpstreamTokens: redactedUpstreamTokens,
+		Subject:          i.Subject,
+		PlatformUserID:   i.PlatformUserID,
+		Name:             i.Name,
+		Email:            i.Email,
+		Groups:           i.Groups,
+		Claims:           claims,
+		DelegationChain:  i.DelegationChain,
+		Token:            token,
+		TokenType:        i.TokenType,
+		Metadata:         i.Metadata,
+		UpstreamTokens:   redactedUpstreamTokens,
+		UpstreamIDTokens: redactedUpstreamIDTokens,
 	})
 }
 

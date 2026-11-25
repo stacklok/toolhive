@@ -60,7 +60,10 @@ func ExtractBearerToken(r *http.Request) (string, error) {
 }
 
 // GetAuthenticationMiddleware returns the appropriate authentication middleware based on the configuration.
-// If OIDC config is provided, it returns JWT middleware. Otherwise, it returns local user middleware.
+// If OIDC config is provided, it returns JWT validation middleware. Otherwise it returns local-user
+// middleware and logs a WARNING: with no OIDC config, the proxy accepts every request and forwards it
+// under a synthetic local-user identity with no token or credential check. This unauthenticated fallback
+// is intended for local/development use; configure an OIDC provider to enforce authentication per request.
 func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig, opts ...TokenValidatorOption,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcConfig != nil {
@@ -76,7 +79,9 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 		return jwtValidator.Middleware, authInfoHandler, nil
 	}
 
-	slog.Debug("oidc validation disabled, using local user authentication")
+	slog.Warn("no authentication configured: the proxy will accept every request unauthenticated and " +
+		"assign each a synthetic local-user identity with no token or credential check; " +
+		"configure an OIDC provider to enforce authentication per request")
 
 	// Get current OS user
 	currentUser, err := user.Current()

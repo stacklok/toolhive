@@ -2,14 +2,14 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "operator.fullname" . }}
+  name: {{ include "toolhive-operator.fullname" . }}
   labels:
-    {{- include "operator.labels" . | nindent 4 }}
+    {{- include "toolhive-operator.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "operator.fullname" . }}
+    name: {{ include "toolhive-operator.fullname" . }}
   minReplicas: {{ .Values.operator.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.operator.autoscaling.maxReplicas }}
   metrics:

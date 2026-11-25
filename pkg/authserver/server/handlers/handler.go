@@ -17,46 +17,225 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"math"
+	"mime"
 	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ory/fosite"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"golang.org/x/time/rate"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 )
 
 // NamedUpstream pairs a logical provider name with its OAuth2Provider implementation.
 // The name is used as the storage key and must be unique within the upstream slice.
 type NamedUpstream struct {
-	Name     string
-	Provider upstream.OAuth2Provider
+	Name string
+	// DisplayName is an optional human-readable label shown on the consent page.
+	// It is display-only: never compared, stored, or used to route.
+	DisplayName string
+	Provider    upstream.OAuth2Provider
 }
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider     fosite.OAuth2Provider
-	config       *server.AuthorizationServerConfig
-	storage      storage.Storage
-	upstreams    []NamedUpstream
+	provider  fosite.OAuth2Provider
+	config    *server.AuthorizationServerConfig
+	storage   storage.Storage
+	upstreams []NamedUpstream
+	// continuationFallback is the client store below the CIMD decorator (the
+	// client-admission layer when present, else the innermost store; see
+	// storage.ClientStoreBelowCIMD), selected once at construction.
+	// callbackClient reads it only when the CIMD fetch limiter refuses the
+	// ordinary lookup.
+	continuationFallback fosite.ClientManager
+	// tokenOnly is derived at construction from the absence of upstreams and is
+	// the single source of truth for token-only capability behavior.
+	tokenOnly    bool
 	userResolver *UserResolver
+	// refresher, when set, lets nextMissingUpstream transparently refresh an
+	// expired upstream leg during chain evaluation instead of re-prompting. Nil
+	// when no refresher is configured; an expired leg is then treated as missing.
+	refresher storage.UpstreamTokenRefresher
+	// filter, when set, narrows the authorization chain to a subset of the
+	// configured upstreams once the first leg resolves. Nil when no filter is
+	// configured; the chain then walks all configured upstreams as before.
+	filter upstreamfilter.UpstreamFilter
+	// consentExemptClientIDs is populated by WithConsentExemptClientIDs until
+	// constructor validation builds consentExemptClientIDSet.
+	consentExemptClientIDs   []string
+	consentExemptClientIDSet map[string]struct{}
+	// registerLimiter bounds the unauthenticated /oauth/register endpoint,
+	// which mints persisted state on every call. Per-process, not per-IP: the
+	// goal is to cap storage growth and log volume, not to be fair between
+	// callers (per-IP limiting behind a shared NAT or proxy would either
+	// under- or over-count, and X-Forwarded-For is attacker-controlled without
+	// a trusted proxy list). Because the limit lives on this per-process field,
+	// running N replicas multiplies the effective rate by N — size the
+	// configured rate with replica count in mind. DefaultRegisterRate and
+	// DefaultRegisterBurst unless WithRegisterRateLimit overrides them. Nil in
+	// tests that construct Handler directly; OAuthRoutes tolerates nil by
+	// skipping the gate.
+	registerLimiter *rate.Limiter
+	// meterProvider supplies dcrMetrics. otel.GetMeterProvider() unless
+	// WithMeterProvider overrides it.
+	meterProvider metric.MeterProvider
+	// dcrMetrics counts DCR cap rejections and reports the live DCR client
+	// count. Nil in tests that construct Handler directly; its methods
+	// tolerate a nil receiver.
+	dcrMetrics *dcrMetrics
+	// capacityWarner logs DCR cap rejections at WARN, bounded by time. Nil in
+	// tests that construct Handler directly; its methods tolerate a nil
+	// receiver.
+	capacityWarner *capacityWarner
+	// deviceAuthorizationLimiter bounds the unauthenticated
+	// /oauth/device_authorization endpoint, which mints persisted state
+	// (a device_code/user_code pair) on every call, exactly like
+	// /oauth/register. Same default rate and same per-process (not per-IP)
+	// reasoning as registerLimiter. Nil when device flow is disabled — in
+	// that case OAuthRoutes never registers the route, so the nil limiter is
+	// never dereferenced. Also nil in tests that construct Handler directly.
+	deviceAuthorizationLimiter *rate.Limiter
+	// deviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint, and the value advertised in the
+	// device authorization response's "interval" field. Set from
+	// config.DeviceCodeInterval at construction, falling back to
+	// server.DefaultDeviceCodeInterval when that is zero.
+	deviceCodeInterval time.Duration
+	// deviceStorage is storage's storage.DeviceCodeStorage capability,
+	// resolved once via storage.Unwrap(stor).(storage.DeviceCodeStorage) at
+	// construction time -- storage.Storage deliberately does NOT embed
+	// DeviceCodeStorage (see that interface's contract there), and CIMD/SPIFFE
+	// decorators only implement the narrower Storage interface they wrap, so
+	// the unwrap is needed to reach a decorated backend's underlying
+	// MemoryStorage/RedisStorage. DeviceAuthorizationHandler goes through this
+	// field instead of storage directly. Nil when device flow is disabled;
+	// OAuthRoutes never registers DeviceAuthorizationHandler in that case, so
+	// it is never dereferenced.
+	deviceStorage     storage.DeviceCodeStorage
+	rememberedStorage storage.RememberedConsentStorage
+	// deviceVerificationLimiter bounds the unauthenticated POST /oauth/device
+	// endpoint (DeviceVerificationSubmitHandler), which looks up a
+	// DeviceRequest by the human-entered user_code. RFC 8628 §5.4 requires
+	// throttling this lookup: user_code is drawn from a bounded charset over a
+	// fixed-length code with a 10-minute TTL, so an unthrottled endpoint is a
+	// brute-force guessing oracle. Unlike registerLimiter, this IS per-IP
+	// (see perIPLimiter's doc comment for why): this endpoint is a
+	// human-facing login page, not a machine-driven one-shot call, so a
+	// shared process-wide bucket would let one caller starve every other
+	// concurrent device-flow login. Nil when device flow is disabled;
+	// OAuthRoutes never registers the route in that case, so it is never
+	// dereferenced.
+	deviceVerificationLimiter *perIPLimiter
+}
+
+// DefaultRegisterRate and DefaultRegisterBurst bound /oauth/register when no
+// rate is configured: 1 registration/sec sustained, burst of 5. Generous for
+// legitimate tooling (a client registers once, then reuses its client_id),
+// tight enough that an unauthenticated caller cannot grow the client keyspace
+// or the log stream faster than operators can react.
+const (
+	DefaultRegisterRate  rate.Limit = 1
+	DefaultRegisterBurst int        = 5
+)
+
+// WithRegisterRateLimit overrides the /oauth/register rate (registrations per
+// second) and burst. The limit is per process: N replicas admit N times the
+// rate. NewHandler rejects a non-positive rate or burst.
+func WithRegisterRateLimit(r rate.Limit, burst int) Option {
+	return func(h *Handler) {
+		h.registerLimiter = rate.NewLimiter(r, burst)
+	}
+}
+
+// WithMeterProvider sets the meter provider for the DCR metrics. Without it,
+// NewHandler uses the global otel.GetMeterProvider().
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(h *Handler) {
+		h.meterProvider = mp
+	}
+}
+
+// UpstreamFilter is a compatibility alias for upstreamfilter.UpstreamFilter.
+// See that interface for the first-leg lifecycle and filtering contract.
+type UpstreamFilter = upstreamfilter.UpstreamFilter
+
+// Option configures optional Handler behavior at construction time.
+type Option func(*Handler)
+
+// WithUpstreamRefresher injects a refresher used by nextMissingUpstream to
+// transparently refresh expired upstream tokens while evaluating the
+// authorization chain. When unset, an expired leg is treated as missing and the
+// user is re-prompted — the behavior before this option existed.
+func WithUpstreamRefresher(r storage.UpstreamTokenRefresher) Option {
+	return func(h *Handler) {
+		h.refresher = r
+	}
+}
+
+// WithUpstreamFilter injects a filter that narrows the authorization chain to a
+// subset of the configured upstreams once the first leg resolves. When unset, the
+// handler walks all configured upstreams — the behavior before this option
+// existed. See UpstreamFilter for the contract.
+func WithUpstreamFilter(f upstreamfilter.UpstreamFilter) Option {
+	return func(h *Handler) {
+		h.filter = f
+	}
+}
+
+// WithConsentExemptClientIDs configures the client IDs preauthorized to skip
+// ToolHive's consent page. Listing a client ID preauthorizes whatever registration
+// currently holds that ID, for whichever user completes upstream authentication.
+// It is not per-user consent, and runtime eligibility checks do not prove where
+// the registration came from. The embedder must control registration writes for
+// exempt IDs; replacement or permission expansion transfers or broadens
+// preauthorization. Removing an ID affects new requests only and does not revoke
+// tokens or cancel already-approved flows. Upstream authentication still runs.
+// The IDs are copied when the option is created, and repeated options replace the
+// list.
+func WithConsentExemptClientIDs(ids []string) Option {
+	clientIDs := slices.Clone(ids)
+	return func(h *Handler) {
+		h.consentExemptClientIDs = slices.Clone(clientIDs)
+	}
 }
 
 // NewHandler creates a new Handler with the given dependencies.
 // upstreams defines the ordered sequence of upstream providers consulted
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 //
-// Returns an error if upstreams is empty or if any entry has an empty name or nil provider.
+// Returns an error if config is nil, if config's embedded *fosite.Config is
+// nil, or if any entry has an empty name, a nil provider, or a duplicate name.
+// Upstream names must be unique: upstreamByName returns the
+// first match, tokens are keyed by name, and the authorization chain is keyed by
+// name — a duplicate would silently shadow a provider. Catching misconfiguration
+// here is far easier to diagnose than a nil-deref panic or a shadowed provider
+// deep inside an HTTP handler at request time.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
 	upstreams []NamedUpstream,
+	opts ...Option,
 ) (*Handler, error) {
-	if len(upstreams) == 0 {
-		return nil, fmt.Errorf("handlers: upstreams must not be empty")
+	if config == nil || config.Config == nil {
+		return nil, fmt.Errorf(
+			"handlers: AuthorizationServerConfig with embedded *fosite.Config must be non-nil")
 	}
+	seen := make(map[string]struct{}, len(upstreams))
 	for _, u := range upstreams {
 		if u.Name == "" {
 			return nil, fmt.Errorf("handlers: upstream entry has empty name")
@@ -64,30 +243,258 @@ func NewHandler(
 		if u.Provider == nil {
 			return nil, fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
 		}
+		if _, dup := seen[u.Name]; dup {
+			return nil, fmt.Errorf("handlers: duplicate upstream name %q", u.Name)
+		}
+		seen[u.Name] = struct{}{}
 	}
-	return &Handler{
-		provider:     provider,
-		config:       config,
-		storage:      stor,
-		upstreams:    upstreams,
-		userResolver: NewUserResolver(stor),
-	}, nil
+	h := &Handler{
+		provider:             provider,
+		config:               config,
+		storage:              stor,
+		upstreams:            upstreams,
+		tokenOnly:            len(upstreams) == 0,
+		userResolver:         newUserResolver(stor, upstreams),
+		continuationFallback: storage.ClientStoreBelowCIMD(stor),
+		registerLimiter:      rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
+		meterProvider:        otel.GetMeterProvider(),
+		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
+	}
+	if config.DeviceFlowEnabled {
+		// Same rate as registerLimiter's default: this gate protects the same kind of
+		// unauthenticated persisted-state minting, just reached through
+		// /oauth/device_authorization instead of /oauth/register.
+		h.deviceAuthorizationLimiter = rate.NewLimiter(rate.Limit(1), 5)
+		// Same rate as deviceAuthorizationLimiter, but per-IP rather than
+		// per-process -- see deviceVerificationLimiter's field doc comment
+		// and perIPLimiter's doc comment for why.
+		h.deviceVerificationLimiter = newPerIPLimiter(rate.Limit(1), 5)
+		deviceStorage, ok := storage.Unwrap(stor).(storage.DeviceCodeStorage)
+		if !ok {
+			return nil, fmt.Errorf(
+				"handlers: device flow enabled but storage backend %T does not implement storage.DeviceCodeStorage", stor)
+		}
+		h.deviceStorage = deviceStorage
+	}
+	if base, err := url.Parse(config.GetAuthorizationEndpointBaseURL()); err == nil && base.Scheme == "https" {
+		h.rememberedStorage, _ = storage.Unwrap(stor).(storage.RememberedConsentStorage)
+	}
+	for _, o := range opts {
+		o(h)
+	}
+	if err := validateRegisterLimiter(h.registerLimiter); err != nil {
+		return nil, err
+	}
+	if err := h.initConsentExemptions(); err != nil {
+		return nil, err
+	}
+	// Registered last: the gauge callback outlives a failed constructor.
+	metrics, err := newDCRMetrics(h.meterProvider, stor)
+	if err != nil {
+		return nil, fmt.Errorf("handlers: %w", err)
+	}
+	h.dcrMetrics = metrics
+	h.capacityWarner = newCapacityWarner(stor)
+	return h, nil
+}
+
+// Close releases what NewHandler registered outside the Handler: the DCR
+// client gauge's callback, which holds the storage. Call it when the server
+// shuts down so a rebuilt server in the same process does not leave a
+// callback reading closed storage.
+func (h *Handler) Close() error {
+	return h.dcrMetrics.close()
+}
+
+// deviceCodeInterval returns configured, falling back to
+// server.DefaultDeviceCodeInterval when configured is zero. A zero interval
+// would defeat the interval's purpose of bounding poll frequency, so it is
+// never used as the enforced minimum.
+func deviceCodeInterval(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return server.DefaultDeviceCodeInterval
+	}
+	return configured
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.
-func (h *Handler) Routes() http.Handler {
+// Optional middleware is installed before registering routes.
+func (h *Handler) Routes(middlewares ...func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
+	r.Use(middlewares...)
 	h.OAuthRoutes(r)
 	h.WellKnownRoutes(r)
 	return r
 }
 
-// OAuthRoutes registers OAuth endpoints (authorize, callback, token, register) on the provided router.
+// OAuthRoutes registers OAuth endpoints (authorize, consent, callback, token, register,
+// and the device flow's device_authorization/verification routes when enabled)
+// on the provided router.
 func (h *Handler) OAuthRoutes(r chi.Router) {
-	r.Get("/oauth/authorize", h.AuthorizeHandler)
+	r.Get("/oauth/authorize", rejectMultipartAuthorizeBody(h.AuthorizeHandler))
+	r.Post("/oauth/consent", h.ConsentHandler)
+	// /oauth/callback is shared by the OAuth-client authorization_code flow
+	// and (when device flow is enabled) the verification page's upstream
+	// login -- an upstream's redirect_uri is fixed per upstream at
+	// construction, so there is no way to register a second callback path
+	// for the device flow. CallbackHandler dispatches between the two based
+	// on which pending record the state parameter matches. An OAuth-client
+	// authorization additionally requires the browser-binding cookie that
+	// /oauth/authorize set, so it must be served on the same host (see
+	// browser_binding.go).
 	r.Get("/oauth/callback", h.CallbackHandler)
-	r.Post("/oauth/token", h.TokenHandler)
-	r.Post("/oauth/register", h.RegisterClientHandler)
+	r.Post(server.TokenEndpointPath, h.TokenHandler)
+	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))
+	if h.config.DeviceFlowEnabled {
+		r.Post("/oauth/device_authorization", h.rateLimitDeviceAuthorization(h.DeviceAuthorizationHandler))
+		r.Get("/oauth/device", h.DeviceVerificationHandler)
+		r.Post("/oauth/device", h.rateLimitDeviceVerification(h.DeviceVerificationSubmitHandler))
+		r.Post("/oauth/device/confirm", h.DeviceVerificationConfirmHandler)
+	}
+}
+
+// rateLimitRegister gates the unauthenticated registration endpoint: over the
+// limit it returns 429 with a Retry-After hint rather than minting persisted
+// state. RFC 7591 has no DCR-specific rate-limit response, so this uses the
+// plain HTTP semantics; well-behaved DCR clients retry.
+func (h *Handler) rateLimitRegister(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.registerLimiter != nil && !h.registerLimiter.Allow() {
+			w.Header().Set("Retry-After", strconv.Itoa(limiterRetryAfterSeconds(h.registerLimiter)))
+			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+			return
+		}
+		next(w, req)
+	}
+}
+
+// validateRegisterLimiter rejects a register limiter without a finite
+// positive rate and a positive burst. rate.Inf (math.MaxFloat64, not +Inf)
+// would silently disable limiting, and NaN passes a plain <= 0 check.
+func validateRegisterLimiter(l *rate.Limiter) error {
+	lim := float64(l.Limit())
+	if math.IsNaN(lim) || math.IsInf(lim, 0) || l.Limit() == rate.Inf || lim <= 0 || l.Burst() <= 0 {
+		return fmt.Errorf("handlers: register rate limit must have a finite positive rate and positive burst, got %v/s burst %d",
+			l.Limit(), l.Burst())
+	}
+	return nil
+}
+
+// initConsentExemptions validates the consent-exempt client IDs set by
+// WithConsentExemptClientIDs and indexes them for lookup.
+func (h *Handler) initConsentExemptions() error {
+	if err := consentpolicy.Validate(
+		h.consentExemptClientIDs,
+		h.config.GetAuthorizationEndpointBaseURL(),
+		h.config.GetAccessTokenIssuer(),
+		len(h.upstreams),
+	); err != nil {
+		return fmt.Errorf("handlers: %w", err)
+	}
+	h.consentExemptClientIDSet = make(map[string]struct{}, len(h.consentExemptClientIDs))
+	for _, id := range h.consentExemptClientIDs {
+		h.consentExemptClientIDSet[id] = struct{}{}
+	}
+	h.consentExemptClientIDs = nil
+	return nil
+}
+
+// newUserResolver builds the resolver for the configured upstreams. Only the
+// first upstream creates users. Every login chain starts there, and later
+// upstreams carry the user it resolved, so a later upstream's identity may resolve
+// through an existing link but never creates a user or link.
+func newUserResolver(stor storage.UserStorage, upstreams []NamedUpstream) *UserResolver {
+	if len(upstreams) == 0 {
+		return NewUserResolver(stor)
+	}
+	return NewUserResolver(stor, WithCreateOnlyFor(upstreams[0].Name))
+}
+
+// limiterRetryAfterSeconds returns the Retry-After value for a request l
+// refused: 1/rate seconds, the longest the limiter can take to refill one
+// token, rounded up and at least 1. A partly refilled bucket frees a token
+// sooner, so this is an upper bound. A rate below 1/s therefore advertises a
+// wait longer than a second, so a
+// client honouring the header does not retry into further 429s. The result
+// is clamped to math.MaxInt32 so a vanishingly small rate cannot overflow int.
+func limiterRetryAfterSeconds(l *rate.Limiter) int {
+	return int(min(max(math.Ceil(1/float64(l.Limit())), 1), math.MaxInt32))
+}
+
+// rejectMultipartAuthorizeBody prevents Fosite from accepting multipart GET
+// bodies on /oauth/authorize. The endpoint's parameters must come from the query
+// string; otherwise client_id could bypass the client-hiding checks that use
+// ParseForm, which do not read multipart GET bodies.
+func rejectMultipartAuthorizeBody(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+		if err == nil && strings.HasPrefix(mediaType, "multipart/") {
+			// WARN on purpose although a caller can trigger it: this is a
+			// request-shape rejection and the operator-visible signal. Only the
+			// media type and path are logged, never client_id or other input.
+			slog.WarnContext(req.Context(), "rejected multipart request body on authorize endpoint",
+				"media_type", mediaType, "path", req.URL.Path)
+			http.Error(w, "multipart request bodies are not supported", http.StatusBadRequest)
+			return
+		}
+		next(w, req)
+	}
+}
+
+// writeCIMDRateLimited writes the plain-text 429 for a client lookup refused by
+// the CIMD storage decorator's fetch limiter, matching rateLimitRegister's
+// response. It is used only by the authorize endpoint: the client is unresolved
+// there, so its redirect_uri cannot be trusted (RFC 6749 section 4.1.2.1) and
+// no OAuth error can be redirected to it.
+func writeCIMDRateLimited(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+}
+
+// writeCIMDRateLimitedOAuth writes the 429 for a CIMD client lookup refused by
+// the fetch limiter as an RFC 6749 section 5.2 JSON error. It is used by the
+// token and device authorization endpoints only. The status stays 429 and the
+// code is temporarily_unavailable: section 5.2 has no rate-limit code and
+// defines temporarily_unavailable only for the authorization endpoint, so this
+// is an extension that clients tolerate (fosite defines the same code).
+func writeCIMDRateLimitedOAuth(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	writeOAuthError(w, http.StatusTooManyRequests, "temporarily_unavailable",
+		"client metadata fetch rate limit exceeded, retry later")
+}
+
+// rateLimitDeviceAuthorization gates the unauthenticated
+// /oauth/device_authorization endpoint: over the limit it returns 429 with a
+// Retry-After hint rather than minting persisted state. Mirrors
+// rateLimitRegister exactly, including its nil-tolerant shape (nil when
+// device flow is disabled, in which case this wrapper is never installed by
+// OAuthRoutes anyway).
+func (h *Handler) rateLimitDeviceAuthorization(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.deviceAuthorizationLimiter != nil && !h.deviceAuthorizationLimiter.Allow() {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+			return
+		}
+		next(w, req)
+	}
+}
+
+// rateLimitDeviceVerification gates the unauthenticated POST /oauth/device
+// endpoint: over the limit it returns 429 with a Retry-After hint rather than
+// running another user_code lookup. Per-IP (see perIPLimiter's doc comment
+// for why this endpoint differs from rateLimitDeviceAuthorization's
+// per-process gate), otherwise the same shape, including tolerating a nil
+// limiter when device flow is disabled.
+func (h *Handler) rateLimitDeviceVerification(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.deviceVerificationLimiter != nil && !h.deviceVerificationLimiter.allow(clientIP(req)) {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+			return
+		}
+		next(w, req)
+	}
 }
 
 // WellKnownRoutes registers well-known endpoints (JWKS, OAuth/OIDC discovery) on the provided router.
@@ -109,20 +516,195 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 }
 
 // nextMissingUpstream returns the name of the next upstream provider in the
-// authorization chain that does not yet have stored tokens for this session.
-// Returns empty string if all upstreams are satisfied.
-// Returns an error if the storage lookup fails.
-func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (string, error) {
+// authorization chain that the user must (re-)authenticate with for this session.
+// It walks the provided chain — the effective, possibly filtered, ordered set of
+// upstream names for this authorization (see computeChain) — rather than the raw
+// configured list, so a leg the filter dropped is never prompted for. Returns
+// empty string if all legs in the chain are satisfied, or an error if the storage
+// lookup fails.
+//
+// A leg is satisfied when it has a stored token that is live (or asserts no
+// expiry). A present-but-expired token is NOT treated as satisfied by presence
+// alone: the leg is refreshed transparently (mirroring upstreamtoken
+// InProcessService.GetAllUpstreamCredentials) and only counts as satisfied if the refresh
+// succeeds. If refresh is impossible or fails, the leg is reported as missing so
+// the user is re-prompted up front, rather than the stale token surfacing as a
+// runtime auth error later at MCP-request token-swap time.
+func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, chain []string) (string, error) {
 	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}
-	for _, u := range h.upstreams {
-		if _, ok := stored[u.Name]; !ok {
-			return u.Name, nil
+	for _, name := range chain {
+		tokens, ok := stored[name]
+		if !ok || tokens == nil {
+			// No token stored for this leg — prompt.
+			return name, nil
+		}
+		// A live token (or one with no asserted expiry) satisfies the leg.
+		if tokens.ExpiresAt.IsZero() || !tokens.IsExpired(time.Now()) {
+			continue
+		}
+		// Expired — attempt a transparent refresh; prompt now if it can't be done.
+		if !h.refreshExpiredLeg(ctx, sessionID, name, tokens) {
+			return name, nil
 		}
 	}
 	return "", nil
+}
+
+// computeChain returns the ordered, effective set of upstream names this
+// authorization must walk. The first configured upstream always leads the chain
+// and is never filtered out. When no filter is configured, the chain is the full
+// configured list in order (the behavior before the filter hook existed). When a
+// filter is configured, it is consulted with the names of the non-first upstreams
+// (in configured order) and the chain becomes the first upstream plus the kept
+// subset. Configured order is preserved and any returned name that is not a
+// non-first configured upstream is ignored, so the filter can only narrow — never
+// reorder or extend — the chain.
+//
+// A filter error is returned to the caller so the authorization fails cleanly; it
+// never silently falls back to walking every upstream.
+//
+// principal is the first upstream's resolved identity, passed through to the filter
+// (see UpstreamFilter); it is unused when no filter is configured.
+func (h *Handler) computeChain(ctx context.Context, principal FilterPrincipal) ([]string, error) {
+	chain := []string{h.upstreams[0].Name}
+	rest := h.upstreams[1:]
+	if len(rest) == 0 {
+		return chain, nil
+	}
+
+	restNames := make([]string, len(rest))
+	for i := range rest {
+		restNames[i] = rest[i].Name
+	}
+
+	if h.filter == nil {
+		return append(chain, restNames...), nil
+	}
+
+	keep, err := h.filter.FilterUpstreams(ctx, principal, restNames)
+	if err != nil {
+		return nil, fmt.Errorf("upstream filter failed: %w", err)
+	}
+
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, name := range keep {
+		keepSet[name] = struct{}{}
+	}
+	// Iterate configured order (not the filter's return order) so the chain
+	// preserves the operator-defined sequence and silently drops any name the
+	// filter returned that is not a non-first configured upstream.
+	for i := range rest {
+		if _, ok := keepSet[rest[i].Name]; ok {
+			chain = append(chain, rest[i].Name)
+		}
+	}
+	return chain, nil
+}
+
+// resolveChain returns the effective upstream chain for the leg that just
+// completed. A true first leg — identified by an as-yet-unresolved user
+// (pending.ResolvedUserID == "") — computes the chain now, consulting the optional
+// filter with this leg's request context. A subsequent leg reuses the chain the
+// first leg carried forward in the pending authorization, after validating it
+// against the configured upstreams.
+//
+// A subsequent leg whose pending carries no chain (e.g. one written before the
+// ChainUpstreams field existed, a possible rolling-upgrade window on a persistent
+// backend) is a hard error rather than a silent recompute: the filter's contract
+// is to run once, with the first leg's context, so recomputing here with a later
+// leg's context could narrow the chain against the wrong request. Failing closed
+// forces a fresh authorization that starts cleanly at the first leg.
+//
+// principal is the identity resolved by the leg that just completed; it is passed
+// to computeChain (and thus the filter) only on the first leg, where it reflects
+// the identity provider. Subsequent legs reuse the stored chain and ignore it.
+func (h *Handler) resolveChain(
+	ctx context.Context,
+	pending *storage.PendingAuthorization,
+	principal FilterPrincipal,
+) ([]string, error) {
+	if pending.ResolvedUserID == "" {
+		// True first leg — compute with this (the first) leg's request context.
+		return h.computeChain(ctx, principal)
+	}
+	if len(pending.ChainUpstreams) == 0 {
+		return nil, fmt.Errorf("subsequent chain leg is missing its computed upstream chain (stale pending authorization)")
+	}
+	if err := h.validateChain(pending.ChainUpstreams); err != nil {
+		return nil, fmt.Errorf("stored upstream chain is invalid: %w", err)
+	}
+	return pending.ChainUpstreams, nil
+}
+
+// validateChain rejects an upstream chain loaded from storage that does not agree
+// with the configured upstreams. A valid chain is a non-empty, in-order,
+// duplicate-free subsequence of the configured upstreams led by the required
+// first upstream. This guards the reuse path against a corrupt or tampered
+// PendingAuthorization row shrinking or reordering an in-flight chain to skip legs
+// — which would also silently disable the cross-leg identity check, since
+// verifyChainIdentity is a no-op for a single-element chain.
+//
+// Note: this validates that each name is currently configured, not that the name
+// still points at the same provider it did when the chain was computed. A name
+// rebound to a different IdP mid-flight (a rolling config change) still validates;
+// the frozen subject and the pending TTL bound that exposure.
+func (h *Handler) validateChain(chain []string) error {
+	if len(chain) == 0 {
+		return fmt.Errorf("chain is empty")
+	}
+	if chain[0] != h.upstreams[0].Name {
+		return fmt.Errorf("chain must lead with the first configured upstream %q, got %q",
+			h.upstreams[0].Name, chain[0])
+	}
+	// Walk both, advancing the config cursor past each match. A name that never
+	// matches — unconfigured, out of order, or a duplicate of an already-consumed
+	// entry — is rejected, so the stored chain is a faithful narrowing of the config.
+	ci := 0
+	for _, name := range chain {
+		for ci < len(h.upstreams) && h.upstreams[ci].Name != name {
+			ci++
+		}
+		if ci >= len(h.upstreams) {
+			return fmt.Errorf("chain entry %q is unconfigured, out of order, or duplicated", name)
+		}
+		ci++ // consume the matched upstream so it cannot be reused
+	}
+	return nil
+}
+
+// refreshExpiredLeg attempts to refresh an expired upstream token for one chain
+// leg. It returns true when the leg can be treated as authenticated (refresh
+// succeeded) and false when the user must be re-prompted: no refresher configured,
+// no refresh token on the row, or the refresh itself failed (expired/revoked
+// refresh token, provider error). Mirrors the refresh-then-classify behavior in
+// upstreamtoken.InProcessService.GetAllUpstreamCredentials.
+func (h *Handler) refreshExpiredLeg(
+	ctx context.Context,
+	sessionID, providerName string,
+	expired *storage.UpstreamTokens,
+) bool {
+	if h.refresher == nil || expired.RefreshToken == "" {
+		return false
+	}
+	// RefreshAndStore persists the refreshed token to storage as its side effect;
+	// the token-swap path re-reads it from storage at MCP-request time, so the
+	// returned *UpstreamTokens is intentionally discarded here.
+	if _, err := h.refresher.RefreshAndStore(ctx, sessionID, expired); err != nil {
+		slog.WarnContext(ctx, "upstream token refresh failed during chain evaluation; re-prompting",
+			"session_id", sessionID,
+			"provider", providerName,
+			"error", err,
+		)
+		return false
+	}
+	slog.DebugContext(ctx, "refreshed expired upstream token during chain evaluation",
+		"session_id", sessionID,
+		"provider", providerName,
+	)
+	return true
 }
 
 // upstreamByName returns the upstream provider with the given name.
@@ -135,4 +717,11 @@ func (h *Handler) upstreamByName(name string) (upstream.OAuth2Provider, bool) {
 		}
 	}
 	return nil, false
+}
+
+// issuer returns the authorization-server issuer URL. NewHandler enforces
+// that h.config and h.config.Config are non-nil, so this method does not
+// re-validate.
+func (h *Handler) issuer() string {
+	return h.config.AccessTokenIssuer
 }

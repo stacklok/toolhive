@@ -4,8 +4,10 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,15 +19,15 @@ import (
 
 // newStringCache builds a ValidatingCache[string, string] for tests.
 func newStringCache(
-	load func(string) (string, error),
-	check func(string, string) error,
+	load func(context.Context, string) (string, error),
+	check func(context.Context, string, string) error,
 	evict func(string, string),
 ) *ValidatingCache[string, string] {
 	return New(1000, load, check, evict)
 }
 
 // alwaysAliveCheck returns a check function that always reports the entry as alive.
-func alwaysAliveCheck(_ string, _ string) error { return nil }
+func alwaysAliveCheck(_ context.Context, _ string, _ string) error { return nil }
 
 // ---------------------------------------------------------------------------
 // Construction invariants
@@ -34,14 +36,14 @@ func alwaysAliveCheck(_ string, _ string) error { return nil }
 func TestValidatingCache_New_PanicsOnZeroCapacity(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() {
-		New(0, func(_ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
+		New(0, func(_ context.Context, _ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
 	})
 }
 
 func TestValidatingCache_New_PanicsOnNegativeCapacity(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() {
-		New(-1, func(_ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
+		New(-1, func(_ context.Context, _ string) (string, error) { return "", nil }, alwaysAliveCheck, nil)
 	})
 }
 
@@ -55,7 +57,7 @@ func TestValidatingCache_New_PanicsOnNilLoad(t *testing.T) {
 func TestValidatingCache_New_PanicsOnNilCheck(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() {
-		New(1, func(_ string) (string, error) { return "", nil }, nil, nil)
+		New(1, func(_ context.Context, _ string) (string, error) { return "", nil }, nil, nil)
 	})
 }
 
@@ -68,7 +70,7 @@ func TestValidatingCache_CacheMiss_CallsLoad(t *testing.T) {
 
 	loaded := false
 	c := newStringCache(
-		func(key string) (string, error) {
+		func(_ context.Context, key string) (string, error) {
 			loaded = true
 			return "value-" + key, nil
 		},
@@ -76,7 +78,7 @@ func TestValidatingCache_CacheMiss_CallsLoad(t *testing.T) {
 		nil,
 	)
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "value-k", v)
 	assert.True(t, loaded)
@@ -87,7 +89,7 @@ func TestValidatingCache_CacheMiss_StoresResult(t *testing.T) {
 
 	calls := 0
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			calls++
 			return "v", nil
 		},
@@ -95,8 +97,8 @@ func TestValidatingCache_CacheMiss_StoresResult(t *testing.T) {
 		nil,
 	)
 
-	c.Get("k")
-	c.Get("k")
+	c.Get(t.Context(), "k")
+	c.Get(t.Context(), "k")
 	assert.Equal(t, 1, calls, "load should be called only once after caching")
 }
 
@@ -105,12 +107,12 @@ func TestValidatingCache_CacheMiss_LoadError_ReturnsNotFound(t *testing.T) {
 
 	loadErr := errors.New("not found")
 	c := newStringCache(
-		func(_ string) (string, error) { return "", loadErr },
+		func(_ context.Context, _ string) (string, error) { return "", loadErr },
 		alwaysAliveCheck,
 		nil,
 	)
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	assert.False(t, ok)
 	assert.Empty(t, v)
 }
@@ -123,14 +125,14 @@ func TestValidatingCache_CacheHit_AliveCheck_ReturnsCached(t *testing.T) {
 	t.Parallel()
 
 	c := newStringCache(
-		func(key string) (string, error) { return "loaded-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "loaded-" + key, nil },
 		alwaysAliveCheck,
 		nil,
 	)
-	c.Get("k") // prime the cache
+	c.Get(t.Context(), "k") // prime the cache
 
 	// Second Get should return cached value without calling load again.
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "loaded-k", v)
 }
@@ -141,18 +143,18 @@ func TestValidatingCache_CacheHit_Expired_EvictsAndCallsOnEvict(t *testing.T) {
 	evictedKey := ""
 	evictedVal := ""
 	c := newStringCache(
-		func(_ string) (string, error) { return "v", nil },
-		func(_ string, _ string) error { return ErrExpired },
+		func(_ context.Context, _ string) (string, error) { return "v", nil },
+		func(_ context.Context, _ string, _ string) error { return ErrExpired },
 		func(key, val string) {
 			evictedKey = key
 			evictedVal = val
 		},
 	)
-	c.Get("k") // prime the cache
+	c.Get(t.Context(), "k") // prime the cache
 
 	// With singleflight wrapping the full Get, an expired hit evicts the entry
 	// and falls through to load within the same operation, returning the fresh value.
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "v", v)
 	assert.Equal(t, "k", evictedKey)
@@ -165,11 +167,11 @@ func TestValidatingCache_CacheHit_Expired_EntryRemovedFromCache(t *testing.T) {
 	calls := 0
 	expired := false
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			calls++
 			return "v", nil
 		},
-		func(_ string, _ string) error {
+		func(_ context.Context, _ string, _ string) error {
 			if expired {
 				return ErrExpired
 			}
@@ -178,11 +180,11 @@ func TestValidatingCache_CacheHit_Expired_EntryRemovedFromCache(t *testing.T) {
 		nil,
 	)
 
-	c.Get("k") // prime the cache; check returns alive
+	c.Get(t.Context(), "k") // prime the cache; check returns alive
 	expired = true
-	c.Get("k") // check returns ErrExpired → evict
+	c.Get(t.Context(), "k") // check returns ErrExpired → evict
 	expired = false
-	c.Get("k") // cache miss again → load called
+	c.Get(t.Context(), "k") // cache miss again → load called
 
 	assert.Equal(t, 2, calls, "load should be called twice: initial + after eviction")
 }
@@ -191,13 +193,13 @@ func TestValidatingCache_CacheHit_TransientCheckError_ReturnsCached(t *testing.T
 	t.Parallel()
 
 	c := newStringCache(
-		func(_ string) (string, error) { return "v", nil },
-		func(_ string, _ string) error { return errors.New("transient storage error") },
+		func(_ context.Context, _ string) (string, error) { return "v", nil },
+		func(_ context.Context, _ string, _ string) error { return errors.New("transient storage error") },
 		nil,
 	)
-	c.Get("k") // prime the cache
+	c.Get(t.Context(), "k") // prime the cache
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "v", v, "transient check error should keep cached value")
 }
@@ -210,14 +212,14 @@ func TestValidatingCache_Set_StoresValue(t *testing.T) {
 	t.Parallel()
 
 	c := newStringCache(
-		func(_ string) (string, error) { return "", errors.New("should not call load") },
+		func(_ context.Context, _ string) (string, error) { return "", errors.New("should not call load") },
 		alwaysAliveCheck,
 		nil,
 	)
 
 	c.Set("k", "v")
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "v", v)
 }
@@ -226,14 +228,14 @@ func TestValidatingCache_Set_UpdatesExisting(t *testing.T) {
 	t.Parallel()
 
 	c := newStringCache(
-		func(_ string) (string, error) { return "loaded", nil },
+		func(_ context.Context, _ string) (string, error) { return "loaded", nil },
 		alwaysAliveCheck,
 		nil,
 	)
-	c.Get("k") // prime with "loaded"
+	c.Get(t.Context(), "k") // prime with "loaded"
 	c.Set("k", "updated")
 
-	v, ok := c.Get("k")
+	v, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, "updated", v)
 }
@@ -250,7 +252,7 @@ func TestValidatingCache_LRU_EvictsLeastRecentlyUsed(t *testing.T) {
 
 	// capacity=2: inserting a third entry evicts the LRU.
 	c := New(2,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			mu.Lock()
@@ -259,18 +261,18 @@ func TestValidatingCache_LRU_EvictsLeastRecentlyUsed(t *testing.T) {
 		},
 	)
 
-	c.Get("a") // a=MRU
-	c.Get("b") // b=MRU, a=LRU
-	c.Get("c") // c=MRU, b, a=LRU → evicts a
+	c.Get(t.Context(), "a") // a=MRU
+	c.Get(t.Context(), "b") // b=MRU, a=LRU
+	c.Get(t.Context(), "c") // c=MRU, b, a=LRU → evicts a
 
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, []string{"a"}, evictedKeys, "LRU entry (a) should be evicted")
 
 	// a is evicted; b and c remain.
-	_, bPresent := c.Get("b")
+	_, bPresent := c.Get(t.Context(), "b")
 	assert.True(t, bPresent)
-	_, cPresent := c.Get("c")
+	_, cPresent := c.Get(t.Context(), "c")
 	assert.True(t, cPresent)
 }
 
@@ -281,7 +283,7 @@ func TestValidatingCache_LRU_GetRefreshesMRUPosition(t *testing.T) {
 	var mu sync.Mutex
 
 	c := New(2,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			mu.Lock()
@@ -290,16 +292,16 @@ func TestValidatingCache_LRU_GetRefreshesMRUPosition(t *testing.T) {
 		},
 	)
 
-	c.Get("a") // a loaded (MRU)
-	c.Get("b") // b loaded (MRU), a=LRU
-	c.Get("a") // a accessed → a becomes MRU, b=LRU
-	c.Get("c") // c loaded → evicts b (LRU), not a
+	c.Get(t.Context(), "a") // a loaded (MRU)
+	c.Get(t.Context(), "b") // b loaded (MRU), a=LRU
+	c.Get(t.Context(), "a") // a accessed → a becomes MRU, b=LRU
+	c.Get(t.Context(), "c") // c loaded → evicts b (LRU), not a
 
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, []string{"b"}, evictedKeys, "b should be evicted (LRU after a was re-accessed)")
 
-	_, aPresent := c.Get("a")
+	_, aPresent := c.Get(t.Context(), "a")
 	assert.True(t, aPresent, "a should still be in cache")
 }
 
@@ -310,7 +312,7 @@ func TestValidatingCache_LRU_SetRefreshesMRUPosition(t *testing.T) {
 	var mu sync.Mutex
 
 	c := New(2,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			mu.Lock()
@@ -319,10 +321,10 @@ func TestValidatingCache_LRU_SetRefreshesMRUPosition(t *testing.T) {
 		},
 	)
 
-	c.Get("a")      // a=MRU
-	c.Get("b")      // b=MRU, a=LRU
-	c.Set("a", "x") // Set refreshes a to MRU; b becomes LRU
-	c.Get("c")      // c loaded → evicts b
+	c.Get(t.Context(), "a") // a=MRU
+	c.Get(t.Context(), "b") // b=MRU, a=LRU
+	c.Set("a", "x")         // Set refreshes a to MRU; b becomes LRU
+	c.Get(t.Context(), "c") // c loaded → evicts b
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -336,7 +338,7 @@ func TestValidatingCache_LRU_CapacityOne(t *testing.T) {
 	var mu sync.Mutex
 
 	c := New(1,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			mu.Lock()
@@ -345,9 +347,9 @@ func TestValidatingCache_LRU_CapacityOne(t *testing.T) {
 		},
 	)
 
-	c.Get("a")
-	c.Get("b") // evicts a
-	c.Get("c") // evicts b
+	c.Get(t.Context(), "a")
+	c.Get(t.Context(), "b") // evicts a
+	c.Get(t.Context(), "c") // evicts b
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -359,7 +361,7 @@ func TestValidatingCache_LRU_LargeCapacityNoEviction(t *testing.T) {
 
 	const n = 100
 	c := New(n+1,
-		func(key string) (string, error) { return "val-" + key, nil },
+		func(_ context.Context, key string) (string, error) { return "val-" + key, nil },
 		alwaysAliveCheck,
 		func(key, _ string) {
 			t.Errorf("unexpected eviction for key %s", key)
@@ -367,7 +369,7 @@ func TestValidatingCache_LRU_LargeCapacityNoEviction(t *testing.T) {
 	)
 
 	for i := range n {
-		c.Get(fmt.Sprintf("k%d", i))
+		c.Get(t.Context(), fmt.Sprintf("k%d", i))
 	}
 	assert.Equal(t, n, c.Len(), "no entries should be evicted when under capacity")
 }
@@ -376,15 +378,15 @@ func TestValidatingCache_LRU_Len(t *testing.T) {
 	t.Parallel()
 
 	c := New(5,
-		func(_ string) (string, error) { return "v", nil },
+		func(_ context.Context, _ string) (string, error) { return "v", nil },
 		alwaysAliveCheck,
 		nil,
 	)
 
 	assert.Equal(t, 0, c.Len())
-	c.Get("a")
+	c.Get(t.Context(), "a")
 	assert.Equal(t, 1, c.Len())
-	c.Get("b")
+	c.Get(t.Context(), "b")
 	assert.Equal(t, 2, c.Len())
 }
 
@@ -407,7 +409,7 @@ func TestValidatingCache_Singleflight_SetBeforeLoadReturns(t *testing.T) {
 	allowReturn := make(chan struct{})
 
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			close(loadReached) // signal: load is now in-flight
 			<-allowReturn      // block until test injects the concurrent Set
 			loadCount.Add(1)
@@ -425,7 +427,7 @@ func TestValidatingCache_Singleflight_SetBeforeLoadReturns(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		result, ok = c.Get("k")
+		result, ok = c.Get(context.Background(), "k")
 	}()
 
 	// Wait until load is definitely executing, then write via Set so that
@@ -468,7 +470,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentLivenessChecks(t *te
 	var expired atomic.Bool
 
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			// Wait until every goroutine has signalled it is about to call Get.
 			// allStarted.Done() is called before Get(), so this unblocks once
 			// the goroutine scheduler has scheduled all callers — not necessarily
@@ -481,7 +483,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentLivenessChecks(t *te
 			expired.Store(false) // refresh: late arrivals see a live entry
 			return "reloaded", nil
 		},
-		func(_ string, _ string) error {
+		func(_ context.Context, _ string, _ string) error {
 			if expired.Load() {
 				return ErrExpired
 			}
@@ -492,7 +494,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentLivenessChecks(t *te
 
 	// Prime the cache with a live entry. allStarted has count 0 here, so
 	// Wait() inside load returns immediately — no deadlock.
-	_, ok := c.Get("k")
+	_, ok := c.Get(t.Context(), "k")
 	require.True(t, ok)
 	assert.Equal(t, int32(1), loadCount.Load())
 
@@ -507,7 +509,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentLivenessChecks(t *te
 		go func(i int) {
 			defer wg.Done()
 			allStarted.Done() // signal: about to call Get
-			results[i], oks[i] = c.Get("k")
+			results[i], oks[i] = c.Get(context.Background(), "k")
 		}(i)
 	}
 
@@ -550,7 +552,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 	allStarted.Add(goroutines)
 
 	c := newStringCache(
-		func(_ string) (string, error) {
+		func(_ context.Context, _ string) (string, error) {
 			// Block until all goroutines have signalled they are about to call
 			// Get. While blocked the cache entry has not been stored, so
 			// every goroutine that reaches the miss path is deduplicated via
@@ -569,7 +571,7 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 		go func(i int) {
 			defer wg.Done()
 			allStarted.Done() // signal: about to call Get
-			results[i], oks[i] = c.Get("k")
+			results[i], oks[i] = c.Get(context.Background(), "k")
 		}(i)
 	}
 
@@ -580,4 +582,447 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 		assert.True(t, oks[i], "all goroutines should get ok=true")
 		assert.Equal(t, "v", results[i])
 	}
+}
+
+// TestRemove verifies Remove evicts the entry, invokes onEvict exactly once,
+// and reports that an entry was present.
+func TestRemove(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "loaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+	c.Set("gone", "v1")
+	c.Set("kept", "v2")
+
+	assert.True(t, c.Remove("gone"), "Remove should report the entry was present")
+	assert.Equal(t, []string{"gone"}, evicted, "onEvict should fire once for the removed entry")
+	assert.Equal(t, 1, c.Len(), "only the untouched entry should remain")
+
+	// The surviving entry is still a cache hit (not reloaded).
+	v, ok := c.Get(context.Background(), "kept")
+	require.True(t, ok)
+	assert.Equal(t, "v2", v, "kept should be served from cache, not reloaded")
+}
+
+// TestRemove_AbsentKey pins that removing a key the cache never held is a
+// no-op: it reports false and fires no eviction. Callers on a termination path
+// rely on this to call Remove unconditionally.
+func TestRemove_AbsentKey(t *testing.T) {
+	t.Parallel()
+
+	evictCount := 0
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return key, nil },
+		alwaysAliveCheck,
+		func(string, string) { evictCount++ },
+	)
+	c.Set("present", "v")
+
+	assert.False(t, c.Remove("absent"))
+	assert.Zero(t, evictCount, "no eviction for a key that was never cached")
+	assert.Equal(t, 1, c.Len())
+}
+
+// TestRemove_Idempotent pins that a repeated Remove for the same key is safe:
+// the second call reports false and does not fire onEvict again. Termination
+// can be retried (or raced), so double removal must not double-close.
+func TestRemove_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	evictCount := 0
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return key, nil },
+		alwaysAliveCheck,
+		func(string, string) { evictCount++ },
+	)
+	c.Set("k", "v")
+
+	assert.True(t, c.Remove("k"))
+	assert.False(t, c.Remove("k"), "second Remove must report the entry was already gone")
+	assert.Equal(t, 1, evictCount, "onEvict must fire exactly once across both calls")
+	assert.Zero(t, c.Len())
+}
+
+// TestRemove_SlowOnEvictDoesNotBlockOtherKeys pins that Remove runs onEvict off
+// the cache lock, mirroring RemoveMatching: a slow teardown of one entry must
+// not block Set/Get on unrelated keys.
+func TestRemove_SlowOnEvictDoesNotBlockOtherKeys(t *testing.T) {
+	t.Parallel()
+
+	const slowKey, otherKey = 1, 2
+	closing := make(chan struct{}) // closed when the slow onEvict starts
+	release := make(chan struct{}) // test releases the slow onEvict
+
+	c := New[int, int](
+		1000,
+		func(_ context.Context, k int) (int, error) { return k, nil },
+		func(context.Context, int, int) error { return nil },
+		func(k, _ int) {
+			if k == slowKey {
+				close(closing)
+				<-release
+			}
+		},
+	)
+	c.Set(slowKey, 1)
+	c.Set(otherKey, 1)
+
+	removeDone := make(chan struct{})
+	go func() {
+		defer close(removeDone)
+		c.Remove(slowKey)
+	}()
+
+	select {
+	case <-closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for slow onEvict to start")
+	}
+
+	// The cache lock must be free while onEvict is in flight.
+	setDone := make(chan struct{})
+	go func() {
+		defer close(setDone)
+		c.Set(otherKey, 2)
+	}()
+	select {
+	case <-setDone:
+	case <-time.After(5 * time.Second):
+		close(release) // unblock so the test can exit cleanly before failing
+		t.Fatal("Set blocked while onEvict of another key was in progress: onEvict is holding the cache lock")
+	}
+
+	close(release)
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Remove to finish")
+	}
+}
+
+// TestRemoveMatching verifies that RemoveMatching evicts exactly the entries the
+// predicate selects, fires onEvict for each, returns the count, and leaves
+// non-matching entries in place.
+func TestRemoveMatching(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "loaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+
+	// "drop-*" entries should be removed; "keep-*" entries retained.
+	c.Set("drop-a", "va")
+	c.Set("keep-b", "vb")
+	c.Set("drop-c", "vc")
+	c.Set("keep-d", "vd")
+
+	removed := c.RemoveMatching(func(key, _ string) bool {
+		return strings.HasPrefix(key, "drop-")
+	})
+
+	assert.Equal(t, 2, removed, "two drop-* entries should be removed")
+	assert.ElementsMatch(t, []string{"drop-a", "drop-c"}, evicted,
+		"onEvict should fire once per removed entry")
+	assert.Equal(t, 2, c.Len(), "only keep-* entries should remain")
+
+	// Surviving entries are still cache hits (no reload).
+	for _, key := range []string{"keep-b", "keep-d"} {
+		v, ok := c.Get(context.Background(), key)
+		require.True(t, ok)
+		assert.NotEqual(t, "loaded-"+key, v, "%s should be served from cache, not reloaded", key)
+	}
+}
+
+// TestRemoveMatching_NoMatch verifies RemoveMatching is a no-op (and fires no
+// eviction) when the predicate matches nothing.
+func TestRemoveMatching_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	evictCount := 0
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return key, nil },
+		alwaysAliveCheck,
+		func(string, string) { evictCount++ },
+	)
+	c.Set("a", "va")
+	c.Set("b", "vb")
+
+	removed := c.RemoveMatching(func(string, string) bool { return false })
+
+	assert.Zero(t, removed)
+	assert.Zero(t, evictCount)
+	assert.Equal(t, 2, c.Len())
+}
+
+// TestRemoveMatching_SkipsEntryNoLongerMatchingOnRecheck exercises the phase-2
+// re-check guard: a key selected during the snapshot whose predicate verdict
+// flips to false before removal (modeling a concurrent Set that replaced the
+// value with one pred no longer selects) must be left in place and not counted
+// or closed.
+func TestRemoveMatching_SkipsEntryNoLongerMatchingOnRecheck(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "reloaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+	c.Set("flip", "v")
+	c.Set("drop", "v")
+
+	// pred selects each key on its first evaluation (the phase-1 snapshot) but
+	// rejects "flip" on its second (the phase-2 re-check), standing in for a
+	// value concurrently replaced with one pred no longer selects.
+	seen := map[string]int{}
+	pred := func(key, _ string) bool {
+		seen[key]++
+		return key != "flip" || seen[key] < 2
+	}
+
+	removed := c.RemoveMatching(pred)
+
+	assert.Equal(t, 1, removed, "only 'drop' should be removed; 'flip' is skipped on re-check")
+	assert.Equal(t, []string{"drop"}, evicted, "onEvict must fire only for 'drop'")
+
+	v, ok := c.Get(context.Background(), "flip")
+	require.True(t, ok)
+	assert.Equal(t, "v", v, "'flip' must remain the cached value, not evicted or reloaded")
+}
+
+// TestRemoveMatching_ConcurrentWithSetAndGet stresses RemoveMatching against
+// concurrent Set/Get on overlapping keys. Run under -race (task test), it locks
+// in the no-deadlock / no-panic / no-double-panic guarantees of the split-lock
+// rework; eviction counts are nondeterministic and deliberately not asserted.
+func TestRemoveMatching_ConcurrentWithSetAndGet(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	evictions := 0
+	c := New[int, int](
+		1000,
+		func(_ context.Context, k int) (int, error) { return k, nil },
+		func(context.Context, int, int) error { return nil },
+		func(int, int) { mu.Lock(); evictions++; mu.Unlock() },
+	)
+
+	const iterations = 300
+	const keyspace = 50
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			c.Set(i%keyspace, i)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range iterations / 10 {
+			c.RemoveMatching(func(k, _ int) bool { return k%2 == 0 })
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			c.Get(context.Background(), i%keyspace)
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: RemoveMatching concurrent with Set/Get appears deadlocked")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.GreaterOrEqual(t, evictions, 0) // sanity: onEvict never went negative/panicked
+}
+
+// TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys proves onEvict runs off
+// the cache lock: while RemoveMatching's onEvict for one key is deliberately
+// blocked mid-teardown, a Set on a different key must still complete promptly.
+// If onEvict ran under the cache lock, the Set would block until the slow
+// teardown finished and this test would time out.
+func TestRemoveMatching_SlowOnEvictDoesNotBlockOtherKeys(t *testing.T) {
+	t.Parallel()
+
+	const slowKey, otherKey = 1, 2
+	closing := make(chan struct{}) // closed when the slow onEvict starts
+	release := make(chan struct{}) // test releases the slow onEvict
+
+	c := New[int, int](
+		1000,
+		func(_ context.Context, k int) (int, error) { return k, nil },
+		func(context.Context, int, int) error { return nil },
+		func(k, _ int) {
+			if k == slowKey {
+				close(closing)
+				<-release
+			}
+		},
+	)
+	c.Set(slowKey, 1)
+	c.Set(otherKey, 1)
+
+	removeDone := make(chan struct{})
+	go func() {
+		defer close(removeDone)
+		c.RemoveMatching(func(k, _ int) bool { return k == slowKey })
+	}()
+
+	// Wait until the slow onEvict is in progress (RemoveMatching is past the
+	// cache lock and blocked inside onEvict).
+	select {
+	case <-closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for slow onEvict to start")
+	}
+
+	// The cache lock must be free now: a Set on an unrelated key completes.
+	setDone := make(chan struct{})
+	go func() {
+		defer close(setDone)
+		c.Set(otherKey, 2)
+	}()
+	select {
+	case <-setDone:
+	case <-time.After(5 * time.Second):
+		close(release) // unblock so the test can exit cleanly before failing
+		t.Fatal("Set blocked while onEvict of another key was in progress: onEvict is holding the cache lock")
+	}
+
+	close(release) // let the slow onEvict finish
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for RemoveMatching to finish")
+	}
+}
+
+func TestValidatingCache_Sweep(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		pred        func(k string) bool
+		wantEvicted []string
+	}{
+		{name: "evicts matching entries", pred: func(k string) bool { return k == "b" }, wantEvicted: []string{"b"}},
+		{name: "no match keeps every entry", pred: func(string) bool { return false }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var onEvict []string
+			c := newStringCache(
+				func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+				alwaysAliveCheck,
+				func(k, _ string) { onEvict = append(onEvict, k) },
+			)
+			for _, k := range []string{"a", "b", "c"} {
+				c.Set(k, "v-"+k)
+			}
+
+			evicted := c.Sweep(t.Context(), func(_ context.Context, k string, _ string) bool { return tt.pred(k) })
+
+			assert.ElementsMatch(t, tt.wantEvicted, evicted)
+			assert.ElementsMatch(t, tt.wantEvicted, onEvict)
+			assert.Equal(t, 3-len(tt.wantEvicted), c.Len())
+		})
+	}
+}
+
+// TestValidatingCache_Sweep_PredRunsOutsideLock checks that pred may use the
+// cache: a Set from inside pred would deadlock if Sweep held the cache lock.
+func TestValidatingCache_Sweep_PredRunsOutsideLock(t *testing.T) {
+	t.Parallel()
+
+	c := newStringCache(
+		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+		alwaysAliveCheck,
+		nil,
+	)
+	c.Set("a", "v-a")
+
+	done := make(chan []string)
+	go func() {
+		done <- c.Sweep(t.Context(), func(_ context.Context, k string, _ string) bool {
+			c.Set("other", "v-other")
+			return k == "a"
+		})
+	}()
+	select {
+	case evicted := <-done:
+		assert.Equal(t, []string{"a"}, evicted)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sweep deadlocked: pred ran with the cache lock held")
+	}
+	_, ok := c.Get(t.Context(), "other")
+	assert.True(t, ok)
+}
+
+// TestValidatingCache_Sweep_KeepsConcurrentlyReplacedEntry checks the re-check
+// under the lock: an entry replaced by a concurrent Set after pred selected the
+// old value is neither evicted nor reported.
+func TestValidatingCache_Sweep_KeepsConcurrentlyReplacedEntry(t *testing.T) {
+	t.Parallel()
+
+	var onEvict []string
+	c := newStringCache(
+		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+		alwaysAliveCheck,
+		func(k, _ string) { onEvict = append(onEvict, k) },
+	)
+	c.Set("a", "v-a")
+
+	evicted := c.Sweep(t.Context(), func(_ context.Context, k string, _ string) bool {
+		c.Set(k, "v-a-replaced") // lands between pred and the eviction
+		return true
+	})
+
+	assert.Empty(t, evicted)
+	assert.Empty(t, onEvict)
+	v, ok := c.Get(t.Context(), "a")
+	require.True(t, ok)
+	assert.Equal(t, "v-a-replaced", v)
+}
+
+// TestValidatingCache_Sweep_StopsWhenContextEnds checks that Sweep stops
+// calling pred once ctx ends and leaves the remaining entries in place.
+func TestValidatingCache_Sweep_StopsWhenContextEnds(t *testing.T) {
+	t.Parallel()
+
+	c := newStringCache(
+		func(_ context.Context, k string) (string, error) { return "v-" + k, nil },
+		alwaysAliveCheck,
+		nil,
+	)
+	for _, k := range []string{"a", "b", "c"} {
+		c.Set(k, "v-"+k)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var calls int
+	evicted := c.Sweep(ctx, func(context.Context, string, string) bool {
+		calls++
+		cancel()
+		return true
+	})
+
+	assert.Equal(t, 1, calls, "pred must not run after ctx ends")
+	assert.Len(t, evicted, 1)
+	assert.Equal(t, 2, c.Len())
 }

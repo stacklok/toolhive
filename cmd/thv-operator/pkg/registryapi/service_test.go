@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestBuildRegistryAPIService(t *testing.T) {
@@ -20,12 +20,12 @@ func TestBuildRegistryAPIService(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		mcpRegistry    *mcpv1alpha1.MCPRegistry
+		mcpRegistry    *mcpv1beta1.MCPRegistry
 		validateResult func(*testing.T, *corev1.Service)
 	}{
 		{
 			name: "basic service creation",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+			mcpRegistry: &mcpv1beta1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry",
 					Namespace: "test-namespace",

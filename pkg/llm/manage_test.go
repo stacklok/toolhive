@@ -1,0 +1,524 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package llm
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+	"go.yaml.in/yaml/v3"
+
+	"github.com/stacklok/toolhive/pkg/secrets"
+	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
+)
+
+// ── SetFields ────────────────────────────────────────────────────────────────
+
+func TestConfig_SetFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		base    Config
+		opts    SetOptions
+		want    Config
+		wantErr bool
+	}{
+		{
+			name: "sets all fields",
+			opts: SetOptions{
+				GatewayURL:   "https://gw.example.com",
+				Issuer:       "https://auth.example.com",
+				ClientID:     "client1",
+				Audience:     "aud1",
+				ProxyPort:    9000,
+				CallbackPort: 9001,
+			},
+			want: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC: OIDCConfig{
+					Issuer:       "https://auth.example.com",
+					ClientID:     "client1",
+					Audience:     "aud1",
+					CallbackPort: 9001,
+				},
+				Proxy: ProxyConfig{ListenPort: 9000},
+			},
+		},
+		{
+			name: "zero options leave existing fields untouched",
+			base: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			opts: SetOptions{},
+			want: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+		},
+		{
+			name: "partial config runs partial validation — valid partial accepted",
+			opts: SetOptions{GatewayURL: "https://gw.example.com"},
+			want: Config{GatewayURL: "https://gw.example.com"},
+		},
+		{
+			name:    "partial config runs partial validation — HTTP URL rejected",
+			opts:    SetOptions{GatewayURL: "http://gw.example.com"},
+			wantErr: true,
+		},
+		{
+			name: "full config runs full validation — valid config accepted",
+			opts: SetOptions{
+				GatewayURL: "https://gw.example.com",
+				Issuer:     "https://auth.example.com",
+				ClientID:   "client1",
+			},
+			want: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+		},
+		{
+			name:    "full config runs full validation — invalid issuer rejected",
+			opts:    SetOptions{GatewayURL: "https://gw.example.com", Issuer: "not-a-url", ClientID: "c"},
+			wantErr: true,
+		},
+		{
+			name: "out-of-range proxy port rejected during partial validation",
+			opts: SetOptions{
+				GatewayURL: "https://gw.example.com",
+				ProxyPort:  80,
+			},
+			wantErr: true,
+		},
+		{
+			name: "TLSSkipVerify pointer true sets field",
+			opts: SetOptions{TLSSkipVerify: boolPtr(true)},
+			want: Config{TLSSkipVerify: true},
+		},
+		{
+			name: "TLSSkipVerify pointer false clears field",
+			base: Config{
+				GatewayURL:    "https://gw.example.com",
+				TLSSkipVerify: true,
+			},
+			opts: SetOptions{TLSSkipVerify: boolPtr(false)},
+			want: Config{GatewayURL: "https://gw.example.com", TLSSkipVerify: false},
+		},
+		{
+			name: "nil TLSSkipVerify pointer leaves existing value unchanged",
+			base: Config{
+				GatewayURL:    "https://gw.example.com",
+				TLSSkipVerify: true,
+			},
+			opts: SetOptions{},
+			want: Config{GatewayURL: "https://gw.example.com", TLSSkipVerify: true},
+		},
+		{
+			name: "ShortPromptCache pointer true sets field",
+			opts: SetOptions{ShortPromptCache: boolPtr(true)},
+			want: Config{ShortPromptCache: true},
+		},
+		{
+			name: "ShortPromptCache pointer false clears field",
+			base: Config{ShortPromptCache: true},
+			opts: SetOptions{ShortPromptCache: boolPtr(false)},
+			want: Config{},
+		},
+		{
+			name: "nil ShortPromptCache pointer leaves existing value unchanged",
+			base: Config{ShortPromptCache: true},
+			opts: SetOptions{},
+			want: Config{ShortPromptCache: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := tt.base
+			err := cfg.SetFields(tt.opts)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetFields() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				return
+			}
+			if cfg.GatewayURL != tt.want.GatewayURL {
+				t.Errorf("GatewayURL = %q, want %q", cfg.GatewayURL, tt.want.GatewayURL)
+			}
+			if cfg.OIDC.Issuer != tt.want.OIDC.Issuer {
+				t.Errorf("OIDC.Issuer = %q, want %q", cfg.OIDC.Issuer, tt.want.OIDC.Issuer)
+			}
+			if cfg.OIDC.ClientID != tt.want.OIDC.ClientID {
+				t.Errorf("OIDC.ClientID = %q, want %q", cfg.OIDC.ClientID, tt.want.OIDC.ClientID)
+			}
+			if cfg.OIDC.Audience != tt.want.OIDC.Audience {
+				t.Errorf("OIDC.Audience = %q, want %q", cfg.OIDC.Audience, tt.want.OIDC.Audience)
+			}
+			if cfg.Proxy.ListenPort != tt.want.Proxy.ListenPort {
+				t.Errorf("Proxy.ListenPort = %d, want %d", cfg.Proxy.ListenPort, tt.want.Proxy.ListenPort)
+			}
+			if cfg.OIDC.CallbackPort != tt.want.OIDC.CallbackPort {
+				t.Errorf("OIDC.CallbackPort = %d, want %d", cfg.OIDC.CallbackPort, tt.want.OIDC.CallbackPort)
+			}
+			if cfg.TLSSkipVerify != tt.want.TLSSkipVerify {
+				t.Errorf("TLSSkipVerify = %v, want %v", cfg.TLSSkipVerify, tt.want.TLSSkipVerify)
+			}
+			if cfg.ShortPromptCache != tt.want.ShortPromptCache {
+				t.Errorf("ShortPromptCache = %v, want %v", cfg.ShortPromptCache, tt.want.ShortPromptCache)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// ── SetFields (Bedrock) ──────────────────────────────────────────────────────
+
+func TestConfig_SetFields_Bedrock(t *testing.T) {
+	t.Parallel()
+
+	base := func() Config {
+		return Config{
+			GatewayURL: "https://gw.example.com",
+			OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "c"},
+		}
+	}
+
+	t.Run("compat, enable1M, and models are set and persisted", func(t *testing.T) {
+		t.Parallel()
+		cfg := base()
+		require.NoError(t, cfg.SetFields(SetOptions{
+			BedrockCompat: boolPtr(true),
+			Enable1M:      boolPtr(true),
+			Models:        []string{"us.anthropic.claude-opus-x"},
+		}))
+		assert.True(t, cfg.Bedrock.Compat)
+		assert.True(t, cfg.Bedrock.Enable1M)
+		// Models is persisted at the top level (single source of truth), not under Bedrock.
+		assert.Equal(t, []string{"us.anthropic.claude-opus-x"}, cfg.Models)
+	})
+
+	t.Run("nil pointers leave existing values unchanged", func(t *testing.T) {
+		t.Parallel()
+		cfg := base()
+		cfg.Bedrock = BedrockConfig{Compat: true, Enable1M: true}
+		cfg.Models = []string{"m"}
+		require.NoError(t, cfg.SetFields(SetOptions{}))
+		assert.True(t, cfg.Bedrock.Compat)
+		assert.True(t, cfg.Bedrock.Enable1M)
+		assert.Equal(t, []string{"m"}, cfg.Models)
+	})
+
+	t.Run("false pointer clears compat", func(t *testing.T) {
+		t.Parallel()
+		cfg := base()
+		cfg.Bedrock.Compat = true
+		require.NoError(t, cfg.SetFields(SetOptions{BedrockCompat: boolPtr(false)}))
+		assert.False(t, cfg.Bedrock.Compat)
+	})
+}
+
+// ── DeleteCachedTokens ───────────────────────────────────────────────────────
+
+func TestDeleteCachedTokens(t *testing.T) {
+	t.Parallel()
+
+	// llmScopeKey returns the fully-scoped key for an LLM secret, matching the
+	// __thv_llm_ prefix that ScopedProvider adds.
+	llmScopeKey := func(name string) string {
+		return secrets.SystemKeyPrefix + string(secrets.ScopeLLM) + "_" + name
+	}
+
+	tests := []struct {
+		name      string
+		caps      secrets.ProviderCapabilities
+		setupMock func(m *secretsmocks.MockProvider)
+		wantErr   bool
+	}{
+		{
+			name: "no-op when provider cannot list",
+			caps: secrets.ProviderCapabilities{CanRead: true, CanWrite: true, CanDelete: true, CanList: false},
+		},
+		{
+			name: "no-op when provider cannot delete",
+			caps: secrets.ProviderCapabilities{CanRead: true, CanWrite: true, CanDelete: false, CanList: true},
+		},
+		{
+			name: "no-op when no secrets exist under LLM scope",
+			caps: secrets.ProviderCapabilities{CanRead: true, CanWrite: true, CanDelete: true, CanList: true},
+			setupMock: func(m *secretsmocks.MockProvider) {
+				// Provider returns secrets from other scopes — LLM scope is empty.
+				m.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+					{Key: "__thv_registry_token"},
+				}, nil)
+			},
+		},
+		{
+			name: "deletes all secrets under LLM scope",
+			caps: secrets.ProviderCapabilities{CanRead: true, CanWrite: true, CanDelete: true, CanList: true},
+			setupMock: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+					{Key: llmScopeKey("refresh_token")},
+					{Key: llmScopeKey("access_token")},
+					{Key: "__thv_registry_token"}, // different scope, must be ignored
+				}, nil)
+				m.EXPECT().DeleteSecrets(gomock.Any(), gomock.InAnyOrder([]string{
+					llmScopeKey("refresh_token"),
+					llmScopeKey("access_token"),
+				})).Return(nil)
+			},
+		},
+		{
+			name: "propagates ListSecrets error",
+			caps: secrets.ProviderCapabilities{CanRead: true, CanWrite: true, CanDelete: true, CanList: true},
+			setupMock: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().ListSecrets(gomock.Any()).Return(nil, errors.New("storage unavailable"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "propagates DeleteSecrets error",
+			caps: secrets.ProviderCapabilities{CanRead: true, CanWrite: true, CanDelete: true, CanList: true},
+			setupMock: func(m *secretsmocks.MockProvider) {
+				m.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+					{Key: llmScopeKey("refresh_token")},
+				}, nil)
+				m.EXPECT().DeleteSecrets(gomock.Any(), gomock.Any()).Return(errors.New("delete failed"))
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			mock := secretsmocks.NewMockProvider(ctrl)
+			mock.EXPECT().Capabilities().Return(tt.caps).AnyTimes()
+			if tt.setupMock != nil {
+				tt.setupMock(mock)
+			}
+
+			err := DeleteCachedTokens(context.Background(), mock)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("DeleteCachedTokens() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// ── Show ─────────────────────────────────────────────────────────────────────
+
+func TestConfig_Show(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      Config
+		contains []string
+		absent   []string
+	}{
+		{
+			name:     "not-configured message when empty",
+			cfg:      Config{},
+			contains: []string{"not configured"},
+		},
+		{
+			name: "shows required fields when configured",
+			cfg: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			contains: []string{"https://gw.example.com", "https://auth.example.com", "client1"},
+			absent:   []string{"not configured"},
+		},
+		{
+			name: "audience shown only when set",
+			cfg: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1", Audience: "myaud"},
+			},
+			contains: []string{"myaud"},
+		},
+		{
+			name: "audience absent when not set",
+			cfg: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			absent: []string{"Audience"},
+		},
+		{
+			name: "configured tools listed when present",
+			cfg: Config{
+				GatewayURL:      "https://gw.example.com",
+				OIDC:            OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+				ConfiguredTools: []ToolConfig{{Tool: "cursor", Mode: "proxy", ConfigPath: "/home/user/.cursor/config.json"}},
+			},
+			contains: []string{"cursor", "proxy", "/home/user/.cursor/config.json"},
+		},
+		{
+			name: "TLS skip verify shown with warning when set",
+			cfg: Config{
+				GatewayURL:    "https://gw.example.com",
+				TLSSkipVerify: true,
+				OIDC:          OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			contains: []string{"TLS Skip Verify", "true", "WARNING"},
+		},
+		{
+			name: "TLS skip verify not shown when false",
+			cfg: Config{
+				GatewayURL:    "https://gw.example.com",
+				TLSSkipVerify: false,
+				OIDC:          OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			absent: []string{"TLS Skip Verify"},
+		},
+		{
+			name: "short prompt cache is shown as five minutes",
+			cfg: Config{
+				GatewayURL:       "https://gw.example.com",
+				OIDC:             OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+				ShortPromptCache: true,
+			},
+			contains: []string{"Prompt Cache:    5m"},
+		},
+		{
+			name: "default prompt cache is shown as one hour",
+			cfg: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			contains: []string{"Prompt Cache:    1h"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			if err := tt.cfg.Show(&buf); err != nil {
+				t.Fatalf("Show() returned unexpected error: %v", err)
+			}
+			out := buf.String()
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("Show() output missing %q\ngot: %s", want, out)
+				}
+			}
+			for _, absent := range tt.absent {
+				if strings.Contains(out, absent) {
+					t.Errorf("Show() output should not contain %q\ngot: %s", absent, out)
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_JSONOmitsDefaultShortPromptCache(t *testing.T) {
+	t.Parallel()
+
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			t.Parallel()
+			data, err := json.Marshal(Config{ShortPromptCache: enabled})
+			require.NoError(t, err)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(data, &got))
+			if enabled {
+				assert.Equal(t, true, got["short_prompt_cache"])
+			} else {
+				assert.NotContains(t, got, "short_prompt_cache")
+			}
+		})
+	}
+}
+
+func TestConfig_ShortPromptCacheYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	data, err := yaml.Marshal(Config{ShortPromptCache: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "short_prompt_cache: true")
+
+	var got Config
+	require.NoError(t, yaml.Unmarshal(data, &got))
+	assert.True(t, got.ShortPromptCache)
+}
+
+// TestConfig_SetFields_PinsLegacyBedrockRecords checks that changing the
+// persisted Bedrock-compat setting first pins each Bedrock client record that
+// predates ToolConfig.BedrockCompat to the old setting, so the record keeps
+// saying what its setup wrote. The caller's records are not modified.
+func TestConfig_SetFields_PinsLegacyBedrockRecords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		compat   bool
+		set      *bool
+		wantRecs map[string]*bool
+	}{
+		{
+			name: "turning compat on pins legacy records to off",
+			set:  new(true),
+			wantRecs: map[string]*bool{
+				claudeCodeClient: new(false), codexClient: new(true), "cursor": nil,
+			},
+		},
+		{
+			name:   "turning compat off pins legacy records to on",
+			compat: true,
+			set:    new(false),
+			wantRecs: map[string]*bool{
+				claudeCodeClient: new(true), codexClient: new(true), "cursor": nil,
+			},
+		},
+		{
+			name:     "setting the same value leaves legacy records alone",
+			compat:   true,
+			set:      new(true),
+			wantRecs: map[string]*bool{claudeCodeClient: nil, codexClient: new(true), "cursor": nil},
+		},
+		{
+			name:     "leaving compat unset leaves legacy records alone",
+			wantRecs: map[string]*bool{claudeCodeClient: nil, codexClient: new(true), "cursor": nil},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			records := []ToolConfig{
+				{Tool: claudeCodeClient},
+				{Tool: codexClient, BedrockCompat: new(true)},
+				{Tool: "cursor"},
+			}
+			cfg := Config{Bedrock: BedrockConfig{Compat: tt.compat}, ConfiguredTools: records}
+
+			require.NoError(t, cfg.SetFields(SetOptions{BedrockCompat: tt.set}))
+
+			got := make(map[string]*bool, len(cfg.ConfiguredTools))
+			for _, tc := range cfg.ConfiguredTools {
+				got[tc.Tool] = tc.BedrockCompat
+			}
+			assert.Equal(t, tt.wantRecs, got)
+			assert.Nil(t, records[0].BedrockCompat, "the caller's records must not be modified")
+		})
+	}
+}

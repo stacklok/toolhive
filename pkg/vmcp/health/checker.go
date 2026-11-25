@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // healthChecker implements vmcp.HealthChecker using ListCapabilities as the health check.
@@ -59,7 +60,14 @@ func NewHealthChecker(
 // Health determination logic:
 //   - Success with fast response: Backend is healthy (BackendHealthy)
 //   - Success with slow response (> degradedThreshold): Backend is degraded (BackendDegraded)
-//   - Authentication error: Backend is unauthenticated (BackendUnauthenticated)
+//   - Authentication error (HTTP 401/403) AND backend has an outgoing auth strategy
+//     configured: Backend is healthy (BackendHealthy). Health probes deliberately do
+//     not carry user credentials, so the backend's auth challenge proves reachability
+//     and a working auth layer — that is success for probe purposes.
+//   - Authentication error AND backend has no outgoing auth strategy configured
+//     (AuthConfig nil or StrategyTypeUnauthenticated): Backend is unauthenticated
+//     (BackendUnauthenticated). This signals operator misconfiguration — the backend
+//     requires authentication but none was configured on the backend target.
 //   - Timeout or connection error: Backend is unhealthy (BackendUnhealthy)
 //   - Other errors: Backend is unhealthy (BackendUnhealthy)
 //
@@ -92,8 +100,19 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 	responseDuration := time.Since(startTime)
 
 	if err != nil {
-		// Categorize the error to determine health status
-		status := categorizeError(err)
+		// Categorize the error to determine health status. The target's outgoing
+		// auth config is consulted: a 401/403 from a backend with an outgoing auth
+		// strategy is the expected response to a no-credential probe and maps to
+		// BackendHealthy. In that case we return a nil error so the monitor records
+		// this as a successful check and does not open the circuit breaker.
+		status := categorizeError(target, err)
+		if status == vmcp.BackendHealthy {
+			slog.Debug("health check received expected auth challenge — treating as healthy",
+				"backend", target.WorkloadName,
+				"error", err,
+				"duration", responseDuration)
+			return vmcp.BackendHealthy, nil
+		}
 		slog.Debug("health check failed for backend",
 			"backend", target.WorkloadName,
 			"error", err,
@@ -115,10 +134,16 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 	return vmcp.BackendHealthy, nil
 }
 
-// categorizeError determines the appropriate health status based on the error type.
+// categorizeError determines the appropriate health status based on the error type
+// and the backend's outgoing auth configuration.
+//
 // This uses sentinel error checking with errors.Is() for type-safe error categorization.
 // Falls back to string-based detection for backwards compatibility with non-wrapped errors.
-func categorizeError(err error) vmcp.BackendHealthStatus {
+//
+// For auth errors (HTTP 401/403), the target's AuthConfig is consulted to distinguish
+// an expected auth challenge (backend has outgoing auth configured) from a misconfiguration
+// (backend has no outgoing auth strategy). See authErrorStatus for details.
+func categorizeError(target *vmcp.BackendTarget, err error) vmcp.BackendHealthStatus {
 	if err == nil {
 		return vmcp.BackendHealthy
 	}
@@ -126,7 +151,7 @@ func categorizeError(err error) vmcp.BackendHealthStatus {
 	// 1. Type-safe detection: Check for sentinel errors using errors.Is()
 	// BackendClient now wraps all errors with appropriate sentinel errors
 	if errors.Is(err, vmcp.ErrAuthenticationFailed) || errors.Is(err, vmcp.ErrAuthorizationFailed) {
-		return vmcp.BackendUnauthenticated
+		return authErrorStatus(target)
 	}
 
 	if errors.Is(err, vmcp.ErrTimeout) || errors.Is(err, vmcp.ErrCancelled) {
@@ -140,7 +165,7 @@ func categorizeError(err error) vmcp.BackendHealthStatus {
 	// 2. String-based detection: Fallback for backwards compatibility
 	// This handles errors from sources that don't wrap with sentinel errors
 	if vmcp.IsAuthenticationError(err) {
-		return vmcp.BackendUnauthenticated
+		return authErrorStatus(target)
 	}
 
 	if vmcp.IsTimeoutError(err) || vmcp.IsConnectionError(err) {
@@ -149,4 +174,25 @@ func categorizeError(err error) vmcp.BackendHealthStatus {
 
 	// Default to unhealthy for unknown errors
 	return vmcp.BackendUnhealthy
+}
+
+// authErrorStatus maps an authentication error (HTTP 401/403) to a health status
+// using the backend's outgoing auth configuration.
+//
+// Health probes deliberately do not carry user credentials. If the backend is
+// configured with an outgoing auth strategy, a 401/403 from the backend proves
+// that the backend is alive, the auth layer works, and the network+TLS path is
+// healthy — this is the expected response to an unauthenticated probe and is
+// therefore treated as BackendHealthy.
+//
+// If the backend has no outgoing auth strategy configured (AuthConfig nil or
+// StrategyTypeUnauthenticated), a 401/403 indicates operator misconfiguration:
+// the backend requires authentication but none was configured on the backend
+// target. This is reported as BackendUnauthenticated so it surfaces in status.
+func authErrorStatus(target *vmcp.BackendTarget) vmcp.BackendHealthStatus {
+	if target != nil && target.AuthConfig != nil &&
+		target.AuthConfig.Type != authtypes.StrategyTypeUnauthenticated {
+		return vmcp.BackendHealthy
+	}
+	return vmcp.BackendUnauthenticated
 }

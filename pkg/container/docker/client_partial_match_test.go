@@ -7,7 +7,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,9 +95,9 @@ func TestFindExistingContainer_RejectsPartialMatches(t *testing.T) {
 			t.Parallel()
 
 			api := &fakeDockerAPI{
-				listFunc: func(_ context.Context, opts container.ListOptions) ([]container.Summary, error) {
+				listFunc: func(_ context.Context, opts mobyclient.ContainerListOptions) ([]container.Summary, error) {
 					// Verify that the name filter is being used
-					nameFilters := opts.Filters.Get("name")
+					nameFilters := filterValues(opts.Filters, "name")
 					if len(nameFilters) > 0 {
 						assert.Equal(t, tt.searchName, nameFilters[0], "Expected name filter to be set correctly")
 					}
@@ -214,10 +215,10 @@ func TestFindContainerByExactName_RejectsPartialMatches(t *testing.T) {
 			t.Parallel()
 
 			api := &fakeDockerAPI{
-				listFunc: func(_ context.Context, opts container.ListOptions) ([]container.Summary, error) {
+				listFunc: func(_ context.Context, opts mobyclient.ContainerListOptions) ([]container.Summary, error) {
 					// Verify that both toolhive label filter and name filter are being used
-					toolhiveFilter := opts.Filters.Get("label")
-					nameFilter := opts.Filters.Get("name")
+					toolhiveFilter := filterValues(opts.Filters, "label")
+					nameFilter := filterValues(opts.Filters, "name")
 
 					assert.Contains(t, toolhiveFilter, "toolhive=true", "Expected toolhive label filter")
 					assert.Contains(t, nameFilter, tt.searchName, "Expected name filter to be set")
@@ -258,7 +259,7 @@ func TestPartialMatchingPrevention_IntegrationScenarios(t *testing.T) {
 	}
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			// Simulate that container runtime returned all containers due to partial matching
 			return mockContainers, nil
 		},
@@ -280,4 +281,15 @@ func TestPartialMatchingPrevention_IntegrationScenarios(t *testing.T) {
 	containerID, err = client.findExistingContainer(ctx, "nonexistent")
 	require.NoError(t, err)
 	assert.Empty(t, containerID, "Should not find anything for non-existent exact name")
+}
+
+// filterValues returns the set of values associated with a filter term in the
+// redesigned client.Filters (map[string]map[string]bool), giving tests the same
+// view the legacy filters.Args.Get helper used to provide.
+func filterValues(f mobyclient.Filters, term string) []string {
+	values := make([]string, 0, len(f[term]))
+	for value := range f[term] {
+		values = append(values, value)
+	}
+	return values
 }

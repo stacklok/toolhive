@@ -13,21 +13,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-)
 
-// setupTestScheme creates and initializes a test scheme with core and RBAC types.
-func setupTestScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
-	return scheme
-}
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+)
 
 // createTestOwner creates a ConfigMap to use as an owner for testing owner references.
 // All test owners are created in the "default" namespace.
@@ -65,7 +57,7 @@ func assertOwnerReference(t *testing.T, refs []metav1.OwnerReference, owner clie
 func TestGetServiceAccount(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully retrieves existing ServiceAccount", func(t *testing.T) {
 		t.Parallel()
@@ -145,7 +137,7 @@ func TestGetServiceAccount(t *testing.T) {
 func TestUpsertServiceAccount(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully creates new ServiceAccount", func(t *testing.T) {
 		t.Parallel()
@@ -262,7 +254,7 @@ func TestUpsertServiceAccount(t *testing.T) {
 func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully creates ServiceAccount with owner reference", func(t *testing.T) {
 		t.Parallel()
@@ -492,6 +484,60 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		assertOwnerReference(t, retrieved.OwnerReferences, owner)
 	})
 
+	t.Run("preserves existing ImagePullSecrets when desired list is empty (not nil)", func(t *testing.T) {
+		// An explicit []LocalObjectReference{} must behave the same as nil — neither should
+		// wipe SA-level pull secrets. Tooling like kustomize/helm/ArgoCD can emit empty
+		// slices during overlays/patches; silently clearing platform-managed dockercfg
+		// entries (OpenShift) on those callers would be destructive and undiagnosable.
+		t.Parallel()
+
+		ctx := t.Context()
+
+		owner := createTestOwner("owner-cm", "test-uid-empty-slice")
+
+		existingSA := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "empty-slice-sa",
+				Namespace: "default",
+			},
+			Secrets: []corev1.ObjectReference{
+				{Name: "openshift-sa-token-abc123"},
+			},
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "openshift-sa-dockercfg-xyz789"},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(owner, existingSA).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		// Pass non-nil but empty slices for both fields.
+		updatedSA := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "empty-slice-sa",
+				Namespace: "default",
+			},
+			Secrets:          []corev1.ObjectReference{},
+			ImagePullSecrets: []corev1.LocalObjectReference{},
+		}
+
+		_, err := client.UpsertServiceAccountWithOwnerReference(ctx, updatedSA, owner)
+		require.NoError(t, err)
+
+		retrieved, err := client.GetServiceAccount(ctx, "empty-slice-sa", "default")
+		require.NoError(t, err)
+
+		// Both fields should be preserved, identical to the nil-input case.
+		require.Len(t, retrieved.Secrets, 1, "Secrets should be preserved when input is empty slice")
+		assert.Equal(t, "openshift-sa-token-abc123", retrieved.Secrets[0].Name)
+		require.Len(t, retrieved.ImagePullSecrets, 1, "ImagePullSecrets should be preserved when input is empty slice")
+		assert.Equal(t, "openshift-sa-dockercfg-xyz789", retrieved.ImagePullSecrets[0].Name)
+	})
+
 	t.Run("overwrites Secrets and ImagePullSecrets when explicitly specified", func(t *testing.T) {
 		// Verify that when Secrets/ImagePullSecrets ARE specified, they get applied
 		t.Parallel()
@@ -555,7 +601,7 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 func TestGetRole(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully retrieves existing Role", func(t *testing.T) {
 		t.Parallel()
@@ -643,7 +689,7 @@ func TestGetRole(t *testing.T) {
 func TestUpsertRole(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully creates new Role", func(t *testing.T) {
 		t.Parallel()
@@ -779,7 +825,7 @@ func TestUpsertRole(t *testing.T) {
 func TestUpsertRoleWithOwnerReference(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully creates Role with owner reference", func(t *testing.T) {
 		t.Parallel()
@@ -981,7 +1027,7 @@ func TestUpsertRoleWithOwnerReference(t *testing.T) {
 func TestGetRoleBinding(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully retrieves existing RoleBinding", func(t *testing.T) {
 		t.Parallel()
@@ -1086,7 +1132,7 @@ func TestGetRoleBinding(t *testing.T) {
 func TestUpsertRoleBinding(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully creates new RoleBinding", func(t *testing.T) {
 		t.Parallel()
@@ -1338,7 +1384,7 @@ func TestUpsertRoleBinding(t *testing.T) {
 func TestUpsertRoleBindingWithOwnerReference(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully creates RoleBinding with owner reference", func(t *testing.T) {
 		t.Parallel()
@@ -1569,7 +1615,7 @@ func TestNewClient(t *testing.T) {
 	t.Run("creates client successfully", func(t *testing.T) {
 		t.Parallel()
 
-		scheme := runtime.NewScheme()
+		scheme := testutil.NewScheme(t)
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			Build()
@@ -1583,7 +1629,7 @@ func TestNewClient(t *testing.T) {
 func TestEnsureRBACResources(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("creates all RBAC resources when none exist", func(t *testing.T) {
 		t.Parallel()
@@ -1884,7 +1930,7 @@ func TestEnsureRBACResources(t *testing.T) {
 func TestGetAllRBACResources(t *testing.T) {
 	t.Parallel()
 
-	scheme := setupTestScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully retrieves all RBAC resources", func(t *testing.T) {
 		t.Parallel()

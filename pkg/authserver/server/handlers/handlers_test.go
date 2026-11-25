@@ -15,11 +15,14 @@
 package handlers
 
 import (
+	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -31,13 +34,28 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
-	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
+	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // testSetupOptions allows customizing the test handler setup.
 type testSetupOptions struct {
-	AuthorizationEndpointBaseURL string
+	AuthorizationEndpointBaseURL        string
+	CIMDEnabled                         bool
+	AllowConfidentialClientRegistration bool
+	AllowPrivateKeyJWTRegistration      bool
+	HasStaticConfidentialClients        bool
+	HasStaticSecretClients              bool
+	HasStaticPrivateKeyJWTClients       bool
+	DisableTokenExchange                bool
+	JWTBearerGrantEnabled               bool
+	SPIFFEX509ClientAuthentication      bool
+	SPIFFEJWTClientAuthentication       bool
+	SPIFFEClientCredentialsGrant        bool
+	// SigningKey and SigningKeyAlgorithm override the default RS256 key.
+	SigningKey          crypto.Signer
+	SigningKeyAlgorithm string
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -55,24 +73,38 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		ctrl.Finish()
 	})
 
-	// Generate RSA key for testing
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	signingKey, signingAlg := opts.SigningKey, opts.SigningKeyAlgorithm
+	if signingKey == nil {
+		rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		signingKey, signingAlg = rsaKey, "RS256"
+	}
 
 	secret := make([]byte, 32)
-	_, err = rand.Read(secret)
+	_, err := rand.Read(secret)
 	require.NoError(t, err)
 
 	cfg := &server.AuthorizationServerParams{
-		Issuer:                       "https://auth.example.com",
-		AuthorizationEndpointBaseURL: opts.AuthorizationEndpointBaseURL,
-		AccessTokenLifespan:          time.Hour,
-		RefreshTokenLifespan:         time.Hour * 24,
-		AuthCodeLifespan:             time.Minute * 10,
-		HMACSecrets:                  servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:                 "test-key-1",
-		SigningKeyAlgorithm:          "RS256",
-		SigningKey:                   rsaKey,
+		Issuer:                                 "https://auth.example.com",
+		AuthorizationEndpointBaseURL:           opts.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                            opts.CIMDEnabled,
+		AllowConfidentialClientRegistration:    opts.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:         opts.AllowPrivateKeyJWTRegistration,
+		HasStaticConfidentialClients:           opts.HasStaticConfidentialClients,
+		HasStaticSecretClients:                 opts.HasStaticSecretClients,
+		HasStaticPrivateKeyJWTClients:          opts.HasStaticPrivateKeyJWTClients,
+		DisableTokenExchange:                   opts.DisableTokenExchange,
+		JWTBearerGrantEnabled:                  opts.JWTBearerGrantEnabled,
+		SupportsSPIFFEX509ClientAuthentication: opts.SPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:  opts.SPIFFEJWTClientAuthentication,
+		SupportsSPIFFEClientCredentialsGrant:   opts.SPIFFEClientCredentialsGrant,
+		AccessTokenLifespan:                    time.Hour,
+		RefreshTokenLifespan:                   time.Hour * 24,
+		AuthCodeLifespan:                       time.Minute * 10,
+		HMACSecrets:                            servercrypto.NewHMACSecrets(secret),
+		SigningKeyID:                           "test-key-1",
+		SigningKeyAlgorithm:                    signingAlg,
+		SigningKey:                             signingKey,
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -185,8 +217,11 @@ func TestOAuthDiscoveryHandler(t *testing.T) {
 	// Verify OPTIONAL fields per RFC 8414
 	assert.Contains(t, metadata.GrantTypesSupported, "authorization_code")
 	assert.Contains(t, metadata.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, metadata.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange)
 	assert.Contains(t, metadata.CodeChallengeMethodsSupported, "S256")
-	assert.Contains(t, metadata.TokenEndpointAuthMethodsSupported, "none")
+	// Flag off: only "none" is advertised (exact-slice, not Contains — a
+	// Contains assertion cannot fail to notice an unexpectedly-added method).
+	assert.Equal(t, []string{sharedobauth.TokenEndpointAuthMethodNone}, metadata.TokenEndpointAuthMethodsSupported)
 }
 
 func TestOAuthDiscoveryHandler_DoesNotContainOIDCFields(t *testing.T) {
@@ -246,8 +281,149 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	// Verify OPTIONAL fields
 	assert.Contains(t, discovery.GrantTypesSupported, "authorization_code")
 	assert.Contains(t, discovery.GrantTypesSupported, "refresh_token")
+	assert.Contains(t, discovery.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange)
 	assert.Contains(t, discovery.CodeChallengeMethodsSupported, "S256")
-	assert.Contains(t, discovery.TokenEndpointAuthMethodsSupported, "none")
+	// Flag off: only "none" is advertised (exact-slice, not Contains).
+	assert.Equal(t, []string{sharedobauth.TokenEndpointAuthMethodNone}, discovery.TokenEndpointAuthMethodsSupported)
+}
+
+// TestDiscoveryHandlers_Ed25519SigningKey verifies that an Ed25519 signing key
+// is advertised as EdDSA in id_token_signing_alg_values_supported and served by
+// the JWKS endpoint as an OKP key, so validators can resolve it.
+func TestDiscoveryHandlers_Ed25519SigningKey(t *testing.T) {
+	t.Parallel()
+	_, edKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	handler := testSetupWithOptions(t, testSetupOptions{SigningKey: edKey, SigningKeyAlgorithm: "EdDSA"})
+
+	rec := httptest.NewRecorder()
+	handler.OIDCDiscoveryHandler(rec, httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var discovery sharedobauth.OIDCDiscoveryDocument
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&discovery))
+	assert.Equal(t, []string{"EdDSA"}, discovery.IDTokenSigningAlgValuesSupported)
+
+	rec = httptest.NewRecorder()
+	handler.JWKSHandler(rec, httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var jwks struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&jwks))
+	require.Len(t, jwks.Keys, 1)
+	assert.Equal(t, "OKP", jwks.Keys[0]["kty"])
+	assert.Equal(t, "Ed25519", jwks.Keys[0]["crv"])
+	assert.Equal(t, "EdDSA", jwks.Keys[0]["alg"])
+}
+
+// TestDiscoveryHandlers_ConfidentialAuthMethods verifies both discovery endpoints
+// advertise the client authentication methods enabled by configuration, including
+// the independent private_key_jwt capability. "none" must stay at index 0
+// (readability convention; RFC 8414 defines no ordering).
+func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
+	t.Parallel()
+
+	wantOff := []string{sharedobauth.TokenEndpointAuthMethodNone}
+	wantSecrets := []string{
+		sharedobauth.TokenEndpointAuthMethodNone,
+		sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
+		sharedobauth.TokenEndpointAuthMethodClientSecretPost,
+	}
+	wantPrivateKeyJWT := []string{
+		sharedobauth.TokenEndpointAuthMethodNone,
+		sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT,
+	}
+	wantSecretsAndPrivateKeyJWT := append(
+		append([]string(nil), wantSecrets...), sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT,
+	)
+	wantAlgorithms := registration.SupportedSigningAlgorithms()
+
+	tests := []struct {
+		name                  string
+		allowConfidential     bool
+		allowPrivate          bool
+		hasStaticConfidential bool
+		hasStaticSecret       bool
+		hasStaticPrivateKey   bool
+		spiffeX509            bool
+		spiffeJWT             bool
+		wantMethods           []string
+		wantAlgorithms        []string
+	}{
+		{name: "public only advertises only none", wantMethods: wantOff},
+		{name: "private_key_jwt only advertises private_key_jwt", allowPrivate: true,
+			wantMethods: wantPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "confidential DCR advertises client_secret methods", allowConfidential: true, wantMethods: wantSecrets},
+		{name: "confidential DCR and private_key_jwt advertise both", allowConfidential: true, allowPrivate: true,
+			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "static secret delegate advertises client_secret methods", hasStaticConfidential: true, hasStaticSecret: true,
+			wantMethods: wantSecrets},
+		{name: "static secret delegate and private_key_jwt DCR advertise both", allowPrivate: true,
+			hasStaticConfidential: true, hasStaticSecret: true,
+			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "confidential DCR and static secret delegate advertise client_secret methods", allowConfidential: true,
+			hasStaticConfidential: true, hasStaticSecret: true, wantMethods: wantSecrets},
+		{name: "key-only static delegate advertises only private_key_jwt",
+			hasStaticConfidential: true, hasStaticPrivateKey: true,
+			wantMethods: wantPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "transport flag alone does not advertise client_secret methods", hasStaticConfidential: true,
+			wantMethods: wantOff},
+		{name: "mixed static delegates advertise both", hasStaticConfidential: true, hasStaticSecret: true,
+			hasStaticPrivateKey: true, wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "confidential DCR with a key-only static delegate advertises both", allowConfidential: true,
+			hasStaticConfidential: true, hasStaticPrivateKey: true,
+			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "all authentication methods are advertised", allowConfidential: true, allowPrivate: true,
+			hasStaticConfidential: true, hasStaticSecret: true, hasStaticPrivateKey: true,
+			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "SPIFFE X.509 association advertises spiffe_x509", spiffeX509: true,
+			wantMethods: []string{sharedobauth.TokenEndpointAuthMethodNone, sharedobauth.TokenEndpointAuthMethodSPIFFEX509}},
+		{name: "SPIFFE JWT association advertises spiffe_jwt", spiffeJWT: true,
+			wantMethods: []string{sharedobauth.TokenEndpointAuthMethodNone, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT}},
+		{name: "SPIFFE methods follow private_key_jwt", allowPrivate: true, spiffeX509: true, spiffeJWT: true,
+			wantMethods: []string{
+				sharedobauth.TokenEndpointAuthMethodNone, sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT,
+				sharedobauth.TokenEndpointAuthMethodSPIFFEX509, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT,
+			}, wantAlgorithms: wantAlgorithms},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler := testSetupWithOptions(t, testSetupOptions{
+				AllowConfidentialClientRegistration: tc.allowConfidential,
+				AllowPrivateKeyJWTRegistration:      tc.allowPrivate,
+				HasStaticConfidentialClients:        tc.hasStaticConfidential,
+				HasStaticSecretClients:              tc.hasStaticSecret,
+				HasStaticPrivateKeyJWTClients:       tc.hasStaticPrivateKey,
+				SPIFFEX509ClientAuthentication:      tc.spiffeX509,
+				SPIFFEJWTClientAuthentication:       tc.spiffeJWT,
+			})
+
+			// OAuth AS metadata endpoint.
+			rec := httptest.NewRecorder()
+			handler.OAuthDiscoveryHandler(rec, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+			var metadata sharedobauth.AuthorizationServerMetadata
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&metadata))
+			assert.Equal(t, tc.wantMethods, metadata.TokenEndpointAuthMethodsSupported,
+				"oauth-authorization-server must advertise configured client authentication methods")
+			assert.Equal(t, tc.wantAlgorithms, metadata.TokenEndpointAuthSigningAlgValuesSupported,
+				"oauth-authorization-server must advertise private_key_jwt signing algorithms only when enabled")
+			assert.Equal(t, sharedobauth.TokenEndpointAuthMethodNone, metadata.TokenEndpointAuthMethodsSupported[0],
+				"none must remain at index 0")
+
+			// OIDC discovery endpoint (shares buildOAuthMetadata).
+			rec2 := httptest.NewRecorder()
+			handler.OIDCDiscoveryHandler(rec2, httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil))
+			require.Equal(t, http.StatusOK, rec2.Code)
+			var discovery sharedobauth.OIDCDiscoveryDocument
+			require.NoError(t, json.NewDecoder(rec2.Body).Decode(&discovery))
+			assert.Equal(t, tc.wantMethods, discovery.TokenEndpointAuthMethodsSupported,
+				"openid-configuration must advertise configured client authentication methods")
+			assert.Equal(t, tc.wantAlgorithms, discovery.TokenEndpointAuthSigningAlgValuesSupported,
+				"openid-configuration must advertise private_key_jwt signing algorithms only when enabled")
+		})
+	}
 }
 
 func TestOAuthDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {
@@ -339,4 +515,113 @@ func TestWellKnownRoutes(t *testing.T) {
 	}
 }
 
+func TestDiscoveryHandlers_InboundGrantCapabilities(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name                  string
+		disableTokenExchange  bool
+		jwtBearerGrantEnabled bool
+		clientCredentials     bool
+	}{
+		{name: "historical token exchange default"},
+		{name: "token exchange and JWT bearer", jwtBearerGrantEnabled: true},
+		{name: "all inbound grants disabled", disableTokenExchange: true},
+		{name: "JWT bearer independent of token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
+		{name: "SPIFFE client credentials", clientCredentials: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler := testSetupWithOptions(t, testSetupOptions{
+				DisableTokenExchange:         tc.disableTokenExchange,
+				JWTBearerGrantEnabled:        tc.jwtBearerGrantEnabled,
+				SPIFFEClientCredentialsGrant: tc.clientCredentials,
+			})
+
+			for _, endpoint := range []struct {
+				name string
+				fn   func(http.ResponseWriter, *http.Request)
+			}{
+				{"OAuth AS metadata", handler.OAuthDiscoveryHandler},
+				{"OIDC discovery", handler.OIDCDiscoveryHandler},
+			} {
+				t.Run(endpoint.name, func(t *testing.T) {
+					t.Parallel()
+					req := httptest.NewRequest(http.MethodGet, "/", nil)
+					rec := httptest.NewRecorder()
+					endpoint.fn(rec, req)
+					require.Equal(t, http.StatusOK, rec.Code)
+
+					var meta sharedobauth.AuthorizationServerMetadata
+					require.NoError(t, json.NewDecoder(rec.Body).Decode(&meta))
+					assert.Equal(t, !tc.disableTokenExchange,
+						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange))
+					assert.Equal(t, tc.jwtBearerGrantEnabled,
+						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer))
+					assert.Equal(t, tc.clientCredentials,
+						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeClientCredentials))
+				})
+			}
+		})
+	}
+}
+
 // TODO: Add TestOAuthRoutes once OAuth handlers are implemented
+
+func TestDiscoveryHandlers_CIMDEnabled_AdvertisesSupport(t *testing.T) {
+	t.Parallel()
+
+	handler := testSetupWithOptions(t, testSetupOptions{CIMDEnabled: true})
+
+	for _, tc := range []struct {
+		name string
+		fn   func(http.ResponseWriter, *http.Request)
+	}{
+		{"OAuth AS metadata", handler.OAuthDiscoveryHandler},
+		{"OIDC discovery", handler.OIDCDiscoveryHandler},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			tc.fn(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var meta sharedobauth.AuthorizationServerMetadata
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&meta))
+			assert.True(t, meta.ClientIDMetadataDocumentSupported,
+				"client_id_metadata_document_supported must be true when CIMD is enabled")
+		})
+	}
+}
+
+func TestDiscoveryHandlers_CIMDDisabled_OmitsFlag(t *testing.T) {
+	t.Parallel()
+
+	handler := testSetupWithOptions(t, testSetupOptions{CIMDEnabled: false})
+
+	for _, tc := range []struct {
+		name string
+		fn   func(http.ResponseWriter, *http.Request)
+	}{
+		{"OAuth AS metadata", handler.OAuthDiscoveryHandler},
+		{"OIDC discovery", handler.OIDCDiscoveryHandler},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			tc.fn(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			// Decode to raw map to verify the field is truly absent from the JSON
+			// output (omitempty), not merely false — a struct decode cannot
+			// distinguish between an omitted field and an explicit false value.
+			var raw map[string]interface{}
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&raw))
+			_, present := raw["client_id_metadata_document_supported"]
+			assert.False(t, present,
+				"client_id_metadata_document_supported must be omitted from JSON when CIMD is disabled")
+		})
+	}
+}

@@ -26,7 +26,7 @@ helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-
 ## Prerequisites
 
 - Kubernetes 1.25+
-- Helm 3.10+ minimum, 3.14+ recommended
+- Helm 3.10+ (3.14+ recommended) or Helm 4
 
 ## Usage
 
@@ -88,4 +88,8 @@ This is a one-time operation. After patching, future upgrades will work as long 
 {{ template "chart.requirementsSection" . }}
 
 {{ template "chart.valuesSection" . }}
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this chart.
 

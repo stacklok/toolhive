@@ -30,13 +30,13 @@ thv config otel set-env-vars <var1,var2,...> [flags]
 ### Options
 
 ```
-  -h, --help   help for set-env-vars
+  -h, --help[=true|false]   help for set-env-vars
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

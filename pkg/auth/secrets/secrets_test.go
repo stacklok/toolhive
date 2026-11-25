@@ -11,9 +11,54 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
+	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
+
+// TestGetSystemSecretsProvider_EnvOverrideBypassesSetup verifies the regression
+// fix: TOOLHIVE_SECRETS_PROVIDER=environment must succeed even when
+// SetupCompleted is false (no config file), so Kubernetes / test deployments
+// don't have to run interactive setup.
+func TestGetSystemSecretsProvider_EnvOverrideBypassesSetup(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// PathProvider pointing at a non-existent file → SetupCompleted defaults to false.
+	cfgProvider := config.NewPathProvider(t.TempDir() + "/config.yaml")
+
+	// Mock env reader returns "environment" for the provider env var.
+	mockEnv := envmocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.EnvironmentType))
+
+	provider, err := getSystemSecretsProviderFromConfig(cfgProvider, mockEnv)
+	assert.NoError(t, err, "environment provider should succeed without interactive setup")
+	assert.NotNil(t, provider, "should return a non-nil provider")
+}
+
+// TestGetSystemSecretsProvider_NoSetupNoEnvVar verifies that without both
+// SetupCompleted and a TOOLHIVE_SECRETS_PROVIDER override, the function
+// returns ErrSecretsNotSetup.
+func TestGetSystemSecretsProvider_NoSetupNoEnvVar(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// PathProvider pointing at a non-existent file → SetupCompleted defaults to false.
+	cfgProvider := config.NewPathProvider(t.TempDir() + "/config.yaml")
+
+	// Mock env reader returns empty string → no override present.
+	mockEnv := envmocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("")
+
+	_, err := getSystemSecretsProviderFromConfig(cfgProvider, mockEnv)
+	assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup,
+		"should return ErrSecretsNotSetup when setup is incomplete and no env override is present")
+}
 
 func TestGenerateUniqueSecretNameWithPrefix(t *testing.T) {
 	t.Parallel()
@@ -189,38 +234,59 @@ func TestStoreSecretInManagerWithProvider(t *testing.T) {
 	}
 }
 
-// TestProcessSecret tests the public ProcessSecret function for each token type
-// These tests verify that ProcessSecret works correctly without requiring secrets setup
+// TestProcessSecret verifies early returns that do not require secrets setup.
 func TestProcessSecret(t *testing.T) {
 	t.Parallel()
 
-	t.Run("OAuth client secret - empty returns early", func(t *testing.T) {
-		t.Parallel()
-		// This test verifies that when secretValue is empty, ProcessSecret
-		// returns early without attempting to access the secrets manager.
-		// If it tried to access the secrets manager, it would fail because
-		// no secrets provider is configured in the test environment.
-		result, err := ProcessSecret("test-workload", "", TokenTypeOAuthClientSecret)
-		assert.NoError(t, err, "Should not error when secret is empty")
-		assert.Equal(t, "", result, "Should return empty string when input is empty")
-	})
+	tests := []struct {
+		name        string
+		secretValue string
+		tokenType   TokenType
+		want        string
+		wantErr     string
+	}{
+		{
+			name:      "empty OAuth client secret",
+			tokenType: TokenTypeOAuthClientSecret,
+		},
+		{
+			name:      "empty bearer token",
+			tokenType: TokenTypeBearerToken,
+		},
+		{
+			name:        "existing OAuth client secret reference",
+			secretValue: "EXISTING_SECRET,target=oauth_secret",
+			tokenType:   TokenTypeOAuthClientSecret,
+			want:        "EXISTING_SECRET,target=oauth_secret",
+		},
+		{
+			name:        "existing bearer token reference",
+			secretValue: "EXISTING_TOKEN,target=bearer_token",
+			tokenType:   TokenTypeBearerToken,
+			want:        "EXISTING_TOKEN,target=bearer_token",
+		},
+		{
+			name:        "unknown token type rejects an existing reference",
+			secretValue: "EXISTING_TOKEN,target=bearer_token",
+			tokenType:   TokenType("unknown"),
+			wantErr:     "unknown token type",
+		},
+	}
 
-	t.Run("Bearer token - empty returns early", func(t *testing.T) {
-		t.Parallel()
-		// This test verifies that when secretValue is empty, ProcessSecret
-		// returns early without attempting to access the secrets manager.
-		result, err := ProcessSecret("test-workload", "", TokenTypeBearerToken)
-		assert.NoError(t, err, "Should not error when token is empty")
-		assert.Equal(t, "", result, "Should return empty string when input is empty")
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("unknown token type returns error", func(t *testing.T) {
-		t.Parallel()
-		result, err := ProcessSecret("test-workload", "some-secret", TokenType("unknown"))
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown token type")
-		assert.Equal(t, "", result)
-	})
+			result, err := ProcessSecret("test-workload", tt.secretValue, tt.tokenType)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				assert.Empty(t, result)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, result)
+		})
+	}
 }
 
 func TestProcessSecretWithProvider(t *testing.T) {

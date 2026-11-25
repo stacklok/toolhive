@@ -14,11 +14,12 @@ import (
 )
 
 var (
-	loginRegistry string
-	loginIssuer   string
-	loginClientID string
-	loginAudience string
-	loginScopes   []string
+	loginRegistry       string
+	loginIssuer         string
+	loginClientID       string
+	loginAudience       string
+	loginScopes         []string
+	loginAllowPrivateIP bool
 )
 
 var registryLoginCmd = &cobra.Command{
@@ -46,6 +47,9 @@ func init() {
 		"OAuth audience parameter for registry authentication (optional)")
 	registryLoginCmd.Flags().StringSliceVar(&loginScopes, "scopes", nil,
 		"OAuth scopes for registry authentication (defaults to openid,offline_access)")
+	registryLoginCmd.Flags().BoolVarP(&loginAllowPrivateIP, "allow-private-ip", "p", false,
+		"Allow --registry to reference a private IP address (default false). "+
+			"Mirrors the flag on 'thv config set-registry'.")
 }
 
 func registryLoginCmdFunc(cmd *cobra.Command, _ []string) error {
@@ -56,11 +60,12 @@ func registryLoginCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	opts := auth.LoginOptions{
-		RegistryURL: loginRegistry,
-		Issuer:      loginIssuer,
-		ClientID:    loginClientID,
-		Audience:    loginAudience,
-		Scopes:      loginScopes,
+		RegistryURL:    loginRegistry,
+		Issuer:         loginIssuer,
+		ClientID:       loginClientID,
+		Audience:       loginAudience,
+		Scopes:         loginScopes,
+		AllowPrivateIP: loginAllowPrivateIP,
 	}
 
 	return auth.Login(cmd.Context(), configProvider, secretsProvider, opts)

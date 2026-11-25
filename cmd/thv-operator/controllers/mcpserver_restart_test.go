@@ -19,12 +19,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 type restartTestContext struct {
-	mcpServer  *mcpv1alpha1.MCPServer
+	mcpServer  *mcpv1beta1.MCPServer
 	client     client.Client
 	reconciler *MCPServerReconciler
 	t          *testing.T
@@ -35,11 +37,11 @@ func setupRestartTest(t *testing.T) *restartTestContext {
 	name := "test-server"
 	namespace := "default"
 	mcpServer := createTestMCPServer(name, namespace)
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	return &restartTestContext{
@@ -135,7 +137,7 @@ func (tc *restartTestContext) handleRestartAnnotation() (bool, error) {
 	}
 
 	// Now fetch the updated MCPServer for the actual test
-	updatedMCPServer := &mcpv1alpha1.MCPServer{}
+	updatedMCPServer := &mcpv1beta1.MCPServer{}
 	err = tc.client.Get(context.TODO(), types.NamespacedName{
 		Name:      tc.mcpServer.Name,
 		Namespace: tc.mcpServer.Namespace,
@@ -564,10 +566,10 @@ func TestHandleRestartAnnotation_ErrorPaths(t *testing.T) {
 		testCtx.createDeployment()
 		testCtx.setRestartAnnotation("2023-01-01T12:00:00Z", "rolling")
 
-		// Mock a client that fails only on MCPServer Update operations
+		// Mock a client that fails only on MCPServer write operations
 		mockClient := &mockFailingClient{
-			Client:                testCtx.client,
-			failOnMCPServerUpdate: true,
+			Client:               testCtx.client,
+			failOnMCPServerWrite: true,
 		}
 		testCtx.reconciler.Client = mockClient
 
@@ -698,14 +700,20 @@ func TestReconcile_HandleRestartAnnotation_ErrorPaths(t *testing.T) {
 	})
 }
 
-// mockFailingClient is a test helper that wraps a real client and can be configured to fail on specific operations
+// mockFailingClient is a test helper that wraps a real client and can be configured to fail on specific operations.
+//
+// failOnMCPServerWrite triggers a mock error on any write (Update or Patch)
+// whose target is a *mcpv1beta1.MCPServer. "Write" is used because the
+// #4767 migration replaced MCPServer spec Updates with optimistic-lock
+// Patches, so a single flag covers both code paths that can mutate the
+// resource.
 type mockFailingClient struct {
 	client.Client
-	failOnGet             bool
-	failOnList            bool
-	failOnUpdate          bool
-	failOnDelete          bool
-	failOnMCPServerUpdate bool
+	failOnGet            bool
+	failOnList           bool
+	failOnUpdate         bool
+	failOnDelete         bool
+	failOnMCPServerWrite bool
 }
 
 func (m *mockFailingClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -726,13 +734,24 @@ func (m *mockFailingClient) Update(ctx context.Context, obj client.Object, opts 
 	if m.failOnUpdate {
 		return fmt.Errorf("mock error: Update operation failed")
 	}
-	if m.failOnMCPServerUpdate {
+	if m.failOnMCPServerWrite {
 		// Check if the object being updated is an MCPServer
-		if _, isMCPServer := obj.(*mcpv1alpha1.MCPServer); isMCPServer {
+		if _, isMCPServer := obj.(*mcpv1beta1.MCPServer); isMCPServer {
 			return fmt.Errorf("mock error: MCPServer Update operation failed")
 		}
 	}
 	return m.Client.Update(ctx, obj, opts...)
+}
+
+func (m *mockFailingClient) Patch(
+	ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption,
+) error {
+	if m.failOnMCPServerWrite {
+		if _, isMCPServer := obj.(*mcpv1beta1.MCPServer); isMCPServer {
+			return fmt.Errorf("mock error: MCPServer Patch operation failed")
+		}
+	}
+	return m.Client.Patch(ctx, obj, patch, opts...)
 }
 
 func (m *mockFailingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
@@ -740,4 +759,29 @@ func (m *mockFailingClient) Delete(ctx context.Context, obj client.Object, opts 
 		return fmt.Errorf("mock error: Delete operation failed")
 	}
 	return m.Client.Delete(ctx, obj, opts...)
+}
+
+func TestMCPServerDeploymentNeedsUpdate_KubectlRestartedAtIsNotDrift(t *testing.T) {
+	t.Parallel()
+	tc := setupRestartTest(t)
+	deployment, err := tc.reconciler.deploymentForMCPServer(t.Context(), tc.mcpServer, "test-checksum")
+	require.NoError(t, err)
+	require.NotNil(t, deployment)
+
+	assert.False(t, tc.reconciler.deploymentNeedsUpdate(t.Context(), deployment, tc.mcpServer, "test-checksum"),
+		"freshly built deployment must not report drift")
+
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = map[string]string{}
+	}
+	deployment.Spec.Template.Annotations[ctrlutil.KubectlRestartedAtAnnotation] = "2026-08-19T06:00:00Z"
+	assert.False(t, tc.reconciler.deploymentNeedsUpdate(t.Context(), deployment, tc.mcpServer, "test-checksum"),
+		"kubectl.kubernetes.io/restartedAt on the live template is not drift")
+
+	if deployment.Spec.Template.Labels == nil {
+		deployment.Spec.Template.Labels = map[string]string{}
+	}
+	deployment.Spec.Template.Labels["stale-extra"] = "1"
+	assert.True(t, tc.reconciler.deploymentNeedsUpdate(t.Context(), deployment, tc.mcpServer, "test-checksum"),
+		"extra live pod-template labels remain drift")
 }

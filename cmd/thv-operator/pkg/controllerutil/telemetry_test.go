@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestGenerateOpenTelemetryEnvVarsFromRef(t *testing.T) {
@@ -18,8 +18,8 @@ func TestGenerateOpenTelemetryEnvVarsFromRef(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		telemetryConfig  *mcpv1alpha1.MCPTelemetryConfig
-		ref              *mcpv1alpha1.MCPTelemetryConfigReference
+		telemetryConfig  *mcpv1beta1.MCPTelemetryConfig
+		ref              *mcpv1beta1.MCPTelemetryConfigReference
 		resourceName     string
 		namespace        string
 		expectedEnvVars  []corev1.EnvVar
@@ -28,15 +28,15 @@ func TestGenerateOpenTelemetryEnvVarsFromRef(t *testing.T) {
 		{
 			name:             "nil telemetryConfig returns nil",
 			telemetryConfig:  nil,
-			ref:              &mcpv1alpha1.MCPTelemetryConfigReference{Name: "test-config"},
+			ref:              &mcpv1beta1.MCPTelemetryConfigReference{Name: "test-config"},
 			resourceName:     "my-server",
 			namespace:        "default",
 			expectedNilSlice: true,
 		},
 		{
 			name: "nil ref returns nil",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{},
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{},
 			},
 			ref:              nil,
 			resourceName:     "my-server",
@@ -45,10 +45,10 @@ func TestGenerateOpenTelemetryEnvVarsFromRef(t *testing.T) {
 		},
 		{
 			name: "basic case with service name override",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{},
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{},
 			},
-			ref: &mcpv1alpha1.MCPTelemetryConfigReference{
+			ref: &mcpv1beta1.MCPTelemetryConfigReference{
 				Name:        "test-config",
 				ServiceName: "custom-service",
 			},
@@ -63,10 +63,10 @@ func TestGenerateOpenTelemetryEnvVarsFromRef(t *testing.T) {
 		},
 		{
 			name: "empty ServiceName in ref falls back to resourceName",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{},
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{},
 			},
-			ref: &mcpv1alpha1.MCPTelemetryConfigReference{
+			ref: &mcpv1beta1.MCPTelemetryConfigReference{
 				Name:        "test-config",
 				ServiceName: "",
 			},
@@ -81,20 +81,20 @@ func TestGenerateOpenTelemetryEnvVarsFromRef(t *testing.T) {
 		},
 		{
 			name: "sensitive headers produce env vars with SecretKeyRef",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
-						SensitiveHeaders: []mcpv1alpha1.SensitiveHeader{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
+						SensitiveHeaders: []mcpv1beta1.SensitiveHeader{
 							{
 								Name: "Authorization",
-								SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+								SecretKeyRef: mcpv1beta1.SecretKeyRef{
 									Name: "otel-secret",
 									Key:  "auth-token",
 								},
 							},
 							{
 								Name: "X-API-Key",
-								SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+								SecretKeyRef: mcpv1beta1.SecretKeyRef{
 									Name: "api-secrets",
 									Key:  "api-key",
 								},
@@ -103,7 +103,7 @@ func TestGenerateOpenTelemetryEnvVarsFromRef(t *testing.T) {
 					},
 				},
 			},
-			ref: &mcpv1alpha1.MCPTelemetryConfigReference{
+			ref: &mcpv1beta1.MCPTelemetryConfigReference{
 				Name:        "test-config",
 				ServiceName: "my-service",
 			},

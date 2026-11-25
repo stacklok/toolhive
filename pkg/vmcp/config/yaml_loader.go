@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive-core/env"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -143,6 +143,33 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 
 	case authtypes.StrategyTypeUnauthenticated:
 		// No validation needed
+
+	case authtypes.StrategyTypeAwsSts:
+		if strategy.AwsSts == nil {
+			return fmt.Errorf("backend %s: aws_sts configuration is required", name)
+		}
+		if strategy.AwsSts.Region == "" {
+			return fmt.Errorf("backend %s: aws_sts requires region field", name)
+		}
+
+	case authtypes.StrategyTypeOBO:
+		if strategy.OBO == nil {
+			return fmt.Errorf("backend %s: obo configuration is required", name)
+		}
+		obo := strategy.OBO
+		if obo.ClientSecret != "" && obo.ClientSecretEnv != "" {
+			return fmt.Errorf("backend %s: only one of clientSecret or clientSecretEnv must be set", name)
+		}
+		if obo.ClientSecretEnv != "" {
+			// Only check the variable is set, as for tokenExchange: the OBO
+			// strategy reads ClientSecretEnv at request time and rejects a
+			// config that sets both ClientSecret and ClientSecretEnv, so
+			// copying the value into ClientSecret here would make the
+			// operator-generated inline config fail validation.
+			if l.envReader.Getenv(obo.ClientSecretEnv) == "" {
+				return fmt.Errorf("backend %s: environment variable %s not set", name, obo.ClientSecretEnv)
+			}
+		}
 
 	default:
 		// Unknown strategy type - let validation handle it

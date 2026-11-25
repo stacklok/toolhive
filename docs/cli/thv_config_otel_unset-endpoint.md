@@ -24,13 +24,13 @@ thv config otel unset-endpoint [flags]
 ### Options
 
 ```
-  -h, --help   help for unset-endpoint
+  -h, --help[=true|false]   help for unset-endpoint
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

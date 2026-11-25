@@ -11,10 +11,13 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -41,6 +44,7 @@ var StaticModeAllowedTransports = []string{TransportSSE, TransportStreamableHTTP
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 // This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
+// +gendoc
 // +kubebuilder:validation:Type=string
 // +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 type Duration time.Duration
@@ -164,8 +168,20 @@ type Config struct {
 	// When enabled, vMCP exposes only find_tool and call_tool operations to clients
 	// instead of all backend tools directly. This reduces token usage by allowing
 	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+	// Enabling the optimizer currently pins this instance to MCP 2025-11-25: the
+	// find_tool/call_tool meta-tools are session-scoped, so Modern-capable (2026-07-28)
+	// clients are negotiated down to the Legacy revision (see
+	// pkg/vmcp/server/modern_gate.go; Modern parity is tracked in stacklok/toolhive#6089).
 	// +optional
 	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
+
+	// CodeMode configures vMCP code mode: server-side execution of Starlark scripts that
+	// orchestrate multiple backend tool calls in a single request via the execute_tool_script
+	// virtual tool. When enabled, execute_tool_script is advertised alongside the backend
+	// tools; a script's inner tool calls are authorized individually, so a script can only
+	// reach tools the caller is already permitted to use. Disabled by default.
+	// +optional
+	CodeMode *CodeModeConfig `json:"codeMode,omitempty" yaml:"codeMode,omitempty"`
 
 	// SessionStorage configures session storage for stateful horizontal scaling.
 	// When provider is "redis", the operator injects Redis connection parameters
@@ -173,6 +189,24 @@ type Config struct {
 	// the THV_SESSION_REDIS_PASSWORD environment variable.
 	// +optional
 	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty" yaml:"sessionStorage,omitempty"`
+
+	// RateLimiting defines rate limiting configuration for the Virtual MCP server.
+	// Requires Redis session storage to be configured for distributed rate limiting.
+	// +optional
+	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty" yaml:"rateLimiting,omitempty"`
+
+	// PassthroughHeaders is an allowlist of incoming client request header names
+	// forwarded verbatim to all backends. Captured per request at the vMCP
+	// incoming edge by headerforward.CaptureMiddleware: tool calls, resource
+	// reads and prompt gets carry the values from the request that triggered
+	// them, and a header absent on that request is not forwarded. Session-scoped
+	// work (the session's backend connections, its advertised capability list,
+	// and background capability resyncs) uses the values from the request that
+	// created the session. Names must not be in the restricted set (Host,
+	// hop-by-hop, X-Forwarded-*, etc.).
+	// +optional
+	// +listType=atomic
+	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -217,6 +251,18 @@ type OIDCConfig struct {
 	// Audience is the required token audience.
 	Audience string `json:"audience" yaml:"audience"`
 
+	// RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+	// Tokens with a missing or empty "sub" claim are rejected.
+	// If RequiredSubjectPrefix is also set, both checks must pass.
+	// +optional
+	RequiredSubject string `json:"requiredSubject,omitempty" yaml:"requiredSubject,omitempty"`
+
+	// RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+	// Tokens with a missing or empty "sub" claim are rejected.
+	// If RequiredSubject is also set, both checks must pass.
+	// +optional
+	RequiredSubjectPrefix string `json:"requiredSubjectPrefix,omitempty" yaml:"requiredSubjectPrefix,omitempty"`
+
 	// Resource is the OAuth 2.0 resource indicator (RFC 8707).
 	// Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).
 	// If not specified, defaults to Audience.
@@ -249,6 +295,25 @@ type OIDCConfig struct {
 	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
 	// WARNING: This is insecure and should NEVER be used in production
 	InsecureAllowHTTP bool `json:"insecureAllowHttp,omitempty" yaml:"insecureAllowHttp,omitempty"`
+
+	// CABundlePath is the absolute file path to a PEM-encoded CA certificate bundle
+	// used when the OIDC middleware performs HTTPS requests to the issuer
+	// (OIDC discovery, JWKS fetch, token introspection). When set, the CA bundle
+	// at this path is added to the trust store used for verifying the issuer's
+	// TLS certificate. Typically populated by the Kubernetes operator from
+	// MCPOIDCConfig.spec.inline.caBundleRef (ConfigMap) or from the in-cluster
+	// service-account CA when using Kubernetes service-account auth.
+	// +optional
+	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
+
+	// JWKSAuthTokenPath is the absolute file path to a bearer token that the
+	// OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+	// Needed when the issuer requires authentication for those endpoints, such
+	// as the Kubernetes API server. Typically populated by the Kubernetes
+	// operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+	// pod's service-account token when using Kubernetes service-account auth.
+	// +optional
+	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty" yaml:"jwksAuthTokenPath,omitempty"`
 }
 
 // AuthzConfig configures authorization.
@@ -261,6 +326,14 @@ type AuthzConfig struct {
 	// Policies contains Cedar policy definitions (when Type = "cedar").
 	Policies []string `json:"policies,omitempty" yaml:"policies,omitempty"`
 
+	// EntitiesJSON is a JSON string representing Cedar entities. Required for
+	// enterprise policies that rely on transitive relationships (e.g.
+	// `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is
+	// constructed with an empty entity store and `in` checks against absent
+	// entities silently evaluate to false. Defaults to "[]" when empty.
+	// +optional
+	EntitiesJSON string `json:"entitiesJson,omitempty" yaml:"entitiesJson,omitempty"`
+
 	// PrimaryUpstreamProvider names the upstream IDP provider whose access
 	// token should be used as the source of JWT claims for Cedar evaluation.
 	// When empty, claims from the ToolHive-issued token are used.
@@ -268,6 +341,28 @@ type AuthzConfig struct {
 	// (e.g. "default", "github"). Only relevant when the embedded auth server is active.
 	// +optional
 	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty" yaml:"primaryUpstreamProvider,omitempty"`
+
+	// GroupClaimName is the JWT claim key that contains group membership for
+	// the principal. When set, takes priority over the well-known defaults
+	// ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+	// groups under a URI-style claim (e.g. "https://example.com/groups").
+	// When empty, only the well-known claim names are checked.
+	// +optional
+	GroupClaimName string `json:"groupClaimName,omitempty" yaml:"groupClaimName,omitempty"`
+
+	// RoleClaimName is the JWT claim key that contains role membership for the
+	// principal. When set, the claim is extracted separately from GroupClaimName
+	// and both are mapped to the configured group entity type. When empty, no
+	// role extraction is performed.
+	// +optional
+	RoleClaimName string `json:"roleClaimName,omitempty" yaml:"roleClaimName,omitempty"`
+
+	// GroupEntityType is the Cedar entity type name used for principal parent
+	// UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+	// empty. Must match the entity type used in EntitiesJSON for transitive
+	// `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
+	// +optional
+	GroupEntityType string `json:"groupEntityType,omitempty" yaml:"groupEntityType,omitempty"`
 }
 
 // StaticBackendConfig defines a pre-configured backend server for static mode.
@@ -359,11 +454,59 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 	return nil
 }
 
+// ApplyToBackend applies this outgoing auth configuration to a backend, choosing
+// between the backend's own discovered auth and config-based auth. It is the single
+// implementation shared by startup discovery (pkg/vmcp/aggregator) and the Kubernetes
+// backend watcher's reconciler (pkg/vmcp/k8s), so both paths resolve auth identically.
+//
+// Auth resolution logic:
+//   - "discovered" mode: keep discovered auth if the backend has any, otherwise fall
+//     back to config-based auth via ResolveForBackend (backend-specific entry, then
+//     Default, then no auth)
+//   - "inline" mode (or ""): always use config-based auth, ignore discovered auth
+//   - unknown mode: default to config-based auth for safety
+//
+// A nil receiver is a no-op: the backend keeps whatever auth it already carries.
+func (c *OutgoingAuthConfig) ApplyToBackend(backend *vmcp.Backend, backendName string) {
+	if c == nil {
+		return
+	}
+
+	// Determine if we should use discovered auth or config-based auth
+	var useDiscoveredAuth bool
+	switch c.Source {
+	case "discovered":
+		// In discovered mode, use auth discovered from MCPServer (if any exists)
+		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
+		// which will use backend-specific config, then Default, then no auth
+		useDiscoveredAuth = backend.AuthConfig != nil
+	case "inline", "":
+		// For inline mode or empty source, always use config-based auth
+		// Ignore any discovered auth from backends
+		useDiscoveredAuth = false
+	default:
+		// Unknown source mode - default to config-based auth for safety
+		slog.Warn("unknown auth source mode, defaulting to config-based auth", "source", c.Source)
+		useDiscoveredAuth = false
+	}
+
+	if useDiscoveredAuth {
+		// Keep the auth discovered from MCPServer (already populated in backend)
+		slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
+	} else {
+		// Use auth from config (inline mode)
+		if authConfig := c.ResolveForBackend(backendName); authConfig != nil {
+			backend.AuthConfig = authConfig
+			slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
+		}
+	}
+}
+
 // AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 //
 // Tool Visibility vs Routing:
-//   - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
-//     advertised to MCP clients (visible in tools/list responses).
+//   - ExcludeAllTools, DefaultToolVisibility, per-workload ExcludeAll, and Filter control
+//     which tools are advertised to MCP clients (visible in tools/list responses).
 //   - ALL backend tools remain available in the internal routing table, allowing
 //     composite tools to call hidden backend tools.
 //   - This enables curated experiences where raw backend tools are hidden from
@@ -374,7 +517,8 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 type AggregationConfig struct {
 	// ConflictResolution defines the strategy for resolving tool name conflicts.
 	// - prefix: Automatically prefix tool names with workload identifier
-	// - priority: First workload in priority order wins
+	// - priority: Highest-priority workload wins only if all conflicting workloads
+	//   are listed; otherwise all candidates are dropped (see PriorityOrder)
 	// - manual: Explicitly define overrides for all conflicts
 	// +kubebuilder:validation:Enum=prefix;priority;manual
 	// +kubebuilder:default=prefix
@@ -396,19 +540,73 @@ type AggregationConfig struct {
 	// direct client access while exposing curated composite tool workflows.
 	// +optional
 	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
+
+	// NOTE (maintainers, not rendered into the CRD reference): there is
+	// deliberately no kubebuilder default on DefaultToolVisibility. "" already
+	// behaves as allow everywhere that reads this field, so defaulting would change
+	// only the serialized bytes — and apiextensions applies structural defaults on
+	// decode, so every existing VirtualMCPServer would come back with the field set,
+	// changing config.yaml, its ConfigMap checksum, and the pod template that stamps
+	// it. That restarts every vMCP deployment once for a no-op field.
+
+	// DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+	// tools advertised to MCP clients.
+	//   - allow (default): every tool from an unlisted backend is advertised, so
+	//     adding a workload to the group exposes it without further configuration.
+	//   - deny: an unlisted backend contributes no tools, so only backends named in
+	//     Tools are advertised. Use this when the set of exposed tools must be
+	//     enumerated deliberately rather than inherited from group membership.
+	//
+	// A backend that DOES have a Tools entry is unaffected by this setting: the
+	// entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+	// every other visibility setting here, this controls advertising only — hidden
+	// tools remain in the routing table for composite tools (see the type doc).
+	//
+	// This gates TOOLS only. An unlisted backend's resources, resource templates,
+	// and prompts are still advertised under deny; mergeResources/mergePrompts have
+	// no equivalent check.
+	// +kubebuilder:validation:Enum=allow;deny
+	// +optional
+	DefaultToolVisibility DefaultToolVisibility `json:"defaultToolVisibility,omitempty" yaml:"defaultToolVisibility,omitempty"`
 }
+
+// DefaultToolVisibility names the advertising default applied to backends with no
+// per-workload Tools entry. The zero value is "" (unset), which behaves as
+// DefaultToolVisibilityAllow so existing configs keep today's behavior.
+// +gendoc
+type DefaultToolVisibility string
+
+const (
+	// DefaultToolVisibilityAllow advertises every tool from a backend with no Tools
+	// entry. This is the default and matches pre-DefaultToolVisibility behavior.
+	DefaultToolVisibilityAllow DefaultToolVisibility = "allow"
+
+	// DefaultToolVisibilityDeny advertises no tools from a backend with no Tools entry.
+	DefaultToolVisibilityDeny DefaultToolVisibility = "deny"
+)
 
 // ConflictResolutionConfig provides configuration for conflict resolution strategies.
 // +kubebuilder:object:generate=true
 // +gendoc
 type ConflictResolutionConfig struct {
-	// PrefixFormat defines the prefix format for the "prefix" strategy.
+	// PrefixFormat defines the prefix format for the "prefix" tool strategy
+	// and for backend-prefixed prompt names (the default for every prompt;
+	// under the "priority" strategy, backends listed in priorityOrder keep
+	// their own prompt names).
 	// Supports placeholders: {workload}, {workload}_, {workload}.
 	// +kubebuilder:default="{workload}_"
 	// +optional
 	PrefixFormat string `json:"prefixFormat,omitempty" yaml:"prefixFormat,omitempty"`
 
-	// PriorityOrder defines the workload priority order for the "priority" strategy.
+	// PriorityOrder defines the workload priority order for the "priority" strategy
+	// (first has highest priority). It is not an allowlist: unique tools remain
+	// unchanged, including those from unlisted workloads. If all workloads in a
+	// tool-name collision are listed, the highest-priority one wins and losers
+	// are dropped. If any conflicting workload is unlisted, all candidates in that
+	// collision are dropped from advertising and routing, with no prefix fallback,
+	// and the collision is logged at ERROR.
+	// Separately, listed workloads keep their own prompt names (unlisted workloads'
+	// prompts stay backend-prefixed).
 	// +optional
 	PriorityOrder []string `json:"priorityOrder,omitempty" yaml:"priorityOrder,omitempty"`
 }
@@ -468,23 +666,33 @@ type ToolConfigRef struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type ToolAnnotationsOverride struct {
-	// Title overrides the human-readable title annotation.
+	// Title sets the human-readable title annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	Title *string `json:"title,omitempty" yaml:"title,omitempty"`
 
-	// ReadOnlyHint overrides the read-only hint annotation.
+	// ReadOnlyHint sets the read-only hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	ReadOnlyHint *bool `json:"readOnlyHint,omitempty" yaml:"readOnlyHint,omitempty"`
 
-	// DestructiveHint overrides the destructive hint annotation.
+	// DestructiveHint sets the destructive hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	DestructiveHint *bool `json:"destructiveHint,omitempty" yaml:"destructiveHint,omitempty"`
 
-	// IdempotentHint overrides the idempotent hint annotation.
+	// IdempotentHint sets the idempotent hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	IdempotentHint *bool `json:"idempotentHint,omitempty" yaml:"idempotentHint,omitempty"`
 
-	// OpenWorldHint overrides the open-world hint annotation.
+	// OpenWorldHint sets the open-world hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	OpenWorldHint *bool `json:"openWorldHint,omitempty" yaml:"openWorldHint,omitempty"`
 }
@@ -526,6 +734,33 @@ type OperationalConfig struct {
 	// FailureHandling configures failure handling behavior.
 	// +optional
 	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty" yaml:"failureHandling,omitempty"`
+
+	// ListChanged configures live list_changed propagation from backends.
+	// +optional
+	ListChanged *ListChangedConfig `json:"listChanged,omitempty" yaml:"listChanged,omitempty"`
+}
+
+// ListChangedConfig configures which backends vMCP subscribes to for
+// list_changed notifications.
+//
+// Subscribing opens a standalone notification stream to the backend during
+// session initialization. A backend that accepts that subscribe and then never
+// services it stalls the handshake until the init deadline, and clients with
+// their own connect timeout give up first. Excluding such a backend costs it
+// live propagation only: its tools are still aggregated and callable, and they
+// refresh on the next session.
+// +kubebuilder:object:generate=true
+// +gendoc
+type ListChangedConfig struct {
+	// Enabled turns propagation on or off for every backend. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// DisabledWorkloads names backends to exclude while leaving the rest
+	// subscribed. Prefer this over Enabled when a single backend misbehaves.
+	// +optional
+	// +listType=set
+	DisabledWorkloads []string `json:"disabledWorkloads,omitempty" yaml:"disabledWorkloads,omitempty"`
 }
 
 // TimeoutConfig configures timeout settings.
@@ -540,6 +775,23 @@ type TimeoutConfig struct {
 	// PerWorkload defines per-workload timeout overrides.
 	// +optional
 	PerWorkload map[string]Duration `json:"perWorkload,omitempty" yaml:"perWorkload,omitempty"`
+
+	// BackendInit caps how long session initialization waits for a single
+	// backend to connect and hand back its capabilities. Unlike Default, which
+	// only ever extends that deadline, an explicit BackendInit is authoritative:
+	// it bounds session init even when a workload's request timeout is longer.
+	//
+	// Leave it unset unless a backend can stall the handshake. It exists for
+	// backends that neither answer nor fail promptly: a stateless MCP server
+	// that requires per-user auth cannot be classified by the unauthenticated
+	// health probe, so vMCP opens the persistent connection its Modern skip
+	// path would otherwise avoid, and that connection can hang until the
+	// deadline. Clients with their own connect timeout give up first, and
+	// because they never complete a call, the revision cache never warms and
+	// the next session repeats it. A few seconds here lets session init fail
+	// fast, which partialFailureMode: best_effort turns into a usable session.
+	// +optional
+	BackendInit Duration `json:"backendInit,omitempty" yaml:"backendInit,omitempty"`
 }
 
 // FailureHandlingConfig configures failure handling behavior.
@@ -647,6 +899,26 @@ type CompositeToolConfig struct {
 	// If not specified, the workflow returns the last step's output (backward compatible).
 	// +optional
 	Output *OutputConfig `json:"output,omitempty" yaml:"output,omitempty"`
+
+	// Annotations declares MCP tool annotations for the composite tool.
+	//
+	// Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+	// and the backend tools are aggregated), not at CRD admission — thv vmcp
+	// validate does NOT check annotation contradictions. The derived floor is
+	// fail-closed: when the workflow has one or more tool steps the floor is
+	// always non-nil, and any step whose annotations are nil/unknown taints the
+	// floor conservatively (readOnly=false, destructive=true, openWorld=true).
+	// A workflow with no tool steps (e.g. only elicitation) has no floor.
+	//
+	// When nil, annotations are derived from the annotations of the backend tools
+	// referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+	// step tool is read-only). When set, the values are an explicit author
+	// declaration merged over the derived floor — subject to a safety-floor
+	// guardrail that drops the composite tool (with a warning naming the offending
+	// step tools) if an explicit hint would make the tool look safer than its
+	// steps allow.
+	// +optional
+	Annotations *ToolAnnotationsOverride `json:"annotations,omitempty" yaml:"annotations,omitempty"`
 }
 
 // CompositeToolRef defines a reference to a VirtualMCPCompositeToolDefinition resource.
@@ -855,8 +1127,13 @@ type OutputProperty struct {
 // OptimizerConfig configures the MCP optimizer.
 // When enabled, vMCP exposes only find_tool and call_tool operations to clients
 // instead of all backend tools directly.
+//
 // +kubebuilder:object:generate=true
+// +kubebuilder:validation:XValidation:rule="!has(self.embeddingHeaders) || (has(self.embeddingProvider) && self.embeddingProvider == 'openai')",message="embeddingHeaders is only supported when embeddingProvider is 'openai'"
+// +kubebuilder:validation:XValidation:rule=`!has(self.embeddingHeaders) || self.embeddingHeaders.all(k, k.matches('^[!#$%&\\x27*+.^_\\x60|~0-9A-Za-z-]+$') && !(k.lowerAscii() in ['authorization', 'content-type']))`,message="embeddingHeaders names must be valid HTTP header names and must not include Authorization or Content-Type"
 // +gendoc
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type OptimizerConfig struct {
 	// EmbeddingService is the full base URL of the embedding service endpoint
 	// (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
@@ -879,6 +1156,40 @@ type OptimizerConfig struct {
 	// +kubebuilder:default="30s"
 	// +optional
 	EmbeddingServiceTimeout Duration `json:"embeddingServiceTimeout,omitempty" yaml:"embeddingServiceTimeout,omitempty"`
+
+	// EmbeddingProvider selects the wire protocol used to talk to the embedding
+	// service. "tei" speaks the HuggingFace Text Embeddings Inference API;
+	// "openai" speaks the OpenAI-compatible /embeddings API, which lets the
+	// optimizer use OpenAI, Azure OpenAI, or another OpenAI-compatible gateway.
+	// Defaults to "tei" when empty.
+	//
+	// The "openai" provider reads EmbeddingService directly and cannot be combined
+	// with EmbeddingServerRef, which provisions a managed TEI server; the operator
+	// rejects that combination at admission.
+	// +kubebuilder:validation:Enum=tei;openai
+	// +kubebuilder:default="tei"
+	// +optional
+	EmbeddingProvider string `json:"embeddingProvider,omitempty" yaml:"embeddingProvider,omitempty"`
+
+	// EmbeddingModel is the model name requested from the embedding service
+	// (e.g. "text-embedding-3-small"). Required when EmbeddingProvider is
+	// "openai". Ignored for the "tei" provider, where the model is fixed by the
+	// running TEI container.
+	//
+	// The API key for an OpenAI-compatible service is not configured here: it is
+	// read from the OPENAI_API_KEY environment variable so the secret never
+	// lands in a CRD spec or ConfigMap. An empty key omits the Authorization
+	// header, which supports keyless in-cluster gateways.
+	// +optional
+	EmbeddingModel string `json:"embeddingModel,omitempty" yaml:"embeddingModel,omitempty"`
+
+	// EmbeddingHeaders holds additional HTTP headers sent with every embedding
+	// request. Only supported when EmbeddingProvider is "openai". Values are
+	// stored in plain text and must not contain secrets; Authorization
+	// (derived from OPENAI_API_KEY) and Content-Type cannot be set.
+	// +kubebuilder:validation:MaxProperties=32
+	// +optional
+	EmbeddingHeaders map[string]EmbeddingHeaderValue `json:"embeddingHeaders,omitempty" yaml:"embeddingHeaders,omitempty"`
 
 	// MaxToolsToReturn is the maximum number of tool results returned by a search query.
 	// Defaults to 8 if not specified or zero.
@@ -906,6 +1217,47 @@ type OptimizerConfig struct {
 	SemanticDistanceThreshold string `json:"semanticDistanceThreshold,omitempty" yaml:"semanticDistanceThreshold,omitempty"`
 }
 
+// EmbeddingHeaderValue is a custom embedding request header value: 1 to 8192
+// characters with no control characters other than tab.
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=8192
+// +kubebuilder:validation:Pattern=`^[^\x00-\x08\x0A-\x1F\x7F]*$`
+type EmbeddingHeaderValue string
+
+// CodeModeConfig configures vMCP code mode (the execute_tool_script virtual tool).
+// When enabled, agents can submit a Starlark script that calls multiple backend tools
+// server-side — with loops, conditionals, and parallel() fan-out — and receive a single
+// aggregated result, collapsing many tool-call round-trips into one.
+// +kubebuilder:object:generate=true
+// +gendoc
+type CodeModeConfig struct {
+	// Enabled turns code mode on. When false (the default), execute_tool_script is not
+	// advertised in tools/list and scripts cannot be executed.
+	// +optional
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// StepLimit is the maximum number of Starlark execution steps per script. It bounds
+	// runaway loops and computation. Defaults to 100000 if unset or zero.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=100000
+	// +optional
+	StepLimit int64 `json:"stepLimit,omitempty" yaml:"stepLimit,omitempty"`
+
+	// ParallelMaxConcurrency caps the number of goroutines a script's parallel() builtin
+	// may run concurrently. Defaults to 10 if unset or zero.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=10
+	// +optional
+	ParallelMaxConcurrency int `json:"parallelMaxConcurrency,omitempty" yaml:"parallelMaxConcurrency,omitempty"`
+
+	// ToolCallTimeout bounds each individual backend tool call made from within a script.
+	// A call exceeding it is cancelled and surfaces a timeout error to the script.
+	// Defaults to 30s if unset.
+	// +kubebuilder:default="30s"
+	// +optional
+	ToolCallTimeout Duration `json:"toolCallTimeout,omitempty" yaml:"toolCallTimeout,omitempty"`
+}
+
 // SessionStorageConfig configures session storage for stateful horizontal scaling.
 // The Redis password is not stored here; it is injected as the THV_SESSION_REDIS_PASSWORD
 // environment variable by the operator when spec.sessionStorage.passwordRef is set.
@@ -930,6 +1282,13 @@ type SessionStorageConfig struct {
 	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
 	// +optional
 	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
+
+	// TLS enables TLS for session storage and rate limiting. An empty
+	// configuration verifies the Redis server using system roots.
+	// On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+	// field from it and rejects a value set under spec.config.sessionStorage.
+	// +optional
+	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // Validator validates configuration.

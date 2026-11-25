@@ -7,11 +7,13 @@ package oidc
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
@@ -20,6 +22,10 @@ const (
 	defaultK8sCABundlePath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 	defaultK8sTokenPath    = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec
 	defaultK8sIssuer       = "https://kubernetes.default.svc"
+
+	// serviceAccountSubjectPrefix is the prefix of the "sub" claim in Kubernetes
+	// service account tokens: system:serviceaccount:<namespace>:<name>.
+	serviceAccountSubjectPrefix = "system:serviceaccount:"
 )
 
 // OIDCConfig represents the resolved OIDC configuration values
@@ -37,6 +43,10 @@ type OIDCConfig struct { //nolint:revive // Keeping OIDCConfig name for backward
 	ProtectedResourceAllowPrivateIP bool
 	InsecureAllowHTTP               bool
 	Scopes                          []string
+	// RequiredSubject, when non-empty, is the exact "sub" claim a token must carry.
+	RequiredSubject string
+	// RequiredSubjectPrefix, when non-empty, is a prefix the token's "sub" claim must start with.
+	RequiredSubjectPrefix string
 }
 
 //go:generate mockgen -destination=mocks/mock_resolver.go -package=mocks -source=resolver.go Resolver
@@ -48,8 +58,8 @@ type Resolver interface {
 	// per-server overrides (audience, scopes) from the reference.
 	ResolveFromConfigRef(
 		ctx context.Context,
-		oidcConfigRef *mcpv1alpha1.MCPOIDCConfigReference,
-		oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+		oidcConfigRef *mcpv1beta1.MCPOIDCConfigReference,
+		oidcConfig *mcpv1beta1.MCPOIDCConfig,
 		serverName, namespace string,
 		proxyPort int32,
 	) (*OIDCConfig, error)
@@ -73,8 +83,8 @@ type resolver struct {
 // (audience, scopes) from the MCPOIDCConfigReference.
 func (r *resolver) ResolveFromConfigRef(
 	ctx context.Context,
-	ref *mcpv1alpha1.MCPOIDCConfigReference,
-	oidcCfg *mcpv1alpha1.MCPOIDCConfig,
+	ref *mcpv1beta1.MCPOIDCConfigReference,
+	oidcCfg *mcpv1beta1.MCPOIDCConfig,
 	serverName, namespace string,
 	proxyPort int32,
 ) (*OIDCConfig, error) {
@@ -88,9 +98,9 @@ func (r *resolver) ResolveFromConfigRef(
 	}
 
 	switch oidcCfg.Spec.Type {
-	case mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount:
-		return r.resolveFromK8sServiceAccountConfig(ctx, oidcCfg.Spec.KubernetesServiceAccount, ref, resourceURL)
-	case mcpv1alpha1.MCPOIDCConfigTypeInline:
+	case mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount:
+		return r.resolveFromK8sServiceAccountConfig(ctx, oidcCfg.Spec.KubernetesServiceAccount, ref, resourceURL, namespace)
+	case mcpv1beta1.MCPOIDCConfigTypeInline:
 		return r.resolveFromInlineSharedConfig(oidcCfg.Spec.Inline, ref, resourceURL)
 	default:
 		return nil, fmt.Errorf("unknown MCPOIDCConfig type: %s", oidcCfg.Spec.Type)
@@ -99,19 +109,19 @@ func (r *resolver) ResolveFromConfigRef(
 
 // resolveFromK8sServiceAccountConfig resolves OIDC config from a shared KubernetesServiceAccount config
 // with per-server audience override from the MCPOIDCConfigReference.
+// workloadNamespace is the namespace of the workload referencing the config; it is
+// used as the service account namespace when ServiceAccount is set without Namespace.
 func (*resolver) resolveFromK8sServiceAccountConfig(
 	ctx context.Context,
-	config *mcpv1alpha1.KubernetesServiceAccountOIDCConfig,
-	ref *mcpv1alpha1.MCPOIDCConfigReference,
+	config *mcpv1beta1.KubernetesServiceAccountOIDCConfig,
+	ref *mcpv1beta1.MCPOIDCConfigReference,
 	resourceURL string,
+	workloadNamespace string,
 ) (*OIDCConfig, error) {
 	if config == nil {
 		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Info("KubernetesServiceAccount OIDCConfig is nil, using defaults")
-		defaultUseClusterAuth := true
-		config = &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
-			UseClusterAuth: &defaultUseClusterAuth,
-		}
+		config = &mcpv1beta1.KubernetesServiceAccountOIDCConfig{}
 	}
 
 	useClusterAuth := true
@@ -136,18 +146,89 @@ func (*resolver) resolveFromK8sServiceAccountConfig(
 
 	if useClusterAuth {
 		result.ThvCABundlePath = defaultK8sCABundlePath
-		result.JWKSAuthTokenPath = defaultK8sTokenPath
 		result.JWKSAllowPrivateIP = true
+		if sendServiceAccountToken(config.UseClusterAuth, result.Issuer, result.JWKSURL) {
+			result.JWKSAuthTokenPath = defaultK8sTokenPath
+		}
 	}
 
+	result.RequiredSubject, result.RequiredSubjectPrefix = serviceAccountSubjectRestriction(
+		config.ServiceAccount, config.Namespace, workloadNamespace)
+
 	return result, nil
+}
+
+// inClusterAPIServerHosts are the hostnames that always name the in-cluster
+// Kubernetes API server from inside a pod. The match is exact: a prefix match
+// on "kubernetes.default.svc." would also accept a name such as
+// "kubernetes.default.svc.example.com", which cluster DNS forwards upstream.
+// Clusters with a custom cluster domain opt in with useClusterAuth: true.
+var inClusterAPIServerHosts = map[string]struct{}{
+	"kubernetes.default.svc":               {},
+	"kubernetes.default.svc.cluster.local": {},
+}
+
+// sendServiceAccountToken reports whether the workload's own service account
+// token is attached to the requests that fetch the issuer's signing keys.
+//
+// The token authenticates the workload to the Kubernetes API server, which
+// serves the service account issuer's discovery and JWKS endpoints. Sending it
+// anywhere else hands a credential for the workload's RBAC (for example the
+// proxy runner's or vMCP's Role) to a third party. So when useClusterAuth is
+// left at its default, the token is sent only if the URL actually fetched is
+// the in-cluster API server: jwksUrl when it is set (the validator then skips
+// discovery and never contacts the issuer), otherwise the issuer used for
+// discovery. Introspection is not considered: a kubernetesServiceAccount
+// config has no client credentials, so the validator's introspection client
+// never carries the token. An explicit useClusterAuth: true sends it
+// unconditionally, and false never sends it.
+func sendServiceAccountToken(useClusterAuth *bool, issuer, jwksURL string) bool {
+	if useClusterAuth != nil {
+		return *useClusterAuth
+	}
+	if jwksURL != "" {
+		return isInClusterAPIServerURL(jwksURL)
+	}
+	return isInClusterAPIServerURL(issuer)
+}
+
+// isInClusterAPIServerURL reports whether rawURL is an https URL whose host is
+// one of inClusterAPIServerHosts.
+func isInClusterAPIServerURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.User != nil {
+		return false
+	}
+	_, ok := inClusterAPIServerHosts[strings.ToLower(u.Hostname())]
+	return ok
+}
+
+// serviceAccountSubjectRestriction computes the "sub" claim restriction for a
+// kubernetesServiceAccount config. Only what is set is enforced:
+//   - serviceAccount set: exact subject system:serviceaccount:<ns>:<serviceAccount>,
+//     where <ns> is namespace if set, otherwise workloadNamespace.
+//   - only namespace set: prefix system:serviceaccount:<namespace>: (any SA in it).
+//   - neither set: no restriction.
+func serviceAccountSubjectRestriction(serviceAccount, namespace, workloadNamespace string) (exact, prefix string) {
+	switch {
+	case serviceAccount != "":
+		ns := namespace
+		if ns == "" {
+			ns = workloadNamespace
+		}
+		return serviceAccountSubjectPrefix + ns + ":" + serviceAccount, ""
+	case namespace != "":
+		return "", serviceAccountSubjectPrefix + namespace + ":"
+	default:
+		return "", ""
+	}
 }
 
 // resolveFromInlineSharedConfig resolves OIDC config from a shared inline config
 // with per-server audience and scopes override from the MCPOIDCConfigReference.
 func (*resolver) resolveFromInlineSharedConfig(
-	config *mcpv1alpha1.InlineOIDCSharedConfig,
-	ref *mcpv1alpha1.MCPOIDCConfigReference,
+	config *mcpv1beta1.InlineOIDCSharedConfig,
+	ref *mcpv1beta1.MCPOIDCConfigReference,
 	resourceURL string,
 ) (*OIDCConfig, error) {
 	if config == nil {
@@ -176,7 +257,7 @@ func (*resolver) resolveFromInlineSharedConfig(
 
 // computeCABundlePath computes the CA bundle mount path from a CABundleSource.
 // Returns empty string if caBundleRef is nil or has no ConfigMapRef.
-func computeCABundlePath(caBundleRef *mcpv1alpha1.CABundleSource) string {
+func computeCABundlePath(caBundleRef *mcpv1beta1.CABundleSource) string {
 	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
 		return ""
 	}

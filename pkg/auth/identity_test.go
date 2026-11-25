@@ -5,11 +5,14 @@ package auth
 
 import (
 	"encoding/json"
+	"maps"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/audit"
 )
 
 func TestClaimsToIdentity(t *testing.T) {
@@ -389,13 +392,240 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 				assert.NotContains(t, string(data), "gho_secret123")
 			},
 		},
+		{
+			name: "redacts_upstream_id_tokens",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{Subject: "user123"},
+				UpstreamIDTokens: map[string]string{
+					"github":    "eyJhbGciOiJSUzI1NiJ9.github-id-token",
+					"atlassian": "eyJhbGciOiJSUzI1NiJ9.atlassian-id-token",
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				err := json.Unmarshal(data, &result)
+				require.NoError(t, err)
+
+				tokens, ok := result["upstreamIDTokens"].(map[string]any)
+				require.True(t, ok, "upstreamIDTokens should be a map")
+				assert.Equal(t, "REDACTED", tokens["github"])
+				assert.Equal(t, "REDACTED", tokens["atlassian"])
+				assert.NotContains(t, string(data), "eyJhbGciOiJSUzI1NiJ9")
+			},
+		},
+		{
+			name: "empty_upstream_id_tokens_omitted",
+			identity: &Identity{
+				PrincipalInfo:    PrincipalInfo{Subject: "user123"},
+				UpstreamIDTokens: map[string]string{},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				err := json.Unmarshal(data, &result)
+				require.NoError(t, err)
+
+				_, exists := result["upstreamIDTokens"]
+				assert.False(t, exists, "empty upstreamIDTokens should be omitted")
+			},
+		},
+		{
+			name: "nil_upstream_id_tokens_omitted",
+			identity: &Identity{
+				PrincipalInfo:    PrincipalInfo{Subject: "user123"},
+				UpstreamIDTokens: nil,
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				err := json.Unmarshal(data, &result)
+				require.NoError(t, err)
+
+				_, exists := result["upstreamIDTokens"]
+				assert.False(t, exists, "nil upstreamIDTokens should be omitted")
+			},
+		},
+		{
+			name: "upstream_id_tokens_round_trip_preserves_keys_redacts_values",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{Subject: "user123"},
+				UpstreamIDTokens: map[string]string{
+					"github":    "eyJhbGciOiJSUzI1NiJ9.github-id-token",
+					"atlassian": "eyJhbGciOiJSUzI1NiJ9.atlassian-id-token",
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				// Unmarshal into the same SafeIdentity shape that MarshalJSON produces
+				// so we can verify the round-trip preserves the key set and the
+				// redaction replaces every non-empty value with "REDACTED".
+				var roundTrip struct {
+					Subject          string            `json:"subject"`
+					UpstreamIDTokens map[string]string `json:"upstreamIDTokens,omitempty"`
+				}
+				require.NoError(t, json.Unmarshal(data, &roundTrip))
+
+				assert.Equal(t, "user123", roundTrip.Subject)
+				assert.Equal(t, map[string]string{
+					"github":    "REDACTED",
+					"atlassian": "REDACTED",
+				}, roundTrip.UpstreamIDTokens,
+					"round-trip must preserve all provider keys with redacted values")
+				assert.NotContains(t, string(data), "eyJhbGciOiJSUzI1NiJ9",
+					"raw ID token material must not appear in marshaled output")
+			},
+		},
+		{
+			name: "strips_internal_claims_from_serialized_claims",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{
+					Subject: "user123",
+					Claims: map[string]any{
+						"tsid":   "session-xyz",
+						"sub":    "user123",
+						"org_id": "org456",
+						"https://toolhive.dev/claims/delegated_access": "true",
+					},
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(data, &result))
+
+				claims, ok := result["claims"].(map[string]any)
+				require.True(t, ok, "claims should be a map")
+				_, hasTsid := claims["tsid"]
+				assert.False(t, hasTsid, "tsid must be stripped from serialized claims")
+				_, hasDelegated := claims["https://toolhive.dev/claims/delegated_access"]
+				assert.False(t, hasDelegated, "delegated-access marker must be stripped from serialized claims")
+				assert.NotContains(t, string(data), "session-xyz",
+					"tsid value must not appear anywhere in marshaled output")
+				assert.NotContains(t, string(data), "https://toolhive.dev/claims/delegated_access",
+					"delegated-access marker must not appear anywhere in marshaled output")
+				// Guard: co-resident claims must be preserved
+				assert.Equal(t, "user123", claims["sub"], "sub claim must be preserved")
+				assert.Equal(t, "org456", claims["org_id"], "org_id claim must be preserved")
+			},
+		},
+		{
+			name: "includes_delegation_chain",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{
+					Subject: "user123",
+					DelegationChain: audit.ParseDelegationChain(map[string]any{
+						"sub": "agent-1",
+						"iss": "https://issuer.example",
+						"act": map[string]any{"sub": "agent-2"},
+					}, DefaultMaxDelegationDepth),
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(data, &result))
+
+				chain, ok := result["delegation"].(map[string]any)
+				require.True(t, ok, "delegation should be a map")
+				assert.Equal(t, false, chain["truncated"])
+				assert.Equal(t, float64(0), chain["omitted"])
+				assert.Equal(t, false, chain["malformed"])
+
+				hops, ok := chain["chain"].([]any)
+				require.True(t, ok, "chain should be an array")
+				require.Len(t, hops, 2)
+
+				first, ok := hops[0].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "agent-1", first["sub"])
+				assert.Equal(t, "https://issuer.example", first["iss"])
+
+				second, ok := hops[1].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "agent-2", second["sub"])
+			},
+		},
+		{
+			name: "omits_empty_delegation_chain",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{Subject: "user123"},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(data, &result))
+
+				_, exists := result["delegation"]
+				assert.False(t, exists, "delegation key should be omitted when no chain is present")
+			},
+		},
+		{
+			name: "omits_admission_route",
+			identity: &Identity{
+				PrincipalInfo:  PrincipalInfo{Subject: "user123"},
+				AdmissionRoute: AdmissionRouteDelegated,
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+				assert.NotContains(t, string(data), "delegated", "admission route must not be serialized")
+			},
+		},
+		{
+			name: "marshals_claims_without_tsid_unchanged",
+			identity: &Identity{
+				PrincipalInfo: PrincipalInfo{
+					Subject: "user123",
+					Claims: map[string]any{
+						"sub":    "user123",
+						"org_id": "org456",
+					},
+				},
+			},
+			wantErr: false,
+			checkFunc: func(t *testing.T, data []byte) {
+				t.Helper()
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(data, &result))
+
+				claims, ok := result["claims"].(map[string]any)
+				require.True(t, ok, "claims should be a map")
+				assert.Equal(t, "user123", claims["sub"], "sub must pass through verbatim")
+				assert.Equal(t, "org456", claims["org_id"], "org_id must pass through verbatim")
+				assert.Len(t, claims, 2, "no claims should be added or dropped when tsid is absent")
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			var before map[string]any
+			if tt.identity != nil {
+				before = maps.Clone(tt.identity.Claims)
+			}
 			data, err := tt.identity.MarshalJSON()
+			if tt.identity != nil {
+				// Stripping internal claims for output must not touch the caller's map.
+				require.Equal(t, before, tt.identity.Claims, "MarshalJSON must leave the caller's claims intact")
+			}
 
 			if tt.wantErr {
 				require.Error(t, err)

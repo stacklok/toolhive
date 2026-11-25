@@ -17,29 +17,31 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: 'stable'
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup ko
-        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+        uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Build and Push Image to GHCR
         env:
@@ -48,11 +50,11 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
 
@@ -62,13 +64,15 @@ jobs:
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 
           # Sign the latest tag if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
           fi
 
@@ -85,25 +89,27 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.BASE_REPO }}
           tags: |
@@ -112,7 +118,7 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: containers/egress-proxy
           platforms: linux/amd64,linux/arm64
@@ -125,12 +131,14 @@ jobs:
 
       - name: Install Cosign
         if: startsWith(github.ref, 'refs/tags/')
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Sign container image
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           cosign sign -y $BASE_REPO:$TAG
           cosign sign -y $BASE_REPO:latest
 
@@ -147,15 +155,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: 'stable'
 
       - name: Install Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -165,23 +175,23 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup ko
-        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+        uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Build and Push Image to GHCR
         env:
@@ -190,11 +200,11 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
 
@@ -204,13 +214,15 @@ jobs:
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 
           # Sign the latest tag if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
           fi
 
@@ -227,32 +239,34 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: 'stable'
 
       - name: Compute version number
         id: version-string
-        uses: ./.github/actions/compute-version
+        uses: $/.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup ko
-        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+        uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Build and Push Image to GHCR
         env:
@@ -261,10 +275,10 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           TAGS="-t $TAG"
           # Add latest tag only if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv-proxyrunner \
@@ -273,13 +287,15 @@ jobs:
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=${{ steps.version-string.outputs.tag }}
+          TAG="$VERSION"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 
           # Sign the latest tag if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
           fi
 
@@ -296,41 +312,43 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: 'stable'
 
       - name: Compute version number
         id: version-string
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
             # For main branch, use semver with -dev suffix
             echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             # For tags, use the tag as is (assuming it's semver)
-            TAG="${{ github.ref_name }}"
+            TAG="$GITHUB_REF_NAME"
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           else
             # For other branches, use branch name and run number
-            BRANCH="${{ github.ref_name }}"
+            BRANCH="$GITHUB_REF_NAME"
             echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup ko
-        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+        uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Build and Push Image to GHCR
         env:
@@ -339,11 +357,11 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=$(echo "$VERSION" | sed 's/+/_/g')
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
 
@@ -353,12 +371,14 @@ jobs:
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=$(echo "$VERSION" | sed 's/+/_/g')
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 
           # Sign the latest tag if building from a tag
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
           fi

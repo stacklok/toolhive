@@ -12,7 +12,7 @@ ToolHive is a **platform** - not just a container runner. It provides the buildi
 - **Proxy and enhance** MCP server communications with middleware
 - **Aggregate and compose** multiple MCP servers into unified interfaces
 - **Manage at scale** using Kubernetes operators or local deployments
-- **Curate and distribute** trusted MCP server registries
+- **Curate and distribute** trusted MCP servers, Agent Skills, and AI-tool plugins
 
 The platform is designed to be extensible, allowing developers to build on top of its proxy and middleware capabilities.
 
@@ -87,7 +87,7 @@ thv run go://package-name
 
 Manages MCP servers in Kubernetes clusters using custom resources.
 
-The operator watches for `MCPServer`, `MCPRegistry`, `MCPToolConfig`, `MCPExternalAuthConfig`, `MCPGroup`, and `VirtualMCPServer` CRDs, reconciling them into Kubernetes resources (Deployments, StatefulSets, Services).
+The operator watches a layered set of CRDs (Core: `MCPServer`, `MCPRemoteProxy`, `MCPServerEntry`; Organization: `MCPGroup`; Aggregation: `VirtualMCPServer`, `VirtualMCPCompositeToolDefinition`; Discovery: `MCPRegistry`; Configuration: `MCPToolConfig`, `MCPExternalAuthConfig`, `MCPOIDCConfig`, `MCPTelemetryConfig`, `MCPWebhookConfig`; Auxiliary: `EmbeddingServer`) and reconciles them into Kubernetes resources (proxy-runner Deployments and Services; ConfigMaps; the MCP server itself is created as a StatefulSet by the proxy-runner, while `EmbeddingServer`'s StatefulSet is created by the operator directly). See [Operator Architecture](09-operator-architecture.md) for the full taxonomy.
 
 **For details**, see:
 - [`cmd/thv-operator/README.md`](../../cmd/thv-operator/README.md) - Operator overview and usage
@@ -145,7 +145,9 @@ For detailed definitions and relationships, see [Core Concepts](02-core-concepts
 - **RunConfig** - Portable configuration format
 - **Permission Profiles** - Security policies
 - **Groups** - Logical server collections
-- **Registry** - Catalog of trusted MCP servers
+- **Registry** - Catalog of MCP servers, Agent Skills, and AI-tool plugins
+- **Skill** - One `SKILL.md`-based instruction component for AI assistants
+- **AI-tool plugin** - A manifest-based, multi-component bundle materialized for supported AI clients
 - **Virtual MCP Server** - Aggregates multiple backends into unified interface
 
 ## Deployment Modes
@@ -173,7 +175,7 @@ Via [ToolHive Studio](https://github.com/stacklok/toolhive-studio):
 
 Everything is driven by `thv-operator`:
 - Listens for Kubernetes custom resources
-- Creates Kubernetes-native resources (Deployments, StatefulSets, Services)
+- Creates Kubernetes-native resources (Deployments, Services, ConfigMaps for the proxy-runner; StatefulSets are created by the proxy-runner for MCP server pods)
 - Uses `thv-proxyrunner` binary (not `thv`)
 - Provides cluster-scale management
 

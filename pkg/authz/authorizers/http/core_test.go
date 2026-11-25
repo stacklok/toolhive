@@ -328,3 +328,24 @@ func TestFactoryRegistration(t *testing.T) {
 		t.Errorf("Registered factory is not *Factory, got %T", factory)
 	}
 }
+
+// TestFactory_ConfigKeyMatchesStructTag locks in the contract between
+// Factory.ConfigKey() and the Config struct's json tag. A future rename of
+// either string without updating the other would silently produce JSON the
+// backend's own Unmarshal could not parse. Building an envelope around
+// ConfigKey() and asserting it deserialises into Config.Options is the
+// cheapest way to make that drift impossible.
+func TestFactory_ConfigKeyMatchesStructTag(t *testing.T) {
+	t.Parallel()
+
+	envelope := []byte(`{"version":"1.0","type":"httpv1","` + (&Factory{}).ConfigKey() +
+		`":{"http":{"url":"http://localhost:9000"},"claim_mapping":"standard"}}`)
+
+	var cfg Config
+	if err := json.Unmarshal(envelope, &cfg); err != nil {
+		t.Fatalf("envelope built around Factory.ConfigKey() must parse into Config: %v", err)
+	}
+	if cfg.Options == nil {
+		t.Fatal("Config.Options must be set after Unmarshal — if nil, Factory.ConfigKey() and the Options struct tag have drifted apart")
+	}
+}

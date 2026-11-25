@@ -149,8 +149,9 @@ This session is a "prototype" that may be used for deserialization:
   - The prototype provides the concrete type for JSON/gob deserialization
   - If your storage keeps Requesters in memory, this parameter may be unused
 
-Our in-memory implementation ignores this parameter since we store live Requester
-objects. Persistent backends (SQL, Redis) would use it for deserialization.
+Our in-memory implementation ignores this parameter because it stores snapshots of
+Requesters and returns fresh snapshots on retrieval. A persistent backend may use the
+prototype to choose a deserialization type.
 
 # ToolHive Extensions
 
@@ -173,8 +174,9 @@ Expiration: We use timedEntry wrapper to track creation and expiration times.
 A background goroutine periodically cleans expired entries. Production backends
 might use database TTL features or scheduled jobs.
 
-Defensive copies: Store and retrieve methods make deep copies to prevent aliasing
-issues where callers might modify returned data.
+Defensive copies: The in-memory token stores snapshot Requester fields, form values,
+and sessions on store and retrieval; the concrete Client reference remains shared.
+Other storage types have their own copying behavior.
 
 Error mapping: Storage errors are wrapped with both our sentinel errors (ErrNotFound,
 ErrExpired) and fosite errors (fosite.ErrNotFound) for compatibility with fosite's

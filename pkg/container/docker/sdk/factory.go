@@ -6,14 +6,13 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"os"
-	"path/filepath"
+	"strings"
 
-	"github.com/adrg/xdg"
-	"github.com/docker/docker/client"
-	"gopkg.in/yaml.v3"
+	mobyclient "github.com/moby/moby/client"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -43,6 +42,10 @@ const (
 	DockerSocketPath = "/var/run/docker.sock"
 	// DockerDesktopMacSocketPath is the Docker Desktop socket path on macOS
 	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
+	// DockerDesktopLinuxSocketPath is the Docker Desktop socket path on Linux
+	// (relative to $HOME). Docker Desktop on Linux registers a "desktop-linux"
+	// Docker context that points to this socket.
+	DockerDesktopLinuxSocketPath = ".docker/desktop/docker.sock"
 	// RancherDesktopMacSocketPath is the Docker socket path for Rancher Desktop on macOS
 	RancherDesktopMacSocketPath = ".rd/docker.sock"
 	// OrbStackMacSocketPath is the Docker socket path for OrbStack on macOS
@@ -53,44 +56,21 @@ const (
 
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker, runtime.TypeColima}
 
-// loadSocketOverrides reads socket path overrides from the ToolHive config file.
-// Best-effort: returns empty overrides on any error so auto-detection takes over.
-func loadSocketOverrides() runtime.SocketConfig {
-	configPath, err := xdg.ConfigFile("toolhive/config.yaml")
-	if err != nil {
-		slog.Debug("failed to resolve config path for socket overrides", "error", err)
-		return runtime.SocketConfig{}
-	}
-
-	// #nosec G304: path is derived from XDG config dir, not user input.
-	data, err := os.ReadFile(filepath.Clean(configPath))
-	if err != nil {
-		slog.Debug("failed to read config file for socket overrides", "error", err)
-		return runtime.SocketConfig{}
-	}
-
-	var cfg struct {
-		ContainerRuntime runtime.SocketConfig `yaml:"container_runtime,omitempty"`
-	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		slog.Debug("failed to parse config file for socket overrides", "error", err)
-		return runtime.SocketConfig{}
-	}
-
-	return cfg.ContainerRuntime
-}
-
-// NewDockerClient creates a new container client
-func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type, error) {
+// NewDockerClient creates a new container client.
+//
+// For each runtime (Podman, Docker, Colima) it asks the platform helper for
+// every candidate socket that exists on disk and then tries to connect to each
+// in turn. This matters in mixed setups — e.g. /var/run/docker.sock is present
+// but the running user is not in the docker group, while Docker Desktop's
+// per-user socket at ~/.docker/desktop/docker.sock would work. Without
+// per-runtime fallback the first stat-OK socket short-circuits discovery and
+// we'd surface "no container runtime available" even though a usable Docker
+// daemon is reachable through a different socket.
+func NewDockerClient(ctx context.Context) (*mobyclient.Client, string, runtime.Type, error) {
 	var lastErr error
 
-	overrides := loadSocketOverrides()
-
-	// We try to find a container socket for the given runtime
-	// We try Podman first, then Docker as fallback
 	for _, sp := range supportedSocketPaths {
-		// Try to find a container socket for the given runtime
-		socketPath, runtimeType, err := findContainerSocket(sp, overrides)
+		socketPaths, runtimeType, err := findContainerSocket(sp)
 		if err != nil {
 			//nolint:gosec // G706: runtime type from internal config
 			slog.Debug("failed to find socket", "runtime", sp, "error", err)
@@ -98,38 +78,63 @@ func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type,
 			continue
 		}
 
-		c, err := newClientWithSocketPath(ctx, socketPath)
-		if err != nil {
-			lastErr = err
-			//nolint:gosec // G706: runtime type from internal config
-			slog.Debug("failed to create client", "runtime", sp, "error", err)
-			continue
-		}
+		for _, socketPath := range socketPaths {
+			c, err := newClientWithSocketPath(ctx, socketPath, runtimeType)
+			if err != nil {
+				lastErr = err
+				//nolint:gosec // G706: runtime type from internal config
+				slog.Debug("failed to create client", "runtime", sp, "socket", socketPath, "error", err)
+				continue
+			}
 
-		//nolint:gosec // G706: runtime type from internal detection
-		slog.Debug("successfully connected to runtime", "runtime", runtimeType)
-		return c, socketPath, runtimeType, nil
+			//nolint:gosec // G706: runtime type from internal detection
+			slog.Debug("successfully connected to runtime", "runtime", runtimeType, "socket", socketPath)
+			return c, socketPath, runtimeType, nil
+		}
 	}
 
 	if lastErr != nil {
-		return nil, "", "", fmt.Errorf("no supported container runtime available: %w", lastErr)
+		return nil, "", "", fmt.Errorf("no supported container runtime available%s: %w", dockerPermissionHint(lastErr), lastErr)
 	}
 	return nil, "", "", fmt.Errorf("no supported container runtime found/running")
 }
 
+// dockerPermissionHint returns an actionable hint when the underlying socket
+// connect was rejected with a permission error. The most common cause on
+// Linux is the calling user not being a member of the docker group, which the
+// raw "permission denied" error does not call out.
+func dockerPermissionHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	// errors.Is handles syscall.EACCES/EPERM (which map to fs.ErrPermission via
+	// the syscall.Errno.Is shim); the Docker client wraps the underlying
+	// *os.SyscallError in its own message, so also fall back to a substring
+	// match on the rendered text for robustness across error wrappings.
+	if !errors.Is(err, fs.ErrPermission) && !strings.Contains(err.Error(), "permission denied") {
+		return ""
+	}
+	return " (hint: the Docker socket rejected the connection with 'permission denied' — " +
+		"is your user in the 'docker' group? On Linux: 'sudo usermod -aG docker $USER', " +
+		"then log out and back in. See https://docs.docker.com/engine/install/linux-postinstall/.)"
+}
+
 // NewClientWithSocketPath creates a new container client with a specific socket path
-func newClientWithSocketPath(ctx context.Context, socketPath string) (*client.Client, error) {
+func newClientWithSocketPath(ctx context.Context, socketPath string, runtimeType runtime.Type) (*mobyclient.Client, error) {
 	// Create platform-specific client
-	_, opts := newPlatformClient(socketPath)
+	httpClient, opts := newPlatformClient(socketPath)
+	if runtimeType == runtime.TypePodman {
+		httpClient.Transport = newPodmanNetworkCompatRoundTripper(httpClient.Transport)
+	}
 
 	// Create Docker client with the custom HTTP client
-	dockerClient, err := client.NewClientWithOpts(opts...)
+	dockerClient, err := mobyclient.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
 
 	// Make sure we can ping the server.
-	_, err = dockerClient.Ping(ctx)
+	_, err = dockerClient.Ping(ctx, mobyclient.PingOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to ping Docker server at %s: %w", socketPath, err)
 	}
@@ -137,8 +142,11 @@ func newClientWithSocketPath(ctx context.Context, socketPath string) (*client.Cl
 	return dockerClient, nil
 }
 
-// findContainerSocket finds a container socket path, preferring Podman over Docker
-func findContainerSocket(rt runtime.Type, overrides runtime.SocketConfig) (string, runtime.Type, error) {
+// findContainerSocket finds candidate container socket paths for the given
+// runtime, preferring Podman over Docker. The returned slice is ordered from
+// highest to lowest priority and may contain multiple entries on Unix when
+// several known socket locations exist on disk simultaneously.
+func findContainerSocket(rt runtime.Type) ([]string, runtime.Type, error) {
 	// Use platform-specific implementation
-	return findPlatformContainerSocket(rt, overrides)
+	return findPlatformContainerSocket(rt)
 }

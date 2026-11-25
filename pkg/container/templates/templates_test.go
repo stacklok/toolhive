@@ -80,7 +80,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM node:",
-				"npm install --save example-package",
+				"npm install --save 'example-package'",
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
 				`ENTRYPOINT ["npx", "example-package"]`,
 			},
@@ -103,7 +103,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM node:",
-				"npm install --save example-package",
+				"npm install --save 'example-package'",
 				`ENTRYPOINT ["npx", "example-package"]`,
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
@@ -176,7 +176,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantContains: []string{
 				"FROM golang:",
 				"COPY . /build/",
-				"go build -o /app/mcp-server ./cmd/server",
+				"go build -o /app/mcp-server './cmd/server'",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
 				"COPY --from=builder --chown=appuser:appgroup /build/ /app/",
 				"ENTRYPOINT [\"/app/mcp-server\"]",
@@ -200,7 +200,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantContains: []string{
 				"FROM golang:",
 				"COPY . /build/",
-				"go build -o /app/mcp-server .",
+				"go build -o /app/mcp-server '.'",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
 				"ENTRYPOINT [\"/app/mcp-server\"]",
 			},
@@ -222,7 +222,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM node:",
-				"npm install --save @launchdarkly/mcp-server",
+				"npm install --save '@launchdarkly/mcp-server'",
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
 				`ENTRYPOINT ["npx", "@launchdarkly/mcp-server", "start"]`,
 			},
@@ -294,7 +294,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM node:",
 				"# Custom build environment variables",
 				`ENV NPM_CONFIG_REGISTRY="https://npm.corp.example.com"`,
-				"npm install --save example-package",
+				"npm install --save 'example-package'",
 			},
 			wantMatches: []string{
 				`FROM node:\d+-alpine AS builder`,
@@ -340,6 +340,81 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"# Custom build environment variables",
 				`ENV GOPROXY="https://goproxy.corp.example.com"`,
 				`ENV GOPRIVATE="github.com/myorg/*"`,
+				"go install",
+			},
+			wantMatches: []string{
+				`FROM golang:\d+\.\d+-alpine AS builder`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			// Okta MCP server needs a non-default keyring backend at container
+			// startup, since the default backend requires a desktop session.
+			name:          "UVX transport with RuntimeEnv",
+			transportType: TransportTypeUVX,
+			data: TemplateData{
+				MCPPackage: "okta-mcp-server",
+				RuntimeConfig: &RuntimeConfig{
+					BuilderImage: "python:3.14-slim",
+					RuntimeEnv: map[string]string{
+						"PYTHON_KEYRING_BACKEND": "keyrings.alt.file.PlaintextKeyring",
+					},
+				},
+			},
+			wantContains: []string{
+				"FROM python:",
+				"# Custom runtime environment variables",
+				`ENV PYTHON_KEYRING_BACKEND="keyrings.alt.file.PlaintextKeyring"`,
+				"uv tool install",
+			},
+			wantMatches: []string{
+				`FROM python:\d+\.\d+-slim AS builder`,
+				`FROM python:\d+\.\d+-slim`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			name:          "NPX transport with RuntimeEnv",
+			transportType: TransportTypeNPX,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				RuntimeConfig: &RuntimeConfig{
+					BuilderImage: "node:24-alpine",
+					RuntimeEnv: map[string]string{
+						"NODE_ENV": "production",
+					},
+				},
+			},
+			wantContains: []string{
+				"FROM node:",
+				"# Custom runtime environment variables",
+				`ENV NODE_ENV="production"`,
+				"npm install --save 'example-package'",
+			},
+			wantMatches: []string{
+				`FROM node:\d+-alpine AS builder`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			name:          "GO transport with RuntimeEnv",
+			transportType: TransportTypeGO,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				RuntimeConfig: &RuntimeConfig{
+					BuilderImage: "golang:1.26-alpine",
+					RuntimeEnv: map[string]string{
+						"LOG_LEVEL": "debug",
+					},
+				},
+			},
+			wantContains: []string{
+				"FROM golang:",
+				"# Custom runtime environment variables",
+				`ENV LOG_LEVEL="debug"`,
 				"go install",
 			},
 			wantMatches: []string{
@@ -454,6 +529,83 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 
 			if !strings.Contains(runtimeStage, tt.wantInRuntime) {
 				t.Errorf("runtime stage does not install %q.\nRuntime stage:\n%s", tt.wantInRuntime, runtimeStage)
+			}
+		})
+	}
+}
+
+func TestRuntimeEnvOnlyAppearsInRuntimeStage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		transportType TransportType
+		runtimeConfig *RuntimeConfig
+		wantEnvLine   string // ENV line that must appear AFTER the second FROM, and nowhere before it
+	}{
+		{
+			name:          "NPX runtime stage sets RuntimeEnv",
+			transportType: TransportTypeNPX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage: "node:24-alpine",
+				RuntimeEnv: map[string]string{
+					"NPX_RUNTIME_FLAG": "enabled",
+				},
+			},
+			wantEnvLine: `ENV NPX_RUNTIME_FLAG="enabled"`,
+		},
+		{
+			name:          "UVX runtime stage sets RuntimeEnv",
+			transportType: TransportTypeUVX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage: "python:3.14-slim",
+				RuntimeEnv: map[string]string{
+					"PYTHON_KEYRING_BACKEND": "keyrings.alt.file.PlaintextKeyring",
+				},
+			},
+			wantEnvLine: `ENV PYTHON_KEYRING_BACKEND="keyrings.alt.file.PlaintextKeyring"`,
+		},
+		{
+			name:          "GO runtime stage sets RuntimeEnv",
+			transportType: TransportTypeGO,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage: "golang:1.26-alpine",
+				RuntimeEnv: map[string]string{
+					"GO_RUNTIME_FLAG": "enabled",
+				},
+			},
+			wantEnvLine: `ENV GO_RUNTIME_FLAG="enabled"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := TemplateData{
+				MCPPackage:    "test-package",
+				RuntimeConfig: tt.runtimeConfig,
+			}
+
+			result, err := GetDockerfileTemplate(tt.transportType, data)
+			if err != nil {
+				t.Fatalf("GetDockerfileTemplate() error = %v", err)
+			}
+
+			// Find the runtime stage (second FROM) and check that RuntimeEnv
+			// appears there, and only there - not in the builder stage.
+			parts := strings.SplitN(result, "\nFROM ", 2)
+			if len(parts) < 2 {
+				t.Fatal("Dockerfile does not contain a second FROM (runtime stage)")
+			}
+			builderStage := parts[0]
+			runtimeStage := parts[1]
+
+			if !strings.Contains(runtimeStage, tt.wantEnvLine) {
+				t.Errorf("runtime stage does not contain %q.\nRuntime stage:\n%s", tt.wantEnvLine, runtimeStage)
+			}
+			if strings.Contains(builderStage, tt.wantEnvLine) {
+				t.Errorf("builder stage unexpectedly contains %q.\nBuilder stage:\n%s", tt.wantEnvLine, builderStage)
 			}
 		})
 	}
@@ -642,6 +794,38 @@ func TestStripVersionSuffix(t *testing.T) {
 			got := stripVersionSuffix(tt.input)
 			if got != tt.want {
 				t.Errorf("stripVersionSuffix(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPackageNameIsQuotedInRunInstructions guards the templates themselves.
+// Callers validate the package name before it gets here (see
+// runner.validatePackageName), but the templates should not depend on that
+// alone: every RUN instruction that interpolates MCPPackage must quote it, so
+// dropping the quoting in a future edit is caught here rather than in a
+// generated Dockerfile.
+func TestPackageNameIsQuotedInRunInstructions(t *testing.T) {
+	t.Parallel()
+	// A name that would become a second shell statement if interpolated bare.
+	const payload = "foo; echo INJECTED"
+
+	for _, transportType := range []TransportType{TransportTypeUVX, TransportTypeNPX, TransportTypeGO} {
+		t.Run(string(transportType), func(t *testing.T) {
+			t.Parallel()
+			dockerfile, err := GetDockerfileTemplate(transportType, TemplateData{MCPPackage: payload})
+			if err != nil {
+				t.Fatalf("GetDockerfileTemplate() error = %v", err)
+			}
+
+			for _, line := range strings.Split(dockerfile, "\n") {
+				if !strings.HasPrefix(line, "RUN ") || !strings.Contains(line, payload) {
+					continue
+				}
+				quoted := strings.Contains(line, "'"+payload+"'") || strings.Contains(line, `"`+payload+`"`)
+				if !quoted {
+					t.Errorf("package name interpolated unquoted into RUN instruction:\n%s", line)
+				}
 			}
 		})
 	}

@@ -10,7 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // TestLabelsForRegistryAPI tests the label generation function
@@ -18,14 +18,14 @@ func TestLabelsForRegistryAPI(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name         string
-		mcpRegistry  *mcpv1alpha1.MCPRegistry
+		mcpRegistry  *mcpv1beta1.MCPRegistry
 		resourceName string
 		expected     map[string]string
 		description  string
 	}{
 		{
 			name: "BasicLabels",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+			mcpRegistry: &mcpv1beta1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-registry",
 				},
@@ -41,7 +41,7 @@ func TestLabelsForRegistryAPI(t *testing.T) {
 		},
 		{
 			name: "LabelsWithSpecialCharacters",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+			mcpRegistry: &mcpv1beta1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "my-special-registry-123",
 				},
@@ -104,7 +104,7 @@ func TestMCPRegistryHelperMethods(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			mcpRegistry := &mcpv1beta1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: tt.registryName,
 				},

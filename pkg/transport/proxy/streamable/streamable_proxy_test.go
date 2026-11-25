@@ -4,11 +4,18 @@
 package streamable
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -34,7 +41,7 @@ func TestNewHTTPProxy(t *testing.T) {
 //nolint:paralleltest // Test modifies shared proxy state
 func TestProxyChannelCommunication(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", 8080, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Test that we can send a message to the destination
 	request, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -114,7 +121,7 @@ func TestSendMessageToDestination_ChannelFull(t *testing.T) {
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestStartStop(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", 0, nil, nil) // Use port 0 for auto-assignment
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Start the proxy
 	err := proxy.Start(ctx)
@@ -213,4 +220,386 @@ func TestNewHTTPProxyWithSessionStorage(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", 0, nil, nil, WithSessionStorage(storage))
 	require.NotNil(t, proxy)
 	require.NotNil(t, proxy.sessionManager)
+}
+
+// TestNewHTTPProxy_AuthInfoHandlerMounted verifies that a sentinel authInfoHandler
+// registered via WithAuthInfoHandler is reachable at /.well-known/oauth-protected-resource
+// after Start is called.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_AuthInfoHandlerMounted(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil, WithAuthInfoHandler(sentinel))
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// Poll until server is ready (max 500 ms).
+	url := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestNewHTTPProxy_AuthInfoHandlerNil verifies that when no authInfoHandler is set,
+// requests to /.well-known/oauth-protected-resource return a JSON 404 (not a Go default 404).
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_AuthInfoHandlerNil(t *testing.T) {
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil) // no WithAuthInfoHandler
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	url := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	// WellKnownHandler returns a JSON 404, not 200.
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+}
+
+// TestNewHTTPProxy_PrefixHandlerMounted verifies that a handler registered via
+// WithPrefixHandlers is reachable at its declared path prefix.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_PrefixHandlerMounted(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	url := fmt.Sprintf("http://localhost:%d/oauth/token", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP verifies that registering prefix
+// handlers does not prevent the /mcp endpoint from being reachable.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
+		WithStandaloneSSE(false), // keep the 405 GET response so this test terminates promptly
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// /mcp returns 405 for GET (only POST is accepted), which proves the
+	// endpoint is registered — a missing route would be 404.
+	url := fmt.Sprintf("http://localhost:%d%s", port, StreamableHTTPEndpoint)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}
+
+// TestNewHTTPProxy_ExactWellKnownBeatsSubtree verifies that Go's http.ServeMux
+// specificity rule causes an exact /.well-known/openid-configuration prefix handler
+// to win over the /.well-known/ subtree authInfoHandler (PRM endpoint), ensuring
+// the two registrations coexist without collision.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_ExactWellKnownBeatsSubtree(t *testing.T) {
+	oidcHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot) // sentinel: exact match wins
+	})
+	prmHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/.well-known/openid-configuration": oidcHandler}),
+		WithAuthInfoHandler(prmHandler),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// Poll until server is ready.
+	oidcURL := fmt.Sprintf("http://localhost:%d/.well-known/openid-configuration", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(oidcURL) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusTeapot, resp.StatusCode, "exact /.well-known/openid-configuration must win")
+
+	prmURL := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	resp2, err := http.Get(prmURL) //nolint:gosec // test-only URL construction
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp2.StatusCode, "/.well-known/ subtree must still reach authInfoHandler")
+}
+
+// nonFlushableResponseWriter implements http.ResponseWriter but deliberately
+// does NOT implement http.Flusher, to exercise handleGet's capability check.
+type nonFlushableResponseWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	statusCode int
+}
+
+func newNonFlushableResponseWriter() *nonFlushableResponseWriter {
+	return &nonFlushableResponseWriter{header: make(http.Header)}
+}
+
+func (w *nonFlushableResponseWriter) Header() http.Header { return w.header }
+
+func (w *nonFlushableResponseWriter) Write(b []byte) (int, error) { return w.body.Write(b) }
+
+func (w *nonFlushableResponseWriter) WriteHeader(statusCode int) { w.statusCode = statusCode }
+
+// TestHandleGet_StandaloneSSEDisabledReturns405 verifies handleGet returns 405
+// when the proxy was constructed with WithStandaloneSSE(false), regardless of
+// whether the underlying ResponseWriter supports flushing.
+func TestHandleGet_StandaloneSSEDisabledReturns405(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewHTTPProxy("localhost", 0, nil, nil, WithStandaloneSSE(false))
+	req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil)
+	rec := httptest.NewRecorder()
+
+	proxy.handleGet(rec, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+	assert.Equal(t, 0, proxy.serverStreams.streamCount(), "no stream should be registered when SSE is disabled")
+}
+
+// TestHandleGet_NonFlushableWriterReturns500 verifies handleGet fails loudly
+// with 500 when the ResponseWriter does not support streaming, rather than
+// silently degrading (standaloneSSE defaults to true here).
+func TestHandleGet_NonFlushableWriterReturns500(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewHTTPProxy("localhost", 0, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil)
+	rec := newNonFlushableResponseWriter()
+
+	proxy.handleGet(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.statusCode)
+	assert.Equal(t, 0, proxy.serverStreams.streamCount(), "stream must not remain registered after the capability check fails")
+}
+
+// TestHandleGet_DefaultEnabledRegistersAndDeregistersStream verifies that,
+// with standaloneSSE at its default (enabled) and a known Mcp-Session-Id, a
+// GET request registers a stream for the lifetime of the connection and
+// deregisters it on client disconnect (request context cancellation).
+func TestHandleGet_DefaultEnabledRegistersAndDeregistersStream(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewHTTPProxy("localhost", 0, nil, nil)
+	sessID := uuid.NewString()
+	require.NoError(t, proxy.ensureSession(httptest.NewRequest(http.MethodPost, "/mcp", nil), sessID))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil).WithContext(ctx)
+	req.Header.Set("Mcp-Session-Id", sessID)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		proxy.handleGet(rec, req)
+	}()
+
+	require.Eventually(t, func() bool {
+		return proxy.serverStreams.streamCount() == 1
+	}, time.Second, 5*time.Millisecond, "stream was not registered")
+
+	cancel() // simulate client disconnect
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleGet did not return after client disconnect")
+	}
+
+	assert.Equal(t, 0, proxy.serverStreams.streamCount(), "stream must be deregistered after disconnect")
+	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+}
+
+// TestHandleGet_SessionDecisionMatrix verifies handleGet's Mcp-Session-Id
+// resolution matrix directly (without a full HTTP round-trip): no header is
+// rejected with 400, an unknown session with 404, and a known session opens
+// the stream with 200.
+func TestHandleGet_SessionDecisionMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		setHeader     bool
+		useKnownSess  bool
+		wantStatus    int
+		wantStreamReg bool
+	}{
+		{name: "no header", setHeader: false, wantStatus: http.StatusBadRequest},
+		{name: "unknown session", setHeader: true, useKnownSess: false, wantStatus: http.StatusNotFound},
+		{name: "known session", setHeader: true, useKnownSess: true, wantStatus: http.StatusOK, wantStreamReg: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proxy := NewHTTPProxy("localhost", 0, nil, nil)
+			sessID := uuid.NewString()
+			require.NoError(t, proxy.ensureSession(httptest.NewRequest(http.MethodPost, "/mcp", nil), sessID))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil).WithContext(ctx)
+			if tt.setHeader {
+				if tt.useKnownSess {
+					req.Header.Set("Mcp-Session-Id", sessID)
+				} else {
+					req.Header.Set("Mcp-Session-Id", uuid.NewString())
+				}
+			}
+			rec := httptest.NewRecorder()
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				proxy.handleGet(rec, req)
+			}()
+
+			if tt.wantStreamReg {
+				require.Eventually(t, func() bool {
+					return proxy.serverStreams.streamCount() == 1
+				}, time.Second, 5*time.Millisecond, "stream was not registered")
+				cancel()
+			}
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("handleGet did not return")
+			}
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}
+
+// TestWriteSSEErrorEvent verifies the "id" key is present and echoed for a
+// valid jsonrpc2.ID, and omitted entirely -- never sent as "id":null -- for
+// the zero-value ID (jsonrpc2.ID{}.IsValid() == false), in both cases
+// preserving the SSE "event: message" + "data: ..." framing writeSSEData produces.
+//
+// The body is decoded to map[string]any rather than a tagged struct: a
+// struct field of type `any` cannot distinguish an absent key from a
+// present-but-null one, so it would not detect a regression to "id":null.
+func TestWriteSSEErrorEvent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		id     jsonrpc2.ID
+		wantID bool
+	}{
+		{name: "valid id is present and echoed", id: jsonrpc2.Int64ID(7), wantID: true},
+		{name: "zero-value id is omitted, not sent as null", id: jsonrpc2.ID{}, wantID: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+
+			writeSSEErrorEvent(rec, rec, tt.id, errors.New("boom"))
+
+			assert.True(t, rec.Flushed, "writeSSEErrorEvent must flush the SSE frame to the client")
+
+			body := rec.Body.String()
+			require.True(t, strings.HasPrefix(body, "event: message\n"), "SSE frame must include event: message, got %q", body)
+			require.True(t, strings.HasSuffix(body, "\n\n"), "SSE frame must end with a blank line, got %q", body)
+			lines := strings.Split(strings.TrimSuffix(body, "\n\n"), "\n")
+			require.Len(t, lines, 2, "expected event + data lines, got %q", body)
+			require.Equal(t, "event: message", lines[0])
+			payload := strings.TrimPrefix(lines[1], "data: ")
+
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal([]byte(payload), &parsed))
+			_, hasID := parsed["id"]
+			assert.Equal(t, tt.wantID, hasID)
+			if tt.wantID {
+				assert.EqualValues(t, tt.id.Raw(), parsed["id"])
+			}
+		})
+	}
 }

@@ -6,19 +6,21 @@ package discovery
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const wellKnownOAuthPath = "/.well-known/oauth-protected-resource"
@@ -1286,43 +1288,222 @@ func TestTryWellKnownDiscovery_ErrorPaths(t *testing.T) {
 	})
 }
 
-// TestRegisterDynamicClient_MissingRegistrationEndpoint tests that registerDynamicClient
-// returns a clear error message when the OIDC discovery document doesn't include
-// a registration_endpoint (provider doesn't support DCR).
-func TestRegisterDynamicClient_MissingRegistrationEndpoint(t *testing.T) {
+// TestHandleDynamicRegistration_MissingRegistrationEndpoint pins the CLI's
+// behaviour when the OIDC discovery document does not advertise a
+// registration_endpoint (provider does not support DCR). The CLI surfaces
+// a clear error directing the operator to the manual --remote-auth-client-*
+// fallback flags.
+//
+// The check runs before the resolver is invoked: with no
+// registration_endpoint there is no upstream URL to register against, so
+// the CLI cannot proceed regardless of the resolver's S256 PKCE / synthesis
+// behaviour. This keeps the error message stable across both code paths
+// (this branch and any future resolver-side synthesis disable).
+func TestHandleDynamicRegistration_MissingRegistrationEndpoint(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-
-	// Create a discovery document without registration_endpoint
-	discoveredDoc := &oauthproto.OIDCDiscoveryDocument{
-		AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
-			Issuer:                "https://auth.example.com",
-			AuthorizationEndpoint: "https://auth.example.com/oauth/authorize",
-			TokenEndpoint:         "https://auth.example.com/oauth/token",
-			JWKSURI:               "https://auth.example.com/oauth/jwks",
-			// Note: RegistrationEndpoint is intentionally omitted (empty string)
-			RegistrationEndpoint: "",
-		},
-	}
+	// Mount a metadata document that intentionally omits registration_endpoint.
+	// The CLI flow's getDiscoveryDocument short-circuit reads AuthorizeURL /
+	// TokenURL off OAuthFlowConfig and skips network discovery — we set
+	// AuthorizeURL and TokenURL but leave RegistrationEndpoint empty, which
+	// falls through to oauth.DiscoverOIDCEndpoints against the httptest
+	// server below.
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// registration_endpoint intentionally omitted.
+		_, _ = w.Write([]byte(`{
+			"issuer": "` + server.URL + `",
+			"authorization_endpoint": "` + server.URL + `/authorize",
+			"token_endpoint": "` + server.URL + `/token",
+			"jwks_uri": "` + server.URL + `/jwks",
+			"response_types_supported": ["code"],
+			"subject_types_supported": ["public"],
+			"id_token_signing_alg_values_supported": ["RS256"]
+		}`))
+	})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
 
 	config := &OAuthFlowConfig{
-		Scopes:       []string{"openid", "profile"},
-		CallbackPort: 8765,
+		Scopes:          []string{"openid", "profile"},
+		CallbackPort:    8765,
+		AllowPrivateIPs: true, // loopback test server; guard would otherwise refuse to dial it
 	}
 
-	// Call registerDynamicClient with a discovery document missing registration_endpoint
-	result, err := registerDynamicClient(ctx, config, discoveredDoc)
-
-	// Should return an error
+	err := handleDynamicRegistration(context.Background(), server.URL, config)
 	require.Error(t, err)
-	assert.Nil(t, result)
 
-	// Error message should clearly indicate DCR is not supported
+	// The CLI-flag fallback hint MUST be preserved verbatim — it is the
+	// load-bearing operator guidance for upstreams that do not advertise
+	// registration_endpoint.
 	assert.Contains(t, err.Error(), "does not support Dynamic Client Registration")
 	assert.Contains(t, err.Error(), "DCR")
-
-	// Error message should provide actionable guidance
 	assert.Contains(t, err.Error(), "--remote-auth-client-id")
 	assert.Contains(t, err.Error(), "--remote-auth-client-secret")
+}
+
+func TestBuildOAuthFlowResult_CopiesDCRRenewalMetadata(t *testing.T) {
+	t.Parallel()
+
+	secretExpiry := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	config := &OAuthFlowConfig{
+		SecretExpiry:            secretExpiry,
+		RegistrationAccessToken: "registration-access-token",
+		RegistrationClientURI:   "https://issuer.example/register/client-id",
+		TokenEndpointAuthMethod: "client_secret_basic",
+		RegisteredCallbackPort:  49152,
+	}
+
+	result := buildOAuthFlowResult(nil, &oauth.Config{}, &oauth.TokenResult{}, config)
+
+	assert.Equal(t, config.SecretExpiry, result.SecretExpiry)
+	assert.Equal(t, config.RegistrationAccessToken, result.RegistrationAccessToken)
+	assert.Equal(t, config.RegistrationClientURI, result.RegistrationClientURI)
+	assert.Equal(t, config.TokenEndpointAuthMethod, result.TokenEndpointAuthMethod)
+	assert.Equal(t, config.RegisteredCallbackPort, result.RegisteredCallbackPort)
+}
+
+// startIssuerServer starts an httptest listener that serves an OIDC discovery
+// document plus a /token endpoint, counting the token-endpoint requests it
+// receives. tokenEndpoint receives the listener's own base URL so a caller can
+// advertise either this listener or a different one.
+func startIssuerServer(t *testing.T, tokenEndpoint func(issuerURL string) string, tokenHits *atomic.Int32) string {
+	t.Helper()
+
+	var issuerURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
+			issuerURL, issuerURL+"/authorize", tokenEndpoint(issuerURL), issuerURL+"/jwks")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		tokenHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer"}`))
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	issuerURL = server.URL
+	return server.URL
+}
+
+// TestCreateOAuthConfig_BlocksPrivateIssuerDiscoveryFallback verifies that the
+// OIDC fallback preserves OAuthFlowConfig's private-IP policy.
+func TestCreateOAuthConfig_BlocksPrivateIssuerDiscoveryFallback(t *testing.T) {
+	t.Parallel()
+
+	var discoveryHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		discoveryHits.Add(1)
+		http.Error(w, "unexpected discovery request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	config, err := createOAuthConfig(context.Background(), server.URL, &OAuthFlowConfig{
+		ClientID:        "test-client",
+		AllowPrivateIPs: false,
+	})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, networking.ErrPrivateIpAddress)
+	assert.Nil(t, config)
+	assert.Zero(t, discoveryHits.Load(), "OIDC fallback must not reach a private issuer")
+}
+
+// TestCreateOAuthConfig_DiscoveredTokenEndpoint is the regression test for
+// GHSA-3768-rwj3-38p2. An operator-configured issuer that names its own
+// authority in its metadata keeps the operator's trust; one that names a
+// different authority must not lend that authority the trust, even on the same
+// host at a different port (CWE-918).
+//
+// The trust flag is this function's output, so that is what is asserted here.
+// What the flag then does to a dial — permitted for a trusted endpoint, refused
+// at the private-IP guard for an untrusted one — belongs to the package that
+// builds the client, and is covered by
+// oauth.TestHandleCallback_BlocksUntrustedLoopbackTokenEndpoint driving the real
+// oauth.NewFlow. Splitting it this way keeps each package asserting its own
+// behaviour instead of reimplementing the other's client.
+func TestCreateOAuthConfig_DiscoveredTokenEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// foreignTokenEndpoint advertises the token endpoint on a second
+		// listener, i.e. an authority the operator never named.
+		foreignTokenEndpoint bool
+		wantTrusted          bool
+	}{
+		{name: "issuer naming its own authority keeps the trust", wantTrusted: true},
+		{name: "issuer naming a foreign authority loses the trust", foreignTokenEndpoint: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var hits atomic.Int32
+			tokenEndpoint := func(issuer string) string { return issuer + "/token" }
+			wantTokenURL := ""
+			if tt.foreignTokenEndpoint {
+				foreignURL := startIssuerServer(t, func(issuer string) string { return issuer + "/token" }, &hits)
+				tokenEndpoint = func(string) string { return foreignURL + "/token" }
+				wantTokenURL = foreignURL + "/token"
+			}
+
+			issuerURL := startIssuerServer(t, tokenEndpoint, &hits)
+			if wantTokenURL == "" {
+				wantTokenURL = issuerURL + "/token"
+			}
+
+			cfg, err := createOAuthConfig(context.Background(), issuerURL, &OAuthFlowConfig{
+				ClientID:             "test-client",
+				IssuerTrusted:        true,
+				TokenEndpointTrusted: true,
+				AllowPrivateIPs:      true,
+			})
+			require.NoError(t, err)
+
+			// The endpoint is taken from the document either way; only the trust
+			// attached to it differs.
+			require.Equal(t, wantTokenURL, cfg.TokenURL)
+			assert.Equal(t, tt.wantTrusted, cfg.TokenEndpointTrusted)
+		})
+	}
+}
+
+// TestNewDetectionClient_BoundsIdleConnectionPool pins that the auth-detection
+// client bounds its idle-connection pool. This is one of the exact sites #6483
+// names; a zero IdleConnTimeout would pin a socket and its goroutine pair for
+// the process lifetime.
+func TestNewDetectionClient_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	client := newDetectionClient(DefaultDiscoveryConfig())
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "detection client must use an *http.Transport")
+
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+}
+
+// TestNewResourceMetadataTransport_BoundsIdleConnectionPool pins that the RFC
+// 9728 metadata transport bounds its pool in both dial modes. The bounds are
+// set regardless of blockPrivateIPs (they are moot only when keep-alive is
+// disabled, which is a separate field).
+func TestNewResourceMetadataTransport_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	for _, blockPrivateIPs := range []bool{false, true} {
+		transport := newResourceMetadataTransport(blockPrivateIPs)
+		assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+		assert.Equal(t, 100, transport.MaxIdleConns)
+		assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+		assert.Equal(t, blockPrivateIPs, transport.DisableKeepAlives,
+			"blockPrivateIPs must disable keep-alive so pooling cannot skip the per-dial SSRF check")
+	}
 }

@@ -16,10 +16,12 @@ import (
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authz"
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -358,6 +360,94 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	}
 }
 
+func TestRunConfigBuilder_Build_IsolatesImageMetadataPermissionProfile(t *testing.T) {
+	t.Parallel()
+
+	baseRead := permissions.MountDeclaration(t.TempDir() + ":/base-read")
+	baseWrite := permissions.MountDeclaration(t.TempDir() + ":/base-write")
+	profile := &permissions.Profile{
+		Name:  "shared-profile",
+		Read:  append(make([]permissions.MountDeclaration, 0, 2), baseRead),
+		Write: append(make([]permissions.MountDeclaration, 0, 2), baseWrite),
+		Network: &permissions.NetworkPermissions{
+			Mode: "none",
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"registry.example.com"},
+				AllowPort: []int{443},
+			},
+			Inbound: &permissions.InboundNetworkPermissions{
+				AllowHost: []string{"127.0.0.1"},
+			},
+		},
+	}
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{Name: "shared-image"},
+		Permissions:        profile,
+	}
+	expectedCallerProfile := &permissions.Profile{
+		Name:  "shared-profile",
+		Read:  []permissions.MountDeclaration{baseRead},
+		Write: []permissions.MountDeclaration{baseWrite},
+		Network: &permissions.NetworkPermissions{
+			Mode: "none",
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"registry.example.com"},
+				AllowPort: []int{443},
+			},
+			Inbound: &permissions.InboundNetworkPermissions{
+				AllowHost: []string{"127.0.0.1"},
+			},
+		},
+	}
+
+	firstRead := permissions.MountDeclaration(t.TempDir() + ":/first-read")
+	firstWrite := permissions.MountDeclaration(t.TempDir() + ":/first-write")
+	secondRead := permissions.MountDeclaration(t.TempDir() + ":/second-read")
+	secondWrite := permissions.MountDeclaration(t.TempDir() + ":/second-write")
+
+	build := func(t *testing.T, mode string, read, write permissions.MountDeclaration) *RunConfig {
+		t.Helper()
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			imageMetadata,
+			nil,
+			&mockEnvVarValidator{},
+			WithNetworkMode(mode),
+			WithVolumes([]string{string(read) + ":ro", string(write)}),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, config.PermissionProfile)
+		return config
+	}
+
+	first := build(t, "host", firstRead, firstWrite)
+	second := build(t, "bridge", secondRead, secondWrite)
+
+	assert.Equal(t, expectedCallerProfile, profile, "building configs must not mutate the metadata-owned profile")
+	assert.Equal(t, []permissions.MountDeclaration{baseRead, firstRead}, first.PermissionProfile.Read)
+	assert.Equal(t, []permissions.MountDeclaration{baseWrite, firstWrite}, first.PermissionProfile.Write)
+	assert.Equal(t, "host", first.PermissionProfile.Network.Mode)
+	assert.Equal(t, []permissions.MountDeclaration{baseRead, secondRead}, second.PermissionProfile.Read)
+	assert.Equal(t, []permissions.MountDeclaration{baseWrite, secondWrite}, second.PermissionProfile.Write)
+	assert.Equal(t, "bridge", second.PermissionProfile.Network.Mode)
+
+	first.PermissionProfile.Read[0] = permissions.MountDeclaration("/mutated:/read")
+	first.PermissionProfile.Write[0] = permissions.MountDeclaration("/mutated:/write")
+	first.PermissionProfile.Network.Mode = "mutated"
+	first.PermissionProfile.Network.Outbound.AllowHost[0] = "mutated.example.com"
+	first.PermissionProfile.Network.Outbound.AllowPort[0] = 8443
+	first.PermissionProfile.Network.Inbound.AllowHost[0] = "0.0.0.0"
+
+	assert.Equal(t, expectedCallerProfile, profile, "returned profiles must not share storage with the metadata-owned profile")
+	assert.Equal(t, baseRead, second.PermissionProfile.Read[0], "returned read slices must not share backing storage")
+	assert.Equal(t, baseWrite, second.PermissionProfile.Write[0], "returned write slices must not share backing storage")
+	assert.Equal(t, "bridge", second.PermissionProfile.Network.Mode, "returned network profiles must not alias")
+	assert.Equal(t, []string{"registry.example.com"}, second.PermissionProfile.Network.Outbound.AllowHost)
+	assert.Equal(t, []int{443}, second.PermissionProfile.Network.Outbound.AllowPort)
+	assert.Equal(t, []string{"127.0.0.1"}, second.PermissionProfile.Network.Inbound.AllowHost)
+}
+
 // createTempProfileFile creates a temporary JSON profile file with the provided content
 // and returns its path. The caller is responsible for removing the file using the
 // returned cleanup function.
@@ -387,7 +477,7 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 
 		var mws []types.MiddlewareConfig
 		// OIDC config can be empty for this unit test since we're only testing token-exchange behavior.
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, false)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, "", false)
 
 		// Expect only auth + mcp parser when token-exchange config == nil
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
@@ -415,7 +505,7 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 			// ExternalTokenHeaderName not required for replace strategy
 		}
 
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, false)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, "", false)
 
 		// Expect auth, token-exchange, then mcp parser — verify correct order and count.
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
@@ -439,6 +529,41 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 		assert.Equal(t, teCfg.Scopes, mwParams.TokenExchangeConfig.Scopes, "Scopes should propagate into middleware params")
 		assert.Equal(t, teCfg.HeaderStrategy, mwParams.TokenExchangeConfig.HeaderStrategy, "HeaderStrategy should propagate into middleware params")
 	})
+}
+
+func TestWithMiddlewareFromFlags_BindsEmbeddedAuthServerIssuer(t *testing.T) {
+	t.Parallel()
+
+	builder := &runConfigBuilder{config: NewRunConfig()}
+	require.NoError(t, WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+		Issuer: "https://auth.toolhive.example.com",
+	})(builder))
+	require.NoError(t, WithMiddlewareFromFlags(
+		nil,   // oidcConfig
+		nil,   // tokenExchangeConfig
+		nil,   // toolsFilter
+		nil,   // toolsOverride
+		nil,   // telemetryConfig
+		"",    // authzConfigPath
+		false, // enableAudit
+		"",    // auditConfigPath
+		"",    // serverName
+		"",    // transportType
+		true,  // disableUsageMetrics
+	)(builder))
+
+	var authConfig types.MiddlewareConfig
+	for _, config := range builder.config.MiddlewareConfigs {
+		if config.Type == auth.MiddlewareType {
+			authConfig = config
+			break
+		}
+	}
+	require.NotEmpty(t, authConfig.Parameters, "auth middleware must be present")
+
+	var authParams auth.MiddlewareParams
+	require.NoError(t, json.Unmarshal(authConfig.Parameters, &authParams))
+	assert.Equal(t, "https://auth.toolhive.example.com", authParams.EmbeddedAuthServerIssuer)
 }
 
 func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
@@ -1110,6 +1235,73 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	}
 }
 
+func TestRunConfigBuilder_CanonicalizesOIDCMiddlewareConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		operator  bool
+		options   []RunConfigBuilderOption
+		assertion func(t *testing.T, config *RunConfig)
+	}{
+		{
+			name: "canonicalizes production CLI option ordering after embedded scope derivation",
+			options: []RunConfigBuilderOption{
+				WithMiddlewareFromFlags(nil, nil, nil, nil, nil, "", false, "", "", "", true),
+				WithOIDCConfig(
+					"https://issuer.example.com", "api://toolhive", "https://issuer.example.com/keys", "",
+					"client", "", "/certs/ca.pem", "/secrets/jwks-token", "https://resource.example.com", true, true, nil,
+				),
+				WithEmbeddedAuthServerConfig(&authserver.RunConfig{ScopesSupported: []string{"openid", "offline_access"}}),
+			},
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				want := &auth.TokenValidatorConfig{
+					Issuer: "https://issuer.example.com", Audience: "api://toolhive", JWKSURL: "https://issuer.example.com/keys",
+					ClientID: "client", CACertPath: "/certs/ca.pem", AuthTokenFile: "/secrets/jwks-token",
+					ResourceURL: "https://resource.example.com", AllowPrivateIP: true, InsecureAllowHTTP: true,
+					Scopes: []string{"openid", "offline_access"},
+				}
+				assert.Equal(t, want, config.OIDCConfig)
+				for _, middlewareConfig := range config.MiddlewareConfigs {
+					if middlewareConfig.Type != auth.MiddlewareType {
+						continue
+					}
+					var params auth.MiddlewareParams
+					require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+					assert.Equal(t, want, params.OIDCConfig)
+					return
+				}
+				t.Fatal("authentication middleware configuration not found")
+			},
+		},
+		{
+			name:     "allows deferred operator middleware assembly",
+			operator: true,
+			options: []RunConfigBuilderOption{
+				WithTokenValidatorConfig(&auth.TokenValidatorConfig{Issuer: "https://issuer.example.com"}),
+			},
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				assert.Empty(t, config.MiddlewareConfigs)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			build := NewRunConfigBuilder
+			if tt.operator {
+				build = NewOperatorRunConfigBuilder
+			}
+			config, err := build(context.Background(), nil, nil, &mockEnvVarValidator{}, tt.options...)
+			require.NoError(t, err)
+			tt.assertion(t, config)
+		})
+	}
+}
+
 // TestEmbeddedAuthServerScopePropagation verifies that the builder propagates
 // EmbeddedAuthServerConfig.ScopesSupported to OIDCConfig.Scopes when no
 // explicit PRM scopes are configured, and that explicit scopes are preserved.
@@ -1489,6 +1681,225 @@ func TestWithRegistryServerName(t *testing.T) {
 	}
 }
 
+func TestWithSessionTTL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		ttl         time.Duration
+		expectErr   bool
+		expectedTTL string
+	}{
+		{
+			name:        "zero is accepted and serialized as empty (use transport default)",
+			ttl:         0,
+			expectErr:   false,
+			expectedTTL: "",
+		},
+		{
+			name:        "positive duration is stored as Go duration string",
+			ttl:         45 * time.Minute,
+			expectErr:   false,
+			expectedTTL: "45m0s",
+		},
+		{
+			name:        "large positive duration is stored as Go duration string",
+			ttl:         24 * time.Hour,
+			expectErr:   false,
+			expectedTTL: "24h0m0s",
+		},
+		{
+			name:      "negative duration returns an error",
+			ttl:       -1 * time.Second,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithSessionTTL(tt.ttl)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedTTL, builder.config.SessionTTL)
+		})
+	}
+}
+
+func TestWithOIDCRequiredSubject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		existing   *auth.TokenValidatorConfig
+		subject    string
+		prefix     string
+		expectErr  bool
+		wantConfig *auth.TokenValidatorConfig
+	}{
+		{
+			name:       "sets exact subject on existing OIDC config",
+			existing:   &auth.TokenValidatorConfig{Issuer: "https://issuer"},
+			subject:    "system:serviceaccount:ns:sa",
+			wantConfig: &auth.TokenValidatorConfig{Issuer: "https://issuer", RequiredSubject: "system:serviceaccount:ns:sa"},
+		},
+		{
+			name:     "sets subject prefix on existing OIDC config",
+			existing: &auth.TokenValidatorConfig{Issuer: "https://issuer"},
+			prefix:   "system:serviceaccount:ns:",
+			wantConfig: &auth.TokenValidatorConfig{
+				Issuer: "https://issuer", RequiredSubjectPrefix: "system:serviceaccount:ns:",
+			},
+		},
+		{
+			name:       "empty restriction without OIDC config is a no-op",
+			wantConfig: nil,
+		},
+		{
+			name:      "restriction without OIDC config is an error",
+			subject:   "system:serviceaccount:ns:sa",
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			builder.config.OIDCConfig = tt.existing
+			err := WithOIDCRequiredSubject(tt.subject, tt.prefix)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantConfig, builder.config.OIDCConfig)
+		})
+	}
+}
+
+func TestWithMaxRequestBodySize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		maxBytes         int64
+		expectErr        bool
+		expectedMaxBytes int64
+	}{
+		{
+			name:             "zero is accepted and uses the middleware default",
+			maxBytes:         0,
+			expectedMaxBytes: 0,
+		},
+		{
+			name:             "positive size is stored",
+			maxBytes:         16 << 20,
+			expectedMaxBytes: 16 << 20,
+		},
+		{
+			name:      "negative size returns an error",
+			maxBytes:  -1,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithMaxRequestBodySize(tt.maxBytes)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "max-request-body-size must be non-negative")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedMaxBytes, builder.config.MaxRequestBodySize)
+		})
+	}
+}
+
+func TestWithProxyReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		value       time.Duration
+		expectErr   bool
+		expectedStr string
+	}{
+		{
+			name:        "zero is serialized as empty to use the proxy default",
+			value:       0,
+			expectedStr: "",
+		},
+		{
+			name:        "positive duration is stored as a Go duration string",
+			value:       45 * time.Second,
+			expectedStr: "45s",
+		},
+		{
+			name:      "negative duration returns an error",
+			value:     -1 * time.Second,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithProxyReadTimeout(tt.value)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedStr, builder.config.ProxyReadTimeout)
+		})
+	}
+}
+
+// TestWithStrictProtocolValidation verifies the builder option sets
+// RunConfig.StrictProtocolValidation, mirroring WithTrustProxyHeaders's
+// plumbing (see cmd/thv/app/run_flags.go's --strict-protocol-validation flag).
+func TestWithStrictProtocolValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		strict bool
+	}{
+		{name: "enabled", strict: true},
+		{name: "disabled (default)", strict: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithStrictProtocolValidation(tt.strict)(builder)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.strict, builder.config.StrictProtocolValidation)
+		})
+	}
+}
+
 func TestResolveRegistryServerName(t *testing.T) {
 	t.Parallel()
 
@@ -1528,6 +1939,198 @@ func TestResolveRegistryServerName(t *testing.T) {
 
 			result := ResolveRegistryServerName(tt.serverMetadata)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestWithMiddlewareFromFlags_AuditWrapsChain pins the same audit-wraps-chain
+// ordering invariant on the CLI flag path that
+// TestPopulateMiddlewareConfigs_AuditWrapsChain pins on the operator path:
+// audit is the first entry of the built slice (earlier entries wrap later
+// ones at request time; runner.Run later prepends only body-limit/origin), so
+// rejections from auth (401), webhooks, and authorization (403) all still
+// produce audit events.
+func TestWithMiddlewareFromFlags_AuditWrapsChain(t *testing.T) {
+	t.Parallel()
+
+	builder := &runConfigBuilder{config: NewRunConfig()}
+	opt := WithMiddlewareFromFlags(
+		nil,                     // oidcConfig
+		nil,                     // tokenExchangeConfig
+		nil,                     // toolsFilter
+		nil,                     // toolsOverride
+		nil,                     // telemetryConfig
+		writeCedarConfigFile(t), // authzConfigPath
+		true,                    // enableAudit
+		"",                      // auditConfigPath
+		"test-server",           // serverName
+		"streamable-http",       // transportType
+		true,                    // disableUsageMetrics
+	)
+	require.NoError(t, opt(builder))
+
+	typeIndex := make(map[string]int, len(builder.config.MiddlewareConfigs))
+	for i, mw := range builder.config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+
+	auditIdx, ok := typeIndex[audit.MiddlewareType]
+	require.True(t, ok, "audit middleware must be present")
+	authzIdx, ok := typeIndex[authz.MiddlewareType]
+	require.True(t, ok, "authz middleware must be present")
+	authIdx, ok := typeIndex[auth.MiddlewareType]
+	require.True(t, ok, "auth middleware must be present")
+	parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]
+	require.True(t, ok, "MCP parser middleware must be present")
+
+	assert.Equal(t, 0, auditIdx,
+		"audit must be the outermost built entry so every rejection is audited")
+	assert.Less(t, auditIdx, authIdx,
+		"audit must wrap auth so authentication failures (401) are audited")
+	assert.Less(t, auditIdx, parserIdx,
+		"audit wraps the parser; parsed MCP data flows back via mcp.ParsedRequestHolder")
+	assert.Less(t, auditIdx, authzIdx,
+		"audit must wrap authz so authorization denials (403) are audited")
+}
+
+// TestWithAdditionalMiddlewareConfigs verifies the generic injected-middleware
+// builder option: it appends pre-built configs (across multiple calls and
+// multiple arguments), preserves order, and skips nil entries. The option is
+// OBO-agnostic, so the test uses synthetic middleware types.
+func TestWithAdditionalMiddlewareConfigs(t *testing.T) {
+	t.Parallel()
+
+	mk := func(t *testing.T, mwType string) *types.MiddlewareConfig {
+		t.Helper()
+		mc, err := types.NewMiddlewareConfig(mwType, map[string]string{"marker": mwType})
+		require.NoError(t, err)
+		return mc
+	}
+
+	t.Run("appends a single config", func(t *testing.T) {
+		t.Parallel()
+		b := &runConfigBuilder{config: &RunConfig{}}
+		require.NoError(t, WithAdditionalMiddlewareConfigs(mk(t, "type-a"))(b))
+		require.Len(t, b.config.AdditionalMiddlewareConfigs, 1)
+		assert.Equal(t, "type-a", b.config.AdditionalMiddlewareConfigs[0].Type)
+	})
+
+	t.Run("multiple args in one call preserve order", func(t *testing.T) {
+		t.Parallel()
+		b := &runConfigBuilder{config: &RunConfig{}}
+		require.NoError(t, WithAdditionalMiddlewareConfigs(mk(t, "type-a"), mk(t, "type-b"))(b))
+		require.Len(t, b.config.AdditionalMiddlewareConfigs, 2)
+		assert.Equal(t, "type-a", b.config.AdditionalMiddlewareConfigs[0].Type)
+		assert.Equal(t, "type-b", b.config.AdditionalMiddlewareConfigs[1].Type)
+	})
+
+	t.Run("multiple calls are additive", func(t *testing.T) {
+		t.Parallel()
+		b := &runConfigBuilder{config: &RunConfig{}}
+		require.NoError(t, WithAdditionalMiddlewareConfigs(mk(t, "type-a"))(b))
+		require.NoError(t, WithAdditionalMiddlewareConfigs(mk(t, "type-b"))(b))
+		require.Len(t, b.config.AdditionalMiddlewareConfigs, 2)
+		assert.Equal(t, "type-a", b.config.AdditionalMiddlewareConfigs[0].Type)
+		assert.Equal(t, "type-b", b.config.AdditionalMiddlewareConfigs[1].Type)
+	})
+
+	t.Run("nil entries are skipped", func(t *testing.T) {
+		t.Parallel()
+		b := &runConfigBuilder{config: &RunConfig{}}
+		require.NoError(t, WithAdditionalMiddlewareConfigs(nil, mk(t, "type-a"), nil)(b))
+		require.Len(t, b.config.AdditionalMiddlewareConfigs, 1)
+		assert.Equal(t, "type-a", b.config.AdditionalMiddlewareConfigs[0].Type)
+	})
+
+	t.Run("no args leaves the slice nil", func(t *testing.T) {
+		t.Parallel()
+		b := &runConfigBuilder{config: &RunConfig{}}
+		require.NoError(t, WithAdditionalMiddlewareConfigs()(b))
+		assert.Nil(t, b.config.AdditionalMiddlewareConfigs)
+	})
+}
+
+// TestRunConfigBuilder_NetworkIsolationReconciliation verifies that network
+// isolation is reconciled against the resolved network mode: enforced in bridge
+// mode, dropped (with warn or error) for host, and dropped silently for none.
+// See issue #5775.
+func TestRunConfigBuilder_NetworkIsolationReconciliation(t *testing.T) {
+	t.Parallel()
+
+	mockValidator := &mockEnvVarValidator{}
+
+	const (
+		isolateDefaultTrue  = "default-true"  // isolation on, not explicitly requested
+		isolateExplicitTrue = "explicit-true" // isolation on, explicitly requested
+		isolateFalse        = "false"         // isolation off
+	)
+
+	tests := []struct {
+		name            string
+		networkMode     string
+		isolate         string
+		expectError     bool
+		expectIsolation bool
+	}{
+		// Bridge modes: isolation left untouched.
+		{"empty mode default isolate", "", isolateDefaultTrue, false, true},
+		{"empty mode explicit isolate", "", isolateExplicitTrue, false, true},
+		{"empty mode isolate off", "", isolateFalse, false, false},
+		{"bridge mode default isolate", "bridge", isolateDefaultTrue, false, true},
+		{"bridge mode explicit isolate", "bridge", isolateExplicitTrue, false, true},
+		{"default mode default isolate", "default", isolateDefaultTrue, false, true},
+
+		// Host mode: drop + warn when defaulted, error when explicit.
+		{"host mode default isolate degrades", "host", isolateDefaultTrue, false, false},
+		{"host mode explicit isolate errors", "host", isolateExplicitTrue, true, false},
+		{"host mode isolate off untouched", "host", isolateFalse, false, false},
+
+		// None mode: always drop silently, never error.
+		{"none mode default isolate degrades", "none", isolateDefaultTrue, false, false},
+		{"none mode explicit isolate degrades", "none", isolateExplicitTrue, false, false},
+		{"none mode isolate off", "none", isolateFalse, false, false},
+
+		// Custom (non-bridge, non-none) mode behaves like host.
+		{"custom mode default isolate degrades", "container:foo", isolateDefaultTrue, false, false},
+		{"custom mode explicit isolate errors", "container:foo", isolateExplicitTrue, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := []RunConfigBuilderOption{
+				WithImage("test-image"),
+				WithName("test-name"),
+				WithNetworkMode(tt.networkMode),
+			}
+			switch tt.isolate {
+			case isolateDefaultTrue:
+				opts = append(opts, WithNetworkIsolation(true))
+			case isolateExplicitTrue:
+				opts = append(opts, WithNetworkIsolation(true), WithNetworkIsolationExplicit(true))
+			case isolateFalse:
+				opts = append(opts, WithNetworkIsolation(false))
+			}
+
+			config, err := NewRunConfigBuilder(t.Context(), nil, map[string]string{}, mockValidator, opts...)
+
+			if tt.expectError {
+				require.Error(t, err, "expected build to fail fast")
+				// The error must name the resolved mode (not assume it came from
+				// --network, since it may have come from --permission-profile)
+				// and both ways out.
+				assert.Contains(t, err.Error(), `"`+tt.networkMode+`"`,
+					"error should name the resolved network mode")
+				assert.Contains(t, err.Error(), "pass --isolate-network=false",
+					"error should offer disabling isolation")
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.expectIsolation, config.IsolateNetwork,
+				"IsolateNetwork should reflect reconciled value")
 		})
 	}
 }

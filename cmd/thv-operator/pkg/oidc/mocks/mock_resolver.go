@@ -13,7 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	oidc "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -43,7 +43,7 @@ func (m *MockResolver) EXPECT() *MockResolverMockRecorder {
 }
 
 // ResolveFromConfigRef mocks base method.
-func (m *MockResolver) ResolveFromConfigRef(ctx context.Context, oidcConfigRef *v1alpha1.MCPOIDCConfigReference, oidcConfig *v1alpha1.MCPOIDCConfig, serverName, namespace string, proxyPort int32) (*oidc.OIDCConfig, error) {
+func (m *MockResolver) ResolveFromConfigRef(ctx context.Context, oidcConfigRef *v1beta1.MCPOIDCConfigReference, oidcConfig *v1beta1.MCPOIDCConfig, serverName, namespace string, proxyPort int32) (*oidc.OIDCConfig, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ResolveFromConfigRef", ctx, oidcConfigRef, oidcConfig, serverName, namespace, proxyPort)
 	ret0, _ := ret[0].(*oidc.OIDCConfig)

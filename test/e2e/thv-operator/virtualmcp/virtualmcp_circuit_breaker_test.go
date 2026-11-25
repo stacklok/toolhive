@@ -10,12 +10,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -46,18 +48,18 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			"Test MCP Group for circuit breaker E2E tests", timeout, pollingInterval)
 
 		By("Creating stable backend MCPServer")
-		backend1 := &mcpv1alpha1.MCPServer{
+		backend1 := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend1Name,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.MCPServerSpec{
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				MCPPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []mcpv1beta1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},
@@ -65,18 +67,18 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
 
 		By("Creating unstable backend MCPServer (will be scaled down to simulate failure)")
-		backend2 := &mcpv1alpha1.MCPServer{
+		backend2 := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend2Name,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.MCPServerSpec{
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				MCPPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []mcpv1beta1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},
@@ -85,25 +87,25 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 		By("Waiting for backend MCPServers to be running")
 		Eventually(func() error {
-			server1 := &mcpv1alpha1.MCPServer{}
+			server1 := &mcpv1beta1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend1Name,
 				Namespace: testNamespace,
 			}, server1); err != nil {
 				return err
 			}
-			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+			if server1.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 				return fmt.Errorf("backend1 not running, phase: %s", server1.Status.Phase)
 			}
 
-			server2 := &mcpv1alpha1.MCPServer{}
+			server2 := &mcpv1beta1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend2Name,
 				Namespace: testNamespace,
 			}, server2); err != nil {
 				return err
 			}
-			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+			if server2.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 				return fmt.Errorf("backend2 not running, phase: %s", server2.Status.Phase)
 			}
 
@@ -113,7 +115,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      vmcpServerName,
 			Namespace: testNamespace,
@@ -121,7 +123,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			Expect(k8sClient.Delete(ctx, vmcpServer)).To(Succeed())
 		}
 
-		backend1 := &mcpv1alpha1.MCPServer{}
+		backend1 := &mcpv1beta1.MCPServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      backend1Name,
 			Namespace: testNamespace,
@@ -129,7 +131,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			Expect(k8sClient.Delete(ctx, backend1)).To(Succeed())
 		}
 
-		backend2 := &mcpv1alpha1.MCPServer{}
+		backend2 := &mcpv1beta1.MCPServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      backend2Name,
 			Namespace: testNamespace,
@@ -137,7 +139,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			Expect(k8sClient.Delete(ctx, backend2)).To(Succeed())
 		}
 
-		group := &mcpv1alpha1.MCPGroup{}
+		group := &mcpv1beta1.MCPGroup{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      mcpGroupName,
 			Namespace: testNamespace,
@@ -148,41 +150,37 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 	It("should configure circuit breaker from VirtualMCPServer spec", func() {
 		By("Creating VirtualMCPServer with circuit breaker enabled")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Name:  vmcpServerName,
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
 				},
-				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				ServiceType: "NodePort",
-				Config: vmcpconfig.Config{
-					Name:  vmcpServerName,
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-					},
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
-							HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
-							UnhealthyThreshold:  cbUnhealthyThreshold,
-							CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
-								Enabled:          true,
-								FailureThreshold: cbFailureThreshold,
-								Timeout:          vmcpconfig.Duration(cbTimeout),
-							},
+				Operational: &vmcpconfig.OperationalConfig{
+					FailureHandling: &vmcpconfig.FailureHandlingConfig{
+						HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
+						HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
+						UnhealthyThreshold:  cbUnhealthyThreshold,
+						CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
+							Enabled:          true,
+							FailureThreshold: cbFailureThreshold,
+							Timeout:          vmcpconfig.Duration(cbTimeout),
 						},
 					},
 				},
-			},
-		}
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Verifying circuit breaker configuration in ConfigMap")
@@ -219,7 +217,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 	It("should discover backends with healthy status initially", func() {
 		By("Checking VirtualMCPServer status has discovered backends")
 		Eventually(func() error {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -234,9 +232,9 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			// Check that backends are initially healthy or ready
 			for _, backend := range vmcpServer.Status.DiscoveredBackends {
 				// Initial status can be ready, degraded, or unknown (during startup)
-				if backend.Status != mcpv1alpha1.BackendStatusReady &&
-					backend.Status != mcpv1alpha1.BackendStatusDegraded &&
-					backend.Status != mcpv1alpha1.BackendStatusUnknown {
+				if backend.Status != mcpv1beta1.BackendStatusReady &&
+					backend.Status != mcpv1beta1.BackendStatusDegraded &&
+					backend.Status != mcpv1beta1.BackendStatusUnknown {
 					return fmt.Errorf("backend %s has unexpected status: %s (message: %s)",
 						backend.Name, backend.Status, backend.Message)
 				}
@@ -248,7 +246,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 	It("should open circuit breaker when backend fails repeatedly", func() {
 		By("Making unstable backend unavailable by changing to non-existent image")
-		backend := &mcpv1alpha1.MCPServer{}
+		backend := &mcpv1beta1.MCPServer{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      backend2Name,
 			Namespace: testNamespace,
@@ -284,7 +282,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 		// Timeline: T=0 (check 1 starts), T=2s (fails), T=5s (check 2), T=7s (fails), T=10s (check 3), T=12s (fails)
 		// Circuit opens after 3rd failure at ~12s. Eventually() polls until condition is met.
 		Eventually(func() error {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -293,7 +291,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}
 
 			// Find the unstable backend
-			var unstableBackend *mcpv1alpha1.DiscoveredBackend
+			var unstableBackend *mcpv1beta1.DiscoveredBackend
 			for i := range vmcpServer.Status.DiscoveredBackends {
 				if vmcpServer.Status.DiscoveredBackends[i].Name == backend2Name {
 					unstableBackend = &vmcpServer.Status.DiscoveredBackends[i]
@@ -306,7 +304,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}
 
 			// Check backend is unavailable (unhealthy backends map to "unavailable" in CRD)
-			if unstableBackend.Status != mcpv1alpha1.BackendStatusUnavailable {
+			if unstableBackend.Status != mcpv1beta1.BackendStatusUnavailable {
 				return fmt.Errorf("backend status is %s (expected unavailable), message: %s",
 					unstableBackend.Status, unstableBackend.Message)
 			}
@@ -325,7 +323,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 		By("Verifying VirtualMCPServer phase reflects backend failure")
 		Eventually(func() error {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -334,33 +332,33 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}
 
 			// Phase should be Degraded (some backends unavailable) or Failed (all unavailable)
-			if vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseDegraded &&
-				vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseFailed {
+			if vmcpServer.Status.Phase != mcpv1beta1.VirtualMCPServerPhaseDegraded &&
+				vmcpServer.Status.Phase != mcpv1beta1.VirtualMCPServerPhaseFailed {
 				return fmt.Errorf("expected phase Degraded or Failed, got: %s", vmcpServer.Status.Phase)
 			}
 
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Note: Tools from unhealthy backends excluded by discovery middleware")
+		By("Note: Tools from unhealthy backends excluded during core capability aggregation")
 		// NOTE: This e2e test verifies the circuit breaker state changes (above assertions).
-		// The capability filtering itself is thoroughly unit tested in the discovery middleware.
+		// The capability filtering itself is thoroughly unit tested in the vMCP core.
 		//
 		// Full end-to-end verification of tools/list filtering would require:
 		// 1. Making an HTTP request to the vMCP server
 		// 2. Implementing MCP protocol initialize handshake
 		// 3. Calling tools/list and parsing the response
 		//
-		// The filtering logic is implemented in pkg/vmcp/discovery/middleware.go:filterHealthyBackends()
-		// and covered by unit tests in middleware_test.go (TestFilterHealthyBackends,
-		// TestFilterHealthyBackends_WithHealthMonitor).
+		// The filtering logic is implemented in pkg/vmcp/core/core_vmcp.go:filterHealthyBackends()
+		// and covered by unit tests in core_vmcp_test.go (TestFilterHealthyBackends,
+		// TestFilterHealthyBackends_Empty).
 		//
 		// How it works:
 		// - When backend circuit breaker opens → health monitor marks backend unhealthy
-		// - Discovery middleware queries health monitor via StatusProvider interface
-		// - handleInitializeRequest filters unhealthy backends before aggregation
+		// - The core queries the health monitor via the StatusProvider interface
+		// - filterHealthyBackends excludes unhealthy backends before capability aggregation
 		// - Only healthy/degraded backends' tools appear in tools/list response
-		GinkgoWriter.Printf("ℹ️  Backend health filtering is unit tested in pkg/vmcp/discovery/middleware_test.go\n")
+		GinkgoWriter.Printf("ℹ️  Backend health filtering is unit tested in pkg/vmcp/core/core_vmcp_test.go\n")
 		GinkgoWriter.Printf("   Circuit breaker state verified above; capability filtering covered by unit tests\n")
 	})
 
@@ -451,7 +449,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 	It("should close circuit breaker when backend recovers", func() {
 		By("Restoring unstable backend by fixing the image")
-		backend := &mcpv1alpha1.MCPServer{}
+		backend := &mcpv1beta1.MCPServer{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      backend2Name,
 			Namespace: testNamespace,
@@ -460,9 +458,30 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 		backend.Spec.Image = images.YardstickServerImage
 		Expect(k8sClient.Update(ctx, backend)).To(Succeed())
 
+		By("Waiting for backend StatefulSet template to use the fixed image")
+		Eventually(func() error {
+			sts := &appsv1.StatefulSet{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backend2Name,
+				Namespace: testNamespace,
+			}, sts); err != nil {
+				return err
+			}
+			for _, container := range sts.Spec.Template.Spec.Containers {
+				if container.Name == "mcp" {
+					if container.Image != images.YardstickServerImage {
+						return fmt.Errorf("statefulset still has image %q", container.Image)
+					}
+					return nil
+				}
+			}
+			return fmt.Errorf("mcp container not found in statefulset template")
+		}, timeout, pollingInterval).Should(Succeed())
+
 		By("Deleting stuck pods to force recreation with fixed image")
 		// Pods in ImagePullBackOff don't automatically recreate when image is fixed
-		// Delete them to force the statefulset to create new pods with the correct image
+		// Delete them after the statefulset template is updated, otherwise the old template
+		// can immediately recreate the pod with the broken image again.
 		podList := &corev1.PodList{}
 		Expect(k8sClient.List(ctx, podList,
 			client.InNamespace(testNamespace),
@@ -481,14 +500,14 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 		// need to be recreated. Status reporting test intentionally skips recovery testing
 		// for this reason, but circuit breaker recovery is a key feature we must verify.
 		Eventually(func() error {
-			server := &mcpv1alpha1.MCPServer{}
+			server := &mcpv1beta1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend2Name,
 				Namespace: testNamespace,
 			}, server); err != nil {
 				return err
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+			if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 				return fmt.Errorf("backend not running yet, phase: %s", server.Status.Phase)
 			}
 			return nil
@@ -502,7 +521,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 		// 4. Close if healthy
 		// We poll instead of sleeping to complete as soon as recovery happens
 		Eventually(func() error {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -511,7 +530,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}
 
 			// Find the unstable backend
-			var unstableBackend *mcpv1alpha1.DiscoveredBackend
+			var unstableBackend *mcpv1beta1.DiscoveredBackend
 			for i := range vmcpServer.Status.DiscoveredBackends {
 				if vmcpServer.Status.DiscoveredBackends[i].Name == backend2Name {
 					unstableBackend = &vmcpServer.Status.DiscoveredBackends[i]
@@ -524,8 +543,8 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}
 
 			// Backend should be ready or degraded (recovering)
-			if unstableBackend.Status != mcpv1alpha1.BackendStatusReady &&
-				unstableBackend.Status != mcpv1alpha1.BackendStatusDegraded {
+			if unstableBackend.Status != mcpv1beta1.BackendStatusReady &&
+				unstableBackend.Status != mcpv1beta1.BackendStatusDegraded {
 				return fmt.Errorf("backend status is still %s (expected ready/degraded after recovery), message: %s, circuitState: %s",
 					unstableBackend.Status, unstableBackend.Message, unstableBackend.CircuitBreakerState)
 			}
@@ -544,7 +563,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 		By("Verifying VirtualMCPServer phase returns to healthy state")
 		Eventually(func() error {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -553,8 +572,8 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}
 
 			// Phase should return to Ready or Degraded (if still recovering)
-			if vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseReady &&
-				vmcpServer.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseDegraded {
+			if vmcpServer.Status.Phase != mcpv1beta1.VirtualMCPServerPhaseReady &&
+				vmcpServer.Status.Phase != mcpv1beta1.VirtualMCPServerPhaseDegraded {
 				return fmt.Errorf("expected phase Ready or Degraded after recovery, got: %s (message: %s)",
 					vmcpServer.Status.Phase, vmcpServer.Status.Message)
 			}
@@ -579,14 +598,14 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 	It("should track circuit breaker state per backend independently", func() {
 		By("Verifying stable backend remained healthy throughout test")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      vmcpServerName,
 			Namespace: testNamespace,
 		}, vmcpServer)).To(Succeed())
 
 		// Find the stable backend
-		var stableBackend *mcpv1alpha1.DiscoveredBackend
+		var stableBackend *mcpv1beta1.DiscoveredBackend
 		for i := range vmcpServer.Status.DiscoveredBackends {
 			if vmcpServer.Status.DiscoveredBackends[i].Name == backend1Name {
 				stableBackend = &vmcpServer.Status.DiscoveredBackends[i]
@@ -598,8 +617,8 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 		// Stable backend should be ready or degraded (never unavailable)
 		Expect(stableBackend.Status).To(Or(
-			Equal(mcpv1alpha1.BackendStatusReady),
-			Equal(mcpv1alpha1.BackendStatusDegraded)),
+			Equal(mcpv1beta1.BackendStatusReady),
+			Equal(mcpv1beta1.BackendStatusDegraded)),
 			"stable backend should remain healthy, got status=%s message=%s",
 			stableBackend.Status, stableBackend.Message)
 

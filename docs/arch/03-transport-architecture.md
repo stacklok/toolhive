@@ -94,7 +94,7 @@ sequenceDiagram
 - `pkg/transport/proxy/transparent/transparent_proxy.go` - Transparent HTTP proxy
 
 **Key features:**
-- Transparent HTTP proxying (no protocol awareness needed)
+- Transparent HTTP proxying with MCP envelope admission
 - Middleware applied to all requests
 - Session tracking from headers
 - Keep-alive support
@@ -139,7 +139,7 @@ sequenceDiagram
 **Key features:**
 - Transparent HTTP proxying
 - Session management via `Mcp-Session-Id` header
-- Batch request support
+- Batch requests rejected
 - Notification and client response handling
 
 ## Proxy Architecture
@@ -156,15 +156,40 @@ ToolHive uses two different proxy implementations:
 
 **How it works:**
 - Uses Go's `httputil.ReverseProxy`
-- Forwards HTTP requests/responses without protocol-specific logic
-- Applies middleware to all traffic
+- Validates every POST routed to the backend-forwarding MCP handler with shared MCP message admission, regardless of path or Content-Type
+- Forwards admitted body bytes and headers without reserializing the envelope.
+  The one exception is `Accept-Encoding`, which the authorization middleware
+  (on requests whose response it filters) and the tool filter (on every request)
+  withhold, so that Go's
+  transport negotiates and decodes the encoding itself (see
+  [Middleware Architecture](../middleware.md))
+- Applies the MCP middleware chain only to traffic routed to the backend-forwarding handler
 - Detects session IDs from headers/body for tracking
-- No JSON-RPC parsing needed
+- Rejects malformed, trailing, batched, ambiguous, or mixed JSON-RPC envelopes before forwarding
+
+##### POST compatibility
+
+Every POST routed to the backend-forwarding MCP handler requires a single MCP envelope, regardless of path or Content-Type, including `thv proxy` with an unspecified transport type. This handler is not generic non-MCP HTTP forwarding.
+
+Local mux routes sit outside this handler and its MCP admission and middleware chain:
+- Configured prefix handlers, including embedded auth routes such as `/oauth/token`, `/oauth/register`, and auth server well-known endpoints.
+- `/health`, which always stays local: a health handler when enabled, otherwise `404`.
+- `/metrics`, which uses a metrics handler when provided, otherwise a local response.
+- `/.well-known/` discovery, which is always registered, even when auth is disabled.
+
+These local routes retain their own method, body, and authentication behavior; being outside MCP admission does not mean they accept every POST or require no authentication.
+
+Current admission is stricter than base JSON-RPC:
+- Request and notification `params` must be omitted or an object; `null` and arrays are rejected.
+- IDs, when present, must be strings or signed-int64 values written as lexical JSON integers. `null`, fractional spellings such as `1.0`, and exponent spellings such as `1e0` are rejected.
+- Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Client responses remain subject to transport and authorization handling.
+- Invalid envelopes and unreadable bodies return `400`; bodies exceeding the configured limit return `413`.
+- Only a `POST` body is parsed as an MCP message. A request carrying a body on any other method (matched case-sensitively, so `post` is not `POST`) is rejected with `400` rather than forwarded unparsed: forwarding it would skip the request-level middleware that act on the parsed message. Bodyless `GET` (SSE stream), `DELETE` (session termination), and `OPTIONS` (CORS preflight) pass through unchanged; method-specific `405`/`Allow` responses stay with the transport handlers, which know the methods their endpoint serves.
 
 **Why transparent:**
 - Container already speaks HTTP
-- MCP protocol handled by container
-- Proxy just routes traffic + applies middleware
+- MCP operations are handled by the container
+- Proxy validates envelopes, routes traffic, and applies middleware
 
 #### 2. Protocol-Specific Proxies (for Stdio)
 
@@ -205,16 +230,56 @@ When stdio transport is selected, the proxy mode determines which HTTP protocol 
 | **sse** | HTTP (SSE) | Transparent | `transparent_proxy.go` |
 | **streamable-http** | HTTP (Streamable) | Transparent | `transparent_proxy.go` |
 
+### Session Ownership
+
+Ordinary proxies use `pkg/auth/sessionbinding` to bind each session to the
+validated request identity's issuer and subject under `vmcp.identity.binding`.
+The complete bound record is inserted conditionally (memory/Redis SET NX) before
+publishing an ID or SSE endpoint. Refreshed tokens for the same principal work;
+changing either issuer or subject does not.
+
+Ownership is checked after authentication, before forwarding, stream replacement,
+delete, or backend recovery. SSE-to-stdio uses the `session_id` query parameter;
+direct Streamable HTTP uses `Mcp-Session-Id`; transparent proxies validate both
+that header and the backend SSE `sessionId` query parameter, rejecting ambiguous
+carriers. Transparent requests that forward a backend SID are checked even for
+Modern MCP. Direct Modern POST requests intentionally ignore the SID and retain
+fresh per-request routing tokens; truly sessionless requests remain unaffected.
+
+Missing, foreign, and legacy unowned sessions all return a non-disclosing 404;
+legacy clients must reinitialize. Storage failures return 503 before streaming;
+a binding failure discovered inside an upstream SSE stream terminates it without
+publishing the conflicting endpoint. Rejection does not delete or close the owner's session. With authentication disabled, only an
+actually absent identity uses the unauthenticated sentinel. Non-nil identities
+(including synthetic anonymous/local identities) require valid nonempty string
+`iss` and `sub` claims without NUL bytes. Ownership never comes from outbound
+Authorization headers. Shared metadata does not replace live-stream affinity.
+
+vMCP applies the same check (`sessionbinding.Validate`) to every request carrying
+`Mcp-Session-Id`, with the shared carrier parsing. Its 404 is a plain-text
+`Session terminated` rather than the proxies' JSON-RPC body, so go-sdk clients
+re-initialize. See *Session
+Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
+
 ### Middleware Integration
+
+Token exchange's host adapter and host tests live in `pkg/auth/tokenexchange`;
+`factory.go` handles runner setup and lifecycle, while `middleware.go` holds
+runtime behavior and configuration. Reusable RFC 8693 exchange and normalization
+remain in `pkg/oauthproto/tokenexchange`.
+The host depends on the reusable package, never the reverse. Runner startup uses
+`GetSupportedMiddlewareFactories` to select the host factory by `tokenexchange`;
+there is no token-exchange `init()` registration. See the
+[Go API migration](../middleware.md#8-token-exchange-middleware) for moved symbols.
 
 All proxy types integrate with the middleware chain:
 
 ```mermaid
 graph LR
-    Client[Client Request] --> MW1[Middleware 1<br/>Auth]
-    MW1 --> MW2[Middleware 2<br/>Parser]
-    MW2 --> MW3[Middleware 3<br/>Authz]
-    MW3 --> MW4[Middleware 4<br/>Audit]
+    Client[Client Request] --> MW1[Middleware 1<br/>Audit]
+    MW1 --> MW2[Middleware 2<br/>Auth]
+    MW2 --> MW3[Middleware 3<br/>Parser]
+    MW3 --> MW4[Middleware 4<br/>Authz]
     MW4 --> Proxy[Proxy Handler]
     Proxy --> Container[MCP Server]
 
@@ -226,9 +291,9 @@ graph LR
 ```
 
 **Implementation:**
-- `pkg/transport/types/transport.go` - MiddlewareFunction type
-- Middleware applied in reverse order (last registered = outermost)
-- Each transport type accepts `[]MiddlewareFunction` in constructor
+- `pkg/transport/types/transport.go` - `MiddlewareFunction` and `NamedMiddleware` types
+- Middleware wraps the handler in reverse registration order, so the first registered entry is the outermost wrapper and runs first at request time
+- Each transport type accepts `[]NamedMiddleware` in constructor (each wraps a `MiddlewareFunction` with its name for logging)
 
 ## Remote MCP Server Proxying
 
@@ -297,6 +362,19 @@ Remote MCP servers can require OAuth 2.0 authentication. The architecture uses:
 - `pkg/transport/http.go` - `SetTokenSource` method
 - `pkg/auth/oauth/flow.go` - OAuth flow and TokenSource creation
 
+### TLS and CA trust
+
+Outgoing HTTPS clients can use either a **pinned** or an **additive** CA bundle:
+
+- `WithCABundle` replaces the system root pool. Only certificates chaining to the supplied bundle are trusted.
+- `WithSystemRootsPlusCABundle` starts with the system root pool and appends the supplied certificates. This supports an upstream that may use either a publicly trusted certificate or a private CA.
+
+The `caBundleRef` fields on embedded auth-server upstreams and trusted issuers use additive trust. A referenced ConfigMap augments, rather than replaces, the system roots for an upstream's OAuth/OIDC requests or a trusted issuer's discovery and JWKS requests. The reference is per provider or issuer, so a bundle is not implicitly trusted for other clients or unrelated ToolHive traffic. Existing callers that need strict CA pinning continue to use the pinned mode.
+
+In Kubernetes, the operator projects each selected ConfigMap key as a read-only `ca.crt` file in the proxyrunner pod and passes its path to the upstream client. The ConfigMap must contain PEM-encoded CA certificates.
+
+**Implementation:** `pkg/networking/http_client.go`, `pkg/authserver/upstream/`, and `pkg/auth/dcr/`
+
 ### Remote vs Container Workloads
 
 | Feature | Container Workload | Remote Workload |
@@ -353,7 +431,40 @@ export TOOLHIVE_PROXY_REQUEST_TIMEOUT=5m
 thv run my-slow-server
 ```
 
-**Note:** This timeout only affects the streamable HTTP proxy used with stdio transport. The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server) does not impose a request timeout.
+**Note:** This MCP response-correlation timeout only affects the streamable HTTP proxy used with stdio transport.
+The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server)
+does not impose an MCP response-correlation timeout, but it does enforce the HTTP request read timeout described below.
+
+### Proxy Request Body Size Limit (All Proxy Transports)
+
+ToolHive proxy listeners reject request bodies larger than 8 MiB by default,
+before authentication or MCP parsing can buffer them. This bounds the memory a
+single inbound request may consume. Operators can override the limit with
+`thv run --max-request-body-size`, `thv proxy --max-request-body-size`, or
+MCPServer `spec.maxRequestBodySize`. RunConfig stores the workload setting as
+`max_request_body_size`, expressed as a number of bytes.
+
+Omitting the setting or specifying zero retains the 8 MiB default; zero never
+disables the limit. Raising the limit supports unusually large `tools/call`
+payloads, such as inline images or documents, but also increases the memory
+available to each concurrent request. The setting applies only to inbound MCP
+proxy requests. Response bodies, the management API's 1 MiB cap, the embedded
+auth server's 64 KiB cap, and vMCP's 8 MiB cap are unaffected.
+
+**Implementation**: `pkg/bodylimit`, `pkg/runner/middleware.go`
+
+### Proxy Request Read Timeout (All Transports)
+
+Every proxy HTTP server limits reading a complete inbound request, including its body, to 30 seconds by default.
+This prevents a slow or stalled upload from holding a connection open indefinitely.
+Operators can override the limit per workload with `thv run --proxy-read-timeout` or the MCPServer `spec.proxyReadTimeout` field.
+RunConfig stores the same setting as `proxy_read_timeout`, using a Go duration string such as `45s` or `2m`.
+
+Omitting the setting or specifying zero retains the 30-second default; it never disables the timeout.
+The read timeout does not limit response streaming, so long-lived SSE responses remain unaffected.
+
+This setting is distinct from `TOOLHIVE_PROXY_REQUEST_TIMEOUT` above: the read timeout bounds the client-to-proxy HTTP upload,
+while the stdio proxy request timeout bounds how long an MCP request waits for its correlated server response.
 
 ### Health Check Tuning Parameters
 
@@ -373,6 +484,10 @@ Duration values use Go's `time.ParseDuration` format (e.g., `10s`, `500ms`, `1m3
 **Threshold of 1**: Setting `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD=1` means the proxy shuts down on the first health check failure with no retries.
 
 **Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` before shutting down — approximately 60 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends. If `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` exceeds `TOOLHIVE_HEALTH_CHECK_INTERVAL`, each health check cycle takes longer than one interval tick, extending the failure window beyond what the formula predicts.
+
+**Before initialization**: The background monitor checks the backend when the proxy starts and on every interval tick from then on, but a failure counts toward the threshold only once the MCP server has been initialized: a successful `initialize` exchange, or, for a server on the stateless 2026-07-28 revision, its first successful request. Before that, the checks only keep the `/health` answer current.
+
+**What `/health` answers**: With health checks enabled, `/health` answers from the monitor's most recent check instead of pinging the backend for each request, so a backend that is slow to answer cannot hold a Kubernetes probe past its timeout, and the ping timeout no longer has to stay below the probe timeouts. The answer is at most about one interval plus one ping timeout old, or two ping timeouts if the ping timeout exceeds the interval; once the MCP server is initialized, a failed check that is retried can instead leave the answer up to two ping timeouts plus the retry delay old, whichever is longer (15 seconds with the defaults); its `timestamp` and `mcp.last_checked` members say when the check started. Until the first check completes, `/health` reports `healthy` without the `mcp` member. A failed check is reported as `degraded` with HTTP 200, as before. With health checks disabled, as for remote workloads by default, `/health` reports the proxy alone. The HTTP-SSE and streamable HTTP proxies, whose `/health` never waits on a backend, still build their answer per request.
 
 **Usage example** (increase tolerance for a flaky network):
 ```bash
@@ -446,24 +561,22 @@ ToolHive uses two port concepts:
 
 ### MCP Environment Variables
 
-**Implementation**: `pkg/transport/http.go`
+**Implementation**: `pkg/environment/environment.go` sets `MCP_TRANSPORT`, `MCP_PORT`, and `FASTMCP_PORT` for the CLI/local path. `pkg/runtime/setup.go` sets all four variables (`MCP_TRANSPORT`, `MCP_PORT`, `FASTMCP_PORT`, and `MCP_HOST`) when deploying workloads through the runtime (used by both local and Kubernetes/proxy-runner paths). The `TargetHost` default of `127.0.0.1` (`transport.LocalhostIPv4`) is established by `WithTargetHost` in `pkg/runner/config_builder.go` (around line 204), not by the env-emitting code — both code paths simply read `RunConfig.TargetHost`.
 
 Environment variables set automatically for container configuration:
 
 - `MCP_TRANSPORT`: Transport type (stdio, sse, streamable-http)
 - `MCP_PORT`: Target port (for SSE/Streamable HTTP)
-- `MCP_HOST`: Target host - always `127.0.0.1` (both local and Kubernetes)
+- `MCP_HOST`: Target host - defaults to `127.0.0.1` (`transport.LocalhostIPv4`), with the default applied by `WithTargetHost` in `pkg/runner/config_builder.go` when `RunConfig.TargetHost` is empty
 - `FASTMCP_PORT`: Alias for `MCP_PORT` (legacy support)
 
 **Architecture distinction:**
-- **Target host** (`MCP_HOST` env var): Where container listens - always `127.0.0.1`
-- **Proxy host**: Where proxy binds - `127.0.0.1` in local mode, `0.0.0.0` in Kubernetes for cluster access
+- **Target host** (`MCP_HOST` env var): Where the container's MCP server listens - defaults to `127.0.0.1`
+- **Proxy host**: Where the proxy binds - `127.0.0.1` in local mode, `0.0.0.0` in Kubernetes for cluster access
 
 **Merge strategy**:
 - User-provided values take precedence
 - ToolHive sets deployment-appropriate defaults
-
-**Reference**: PR #1890 - Runtime Authoring Guide
 
 ## Container Attach (Stdio Transport)
 
@@ -484,7 +597,7 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 5. **Framing** - Newline-delimited JSON-RPC messages
 
 **Monitoring:**
-- Container monitor detects exit: `pkg/container/docker/monitor.go`
+- Container monitor detects exit: `pkg/container/runtime/monitor.go`
 - Proxy automatically stopped on container exit
 - Workload status updated
 
@@ -501,12 +614,60 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 
 ### Stdio Transport - SSE Mode
 
-**Implementation**: `pkg/transport/session/sse_session.go`
+**Implementation**: `pkg/transport/session/sse_session.go`,
+`pkg/transport/proxy/httpsse/routing.go`
 
-- Unique client ID per connection
+- Unique client ID per connection, used as the `session_id` in the POST endpoint
 - Message channel per client
-- Pending messages queued for reconnection
+- No replay buffer: a message the backend emits while no client is connected
+  reaches nobody, then or later (same as the streamable proxy)
 - Automatic cleanup after TTL
+
+#### Server->Client Routing (Legacy SSE)
+
+The legacy SSE proxy sits in front of the same single shared stdio backend as
+the streamable proxy (see the next section) and faces the same problem: every
+message the backend emits arrives untagged, and a message delivered to the
+wrong session is a cross-user disclosure (GHSA-wm2j-ch74-276r).
+
+Responses are routed statelessly. `handleOwnedPostRequest` rewrites each
+call's wire ID to `<session_id>|n:<int64>` or `<session_id>|s:<string>`
+(`encodeRoutedID`), where `session_id` is the value the ownership middleware
+just validated for that request. The backend echoes it, `routeResponse` parses
+it back (`decodeRoutedID`), restores the client's original ID with its
+original type, and delivers only to that session's live stream. Because the
+destination is derivable from the echoed ID alone, there is no pending-request
+table to evict on response, disconnect, or timeout. A response whose ID the
+proxy did not mint, or whose session has disconnected, is dropped at Debug and
+is never queued or broadcast. Shared admission (`mcp.DecodeMessage`) preserves
+exact integer IDs rather than rounding through `float64`; fractional and
+out-of-range IDs are rejected with 400. A client's
+`notifications/cancelled` names its target request in `params.requestId`; the
+proxy rewrites that value the same way (`rewriteCancelledRequestID`) so the
+backend can match it. A JSON-RPC response sent by a client is refused with
+400: the proxy answers or rejects every server-initiated request itself, so a
+client response could only be an attempt to answer backend work belonging to
+another session.
+
+| Backend message | Destination |
+|---|---|
+| Response with a routed ID for a live session | that session only, original ID restored |
+| Response otherwise (unrouted ID, session gone, health-check ping echo) | dropped |
+| `notifications/tools\|resources\|prompts/list_changed` | every live session, rebuilt from the method with no params (the spec allows `_meta`, which could carry one session's data) |
+| Server-initiated `ping` | answered by the proxy with an empty result, written back to the backend |
+| `notifications/message`, `notifications/progress`, `notifications/resources/updated`, anything else | dropped; same SECURE-DROP rationale as the streamable table |
+| Any other server-initiated request (`sampling/createMessage`, `elicitation/create`, ...) | JSON-RPC `-32601` written back to the backend |
+
+The first drop or rejection of each method is logged at Warn so the missing
+capability is diagnosable; later ones at Debug so a chatty backend cannot
+flood the log.
+
+Progress routing by a proxy-minted token and subscription-scoped
+`resources/updated` delivery exist in the streamable proxy and are not yet
+ported to the legacy SSE proxy; SSE clients receive neither until then.
+Server-initiated requests are rejected even when a single client is connected:
+a request emitted on behalf of a session that has since disconnected would
+otherwise be delivered to whichever session remains.
 
 ### Stdio Transport - Streamable Mode
 
@@ -516,6 +677,193 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 - Request ID correlation per session
 - Ephemeral sessions for sessionless requests
 - DELETE `/mcp` to explicitly close session
+
+### Server->Client Routing (Streamable HTTP)
+
+**Implementation**: `pkg/transport/proxy/streamable/streamable_proxy.go`,
+`pkg/transport/proxy/streamable/dispatcher.go`,
+`pkg/transport/proxy/streamable/dispatcher_streams.go`,
+`pkg/transport/proxy/streamable/dispatcher_routing.go`
+
+The streamable HTTP proxy sits in front of a single shared backend process
+(one container, one stdio pipe -- see `pkg/transport/stdio.go`) that may be
+serving many concurrent MCP sessions. Every server->client message the
+backend emits arrives on one shared channel with **no built-in session
+attribution**, so the proxy must reconstruct "which session does this belong
+to" itself before it can deliver anything, and must drop -- never guess or
+broadcast -- whatever it cannot attribute. `dispatchResponses`
+(`dispatcher.go`) is the single place every such message passes through; it
+routes by concrete JSON-RPC type and method:
+
+- `*jsonrpc2.Response` -> the waiter-correlation path (`routeResponseToWaiter`,
+  unchanged): responses are matched back to the in-flight HTTP request that
+  sent them via a composite key (`compositeKey(sessID, idKey)`) baked into the
+  outgoing request's wire ID and echoed back by the backend.
+- `*jsonrpc2.Request` with no valid ID (a **notification**) -> routed by
+  method (`routeNotification`), described in detail below.
+- `*jsonrpc2.Request` with a valid ID (a server->client **request**, e.g.
+  `sampling/createMessage`, `elicitation/create`) -> `rejectServerRequestToBackend`
+  writes a JSON-RPC error (code `-32601`) back to the **backend** (not to any
+  client) via `SendMessageToDestination`, so the backend's own blocking call
+  unblocks instead of hanging until its own timeout. The shared-backend proxy
+  has no way to route a client's reply back to the correct originating backend
+  call across potentially many sessions, so it cannot forward this to any
+  client without either guessing (misdelivery) or broadcasting (cross-session
+  leakage). Per-session backends -- see the [Virtual MCP
+  architecture](10-virtual-mcp-architecture.md) -- are the correct place to
+  support server->client requests; tracked as a follow-up in #5744.
+
+#### Notification routing table
+
+| Method | Destination | Mechanism |
+|---|---|---|
+| `notifications/tools\|resources\|prompts/list_changed` | every connected session's standalone GET stream | `serverStreams.broadcast` -- GLOBAL, no session-specific payload |
+| `notifications/progress` | the ONE originating request's POST SSE stream | `routeProgress` + `sessionRouter`'s progress-token table |
+| `notifications/resources/updated` | only sessions subscribed to the notification's `uri` | `routeResourceUpdated` + `sessionRouter`'s subscription table |
+| `notifications/message` (logging) | nobody -- **SECURE-DROP** | shared-backend log content is unattributable to any session |
+| anything else | nobody | dropped, logged at Debug |
+
+**Progress correlation.** A client that wants progress for a request sets
+`params._meta.progressToken` and sends the request with
+`Accept: text/event-stream` (`handleSingleRequestSSE`). Before forwarding
+upstream, the proxy mints a fresh, proxy-only token (`ptGlobal`, a UUID),
+rewrites `_meta.progressToken` to it (`rewriteMetaProgressToken`, which copies
+rather than mutates the caller's request), and records a `progressRoute`
+(delivery channel + the client's *original* token) keyed by `ptGlobal` in
+`sessionRouter`. `handleSingleRequestSSE`'s response loop then `select`s over
+both that delivery channel and the final response's waiter channel,
+interleaving every progress notification the backend sends as its own SSE
+`data:` frame (with the original client token restored) and only returning
+once the final response (or a context/shutdown signal) arrives. The route is
+dropped as soon as the request completes (`defer`), so it can never be reused
+by a later, unrelated notification. A request with **no** `Accept:
+text/event-stream` (a plain JSON POST) gets no progress route at all -- its
+token is forwarded unrewritten, and any progress the backend sends for it is
+correctly dropped (no route is ever registered for it), since a non-streaming
+client has no channel to receive interim progress on anyway.
+
+Because `ptGlobal` is unique per request regardless of what token value the
+client chose, two different sessions asking for progress with the identical
+client-visible token can never cross-deliver: each is keyed internally by its
+own UUID.
+
+**Subscriptions.** `resources/subscribe` and `resources/unsubscribe` are
+ref-counted per `uri` in `sessionRouter`'s subscription table, for **Legacy,
+session-bearing requests only** (a request with no real, persisted session --
+Modern, or Legacy sessionless -- has nothing durable to track, so it always
+forwards upstream unmodified). The interception happens in `handlePost`
+*after* `applyMiddlewares`/authz has admitted the request, so an
+authorization-denied subscribe is never recorded. A `resources/subscribe` for
+a `uri` with no existing subscriber is forwarded upstream (`interceptSubscribe`,
+via `doRequest`, under `uriLocks` for that `uri`), and is recorded in the
+subscription table **only if that upstream call succeeds**: a backend
+rejection, error, or timeout is returned to the client as-is and leaves no
+trace in the subscription table, so a later session's subscribe for the same
+`uri` is free to try again upstream rather than being dedup-served a
+synthesized success for a subscription the backend never actually granted. A
+`resources/subscribe` for a `uri` that already has a recorded subscriber is
+answered with a locally synthesized success and never reaches the backend at
+all, avoiding redundant upstream subscribe calls -- this dedup is safe
+specifically because the entry it is deduping against is known to have
+succeeded upstream. Symmetrically, `resources/unsubscribe` only reaches the
+backend once the **last** subscriber for a `uri` leaves. `notifications/resources/updated`
+is then delivered only to that `uri`'s current subscribers' standalone GET
+streams (`serverStreams.deliverToMany`).
+
+**Trust-boundary note.** Because identical-`uri` subscriptions are ref-counted
+down to a single upstream `resources/subscribe`, a backend that performs its
+*own* per-resource access control inside its subscribe handler only ever sees
+and evaluates the **first** subscriber for a given `uri` -- sessions 2..N are
+served a synthesized success without the backend's handler ever running for
+them. ToolHive's own per-session middleware/authz still runs in front of
+*every* subscribe attempt regardless of dedup (see the authz-non-bypass note
+above), so this is not a bypass of ToolHive's own controls. It is a
+characteristic of the shared-backend proxy design worth calling out
+explicitly: any authorization a backend implements *inside its own
+subscribe handler*, keyed on the resource `uri`, is not re-invoked for the
+2nd..Nth subscriber of that `uri`. Deployments relying on backend-side,
+per-resource access control for `resources/subscribe` should account for this
+when sharing one backend across sessions with different resource
+entitlements.
+
+**Logging.** `logging/setLevel` is intercepted the same way: the client's
+requested level is recorded per-session, and if it changes the **maximum**
+verbosity requested across all sessions, a reconciled `logging/setLevel` is
+sent upstream with that maximum (see `logLevelRank`, aligned with RFC 5424
+syslog severity numbers) so no session is under-served by another session's
+less-verbose request silently overriding it. The client always gets an
+immediate synthesized success. The resulting `notifications/message` the
+backend then emits is dropped per the routing table above -- there is
+currently no way to safely forward it to the session that actually wanted
+that verbosity.
+
+**Lifecycle.** `sessionRouter`'s three tables (progress tokens, subscriptions,
+log levels) each have their own mutex (no shared locking). Progress tokens are
+request-scoped and dropped when their request completes.
+Subscriptions/log-levels are session-scoped and are purged in two ways: (1)
+explicitly, by `handleDelete` (`purgeSession`), and (2) periodically, by a
+reaper goroutine (`reapRoutingState`, started alongside `dispatchResponses` in
+`Start`) that ticks at `sessionTTL/2` (matching `session.Manager`'s own
+cleanup cadence) and drops state for any session `session.Manager` no longer
+reports as active. That liveness check is the session manager's ordinary
+`Get`, which -- by design, to keep genuinely active sessions alive -- refreshes
+the session's TTL on every call; using it here means a session that still owns
+routing state can have its expiry delayed by up to one reap tick beyond actual
+client inactivity. This is an accepted, documented tradeoff, not a leak: `Get`
+on an already-deleted session simply returns false without refreshing
+anything, so routing state can never outlive a session's true deletion.
+
+Because the GET handler (and every POST) is registered through the same
+`applyMiddlewares` chain, tool-filter and other response-shaping middleware
+see every frame written to any stream -- there is no separate, unfiltered code
+path for server->client messages.
+
+**Behavior and configuration:**
+
+- Standalone SSE is **on by default**. Pass `WithStandaloneSSE(false)` to
+  restore the prior behavior (GET returns 405).
+- Delivery is **best-effort and non-blocking** throughout: a stream (or
+  progress delivery channel) whose buffer is full has its message dropped
+  (logged) rather than blocking delivery to anything else.
+- A notification dispatched while no GET stream is connected for its target
+  session is dropped. There is no replay buffer or pending-message queue -- a
+  client that wants server->client notifications must keep a GET stream open.
+- Per MCP 2025-11-25, a server MUST NOT deliver the same notification to a
+  session more than once, so `serverStreamRegistry` allows **at most one
+  stream per session**: a second concurrent GET for the same session evicts
+  the first (its handler observes a closed per-stream `stop` signal and
+  returns). Each registered stream has two channels: a buffered `data` channel
+  that is **never closed** (only ever read from or sent to), and a `stop`
+  channel closed exactly once -- by an evicting `register` call or by proxy
+  `Stop`'s `closeAll` -- to signal the consumer to return. This avoids a
+  send-on-closed-channel panic if a concurrent broadcast/dispatch races
+  eviction/shutdown.
+
+**Relationship to Modern `subscriptions/listen`**: the 2026-07-28 (Modern)
+revision (see `mcp.MCPVersionModern` and `pkg/mcp/revision.go`) replaces the
+standalone GET with `subscriptions/listen`, a POST method whose response stream
+stays open for server-pushed subscription events.
+
+vMCP now **serves** that method on its client edge
+(`pkg/vmcp/server/modern_subscriptions.go`), and deliberately does **not** use
+`serverStreamRegistry`. The reason is that the handler honors no subscriptions:
+the honored set is intersected against the capabilities `server/discover`
+advertises, every push flag there is false, so the acknowledged set is always
+empty and the stream terminates immediately. With nothing to fan out, wiring in a
+fan-out registry from another package would add an abstraction with zero
+consumers. What the handler does implement is the wire contract — a long-lived
+POST rather than a GET, keyed per-subscription-id (the listen request's own
+JSON-RPC id) rather than per session ID since Modern has no sessions, an initial
+`notifications/subscriptions/acknowledged`, and
+`io.modelcontextprotocol/subscriptionId` tagging.
+
+`serverStreamRegistry` remains the sensible seam for the piece still missing:
+actual **delivery** of notifications on a Modern listen stream (#5743). That work
+needs per-notification-type AND per-URI opt-in filtering rather than blanket
+fan-out, and per `schema/2026-07-28/schema.ts` must tag *every* notification with the
+subscription id, not just the acknowledgement. `dispatcher_streams.go` is
+therefore still intentionally kept transport-agnostic (no HTTP types), so that
+when delivery lands it does not also require rewriting the fan-out primitives.
 
 ## Error Handling
 
@@ -574,7 +922,7 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 
 ### Network Isolation
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: [`toolhive-core/permissions`](https://github.com/stacklok/toolhive-core/tree/main/permissions)
 
 - MCP servers can run in isolated networks
 - Egress proxy for allowed destinations
@@ -584,9 +932,13 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 
 **Architecture:**
 - **Remote MCP servers**: Full HTTPS support with certificate validation
-- **Custom CA bundles**: Configurable via RunConfig for self-signed certificates
+- **Custom CA bundles**: Configurable for clients that connect to private-CA or self-signed endpoints
 - **Local proxy**: HTTP only (localhost binding for security)
-- **Trust store**: System CA bundle or custom CA bundle from configuration
+- **Trust store**: Clients either use the system CA bundle, a pinned custom bundle, or (for embedded auth-server upstreams and trusted issuers) system roots plus a custom bundle
+
+A custom CA bundle does not disable the HTTPS and network protections applied to the client. In particular, the server-supplied endpoint paths retain redirect and private-IP safeguards unless the corresponding explicit development or in-cluster options are configured.
+
+See [TLS and CA trust](#tls-and-ca-trust) for the distinction between pinned and additive trust and the Kubernetes `caBundleRef` configuration.
 
 ### Trust Proxy Headers
 
@@ -595,6 +947,25 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 For deployment behind reverse proxy, proxies respect X-Forwarded headers (Host, Port, Proto, Prefix).
 
 **Security**: Only enable if ToolHive is behind trusted reverse proxy.
+
+### MCP-Protocol-Version Validation (Streamable HTTP)
+
+**Implementation**: `pkg/transport/proxy/streamable/streamable_proxy.go`, `pkg/transport/proxy/streamable/utils.go`
+
+By default, the streamable HTTP proxy is version-agnostic: it accepts any
+`MCP-Protocol-Version` header value (including an absent header, per the
+streamable HTTP spec's rule to assume `2025-03-26`). This is intentional --
+the proxy is transport-level and does not depend on a specific MCP revision,
+so it avoids being pedantic and breaking on new protocol dates.
+
+**Opt-in strict mode**: `thv run --strict-protocol-validation` rejects a
+request whose `MCP-Protocol-Version` header names an unknown/unsupported MCP
+revision with HTTP 400. An absent header is still accepted in strict mode.
+The set of recognized revisions is `supportedMCPVersions` in
+`pkg/transport/proxy/streamable/utils.go`. This is wired through
+`runner.WithStrictProtocolValidation` -> `RunConfig.StrictProtocolValidation`
+-> `types.Config.StrictProtocolValidation` -> `StdioTransport.SetStrictProtocolValidation`
+-> `streamable.WithStrictProtocolValidation`.
 
 ### SSE Endpoint URL Rewriting
 
@@ -618,14 +989,14 @@ thv run --transport sse --endpoint-prefix /playwright playwright
 
 **Kubernetes CRD:**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 spec:
   endpointPrefix: /playwright
   trustProxyHeaders: true
 ```
 
-**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go` - `rewriteEndpointURL()`, `getSSERewriteConfig()`
+**Implementation**: `pkg/transport/proxy/transparent/sse_response_processor.go` - `rewriteEndpointURL()`, `getSSERewriteConfig()`
 
 ## Transport Factory
 
@@ -657,3 +1028,4 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 - [Deployment Modes](01-deployment-modes.md) - How transports work in each mode
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - Transport configuration
 - [Core Concepts](02-core-concepts.md) - Transport concepts and terminology
+- [Operator Architecture](09-operator-architecture.md) - How the operator and proxy-runner set up transports in Kubernetes

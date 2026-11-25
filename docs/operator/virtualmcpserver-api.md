@@ -13,7 +13,7 @@ The `VirtualMCPServer` CRD enables aggregation of multiple backend MCPServers in
 ## API Group and Version
 
 - **Group**: `toolhive.stacklok.dev`
-- **Version**: `v1alpha1`
+- **Version**: \`v1beta1\`
 - **Kind**: `VirtualMCPServer`
 
 ## Resource Names
@@ -56,7 +56,7 @@ A `VirtualMCPServer` aggregates three types of backends from the referenced `MCP
 **Example: MCPServerEntry backend**
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: context7
@@ -83,6 +83,35 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
   - `audience` (string, required): Must be unique per server to prevent token replay
   - `scopes` ([]string, optional): Defaults to `["openid"]`
 - `authzConfig` (AuthzConfigRef, optional): Authorization policy configuration
+  - `type` (string, required): `inline` or `configMap`
+  - `inline` (InlineAuthzConfig, required when type=inline): Inline Cedar policies
+    - `policies` ([]string, required): Cedar policy strings
+    - `entitiesJson` (string, optional): Cedar entities (JSON). Required when
+      transitive policies (e.g. `ClaimGroup` → `PlatformRole`) need a static
+      entity store. Defaults to `"[]"`.
+    - `primaryUpstreamProvider` (string, optional): **Deprecated.** Use
+      `.spec.authServerConfig.primaryUpstreamProvider` instead. Setting this
+      field still resolves a primary upstream for backward compatibility and
+      emits a Warning event with reason
+      `AuthzPrimaryUpstreamProviderDeprecated`. Planned removal one release
+      after the deprecation cycle.
+  - `configMap` (ConfigMapAuthzRef, required when type=configMap): Reference to
+    a ConfigMap holding Cedar policies. The operator resolves the ConfigMap at
+    reconcile time and bakes the policies into the rendered vmcp `config.yaml`.
+    Failures surface as `AuthConfigured=False` with reason
+    `AuthzConfigMapNotFound` (missing reference) or `AuthzConfigMapInvalid`
+    (parse, validation, or non-Cedar payload).
+  - `groupClaimName` (string, optional): JWT claim key Cedar should treat as
+    the group list (overrides the well-known defaults `groups`, `roles`,
+    `cognito:groups`). When `type` is `configMap`, the spec value overrides
+    any `group_claim_name` set in the ConfigMap payload.
+  - `roleClaimName` (string, optional): JWT claim key Cedar should treat as
+    the role list. Same spec-over-ConfigMap precedence as `groupClaimName`.
+  - `groupEntityType` (string, optional): Cedar entity type used for principal
+    parent UIDs synthesised from JWT group/role claims. Defaults to
+    `THVGroup`. Must match the entity type used in the static entity store
+    for transitive `in` checks to resolve. Same spec-over-ConfigMap
+    precedence as `groupClaimName`.
 
 **Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.
 
@@ -127,6 +156,13 @@ Configures authentication from Virtual MCP to backend MCPServers.
 - `default` (BackendAuthConfig, optional): Default behavior for backends without explicit auth config
 - `backends` (map[string]BackendAuthConfig, optional): Per-backend authentication overrides
 
+In both modes the operator reads `spec.externalAuthConfigRef` from the backend
+workload (`MCPServer`, `MCPRemoteProxy` or `MCPServerEntry`) and mounts the secrets
+that strategy needs onto the vMCP Deployment. An entry under `backends` overrides
+the workload's configuration for that backend, and only the override's secrets are
+mounted. `source` selects how the running vMCP resolves backend auth, not whether
+the operator reads these workload references.
+
 **Example (discovered mode)**:
 ```yaml
 spec:
@@ -164,6 +200,30 @@ spec:
   - `externalAuthConfigRef`: Reference an MCPExternalAuthConfig resource
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=externalAuthConfigRef)
 
+### `.spec.passthroughHeaders` (optional)
+
+Allowlist of incoming client request headers forwarded verbatim to every
+backend. The value is captured at the auth boundary and injected into the
+session's outgoing backend requests. **Type**: `[]string`. Names are matched
+case-insensitively; restricted headers (`Host`, `Authorization`,
+`X-Forwarded-*`, hop-by-hop) are rejected at startup. Takes precedence over
+`spec.config.passthroughHeaders`.
+
+```yaml
+spec:
+  passthroughHeaders:
+    - x-litellm-api-key   # forwarded to all backends; absent on a request → not forwarded
+```
+
+> **Security:** forwarded headers are caller-controlled. Use only behind a
+> trusted upstream (gateway/mesh) that sets or strips them; pair with
+> `incomingAuth: anonymous` only in that case.
+>
+> **Horizontal scaling:** forwarded headers are not persisted across replicas
+> (only the `(issuer, subject)` identity tuple is). A session restored on
+> another replica re-captures them from the next request — keep clients pinned
+> with `sessionAffinity: ClientIP`.
+
 ### `.spec.config.aggregation` (optional)
 
 Defines tool aggregation and conflict resolution strategies.
@@ -178,33 +238,79 @@ Defines tool aggregation and conflict resolution strategies.
 - `conflictResolutionConfig` (ConflictResolutionConfig, optional): Configuration for the chosen strategy
 - `tools` ([]WorkloadToolConfig, optional): Per-workload tool filtering and overrides
 - `excludeAllTools` (bool, optional): Excludes all tools from aggregation when true
+- `defaultToolVisibility` (string, optional, default: "allow"): Whether a backend with no `tools` entry is advertised
+  - `allow`: every tool from an unlisted backend is advertised
+  - `deny`: an unlisted backend contributes no tools, so only backends named in `tools` are advertised
 
 **Example (prefix strategy)**:
 ```yaml
 spec:
   groupRef:
     name: my-services
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-    tools:
-      - workload: github
-        filter: ["create_pr", "merge_pr"]
-      - workload: jira
-        toolConfigRef:
-          name: jira-tool-config
+  config:
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+      tools:
+        - workload: github
+          filter: ["create_pr", "merge_pr"]
+        - workload: jira
+          toolConfigRef:
+            name: jira-tool-config
 ```
+
+**Example (deny-by-default)**:
+
+By default, a workload in the group with no `tools` entry has all of its tools
+advertised, so adding a workload to the group exposes it. Set
+`defaultToolVisibility: deny` to invert that, so only the workloads you list
+contribute tools:
+
+```yaml
+spec:
+  groupRef:
+    name: my-services
+  config:
+    aggregation:
+      conflictResolution: prefix
+      defaultToolVisibility: deny
+      tools:
+        # Only these two workloads are advertised. Any other workload in
+        # my-services contributes no tools, including ones added later.
+        - workload: github
+          filter: ["get_issue", "list_prs"]
+        - workload: jira
+          filter: ["get_issue"]
+```
+
+A workload that *is* listed is opted in by its entry: `excludeAll` and `filter`
+on that entry then decide which of its tools are advertised. An entry with
+neither advertises all of that workload's tools.
+
+`defaultToolVisibility: deny` cannot be combined with the `priority` conflict
+strategy unless every `priorityOrder` entry also has a `tools` entry. An unlisted
+backend can win a name conflict and then be withheld, which would hide the tool
+from every workload offering it; the configuration is rejected rather than
+silently dropping the tool.
+
+> **Note**: `defaultToolVisibility` controls **advertising** only, as do
+> `excludeAllTools` and `excludeAll`. Tools hidden this way remain in the routing
+> table so composite tools can still call them, and `defaultToolVisibility` does
+> not affect resources or prompts, which are advertised regardless. For
+> per-identity authorization, use Cedar policies (see
+> [Authorization](../authz.md)).
 
 **Example (priority strategy)**:
 ```yaml
 spec:
   groupRef:
     name: my-services
-  aggregation:
-    conflictResolution: priority
-    conflictResolutionConfig:
-      priorityOrder: ["github", "jira", "slack"]
+  config:
+    aggregation:
+      conflictResolution: priority
+      conflictResolutionConfig:
+        priorityOrder: ["github", "jira", "slack"]
 ```
 
 **Example (manual strategy)**:
@@ -212,23 +318,24 @@ spec:
 spec:
   groupRef:
     name: my-services
-  aggregation:
-    conflictResolution: manual
-    tools:
-      - workload: github
-        filter: ["create_pr", "merge_pr", "list_repos"]
-        overrides:
-          create_pr:
-            name: github_create_pr
-            description: "Create a pull request in GitHub"
-      - workload: jira
-        filter: ["create_issue", "update_issue"]
-        overrides:
-          create_issue:
-            name: jira_create_issue
-            description: "Create an issue in Jira"
-      # All tool name conflicts must be explicitly resolved via overrides
-      # Runtime validation ensures no unresolved conflicts exist
+  config:
+    aggregation:
+      conflictResolution: manual
+      tools:
+        - workload: github
+          filter: ["create_pr", "merge_pr", "list_repos"]
+          overrides:
+            create_pr:
+              name: github_create_pr
+              description: "Create a pull request in GitHub"
+        - workload: jira
+          filter: ["create_issue", "update_issue"]
+          overrides:
+            create_issue:
+              name: jira_create_issue
+              description: "Create an issue in Jira"
+        # All tool name conflicts must be explicitly resolved via overrides
+        # Runtime validation ensures no unresolved conflicts exist
 ```
 
 #### WorkloadToolConfig
@@ -382,6 +489,16 @@ Standard Kubernetes conditions representing the latest observations of the Virtu
 - `AuthConfigured`: Indicates whether authentication is configured
 - `BackendsDiscovered`: Indicates whether backends have been discovered
 - `GroupRefValidated`: Indicates whether the GroupRef is valid
+- `CABundleRefValidated`: Checks the incoming OIDC CA ConfigMap and selected key
+  referenced through `spec.incomingAuth.oidcConfigRef`. The key defaults to
+  `ca.crt`. Reasons are `CABundleRefValid` (`True`), `CABundleRefNotFound`
+  (`False`, missing ConfigMap), and `CABundleRefInvalid` (`False`, invalid
+  reference or missing key). Missing or invalid references are advisory and allow
+  reconciliation to continue. Removing the CA reference removes the condition;
+  ConfigMap create, update, and delete events refresh it. Transient ConfigMap read
+  errors preserve the previous condition and retry before resource reconciliation
+  and the status flush, deferring pending updates while deployed resources remain
+  in place.
 
 ### `.status.discoveredBackends`
 
@@ -448,7 +565,7 @@ The most recent generation observed for this VirtualMCPServer.
 ## Complete Example
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: engineering-vmcp
@@ -600,10 +717,10 @@ The VirtualMCPServer CRD includes comprehensive validation:
 
 ## Related Resources
 
-- [MCPGroup](./mcpgroup-api.md): Defines groups of MCPServers
-- [MCPServer](./mcpserver-api.md): Individual MCP server instances
+- [MCPGroup](./crd-api.md#apiv1beta1mcpgroup): Defines groups of MCPServers
+- [MCPServer](./crd-api.md#apiv1beta1mcpserver): Individual MCP server instances
 - [MCPOIDCConfig](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml): Shared OIDC provider configuration (referenced via `oidcConfigRef`)
-- [MCPExternalAuthConfig](./mcpexternalauthconfig-api.md): External authentication configuration
-- [MCPToolConfig](./toolconfig-api.md): Tool filtering and renaming configuration
+- [MCPExternalAuthConfig](./crd-api.md#apiv1beta1mcpexternalauthconfig): External authentication configuration
+- [MCPToolConfig](./crd-api.md#apiv1beta1mcptoolconfig): Tool filtering and renaming configuration
 - [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
-- [Virtual MCP Proposal](../proposals/THV-2106-virtual-mcp-server.md): Complete design proposal
+- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/toolhive/THV-0008-virtual-mcp-server.md): Complete design proposal

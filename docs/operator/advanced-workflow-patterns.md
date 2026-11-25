@@ -31,7 +31,7 @@ Virtual MCP Composite Tools use a Directed Acyclic Graph (DAG) execution model t
 ### Example: Parallel Data Fetching
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: incident-investigation
@@ -307,7 +307,7 @@ steps:
 ### Example: Combining Error Strategies
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: robust-deployment

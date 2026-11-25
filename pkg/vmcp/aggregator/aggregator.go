@@ -61,25 +61,6 @@ type Aggregator interface {
 	// 2. Resolve conflicts
 	// 3. Merge into final view
 	AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error)
-
-	// ProcessPreQueriedCapabilities applies the same aggregation pipeline (overrides,
-	// conflict resolution, advertising filter) to tools that have already been fetched
-	// from live backends. Used by the session management path to reuse aggregator
-	// logic without re-querying backends over HTTP.
-	//
-	// toolsByBackend maps backend WorkloadID → raw tools as returned by the backend.
-	// targets maps backend WorkloadID → the pre-built BackendTarget for that backend.
-	//
-	// Returns:
-	//   - advertisedTools: resolved tools that pass the advertising filter (for MCP clients)
-	//   - allResolvedTools: all resolved tools including non-advertised ones (for schema lookup)
-	//   - toolsRouting: routing table keyed by resolved name; each entry has OriginalCapabilityName
-	//     set so that GetBackendCapabilityName() translates back to the raw backend name.
-	ProcessPreQueriedCapabilities(
-		ctx context.Context,
-		toolsByBackend map[string][]vmcp.Tool,
-		targets map[string]*vmcp.BackendTarget,
-	) (advertisedTools []vmcp.Tool, allResolvedTools []vmcp.Tool, toolsRouting map[string]*vmcp.BackendTarget, err error)
 }
 
 // BackendCapabilities contains the raw capabilities from a single backend.
@@ -93,6 +74,9 @@ type BackendCapabilities struct {
 	// Resources are the resources exposed by this backend.
 	Resources []vmcp.Resource
 
+	// ResourceTemplates are the resource templates exposed by this backend.
+	ResourceTemplates []vmcp.ResourceTemplate
+
 	// Prompts are the prompts exposed by this backend.
 	Prompts []vmcp.Prompt
 
@@ -104,17 +88,30 @@ type BackendCapabilities struct {
 }
 
 // ResolvedCapabilities contains capabilities after conflict resolution.
-// Tool names are now unique (after prefixing, priority, or manual resolution).
+// Every capability identity (tool name, resource URI, resource template
+// string, prompt name) is unique within its list.
 type ResolvedCapabilities struct {
 	// Tools are the conflict-resolved tools.
 	// Map key is the resolved tool name, value contains original name and backend.
 	Tools map[string]*ResolvedTool
 
-	// Resources are passed through (conflicts rare, namespaced by URI).
+	// Resources are de-duplicated by URI: a URI advertised by multiple backends
+	// appears once, from the backend earliest in sorted-backend-ID order. URIs
+	// are locators the client passes back verbatim, so they are never rewritten.
+	// See resolveResourceConflicts.
 	Resources []vmcp.Resource
 
-	// Prompts are passed through (conflicts rare, namespaced by name).
-	Prompts []vmcp.Prompt
+	// ResourceTemplates are de-duplicated by URI template string, with the same
+	// locator-identity policy as Resources. See resolveResourceTemplateConflicts.
+	ResourceTemplates []vmcp.ResourceTemplate
+
+	// Prompts are conflict-resolved by name: by default every prompt is
+	// renamed to its backend-prefixed form; under the priority strategy,
+	// backends listed in priorityOrder keep their bare names. Either way the
+	// advertised name is a pure function of the aggregation config and
+	// (backendID, name) — it never shifts with group membership. See
+	// resolvePromptConflicts.
+	Prompts []ResolvedPrompt
 
 	// SupportsLogging is true if any backend supports logging.
 	SupportsLogging bool
@@ -150,10 +147,25 @@ type ResolvedTool struct {
 	ConflictResolutionApplied vmcp.ConflictResolutionStrategy
 }
 
+// ResolvedPrompt represents a prompt after conflict resolution. The embedded
+// Prompt is the advertised form: Name holds the resolved (client-visible)
+// name. OriginalName is the name the backend itself uses; prompts/get and
+// completion requests are translated back to it via
+// BackendTarget.GetBackendCapabilityName, exactly like renamed tools.
+type ResolvedPrompt struct {
+	vmcp.Prompt
+
+	// OriginalName is the prompt's name in the backend (equal to Name only
+	// for priority-listed backends; otherwise Name is the backend-prefixed
+	// form).
+	OriginalName string
+}
+
 // AggregatedCapabilities is the final unified view of all backend capabilities.
 // This is what gets exposed to MCP clients via tools/list, resources/list, prompts/list.
 type AggregatedCapabilities struct {
-	// Tools are the aggregated backend tools (ready to expose to clients).
+	// Tools are the aggregated backend tools (ready to expose to clients),
+	// sorted by name for deterministic ordering.
 	Tools []vmcp.Tool
 
 	// CompositeTools are the composite workflow tools defined in vMCP configuration.
@@ -162,6 +174,9 @@ type AggregatedCapabilities struct {
 
 	// Resources are the aggregated resources.
 	Resources []vmcp.Resource
+
+	// ResourceTemplates are the aggregated resource templates.
+	ResourceTemplates []vmcp.ResourceTemplate
 
 	// Prompts are the aggregated prompts.
 	Prompts []vmcp.Prompt
@@ -190,6 +205,9 @@ type AggregationMetadata struct {
 	// ResourceCount is the total number of resources.
 	ResourceCount int
 
+	// ResourceTemplateCount is the total number of resource templates.
+	ResourceTemplateCount int
+
 	// PromptCount is the total number of prompts.
 	PromptCount int
 
@@ -215,6 +233,25 @@ type ToolFilter interface {
 type ToolOverride interface {
 	// ApplyOverrides modifies tool names and descriptions.
 	ApplyOverrides(ctx context.Context, tools []vmcp.Tool) ([]vmcp.Tool, error)
+}
+
+// CacheInvalidator is optionally implemented by an Aggregator that memoizes
+// AggregateCapabilities results (see cachingAggregator). It lets a caller force
+// a re-sweep of all cached entries after learning, out of band, that backend
+// capabilities changed — e.g. a persistent backend connection observing
+// notifications/tools/list_changed (#5748) — rather than waiting out the TTL.
+//
+// InvalidateAll purges the ENTIRE cache (every identity's entry), not just the
+// backend that changed: the cache has no per-backend index, and coarse
+// invalidation briefly de-optimizes other identities' cached views rather than
+// leaving any identity looking at stale capabilities. Callers that type-assert
+// an Aggregator to this interface must handle the case where it is not
+// implemented (a non-caching or differently-implemented Aggregator) — see
+// core.coreVMCP.InvalidateCapabilityCache for the WARN-log fallback.
+type CacheInvalidator interface {
+	// InvalidateAll purges every cached AggregateCapabilities entry so the next
+	// call for any identity re-sweeps the backends.
+	InvalidateAll()
 }
 
 // Common aggregation errors.

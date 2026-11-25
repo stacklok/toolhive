@@ -6,6 +6,7 @@ package composer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -123,6 +124,17 @@ func (d *dagExecutor) executeLevel(
 			// Execute the step
 			err := execFunc(groupCtx, step)
 			if err != nil {
+				// errSkipRemaining is a graceful short-circuit, not a failure.
+				// It must always stop the DAG, even under failureMode "continue",
+				// so return it immediately and bypass the continue-on-error logic.
+				// Returning it cancels the errgroup context, so steps in the same
+				// level as the gate (which do not depend on it) are cancelled, as
+				// with abort; only steps in later levels are guaranteed not to run.
+				if errors.Is(err, errSkipRemaining) {
+					slog.Debug("stopping workflow after skip_remaining", "step", step.ID)
+					return err
+				}
+
 				slog.Error("step failed", "step", step.ID, "error", err)
 
 				// Check if we should continue despite the error

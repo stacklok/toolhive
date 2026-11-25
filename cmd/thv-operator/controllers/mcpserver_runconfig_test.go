@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,12 +19,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -34,26 +38,10 @@ const (
 	streamableHTTPProxyMode = "streamable-http"
 )
 
-func createRunConfigTestScheme() *runtime.Scheme {
-	testScheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(testScheme)
-	_ = mcpv1alpha1.AddToScheme(testScheme)
-	return testScheme
-}
-
-func createTestMCPServerWithConfig(name, namespace, image string, envVars []mcpv1alpha1.EnvVar) *mcpv1alpha1.MCPServer {
-	return &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     image,
-			Transport: stdioTransport,
-			ProxyPort: 8080,
-			Env:       envVars,
-		},
-	}
+func createTestMCPServerWithConfig(name, namespace, image string, envVars []mcpv1beta1.EnvVar) *mcpv1beta1.MCPServer {
+	return v1beta1test.NewMCPServer(name, namespace,
+		v1beta1test.WithImage(image),
+		v1beta1test.WithEnv(envVars...))
 }
 
 // TestCreateRunConfigFromMCPServer tests the conversion from MCPServer to RunConfig
@@ -61,22 +49,12 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name      string
-		mcpServer *mcpv1alpha1.MCPServer
+		mcpServer *mcpv1beta1.MCPServer
 		expected  func(t *testing.T, config *runner.RunConfig)
 	}{
 		{
-			name: "basic conversion",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-				},
-			},
+			name:      "basic conversion",
+			mcpServer: v1beta1test.NewMCPServer("test-server", "test-ns"),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "test-server", config.Name)
@@ -86,22 +64,45 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
-			name: "with environment variables",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "env-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "env-image:latest",
-					Transport: "sse",
-					ProxyPort: 9090,
-					Env: []mcpv1alpha1.EnvVar{
-						{Name: "VAR1", Value: "value1"},
-						{Name: "VAR2", Value: "value2"},
-					},
-				},
+			name:      "nil proxy read timeout leaves the RunConfig value empty",
+			mcpServer: v1beta1test.NewMCPServer("nil-timeout-server", "test-ns"),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Empty(t, config.ProxyReadTimeout)
 			},
+		},
+		{
+			name: "zero proxy read timeout uses the proxy default",
+			mcpServer: v1beta1test.NewMCPServer("zero-timeout-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.ProxyReadTimeout = &metav1.Duration{}
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Empty(t, config.ProxyReadTimeout)
+			},
+		},
+		{
+			name: "positive proxy read timeout is translated",
+			mcpServer: v1beta1test.NewMCPServer("positive-timeout-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.ProxyReadTimeout = &metav1.Duration{Duration: time.Minute}
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "1m0s", config.ProxyReadTimeout)
+			},
+		},
+		{
+			name: "with environment variables",
+			mcpServer: v1beta1test.NewMCPServer("env-server", "test-ns",
+				v1beta1test.WithImage("env-image:latest"),
+				v1beta1test.WithTransport("sse"),
+				v1beta1test.WithProxyPort(9090),
+				v1beta1test.WithEnv(
+					mcpv1beta1.EnvVar{Name: "VAR1", Value: "value1"},
+					mcpv1beta1.EnvVar{Name: "VAR2", Value: "value2"},
+				)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "env-server", config.Name)
@@ -114,21 +115,14 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "with volumes",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "vol-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "vol-image:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					Volumes: []mcpv1alpha1.Volume{
+			mcpServer: v1beta1test.NewMCPServer("vol-server", "test-ns",
+				v1beta1test.WithImage("vol-image:latest"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.Volumes = []mcpv1beta1.Volume{
 						{Name: "vol1", HostPath: "/host/path1", MountPath: "/mount/path1", ReadOnly: false},
 						{Name: "vol2", HostPath: "/host/path2", MountPath: "/mount/path2", ReadOnly: true},
-					},
-				},
-			},
+					}
+				})),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "vol-server", config.Name)
@@ -139,21 +133,14 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "with secrets",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "secret-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "secret-image:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					Secrets: []mcpv1alpha1.SecretRef{
+			mcpServer: v1beta1test.NewMCPServer("secret-server", "test-ns",
+				v1beta1test.WithImage("secret-image:latest"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.Secrets = []mcpv1beta1.SecretRef{
 						{Name: "secret1", Key: "key1", TargetEnvName: "TARGET1"},
 						{Name: "secret2", Key: "key2"}, // No target, should use key as target
-					},
-				},
-			},
+					}
+				})),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "secret-server", config.Name)
@@ -167,18 +154,8 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "proxy mode specified",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "proxy-mode-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-					ProxyMode: streamableHTTPProxyMode,
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("proxy-mode-server", "test-ns",
+				v1beta1test.WithProxyMode(streamableHTTPProxyMode)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "proxy-mode-server", config.Name)
@@ -190,18 +167,8 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "proxy mode defaults to streamable-http when not specified",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "default-proxy-mode-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-					// ProxyMode not specified
-				},
-			},
+			// ProxyMode not specified
+			mcpServer: v1beta1test.NewMCPServer("default-proxy-mode-server", "test-ns"),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "default-proxy-mode-server", config.Name)
@@ -213,20 +180,11 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "SSE transport sets proxyMode to sse (ignores configured proxyMode)",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "sse-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: "sse",
-					ProxyPort: 8080,
-					MCPPort:   8080,
-					// ProxyMode set to streamable-http (should be ignored and set to "sse")
-					ProxyMode: streamableHTTPProxyMode,
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("sse-server", "test-ns",
+				v1beta1test.WithTransport("sse"),
+				// ProxyMode set to streamable-http (should be ignored and set to "sse")
+				v1beta1test.WithProxyMode(streamableHTTPProxyMode),
+				v1beta1test.WithMCPPort(8080)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "sse-server", config.Name)
@@ -240,19 +198,10 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "SSE transport without proxyMode sets proxyMode to sse",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "sse-server-no-proxymode",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: "sse",
-					ProxyPort: 8080,
-					MCPPort:   8080,
-					// ProxyMode not specified
-				},
-			},
+			// ProxyMode not specified
+			mcpServer: v1beta1test.NewMCPServer("sse-server-no-proxymode", "test-ns",
+				v1beta1test.WithTransport("sse"),
+				v1beta1test.WithMCPPort(8080)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "sse-server-no-proxymode", config.Name)
@@ -263,20 +212,11 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "streamable-http transport sets proxyMode to streamable-http (ignores configured proxyMode)",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "streamable-http-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: "streamable-http",
-					ProxyPort: 8080,
-					MCPPort:   8080,
-					// ProxyMode set to sse (should be ignored and set to "streamable-http")
-					ProxyMode: sseProxyMode,
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("streamable-http-server", "test-ns",
+				v1beta1test.WithTransport("streamable-http"),
+				// ProxyMode set to sse (should be ignored and set to "streamable-http")
+				v1beta1test.WithProxyMode(sseProxyMode),
+				v1beta1test.WithMCPPort(8080)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "streamable-http-server", config.Name)
@@ -287,19 +227,10 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "streamable-http transport without proxyMode sets proxyMode to streamable-http",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "streamable-http-server-no-proxymode",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: "streamable-http",
-					ProxyPort: 8080,
-					MCPPort:   8080,
-					// ProxyMode not specified
-				},
-			},
+			// ProxyMode not specified
+			mcpServer: v1beta1test.NewMCPServer("streamable-http-server-no-proxymode", "test-ns",
+				v1beta1test.WithTransport("streamable-http"),
+				v1beta1test.WithMCPPort(8080)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "streamable-http-server-no-proxymode", config.Name)
@@ -310,28 +241,28 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "comprehensive test with all fields",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "comprehensive-server",
 					Namespace: "test-ns",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "comprehensive:latest",
 					Transport: "streamable-http",
 					ProxyPort: 9090,
 					MCPPort:   8080,
 					ProxyMode: "streamable-http",
 					Args:      []string{"--comprehensive", "--test"},
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []mcpv1beta1.EnvVar{
 						{Name: "ENV1", Value: "value1"},
 						{Name: "ENV2", Value: "value2"},
 						{Name: "EMPTY_VALUE", Value: ""},
 					},
-					Volumes: []mcpv1alpha1.Volume{
+					Volumes: []mcpv1beta1.Volume{
 						{Name: "vol1", HostPath: "/host/path1", MountPath: "/mount/path1", ReadOnly: false},
 						{Name: "vol2", HostPath: "/host/path2", MountPath: "/mount/path2", ReadOnly: true},
 					},
-					Secrets: []mcpv1alpha1.SecretRef{
+					Secrets: []mcpv1beta1.SecretRef{
 						{Name: "secret1", Key: "key1", TargetEnvName: "CUSTOM_TARGET"},
 						{Name: "secret2", Key: "key2"}, // Uses key as target
 					},
@@ -363,19 +294,19 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "edge case: empty/nil slices",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "edge-server",
 					Namespace: "test-ns",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "edge:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					Args:      []string{},             // Empty slice
-					Env:       nil,                    // Nil slice
-					Volumes:   []mcpv1alpha1.Volume{}, // Empty slice
-					Secrets:   nil,                    // Nil slice
+					Args:      []string{},            // Empty slice
+					Env:       nil,                   // Nil slice
+					Volumes:   []mcpv1beta1.Volume{}, // Empty slice
+					Secrets:   nil,                   // Nil slice
 				},
 			},
 			//nolint:thelper // We want to see the error at the specific line
@@ -390,34 +321,26 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "with inline authorization configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "authz-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+			mcpServer: v1beta1test.NewMCPServer("authz-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.AuthzConfig = &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{
 								`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 								`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
 							},
 							EntitiesJSON: `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`,
 						},
-					},
-				},
-			},
+					}
+				})),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "authz-server", config.Name)
 
 				// Verify authorization config is set
 				assert.NotNil(t, config.AuthzConfig)
-				assert.Equal(t, "v1", config.AuthzConfig.Version)
+				assert.Equal(t, ctrlutil.AuthzConfigVersion, config.AuthzConfig.Version)
 				assert.Equal(t, authz.ConfigType(cedar.ConfigType), config.AuthzConfig.Type)
 
 				// Check Cedar-specific configuration
@@ -431,31 +354,23 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 		},
 		{
 			name: "with configmap authorization configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "authz-configmap-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+			mcpServer: v1beta1test.NewMCPServer("authz-configmap-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.AuthzConfig = &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 							Name: "test-authz-config",
 							Key:  ctrlutil.DefaultAuthzKey,
 						},
-					},
-				},
-			},
+					}
+				})),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "authz-configmap-server", config.Name)
 
 				// For ConfigMap type, with new feature, authorization config is embedded in RunConfig
 				require.NotNil(t, config.AuthzConfig)
-				assert.Equal(t, "v1", config.AuthzConfig.Version)
+				assert.Equal(t, ctrlutil.AuthzConfigVersion, config.AuthzConfig.Version)
 				assert.Equal(t, authz.ConfigType(cedar.ConfigType), config.AuthzConfig.Type)
 
 				cedarCfg, err := cedar.ExtractConfig(config.AuthzConfig)
@@ -463,6 +378,25 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Len(t, cedarCfg.Options.Policies, 1)
 				assert.Contains(t, cedarCfg.Options.Policies[0], "call_tool")
 				assert.Equal(t, "[]", cedarCfg.Options.EntitiesJSON)
+			},
+		},
+		{
+			name:      "max request body size omitted",
+			mcpServer: v1beta1test.NewMCPServer("body-limit-omitted", "test-ns"),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Zero(t, config.MaxRequestBodySize)
+			},
+		},
+		{
+			name: "with max request body size",
+			mcpServer: v1beta1test.NewMCPServer("body-limit-configured", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.MaxRequestBodySize = 16 << 20
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, int64(16<<20), config.MaxRequestBodySize)
 			},
 		},
 	}
@@ -475,10 +409,10 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			var r *MCPServerReconciler
 			if tt.mcpServer != nil &&
 				tt.mcpServer.Spec.AuthzConfig != nil &&
-				tt.mcpServer.Spec.AuthzConfig.Type == mcpv1alpha1.AuthzConfigTypeConfigMap &&
+				tt.mcpServer.Spec.AuthzConfig.Type == mcpv1beta1.AuthzConfigTypeConfigMap &&
 				tt.mcpServer.Spec.AuthzConfig.ConfigMap != nil {
 
-				scheme := createRunConfigTestScheme()
+				scheme := testutil.NewScheme(t)
 
 				// Prepare a ConfigMap with authorization configuration content
 				cm := &corev1.ConfigMap{
@@ -493,7 +427,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 							}
 							return ctrlutil.DefaultAuthzKey
 						}(): `{
-							"version": "v1",
+							"version": "1.0",
 							"type": "cedarv1",
 							"cedar": {
 								"policies": [
@@ -529,28 +463,28 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 	t.Parallel()
 
 	// Create a complex MCPServer with all possible fields to ensure comprehensive testing
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "deterministic-server",
 			Namespace: "test-namespace",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "deterministic-test:v1.2.3",
 			Transport: "sse",
 			ProxyPort: 9090,
 			MCPPort:   8080,
 			Args:      []string{"--arg1", "--arg2", "--complex-flag=value"},
-			Env: []mcpv1alpha1.EnvVar{
+			Env: []mcpv1beta1.EnvVar{
 				{Name: "VAR_C", Value: "value_c"},
 				{Name: "VAR_A", Value: "value_a"},
 				{Name: "VAR_B", Value: "value_b"},
 				{Name: "EMPTY_VAR", Value: ""},
 			},
-			Volumes: []mcpv1alpha1.Volume{
+			Volumes: []mcpv1beta1.Volume{
 				{Name: "vol2", HostPath: "/host/path2", MountPath: "/container/path2", ReadOnly: true},
 				{Name: "vol1", HostPath: "/host/path1", MountPath: "/container/path1", ReadOnly: false},
 			},
-			Secrets: []mcpv1alpha1.SecretRef{
+			Secrets: []mcpv1beta1.SecretRef{
 				{Name: "secret2", Key: "key2", TargetEnvName: "CUSTOM_TARGET2"},
 				{Name: "secret1", Key: "key1"}, // Uses key as target
 			},
@@ -664,7 +598,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name            string
-		mcpServer       *mcpv1alpha1.MCPServer
+		mcpServer       *mcpv1beta1.MCPServer
 		existingCM      *corev1.ConfigMap
 		expectUpdate    bool
 		expectError     bool
@@ -759,27 +693,20 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 		},
 		{
 			name: "configmap with inline authorization configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "authz-test",
-					Namespace: "toolhive-system",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "ghcr.io/example/server:v1.0.0",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+			mcpServer: v1beta1test.NewMCPServer("authz-test", "toolhive-system",
+				v1beta1test.WithImage("ghcr.io/example/server:v1.0.0"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.AuthzConfig = &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{
 								`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 								`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
 							},
 							EntitiesJSON: `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`,
 						},
-					},
-				},
-			},
+					}
+				})),
 			existingCM:  nil,
 			expectError: false,
 			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
@@ -799,7 +726,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 
 				// Verify authorization configuration is properly serialized
 				assert.NotNil(t, runConfig.AuthzConfig, "AuthzConfig should be present in runconfig.json")
-				assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
+				assert.Equal(t, ctrlutil.AuthzConfigVersion, runConfig.AuthzConfig.Version)
 				assert.Equal(t, authz.ConfigType(cedar.ConfigType), runConfig.AuthzConfig.Type)
 
 				// Check Cedar-specific configuration
@@ -813,20 +740,9 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 		},
 		{
 			name: "configmap with audit configuration enabled",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "audit-test",
-					Namespace: "toolhive-system",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "ghcr.io/example/server:v1.0.0",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					Audit: &mcpv1alpha1.AuditConfig{
-						Enabled: true,
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("audit-test", "toolhive-system",
+				v1beta1test.WithImage("ghcr.io/example/server:v1.0.0"),
+				v1beta1test.WithAudit(&mcpv1beta1.AuditConfig{Enabled: true})),
 			existingCM:  nil,
 			expectError: false,
 			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
@@ -850,7 +766,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.mcpServer}
 			if tt.existingCM != nil {
 				objects = append(objects, tt.existingCM)
@@ -899,26 +815,19 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 	// Additional test: ConfigMap-based Authz referenced externally should be embedded into runconfig.json
 	t.Run("configmap with external authorization configuration", func(t *testing.T) {
 		t.Parallel()
-		testScheme := createRunConfigTestScheme()
+		testScheme := testutil.NewScheme(t)
 
-		mcpServer := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "authz-cm-ext",
-				Namespace: "toolhive-system",
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				Image:     "ghcr.io/example/server:v1.0.0",
-				Transport: "stdio",
-				ProxyPort: 8080,
-				AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-					Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-					ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		mcpServer := v1beta1test.NewMCPServer("authz-cm-ext", "toolhive-system",
+			v1beta1test.WithImage("ghcr.io/example/server:v1.0.0"),
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+				m.Spec.AuthzConfig = &mcpv1beta1.AuthzConfigRef{
+					Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+					ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 						Name: "ext-authz-config",
 						Key:  "authz.json",
 					},
-				},
-			},
-		}
+				}
+			}))
 
 		authzCM := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
@@ -927,7 +836,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			},
 			Data: map[string]string{
 				"authz.json": `{
-					"version": "v1",
+					"version": "1.0",
 					"type": "cedarv1",
 					"cedar": {
 						"policies": [
@@ -965,7 +874,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotNil(t, runConfig.AuthzConfig)
-		assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
+		assert.Equal(t, ctrlutil.AuthzConfigVersion, runConfig.AuthzConfig.Version)
 		assert.Equal(t, authz.ConfigType(cedar.ConfigType), runConfig.AuthzConfig.Type)
 
 		cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
@@ -1195,7 +1104,7 @@ func TestLabelsForRunConfig(t *testing.T) {
 // TestEnsureRunConfigConfigMapCompleteFlow tests the complete flow from MCPServer changes to ConfigMap updates
 func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 	t.Parallel()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 	reconciler := &MCPServerReconciler{
 		Client: fakeClient,
@@ -1203,7 +1112,7 @@ func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 	}
 
 	// Step 1: Create initial MCPServer and ConfigMap
-	mcpServer := createTestMCPServerWithConfig("flow-server", "flow-ns", "test:v1", []mcpv1alpha1.EnvVar{
+	mcpServer := createTestMCPServerWithConfig("flow-server", "flow-ns", "test:v1", []mcpv1beta1.EnvVar{
 		{Name: "ENV1", Value: "value1"},
 	})
 
@@ -1234,7 +1143,7 @@ func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 	// The checksum will automatically change when content changes
 
 	mcpServer.Spec.Image = "test:v2"
-	mcpServer.Spec.Env = []mcpv1alpha1.EnvVar{
+	mcpServer.Spec.Env = []mcpv1beta1.EnvVar{
 		{Name: "ENV1", Value: "value1"},
 		{Name: "ENV2", Value: "value2"},
 	}
@@ -1283,16 +1192,16 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name            string
-		initialServer   func() *mcpv1alpha1.MCPServer
-		modifyServer    func(*mcpv1alpha1.MCPServer)
+		initialServer   func() *mcpv1beta1.MCPServer
+		modifyServer    func(*mcpv1beta1.MCPServer)
 		expectedChanges map[string]interface{}
 	}{
 		{
 			name: "Transport change",
-			initialServer: func() *mcpv1alpha1.MCPServer {
+			initialServer: func() *mcpv1beta1.MCPServer {
 				return createTestMCPServerWithConfig("transport-test", "default", "test:v1", nil)
 			},
-			modifyServer: func(server *mcpv1alpha1.MCPServer) {
+			modifyServer: func(server *mcpv1beta1.MCPServer) {
 				server.Spec.Transport = "sse"
 				server.Spec.ProxyPort = 9090
 				server.Spec.MCPPort = 8080
@@ -1305,12 +1214,12 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 		},
 		{
 			name: "Args modification",
-			initialServer: func() *mcpv1alpha1.MCPServer {
+			initialServer: func() *mcpv1beta1.MCPServer {
 				server := createTestMCPServerWithConfig("args-test", "default", "test:v1", nil)
 				server.Spec.Args = []string{"--initial", "--arg"}
 				return server
 			},
-			modifyServer: func(server *mcpv1alpha1.MCPServer) {
+			modifyServer: func(server *mcpv1beta1.MCPServer) {
 				server.Spec.Args = []string{"--modified", "--different", "--args"}
 			},
 			expectedChanges: map[string]interface{}{
@@ -1319,15 +1228,15 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 		},
 		{
 			name: "Volume changes",
-			initialServer: func() *mcpv1alpha1.MCPServer {
+			initialServer: func() *mcpv1beta1.MCPServer {
 				server := createTestMCPServerWithConfig("volume-test", "default", "test:v1", nil)
-				server.Spec.Volumes = []mcpv1alpha1.Volume{
+				server.Spec.Volumes = []mcpv1beta1.Volume{
 					{HostPath: "/host/path1", MountPath: "/container/path1"},
 				}
 				return server
 			},
-			modifyServer: func(server *mcpv1alpha1.MCPServer) {
-				server.Spec.Volumes = []mcpv1alpha1.Volume{
+			modifyServer: func(server *mcpv1beta1.MCPServer) {
+				server.Spec.Volumes = []mcpv1beta1.Volume{
 					{HostPath: "/host/path1", MountPath: "/container/path1", ReadOnly: true},
 					{HostPath: "/host/path2", MountPath: "/container/path2"},
 				}
@@ -1338,15 +1247,15 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 		},
 		{
 			name: "Secret changes",
-			initialServer: func() *mcpv1alpha1.MCPServer {
+			initialServer: func() *mcpv1beta1.MCPServer {
 				server := createTestMCPServerWithConfig("secret-test", "default", "test:v1", nil)
-				server.Spec.Secrets = []mcpv1alpha1.SecretRef{
+				server.Spec.Secrets = []mcpv1beta1.SecretRef{
 					{Name: "secret1", Key: "key1"},
 				}
 				return server
 			},
-			modifyServer: func(server *mcpv1alpha1.MCPServer) {
-				server.Spec.Secrets = []mcpv1alpha1.SecretRef{
+			modifyServer: func(server *mcpv1beta1.MCPServer) {
+				server.Spec.Secrets = []mcpv1beta1.SecretRef{
 					{Name: "secret1", Key: "key1", TargetEnvName: "CUSTOM_ENV1"},
 					{Name: "secret2", Key: "key2"},
 				}
@@ -1359,12 +1268,12 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 		},
 		{
 			name: "Proxy mode change",
-			initialServer: func() *mcpv1alpha1.MCPServer {
+			initialServer: func() *mcpv1beta1.MCPServer {
 				server := createTestMCPServerWithConfig("proxy-test", "default", "test:v1", nil)
 				server.Spec.ProxyMode = sseProxyMode
 				return server
 			},
-			modifyServer: func(server *mcpv1alpha1.MCPServer) {
+			modifyServer: func(server *mcpv1beta1.MCPServer) {
 				server.Spec.ProxyMode = streamableHTTPProxyMode
 			},
 			expectedChanges: map[string]interface{}{
@@ -1377,7 +1286,7 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			// Setup - create a new scheme for each test to avoid concurrent access
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -1446,74 +1355,49 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 	// Test that EnvFileDir is properly set when Vault Agent Injection is detected
 	testCases := []struct {
 		name           string
-		mcpServer      *mcpv1alpha1.MCPServer
+		mcpServer      *mcpv1beta1.MCPServer
 		expectedEnvDir string
 	}{
 		{
 			name: "vault injection in PodTemplateSpec annotations",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "vault-server",
-					Namespace: "toolhive-system",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "ghcr.io/example/server:v1.0.0",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					PodTemplateSpec: func() *runtime.RawExtension {
-						pts := &corev1.PodTemplateSpec{
-							ObjectMeta: metav1.ObjectMeta{
-								Annotations: map[string]string{
-									"vault.hashicorp.com/agent-inject": "true",
-									"vault.hashicorp.com/role":         "test-role",
-								},
+			mcpServer: v1beta1test.NewMCPServer("vault-server", "toolhive-system",
+				v1beta1test.WithImage("ghcr.io/example/server:v1.0.0"),
+				v1beta1test.WithPodTemplateSpec(func() *runtime.RawExtension {
+					pts := &corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"vault.hashicorp.com/agent-inject": "true",
+								"vault.hashicorp.com/role":         "test-role",
 							},
-						}
-						raw, _ := json.Marshal(pts)
-						return &runtime.RawExtension{Raw: raw}
-					}(),
-				},
-			},
+						},
+					}
+					raw, _ := json.Marshal(pts)
+					return &runtime.RawExtension{Raw: raw}
+				}())),
 			expectedEnvDir: "/vault/secrets",
 		},
 		{
 			name: "vault injection in ResourceOverrides annotations",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "vault-override-server",
-					Namespace: "toolhive-system",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "ghcr.io/example/server:v1.0.0",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: v1beta1test.NewMCPServer("vault-override-server", "toolhive-system",
+				v1beta1test.WithImage("ghcr.io/example/server:v1.0.0"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 								Annotations: map[string]string{
 									"vault.hashicorp.com/agent-inject": "true",
 									"vault.hashicorp.com/role":         "override-role",
 								},
 							},
 						},
-					},
-				},
-			},
+					}
+				})),
 			expectedEnvDir: "/vault/secrets",
 		},
 		{
 			name: "no vault injection - should have empty EnvFileDir",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-vault-server",
-					Namespace: "toolhive-system",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "ghcr.io/example/server:v1.0.0",
-					Transport: "stdio",
-					ProxyPort: 8080,
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("no-vault-server", "toolhive-system",
+				v1beta1test.WithImage("ghcr.io/example/server:v1.0.0")),
 			expectedEnvDir: "",
 		},
 	}
@@ -1522,7 +1406,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
 				WithRuntimeObjects(tc.mcpServer).
@@ -1561,12 +1445,12 @@ func TestPopulateScalingConfig(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		spec     mcpv1alpha1.MCPServerSpec
+		spec     mcpv1beta1.MCPServerSpec
 		expected func(t *testing.T, sc *runner.ScalingConfig)
 	}{
 		{
 			name: "nil backendReplicas and nil sessionStorage — ScalingConfig stays nil",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     testImage,
 				Transport: stdioTransport,
 				ProxyPort: 8080,
@@ -1578,7 +1462,7 @@ func TestPopulateScalingConfig(t *testing.T) {
 		},
 		{
 			name: "backendReplicas set — written to ScalingConfig",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:           testImage,
 				Transport:       stdioTransport,
 				ProxyPort:       8080,
@@ -1593,7 +1477,7 @@ func TestPopulateScalingConfig(t *testing.T) {
 		},
 		{
 			name: "backendReplicas zero — written (not nil) to ScalingConfig",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:           testImage,
 				Transport:       stdioTransport,
 				ProxyPort:       8080,
@@ -1608,7 +1492,7 @@ func TestPopulateScalingConfig(t *testing.T) {
 		},
 		{
 			name: "sessionStorage nil — SessionRedis stays nil",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:           testImage,
 				Transport:       stdioTransport,
 				ProxyPort:       8080,
@@ -1622,11 +1506,11 @@ func TestPopulateScalingConfig(t *testing.T) {
 		},
 		{
 			name: "sessionStorage memory — SessionRedis stays nil",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     testImage,
 				Transport: stdioTransport,
 				ProxyPort: 8080,
-				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
 					Provider: "memory",
 				},
 			},
@@ -1637,11 +1521,11 @@ func TestPopulateScalingConfig(t *testing.T) {
 		},
 		{
 			name: "sessionStorage redis — address/db/keyPrefix written to SessionRedis",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     testImage,
 				Transport: stdioTransport,
 				ProxyPort: 8080,
-				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
 					Provider:  "redis",
 					Address:   "redis.default.svc:6379",
 					DB:        2,
@@ -1655,18 +1539,42 @@ func TestPopulateScalingConfig(t *testing.T) {
 				assert.Equal(t, "redis.default.svc:6379", sc.SessionRedis.Address)
 				assert.Equal(t, int32(2), sc.SessionRedis.DB)
 				assert.Equal(t, "thv:", sc.SessionRedis.KeyPrefix)
+				assert.Nil(t, sc.SessionRedis.TLS, "omitted tls must keep the existing plaintext behavior")
+			},
+		},
+		{
+			name: "sessionStorage redis with tls — TLS and mounted CA path written to SessionRedis",
+			spec: mcpv1beta1.MCPServerSpec{
+				Image:     testImage,
+				Transport: stdioTransport,
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6380",
+					TLS: &mcpv1beta1.RedisTLSConfig{
+						CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+					},
+				},
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.SessionRedis)
+				assert.Equal(t, &redisconfig.TLSConfig{
+					CACertFile: "/etc/toolhive/session-redis-tls/ca.crt",
+				}, sc.SessionRedis.TLS)
 			},
 		},
 		{
 			name: "sessionStorage redis with passwordRef — password NOT in SessionRedis",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     testImage,
 				Transport: stdioTransport,
 				ProxyPort: 8080,
-				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 					Address:  "redis:6379",
-					PasswordRef: &mcpv1alpha1.SecretKeyRef{
+					PasswordRef: &mcpv1beta1.SecretKeyRef{
 						Name: "redis-secret",
 						Key:  "password",
 					},
@@ -1693,14 +1601,14 @@ func TestPopulateScalingConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			m := &mcpv1alpha1.MCPServer{
+			m := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec:       tt.spec,
 			}
 
 			r := &MCPServerReconciler{
 				Client: fake.NewClientBuilder().
-					WithScheme(createRunConfigTestScheme()).
+					WithScheme(testutil.NewScheme(t)).
 					WithObjects(m).
 					Build(),
 			}
@@ -1717,27 +1625,27 @@ func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		spec    mcpv1alpha1.MCPServerSpec
+		spec    mcpv1beta1.MCPServerSpec
 		wantNil bool
 		wantNs  string
 	}{
 		{
 			name: "rateLimiting nil produces nil config",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image: testImage,
 			},
 			wantNil: true,
 		},
 		{
 			name: "rateLimiting set flows to RunConfig",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image: testImage,
-				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 					Address:  "redis:6379",
 				},
-				RateLimiting: &mcpv1alpha1.RateLimitConfig{
-					Shared: &mcpv1alpha1.RateLimitBucket{
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					Shared: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    10,
 						RefillPeriod: metav1.Duration{Duration: 60_000_000_000}, // 1m
 					},
@@ -1752,14 +1660,14 @@ func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 			k8sClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 
 			r := &MCPServerReconciler{
 				Client: k8sClient,
 			}
 
-			m := &mcpv1alpha1.MCPServer{
+			m := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "test-ns",
@@ -1781,4 +1689,72 @@ func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPopulateScalingConfig_GlobalRedisDefault(t *testing.T) {
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
+
+	m := &mcpv1beta1.MCPServer{
+		Spec: mcpv1beta1.MCPServerSpec{
+			// sessionStorage is nil — should fall back to global default
+		},
+	}
+	runConfig := &runner.RunConfig{}
+	populateScalingConfig(runConfig, m, defaults)
+
+	require.NotNil(t, runConfig.ScalingConfig)
+	require.NotNil(t, runConfig.ScalingConfig.SessionRedis)
+	assert.Equal(t, "global-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
+}
+
+func TestPopulateScalingConfig_SpecTakesPrecedenceOverGlobal(t *testing.T) {
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
+
+	m := &mcpv1beta1.MCPServer{
+		Spec: mcpv1beta1.MCPServerSpec{
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "local-redis:6379",
+			},
+		},
+	}
+	runConfig := &runner.RunConfig{}
+	populateScalingConfig(runConfig, m, defaults)
+
+	require.NotNil(t, runConfig.ScalingConfig.SessionRedis)
+	assert.Equal(t, "local-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
+}
+
+func TestPopulateScalingConfig_NoGlobalNoSpec(t *testing.T) {
+	t.Parallel()
+
+	m := &mcpv1beta1.MCPServer{Spec: mcpv1beta1.MCPServerSpec{}}
+	runConfig := &runner.RunConfig{}
+	populateScalingConfig(runConfig, m, nil)
+
+	assert.Nil(t, runConfig.ScalingConfig)
+}
+
+func TestCreateRunConfigFromMCPServer_SetsMCPServerGeneration(t *testing.T) {
+	t.Parallel()
+
+	m := v1beta1test.NewMCPServer("generation-server", "default",
+		v1beta1test.WithImage("ghcr.io/example/mcp:v1"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Generation = 7 }))
+
+	r := newTestMCPServerReconciler(
+		fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(m).Build(),
+		testutil.NewScheme(t),
+		kubernetes.PlatformKubernetes,
+	)
+
+	rc, err := r.createRunConfigFromMCPServer(m)
+
+	require.NoError(t, err)
+	require.NotNil(t, rc)
+
+	assert.Equal(t, int64(7), rc.MCPServerGeneration,
+		"MCPServerGeneration should match MCPServer .metadata.generation")
 }

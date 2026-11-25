@@ -1,0 +1,52 @@
+suite: crds chart toggles
+# Exercises the two values knobs that wrap every CRD template:
+#   crds.install — gates the entire CRD render
+#   crds.keep    — gates the `helm.sh/resource-policy: keep` annotation
+# A regression in either is silent at install time (gate removed →
+# unconditional install still works; keep removed → uninstall silently
+# cascade-deletes CRs). These tests make both behaviours red-on-break.
+# Assertions apply per template — each `templates:` entry renders one
+# CustomResourceDefinition, so the three toggle tests run once per CRD.
+templates:
+  - toolhive.stacklok.dev_embeddingservers.yaml
+  - toolhive.stacklok.dev_mcpexternalauthconfigs.yaml
+  - toolhive.stacklok.dev_mcpgroups.yaml
+  - toolhive.stacklok.dev_mcpoidcconfigs.yaml
+  - toolhive.stacklok.dev_mcpregistries.yaml
+  - toolhive.stacklok.dev_mcpremoteproxies.yaml
+  - toolhive.stacklok.dev_mcpserverentries.yaml
+  - toolhive.stacklok.dev_mcpservers.yaml
+  - toolhive.stacklok.dev_mcptelemetryconfigs.yaml
+  - toolhive.stacklok.dev_mcptoolconfigs.yaml
+  - toolhive.stacklok.dev_mcpwebhookconfigs.yaml
+  - toolhive.stacklok.dev_virtualmcpcompositetooldefinitions.yaml
+  - toolhive.stacklok.dev_virtualmcpservers.yaml
+
+tests:
+  - it: renders the CRD with the keep annotation on chart defaults
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: CustomResourceDefinition
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+
+  - it: renders nothing when crds.install is false
+    set:
+      crds.install: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: omits the keep annotation when crds.keep is false
+    set:
+      crds.keep: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: CustomResourceDefinition
+      - notExists:
+          path: metadata.annotations["helm.sh/resource-policy"]

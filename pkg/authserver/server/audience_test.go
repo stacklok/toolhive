@@ -4,9 +4,15 @@
 package server
 
 import (
+	"net/url"
 	"testing"
 
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
 func TestValidateAudienceURI(t *testing.T) {
@@ -66,6 +72,285 @@ func TestValidateAudienceAllowed(t *testing.T) {
 			} else {
 				assert.NoError(t, err, "resource: %q, allowlist: %v", tt.resource, tt.allowlist)
 			}
+		})
+	}
+}
+
+func TestValidateSubjectIdentifierAudiences(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured []string
+		allowed    []string
+		wantErr    bool
+	}{
+		{name: "disabled by default"},
+		{name: "empty disables", configured: []string{}},
+		{name: "exact allowed audience", configured: []string{"https://a.example"}, allowed: []string{"https://a.example"}},
+		{name: "all is not special", configured: []string{"all"}, allowed: []string{"https://a.example"}, wantErr: true},
+		{name: "empty audience rejected", configured: []string{""}, allowed: []string{"https://a.example"}, wantErr: true},
+		{name: "non-member entry rejected", configured: []string{"relative"}, allowed: []string{"https://a.example"}, wantErr: true},
+		{name: "unknown audience rejected", configured: []string{"https://b.example"}, allowed: []string{"https://a.example"}, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateSubjectIdentifierAudiences(tc.configured, tc.allowed)
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// resourceClient keeps a resource allowlist independent of its audiences.
+type resourceClient struct {
+	*fosite.DefaultClient
+	resources []string
+}
+
+func (c resourceClient) Resources() []string { return c.resources }
+
+var _ ResourceScopedClient = (*registration.AuthenticatedSPIFFEClient)(nil)
+
+func TestValidateClientAudience_AuthenticatedSPIFFEClient(t *testing.T) {
+	t.Parallel()
+
+	const (
+		resource = "https://resource.example.com"
+		other    = "https://other.example.com"
+	)
+	client := spiffetest.AuthenticatedClient(t,
+		spiffetest.WithID("client"),
+		spiffetest.WithResources(resource),
+	)
+
+	assert.Equal(t, []string{resource}, ClientResources(client))
+	assert.NoError(t, ValidateClientAudience(resource, client, fosite.DefaultAudienceMatchingStrategy))
+	assert.ErrorIs(t, ValidateClientAudience(other, client, fosite.DefaultAudienceMatchingStrategy), ErrInvalidTarget)
+}
+
+func TestGrantSingleResource(t *testing.T) {
+	t.Parallel()
+
+	const (
+		permitted    = "https://resource.example.com"
+		notPermitted = "https://other.example.com"
+		notAllowed   = "https://not-allowed.example.com"
+	)
+	tests := []struct {
+		name        string
+		form        url.Values
+		permitted   []string
+		allowed     []string
+		wantGranted []string
+		wantHint    string
+	}{
+		{
+			name: "one permitted resource is granted", form: url.Values{"resource": {permitted}},
+			permitted: []string{permitted}, allowed: []string{permitted}, wantGranted: []string{permitted},
+		},
+		{
+			name: "audience parameter is refused", form: url.Values{"audience": {permitted}},
+			permitted: []string{permitted}, allowed: []string{permitted},
+			wantHint: "audience parameter is not accepted",
+		},
+		{
+			name: "empty audience parameter is refused", form: url.Values{"resource": {permitted}, "audience": {""}},
+			permitted: []string{permitted}, allowed: []string{permitted},
+			wantHint: "audience parameter is not accepted",
+		},
+		{
+			name: "no resource is refused", form: url.Values{},
+			permitted: []string{permitted}, allowed: []string{permitted},
+			wantHint: "Exactly one resource parameter is required",
+		},
+		{
+			name: "empty resource is refused", form: url.Values{"resource": {""}},
+			permitted: []string{permitted}, allowed: []string{permitted},
+			wantHint: "Exactly one resource parameter is required",
+		},
+		{
+			name: "two resources are refused", form: url.Values{"resource": {permitted, notPermitted}},
+			permitted: []string{permitted, notPermitted}, allowed: []string{permitted, notPermitted},
+			wantHint: "Exactly one resource parameter is allowed",
+		},
+		{
+			name: "malformed resource is refused", form: url.Values{"resource": {"relative"}},
+			permitted: []string{"relative"}, allowed: []string{"relative"},
+			wantHint: "absolute http or https URI",
+		},
+		{
+			name: "resource outside the permitted list is refused", form: url.Values{"resource": {notPermitted}},
+			permitted: []string{permitted}, allowed: []string{permitted, notPermitted},
+			wantHint: "must exactly match a permitted resource",
+		},
+		{
+			name: "sub-path of a permitted resource is refused", form: url.Values{"resource": {permitted + "/v1"}},
+			permitted: []string{permitted}, allowed: []string{permitted, permitted + "/v1"},
+			wantHint: "must exactly match a permitted resource",
+		},
+		{
+			name: "permitted resource outside the server allowlist is refused", form: url.Values{"resource": {notAllowed}},
+			permitted: []string{notAllowed}, allowed: []string{permitted},
+			wantHint: "not an allowed audience",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := fosite.NewAccessRequest(nil)
+			req.Form = tt.form
+
+			err := GrantSingleResource(req, tt.permitted, tt.allowed)
+
+			if tt.wantHint == "" {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantGranted, []string(req.GetGrantedAudience()))
+				return
+			}
+			require.ErrorIs(t, err, ErrInvalidTarget)
+			assert.Contains(t, fosite.ErrorToRFC6749Error(err).HintField, tt.wantHint)
+			assert.Empty(t, req.GetGrantedAudience())
+		})
+	}
+}
+
+func TestValidateClientAudience(t *testing.T) {
+	t.Parallel()
+
+	plain := func(audiences ...string) fosite.Client { return &fosite.DefaultClient{Audience: audiences} }
+	scoped := func(resources ...string) fosite.Client {
+		return resourceClient{DefaultClient: &fosite.DefaultClient{}, resources: resources}
+	}
+	tests := []struct {
+		name     string
+		resource string
+		client   fosite.Client
+		wantErr  bool
+	}{
+		{"empty resource always valid", "", plain(), false},
+		{"client without audiences permits nothing", "https://a.com", plain(), true},
+		{"resource among client audiences", "https://b.com", plain("https://a.com", "https://b.com"), false},
+		{"resource outside client audiences", "https://c.com", plain("https://a.com", "https://b.com"), true},
+		{"path below the client audience", "https://a.com/x", plain("https://a.com"), false},
+		{"path below a deeper client audience", "https://a.com/x/y", plain("https://a.com/x"), false},
+		{"sibling path is not a segment prefix", "https://a.com/xy", plain("https://a.com/x"), true},
+		{"parent path is not covered", "https://a.com", plain("https://a.com/x"), true},
+		{"host that merely starts with the audience host", "https://a.com.evil.com", plain("https://a.com"), true},
+		{"different port", "https://a.com:8443", plain("https://a.com"), true},
+		{"different scheme", "http://a.com", plain("https://a.com"), true},
+		{"resource allowlist replaces audiences", "https://a.com",
+			resourceClient{DefaultClient: &fosite.DefaultClient{Audience: []string{"https://a.com"}}, resources: []string{"https://b.com"}}, true},
+		{"resource allowlist permits its resource", "https://b.com", scoped("https://b.com"), false},
+		{"empty resource allowlist permits nothing", "https://b.com", scoped(), true},
+		{"DCR client is checked like any other", "https://new.com",
+			registration.MarkDCRIssued(&fosite.DefaultClient{Audience: []string{"https://old.com"}}), true},
+		{"DCR client with a matching audience", "https://old.com",
+			registration.MarkDCRIssued(&fosite.DefaultClient{Audience: []string{"https://old.com"}}), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateClientAudience(tt.resource, tt.client, fosite.DefaultAudienceMatchingStrategy)
+			if tt.wantErr {
+				assert.ErrorIs(t, err, ErrInvalidTarget)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestAudienceRefusalsAreIndistinguishable pins that the server-level and the
+// client-level refusal return the same hint, because /authorize puts it in a
+// redirect for a caller that has not authenticated.
+func TestAudienceRefusalsAreIndistinguishable(t *testing.T) {
+	t.Parallel()
+
+	const resource = "https://c.com"
+	client := &fosite.DefaultClient{Audience: []string{"https://a.com"}}
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"not on the server's list", ValidateAudienceAllowed(resource, []string{"https://a.com"})},
+		{"server has no audiences", ValidateAudienceAllowed(resource, nil)},
+		{"outside the client's audiences", ValidateClientAudience(resource, client, fosite.DefaultAudienceMatchingStrategy)},
+	}
+
+	var want *fosite.RFC6749Error
+	for _, tt := range tests {
+		require.ErrorIs(t, tt.err, ErrInvalidTarget, tt.name)
+		var got *fosite.RFC6749Error
+		require.ErrorAs(t, tt.err, &got, tt.name)
+		if want == nil {
+			want = got
+			continue
+		}
+		assert.Equal(t, want.ErrorField, got.ErrorField, tt.name)
+		assert.Equal(t, want.HintField, got.HintField, tt.name)
+		assert.Equal(t, want.DescriptionField, got.DescriptionField, tt.name)
+	}
+}
+
+func TestValidateIDJAGClientAudience(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resource string
+		client   fosite.Client
+		wantErr  bool
+	}{
+		{"client without audiences may request nothing", "https://a.com", &fosite.DefaultClient{}, true},
+		{"bare client with a prefix match", "https://a.com/x", &fosite.DefaultClient{Audience: []string{"https://a.com"}}, false},
+		{"client with audiences and a mismatch", "https://b.com", &fosite.DefaultClient{Audience: []string{"https://a.com"}}, true},
+		{"stale DCR client is not narrowed", "https://new.com",
+			registration.MarkDCRIssued(&fosite.DefaultClient{Audience: []string{"https://old.com"}}), false},
+		{"resource allowlist client with an empty allowlist", "https://a.com",
+			resourceClient{DefaultClient: &fosite.DefaultClient{}}, true},
+		{"resource allowlist client with a match", "https://a.com/x",
+			resourceClient{DefaultClient: &fosite.DefaultClient{}, resources: []string{"https://a.com"}}, false},
+		{"resource allowlist client with a mismatch", "https://b.com",
+			resourceClient{DefaultClient: &fosite.DefaultClient{}, resources: []string{"https://a.com"}}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateIDJAGClientAudience(tt.resource, tt.client, fosite.DefaultAudienceMatchingStrategy)
+			if tt.wantErr {
+				assert.ErrorIs(t, err, ErrInvalidTarget)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestIsUnscopedDCRClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		client fosite.Client
+		want   bool
+	}{
+		{"DCR client without a resource allowlist", registration.MarkDCRIssued(&fosite.DefaultClient{}), true},
+		{"pre-provisioned client", &fosite.DefaultClient{Audience: []string{"https://a.com"}}, false},
+		{"resource-scoped client", resourceClient{DefaultClient: &fosite.DefaultClient{}, resources: []string{"https://a.com"}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsUnscopedDCRClient(tt.client))
 		})
 	}
 }

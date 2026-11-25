@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
@@ -24,7 +24,7 @@ func TestValidateCABundleSource(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		ref         *mcpv1alpha1.CABundleSource
+		ref         *mcpv1beta1.CABundleSource
 		wantErr     bool
 		errContains string
 	}{
@@ -45,7 +45,7 @@ func TestValidateCABundleSource(t *testing.T) {
 		},
 		{
 			name:        "missing configMapRef",
-			ref:         &mcpv1alpha1.CABundleSource{},
+			ref:         &mcpv1beta1.CABundleSource{},
 			wantErr:     true,
 			errContains: "configMapRef must be specified in caBundleRef",
 		},
@@ -73,6 +73,66 @@ func TestValidateCABundleSource(t *testing.T) {
 			t.Parallel()
 
 			err := validation.ValidateCABundleSource(tt.ref)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errContains != "" {
+					assert.ErrorContains(t, err, tt.errContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateCABundleSourceShape(t *testing.T) {
+	t.Parallel()
+
+	// Longer than the 48-char cap ValidateCABundleSource enforces for OIDC
+	// volume names, which must not apply to the shape-only check.
+	const overOIDCCapLength = 60
+
+	tests := []struct {
+		name        string
+		ref         *mcpv1beta1.CABundleSource
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "nil ref is valid",
+			ref:     nil,
+			wantErr: false,
+		},
+		{
+			name:    "valid configMapRef with name and key",
+			ref:     makeCABundleSource("my-ca", "ca.crt"),
+			wantErr: false,
+		},
+		{
+			name:        "missing configMapRef",
+			ref:         &mcpv1beta1.CABundleSource{},
+			wantErr:     true,
+			errContains: "configMapRef must be specified in caBundleRef",
+		},
+		{
+			name:        "empty configMapRef name",
+			ref:         makeCABundleSource("", ""),
+			wantErr:     true,
+			errContains: "configMapRef.name must be specified",
+		},
+		{
+			name:    "name longer than the OIDC volume-name cap is accepted",
+			ref:     makeCABundleSource(strings.Repeat("a", overOIDCCapLength), ""),
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validation.ValidateCABundleSourceShape(tt.ref)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -156,8 +216,8 @@ func TestValidateOIDCIssuerURL(t *testing.T) {
 }
 
 // makeCABundleSource creates a CABundleSource with the given name and optional key.
-func makeCABundleSource(name, key string) *mcpv1alpha1.CABundleSource {
-	return &mcpv1alpha1.CABundleSource{
+func makeCABundleSource(name, key string) *mcpv1beta1.CABundleSource {
+	return &mcpv1beta1.CABundleSource{
 		ConfigMapRef: &corev1.ConfigMapKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: name},
 			Key:                  key,

@@ -26,6 +26,15 @@ const (
 	MaxAttempts = 10
 )
 
+// CallbackPortInUseError reports that a requested OAuth callback port is unavailable.
+type CallbackPortInUseError struct {
+	Port int
+}
+
+func (e *CallbackPortInUseError) Error() string {
+	return fmt.Sprintf("OAuth callback port %d is already in use", e.Port)
+}
+
 // IsAvailable checks if a port is available
 func IsAvailable(port int) bool {
 	// Check TCP
@@ -59,41 +68,6 @@ func IsAvailable(port int) bool {
 	}
 
 	return true
-}
-
-// IsIPv6Available checks if IPv6 is available on the system
-// by looking for IPv6 addresses on network interfaces
-func IsIPv6Available() bool {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return false
-	}
-
-	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 {
-			// Interface is down
-			continue
-		}
-
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-
-		for _, addr := range addrs {
-			ipNet, ok := addr.(*net.IPNet)
-			if !ok {
-				continue
-			}
-
-			if ipNet.IP.To4() == nil && !ipNet.IP.IsLoopback() {
-				// This is an IPv6 address and not a loopback
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 // FindAvailable finds an available port
@@ -170,7 +144,7 @@ func ValidateCallbackPort(callbackPort int, clientID string) error {
 		// For pre-registered clients, the port must be available
 		// The user likely configured this port in their IdP/app
 		if !IsAvailable(callbackPort) {
-			return fmt.Errorf("OAuth callback port %d is not available - please choose a different port", callbackPort)
+			return &CallbackPortInUseError{Port: callbackPort}
 		}
 	}
 

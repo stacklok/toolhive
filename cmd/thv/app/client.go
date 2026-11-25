@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -162,6 +163,7 @@ func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.Clie
 	clients := make([]client.Client, len(clientsToRegister))
 	for i, cli := range clientsToRegister {
 		clients[i] = client.Client{Name: cli.ClientType}
+		warnIfDeprecatedClient(cli.ClientType)
 	}
 
 	return performClientRegistration(cmd.Context(), clients, selectedGroups)
@@ -175,6 +177,8 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid client type: %s (valid types: %s)", clientType, client.GetClientListCSV())
 	}
 
+	warnIfDeprecatedClient(client.ClientApp(clientType))
+
 	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.ClientApp(clientType)}}, groupAddNames)
 }
 
@@ -186,7 +190,17 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid client type: %s (valid types: %s)", clientType, client.GetClientListCSV())
 	}
 
+	warnIfDeprecatedClient(client.ClientApp(clientType))
+
 	return performClientRemoval(cmd.Context(), client.Client{Name: client.ClientApp(clientType)}, groupRmNames)
+}
+
+// warnIfDeprecatedClient prints a deprecation warning to stderr when the given
+// client integration is deprecated. It is a no-op for active clients.
+func warnIfDeprecatedClient(clientType client.ClientApp) {
+	if message, deprecated := client.GetClientDeprecation(clientType); deprecated {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", message)
+	}
 }
 
 func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {

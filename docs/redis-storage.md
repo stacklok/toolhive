@@ -1,67 +1,121 @@
-# Redis Sentinel Storage for Auth Server
+# Redis Storage for Auth Server
 
-This guide explains how to configure Redis Sentinel as the storage backend for ToolHive's embedded authorization server, enabling horizontal scaling across multiple auth server replicas.
+This guide explains how to configure Redis as the storage backend for ToolHive's embedded authorization server, enabling horizontal scaling across multiple auth server replicas.
 
 ## Overview
 
-By default, ToolHive's embedded auth server uses in-memory storage. This works well for single-instance deployments but does not support horizontal scaling since each replica has its own isolated state. Redis Sentinel provides a shared, highly available storage backend that enables multiple auth server replicas to share OAuth 2.0 state (tokens, authorization codes, clients, and user data).
+By default, ToolHive's embedded auth server uses in-memory storage. This works well for single-instance deployments but does not support horizontal scaling since each replica has its own isolated state. Redis provides a shared storage backend that enables multiple auth server replicas to share OAuth 2.0 state (tokens, authorization codes, clients, and user data).
 
 **Key design decisions:**
 
-- **Sentinel-only**: Only Redis Sentinel deployments are supported (not standalone or cluster mode). Sentinel provides automatic failover and high availability without the complexity of Redis Cluster.
-- **ACL user authentication**: Only Redis ACL user authentication is supported. This is the modern Redis authentication mechanism (Redis 6+) that provides fine-grained access control.
+- **Standalone or Sentinel**: Both standalone Redis (single endpoint) and Redis Sentinel (high-availability with automatic failover) are supported. Use standalone for managed Redis services that expose a single endpoint (GCP Memorystore Basic/Standard HA, Azure Cache for Redis, AWS ElastiCache non-cluster); use Sentinel for self-managed HA clusters. Redis Cluster mode is not supported.
+- **ACL or legacy authentication**: Redis ACL user authentication (Redis 6+) is supported for fine-grained access control. For managed Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard HA, Azure Cache for Redis), omit the username to use legacy password-only `AUTH`.
 - **Multi-tenancy via key prefixes**: Each auth server instance uses a unique key prefix (`thv:auth:{namespace:name}:`) to isolate its data, allowing multiple auth servers to share the same Redis deployment.
 
 ## Prerequisites
 
-- A running Redis Sentinel deployment (Redis 6+ for ACL support)
-- Redis ACL user configured with appropriate permissions
+- A running Redis deployment accessible from the auth server pod
+- Redis credentials (password, and optionally a username for ACL-based access)
 - For Kubernetes: Secrets containing Redis credentials
 
 ## Configuration
 
-> **Note: No TLS support.** Redis connections are currently unencrypted. All traffic — including OAuth tokens, authorization codes, and credentials — is transmitted in plaintext between the auth server and Redis.
-> In shared network environments, use Kubernetes NetworkPolicies to restrict access to Redis pods, or deploy a service mesh (e.g., Istio, Linkerd) for transparent mTLS. TLS support is planned as a future enhancement.
+> **TLS support:** TLS is supported for both standalone and Sentinel connections. To enable TLS, set `tls.caCertSecretRef` to a Secret containing the CA certificate. For managed services with private CAs (e.g. GCP Memorystore), retrieve the CA certificate first:
+> ```bash
+> gcloud redis instances get-server-ca-certs INSTANCE_NAME --region=REGION --format=json
+> ```
+> For connections without a custom CA, TLS uses the system root CAs. To skip verification (self-signed certs only, not for production), set `tls.insecureSkipVerify: true`.
+>
+> In Kubernetes, changing which Secret or key `caCertSecretRef` points to restarts the MCPServer, MCPRemoteProxy and VirtualMCPServer pods that use the auth server.
 
 ### Kubernetes (MCPExternalAuthConfig CRD)
 
 When using the ToolHive operator, Redis storage is configured through the `storage` field in the embedded auth server section of `MCPExternalAuthConfig`.
 
+#### Standalone Redis (Managed Services)
+
+Use `addr` for single-endpoint Redis services such as GCP Memorystore, AWS ElastiCache, or Azure Cache for Redis.
+
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPExternalAuthConfig
-metadata:
-  name: my-auth-config
-  namespace: default
+storage:
+  type: redis
+  redis:
+    addr: "10.0.0.3:6379"   # Redis endpoint
+
+    aclUserConfig:
+      # Omit usernameSecretRef for managed Redis tiers that use password-only
+      # AUTH (e.g. GCP Memorystore Basic/Standard HA, Azure Cache for Redis).
+      # Include it for services that support ACL users (e.g. AWS ElastiCache
+      # non-cluster with Redis 6+ RBAC).
+      usernameSecretRef:         # optional
+        name: redis-credentials
+        key: username
+      passwordSecretRef:
+        name: redis-credentials
+        key: password
+
+    # Optional: TLS for managed services with private CAs (e.g. GCP Memorystore)
+    tls:
+      caCertSecretRef:
+        name: redis-tls-ca
+        key: ca.crt
+
+    # Optional timeouts (shown with defaults)
+    dialTimeout: "5s"
+    readTimeout: "3s"
+    writeTimeout: "3s"
+```
+
+#### DCR Client Cap and Registration Rate
+
+`storage.maxDCRClients` caps the live clients created through Dynamic Client Registration (default 10,000; `0` removes the cap), and the sibling `registrationRateLimit` field bounds how fast `/oauth/register` accepts them. On Redis the cap is shared by every replica; the rate limit is per replica. A `registrationRateLimit` bucket with `maxTokens` B and `refillPeriod` B/R allows a burst of B and a sustained rate of R per second:
+
+```yaml
 spec:
   type: embeddedAuthServer
   embeddedAuthServer:
-    # ... other auth server config ...
-
+    # ...issuer, upstreamProviders, signing keys...
     storage:
       type: redis
+      maxDCRClients: 50000   # raise above the observed live DCR client count
       redis:
-        sentinelConfig:
-          masterName: mymaster
-          # Option 1: Direct Sentinel addresses
-          sentinelAddrs:
-            - "redis-sentinel-0.redis-sentinel:26379"
-            - "redis-sentinel-1.redis-sentinel:26379"
-            - "redis-sentinel-2.redis-sentinel:26379"
-          db: 0
+        # ...as above...
+    registrationRateLimit:   # 10 per minute sustained, burst of 3
+      maxTokens: 3
+      refillPeriod: 18s
+```
 
-        aclUserConfig:
-          usernameSecretRef:
-            name: redis-credentials
-            key: username
-          passwordSecretRef:
-            name: redis-credentials
-            key: password
+`0` leaves the unauthenticated endpoint bounded only by the rate limit, so use it only temporarily; a large finite value, two to three times the observed count, keeps some protection. See [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap) for sizing.
 
-        # Optional timeouts (shown with defaults)
-        dialTimeout: "5s"
-        readTimeout: "3s"
-        writeTimeout: "3s"
+#### Redis Sentinel
+
+Use `sentinelConfig` for self-managed Redis deployments with Sentinel-based high availability.
+
+```yaml
+storage:
+  type: redis
+  redis:
+    sentinelConfig:
+      masterName: mymaster
+      # Option 1: Direct Sentinel addresses
+      sentinelAddrs:
+        - "redis-sentinel-0.redis-sentinel:26379"
+        - "redis-sentinel-1.redis-sentinel:26379"
+        - "redis-sentinel-2.redis-sentinel:26379"
+      db: 0
+
+    aclUserConfig:
+      usernameSecretRef:
+        name: redis-credentials
+        key: username
+      passwordSecretRef:
+        name: redis-credentials
+        key: password
+
+    # Optional timeouts (shown with defaults)
+    dialTimeout: "5s"
+    readTimeout: "3s"
+    writeTimeout: "3s"
 ```
 
 #### Sentinel Service Discovery
@@ -94,7 +148,7 @@ storage:
 
 #### Redis Credentials Secret
 
-Create a Kubernetes Secret containing the Redis ACL username and password:
+Create a Kubernetes Secret containing the Redis password (and optionally a username for ACL-based access):
 
 ```yaml
 apiVersion: v1
@@ -104,14 +158,15 @@ metadata:
   namespace: default
 type: Opaque
 stringData:
-  username: toolhive-auth
+  username: toolhive-auth   # omit for password-only AUTH
   password: "<your-secure-password>"
 ```
 
 ### RunConfig (Process Boundary Configuration)
 
-When the auth server configuration is serialized for passing across process boundaries (e.g., from operator to proxy-runner), it uses the `RunConfig` format:
+When the auth server configuration is serialized for passing across process boundaries (e.g., from operator to proxy-runner), it uses the `RunConfig` format.
 
+**Sentinel example:**
 ```json
 {
   "type": "redis",
@@ -138,7 +193,22 @@ When the auth server configuration is serialized for passing across process boun
 }
 ```
 
-In RunConfig format, credentials are referenced via environment variables rather than Kubernetes Secrets. The operator handles the translation from Secret references to environment variables when constructing the proxy-runner pod.
+**Standalone with password-only AUTH (no username):**
+```json
+{
+  "type": "redis",
+  "redisConfig": {
+    "addr": "10.0.0.3:6379",
+    "authType": "aclUser",
+    "aclUserConfig": {
+      "passwordEnvVar": "TOOLHIVE_AS_REDIS_PASSWORD"
+    },
+    "keyPrefix": "thv:auth:{default:my-auth-config}:"
+  }
+}
+```
+
+In RunConfig format, credentials are referenced via environment variables rather than Kubernetes Secrets. The operator handles the translation from Secret references to environment variables when constructing the proxy-runner pod. When `usernameSecretRef` is omitted from the CRD, `usernameEnvVar` is omitted from the RunConfig and go-redis uses the legacy `AUTH <password>` form.
 
 ## Deploying Redis with the Spotahome Redis Operator
 
@@ -236,7 +306,7 @@ stringData:
   password: "<your-secure-password>"
 ---
 # MCPExternalAuthConfig with Redis storage
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPExternalAuthConfig
 metadata:
   name: my-auth-config
@@ -283,13 +353,40 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}refresh:{signature}` | Refresh token data | 30 days (default) |
 | `{prefix}authcode:{code}` | Authorization code | 10 minutes |
 | `{prefix}pkce:{signature}` | PKCE challenge data | 10 minutes |
-| `{prefix}client:{client_id}` | OAuth client registration | 30 days (public) / none (confidential) |
+| `{prefix}client:{client_id}` | OAuth client registration | DCR-issued: 24 hours until first token exchange, then 30 days sliding, renewed on use / none (pre-provisioned) |
+| `{prefix}client-idx` | Sorted set of DCR-issued client IDs counted against the DCR client cap, scored by expiry (Unix ms) | None; entries are trimmed as their score passes |
 | `{prefix}user:{user_id}` | User account | None |
 | `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
-| `{prefix}upstream:{session_id}` | Upstream IDP tokens | Matches token lifetime |
-| `{prefix}pending:{state}` | In-flight authorization | 10 minutes |
+| `{prefix}upstream:{session_id}:{provider}` | Upstream IDP tokens, one key per provider | Access token expiry + 30 days; session expiry + 30 days if the token has no expiry; none if neither is set |
+| `{prefix}pending:{handle_or_state}` | Browser-bound consent handle or upstream callback state | Remaining time until the initial `CreatedAt` + 10 minutes; deadline checked before consent/callback consumption |
+| `{prefix}consent:session:{digest}` | SHA-256 digest of the browser session cookie secret (never the raw secret) | Remaining fixed lifetime, at most 7 days |
+| `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
-| `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
+| `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Deadline set by the server: JWT `exp` plus 60 seconds of clock skew and a 5 second grace |
+| `{prefix}xgrant:{signature}` | HASH holding one exchange grant, the record behind a refresh token issued through token exchange. Field `data` is the immutable JSON record; field `rev_ms` (Unix ms) appears only after revocation | Grant `ExpiresAt`; revoke does not change it |
+| `{prefix}assertion-jwt:{digest}` | Replay marker. For JWT-bearer assertions it is kept until the assertion's `exp`. For an exchange grant it records the subject access token's `(issuer, jti)`, holds the grant signature, and is written only for a top-level grant | JWT-bearer: assertion `exp`. Exchange grant: access token `exp` plus 1 minute |
+
+Exchange grant keys need AOF persistence to survive a restart. Without AOF, or after a failover to a replica that had not received the latest writes, replay markers and revocations can be lost: a lost marker allows a second exchange of the same access token, and a lost revocation makes a grant usable again until it expires. See [Auth Server Storage](arch/11-auth-server-storage.md#exchange-grant-storage).
+
+For how configured (delegate and SPIFFE) client rows behave across restarts and rollbacks, see [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
+
+A delegate client removed from config stops being served after the next restart. It gets `invalid_client` at the token endpoint. Its row is not deleted, and access tokens already issued to it stay valid until they expire. To delete the row, run `DEL {prefix}client:{client_id}`. A newly added delegate gets `invalid_client` on any replica that runs client admission but still has the old config. See "Client admission" in [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
+
+A pending consent or upstream callback for a removed client also gets `invalid_client`, and the device verification page refuses it. The same happens to any client whose lookup ends in not-found, including a CIMD client whose metadata document fetch fails transiently with no servable cache entry; storage and transport failures answer HTTP 500.
+
+When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap before upgrading. Backfilled rows keep their existing TTL of up to 30 days. With the operator, `storage.maxDCRClients` exists only in the new CRDs, so upgrade in this order:
+
+1. Upgrade the `operator-crds` chart.
+2. Set `storage.maxDCRClients` on each Redis-backed `MCPExternalAuthConfig` and `VirtualMCPServer` `authServerConfig`.
+3. Upgrade the `operator` chart.
+
+With the older CRDs the API server drops the field, and an older operator ignores it; upgrading the operator first enforces the default cap before you can raise it.
+
+When upgrading to the release that adds the 60 second clock margin for `private_key_jwt` client assertions, replicas on the older version keep the `{prefix}jwt:{jti}` marker only until the assertion `exp`. An assertion first used on an older replica can be used again on an upgraded replica until 60 seconds after its `exp`. Wait more than 6 minutes after the last older replica stops before relying on replay protection for that window. See [Secretless DCR delegate flow](arch/17-token-exchange-delegation.md#secretless-dcr-delegate-flow).
+
+When upgrading to the release that adds upstream subject identifiers (`sub_id` and the `https://toolhive.dev/upstream_subject` claim), see [Storage and upgrades](arch/11-auth-server-storage.md#storage-and-upgrades): replicas running an older version drop the stored upstream identity during a rolling upgrade or after a rollback, and can issue a stored `sub_id` or upstream subject claim again without checking the disclosure setting.
+
+The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, and a user's first login links the upstream identity with one Lua script that touches `{prefix}user:{user_id}`, `{prefix}provider:...` and `{prefix}user:providers:{user_id}`. On Redis Cluster the key prefix must therefore contain a `{...}` hash tag; a prefix without one fails every DCR registration and every first login with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
 ### Secondary Indexes
 
@@ -299,7 +396,8 @@ Redis Sets are used as secondary indexes for efficient lookups:
 |---|---|
 | `{prefix}reqid:access:{request_id}` | Request ID → access token signatures |
 | `{prefix}reqid:refresh:{request_id}` | Request ID → refresh token signatures |
-| `{prefix}user:upstream:{user_id}` | User → upstream token session IDs |
+| `{prefix}upstream:idx:{session_id}` | Session → that session's upstream token row keys (full keys), one per provider. Its TTL is extended to outlive its longest-lived member; if any member never expires, the index has no TTL |
+| `{prefix}user:upstream:{user_id}` | User → upstream token row keys (full keys), one per session and provider (for example `{prefix}upstream:{session_id}:{provider}`) |
 | `{prefix}user:providers:{user_id}` | User → provider identity keys |
 
 These indexes enable grant-wide operations like token revocation (finding all tokens for a request ID) and user-scoped queries (finding all upstream tokens for a user).
@@ -308,7 +406,7 @@ These indexes enable grant-wide operations like token revocation (finding all to
 
 The storage implementation uses different strategies depending on the consistency requirements of each operation:
 
-- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates
+- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates, provider identity linking (user check, set-if-absent link, and reverse-index entry)
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation. These operations use `SMEMBERS` + individual `DEL` calls, meaning partial failures are possible but safe (orphaned keys expire via TTL)
 
@@ -383,13 +481,17 @@ Secondary index cleanup is best-effort: stale entries may remain temporarily but
 |---|---|---|---|---|
 | `type` | `string` | No | `memory` | Storage backend type: `memory` or `redis` |
 | `redis` | `RedisStorageConfig` | When type=redis | — | Redis configuration |
+| `maxDCRClients` | `int32` | No | `10000` | Cap on live DCR-created clients; `0` means unlimited |
 
 ### RedisStorageConfig (CRD)
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `sentinelConfig` | `RedisSentinelConfig` | Yes | — | Sentinel connection settings |
-| `aclUserConfig` | `RedisACLUserConfig` | Yes | — | ACL user credentials |
+| `addr` | `string` | One of addr/sentinelConfig | — | Standalone Redis endpoint (`host:port`). Use for managed single-endpoint Redis services (GCP Memorystore Basic/Standard HA, Azure Cache for Redis, AWS ElastiCache non-cluster). |
+| `sentinelConfig` | `RedisSentinelConfig` | One of addr/sentinelConfig | — | Sentinel connection settings for high-availability Redis. |
+| `aclUserConfig` | `RedisACLUserConfig` | Yes | — | Authentication credentials |
+| `tls` | `RedisTLSConfig` | No | — | TLS for the Redis master connection |
+| `sentinelTLS` | `RedisTLSConfig` | No | — | TLS for Sentinel connections (Sentinel mode only) |
 | `dialTimeout` | `string` | No | `5s` | Connection establishment timeout |
 | `readTimeout` | `string` | No | `3s` | Socket read timeout |
 | `writeTimeout` | `string` | No | `3s` | Socket write timeout |
@@ -415,8 +517,15 @@ Secondary index cleanup is best-effort: stale entries may remain temporarily but
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `usernameSecretRef` | `SecretKeyRef` | Yes | — | Secret reference for Redis username |
+| `usernameSecretRef` | `SecretKeyRef` | No | — | Secret reference for Redis username. Omit for managed tiers that use password-only AUTH (GCP Memorystore Basic/Standard HA, Azure Cache for Redis). |
 | `passwordSecretRef` | `SecretKeyRef` | Yes | — | Secret reference for Redis password |
+
+### RedisTLSConfig (CRD)
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `caCertSecretRef` | `SecretKeyRef` | No | — | Secret containing a PEM-encoded CA certificate. When absent, system root CAs are used. |
+| `insecureSkipVerify` | `bool` | No | `false` | Skip certificate verification. For self-signed certs only; do not use in production. |
 
 ## Related Documentation
 

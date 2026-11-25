@@ -1,6 +1,6 @@
 ---
 name: check-contribution
-description: Validates operator chart contribution practices (helm template, ct lint, docs generation, version bump) before committing changes.
+description: Validates operator chart contribution practices (helm template, ct lint, docs generation) before committing changes.
 allowed-tools: [Bash, Read]
 ---
 
@@ -28,19 +28,14 @@ helm-docs --dry-run
 ```
 Verify that `values.yaml` variables are documented and the generated README.md matches.
 
-### 4. Chart Version Bump
-If chart files changed, verify:
-- `deploy/charts/operator/Chart.yaml` version is bumped for operator changes
-- `deploy/charts/operator-crds/Chart.yaml` version is bumped for CRD changes
-- Version follows [SemVer](https://semver.org/) and bump type matches the change scope
-
 ## Output Format
 
 ```
 ✅ or ❌ Helm template renders successfully
 ✅ or ❌ Chart linting passes
 ✅ or ❌ Documentation up-to-date
-✅ or ❌ Chart version bumped appropriately
+
+Note: Chart version bumps are automated by the release bot. Feature PRs should NOT modify Chart.yaml.
 ```
 
 Include specific errors for any failing checks with actionable remediation commands.

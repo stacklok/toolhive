@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -76,33 +75,4 @@ func newControllerRuntimeClientWithConfig(config *rest.Config, scheme *runtime.S
 	}
 
 	return k8sClient, nil
-}
-
-// NewDynamicClient creates a new dynamic client for working with arbitrary resources.
-// Use this when you need to work with resources without compile-time type information,
-// such as discovering resources at runtime or working with unstructured data.
-func NewDynamicClient() (dynamic.Interface, error) {
-	config, err := GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get kubernetes config: %w", err)
-	}
-
-	return newDynamicClientWithConfig(config)
-}
-
-// newDynamicClientWithConfig is the internal implementation for creating a dynamic client
-func newDynamicClientWithConfig(config *rest.Config) (dynamic.Interface, error) {
-	dynamicClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create dynamic client: %w", err)
-	}
-
-	return dynamicClient, nil
-}
-
-// IsAvailable checks if Kubernetes is available by attempting to create a client
-// and verifying connectivity.
-func IsAvailable() bool {
-	_, _, err := NewClient()
-	return err == nil
 }

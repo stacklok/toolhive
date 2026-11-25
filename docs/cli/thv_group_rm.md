@@ -24,14 +24,14 @@ thv group rm [group-name] [flags]
 ### Options
 
 ```
-  -h, --help             help for rm
-      --with-workloads   Delete all workloads in the group along with the group (default false)
+  -h, --help[=true|false]             help for rm
+      --with-workloads[=true|false]   Delete all workloads in the group along with the group (default false)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

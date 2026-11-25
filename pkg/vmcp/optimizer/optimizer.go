@@ -14,20 +14,33 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive-core/redisconn"
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/toolstore"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
+
+// embeddingAPIKeyEnvVar holds the bearer token for an OpenAI-compatible
+// embedding service. It is an env var, not a config field, so the secret never
+// lands in a CRD spec or ConfigMap.
+// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+const embeddingAPIKeyEnvVar = "OPENAI_API_KEY"
 
 // Config defines configuration options for the Optimizer.
 // It is defined in the internal/types package and aliased here so that
@@ -45,6 +58,13 @@ func GetAndValidateConfig(cfg *vmcpconfig.OptimizerConfig) (*Config, error) {
 	optCfg := &Config{
 		EmbeddingService:        cfg.EmbeddingService,
 		EmbeddingServiceTimeout: time.Duration(cfg.EmbeddingServiceTimeout),
+		EmbeddingProvider:       cfg.EmbeddingProvider,
+		EmbeddingModel:          cfg.EmbeddingModel,
+		EmbeddingHeaders:        convertEmbeddingHeaders(cfg.EmbeddingHeaders),
+	}
+
+	if err := resolveEmbeddingProvider(optCfg); err != nil {
+		return nil, err
 	}
 
 	if cfg.MaxToolsToReturn != 0 {
@@ -85,6 +105,83 @@ func GetAndValidateConfig(cfg *vmcpconfig.OptimizerConfig) (*Config, error) {
 	return optCfg, nil
 }
 
+// resolveEmbeddingProvider normalizes and validates the embedding provider on
+// optCfg in place. An empty provider defaults to TEI so existing configs keep
+// working; the OpenAI provider requires a service and model, reads its API
+// key from the environment, and is the only provider that accepts custom
+// embedding headers.
+func resolveEmbeddingProvider(optCfg *Config) error {
+	switch optCfg.EmbeddingProvider {
+	case "":
+		optCfg.EmbeddingProvider = types.EmbeddingProviderTEI
+	case types.EmbeddingProviderTEI:
+	case types.EmbeddingProviderOpenAI:
+		if optCfg.EmbeddingService == "" {
+			return fmt.Errorf("optimizer.embeddingService is required when optimizer.embeddingProvider is %q",
+				types.EmbeddingProviderOpenAI)
+		}
+		if optCfg.EmbeddingModel == "" {
+			return fmt.Errorf("optimizer.embeddingModel is required when optimizer.embeddingProvider is %q",
+				types.EmbeddingProviderOpenAI)
+		}
+		if err := validateEmbeddingHeaders(optCfg.EmbeddingHeaders); err != nil {
+			return err
+		}
+		optCfg.EmbeddingAPIKey = os.Getenv(embeddingAPIKeyEnvVar)
+	default:
+		return fmt.Errorf("optimizer.embeddingProvider must be %q or %q, got %q",
+			types.EmbeddingProviderTEI, types.EmbeddingProviderOpenAI, optCfg.EmbeddingProvider)
+	}
+
+	// Defense in depth: mirrors the CEL rule on config.OptimizerConfig,
+	// covering config sources with no admission validation.
+	if optCfg.EmbeddingProvider != types.EmbeddingProviderOpenAI && len(optCfg.EmbeddingHeaders) > 0 {
+		return fmt.Errorf("optimizer.embeddingHeaders is only supported when optimizer.embeddingProvider is %q",
+			types.EmbeddingProviderOpenAI)
+	}
+
+	return nil
+}
+
+// convertEmbeddingHeaders converts the config header map to the internal
+// plain-string representation, returning nil for an empty map.
+func convertEmbeddingHeaders(headers map[string]vmcpconfig.EmbeddingHeaderValue) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		out[name] = string(value)
+	}
+	return out
+}
+
+// validateEmbeddingHeaders rejects custom embedding headers with invalid
+// RFC 7230 names or values, and headers the OpenAI client sets itself:
+// Content-Type is always application/json, and Authorization is derived from
+// the OPENAI_API_KEY environment variable so the token never lands in config.
+// Reserved names are compared case-insensitively, matching HTTP semantics.
+// Mirrors the CEL rule on config.OptimizerConfig as defense in depth.
+func validateEmbeddingHeaders(headers map[string]string) error {
+	for name, value := range headers {
+		if err := httpval.ValidateHeaderName(name); err != nil {
+			return fmt.Errorf("optimizer.embeddingHeaders: invalid header name %q: %w", name, err)
+		}
+		if err := httpval.ValidateHeaderValue(value); err != nil {
+			return fmt.Errorf("optimizer.embeddingHeaders[%q]: %w", name, err)
+		}
+		switch strings.ToLower(name) {
+		case "authorization":
+			return fmt.Errorf("optimizer.embeddingHeaders must not set %q: the Authorization header is derived "+
+				"from the %s environment variable", name, embeddingAPIKeyEnvVar)
+		case "content-type":
+			return fmt.Errorf("optimizer.embeddingHeaders must not set %q: the Content-Type header is always "+
+				"application/json", name)
+		}
+	}
+	return nil
+}
+
 // Optimizer defines the interface for intelligent tool discovery and invocation.
 //
 // The default implementation delegates search to a ToolStore (SQLite FTS5 with
@@ -109,7 +206,7 @@ type FindToolInput struct {
 
 	// ToolKeywords is an optional list of keywords to narrow the search.
 	//nolint:lll // Long description tag provides essential context for LLM tool usage.
-	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords for BM25 text search to narrow results (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Combined with tool_description for hybrid search."`
+	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords driving the BM25 keyword-search arm (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Semantic matching always uses tool_description, so provide a complete description even when supplying keywords."`
 }
 
 // FindToolOutput contains the results of a tool search.
@@ -137,23 +234,120 @@ type CallToolInput struct {
 	Parameters map[string]any `json:"parameters" description:"Dictionary of arguments required by the tool. The structure must match the tool's input schema as returned by find_tool."`
 }
 
+// callToolArgToolName is the parameters key resolveCallToolTarget hoists a nested
+// name out of. It must match the json tag on CallToolInput.ToolName, since the
+// nested lookup is a map index while the top-level one goes through encoding/json;
+// TestCallToolArgToolNameMatchesStructTag guards the pair against drift.
+const callToolArgToolName = "tool_name"
+
+// resolveCallToolTarget resolves the tool a call_tool invocation targets,
+// accepting the common LLM malformation where tool_name is nested inside
+// parameters instead of sitting alongside it. A top-level name always wins, so a
+// backend tool with its own tool_name argument still works.
+//
+// It is deliberately unexported: decoding a payload into a CallToolInput is the
+// only supported way to learn which tool a call_tool request names. Reading the
+// name out of a raw arguments map instead misses the case-variant keys
+// encoding/json accepts, and a target that authorization and dispatch disagree on
+// is a tool executing under a policy decision made for a different name.
+//
+// params is never modified; a copy is returned when a nested name is hoisted.
+func resolveCallToolTarget(name string, params map[string]any) (string, map[string]any) {
+	if name != "" {
+		return name, params
+	}
+	nested, ok := params[callToolArgToolName].(string)
+	if !ok || nested == "" {
+		return name, params
+	}
+	hoisted := maps.Clone(params)
+	delete(hoisted, callToolArgToolName)
+	return nested, hoisted
+}
+
+// UnmarshalJSON hoists a nested tool_name so dispatch targets the same tool
+// authorization approved. See resolveCallToolTarget.
+func (in *CallToolInput) UnmarshalJSON(data []byte) error {
+	type rawCallToolInput CallToolInput // drops the method set to avoid recursion
+	var raw rawCallToolInput
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	raw.ToolName, raw.Parameters = resolveCallToolTarget(raw.ToolName, raw.Parameters)
+	*in = CallToolInput(raw)
+	return nil
+}
+
+// FactoryOption configures NewOptimizerFactory.
+type FactoryOption func(*factoryOptions)
+
+type factoryOptions struct {
+	sharedRedis     *redisconn.Config
+	sharedKeyPrefix string
+}
+
+// WithSharedEmbeddings shares tool embeddings through Redis, so each vMCP
+// replica using the same Redis and keyPrefix (which must end with ':') reuses
+// the vectors any of them computed instead of embedding the catalogue again.
+//
+// It shares vectors only: each replica still builds its own index from its own
+// sessions, and replicas that miss the same vectors at the same moment both
+// embed them. Only vectors embedded under a verified model identity are
+// published. A build reads Redis at most once, before it waits for its turn to
+// embed, and writes at most once, after it commits. A slow Redis therefore
+// delays only that build, by the Redis timeouts on those calls, and a Redis
+// failure after startup costs reuse but never fails a session.
+// Anyone who can write the keyspace can replace vectors and so change find_tool
+// ranking, so the instance needs the access control the session data needs.
+func WithSharedEmbeddings(redisCfg redisconn.Config, keyPrefix string) FactoryOption {
+	return func(o *factoryOptions) {
+		o.sharedRedis = &redisCfg
+		o.sharedKeyPrefix = keyPrefix
+	}
+}
+
+// sharedEmbeddingsConnectTimeout bounds the startup connection check.
+const sharedEmbeddingsConnectTimeout = 10 * time.Second
+
 // NewOptimizerFactory creates the embedding client and SQLite tool store from
 // the given OptimizerConfig, then returns an OptimizerFactory and a cleanup
 // function that closes the store. The caller must invoke the cleanup function
-// during shutdown to release resources.
-func NewOptimizerFactory(cfg *Config) (
+// during shutdown to release resources. With WithSharedEmbeddings it also
+// connects to the shared embedding cache, failing if Redis is unreachable.
+func NewOptimizerFactory(cfg *Config, opts ...FactoryOption) (
 	func(context.Context, []server.ServerTool) (Optimizer, error),
 	func(context.Context) error,
 	error,
 ) {
+	var o factoryOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	embClient, err := similarity.NewEmbeddingClient(cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create embedding client: %w", err)
 	}
 
-	store, err := toolstore.NewSQLiteToolStore(embClient, cfg)
+	var storeOpts []toolstore.Option
+	var sharedCache toolstore.EmbeddingCache
+	if o.sharedRedis != nil && embClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), sharedEmbeddingsConnectTimeout)
+		sharedCache, err = toolstore.NewRedisEmbeddingCache(ctx, *o.sharedRedis, o.sharedKeyPrefix)
+		cancel()
+		if err != nil {
+			return nil, nil, errors.Join(fmt.Errorf("failed to create shared embedding cache: %w", err), embClient.Close())
+		}
+		storeOpts = append(storeOpts, toolstore.WithEmbeddingCache(sharedCache))
+	}
+
+	store, err := toolstore.NewSQLiteToolStore(embClient, cfg, storeOpts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create optimizer store: %w", err)
+		err = fmt.Errorf("failed to create optimizer store: %w", err)
+		if sharedCache != nil {
+			err = errors.Join(err, sharedCache.Close()) // the store owns it only once created
+		}
+		return nil, nil, err
 	}
 
 	factory := newOptimizerFactoryWithStore(store, tokencounter.NewJSONByteCounter())
@@ -164,6 +358,7 @@ func NewOptimizerFactory(cfg *Config) (
 	slog.Debug("optimizer factory created",
 		"embedding_service", cfg.EmbeddingService,
 		"semantic_search_enabled", embClient != nil,
+		"shared_embeddings_enabled", sharedCache != nil,
 	)
 
 	return factory, cleanup, nil
@@ -244,7 +439,10 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 		return nil, fmt.Errorf("tool_description is required")
 	}
 
-	matches, err := d.store.Search(ctx, input.ToolDescription, d.toolNames)
+	matches, err := d.store.Search(ctx, types.SearchQuery{
+		Description: input.ToolDescription,
+		Keywords:    input.ToolKeywords,
+	}, d.toolNames)
 	if err != nil {
 		return nil, fmt.Errorf("tool search failed: %w", err)
 	}
@@ -285,7 +483,10 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 // is invoked directly with the given parameters.
 func (d *toolOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error) {
 	if input.ToolName == "" {
-		return nil, fmt.Errorf("tool_name is required")
+		return nil, fmt.Errorf(
+			`tool_name is required: call_tool expects {"tool_name": "<name from find_tool>", `+
+				`"parameters": {<tool arguments>}}, got parameters keys %v`,
+			slices.Sorted(maps.Keys(input.Parameters)))
 	}
 
 	// Verify the tool exists

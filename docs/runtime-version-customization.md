@@ -6,7 +6,7 @@ This guide explains how to customize the base images and packages used when runn
 
 When you use protocol schemes like `thv run go://github.com/example/server`, ToolHive automatically generates a container image. By default, it uses:
 
-- **Go**: `golang:1.26-alpine` (builder), `alpine:3.23` (runtime)
+- **Go**: `golang:1.27-alpine` (builder), `alpine:3.23` (runtime)
 - **Node**: `node:24-alpine` (builder and runtime)
 - **Python**: `python:3.14-slim` (builder and runtime)
 
@@ -28,7 +28,7 @@ Override the default base image for the builder stage.
 **Examples:**
 
 ```bash
-# Use Go 1.23 instead of default 1.26
+# Use Go 1.23 instead of default 1.27
 thv run go://github.com/example/server --runtime-image golang:1.23-alpine
 
 # Use Node 20 LTS instead of default 22
@@ -194,4 +194,4 @@ thv run go://github.com/example/server \
 ## See Also
 
 - [RunConfig Documentation](arch/05-runconfig-and-permissions.md) - Complete RunConfig reference
-- [Protocol Schemes](../README.md#protocol-schemes) - Overview of uvx://, npx://, and go:// schemes
+- [Protocol Schemes](arch/00-overview.md#protocol-builds) - Overview of uvx://, npx://, and go:// schemes

@@ -10,10 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -91,22 +90,12 @@ func TestMCPServerReconciler_DetectPlatform_Error(t *testing.T) {
 func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	t.Parallel()
 
-	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Builder defaults (image/transport/port) match this fixture exactly,
+	// so the migration is behavior-identical.
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server", "default")
 
 	// Create reconciler with mock platform detector for Kubernetes
-	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformKubernetes,
 		err:      nil,
@@ -117,7 +106,8 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -163,22 +153,11 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 	t.Parallel()
 
-	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Create a test MCPServer (builder defaults match image/transport/port exactly).
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server", "default")
 
 	// Create reconciler with mock platform detector for OpenShift
-	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformOpenShift,
 		err:      nil,
@@ -189,7 +168,8 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -241,22 +221,11 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *testing.T) {
 	t.Parallel()
 
-	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Create a test MCPServer (builder defaults match image/transport/port exactly).
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server", "default")
 
 	// Create reconciler with mock platform detector that returns error
-	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformKubernetes,
 		err:      assert.AnError,
@@ -267,7 +236,8 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 

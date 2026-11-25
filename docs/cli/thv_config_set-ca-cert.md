@@ -28,13 +28,13 @@ thv config set-ca-cert <path> [flags]
 ### Options
 
 ```
-  -h, --help   help for set-ca-cert
+  -h, --help[=true|false]   help for set-ca-cert
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -13,10 +13,11 @@ import (
 	"maps"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/audit"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
@@ -179,6 +180,17 @@ func (e *workflowEngine) ExecuteWorkflow(
 
 	// Execute DAG
 	dagErr := e.dagExecutor.executeDAG(execCtx, def.Steps, stepExecutor, def.FailureMode)
+
+	// A "skip_remaining" elicitation action is a graceful short-circuit, not a
+	// failure: the user chose to stop the workflow. Mark every step that never ran
+	// as skipped and treat the workflow as completed (unlike "abort", which fails).
+	// If the workflow deadline or the caller's context ended while the gate waited,
+	// the elicitation timeout that triggered skip_remaining was not a user choice,
+	// so report the context error and let the timeout/failure handling below apply.
+	if errors.Is(dagErr, errSkipRemaining) {
+		e.markRemainingStepsSkipped(ctx, def.Steps, workflowCtx)
+		dagErr = execCtx.Err()
+	}
 
 	// Copy step results to workflow result
 	// Acquire read lock to safely copy Steps map
@@ -388,7 +400,9 @@ func (e *workflowEngine) executeStep(
 		retryCount = result.RetryCount
 	}
 
-	if err != nil {
+	// errSkipRemaining is a graceful short-circuit, not a step failure: the step
+	// itself completed (the user answered the gate), so audit it as a completion.
+	if err != nil && !errors.Is(err, errSkipRemaining) {
 		e.auditStepFailure(ctx, workflowCtx.WorkflowID, step.ID, duration, retryCount, err)
 	} else {
 		e.auditStepCompletion(ctx, workflowCtx.WorkflowID, step.ID, duration, retryCount)
@@ -467,11 +481,22 @@ func (e *workflowEngine) callToolWithRetry(
 	expBackoff.MaxInterval = 60 * initialDelay // Cap at 60x the initial delay
 	expBackoff.Reset()
 
+	// SEP-2243 Mcp-Param-* headers for this step's backend tool. A composite step
+	// calls a backend tool exactly as a direct call would, so an annotating backend
+	// must receive the same mirrored headers or it answers -32020. Derived once
+	// outside the retry loop: args do not change between attempts.
+	paramHeaders, headerErr := mcpparser.ParamHeadersForSchema(e.getToolInputSchema(ctx, step.Tool), args)
+	if headerErr != nil {
+		// Zero attempts: the step never reached the backend.
+		return nil, 0, fmt.Errorf(
+			"deriving parameter headers for step %q tool %q: %w", step.ID, step.Tool, headerErr)
+	}
+
 	attemptCount := 0
 	operation := func() (*vmcp.ToolCallResult, error) {
 		attemptCount++
 		// TODO: For composite tools, we may want to propagate metadata from the parent request
-		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args, nil)
+		result, err := e.backendClient.CallTool(ctx, target, step.Tool, args, nil, paramHeaders)
 		if err != nil {
 			slog.Warn("tool call failed for step",
 				"step", step.ID, "attempt", attemptCount, "max_attempts", maxRetries+1, "error", err)
@@ -1026,16 +1051,17 @@ func (*workflowEngine) handleElicitationAction(
 ) error {
 	switch action {
 	case "skip_remaining":
-		// Mark this step as skipped and signal to skip remaining steps
+		// The user answered the gate (so this step itself succeeds) but asked to
+		// stop the workflow. Record the step as successful with a skipped marker,
+		// then return the sentinel so the DAG executor stops scheduling later
+		// steps. ExecuteWorkflow marks those steps skipped and still completes.
 		slog.Debug("skipping remaining steps", "reason", reason, "step", step.ID)
 		output := map[string]any{
 			"action":  reason,
 			"skipped": true,
 		}
 		workflowCtx.RecordStepSuccess(step.ID, output, nil)
-		// Return a special error that the workflow engine can detect
-		// For now, we'll just complete the step successfully
-		return nil
+		return errSkipRemaining
 
 	case "abort":
 		// Abort the workflow
@@ -1062,6 +1088,30 @@ func (*workflowEngine) handleElicitationAction(
 		err := fmt.Errorf("invalid elicitation action: %s", action)
 		workflowCtx.RecordStepFailure(step.ID, err)
 		return err
+	}
+}
+
+// markRemainingStepsSkipped records every step that has not reached a terminal
+// state (completed, failed or skipped) as skipped and audits the skip. It is
+// called after a "skip_remaining" elicitation action stops the DAG so that steps
+// which never ran are reported as skipped rather than silently missing from the
+// result, mirroring how condition-skipped steps are recorded.
+// Must only be called after executeDAG has returned (no step goroutines running).
+func (e *workflowEngine) markRemainingStepsSkipped(
+	ctx context.Context,
+	steps []WorkflowStep,
+	workflowCtx *WorkflowContext,
+) {
+	for i := range steps {
+		step := &steps[i]
+		result, exists := workflowCtx.GetStepResult(step.ID)
+		if exists && (result.Status == StepStatusCompleted ||
+			result.Status == StepStatusFailed ||
+			result.Status == StepStatusSkipped) {
+			continue
+		}
+		workflowCtx.RecordStepSkipped(step.ID, step.DefaultResults)
+		e.auditStepSkipped(ctx, workflowCtx.WorkflowID, step.ID, "")
 	}
 }
 

@@ -5,7 +5,7 @@ metadata:
   name: {{ .Values.operator.leaderElectionRole.name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "operator.labels" . | nindent 4 }}
+    {{- include "toolhive-operator.labels" . | nindent 4 }}
 rules:
   {{- toYaml .Values.operator.leaderElectionRole.rules | nindent 2 }}
 ---
@@ -15,12 +15,12 @@ metadata:
   name: {{ .Values.operator.leaderElectionRole.binding.name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "operator.labels" . | nindent 4 }}
+    {{- include "toolhive-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ .Values.operator.leaderElectionRole.name }}
 subjects:
 - kind: ServiceAccount
-  name: {{ .Values.operator.serviceAccount.name }}
+  name: {{ include "toolhive-operator.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}

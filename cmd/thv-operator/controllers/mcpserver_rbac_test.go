@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,26 +14,27 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 type testContext struct {
-	mcpServer              *mcpv1alpha1.MCPServer
+	mcpServer              *mcpv1beta1.MCPServer
 	client                 client.Client
 	reconciler             *MCPServerReconciler
 	proxyRunnerNameForRBAC string
 }
 
-func setupTest(name, namespace string) *testContext {
+func setupTest(t *testing.T, name, namespace string) *testContext {
+	t.Helper()
 	mcpServer := createTestMCPServer(name, namespace)
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", name)
 	return &testContext{
@@ -69,7 +71,25 @@ func (tc *testContext) assertRoleExists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, tc.proxyRunnerNameForRBAC, role.Name)
 	assert.Equal(t, tc.mcpServer.Namespace, role.Namespace)
-	assert.Equal(t, defaultRBACRules, role.Rules)
+	assert.Equal(t, expectedRoleRules(tc.mcpServer.Spec.Transport), role.Rules)
+}
+
+// podAttachRuleFixture restates the pods/attach rule rather than reusing
+// stdioRBACRules, so a change to the production rule's verbs or resources shows
+// up as a test failure instead of being mirrored silently.
+var podAttachRuleFixture = rbacv1.PolicyRule{
+	APIGroups: []string{""},
+	Resources: []string{"pods/attach"},
+	Verbs:     []string{"create", "get"},
+}
+
+// expectedRoleRules is what a proxy-runner Role should carry for a transport:
+// the shared rules, plus pods/attach only where the proxy actually attaches.
+func expectedRoleRules(mcpTransport string) []rbacv1.PolicyRule {
+	if mcpTransport == "stdio" || mcpTransport == "" {
+		return append(slices.Clone(defaultRBACRules), podAttachRuleFixture)
+	}
+	return defaultRBACRules
 }
 
 func (tc *testContext) assertRoleBindingExists(t *testing.T) {
@@ -109,7 +129,7 @@ func (tc *testContext) assertAllRBACResourcesExist(t *testing.T) {
 
 func TestEnsureRBACResources_ServiceAccount_Creation(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server", "default")
+	tc := setupTest(t, "test-server", "default")
 
 	err := tc.ensureRBACResources()
 	require.NoError(t, err)
@@ -119,7 +139,7 @@ func TestEnsureRBACResources_ServiceAccount_Creation(t *testing.T) {
 
 func TestEnsureRBACResources_ServiceAccount_Update(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-sa-update", "default")
+	tc := setupTest(t, "test-server-sa-update", "default")
 
 	existingSA := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -139,7 +159,7 @@ func TestEnsureRBACResources_ServiceAccount_Update(t *testing.T) {
 
 func TestEnsureRBACResources_Role_Creation(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server", "default")
+	tc := setupTest(t, "test-server", "default")
 
 	err := tc.ensureRBACResources()
 	require.NoError(t, err)
@@ -149,7 +169,7 @@ func TestEnsureRBACResources_Role_Creation(t *testing.T) {
 
 func TestEnsureRBACResources_Role_Update(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-role-update", "default")
+	tc := setupTest(t, "test-server-role-update", "default")
 
 	existingRole := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -175,7 +195,7 @@ func TestEnsureRBACResources_Role_Update(t *testing.T) {
 
 func TestEnsureRBACResources_RoleBinding_Creation(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server", "default")
+	tc := setupTest(t, "test-server", "default")
 
 	err := tc.ensureRBACResources()
 	require.NoError(t, err)
@@ -185,7 +205,7 @@ func TestEnsureRBACResources_RoleBinding_Creation(t *testing.T) {
 
 func TestEnsureRBACResources_RoleBinding_Update(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-rb-update", "default")
+	tc := setupTest(t, "test-server-rb-update", "default")
 
 	existingRB := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -228,7 +248,7 @@ func TestEnsureRBACResources_MultipleNamespaces(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name+"-"+testCase.namespace, func(t *testing.T) {
 			t.Parallel()
-			tc := setupTest(testCase.name, testCase.namespace)
+			tc := setupTest(t, testCase.name, testCase.namespace)
 
 			err := tc.ensureRBACResources()
 			require.NoError(t, err)
@@ -249,7 +269,7 @@ func TestEnsureRBACResources_ResourceNames(t *testing.T) {
 	for _, serverName := range testCases {
 		t.Run(serverName, func(t *testing.T) {
 			t.Parallel()
-			tc := setupTest(serverName, "default")
+			tc := setupTest(t, serverName, "default")
 
 			err := tc.ensureRBACResources()
 			require.NoError(t, err)
@@ -261,7 +281,7 @@ func TestEnsureRBACResources_ResourceNames(t *testing.T) {
 
 func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-no-changes", "default")
+	tc := setupTest(t, "test-server-no-changes", "default")
 
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -311,7 +331,7 @@ func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 
 func TestEnsureRBACResources_Idempotency(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-idempotency", "default")
+	tc := setupTest(t, "test-server-idempotency", "default")
 
 	for i := 0; i < 3; i++ {
 		err := tc.ensureRBACResources()
@@ -324,21 +344,14 @@ func TestEnsureRBACResources_Idempotency(t *testing.T) {
 func TestEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 	t.Parallel()
 	customSA := "custom-mcpserver-sa"
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server-custom-sa",
-			Namespace: "default",
-			UID:       "test-uid",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:          "test-image:latest",
-			Transport:      "stdio",
-			ProxyPort:      8080,
-			ServiceAccount: &customSA,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server-custom-sa", "default",
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.UID = "test-uid"
+			m.Spec.ServiceAccount = &customSA
+		}),
+	)
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(mcpServer).Build()
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
@@ -383,11 +396,11 @@ func TestEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 
 func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-pull-secrets", "default")
+	tc := setupTest(t, "test-server-pull-secrets", "default")
 
 	// Set ImagePullSecrets via ResourceOverrides
-	tc.mcpServer.Spec.ResourceOverrides = &mcpv1alpha1.ResourceOverrides{
-		ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+	tc.mcpServer.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+		ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
 			ImagePullSecrets: []corev1.LocalObjectReference{
 				{Name: "my-secret"},
 			},
@@ -424,23 +437,93 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	assert.Equal(t, expectedSecrets, mcpServerSA.ImagePullSecrets)
 }
 
-func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {
-	return &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+// TestEnsureRBACResources_Role_PodsAttachScopedToStdio pins the permission to
+// the one transport that uses it. The proxy runner attaches to the MCP pod's
+// stdio only for the stdio transport; granting pods/attach for the HTTP
+// transports hands every such deployment a permission equivalent to pod exec
+// that it can never exercise.
+func TestEnsureRBACResources_Role_PodsAttachScopedToStdio(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		transport      string
+		wantPodsAttach bool
+	}{
+		{
+			name:           "stdio attaches to the pod",
+			transport:      "stdio",
+			wantPodsAttach: true,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
+		{
+			name:           "streamable-http never calls AttachToWorkload",
+			transport:      "streamable-http",
+			wantPodsAttach: false,
 		},
+		{
+			name:           "sse never calls AttachToWorkload",
+			transport:      "sse",
+			wantPodsAttach: false,
+		},
+		{
+			name:           "empty transport is treated as the stdio CRD default",
+			transport:      "",
+			wantPodsAttach: true,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc := setupTest(t, fmt.Sprintf("test-server-attach-%d", i), "default")
+			tc.mcpServer.Spec.Transport = tt.transport
+
+			require.NoError(t, tc.ensureRBACResources())
+
+			role := &rbacv1.Role{}
+			require.NoError(t, tc.client.Get(context.TODO(), types.NamespacedName{
+				Name:      tc.proxyRunnerNameForRBAC,
+				Namespace: tc.mcpServer.Namespace,
+			}, role))
+
+			if tt.wantPodsAttach {
+				assert.Contains(t, role.Rules, podAttachRuleFixture,
+					"transport %q attaches to the pod and needs pods/attach", tt.transport)
+			} else {
+				assert.NotContains(t, role.Rules, podAttachRuleFixture,
+					"transport %q never attaches and must not be granted pods/attach", tt.transport)
+			}
+
+			// Whatever the transport, the shared rules must survive intact.
+			for _, want := range defaultRBACRules {
+				assert.Contains(t, role.Rules, want)
+			}
+		})
 	}
 }
 
-func createTestScheme() *runtime.Scheme {
-	s := runtime.NewScheme()
-	_ = scheme.AddToScheme(s)
-	_ = mcpv1alpha1.AddToScheme(s)
-	return s
+// TestRBACRulesForTransport_ReturnsFreshSlice guards the backing array of the
+// package-level defaultRBACRules: appending the stdio rule onto it directly
+// would let one call mutate what every later call sees.
+func TestRBACRulesForTransport_ReturnsFreshSlice(t *testing.T) {
+	t.Parallel()
+
+	before := slices.Clone(defaultRBACRules)
+
+	stdio := rbacRulesForTransport("stdio")
+	require.Contains(t, stdio, podAttachRuleFixture)
+
+	assert.Equal(t, before, defaultRBACRules, "defaultRBACRules must not be mutated")
+	assert.NotContains(t, rbacRulesForTransport("streamable-http"), podAttachRuleFixture)
+
+	// Mutating a returned slice must not reach a later caller.
+	stdio[0] = rbacv1.PolicyRule{APIGroups: []string{"mutated"}}
+	assert.NotEqual(t, stdio[0], rbacRulesForTransport("stdio")[0])
+}
+
+func createTestMCPServer(name, namespace string) *mcpv1beta1.MCPServer {
+	// Builder defaults (image "test-image:latest", transport "stdio",
+	// proxyPort 8080) match this fixture exactly.
+	return v1beta1test.NewMCPServer(name, namespace)
 }

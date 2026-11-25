@@ -5,12 +5,17 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -21,6 +26,7 @@ type Handler struct {
 	tokenPersister             TokenPersister
 	clientCredentialsPersister ClientCredentialsPersister
 	secretProvider             secrets.Provider
+	httpClient                 networking.HTTPClient
 }
 
 // NewHandler creates a new remote authentication handler
@@ -47,12 +53,18 @@ func (h *Handler) SetClientCredentialsPersister(persister ClientCredentialsPersi
 	h.clientCredentialsPersister = persister
 }
 
+// SetHTTPClient sets the HTTP client used for RFC 7592 registration management requests.
+func (h *Handler) SetHTTPClient(client networking.HTTPClient) {
+	h.httpClient = client
+}
+
 // Authenticate is the main entry point for remote MCP server authentication
 func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
 	// Priority 1: Bearer token authentication (if configured)
-	if h.config.BearerToken != "" {
+	bearerToken := h.config.bearerToken()
+	if bearerToken != "" {
 		slog.Debug("Using bearer token authentication")
-		return NewBearerTokenSource(h.config.BearerToken), nil
+		return NewBearerTokenSource(bearerToken), nil
 	}
 
 	// Detect authentication requirements once (used by both cached token restore and fresh OAuth)
@@ -81,7 +93,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 	}
 
 	// Discover OAuth endpoints once (used by both cached token restore and fresh OAuth)
-	issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
+	issuer, scopes, authServerInfo, allowPrivateIPs, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
 	if err != nil {
 		return nil, err
 	}
@@ -91,16 +103,20 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		tokenSource, err := h.tryRestoreFromCachedTokens(ctx, issuer, scopes, authServerInfo)
 		if err != nil {
 			slog.Warn("Failed to restore from cached tokens, will perform fresh OAuth flow", "error", err)
-			// Clear invalid cached tokens
-			h.config.ClearCachedTokens()
+			h.clearCachedSessionMetadata()
 		} else if tokenSource != nil {
 			slog.Debug("Successfully restored OAuth session from cached tokens")
 			return tokenSource, nil
 		}
 	}
 
-	// Priority 3: Fresh OAuth authentication flow
-	return h.performOAuthFlow(ctx, issuer, scopes, authServerInfo)
+	// Priority 3: Fresh OAuth authentication flow. Reuse the same target-private
+	// decision the discovery fetches above already computed, so DCR (discovery +
+	// registration) is allowed to reach a private upstream only when the
+	// operator-configured remote is itself private, and guarded otherwise
+	// (CWE-918) — without a second, later TargetIsPrivate DNS lookup that could
+	// disagree with the first.
+	return h.performOAuthFlow(ctx, issuer, scopes, authServerInfo, allowPrivateIPs)
 }
 
 // validateBearerRequirement checks if Bearer auth is required without OAuth fallback
@@ -128,35 +144,56 @@ func (h *Handler) performOAuthFlow(
 	issuer string,
 	scopes []string,
 	authServerInfo *discovery.AuthServerInfo,
+	allowPrivateIPs bool,
 ) (oauth2.TokenSource, error) {
 	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
-	// Create OAuth flow config
-	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
+	// Client registration priority (MCP spec: stored credentials → CIMD → DCR):
+	// Priority 1: Pre-configured credentials — set by buildOAuthFlowConfig from h.config's effective values.
+	// Priority 2: CIMD — AS advertises support and no credentials are set; use metadata URL as client_id.
+	// Priority 3: DCR — PerformOAuthFlow handles this when ClientID is still empty after the above.
+	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo, allowPrivateIPs)
+	if shouldUseCIMD(authServerInfo, flowConfig) {
+		flowConfig.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
+		slog.Debug("Using CIMD client_id", "url", oauthproto.ToolHiveClientMetadataDocumentURL)
+	}
 
 	result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+	if err != nil {
+		// If we used CIMD and it was rejected, we need to retry with DCR.
+		if flowConfig.ClientID == oauthproto.ToolHiveClientMetadataDocumentURL && isCIMDRejectionError(err) {
+			slog.Warn("CIMD client_id rejected by AS, retrying with DCR", "issuer", issuer, "error", err)
+			flowConfig.ClientID = ""
+			result, err = discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	// Persist and wrap the token source
-	return h.wrapWithPersistence(result), nil
+	return h.wrapWithPersistence(result, h.effectiveIssuer(issuer, authServerInfo)), nil
 }
 
 // buildOAuthFlowConfig creates the OAuth flow configuration
-func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discovery.AuthServerInfo) *discovery.OAuthFlowConfig {
+func (h *Handler) buildOAuthFlowConfig(
+	scopes []string,
+	authServerInfo *discovery.AuthServerInfo,
+	allowPrivateIPs bool,
+) *discovery.OAuthFlowConfig {
 	flowConfig := &discovery.OAuthFlowConfig{
-		ClientID:       h.config.ClientID,
-		ClientSecret:   h.config.ClientSecret,
-		AuthorizeURL:   h.config.AuthorizeURL,
-		TokenURL:       h.config.TokenURL,
-		Scopes:         scopes,
-		CallbackPort:   h.config.CallbackPort,
-		Timeout:        h.config.Timeout,
-		SkipBrowser:    h.config.SkipBrowser,
-		Resource:       h.config.Resource,
-		OAuthParams:    h.config.OAuthParams,
-		ScopeParamName: h.config.ScopeParamName,
+		ClientID:        h.config.ClientID,
+		ClientSecret:    h.config.clientSecret(),
+		AuthorizeURL:    h.config.AuthorizeURL,
+		TokenURL:        h.config.TokenURL,
+		Scopes:          scopes,
+		CallbackPort:    h.config.CallbackPort,
+		Timeout:         h.config.Timeout,
+		SkipBrowser:     h.config.SkipBrowser,
+		Resource:        h.config.Resource,
+		OAuthParams:     h.config.OAuthParams,
+		ScopeParamName:  h.config.ScopeParamName,
+		AllowPrivateIPs: allowPrivateIPs,
+		IssuerTrusted:   h.config.Issuer != "",
 	}
 
 	// If we have discovered endpoints from the authorization server metadata,
@@ -171,37 +208,170 @@ func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discover
 			"registration", authServerInfo.RegistrationEndpoint)
 	}
 
+	// Derived after the override above so the flag describes the URL that will
+	// actually be dialed, not the one the operator may have been overridden out of.
+	flowConfig.TokenEndpointTrusted = h.tokenEndpointTrusted(flowConfig.TokenURL)
+
 	return flowConfig
 }
 
-// wrapWithPersistence wraps the OAuth result with token persistence
-func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.TokenSource {
-	// Persist the refresh token for future restarts
-	if h.tokenPersister != nil && result.RefreshToken != "" {
-		if err := h.tokenPersister(result.RefreshToken, result.Expiry); err != nil {
+// tokenEndpointTrusted reports whether tokenURL's authority was supplied by the
+// operator — either configured directly, or named by the operator-configured
+// issuer's own metadata document.
+//
+// An empty tokenURL means no endpoint has been resolved yet: OIDC discovery will
+// fill it in from the issuer, and createOAuthConfig re-checks the discovered
+// authority against that issuer before the trust survives.
+func (h *Handler) tokenEndpointTrusted(tokenURL string) bool {
+	if tokenURL == "" {
+		return h.config.Issuer != ""
+	}
+	return networking.AuthorityMatchesAny(tokenURL, h.config.TokenURL, h.config.Issuer)
+}
+
+// clearCachedSessionMetadata prevents a failed restore from reusing any cached
+// session credential. It deliberately leaves the secret manager unchanged.
+func (h *Handler) clearCachedSessionMetadata() {
+	h.config.ClearCachedTokens()
+	h.config.ClearCachedClientCredentials()
+	h.config.CachedCIMDClientID = ""
+}
+
+// wrapWithPersistence wraps the OAuth result with token persistence.
+func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult, issuer string) oauth2.TokenSource {
+	endpoint := ""
+	if result.Config != nil {
+		endpoint = result.Config.TokenURL
+	}
+	persister := h.tokenPersisterFor(issuer, endpoint)
+
+	// The client identity is written before the refresh token. A cached refresh
+	// token is only usable with the client credentials it was issued to, so if
+	// the process dies between the two writes we want the harmless order: client
+	// credentials with no cached token (a fresh flow follows) rather than a
+	// cached token with no credentials to redeem it.
+	if err := h.persistClientIdentity(result); err != nil {
+		slog.Warn("Failed to persist client credentials; refresh token will not be cached", "error", err)
+		return result.TokenSource
+	}
+
+	// Persist the refresh token for future restarts.
+	if persister != nil && result.RefreshToken != "" {
+		if err := persister(result.RefreshToken, result.Expiry); err != nil {
 			slog.Warn("Failed to persist OAuth tokens", "error", err)
 		} else {
 			slog.Debug("Successfully persisted OAuth tokens for future restarts")
 		}
 	}
 
-	// Persist DCR client credentials if available (for servers that use Dynamic Client Registration)
-	// Only persist if client_id exists - client_secret may be empty for PKCE flows
-	if h.clientCredentialsPersister != nil && result.ClientID != "" {
-		if err := h.clientCredentialsPersister(result.ClientID, result.ClientSecret); err != nil {
-			slog.Warn("Failed to persist DCR client credentials", "error", err)
-		} else {
-			slog.Debug("Successfully persisted DCR client credentials for future restarts")
-		}
-	}
-
 	// Wrap the token source to persist refreshed tokens
 	tokenSource := result.TokenSource
-	if h.tokenPersister != nil {
-		tokenSource = NewPersistingTokenSource(result.TokenSource, h.tokenPersister)
+	if persister != nil {
+		tokenSource = NewPersistingTokenSource(result.TokenSource, persister)
 	}
 
 	return tokenSource
+}
+
+// persistClientIdentity stores the client credentials the flow ended up using,
+// so a later restore has an identity to redeem its cached refresh token with.
+// It returns nil when there is nothing to store.
+func (h *Handler) persistClientIdentity(result *discovery.OAuthFlowResult) error {
+	// CIMD client IDs (HTTPS URLs) are stable constants, not DCR-issued
+	// credentials, so they are recorded on the config instead.
+	if oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
+		h.config.CachedCIMDClientID = result.ClientID
+		slog.Debug("Persisted CIMD client_id for future restarts", "url", result.ClientID)
+		return nil
+	}
+
+	// Only persist if client_id exists - client_secret may be empty for PKCE flows.
+	if h.clientCredentialsPersister == nil || result.ClientID == "" {
+		return nil
+	}
+
+	if err := h.clientCredentialsPersister(
+		result.ClientID,
+		result.ClientSecret,
+		result.SecretExpiry,
+		result.RegistrationAccessToken,
+		result.RegistrationClientURI,
+		result.TokenEndpointAuthMethod,
+		result.RegisteredCallbackPort,
+	); err != nil {
+		return err
+	}
+
+	slog.Debug("Successfully persisted DCR client credentials for future restarts")
+	return nil
+}
+
+func (h *Handler) tokenPersisterFor(issuer, endpoint string) TokenPersister {
+	if h.tokenPersister == nil {
+		return nil
+	}
+	return func(token string, expiry time.Time) error {
+		envelope, err := encodeCachedRefreshToken(token, issuer, endpoint)
+		if err != nil {
+			return err
+		}
+		return h.tokenPersister(envelope, expiry)
+	}
+}
+
+func (*Handler) effectiveIssuer(issuer string, authServerInfo *discovery.AuthServerInfo) string {
+	if authServerInfo != nil && authServerInfo.Issuer != "" {
+		return authServerInfo.Issuer
+	}
+	return issuer
+}
+
+// restoreCachedRefreshToken resolves the cached refresh token and the
+// authorization server it should be bound to. The returned migrated flag is
+// true when the cached value was a pre-upgrade bare string rather than a
+// bound envelope; callers must persist a bound envelope once the token is
+// verified so the migration only happens once per session.
+func (h *Handler) restoreCachedRefreshToken(
+	ctx context.Context,
+	issuer string,
+	authServerInfo *discovery.AuthServerInfo,
+) (token, effectiveIssuer, tokenURL string, migrated bool, err error) {
+	tokenURL = h.config.TokenURL
+	if tokenURL == "" && authServerInfo != nil {
+		tokenURL = authServerInfo.TokenURL
+	}
+	refreshTokenValue, err := h.secretProvider.GetSecret(ctx, h.config.CachedRefreshTokenRef)
+	if err != nil {
+		return "", "", "", false, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
+	}
+	effectiveIssuer = h.effectiveIssuer(issuer, authServerInfo)
+	envelope, err := decodeCachedRefreshToken(refreshTokenValue)
+	if err != nil {
+		if !errors.Is(err, errLegacyCachedRefreshToken) {
+			return "", "", "", false, fmt.Errorf("unsafe legacy cached refresh token: %w", err)
+		}
+		// Pre-upgrade bare-string token. An operator-pinned issuer/token
+		// endpoint was never exposed to GHSA-pc64-52fx-5v22 — the attacker
+		// cannot change what the operator configured — so binding to it is
+		// not a trust extension. effectiveIssuer already resolves to the
+		// operator-configured issuer when authServerInfo is unavailable, and
+		// to the issuer validated against the operator-configured metadata
+		// URL otherwise — never to a bare-token-time guess.
+		if h.config.Issuer != "" || h.config.TokenURL != "" {
+			return refreshTokenValue, effectiveIssuer, tokenURL, true, nil
+		}
+		// Auto-discovery deployment: this is exactly the class the advisory
+		// describes. A bare legacy token carries no independently trusted
+		// issuer to bind to, so migrating it would mean trusting whatever
+		// the remote currently advertises — replaying the original exploit
+		// instead of closing it. Force a fresh OAuth flow.
+		return "", "", "", false,
+			fmt.Errorf("legacy cached refresh token has no trusted authorization server binding, re-authentication required")
+	}
+	if envelope.Issuer != effectiveIssuer || envelope.TokenURL != tokenURL {
+		return "", "", "", false, fmt.Errorf("cached refresh token authorization server does not match current discovery")
+	}
+	return envelope.Token, effectiveIssuer, tokenURL, false, nil
 }
 
 // resolveClientCredentials returns the client ID and secret to use, preferring
@@ -209,7 +379,16 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clientSecret string) {
 	// First try to use statically configured credentials
 	clientID = h.config.ClientID
-	clientSecret = h.config.ClientSecret
+	clientSecret = h.config.clientSecret()
+
+	// If CIMD was used in a prior session, use the cached metadata URL as client_id.
+	// CIMD clients have no secret (token_endpoint_auth_method=none).
+	// Checked before DCR so that DCR credential rotation does not change which
+	// client_id is sent on token refresh.
+	if h.config.HasCachedCIMDClientID() {
+		slog.Debug("Using cached CIMD client_id", "url", h.config.CachedCIMDClientID)
+		return h.config.CachedCIMDClientID, ""
+	}
 
 	// If we have cached DCR client credentials, use those instead
 	if h.config.HasCachedClientCredentials() {
@@ -243,12 +422,35 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		return nil, fmt.Errorf("secret provider not configured, cannot restore cached tokens")
 	}
 
-	refreshToken, err := h.secretProvider.GetSecret(ctx, h.config.CachedRefreshTokenRef)
+	// Decode and bind the refresh token before using any cached credential.
+	// This must precede DCR renewal and client credential retrieval.
+	refreshToken, effectiveIssuer, tokenURL, migrated, err := h.restoreCachedRefreshToken(ctx, issuer, authServerInfo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
+		return nil, err
 	}
 
-	// Resolve client credentials - prefer cached DCR credentials over config
+	// Check if the cached client secret is expired before attempting token refresh.
+	// If it has fully expired and renewal also fails we must force a fresh OAuth flow.
+	if h.isSecretExpiredOrExpiringSoon() {
+		slog.Debug("Cached client secret is expiring or expired; attempting renewal before token restore",
+			"expiry", h.config.CachedSecretExpiry)
+		if renewErr := h.renewClientSecret(ctx, effectiveIssuer); renewErr != nil {
+			slog.Warn("Client secret renewal failed", "error", renewErr)
+			// Hard-fail only when the secret is already past its expiry.
+			// If we are still in the buffer window the existing secret may work.
+			if !h.config.CachedSecretExpiry.IsZero() && time.Now().After(h.config.CachedSecretExpiry) {
+				return nil, fmt.Errorf(
+					"client secret expired at %v and renewal failed: %w",
+					h.config.CachedSecretExpiry, renewErr)
+			}
+			// Still within buffer — log and continue with the existing (still-valid) secret
+			slog.Warn("Proceeding with expiring client secret after failed renewal attempt")
+		} else {
+			slog.Debug("Successfully renewed client secret before token restore")
+		}
+	}
+
+	// Resolve client credentials - prefer cached DCR credentials over config.
 	clientID, clientSecret := h.resolveClientCredentials(ctx)
 
 	// Public clients (no secret) must use AuthStyleInParams: strict OAuth 2.1 servers
@@ -261,52 +463,76 @@ func (h *Handler) tryRestoreFromCachedTokens(
 		authStyle = oauth2.AuthStyleAutoDetect
 	}
 
-	// Build OAuth2 config for token refresh
+	// Build OAuth2 config for token refresh.
 	oauth2Config := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Scopes:       scopes,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   h.config.AuthorizeURL,
-			TokenURL:  h.config.TokenURL,
+			TokenURL:  tokenURL,
 			AuthStyle: authStyle,
 		},
 	}
 
-	// Use discovered endpoints if available
-	if authServerInfo != nil {
-		if h.config.AuthorizeURL == "" {
-			oauth2Config.Endpoint.AuthURL = authServerInfo.AuthorizationURL
-		}
-		if h.config.TokenURL == "" {
-			oauth2Config.Endpoint.TokenURL = authServerInfo.TokenURL
-		}
+	// Use the discovered authorization endpoint if available.
+	if authServerInfo != nil && h.config.AuthorizeURL == "" {
+		oauth2Config.Endpoint.AuthURL = authServerInfo.AuthorizationURL
 	}
 
 	// Create token source from cached refresh token.
 	// Passes resource for RFC 8707 compliance when configured.
-	baseSource := CreateTokenSourceFromCached(
+	baseSource, err := CreateTokenSourceFromCached(
 		oauth2Config,
 		refreshToken,
 		h.config.CachedTokenExpiry,
 		h.config.Resource,
+		h.tokenEndpointTrusted(oauth2Config.Endpoint.TokenURL),
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Try to get a token to verify the cached tokens are valid
 	// This will trigger a refresh since we don't have an access token
-	_, err = baseSource.Token()
+	tok, err := baseSource.Token()
 	if err != nil {
 		return nil, fmt.Errorf("cached tokens are invalid or expired: %w", err)
 	}
 
 	slog.Debug("Restored OAuth session from cached tokens", "issuer", issuer)
 
-	// Wrap with persisting token source to save refreshed tokens
-	if h.tokenPersister != nil {
-		return NewPersistingTokenSource(baseSource, h.tokenPersister), nil
+	if migrated {
+		h.persistMigratedRefreshToken(tok, refreshToken, effectiveIssuer, tokenURL)
+	}
+
+	// Wrap with a persisting token source to save refreshed tokens bound to the
+	// same authorization server and token endpoint.
+	if persister := h.tokenPersisterFor(effectiveIssuer, tokenURL); persister != nil {
+		return NewPersistingTokenSource(baseSource, persister), nil
 	}
 
 	return baseSource, nil
+}
+
+// persistMigratedRefreshToken persists a bound envelope after a legacy bare-string
+// token has been verified against issuer/tokenURL, rather than waiting for a
+// future refresh. It uses the refresh token/expiry the AS just returned, falling
+// back to the pre-verification values if it didn't rotate them.
+func (h *Handler) persistMigratedRefreshToken(tok *oauth2.Token, refreshToken, issuer, tokenURL string) {
+	newRefreshToken := tok.RefreshToken
+	if newRefreshToken == "" {
+		newRefreshToken = refreshToken
+	}
+	expiry := tok.Expiry
+	if expiry.IsZero() {
+		expiry = h.config.CachedTokenExpiry
+	}
+	if persister := h.tokenPersisterFor(issuer, tokenURL); persister != nil {
+		if err := persister(newRefreshToken, expiry); err != nil {
+			slog.Warn("Failed to persist migrated cached refresh token", "error", err)
+		}
+	}
 }
 
 // discoverIssuerAndScopes attempts to discover the OAuth issuer and scopes from various sources
@@ -316,36 +542,53 @@ func (h *Handler) discoverIssuerAndScopes(
 	ctx context.Context,
 	authInfo *discovery.AuthInfo,
 	remoteURL string,
-) (string, []string, *discovery.AuthServerInfo, error) {
-	// Priority 1: Use configured issuer if available
+) (string, []string, *discovery.AuthServerInfo, bool, error) {
+	// Decide once whether discovery fetches derived from untrusted server input
+	// (realm, resource_metadata, authorization_servers) may reach private
+	// addresses. If the operator-configured target is itself internal they may;
+	// otherwise block them to contain SSRF (CWE-918). The configured-issuer path
+	// below is exempt because that URL comes from the operator, not the server.
+	// Callers also thread this decision into the DCR flow (see performOAuthFlow),
+	// so it's computed exactly once per Authenticate call rather than being
+	// re-derived from a second, later TargetIsPrivate DNS lookup that could
+	// disagree with this one.
+	allowPrivateIPs := networking.TargetIsPrivate(ctx, remoteURL)
+	blockPrivateIPs := !allowPrivateIPs
+
+	// Priority 1: Use configured issuer if available. Fetch discovery to populate
+	// AuthServerInfo (including ClientIDMetadataDocumentSupported) even when the
+	// issuer is pre-configured, so CIMD detection works on this path.
 	if h.config.Issuer != "" {
 		slog.Debug("Using configured issuer", "issuer", h.config.Issuer)
-		return h.config.Issuer, h.config.Scopes, nil, nil
+		authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, h.config.Issuer, false)
+		return h.config.Issuer, h.config.Scopes, authServerInfo, allowPrivateIPs, nil
 	}
 
-	// Priority 2: Try to derive from realm (RFC 8414)
+	// Priority 2: Try to derive from realm (RFC 8414). Fetch discovery for the
+	// same reason as Priority 1 — the realm path skips resource metadata discovery.
 	if authInfo.Realm != "" {
 		derivedIssuer := discovery.DeriveIssuerFromRealm(authInfo.Realm)
 		if derivedIssuer != "" {
 			slog.Debug("Derived issuer from realm", "issuer", derivedIssuer)
-			return derivedIssuer, h.config.Scopes, nil, nil
+			authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, derivedIssuer, blockPrivateIPs)
+			return derivedIssuer, h.config.Scopes, authServerInfo, allowPrivateIPs, nil
 		}
 	}
 
 	// Priority 3: Fetch from resource metadata (RFC 9728)
 	if authInfo.ResourceMetadata != "" {
-		issuer, scopes, authServerInfo, err := h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata)
+		issuer, scopes, authServerInfo, err := h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata, blockPrivateIPs)
 		if err == nil {
-			return issuer, scopes, authServerInfo, nil
+			return issuer, scopes, authServerInfo, allowPrivateIPs, nil
 		}
 		slog.Debug("Resource metadata discovery failed, falling through to well-known discovery", "error", err)
 	}
 
 	// Priority 4: Try to discover actual issuer from the server's well-known endpoint
 	// This handles cases where the issuer differs from the server URL (e.g., Atlassian)
-	issuer, scopes, authServerInfo, err := h.tryDiscoverFromWellKnown(ctx, remoteURL)
+	issuer, scopes, authServerInfo, err := h.tryDiscoverFromWellKnown(ctx, remoteURL, blockPrivateIPs)
 	if err == nil {
-		return issuer, scopes, authServerInfo, nil
+		return issuer, scopes, authServerInfo, allowPrivateIPs, nil
 	}
 	slog.Debug("Could not discover from well-known endpoint", "error", err)
 
@@ -353,22 +596,25 @@ func (h *Handler) discoverIssuerAndScopes(
 	derivedIssuer := discovery.DeriveIssuerFromURL(remoteURL)
 	if derivedIssuer != "" {
 		slog.Debug("Using derived issuer from URL", "issuer", derivedIssuer)
-		return derivedIssuer, h.config.Scopes, nil, nil
+		return derivedIssuer, h.config.Scopes, nil, allowPrivateIPs, nil
 	}
 
 	// No issuer could be determined
-	return "", nil, nil, fmt.Errorf("could not determine OAuth issuer. Please provide issuer in configuration, " +
+	return "", nil, nil, false, fmt.Errorf("could not determine OAuth issuer. Please provide issuer in configuration, " +
 		"or ensure the server provides a valid realm parameter or resource_metadata URL in the WWW-Authenticate header")
 }
 
-// tryDiscoverFromResourceMetadata attempts to discover issuer and scopes from resource metadata
+// tryDiscoverFromResourceMetadata attempts to discover issuer and scopes from resource metadata.
+// blockPrivateIPs is propagated to the SSRF guard on the server-supplied metadata
+// and authorization-server fetches.
 func (h *Handler) tryDiscoverFromResourceMetadata(
 	ctx context.Context,
 	resourceMetadataURL string,
+	blockPrivateIPs bool,
 ) (string, []string, *discovery.AuthServerInfo, error) {
 	slog.Debug("Fetching resource metadata", "url", resourceMetadataURL)
 
-	metadata, err := discovery.FetchResourceMetadata(ctx, resourceMetadataURL)
+	metadata, err := discovery.FetchResourceMetadata(ctx, resourceMetadataURL, blockPrivateIPs)
 	if err != nil {
 		slog.Debug("Failed to fetch resource metadata", "error", err)
 		return "", nil, nil, fmt.Errorf("could not determine OAuth issuer")
@@ -379,7 +625,7 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 	}
 
 	// Try to find a valid authorization server from the list
-	authServerInfo, issuer := h.findValidAuthServer(ctx, metadata.AuthorizationServers)
+	authServerInfo, issuer := h.findValidAuthServer(ctx, metadata.AuthorizationServers, blockPrivateIPs)
 	if authServerInfo == nil {
 		if len(metadata.AuthorizationServers) > 0 {
 			slog.Warn("Resource metadata contained authorization_servers, " +
@@ -402,11 +648,12 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 func (*Handler) findValidAuthServer(
 	ctx context.Context,
 	authServers []string,
+	blockPrivateIPs bool,
 ) (*discovery.AuthServerInfo, string) {
 	for _, authServer := range authServers {
 		slog.Debug("Validating authorization server", "server", authServer)
 
-		authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, authServer)
+		authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, authServer, blockPrivateIPs)
 		if err != nil {
 			slog.Debug("Authorization server validation failed", "server", authServer, "error", err)
 			continue
@@ -427,6 +674,7 @@ func (*Handler) findValidAuthServer(
 func (h *Handler) tryDiscoverFromWellKnown(
 	ctx context.Context,
 	remoteURL string,
+	blockPrivateIPs bool,
 ) (string, []string, *discovery.AuthServerInfo, error) {
 	// First try to derive a base URL from the remote URL
 	derivedURL := discovery.DeriveIssuerFromURL(remoteURL)
@@ -436,7 +684,7 @@ func (h *Handler) tryDiscoverFromWellKnown(
 
 	// Try to discover the actual issuer without validation
 	// This uses DiscoverActualIssuer which doesn't validate issuer match
-	authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, derivedURL)
+	authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, derivedURL, blockPrivateIPs)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("well-known discovery failed: %w", err)
 	}
@@ -456,4 +704,43 @@ func (h *Handler) tryDiscoverFromWellKnown(
 	}
 
 	return authServerInfo.Issuer, scopes, authServerInfo, nil
+}
+
+// shouldUseCIMD reports whether the CIMD client_id should be presented to the AS.
+// The AS must advertise CIMD support and no pre-configured credentials may be set.
+// Mirrors shouldDynamicallyRegisterClient in pkg/auth/discovery for consistency.
+func shouldUseCIMD(authServerInfo *discovery.AuthServerInfo, flowConfig *discovery.OAuthFlowConfig) bool {
+	if authServerInfo == nil || !authServerInfo.ClientIDMetadataDocumentSupported {
+		return false
+	}
+	return flowConfig.ClientID == "" && flowConfig.ClientSecret == ""
+}
+
+// isCIMDRejectionError returns true if err indicates the AS rejected the CIMD
+// client_id. Only the RFC 6749 error codes invalid_client and unauthorized_client
+// trigger a DCR retry; all other errors — including invalid_request and
+// token-exchange failures — surface as-is.
+//
+// CIMD rejection can surface from two stages:
+//   - Authorization endpoint: AS redirects to callback with error=invalid_client;
+//     flow.go formats this as "OAuth error: <code> - <description>" (a plain error).
+//   - Token endpoint: oauth2.RetrieveError with ErrorCode set.
+func isCIMDRejectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Token endpoint rejection — structured error from golang.org/x/oauth2.
+	var rerr *oauth2.RetrieveError
+	if errors.As(err, &rerr) {
+		switch rerr.ErrorCode {
+		case "invalid_client", "unauthorized_client":
+			return true
+		}
+		return false
+	}
+	// Authorization endpoint rejection — flow.go formats callback errors as
+	// "OAuth error: <code> - <description>". Check for the code after the prefix.
+	msg := err.Error()
+	return strings.HasPrefix(msg, "OAuth error: invalid_client") ||
+		strings.HasPrefix(msg, "OAuth error: unauthorized_client")
 }

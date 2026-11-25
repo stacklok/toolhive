@@ -50,7 +50,7 @@ The `--format k8s` option automatically converts to MCPServer CRD format.
 Review the exported YAML and make any necessary adjustments:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: my-server
@@ -163,7 +163,7 @@ Create an MCPGroup to organize the backends:
 
 ```yaml
 # mcp-group.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: my-services
@@ -178,7 +178,7 @@ Add `groupRef` to each exported MCPServer:
 
 ```yaml
 # github.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: github
@@ -200,7 +200,7 @@ Create a VirtualMCPServer to aggregate the backends:
 
 ```yaml
 # virtual-mcp-server.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: my-vmcp
@@ -341,8 +341,8 @@ The preferred approach is to create a shared `MCPOIDCConfig` resource and refere
 See example configurations:
 
 - [mcpserver_with_oidcconfig_ref.yaml](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml) — Shared MCPOIDCConfig (preferred)
-- [mcpserver_with_inline_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_inline_oidc.yaml) — Inline OIDC (deprecated)
-- [mcpserver_with_kubernetes_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_kubernetes_oidc.yaml) — Kubernetes SA OIDC (deprecated inline variant)
+
+Inline OIDC and Kubernetes SA OIDC variants were deprecated and removed; use `MCPOIDCConfig` references instead.
 
 #### Scenario 3: Grouped Servers (CLI) → VirtualMCPServer (K8s)
 
@@ -362,7 +362,7 @@ thv export backend2 ./backend2.yaml --format k8s
 
 # Create manifests (add groupRef to each backend YAML)
 cat > resources.yaml <<EOF
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: services
@@ -370,7 +370,7 @@ metadata:
 # Include backend1.yaml content with groupRef: {name: services}
 # Include backend2.yaml content with groupRef: {name: services}
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: services-vmcp
@@ -438,7 +438,7 @@ For remote MCP servers that don't need a dedicated proxy, use `MCPServerEntry` i
 
 **Before (MCPRemoteProxy — deploys a proxy pod):**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRemoteProxy
 metadata:
   name: context7
@@ -452,7 +452,7 @@ spec:
 
 **After (MCPServerEntry — zero infrastructure):**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: context7
@@ -624,6 +624,274 @@ Then gradually add restrictions. Common Cedar policy issues:
 - Check syntax is correct
 - Verify attribute names match token claims
 - Test policies with different user roles
+
+**Multiple upstream IDPs**: when `spec.authServerConfig` declares more than
+one `upstreamProviders` entry, Cedar evaluates claims from the first one by
+default. Pin a specific provider explicitly via
+`spec.authServerConfig.primaryUpstreamProvider`:
+
+```yaml
+spec:
+  authServerConfig:
+    issuer: https://vmcp.example.com
+    primaryUpstreamProvider: okta   # must match one of the configured upstreams
+    upstreamProviders:
+      - name: okta
+        type: oidc
+        # ...
+      - name: github
+        type: oauth2
+        # ...
+  incomingAuth:
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+```
+
+**Which token's claims a policy sees**: Cedar reads the primary upstream
+provider's *access token*. Claims that token asserts always win. Providers
+routinely split what they assert across their two tokens — `email` and group
+membership are both commonly in the `id_token` only — so any claim the access
+token does **not** carry falls back to **that same provider's `id_token`**
+(captured at login and stored alongside its access token). Provenance is preserved
+either way, since both tokens come from one login at one provider: `principal has
+claim_email` means "this upstream asserted an email", and `principal in
+THVGroup::"platform-eng"` means "this upstream put the user in that group". When a
+fallback happens the proxy logs, at debug level and at most once per 30s:
+
+```
+DEBUG upstream access token omits claims the upstream ID token asserts; using the
+     ID token's values for Cedar evaluation provider=okta claims="[email groups]"
+```
+
+Group and role claims are included, under whatever name the provider uses — the
+well-known names, `spec.incomingAuth.authzConfig.groupClaimName`/`roleClaimName`,
+and URI-style names such as `https://example.com/groups` alike. So are
+`email_verified` and any other claim the provider asserts about the user or their
+login (`acr`, `amr`, `auth_time`). Read the group-revocation callout below before
+relying on this.
+
+**ToolHive's client registration is authoritative for what the access token
+omits.** Identity providers compute group and role claims per client or per
+audience: Entra ID builds each token from its app registration's group and
+app-role configuration, Okta configures group claims per authorization server and
+app, Auth0 Actions set each token's claims separately, and Keycloak resolves
+`realm_access`/`resource_access` through the requesting client's role scope
+mappings. A group or role claim filled from the `id_token` is therefore the answer
+for ToolHive's own client registration at the IdP, not the resource API's. When
+the access token carries no group or role claim, configure group filters, app
+roles and client scopes on that registration.
+
+Three categories are never taken from the `id_token`, no matter what the access
+token carries:
+
+* Claims that describe the `id_token` itself rather than the user — `iss`, `aud`,
+  `exp`, `nbf`, `iat`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`, `azp`,
+  `sid`, `client_id`; the token-type, version and binding claims `typ`,
+  `token_use`, `uti`, `rh`, `idtyp`, `ver`, `cnf`; the requesting client's
+  `appid`, `appidacr`, `azpacr`, `cid`, `gty`, `allowed-origins`; and
+  `session_state`, `xms_cc`, `acrs`. That `id_token`'s audience is ToolHive's own
+  auth-server client, so a policy gating on the resource-server `aud`, on token
+  lifetime, or on the requesting `client_id` would otherwise read a fact about a
+  different token.
+* **`scope` and `scp`**, the delegated grant, along with the RFC 8693
+  delegation claims `act` and `may_act` and RFC 9396 `authorization_details`. A
+  group is a fact about the *user*,
+  which either token can usually report; a scope is the authority *a particular
+  token* carries, and the only authority at issue is the access token's. Where a
+  provider emits `scope` in an `id_token` at all (it is not a standard `id_token`
+  claim) it may echo what the client *requested* rather than what the user
+  *granted* — and granular or incremental consent makes those differ routinely.
+  So a `claimset_scp` or `claim_scope` gate only ever matches what the access
+  token asserts. Put scopes policies depend on in the access token.
+* `sub`, the principal. A rule keyed on `Client::"<upstream-subject>"` keeps
+  matching the upstream identity, and an access token with no `sub` is rejected
+  outright rather than having a principal chosen for it.
+
+**Precedence is fill-only, not union.** A claim the access token asserts is used
+verbatim and is never extended. If your provider filters group claims per
+application (Okta group filters, Entra group-claim configuration) so that the
+access token carries a *partial* group list and the `id_token` carries the full
+one, policies see the partial list. That is deliberate: the access token's list is
+the provider's answer to "which of this user's groups are relevant to this
+resource server", and unioning in a list minted for a different audience would
+restore groups the provider chose to withhold. If policies need the fuller list,
+configure the upstream to assert it in the access token.
+
+Fill-only has three consequences worth knowing:
+
+* **Group and role claims come from one token.** If the access token carries a
+  list under any claim ToolHive reads groups from (`groupClaimName`,
+  `roleClaimName`, or one of the defaults `groups`, `roles` and
+  `cognito:groups`), the `id_token` fills none of them; a null or non-list value
+  does not count. So one decision never combines the access token's `groups`
+  with the `id_token`'s `roles`, and an `id_token`-only `groups` cannot hide the
+  access token's `roles`. A name that is not filled is also absent as a
+  `claim_<name>` attribute.
+* **Empty per-audience filters.** When a group filter matches none of the user's
+  groups, providers typically omit the claim from the access token rather than
+  emit an empty list, and the client registration's list is then filled in.
+  Apply the same filter to ToolHive's client registration, have the upstream
+  emit an empty claim, or keep groups out of the `id_token`.
+* **Entra ID app roles.** `roles` lists the user's role assignments on the app
+  the token was issued for: the resource API in the access token, ToolHive's
+  auth-server client in the `id_token`. Entra omits `roles` when the user has no
+  assignment on the resource, so with no group or role claim in the access token
+  the client app's roles are filled in. Assign app roles on the client
+  registration accordingly, or use one registration for both.
+
+> **Warning**: how fresh `id_token`-sourced groups are depends on the provider.
+>
+> **Read this if your provider asserts groups in the `id_token`.** The stored
+> `id_token` is used even after it expires.
+>
+> * An expired `id_token` triggers an upstream refresh even while the access
+>   token is still valid. Entra ID, Okta, Auth0 and Keycloak return a new
+>   `id_token` on refresh when `openid` was requested, so for them filled groups
+>   track the provider at about the `id_token`'s lifetime.
+> * A provider that does not rotate the `id_token` on refresh, or a refresh that
+>   fails, leaves the old one in place, and its groups keep granting for as long
+>   as the session is kept alive.
+>   `spec.authServerConfig.tokenLifespans.refreshTokenLifespan` is renewed on
+>   every refresh, so it bounds only idle sessions.
+> * Keycloak (and apparently Entra ID) omit `groups` when the user has none
+>   instead of sending an empty list. After a user's **last** group is revoked,
+>   the refreshed access token carries no group claim and the `id_token` is
+>   consulted. Both return a new `id_token` on the same refresh, which omits
+>   `groups` too, so no stale list is filled. A stale list survives only when
+>   such a provider does not rotate the `id_token` or the refresh fails.
+>
+> Rejecting an expired `id_token` is not the remedy: it would flip policies from
+> permit to deny mid-session for *every* user at once, not just a revoked one.
+>
+> **What to do**: if revocation must propagate at the access token's refresh
+> rate even when the `id_token` is not rotated, assert groups in the **access
+> token** and keep groups out of the `id_token`. On Entra ID, Microsoft
+> advises against relying on an `id_token` returned by a refresh for
+> authorization, so prefer group and role claims in the access token,
+> configured on the resource API's registration.
+
+What the `id_token` contributes depends on where your provider puts claims:
+
+* **Groups and roles in the access token**: groups come from the access token.
+  Other claims it omits (`email_verified`, `acr`, `amr`, custom claims) are
+  filled from the `id_token`.
+* **Groups or roles in the `id_token` only**: group claims are filled from the
+  `id_token`, so `permit` and `forbid` rules keyed on `THVGroup` or on a
+  supplemented claim can both match.
+
+> **Migration: claims from the `id_token`**
+>
+> Releases v0.41.0 through v0.69.1 fill only `name` and `email` from the
+> `id_token`. Later releases fill every claim not listed above, so decisions can
+> change in both directions. Review `permit` and `forbid` rules before
+> upgrading: a rule keyed on a group or claim the `id_token` now supplies can
+> start matching, a `!(principal has claim_X)` condition or an `unless` clause
+> can stop matching, and a claim arriving with an unexpected type can make a
+> policy error, which denies the request.
+
+The token the client presented — the one ToolHive's auth server issued — is not
+a claim source here, even though it mirrors a `name` and `email`, so on this path a
+group, role or scope claim on it grants nothing. In a multi-upstream chain those
+mirrored values come from the **first** configured upstream (the identity
+provider), which need not be the provider `primaryUpstreamProvider` names, so
+using them could attribute one IdP's claims to another.
+
+There are two exceptions, where Cedar evaluates the ToolHive-issued token's own
+claims instead:
+
+- **Tokens that can have no upstream session at all** — those minted by the RFC
+  8693 delegation grant or the RFC 7523 JWT-bearer grant. No upstream ever logged
+  the subject in, so no upstream credential exists to read.
+- **Upstreams whose access token is opaque** rather than a JWT. Google
+  (`ya29.*`) and GitHub (`gho_*`) access tokens are opaque, so this is the normal
+  state for those providers, not a misconfiguration — their claims cannot be
+  read, and evaluation degrades to the request token's claims.
+
+Every request carries a `thv_claim_source` attribute naming which trust root
+asserted the claims Cedar saw — `upstream:<provider>` on the normal path above,
+`request:no-upstream-session` and `request:upstream-opaque` for the two cases
+here — so a policy that must only act on what an upstream actually asserted can
+require it:
+
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"deploy") when {
+  principal.thv_claim_source == "upstream:okta" &&
+  principal has claim_email
+};
+```
+
+On both fallback paths the token carries no upstream attributes, so policies
+keyed on `groups`, `roles` or similar will not match. What `email` and `name`
+hold depends on the path: on the opaque path they are mirrored from the
+**first** upstream in the chain, which is not necessarily the one you pinned, so
+a multi-upstream chain pinned to a later leg can see another provider's email.
+Session-less tokens differ by grant, and JWT-bearer tokens carry neither. See
+[What the fallback claims actually
+are](../authz.md#what-the-fallback-claims-actually-are) and [tokens with no
+upstream login](../authz.md#tokens-with-no-upstream-login) for the full contract,
+including how this affects `forbid` rules.
+
+Everything else still fails closed: an identity that simply arrives without
+upstream credentials and says nothing about why — anonymous, local, or a bearer
+token from an IdP other than the pinned one — is denied, as is a session that
+exists but holds no credential for the pinned provider.
+
+An OAuth 2.0 upstream that was never asked for the `openid` scope has no stored
+`id_token`, so nothing is available to fall back to and the claim stays absent.
+The proxy says so once per 30s:
+
+```
+WARN no upstream ID token stored for provider; policies referencing claims the
+     access token omits will deny provider=okta
+```
+
+If a policy references a claim that neither the access token nor the `id_token`
+carries, `principal has claim_x` is false and the policy denies — author domain
+and group gates defensively with `has`, and confirm the claim is present in one of
+those two tokens before gating on it.
+
+> **Migration: `primaryUpstreamProvider` location**
+>
+> The field used to live under
+> `spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider`. It has
+> moved to `spec.authServerConfig.primaryUpstreamProvider` to sit next to
+> the `upstreamProviders` list it selects from. The old location is read
+> for one release for backward compatibility; the controller emits a
+> Warning event with reason `AuthzPrimaryUpstreamProviderDeprecated`
+> whenever it consumes the deprecated location. Move the value to the new
+> location to clear the warning. The deprecated field is planned for
+> removal one release after the deprecation cycle.
+
+**Authorization policy errors**: misconfigured authz surfaces on the
+`AuthConfigured` condition with one of:
+
+* `AuthzConfigMapNotFound`: the ConfigMap referenced by
+  `spec.incomingAuth.authzConfig.configMap` does not exist in the
+  namespace. Create it before reconciling, or fix the name.
+* `AuthzConfigMapInvalid`: the ConfigMap exists but the payload is
+  missing the configured key, empty, malformed YAML/JSON, fails Cedar
+  validation, or is a registered non-Cedar authorizer (vMCP supports
+  Cedar only). Check the payload shape (see the Cedar v1 schema in the
+  example above).
+
+**Enterprise Cedar policies that deny every request**: when a policy
+walks a transitive hierarchy like `Client → ClaimGroup → PlatformRole`,
+both Cedar JWT-claim mapping settings and the static entity store must
+agree on the entity type. The configuration fields live on
+`spec.incomingAuth.authzConfig`:
+
+* `groupClaimName` / `roleClaimName`: JWT claim keys to extract.
+* `groupEntityType`: Cedar entity type used for principal parent UIDs.
+  Must match the entity type used in `entitiesJson` (e.g. `ClaimGroup`
+  rather than the default `THVGroup`).
+
+For configMap-sourced authz, the same fields can be set in the
+ConfigMap payload (`cedar.group_claim_name`, `cedar.role_claim_name`,
+`cedar.group_entity_type`); spec-level values on `authzConfig` override
+the ConfigMap when set.
 
 ### Backend Discovery Issues
 

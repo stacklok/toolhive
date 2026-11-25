@@ -91,7 +91,7 @@ To run the Operator end-to-end (E2E) tests locally, ensure you have the followin
 - [Kind](https://kind.sigs.k8s.io/)
 - [Kind Load Balancer](https://kind.sigs.k8s.io/docs/user/loadbalancer/)
 - [Task](https://taskfile.dev/#/installation)
-- [Chainsaw](https://github.com/kubernetes-sigs/chainsaw) (automatically installed by the Taskfile for local runs)
+- [Chainsaw](https://github.com/kyverno/chainsaw) (automatically installed by the Taskfile for local runs)
 
 ### Steps
 
@@ -129,6 +129,10 @@ helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-
 helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace
 ```
 
+For the full list of configurable values, see the
+[operator chart](../../deploy/charts/operator/README.md) and
+[operator CRDs chart](../../deploy/charts/operator-crds/README.md) documentation.
+
 ## Usage
 
 ### Creating an MCP Server
@@ -136,7 +140,7 @@ helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator
 To create an MCP server, define an `MCPServer` resource and apply it to your cluster:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: fetch
@@ -165,7 +169,7 @@ kubectl apply -f your-mcpserver.yaml
 For MCP servers that require authentication tokens or other secrets:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: github
@@ -225,33 +229,13 @@ kubectl describe mcpserver <name>
 | `volumes`           | Volumes to mount in the container                  | No       | -       |
 | `resources`         | Resource requirements for the container            | No       | -       |
 | `secrets`           | References to secrets to mount in the container    | No       | -       |
-| `permissionProfile` | Permission profile configuration (not implemented) | No       | -       |
+| `permissionProfile` | Deprecated compatibility field; ignored by the operator | No       | -       |
 | `tools`             | Allow-list filter on the list of tools             | No       | -       |
 
-<!-- not implemented; commenting out until a decision is made on removal
-### Permission Profiles
-
-Permission profiles can be configured in two ways:
-
-1. Using a built-in profile:
-
-```yaml
-permissionProfile:
-  type: builtin
-  name: network  # or "none"
-```
-
-2. Using a ConfigMap:
-
-```yaml
-permissionProfile:
-  type: configmap
-  name: my-permission-profile
-  key: profile.json
-```
-
-The ConfigMap should contain a JSON permission profile.
--->
+`permissionProfile` is retained so existing manifests remain compatible, but
+the operator does not apply it to Kubernetes workloads. When the field is set,
+the operator ignores it and emits a Warning event. Use Kubernetes-native
+controls such as `podTemplateSpec` and network policies to secure workloads.
 
 ### Creating an MCP Registry
 
@@ -272,7 +256,7 @@ kubectl create configmap my-registry-data --from-file registry.json=/path/to/you
 Then create the MCPRegistry resource with `configYAML` and mount the ConfigMap:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: my-registry
@@ -282,7 +266,6 @@ spec:
   configYAML: |
     sources:
       - name: my-source
-        format: toolhive
         file:
           path: /config/registry/my-source/registry.json
         syncPolicy:
@@ -350,7 +333,7 @@ This operator is scaffolded using Kubebuilder. If you want to make changes to th
 Generate CRD manifests:
 
 ```bash
-kubebuilder create api --group toolhive --version v1alpha1 --kind MCPServer
+kubebuilder create api --group toolhive --version v1beta1 --kind MCPServer
 ```
 
 Update CRD manifests after changing API types:
@@ -369,7 +352,7 @@ task operator-run
 
 The Kubebuilder project structure is as follows:
 
-- `api/v1alpha1/`: Contains the API definitions for the CRDs
+- `api/v1beta1/`: Contains the API definitions for the CRDs
 - `controllers/`: Contains the reconciliation logic for the controllers
 - `config/`: Contains the Kubernetes manifests for deploying the operator
 - `PROJECT`: Kubebuilder project configuration file

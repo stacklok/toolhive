@@ -16,7 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 // TestCase defines a table-driven test case for EmbeddingServer controller
@@ -30,7 +31,7 @@ type TestCase struct {
 
 // InitialState represents the initial Kubernetes objects to create
 type InitialState struct {
-	EmbeddingServer *mcpv1alpha1.EmbeddingServer
+	EmbeddingServer *mcpv1beta1.EmbeddingServer
 	Secrets         []*corev1.Secret
 }
 
@@ -42,7 +43,7 @@ type FinalState struct {
 	// Service expected state (nil means don't check specific fields)
 	Service *corev1.Service
 	// EmbeddingServer status expectations
-	Status *mcpv1alpha1.EmbeddingServerStatus
+	Status *mcpv1beta1.EmbeddingServerStatus
 }
 
 var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
@@ -65,7 +66,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 	// Helper to run a single test case
 	runTestCase := func(tc TestCase) {
 		Context(tc.Name, Ordered, func() {
-			var createdEmbeddingServer *mcpv1alpha1.EmbeddingServer
+			var createdEmbeddingServer *mcpv1beta1.EmbeddingServer
 
 			BeforeAll(func() {
 				namespace := tc.InitialState.EmbeddingServer.Namespace
@@ -80,7 +81,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 				Expect(k8sClient.Create(ctx, tc.InitialState.EmbeddingServer)).Should(Succeed())
 
 				// Fetch the created resource to get UID etc.
-				createdEmbeddingServer = &mcpv1alpha1.EmbeddingServer{}
+				createdEmbeddingServer = &mcpv1beta1.EmbeddingServer{}
 				Eventually(func() error {
 					return k8sClient.Get(ctx, types.NamespacedName{
 						Name:      tc.InitialState.EmbeddingServer.Name,
@@ -135,7 +136,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 			// Status assertions
 			It("Should have expected status and finalizer", func() {
 				Eventually(func() bool {
-					actual := &mcpv1alpha1.EmbeddingServer{}
+					actual := &mcpv1beta1.EmbeddingServer{}
 					err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      tc.InitialState.EmbeddingServer.Name,
 						Namespace: tc.InitialState.EmbeddingServer.Namespace,
@@ -154,17 +155,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with minimal config (verifies defaults)",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-defaults",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						// Only required fields - model and image
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-defaults", defaultNamespace),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -208,7 +199,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 						Ports: []corev1.ServicePort{{Port: 8080}},
 					},
 				},
-				Status: &mcpv1alpha1.EmbeddingServerStatus{
+				Status: &mcpv1beta1.EmbeddingServerStatus{
 					// URL uses default port
 					URL: "http://test-defaults.default.svc.cluster.local:8080",
 				},
@@ -217,17 +208,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating a basic EmbeddingServer",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-basic",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-basic", defaultNamespace),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -264,7 +245,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 						Ports: []corev1.ServicePort{{Port: 8080}},
 					},
 				},
-				Status: &mcpv1alpha1.EmbeddingServerStatus{
+				Status: &mcpv1beta1.EmbeddingServerStatus{
 					URL: "http://test-basic.default.svc.cluster.local:8080",
 				},
 			},
@@ -272,21 +253,12 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with model cache enabled",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-with-cache",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-						ModelCache: &mcpv1alpha1.ModelCacheConfig{
-							Enabled: true,
-							Size:    "20Gi",
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-with-cache", defaultNamespace,
+					v1beta1test.WithEmbeddingModelCache(&mcpv1beta1.ModelCacheConfig{
+						Enabled: true,
+						Size:    "20Gi",
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -318,21 +290,14 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with resource requirements",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-resources",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-						Resources: mcpv1alpha1.ResourceRequirements{
-							Limits:   mcpv1alpha1.ResourceList{CPU: "2", Memory: "4Gi"},
-							Requests: mcpv1alpha1.ResourceList{CPU: "500m", Memory: "1Gi"},
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-resources", defaultNamespace,
+					v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+						e.Spec.Resources = mcpv1beta1.ResourceRequirements{
+							Limits:   mcpv1beta1.ResourceList{CPU: "2", Memory: "4Gi"},
+							Requests: mcpv1beta1.ResourceList{CPU: "500m", Memory: "1Gi"},
+						}
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -355,18 +320,9 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with custom replicas",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-replicas",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model:    "sentence-transformers/all-MiniLM-L6-v2",
-						Image:    "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:     8080,
-						Replicas: ptr.To(int32(3)),
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-replicas", defaultNamespace,
+					v1beta1test.WithEmbeddingReplicas(3),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -379,28 +335,19 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with invalid PodTemplateSpec",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-invalid-podtemplate",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-						PodTemplateSpec: &runtime.RawExtension{
-							Raw: []byte(`{"spec": {"containers": "invalid-not-an-array"}}`),
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-invalid-podtemplate", defaultNamespace,
+					v1beta1test.WithEmbeddingPodTemplateSpec(&runtime.RawExtension{
+						Raw: []byte(`{"spec": {"containers": "invalid-not-an-array"}}`),
+					}),
+				),
 			},
 			FinalState: FinalState{
-				Status: &mcpv1alpha1.EmbeddingServerStatus{
-					Phase: mcpv1alpha1.EmbeddingServerPhaseFailed,
+				Status: &mcpv1beta1.EmbeddingServerStatus{
+					Phase: mcpv1beta1.EmbeddingServerPhaseFailed,
 					Conditions: []metav1.Condition{{
-						Type:   mcpv1alpha1.ConditionPodTemplateValid,
+						Type:   mcpv1beta1.ConditionPodTemplateValid,
 						Status: metav1.ConditionFalse,
-						Reason: mcpv1alpha1.ConditionReasonPodTemplateInvalid,
+						Reason: mcpv1beta1.ConditionReasonPodTemplateInvalid,
 					}},
 				},
 			},
@@ -408,20 +355,11 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with valid PodTemplateSpec (nodeSelector)",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-valid-podtemplate",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-						PodTemplateSpec: &runtime.RawExtension{
-							Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-valid-podtemplate", defaultNamespace,
+					v1beta1test.WithEmbeddingPodTemplateSpec(&runtime.RawExtension{
+						Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -433,9 +371,9 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 						},
 					},
 				},
-				Status: &mcpv1alpha1.EmbeddingServerStatus{
+				Status: &mcpv1beta1.EmbeddingServerStatus{
 					Conditions: []metav1.Condition{{
-						Type:   mcpv1alpha1.ConditionPodTemplateValid,
+						Type:   mcpv1beta1.ConditionPodTemplateValid,
 						Status: metav1.ConditionTrue,
 					}},
 				},
@@ -444,21 +382,12 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with HuggingFace token secret",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-hf-token",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-						HFTokenSecretRef: &mcpv1alpha1.SecretKeyRef{
-							Name: "hf-token-secret",
-							Key:  "token",
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-hf-token", defaultNamespace,
+					v1beta1test.WithEmbeddingHFTokenSecretRef(&mcpv1beta1.SecretKeyRef{
+						Name: "hf-token-secret",
+						Key:  "token",
+					}),
+				),
 				Secrets: []*corev1.Secret{{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "hf-token-secret",
@@ -493,21 +422,12 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with custom environment variables",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-custom-env",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-						Env: []mcpv1alpha1.EnvVar{
-							{Name: "CUSTOM_VAR_1", Value: "value1"},
-							{Name: "CUSTOM_VAR_2", Value: "value2"},
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-custom-env", defaultNamespace,
+					v1beta1test.WithEmbeddingEnv(
+						mcpv1beta1.EnvVar{Name: "CUSTOM_VAR_1", Value: "value1"},
+						mcpv1beta1.EnvVar{Name: "CUSTOM_VAR_2", Value: "value2"},
+					),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -530,18 +450,9 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with custom args",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-custom-args",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-						Args:  []string{"--max-concurrent-requests", "512", "--tokenization-workers", "4"},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-custom-args", defaultNamespace,
+					v1beta1test.WithEmbeddingArgs("--max-concurrent-requests", "512", "--tokenization-workers", "4"),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -561,17 +472,9 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with custom port",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-custom-port",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  9090,
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-custom-port", defaultNamespace,
+					v1beta1test.WithEmbeddingPort(9090),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -587,23 +490,15 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 					},
 				},
 				Service: &corev1.Service{Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 9090}}}},
-				Status:  &mcpv1alpha1.EmbeddingServerStatus{URL: "http://test-custom-port.default.svc.cluster.local:9090"},
+				Status:  &mcpv1beta1.EmbeddingServerStatus{URL: "http://test-custom-port.default.svc.cluster.local:9090"},
 			},
 		},
 		{
 			Name: "When creating an EmbeddingServer with ImagePullPolicy Always",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-imagepullpolicy-always",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model:           "sentence-transformers/all-MiniLM-L6-v2",
-						Image:           "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ImagePullPolicy: "Always",
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-imagepullpolicy-always", defaultNamespace,
+					v1beta1test.WithEmbeddingImagePullPolicy(corev1.PullAlways),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -623,17 +518,9 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with ImagePullPolicy Never",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-imagepullpolicy-never",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model:           "sentence-transformers/all-MiniLM-L6-v2",
-						Image:           "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ImagePullPolicy: "Never",
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-imagepullpolicy-never", defaultNamespace,
+					v1beta1test.WithEmbeddingImagePullPolicy(corev1.PullNever),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -653,21 +540,13 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with model cache and custom storage class",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-cache-storageclass",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ModelCache: &mcpv1alpha1.ModelCacheConfig{
-							Enabled:          true,
-							Size:             "50Gi",
-							StorageClassName: ptr.To("fast-ssd"),
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-cache-storageclass", defaultNamespace,
+					v1beta1test.WithEmbeddingModelCache(&mcpv1beta1.ModelCacheConfig{
+						Enabled:          true,
+						Size:             "50Gi",
+						StorageClassName: ptr.To("fast-ssd"),
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -689,21 +568,13 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with model cache ReadWriteMany access mode",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-cache-rwx",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ModelCache: &mcpv1alpha1.ModelCacheConfig{
-							Enabled:    true,
-							Size:       "10Gi",
-							AccessMode: "ReadWriteMany",
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-cache-rwx", defaultNamespace,
+					v1beta1test.WithEmbeddingModelCache(&mcpv1beta1.ModelCacheConfig{
+						Enabled:    true,
+						Size:       "10Gi",
+						AccessMode: "ReadWriteMany",
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -721,19 +592,11 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with PodTemplateSpec tolerations",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-tolerations",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						PodTemplateSpec: &runtime.RawExtension{
-							Raw: []byte(`{"spec":{"tolerations":[{"key":"gpu","operator":"Exists","effect":"NoSchedule"}]}}`),
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-tolerations", defaultNamespace,
+					v1beta1test.WithEmbeddingPodTemplateSpec(&runtime.RawExtension{
+						Raw: []byte(`{"spec":{"tolerations":[{"key":"gpu","operator":"Exists","effect":"NoSchedule"}]}}`),
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -754,19 +617,11 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with PodTemplateSpec serviceAccountName",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-serviceaccount",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						PodTemplateSpec: &runtime.RawExtension{
-							Raw: []byte(`{"spec":{"serviceAccountName":"custom-sa"}}`),
-						},
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-serviceaccount", defaultNamespace,
+					v1beta1test.WithEmbeddingPodTemplateSpec(&runtime.RawExtension{
+						Raw: []byte(`{"spec":{"serviceAccountName":"custom-sa"}}`),
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -784,24 +639,18 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with ResourceOverrides on StatefulSet",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-resource-overrides-sts",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ResourceOverrides: &mcpv1alpha1.EmbeddingResourceOverrides{
-							StatefulSet: &mcpv1alpha1.EmbeddingStatefulSetOverrides{
-								ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-resource-overrides-sts", defaultNamespace,
+					v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+						e.Spec.ResourceOverrides = &mcpv1beta1.EmbeddingResourceOverrides{
+							StatefulSet: &mcpv1beta1.EmbeddingStatefulSetOverrides{
+								ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 									Annotations: map[string]string{"custom-annotation": "sts-value"},
 									Labels:      map[string]string{"custom-label": "sts-value"},
 								},
 							},
-						},
-					},
-				},
+						}
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -823,22 +672,16 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with ResourceOverrides on Service",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-resource-overrides-svc",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ResourceOverrides: &mcpv1alpha1.EmbeddingResourceOverrides{
-							Service: &mcpv1alpha1.ResourceMetadataOverrides{
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-resource-overrides-svc", defaultNamespace,
+					v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+						e.Spec.ResourceOverrides = &mcpv1beta1.EmbeddingResourceOverrides{
+							Service: &mcpv1beta1.ResourceMetadataOverrides{
 								Annotations: map[string]string{"service-annotation": "svc-value"},
 								Labels:      map[string]string{"service-label": "svc-value"},
 							},
-						},
-					},
-				},
+						}
+					}),
+				),
 			},
 			FinalState: FinalState{
 				Service: &corev1.Service{
@@ -863,24 +706,18 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer with ResourceOverrides on pod template",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-resource-overrides-pod",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						ResourceOverrides: &mcpv1alpha1.EmbeddingResourceOverrides{
-							StatefulSet: &mcpv1alpha1.EmbeddingStatefulSetOverrides{
-								PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-resource-overrides-pod", defaultNamespace,
+					v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+						e.Spec.ResourceOverrides = &mcpv1beta1.EmbeddingResourceOverrides{
+							StatefulSet: &mcpv1beta1.EmbeddingStatefulSetOverrides{
+								PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 									Annotations: map[string]string{"pod-annotation": "pod-value"},
 									Labels:      map[string]string{"pod-label": "pod-value"},
 								},
 							},
-						},
-					},
-				},
+						}
+					}),
+				),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -905,17 +742,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer verifies container port",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-container-port",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-						Port:  8080,
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-container-port", defaultNamespace),
 			},
 			FinalState: FinalState{
 				StatefulSet: &appsv1.StatefulSet{
@@ -939,16 +766,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 		{
 			Name: "When creating an EmbeddingServer verifies Service selector and type",
 			InitialState: InitialState{
-				EmbeddingServer: &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-service-selector",
-						Namespace: defaultNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Model: "sentence-transformers/all-MiniLM-L6-v2",
-						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-					},
-				},
+				EmbeddingServer: v1beta1test.NewEmbeddingServer("test-service-selector", defaultNamespace),
 			},
 			FinalState: FinalState{
 				Service: &corev1.Service{
@@ -1141,7 +959,7 @@ func verifyServiceEqualsG(g Gomega, actual, expected *corev1.Service) {
 }
 
 // verifyStatusEquals checks status fields match and finalizer is present.
-func verifyStatusEquals(actual *mcpv1alpha1.EmbeddingServer, expected *mcpv1alpha1.EmbeddingServerStatus) bool {
+func verifyStatusEquals(actual *mcpv1beta1.EmbeddingServer, expected *mcpv1beta1.EmbeddingServerStatus) bool {
 	if expected != nil && expected.Phase != "" && actual.Status.Phase != expected.Phase {
 		return false
 	}
@@ -1166,9 +984,9 @@ func containsString(slice []string, s string) bool {
 }
 
 // verifyOwnerReference checks owner reference is set correctly.
-func verifyOwnerReference(ownerRefs []metav1.OwnerReference, embedding *mcpv1alpha1.EmbeddingServer, _ string) {
+func verifyOwnerReference(ownerRefs []metav1.OwnerReference, embedding *mcpv1beta1.EmbeddingServer, _ string) {
 	Expect(ownerRefs).To(HaveLen(1))
-	Expect(ownerRefs[0].APIVersion).To(Equal("toolhive.stacklok.dev/v1alpha1"))
+	Expect(ownerRefs[0].APIVersion).To(Equal("toolhive.stacklok.dev/v1beta1"))
 	Expect(ownerRefs[0].Kind).To(Equal("EmbeddingServer"))
 	Expect(ownerRefs[0].Name).To(Equal(embedding.Name))
 	Expect(ownerRefs[0].UID).To(Equal(embedding.UID))

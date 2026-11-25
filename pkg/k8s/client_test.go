@@ -123,20 +123,6 @@ func TestNewControllerRuntimeClientWithConfig(t *testing.T) {
 	}
 }
 
-func TestNewDynamicClientWithConfig(t *testing.T) {
-	t.Parallel()
-
-	t.Run("creates dynamic client from valid config", func(t *testing.T) {
-		t.Parallel()
-
-		config := createTestConfig(t)
-		client, err := newDynamicClientWithConfig(config)
-
-		assert.NoError(t, err)
-		assert.NotNil(t, client)
-	})
-}
-
 func TestClientTypeCompatibility(t *testing.T) {
 	t.Parallel()
 

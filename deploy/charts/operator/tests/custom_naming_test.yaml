@@ -1,0 +1,59 @@
+suite: custom service account name
+# When operator.serviceAccount.name is overridden, the name must stay consistent
+# across the resources that reference it: the ServiceAccount that gets created,
+# the Pod's identity, and every role binding subject. If they diverge, the
+# Deployment references an SA that does not exist (pod is never admitted) and/or
+# the binding grants the wrong identity. All four assertions must resolve to the
+# same overridden name.
+set:
+  operator.serviceAccount.name: my-sa
+templates:
+  - serviceaccount.yaml
+  - deployment.yaml
+  - clusterrole/rolebinding.yaml
+  - leader-election-role.yaml
+tests:
+  - it: creates the ServiceAccount under the overridden name
+    template: serviceaccount.yaml
+    asserts:
+      - equal: { path: metadata.name, value: my-sa }
+
+  - it: points the Deployment at the overridden name
+    template: deployment.yaml
+    asserts:
+      - equal: { path: spec.template.spec.serviceAccountName, value: my-sa }
+
+  - it: binds the cluster subject to the overridden name
+    template: clusterrole/rolebinding.yaml
+    asserts:
+      - equal: { path: 'subjects[0].name', value: my-sa }
+
+  - it: binds the leader-election subject to the overridden name
+    template: leader-election-role.yaml
+    documentSelector: { path: kind, value: RoleBinding }
+    asserts:
+      - equal: { path: 'subjects[0].name', value: my-sa }
+
+  # When the name is left empty, all references fall back to the generated name
+  # (fullname) via the helper — the leader-election subject must not render empty.
+  - it: creates the SA under the generated name when serviceAccount.name is empty
+    template: serviceaccount.yaml
+    set:
+      operator.serviceAccount.name: ""
+    asserts:
+      - equal: { path: metadata.name, value: toolhive-operator }
+
+  - it: binds the cluster subject to the generated name when name is empty
+    template: clusterrole/rolebinding.yaml
+    set:
+      operator.serviceAccount.name: ""
+    asserts:
+      - equal: { path: 'subjects[0].name', value: toolhive-operator }
+
+  - it: binds the leader-election subject to the generated name when name is empty
+    template: leader-election-role.yaml
+    documentSelector: { path: kind, value: RoleBinding }
+    set:
+      operator.serviceAccount.name: ""
+    asserts:
+      - equal: { path: 'subjects[0].name', value: toolhive-operator }

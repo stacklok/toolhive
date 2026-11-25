@@ -20,18 +20,19 @@ Manage the MCP server registry, including listing and getting information about 
 ### Options
 
 ```
-  -h, --help   help for registry
+  -h, --help[=true|false]   help for registry
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv registry convert](thv_registry_convert.md)	 - Convert a legacy registry file to the upstream MCP format
 * [thv registry info](thv_registry_info.md)	 - Get information about an MCP server
 * [thv registry list](thv_registry_list.md)	 - List available MCP servers
 * [thv registry login](thv_registry_login.md)	 - Authenticate with the configured registry

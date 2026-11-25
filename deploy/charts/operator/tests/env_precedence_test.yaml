@@ -1,0 +1,32 @@
+suite: operator env precedence
+# operator.env entries are rendered before the chart-managed vars so that, on a
+# name collision, the chart value wins (Kubernetes keeps the last entry for a
+# duplicated env name). This protects reserved vars like GOGC from an accidental
+# operator.env override. Assert user vars appear and the chart var is still
+# emitted (after the user's) on collision.
+templates:
+  - deployment.yaml
+tests:
+  - it: renders user-supplied env vars
+    template: deployment.yaml
+    set:
+      operator.env:
+        - name: MY_CUSTOM_VAR
+          value: custom-value
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: MY_CUSTOM_VAR, value: custom-value }
+
+  - it: still emits the chart-managed value when a reserved name collides
+    template: deployment.yaml
+    set:
+      operator.env:
+        - name: GOGC
+          value: "999"
+    asserts:
+      # Both entries render; the chart-managed GOGC=75 comes last, so Kubernetes
+      # uses it. Assert the chart value is present (not dropped by the override).
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: GOGC, value: "75" }

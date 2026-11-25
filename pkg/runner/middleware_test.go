@@ -4,7 +4,11 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,22 +16,27 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
+	"github.com/stacklok/toolhive/pkg/transport/middleware/origin"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/webhook"
 	"github.com/stacklok/toolhive/pkg/webhook/mutating"
@@ -122,6 +131,65 @@ func TestAddHeaderForwardMiddleware(t *testing.T) {
 	}
 }
 
+func TestPrependOriginMiddleware(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		config           *RunConfig
+		wantPrepended    bool
+		wantAllowedCount int
+	}{
+		{
+			name:          "non-loopback bind without explicit allowlist skips middleware",
+			config:        &RunConfig{Host: "0.0.0.0", Port: 8080},
+			wantPrepended: false,
+		},
+		{
+			name:          "zero port skips middleware",
+			config:        &RunConfig{Host: "127.0.0.1", Port: 0},
+			wantPrepended: false,
+		},
+		{
+			name:             "loopback bind derives default allowlist and prepends",
+			config:           &RunConfig{Host: "127.0.0.1", Port: 8080},
+			wantPrepended:    true,
+			wantAllowedCount: 3, // localhost + 127.0.0.1 + [::1]
+		},
+		{
+			name:             "explicit allowlist on non-loopback bind prepends",
+			config:           &RunConfig{Host: "0.0.0.0", Port: 8080, AllowedOrigins: []string{"https://app.example.com"}},
+			wantPrepended:    true,
+			wantAllowedCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Seed with an existing entry so we can prove origin is prepended,
+			// not appended — the security intent requires it to run first.
+			initial := []types.MiddlewareConfig{{Type: auth.MiddlewareType}}
+			got, err := prependOriginMiddleware(initial, tt.config)
+			require.NoError(t, err)
+
+			if !tt.wantPrepended {
+				assert.Equal(t, initial, got, "middleware slice should be unchanged")
+				return
+			}
+
+			require.Len(t, got, len(initial)+1)
+			assert.Equal(t, origin.MiddlewareType, got[0].Type, "origin middleware must be first in the chain")
+			assert.Equal(t, auth.MiddlewareType, got[1].Type, "pre-existing middleware must follow origin")
+
+			var params origin.MiddlewareParams
+			require.NoError(t, json.Unmarshal(got[0].Parameters, &params))
+			assert.Len(t, params.AllowedOrigins, tt.wantAllowedCount)
+		})
+	}
+}
+
 func TestPopulateMiddlewareConfigs_HeaderForward(t *testing.T) {
 	t.Parallel()
 
@@ -180,6 +248,446 @@ func TestPopulateMiddlewareConfigs_HeaderForward(t *testing.T) {
 	}
 }
 
+func TestPopulateMiddlewareConfigs_CredentialStripping(t *testing.T) {
+	t.Parallel()
+
+	oboConfig, err := types.NewMiddlewareConfig(obo.MiddlewareType, map[string]string{"token_url": "https://idp.example.com/token"})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		config  *RunConfig
+		wantErr string
+	}{
+		{
+			name:   "zero upstreams strips credentials after authentication without swap",
+			config: &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+		},
+		{
+			name: "zero upstreams rejects OBO configuration",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig:    &authserver.RunConfig{},
+				AdditionalMiddlewareConfigs: []types.MiddlewareConfig{*oboConfig},
+			},
+			wantErr: "OBO middleware",
+		},
+		{
+			name: "disabled upstream injection rejects OBO configuration",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: &authserver.RunConfig{
+					Upstreams:                     []authserver.UpstreamRunConfig{{Name: "upstream"}},
+					DisableUpstreamTokenInjection: true,
+				},
+				AdditionalMiddlewareConfigs: []types.MiddlewareConfig{*oboConfig},
+			},
+			wantErr: "OBO middleware",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := PopulateMiddlewareConfigs(tt.config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Greater(t,
+				indexOfMiddleware(t, tt.config.MiddlewareConfigs, headerfwd.StripAuthMiddlewareName),
+				indexOfMiddleware(t, tt.config.MiddlewareConfigs, auth.MiddlewareType),
+				"strip-auth must run after authentication")
+			for _, middleware := range tt.config.MiddlewareConfigs {
+				assert.NotEqual(t, upstreamswap.MiddlewareType, middleware.Type)
+			}
+		})
+	}
+}
+
+func TestValidateCredentialStrippingMiddleware_RejectsPrePopulatedOBO(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config *RunConfig
+	}{
+		{
+			name:   "zero upstreams",
+			config: &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+		},
+		{
+			name: "disabled upstream injection",
+			config: &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{
+				Upstreams:                     []authserver.UpstreamRunConfig{{Name: "upstream"}},
+				DisableUpstreamTokenInjection: true,
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateCredentialStrippingMiddleware([]types.MiddlewareConfig{
+				{Type: auth.MiddlewareType},
+				{Type: headerfwd.StripAuthMiddlewareName},
+				{Type: obo.MiddlewareType},
+			}, tt.config)
+			require.ErrorContains(t, err, "OBO middleware")
+		})
+	}
+}
+
+// indexOfMiddleware returns the index of the first middleware of the given type
+// in the chain, failing the test if it is absent.
+func indexOfMiddleware(t *testing.T, mws []types.MiddlewareConfig, mwType string) int {
+	t.Helper()
+	for i, mw := range mws {
+		if mw.Type == mwType {
+			return i
+		}
+	}
+	t.Fatalf("middleware type %q not found in chain", mwType)
+	return -1
+}
+
+// TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs verifies that
+// configs injected via AdditionalMiddlewareConfigs survive
+// PopulateMiddlewareConfigs (which previously overwrote the slice) and land in
+// the backend-egress group: after auth and after header-forward, and
+// immediately before recovery.
+func TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs(t *testing.T) {
+	t.Parallel()
+
+	mkInjected := func(t *testing.T, mwType string) types.MiddlewareConfig {
+		t.Helper()
+		mc, err := types.NewMiddlewareConfig(mwType, map[string]string{"marker": mwType})
+		require.NoError(t, err)
+		return *mc
+	}
+
+	t.Run("injected entry preserved, after auth and before recovery", func(t *testing.T) {
+		t.Parallel()
+		injected := mkInjected(t, obo.MiddlewareType)
+		cfg := &RunConfig{
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{injected},
+		}
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		mws := cfg.MiddlewareConfigs
+		require.NotEmpty(t, mws)
+		// body-limit is the outermost entry (slice index 0), auth runs next, and
+		// recovery is always the last (innermost) entry.
+		assert.Equal(t, bodylimit.MiddlewareType, mws[0].Type)
+		assert.Equal(t, recovery.MiddlewareType, mws[len(mws)-1].Type)
+
+		oboIdx := indexOfMiddleware(t, mws, obo.MiddlewareType)
+		assert.Greater(t, oboIdx, indexOfMiddleware(t, mws, auth.MiddlewareType),
+			"injected middleware must come after auth")
+		assert.Equal(t, len(mws)-2, oboIdx,
+			"injected middleware must be spliced immediately before recovery")
+		// The opaque parameters are carried verbatim.
+		assert.Equal(t, injected.Parameters, mws[oboIdx].Parameters)
+	})
+
+	t.Run("injected entry ordered after header-forward", func(t *testing.T) {
+		t.Parallel()
+		injected := mkInjected(t, obo.MiddlewareType)
+		cfg := &RunConfig{
+			RemoteURL: "https://example.com",
+			HeaderForward: &HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Key": "val"},
+			},
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{injected},
+		}
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		mws := cfg.MiddlewareConfigs
+		oboIdx := indexOfMiddleware(t, mws, obo.MiddlewareType)
+		hfIdx := indexOfMiddleware(t, mws, headerfwd.HeaderForwardMiddlewareName)
+		assert.Greater(t, oboIdx, hfIdx, "injected middleware must come after header-forward")
+		assert.Equal(t, len(mws)-2, oboIdx, "injected middleware must be immediately before recovery")
+		assert.Equal(t, recovery.MiddlewareType, mws[len(mws)-1].Type)
+	})
+
+	t.Run("multiple injected entries keep order before recovery", func(t *testing.T) {
+		t.Parallel()
+		cfg := &RunConfig{
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{
+				mkInjected(t, "type-a"),
+				mkInjected(t, "type-b"),
+			},
+		}
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		mws := cfg.MiddlewareConfigs
+		n := len(mws)
+		require.GreaterOrEqual(t, n, 4)
+		assert.Equal(t, recovery.MiddlewareType, mws[n-1].Type)
+		assert.Equal(t, "type-a", mws[n-3].Type)
+		assert.Equal(t, "type-b", mws[n-2].Type)
+	})
+
+	t.Run("no injected configs leaves the chain unchanged", func(t *testing.T) {
+		t.Parallel()
+		base := &RunConfig{}
+		require.NoError(t, PopulateMiddlewareConfigs(base))
+
+		withEmpty := &RunConfig{AdditionalMiddlewareConfigs: nil}
+		require.NoError(t, PopulateMiddlewareConfigs(withEmpty))
+
+		require.Len(t, withEmpty.MiddlewareConfigs, len(base.MiddlewareConfigs))
+		for i := range base.MiddlewareConfigs {
+			assert.Equal(t, base.MiddlewareConfigs[i].Type, withEmpty.MiddlewareConfigs[i].Type)
+		}
+	})
+
+	t.Run("re-running population keeps the injected entry exactly once", func(t *testing.T) {
+		t.Parallel()
+		cfg := &RunConfig{
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{mkInjected(t, obo.MiddlewareType)},
+		}
+		// PopulateMiddlewareConfigs overwrites MiddlewareConfigs (it rebuilds a fresh
+		// local slice) rather than appending in place, so re-running it must not
+		// accumulate duplicate injected entries. This invariant is what makes the
+		// operator→proxyrunner path safe.
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		count := 0
+		for _, mw := range cfg.MiddlewareConfigs {
+			if mw.Type == obo.MiddlewareType {
+				count++
+			}
+		}
+		assert.Equal(t, 1, count, "injected middleware must appear exactly once after re-population")
+	})
+}
+
+// TestPopulateMiddlewareConfigs_OBOSubjectProviderDefault verifies that behind
+// an embedded auth server an OBO config with no subjectTokenProviderName gets
+// the first upstream, so the subject is the upstream IdP token rather than
+// ToolHive's session JWT, and that the carrier keeps the operator's original.
+func TestPopulateMiddlewareConfigs_OBOSubjectProviderDefault(t *testing.T) {
+	t.Parallel()
+
+	mkOBO := func(t *testing.T, params map[string]any) types.MiddlewareConfig {
+		t.Helper()
+		mc, err := types.NewMiddlewareConfig(obo.MiddlewareType, params)
+		require.NoError(t, err)
+		return *mc
+	}
+	subjectOf := func(t *testing.T, cfg *RunConfig) map[string]any {
+		t.Helper()
+		var got map[string]any
+		mw := cfg.MiddlewareConfigs[indexOfMiddleware(t, cfg.MiddlewareConfigs, obo.MiddlewareType)]
+		require.NoError(t, json.Unmarshal(mw.Parameters, &got))
+		return got
+	}
+
+	withUpstreams := func(names ...string) *authserver.RunConfig {
+		cfg := createMinimalAuthServerConfig()
+		template := cfg.Upstreams[0]
+		cfg.Upstreams = nil
+		for _, n := range names {
+			u := template
+			u.Name = n
+			cfg.Upstreams = append(cfg.Upstreams, u)
+		}
+		return cfg
+	}
+
+	tests := []struct {
+		name      string
+		params    map[string]any
+		rawParams json.RawMessage // used instead of params when set
+		embedded  *authserver.RunConfig
+		want      any // expected subjectTokenProviderName; nil means absent
+		wantErr   string
+	}{
+		{
+			name:     "defaulted to the first upstream",
+			params:   map[string]any{"clientId": "c", "futureKey": "kept"},
+			embedded: createMinimalAuthServerConfig(),
+			want:     "test-upstream",
+		},
+		{
+			name:     "explicit provider kept",
+			params:   map[string]any{"clientId": "c", "subjectTokenProviderName": "explicit"},
+			embedded: createMinimalAuthServerConfig(),
+			want:     "explicit",
+		},
+		{
+			name:     "empty provider defaulted",
+			params:   map[string]any{"clientId": "c", "subjectTokenProviderName": ""},
+			embedded: createMinimalAuthServerConfig(),
+			want:     "test-upstream",
+		},
+		{
+			name:     "several upstreams take the first, as upstream swap does",
+			params:   map[string]any{"clientId": "c"},
+			embedded: withUpstreams("first", "second"),
+			want:     "first",
+		},
+		{
+			name:     "unnamed upstream resolves to the default name",
+			params:   map[string]any{"clientId": "c"},
+			embedded: withUpstreams(""),
+			want:     authserver.DefaultUpstreamName,
+		},
+		{
+			// No upstreams makes the auth server token-only, which strips the
+			// inbound credential; the default is skipped and the OBO guard
+			// rejects the combination.
+			name:     "embedded auth server with no upstreams is rejected",
+			params:   map[string]any{"clientId": "c"},
+			embedded: withUpstreams(),
+			wantErr:  "cannot be combined with OBO middleware",
+		},
+		{
+			name:   "no embedded auth server leaves inbound mode",
+			params: map[string]any{"clientId": "c"},
+			want:   nil,
+		},
+		{
+			name:      "null parameters are defaulted",
+			rawParams: json.RawMessage(`null`),
+			embedded:  createMinimalAuthServerConfig(),
+			want:      "test-upstream",
+		},
+		{
+			name:      "parameters that are not an object are an error",
+			rawParams: json.RawMessage(`[]`),
+			embedded:  createMinimalAuthServerConfig(),
+			wantErr:   "invalid OBO middleware parameters",
+		},
+		{
+			name:      "non-string provider name is an error",
+			rawParams: json.RawMessage(`{"subjectTokenProviderName": 5}`),
+			embedded:  createMinimalAuthServerConfig(),
+			wantErr:   "invalid OBO subjectTokenProviderName",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			injected := types.MiddlewareConfig{Type: obo.MiddlewareType, Parameters: tt.rawParams}
+			if tt.rawParams == nil {
+				injected = mkOBO(t, tt.params)
+			}
+			cfg := &RunConfig{
+				EmbeddedAuthServerConfig:    tt.embedded,
+				AdditionalMiddlewareConfigs: []types.MiddlewareConfig{injected},
+			}
+			err := PopulateMiddlewareConfigs(cfg)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			got := subjectOf(t, cfg)
+			assert.Equal(t, tt.want, got["subjectTokenProviderName"])
+			if v, ok := tt.params["clientId"]; ok {
+				assert.Equal(t, v, got["clientId"], "other parameters are kept")
+			}
+			if v, ok := tt.params["futureKey"]; ok {
+				assert.Equal(t, v, got["futureKey"], "unknown keys are kept")
+			}
+			assert.Equal(t, injected.Parameters, cfg.AdditionalMiddlewareConfigs[0].Parameters,
+				"the carrier keeps the operator's original parameters")
+		})
+	}
+
+	t.Run("a non-OBO middleware beside an OBO one is left alone", func(t *testing.T) {
+		t.Parallel()
+		const otherType = "test-other"
+		other, err := types.NewMiddlewareConfig(otherType, map[string]any{"subjectTokenProviderName": ""})
+		require.NoError(t, err)
+		cfg := &RunConfig{
+			EmbeddedAuthServerConfig: createMinimalAuthServerConfig(),
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{
+				*other, mkOBO(t, map[string]any{"clientId": "c"}),
+			},
+		}
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		assert.Equal(t, "test-upstream", subjectOf(t, cfg)["subjectTokenProviderName"])
+		gotOther := cfg.MiddlewareConfigs[indexOfMiddleware(t, cfg.MiddlewareConfigs, otherType)]
+		assert.JSONEq(t, string(other.Parameters), string(gotOther.Parameters),
+			"a non-OBO middleware's parameters are not defaulted")
+	})
+}
+
+// TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs_RoundTrip exercises
+// the full operator path (NewOperatorRunConfigBuilder + PopulateMiddlewareConfigs)
+// and confirms an injected obo-typed config survives JSON/YAML serialization so
+// the proxyrunner loads it and dispatches obo.MiddlewareType to a registered
+// factory.
+func TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	oboParams := map[string]string{"token_url": "https://login.example.com/token"}
+	injected, err := types.NewMiddlewareConfig(obo.MiddlewareType, oboParams)
+	require.NoError(t, err)
+
+	cfg, err := NewOperatorRunConfigBuilder(
+		t.Context(),
+		nil,
+		nil,
+		nil,
+		WithName("obo-test"),
+		WithAdditionalMiddlewareConfigs(injected),
+	)
+	require.NoError(t, err)
+
+	// The builder records the injected config but does not apply it; the
+	// applied chain is populated separately by PopulateMiddlewareConfigs.
+	require.Len(t, cfg.AdditionalMiddlewareConfigs, 1)
+	require.Empty(t, cfg.MiddlewareConfigs)
+
+	require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+	findOBO := func(t *testing.T, c *RunConfig) types.MiddlewareConfig {
+		t.Helper()
+		return c.MiddlewareConfigs[indexOfMiddleware(t, c.MiddlewareConfigs, obo.MiddlewareType)]
+	}
+
+	original := findOBO(t, cfg)
+	require.JSONEq(t, string(injected.Parameters), string(original.Parameters))
+
+	t.Run("json", func(t *testing.T) {
+		t.Parallel()
+		// JSON is the proxyrunner's ConfigMap read path (WriteJSON/ReadJSON).
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+
+		roundTripped := findOBO(t, got)
+		assert.Equal(t, obo.MiddlewareType, roundTripped.Type)
+		assert.JSONEq(t, string(original.Parameters), string(roundTripped.Parameters))
+	})
+
+	t.Run("yaml", func(t *testing.T) {
+		t.Parallel()
+		data, err := yaml.Marshal(cfg)
+		require.NoError(t, err)
+
+		var got RunConfig
+		require.NoError(t, yaml.Unmarshal(data, &got))
+
+		roundTripped := findOBO(t, &got)
+		assert.Equal(t, obo.MiddlewareType, roundTripped.Type)
+		assert.JSONEq(t, string(original.Parameters), string(roundTripped.Parameters))
+	})
+
+	// The proxyrunner dispatches by middleware type; the obo factory is wired.
+	_, ok := GetSupportedMiddlewareFactories()[obo.MiddlewareType]
+	assert.True(t, ok, "obo middleware type must dispatch to a registered factory")
+}
+
 // TestWithMiddlewareFromFlags_ExcludesHeaderForward verifies that WithMiddlewareFromFlags
 // does NOT add header-forward middleware. Header forward is added later in Runner.Run()
 // after secret resolution, because secret-backed header values are unavailable at builder time.
@@ -209,6 +717,49 @@ func TestWithMiddlewareFromFlags_ExcludesHeaderForward(t *testing.T) {
 	assert.Equal(t, map[string]string{"X-Key": "val"}, cfg.HeaderForward.AddPlaintextHeaders)
 }
 
+func TestTokenExchangeRegistration(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		assert.Equal(t, "original-token", r.Form.Get("subject_token"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"exchanged-token","token_type":"Bearer","issued_token_type":"urn:ietf:params:oauth:token-type:access_token"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	config := &RunConfig{TokenExchangeConfig: &tokenexchange.Config{TokenURL: server.URL}}
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+	serialized, err := json.Marshal(config)
+	require.NoError(t, err)
+	var restored RunConfig
+	require.NoError(t, json.Unmarshal(serialized, &restored))
+	runner := NewRunner(&restored, nil)
+	for _, config := range restored.MiddlewareConfigs {
+		if config.Type != tokenexchange.MiddlewareType {
+			continue
+		}
+		factory, ok := runner.supportedMiddleware[config.Type]
+		require.True(t, ok)
+		require.NoError(t, factory(&config, runner))
+	}
+	require.Len(t, runner.middlewares, 1)
+	require.IsType(t, &tokenexchange.Middleware{}, runner.middlewares[0])
+	t.Cleanup(func() { require.NoError(t, runner.middlewares[0].Close()) })
+	require.Len(t, runner.namedMiddlewares, 1)
+	assert.Equal(t, tokenexchange.MiddlewareType, runner.namedMiddlewares[0].Name)
+
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer original-token")
+	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{}))
+	rec := httptest.NewRecorder()
+	runner.namedMiddlewares[0].Function(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer exchanged-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
 func TestGetSupportedMiddlewareFactories(t *testing.T) {
 	t.Parallel()
 
@@ -217,10 +768,94 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 		headerfwd.HeaderForwardMiddlewareName,
 		upstreamswap.MiddlewareType,
 		awssts.MiddlewareType,
+		obo.MiddlewareType,
 	} {
 		_, ok := factories[key]
 		assert.True(t, ok, "factory map should contain %q", key)
 	}
+}
+
+// TestOBOFactoryHonorsRegisterFactory verifies the runner's factory map
+// dispatches obo.MiddlewareType through obo.CreateMiddleware rather than
+// binding obo.DefaultFactory directly, so a replacement installed with the
+// deprecated obo.RegisterFactory is still honored.
+//
+//nolint:paralleltest // Replaces the package-level OBO factory; must not overlap other tests.
+func TestOBOFactoryHonorsRegisterFactory(t *testing.T) {
+	sentinel := errors.New("replacement obo factory")
+	//nolint:staticcheck // SA1019: exercising the deprecated override path is the point of this test.
+	obo.RegisterFactory(func(*types.MiddlewareConfig, types.MiddlewareRunner) error { return sentinel })
+	t.Cleanup(func() {
+		obo.RegisterFactory(obo.DefaultFactory) //nolint:staticcheck // SA1019: restores the default.
+	})
+
+	factory, ok := GetSupportedMiddlewareFactories()[obo.MiddlewareType]
+	require.True(t, ok)
+	err := factory(&types.MiddlewareConfig{Type: obo.MiddlewareType}, nil)
+	require.ErrorIs(t, err, sentinel, "the runner must dispatch through obo.CreateMiddleware")
+}
+
+// TestOBORegistration exercises the proxyrunner path for an operator-injected
+// obo middleware: the RunConfig round-trips through JSON, the runner's factory
+// map builds the built-in OBO middleware, and a request through it has its
+// subject token exchanged at a (mock) Entra token endpoint and forwarded as the
+// backend bearer token.
+//
+//nolint:paralleltest // Uses t.Setenv for the client secret the factory reads.
+func TestOBORegistration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// assert, not require: this runs on the server's goroutine.
+		if !assert.NoError(t, r.ParseForm()) {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, "urn:ietf:params:oauth:grant-type:jwt-bearer", r.Form.Get("grant_type"))
+		assert.Equal(t, "on_behalf_of", r.Form.Get("requested_token_use"))
+		assert.Equal(t, "user-token", r.Form.Get("assertion"))
+		assert.Equal(t, "the-secret", r.Form.Get("client_secret"))
+		assert.Equal(t, "api://backend/.default", r.Form.Get("scope"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"backend-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("TEST_RUNNER_OBO_SECRET", "the-secret")
+
+	injected, err := types.NewMiddlewareConfig(obo.MiddlewareType, obo.MiddlewareParameters{
+		TokenURL:           server.URL + "/tenant/oauth2/v2.0/token",
+		ClientID:           "client-id",
+		Scopes:             []string{"api://backend/.default"},
+		ClientSecretEnvVar: "TEST_RUNNER_OBO_SECRET",
+	})
+	require.NoError(t, err)
+
+	config := &RunConfig{AdditionalMiddlewareConfigs: []types.MiddlewareConfig{*injected}}
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+	serialized, err := json.Marshal(config)
+	require.NoError(t, err)
+	var restored RunConfig
+	require.NoError(t, json.Unmarshal(serialized, &restored))
+
+	runner := NewRunner(&restored, nil)
+	for _, cfg := range restored.MiddlewareConfigs {
+		if cfg.Type != obo.MiddlewareType {
+			continue
+		}
+		factory, ok := runner.supportedMiddleware[cfg.Type]
+		require.True(t, ok)
+		require.NoError(t, factory(&cfg, runner))
+	}
+	require.Len(t, runner.namedMiddlewares, 1)
+	assert.Equal(t, obo.MiddlewareType, runner.namedMiddlewares[0].Name)
+
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer user-token")
+	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{Token: "user-token"}))
+	rec := httptest.NewRecorder()
+	runner.namedMiddlewares[0].Function(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer backend-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
 func TestWithHeaderForwardSecretsBuilderOption(t *testing.T) {
@@ -271,6 +906,8 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 		name         string
 		config       *RunConfig
 		wantAppended bool
+		wantType     string // expected middleware type when appended
+		wantErr      string
 	}{
 		{
 			name:         "nil EmbeddedAuthServerConfig returns input unchanged",
@@ -284,6 +921,29 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 				UpstreamSwapConfig:       nil,
 			},
 			wantAppended: true,
+			wantType:     upstreamswap.MiddlewareType,
+		},
+		{
+			name: "DisableUpstreamTokenInjection adds strip-auth middleware instead",
+			config: func() *RunConfig {
+				cfg := createMinimalAuthServerConfig()
+				cfg.DisableUpstreamTokenInjection = true
+				return &RunConfig{EmbeddedAuthServerConfig: cfg}
+			}(),
+			wantAppended: true,
+			wantType:     headerfwd.StripAuthMiddlewareName,
+		},
+		{
+			name: "DisableUpstreamTokenInjection rejects explicit upstream swap",
+			config: func() *RunConfig {
+				cfg := createMinimalAuthServerConfig()
+				cfg.DisableUpstreamTokenInjection = true
+				return &RunConfig{
+					EmbeddedAuthServerConfig: cfg,
+					UpstreamSwapConfig:       &upstreamswap.Config{},
+				}
+			}(),
+			wantErr: "disableUpstreamTokenInjection cannot be combined with upstream swap",
 		},
 		{
 			name: "EmbeddedAuthServerConfig set with explicit UpstreamSwapConfig uses provided config",
@@ -294,6 +954,7 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 				},
 			},
 			wantAppended: true,
+			wantType:     upstreamswap.MiddlewareType,
 		},
 		{
 			name: "EmbeddedAuthServerConfig with custom header strategy config",
@@ -305,6 +966,7 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 				},
 			},
 			wantAppended: true,
+			wantType:     upstreamswap.MiddlewareType,
 		},
 	}
 
@@ -314,6 +976,10 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 
 			initial := []types.MiddlewareConfig{{Type: "existing"}}
 			got, err := addUpstreamSwapMiddleware(initial, tt.config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
 			require.NoError(t, err)
 
 			if !tt.wantAppended {
@@ -324,20 +990,20 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 			// Should have one additional entry.
 			require.Len(t, got, len(initial)+1)
 			added := got[len(got)-1]
-			assert.Equal(t, upstreamswap.MiddlewareType, added.Type)
+			assert.Equal(t, tt.wantType, added.Type)
 
-			// Verify serialized params contain the expected config.
-			var params upstreamswap.MiddlewareParams
-			require.NoError(t, json.Unmarshal(added.Parameters, &params))
+			// For upstreamswap type, verify serialized params
+			if tt.wantType == upstreamswap.MiddlewareType {
+				var params upstreamswap.MiddlewareParams
+				require.NoError(t, json.Unmarshal(added.Parameters, &params))
 
-			if tt.config.UpstreamSwapConfig != nil {
-				// Should use the provided config
-				require.NotNil(t, params.Config)
-				assert.Equal(t, tt.config.UpstreamSwapConfig.HeaderStrategy, params.Config.HeaderStrategy)
-				assert.Equal(t, tt.config.UpstreamSwapConfig.CustomHeaderName, params.Config.CustomHeaderName)
-			} else {
-				// Should use defaults (empty config is valid)
-				require.NotNil(t, params.Config)
+				if tt.config.UpstreamSwapConfig != nil {
+					require.NotNil(t, params.Config)
+					assert.Equal(t, tt.config.UpstreamSwapConfig.HeaderStrategy, params.Config.HeaderStrategy)
+					assert.Equal(t, tt.config.UpstreamSwapConfig.CustomHeaderName, params.Config.CustomHeaderName)
+				} else {
+					require.NotNil(t, params.Config)
+				}
 			}
 		})
 	}
@@ -350,6 +1016,7 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 		name               string
 		config             *RunConfig
 		wantUpstreamSwap   bool
+		wantStripAuth      bool
 		wantHeaderStrategy string
 	}{
 		{
@@ -361,6 +1028,16 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 			name:             "no EmbeddedAuthServerConfig omits upstream-swap",
 			config:           &RunConfig{EmbeddedAuthServerConfig: nil},
 			wantUpstreamSwap: false,
+		},
+		{
+			name: "DisableUpstreamTokenInjection adds strip-auth instead of upstream-swap",
+			config: func() *RunConfig {
+				cfg := createMinimalAuthServerConfig()
+				cfg.DisableUpstreamTokenInjection = true
+				return &RunConfig{EmbeddedAuthServerConfig: cfg}
+			}(),
+			wantUpstreamSwap: false,
+			wantStripAuth:    true,
 		},
 		{
 			name: "explicit UpstreamSwapConfig is used",
@@ -382,20 +1059,25 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 			err := PopulateMiddlewareConfigs(tt.config)
 			require.NoError(t, err)
 
-			var found bool
+			var foundSwap bool
+			var foundStrip bool
 			var foundConfig *types.MiddlewareConfig
 			for i, mw := range tt.config.MiddlewareConfigs {
 				if mw.Type == upstreamswap.MiddlewareType {
-					found = true
+					foundSwap = true
 					foundConfig = &tt.config.MiddlewareConfigs[i]
-					break
+				}
+				if mw.Type == headerfwd.StripAuthMiddlewareName {
+					foundStrip = true
 				}
 			}
-			assert.Equal(t, tt.wantUpstreamSwap, found,
+			assert.Equal(t, tt.wantUpstreamSwap, foundSwap,
 				"upstream-swap middleware presence mismatch")
+			assert.Equal(t, tt.wantStripAuth, foundStrip,
+				"strip-auth middleware presence mismatch")
 
 			// Verify config values if we expect the middleware and have specific expectations
-			if found && tt.wantHeaderStrategy != "" {
+			if foundSwap && tt.wantHeaderStrategy != "" {
 				var params upstreamswap.MiddlewareParams
 				require.NoError(t, json.Unmarshal(foundConfig.Parameters, &params))
 				require.NotNil(t, params.Config)
@@ -587,6 +1269,139 @@ func TestPopulateMiddlewareConfigs_AWSStsOrdering(t *testing.T) {
 		"awssts must appear before recovery middleware")
 }
 
+// TestPopulateMiddlewareConfigs_BodyLimitIsOutermost verifies that the body
+// size limit middleware is always present and placed first in the config slice.
+// The proxies apply middleware so the first config is the outermost wrapper (it
+// executes first), which is required so oversized request bodies are rejected
+// before the MCP parser or any proxy handler buffers them via io.ReadAll.
+func TestPopulateMiddlewareConfigs_BodyLimitIsOutermost(t *testing.T) {
+	t.Parallel()
+
+	config := &RunConfig{}
+
+	err := PopulateMiddlewareConfigs(config)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, config.MiddlewareConfigs)
+	assert.Equal(t, bodylimit.MiddlewareType, config.MiddlewareConfigs[0].Type,
+		"body limit middleware must be first (outermost) in the chain")
+
+	// It must come before auth, the MCP parser, and recovery.
+	typeIndex := make(map[string]int, len(config.MiddlewareConfigs))
+	for i, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+	bodyLimitIdx := typeIndex[bodylimit.MiddlewareType]
+	if authIdx, ok := typeIndex[auth.MiddlewareType]; ok {
+		assert.Less(t, bodyLimitIdx, authIdx, "body limit must precede auth")
+	}
+	if parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]; ok {
+		assert.Less(t, bodyLimitIdx, parserIdx, "body limit must precede the MCP parser")
+	}
+}
+
+// TestAddBodyLimitMiddleware verifies the shared helper that guarantees exactly
+// one body-size-limit middleware at index 0 with the configured size. This is the
+// regression guard for pre-populated MiddlewareConfigs (for example, the CLI
+// flags path) bypassing or retaining a stale body-limit configuration.
+func TestAddBodyLimitMiddleware(t *testing.T) {
+	t.Parallel()
+
+	middlewareConfig := func(t *testing.T, middlewareType string, parameters any) types.MiddlewareConfig {
+		t.Helper()
+		cfg, err := types.NewMiddlewareConfig(middlewareType, parameters)
+		require.NoError(t, err)
+		return *cfg
+	}
+
+	tests := []struct {
+		name          string
+		maxBytes      int64
+		input         func(t *testing.T) []types.MiddlewareConfig
+		expectErr     bool
+		expectedTypes []string
+		expectedLimit int64
+	}{
+		{
+			name:          "zero uses default limit",
+			input:         func(*testing.T) []types.MiddlewareConfig { return nil },
+			expectedTypes: []string{bodylimit.MiddlewareType},
+			expectedLimit: bodylimit.DefaultMaxRequestBodySize,
+		},
+		{
+			name:          "positive size configures body limit at index zero",
+			maxBytes:      16 << 20,
+			input:         func(*testing.T) []types.MiddlewareConfig { return nil },
+			expectedTypes: []string{bodylimit.MiddlewareType},
+			expectedLimit: 16 << 20,
+		},
+		{
+			name:      "negative size returns an error",
+			maxBytes:  -1,
+			input:     func(*testing.T) []types.MiddlewareConfig { return nil },
+			expectErr: true,
+		},
+		{
+			name:     "stale outermost body limit is replaced",
+			maxBytes: 32 << 20,
+			input: func(t *testing.T) []types.MiddlewareConfig {
+				t.Helper()
+				return []types.MiddlewareConfig{
+					middlewareConfig(t, bodylimit.MiddlewareType, bodylimit.MiddlewareParams{MaxBytes: 1}),
+					middlewareConfig(t, auth.MiddlewareType, auth.MiddlewareParams{}),
+				}
+			},
+			expectedTypes: []string{bodylimit.MiddlewareType, auth.MiddlewareType},
+			expectedLimit: 32 << 20,
+		},
+		{
+			name:     "duplicates collapse and non-body-limit order is preserved",
+			maxBytes: 64 << 20,
+			input: func(t *testing.T) []types.MiddlewareConfig {
+				t.Helper()
+				return []types.MiddlewareConfig{
+					middlewareConfig(t, auth.MiddlewareType, auth.MiddlewareParams{}),
+					middlewareConfig(t, bodylimit.MiddlewareType, bodylimit.MiddlewareParams{MaxBytes: 1}),
+					middlewareConfig(t, recovery.MiddlewareType, struct{}{}),
+					middlewareConfig(t, bodylimit.MiddlewareType, bodylimit.MiddlewareParams{MaxBytes: 2}),
+				}
+			},
+			expectedTypes: []string{bodylimit.MiddlewareType, auth.MiddlewareType, recovery.MiddlewareType},
+			expectedLimit: 64 << 20,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := tt.input(t)
+			result, err := addBodyLimitMiddleware(input, tt.maxBytes)
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "max_request_body_size must be non-negative")
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, result, len(tt.expectedTypes))
+			for i, expectedType := range tt.expectedTypes {
+				assert.Equal(t, expectedType, result[i].Type)
+			}
+
+			var params bodylimit.MiddlewareParams
+			require.NoError(t, json.Unmarshal(result[0].Parameters, &params))
+			assert.Equal(t, tt.expectedLimit, params.MaxBytes)
+
+			count := 0
+			for _, middleware := range result {
+				if middleware.Type == bodylimit.MiddlewareType {
+					count++
+				}
+			}
+			assert.Equal(t, 1, count, "body limit must occur exactly once")
+		})
+	}
+}
+
 // makeCedarAuthzConfig is a helper that creates a valid Cedar authz.Config.
 func makeCedarAuthzConfig(t *testing.T) *authz.Config {
 	t.Helper()
@@ -649,12 +1464,12 @@ func TestInjectUpstreamProviderIfNeeded(t *testing.T) {
 			wantProviderName: authserver.DefaultUpstreamName,
 		},
 		{
-			name: "empty_upstreams_falls_back_to_default",
+			name: "empty_upstreams_leave_Cedar_config_unchanged",
 			embeddedCfg: &authserver.RunConfig{
 				Upstreams: []authserver.UpstreamRunConfig{},
 			},
-			wantErr:          false,
-			wantProviderName: authserver.DefaultUpstreamName,
+			wantErr:         false,
+			wantSamePointer: true,
 		},
 	}
 
@@ -764,8 +1579,8 @@ func TestAddRateLimitMiddleware(t *testing.T) {
 		{
 			name: "rate limit without Redis returns error",
 			config: &RunConfig{
-				RateLimitConfig: &v1alpha1.RateLimitConfig{
-					Shared: &v1alpha1.RateLimitBucket{
+				RateLimitConfig: &v1beta1.RateLimitConfig{
+					Shared: &v1beta1.RateLimitBucket{
 						MaxTokens:    10,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -778,8 +1593,8 @@ func TestAddRateLimitMiddleware(t *testing.T) {
 			config: &RunConfig{
 				Name:               "test-server",
 				RateLimitNamespace: "default",
-				RateLimitConfig: &v1alpha1.RateLimitConfig{
-					Shared: &v1alpha1.RateLimitBucket{
+				RateLimitConfig: &v1beta1.RateLimitConfig{
+					Shared: &v1beta1.RateLimitBucket{
 						MaxTokens:    10,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -840,8 +1655,8 @@ func TestPopulateMiddlewareConfigs_RateLimit(t *testing.T) {
 			config: &RunConfig{
 				Name:               "test-server",
 				RateLimitNamespace: "default",
-				RateLimitConfig: &v1alpha1.RateLimitConfig{
-					Shared: &v1alpha1.RateLimitBucket{
+				RateLimitConfig: &v1beta1.RateLimitConfig{
+					Shared: &v1beta1.RateLimitBucket{
 						MaxTokens:    5,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -876,6 +1691,50 @@ func TestPopulateMiddlewareConfigs_RateLimit(t *testing.T) {
 			assert.Equal(t, tt.wantRateLimit, found)
 		})
 	}
+}
+
+func TestPopulateMiddlewareConfigs_RateLimitTelemetryOrdering(t *testing.T) {
+	t.Parallel()
+	config := &RunConfig{
+		Name:            "test-server",
+		TelemetryConfig: &telemetry.Config{},
+		MutatingWebhooks: []webhook.Config{{
+			Name:    "mutating-hook",
+			URL:     "http://example.com/mutate",
+			Timeout: webhook.DefaultTimeout,
+		}},
+		ValidatingWebhooks: []webhook.Config{{
+			Name:    "validating-hook",
+			URL:     "http://example.com/validate",
+			Timeout: webhook.DefaultTimeout,
+		}},
+		RateLimitNamespace: "default",
+		RateLimitConfig: &v1beta1.RateLimitConfig{
+			Shared: &v1beta1.RateLimitBucket{
+				MaxTokens:    5,
+				RefillPeriod: metav1.Duration{Duration: time.Minute},
+			},
+		},
+		ScalingConfig: &ScalingConfig{
+			SessionRedis: &SessionRedisConfig{Address: "redis:6379"},
+		},
+	}
+
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+
+	parserIdx := indexOfMiddleware(t, config.MiddlewareConfigs, mcp.ParserMiddlewareType)
+	telemetryIdx := indexOfMiddleware(t, config.MiddlewareConfigs, telemetry.MiddlewareType)
+	rateLimitIdx := indexOfMiddleware(t, config.MiddlewareConfigs, ratelimit.MiddlewareType)
+	mutatingIdx := indexOfMiddleware(t, config.MiddlewareConfigs, mutating.MiddlewareType)
+	validatingIdx := indexOfMiddleware(t, config.MiddlewareConfigs, validating.MiddlewareType)
+	assert.Less(t, parserIdx, telemetryIdx,
+		"MCP parsing must run before telemetry creates the request span")
+	assert.Less(t, telemetryIdx, rateLimitIdx,
+		"telemetry must create the request span before rate limiting annotates it")
+	assert.Less(t, rateLimitIdx, mutatingIdx,
+		"rate limiting must reject excess traffic before invoking mutating webhooks")
+	assert.Less(t, mutatingIdx, validatingIdx,
+		"mutating webhooks must republish the final request before validation")
 }
 
 func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
@@ -913,4 +1772,395 @@ func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
 	assert.True(t, typeIndex[telemetry.MiddlewareType])
 	assert.True(t, typeIndex[authz.MiddlewareType])
 	assert.True(t, typeIndex[audit.MiddlewareType])
+}
+
+// TestPopulateMiddlewareConfigs_AuditWrapsChain pins the ordering invariant
+// that the audit middleware sits directly inside body-limit, wrapping the
+// REST of the chain. Earlier entries wrap later ones at request time, so this
+// placement is what guarantees every request that passes the size cap
+// produces an audit event no matter which middleware rejects it —
+// authentication 401s, webhook denials, and authorization 403s included.
+// Identity and parsed MCP data flow back to audit from the inner auth/parser
+// middlewares via the holder carriers, so audit no longer needs to run inside
+// them.
+func TestPopulateMiddlewareConfigs_AuditWrapsChain(t *testing.T) {
+	t.Parallel()
+
+	config := &RunConfig{
+		AuthzConfig: &authz.Config{},
+		AuditConfig: &audit.Config{Component: "test-component"},
+	}
+
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+
+	typeIndex := make(map[string]int, len(config.MiddlewareConfigs))
+	for i, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+
+	auditIdx, ok := typeIndex[audit.MiddlewareType]
+	require.True(t, ok, "audit middleware must be present")
+	authzIdx, ok := typeIndex[authz.MiddlewareType]
+	require.True(t, ok, "authz middleware must be present")
+	authIdx, ok := typeIndex[auth.MiddlewareType]
+	require.True(t, ok, "auth middleware must be present")
+	parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]
+	require.True(t, ok, "MCP parser middleware must be present")
+	bodyLimitIdx, ok := typeIndex[bodylimit.MiddlewareType]
+	require.True(t, ok, "body limit middleware must be present")
+
+	assert.Less(t, bodyLimitIdx, auditIdx,
+		"body limit must stay outside audit so oversized bodies are rejected before audit buffers them")
+	assert.Less(t, auditIdx, authIdx,
+		"audit must wrap auth so authentication failures (401) are audited")
+	assert.Less(t, auditIdx, parserIdx,
+		"audit wraps the parser; parsed MCP data flows back via mcp.ParsedRequestHolder")
+	assert.Less(t, auditIdx, authzIdx,
+		"audit must wrap authz so authorization denials (403) are audited")
+}
+
+func TestPopulateMiddlewareConfigs_BindsEmbeddedAuthServerIssuer(t *testing.T) {
+	t.Parallel()
+
+	embeddedAuthServerConfig := createMinimalAuthServerConfig()
+	oidcConfig := &auth.TokenValidatorConfig{Issuer: "https://issuer.example.com", Scopes: []string{"openid", "profile"}}
+	config := &RunConfig{EmbeddedAuthServerConfig: embeddedAuthServerConfig, OIDCConfig: oidcConfig}
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+
+	for _, middlewareConfig := range config.MiddlewareConfigs {
+		if middlewareConfig.Type != auth.MiddlewareType {
+			continue
+		}
+
+		var params auth.MiddlewareParams
+		require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+		assert.Equal(t, embeddedAuthServerConfig.Issuer, params.EmbeddedAuthServerIssuer)
+		assert.Equal(t, oidcConfig, params.OIDCConfig)
+		return
+	}
+
+	t.Fatal("authentication middleware configuration not found")
+}
+
+func TestCanonicalizeOIDCMiddlewareConfig(t *testing.T) {
+	t.Parallel()
+
+	canonical := &auth.TokenValidatorConfig{
+		Issuer: "https://issuer.example.com", JWKSURL: "https://issuer.example.com/keys",
+		CACertPath: "/certs/ca.pem", AuthTokenFile: "/secrets/jwks-token",
+		ResourceURL: "https://resource.example.com", AllowPrivateIP: true,
+		InsecureAllowHTTP: true, Scopes: []string{"openid", "profile"},
+	}
+	authConfig := func(t *testing.T, params auth.MiddlewareParams) types.MiddlewareConfig {
+		t.Helper()
+		config, err := types.NewMiddlewareConfig(auth.MiddlewareType, params)
+		require.NoError(t, err)
+		return *config
+	}
+
+	tests := []struct {
+		name                     string
+		canonical                *auth.TokenValidatorConfig
+		middlewares              []types.MiddlewareConfig
+		embeddedAuthServerConfig *authserver.RunConfig
+		wantErr                  string
+		assertion                func(t *testing.T, middlewares []types.MiddlewareConfig)
+	}{
+		{
+			name:      "repairs legacy nil OIDC configuration",
+			canonical: canonical,
+			middlewares: []types.MiddlewareConfig{
+				authConfig(t, auth.MiddlewareParams{EmbeddedAuthServerIssuer: "https://embedded.example.com"}),
+			},
+			assertion: func(t *testing.T, middlewares []types.MiddlewareConfig) {
+				t.Helper()
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewares[0].Parameters, &params))
+				assert.Equal(t, canonical, params.OIDCConfig)
+				assert.Equal(t, "https://embedded.example.com", params.EmbeddedAuthServerIssuer)
+			},
+		},
+		{
+			name:      "replaces stale embedded auth server issuer",
+			canonical: canonical,
+			middlewares: []types.MiddlewareConfig{
+				authConfig(t, auth.MiddlewareParams{EmbeddedAuthServerIssuer: "https://stale-embedded.example.com"}),
+			},
+			embeddedAuthServerConfig: &authserver.RunConfig{Issuer: "https://embedded.example.com"},
+			assertion: func(t *testing.T, middlewares []types.MiddlewareConfig) {
+				t.Helper()
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewares[0].Parameters, &params))
+				assert.Equal(t, "https://embedded.example.com", params.EmbeddedAuthServerIssuer)
+			},
+		},
+		{
+			name:      "replaces stale OIDC configuration and preserves ordering",
+			canonical: canonical,
+			middlewares: []types.MiddlewareConfig{
+				{Type: mcp.ParserMiddlewareType},
+				authConfig(t, auth.MiddlewareParams{OIDCConfig: &auth.TokenValidatorConfig{Issuer: "https://stale.example.com"}}),
+				{Type: recovery.MiddlewareType},
+			},
+			assertion: func(t *testing.T, middlewares []types.MiddlewareConfig) {
+				t.Helper()
+				assert.Equal(t, mcp.ParserMiddlewareType, middlewares[0].Type)
+				assert.Equal(t, auth.MiddlewareType, middlewares[1].Type)
+				assert.Equal(t, recovery.MiddlewareType, middlewares[2].Type)
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewares[1].Parameters, &params))
+				assert.Equal(t, canonical, params.OIDCConfig)
+			},
+		},
+		{
+			name:        "leaves valid canonical configuration intact",
+			canonical:   canonical,
+			middlewares: []types.MiddlewareConfig{authConfig(t, auth.MiddlewareParams{OIDCConfig: canonical})},
+		},
+		{
+			name:        "rejects missing authentication middleware",
+			canonical:   canonical,
+			middlewares: []types.MiddlewareConfig{{Type: mcp.ParserMiddlewareType}},
+			wantErr:     "exactly one authentication middleware",
+		},
+		{
+			name: "rejects malformed authentication parameters", canonical: canonical,
+			middlewares: []types.MiddlewareConfig{{Type: auth.MiddlewareType, Parameters: []byte(`{`)}},
+			wantErr:     "failed to decode authentication middleware parameters",
+		},
+		{
+			name: "rejects null authentication parameters", canonical: canonical,
+			middlewares: []types.MiddlewareConfig{{Type: auth.MiddlewareType, Parameters: []byte(`null`)}},
+			wantErr:     "authentication middleware parameters cannot be null",
+		},
+		{
+			name: "rejects duplicate authentication middleware", canonical: canonical,
+			middlewares: []types.MiddlewareConfig{
+				authConfig(t, auth.MiddlewareParams{OIDCConfig: canonical}),
+				authConfig(t, auth.MiddlewareParams{OIDCConfig: canonical}),
+			},
+			wantErr: "exactly one authentication middleware",
+		},
+		{
+			name:        "leaves chain unchanged without canonical OIDC configuration",
+			middlewares: []types.MiddlewareConfig{authConfig(t, auth.MiddlewareParams{})},
+			assertion: func(t *testing.T, middlewares []types.MiddlewareConfig) {
+				t.Helper()
+				var params auth.MiddlewareParams
+				require.NoError(t, json.Unmarshal(middlewares[0].Parameters, &params))
+				assert.Nil(t, params.OIDCConfig)
+			},
+		},
+		{name: "allows empty deferred chain", canonical: canonical},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := &RunConfig{
+				OIDCConfig:               tt.canonical,
+				MiddlewareConfigs:        tt.middlewares,
+				EmbeddedAuthServerConfig: tt.embeddedAuthServerConfig,
+			}
+			err := canonicalizeOIDCMiddlewareConfig(config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.assertion != nil {
+				tt.assertion(t, config.MiddlewareConfigs)
+			}
+		})
+	}
+}
+
+// TestPopulateMiddlewareConfigs_StripAuthOrdering pins the ordering invariant
+// for strip-auth: the auth middleware must precede it in the chain so the
+// client JWT is fully validated (and the identity stored in the request
+// context for authz/audit) before the Authorization header is removed.
+func TestPopulateMiddlewareConfigs_StripAuthOrdering(t *testing.T) {
+	t.Parallel()
+
+	authServerCfg := createMinimalAuthServerConfig()
+	authServerCfg.DisableUpstreamTokenInjection = true
+	config := &RunConfig{EmbeddedAuthServerConfig: authServerCfg}
+
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+
+	authIdx, stripIdx := -1, -1
+	for i, mw := range config.MiddlewareConfigs {
+		switch mw.Type {
+		case auth.MiddlewareType:
+			authIdx = i
+		case headerfwd.StripAuthMiddlewareName:
+			stripIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, authIdx, 0, "auth middleware must be present")
+	require.GreaterOrEqual(t, stripIdx, 0, "strip-auth middleware must be present")
+	assert.Less(t, authIdx, stripIdx,
+		"auth must validate the client JWT before strip-auth removes the Authorization header")
+}
+
+// TestTokenOnlyAuthServerMiddleware verifies that no-upstream auth servers strip
+// credentials and reject an explicit upstream-swap configuration.
+func TestTokenOnlyAuthServerMiddleware(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  *RunConfig
+		wantErr string
+	}{
+		{
+			name:   "strips credentials",
+			config: &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+		},
+		{
+			name: "rejects explicit upstream swap",
+			config: &RunConfig{
+				EmbeddedAuthServerConfig: &authserver.RunConfig{},
+				UpstreamSwapConfig:       &upstreamswap.Config{},
+			},
+			wantErr: "upstream swap cannot be configured without upstreams",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			configs, err := addUpstreamSwapMiddleware(nil, tt.config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, configs, 1)
+			assert.Equal(t, headerfwd.StripAuthMiddlewareName, configs[0].Type)
+		})
+	}
+}
+
+func TestValidateCredentialStrippingMiddleware(t *testing.T) {
+	t.Parallel()
+
+	disabledInjectionConfig := func() *RunConfig {
+		authServerCfg := createMinimalAuthServerConfig()
+		authServerCfg.DisableUpstreamTokenInjection = true
+		return &RunConfig{EmbeddedAuthServerConfig: authServerCfg}
+	}()
+
+	tests := []struct {
+		name    string
+		config  *RunConfig
+		configs []types.MiddlewareConfig
+		wantErr string
+	}{
+		{
+			name:    "token-only requires strip-auth",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}},
+			wantErr: "requires strip-auth",
+		},
+		{
+			name:    "token-only accepts auth before strip-auth",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+		},
+		{
+			name:    "disabled injection accepts auth before strip-auth",
+			config:  disabledInjectionConfig,
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+		},
+		{
+			name:    "requires auth",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "requires auth",
+		},
+		{
+			name:    "rejects strip-auth before auth",
+			config:  disabledInjectionConfig,
+			configs: []types.MiddlewareConfig{{Type: headerfwd.StripAuthMiddlewareName}, {Type: auth.MiddlewareType}},
+			wantErr: "strip-auth middleware after auth middleware",
+		},
+		{
+			name:    "rejects duplicate strip-auth",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}, {Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "exactly one strip-auth",
+		},
+		{
+			name:    "disabled injection rejects upstream swap",
+			config:  disabledInjectionConfig,
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: upstreamswap.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "upstream swap",
+		},
+		{
+			name:    "token-only rejects token exchange",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: tokenexchange.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "token exchange",
+		},
+		{
+			name:    "token-only rejects AWS STS",
+			config:  &RunConfig{EmbeddedAuthServerConfig: &authserver.RunConfig{}},
+			configs: []types.MiddlewareConfig{{Type: auth.MiddlewareType}, {Type: awssts.MiddlewareType}, {Type: headerfwd.StripAuthMiddlewareName}},
+			wantErr: "AWS STS",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateCredentialStrippingMiddleware(tt.configs, tt.config)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestPopulateMiddlewareConfigs_StripAuthConflicts verifies that
+// DisableUpstreamTokenInjection is rejected when combined with middlewares
+// that would re-add credentials after the strip (token exchange, AWS STS),
+// instead of silently defeating the flag at runtime.
+func TestPopulateMiddlewareConfigs_StripAuthConflicts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*RunConfig)
+		wantErr string
+	}{
+		{
+			name:    "token exchange combination is rejected",
+			mutate:  func(c *RunConfig) { c.TokenExchangeConfig = &tokenexchange.Config{} },
+			wantErr: "token exchange",
+		},
+		{
+			name:    "AWS STS combination is rejected",
+			mutate:  func(c *RunConfig) { c.AWSStsConfig = &awssts.Config{}; c.RemoteURL = "https://example.com" },
+			wantErr: "AWS STS",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authServerCfg := createMinimalAuthServerConfig()
+			authServerCfg.DisableUpstreamTokenInjection = true
+			config := &RunConfig{EmbeddedAuthServerConfig: authServerCfg}
+			tt.mutate(config)
+
+			err := PopulateMiddlewareConfigs(config)
+			require.ErrorContains(t, err, "disableUpstreamTokenInjection cannot be combined")
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
 }

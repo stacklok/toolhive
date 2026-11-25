@@ -17,32 +17,71 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// UserAgent is the user agent for the ToolHive MCP client
-const UserAgent = "ToolHive/1.0"
-
-// DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
-func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*oauthproto.OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false)
+// DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer.
+//
+// issuer originates from untrusted remote-server discovery in some callers
+// (e.g. the CLI DCR flow's well-known fallback) and from an operator-supplied
+// flag in others; blockPrivateIPs lets each caller apply its own SSRF policy
+// (CWE-918) rather than this function silently choosing one for everyone.
+func DiscoverOIDCEndpoints(
+	ctx context.Context,
+	issuer string,
+	blockPrivateIPs bool,
+) (*oauthproto.OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false, blockPrivateIPs)
 }
 
 // DiscoverActualIssuer discovers the actual issuer from a URL that might be different from the issuer itself
 // This is useful when the resource metadata points to a URL that hosts the authorization server metadata
 // but the actual issuer identifier is different (e.g., Stripe's case)
-func DiscoverActualIssuer(ctx context.Context, metadataURL string) (*oauthproto.OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false, false)
+//
+// metadataURL originates from untrusted remote-server discovery. When
+// blockPrivateIPs is true the default client refuses to dial private, loopback,
+// or link-local addresses on every hop (SSRF guard); callers pass false when the
+// operator-configured target is itself internal.
+func DiscoverActualIssuer(
+	ctx context.Context,
+	metadataURL string,
+	blockPrivateIPs bool,
+) (*oauthproto.OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false, false, blockPrivateIPs)
 }
 
-// discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC issuer with a custom HTTP client (private for testing)
+// discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC
+// issuer with a custom HTTP client (private for testing). blockPrivateIPs is
+// only consulted when client is nil — a caller-supplied client carries its
+// own dial policy.
 func discoverOIDCEndpointsWithClient(
 	ctx context.Context,
 	issuer string,
 	client networking.HTTPClient,
 	insecureAllowHTTP bool,
+	blockPrivateIPs bool,
 ) (*oauthproto.OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP)
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP, blockPrivateIPs)
+}
+
+// newOIDCDiscoveryTransport builds the transport used to fetch OIDC/OAuth
+// discovery documents from an untrusted, remote-server-supplied issuer. The
+// caller pairs it with a same-host redirect policy to prevent a 30x driving the
+// host into an SSRF (CWE-918); when blockPrivateIPs is true it also refuses to
+// dial private/loopback/link-local addresses on every hop (and disables
+// keep-alive so a pooled connection cannot skip the per-dial check). Extracted
+// so the pool bounds networking.SetIdleConnBounds applies stay unit-testable.
+func newOIDCDiscoveryTransport(blockPrivateIPs bool) *http.Transport {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	}
+	networking.SetIdleConnBounds(transport)
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
+	return transport
 }
 
 // discoverOIDCEndpointsWithClientAndValidation discovers OAuth endpoints with optional issuer validation
@@ -54,6 +93,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 	client networking.HTTPClient,
 	validateIssuer bool,
 	insecureAllowHTTP bool,
+	blockPrivateIPs bool,
 ) (*oauthproto.OIDCDiscoveryDocument, error) {
 
 	oidcURL, oauthURL, err := buildWellKnownURLs(issuer, insecureAllowHTTP)
@@ -63,11 +103,9 @@ func discoverOIDCEndpointsWithClientAndValidation(
 
 	if client == nil {
 		client = &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 10 * time.Second,
-			},
+			Timeout:       30 * time.Second,
+			Transport:     newOIDCDiscoveryTransport(blockPrivateIPs),
+			CheckRedirect: networking.SameHostRedirectPolicy(),
 		}
 	}
 
@@ -76,7 +114,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
-		req.Header.Set("User-Agent", UserAgent)
+		req.Header.Set("User-Agent", oauthproto.UserAgent)
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := client.Do(req)
@@ -127,6 +165,12 @@ func discoverOIDCEndpointsWithClientAndValidation(
 				if oauthDoc.Issuer == doc.Issuer {
 					doc.RegistrationEndpoint = oauthDoc.RegistrationEndpoint
 					slog.Debug("Found registration_endpoint in OAuth authorization server metadata", "endpoint", doc.RegistrationEndpoint)
+					// Merge CIMD support flag — some servers (e.g. Granola) only advertise
+					// client_id_metadata_document_supported in the OAuth AS metadata, not
+					// in the OIDC discovery document.
+					if oauthDoc.ClientIDMetadataDocumentSupported {
+						doc.ClientIDMetadataDocumentSupported = true
+					}
 				} else {
 					slog.Warn("Issuer mismatch between OIDC and OAuth discovery documents, not merging registration_endpoint",
 						"oidc_issuer", doc.Issuer, "oauth_issuer", oauthDoc.Issuer)
@@ -155,12 +199,16 @@ func validateOIDCDocument(
 	oidc bool,
 	insecureAllowHTTP bool,
 ) error {
-	// Delegate basic field presence validation to the shared method.
-	// Note: We pass oidc=false here because we handle jwks_uri separately below
-	// with a more specific error message, and response_types_supported validation
-	// is not enforced in this legacy code path to maintain backward compatibility.
+	// Delegate basic field presence validation to the shared method. We pass
+	// oidc=false because this legacy path handles jwks_uri separately below and
+	// does not require response_types_supported. It nevertheless always creates
+	// an interactive authorization request, so authorization_endpoint is required
+	// regardless of the remote server's advertised grant types.
 	if err := doc.Validate(false); err != nil {
 		return err
+	}
+	if doc.AuthorizationEndpoint == "" {
+		return oauthproto.ErrMissingAuthorizationEndpoint
 	}
 
 	// Require jwks_uri for OIDC (with specific error message)
@@ -202,8 +250,11 @@ func CreateOAuthConfigFromOIDC(
 	usePKCE bool,
 	callbackPort int,
 	resource string,
+	blockPrivateIPs bool,
 ) (*Config, error) {
-	return createOAuthConfigFromOIDCWithClient(ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, resource, nil)
+	return createOAuthConfigFromOIDCWithClient(
+		ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, resource, nil, blockPrivateIPs,
+	)
 }
 
 // createOAuthConfigFromOIDCWithClient creates an OAuth config from OIDC discovery with a custom HTTP client (private for testing)
@@ -215,9 +266,10 @@ func createOAuthConfigFromOIDCWithClient(
 	callbackPort int,
 	resource string,
 	client networking.HTTPClient,
+	blockPrivateIPs bool,
 ) (*Config, error) {
-	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation)
-	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false)
+	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation).
+	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, blockPrivateIPs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}

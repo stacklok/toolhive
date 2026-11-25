@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 	workloadsmgr "github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -33,6 +34,15 @@ type backendDiscoverer struct {
 	authConfig       *config.OutgoingAuthConfig
 	staticBackends   []config.StaticBackendConfig // Pre-configured backends for static mode
 	groupRef         string                       // Group reference for static mode metadata
+
+	// headerForwardByBackend is keyed by the NORMALIZED backend name (the
+	// suffix the operator emits in TOOLHIVE_HEADER_FORWARD_<entry>). The
+	// canonical backend name from the static config is normalized on
+	// lookup via wirefmt.NormalizeForEnvVar so the keying matches
+	// the operator-side env-var encoding. Nil/empty when no entry declared
+	// headerForward. Only populated in static mode — dynamic mode reads
+	// headerForward directly from the MCPServerEntry CRD.
+	headerForwardByBackend map[string]*vmcp.HeaderForwardConfig
 }
 
 // NewUnifiedBackendDiscoverer creates a unified backend discoverer that works with both
@@ -55,17 +65,24 @@ func NewUnifiedBackendDiscoverer(
 
 // NewUnifiedBackendDiscovererWithStaticBackends creates a backend discoverer for static mode
 // with pre-configured backends, eliminating the need for K8s API access.
+//
+// headerForwardByBackend carries per-backend HeaderForwardConfig (keyed by
+// backend name) constructed at startup from the operator-emitted env vars.
+// Pass nil when no entry in the group declares headerForward — the discoverer
+// will simply leave Backend.HeaderForward nil for every backend.
 func NewUnifiedBackendDiscovererWithStaticBackends(
 	staticBackends []config.StaticBackendConfig,
 	authConfig *config.OutgoingAuthConfig,
 	groupRef string,
+	headerForwardByBackend map[string]*vmcp.HeaderForwardConfig,
 ) BackendDiscoverer {
 	return &backendDiscoverer{
-		workloadsManager: nil, // Not needed in static mode
-		groupsManager:    nil, // Not needed in static mode
-		authConfig:       authConfig,
-		staticBackends:   staticBackends,
-		groupRef:         groupRef,
+		workloadsManager:       nil, // Not needed in static mode
+		groupsManager:          nil, // Not needed in static mode
+		authConfig:             authConfig,
+		staticBackends:         staticBackends,
+		groupRef:               groupRef,
+		headerForwardByBackend: headerForwardByBackend,
 	}
 }
 
@@ -103,16 +120,6 @@ func NewBackendDiscoverer(
 		workloadDiscoverer = workloadsmgr.NewDiscovererAdapter(manager)
 	}
 	return NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig), nil
-}
-
-// NewBackendDiscovererWithManager creates a unified BackendDiscoverer with a pre-configured
-// WorkloadDiscoverer. This is useful for testing or when you already have a workload manager.
-func NewBackendDiscovererWithManager(
-	workloadManager workloads.Discoverer,
-	groupsManager groups.Manager,
-	authConfig *config.OutgoingAuthConfig,
-) BackendDiscoverer {
-	return NewUnifiedBackendDiscoverer(workloadManager, groupsManager, authConfig)
 }
 
 // Discover finds all backend workloads in the specified group.
@@ -213,49 +220,11 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 // applyAuthConfigToBackend applies authentication configuration to a backend based on the source mode.
 // It determines whether to use discovered auth from the MCPServer or auth from the vMCP config.
 //
-// Auth resolution logic:
-// - "discovered" mode: Use discovered auth if available, otherwise fall back to Default or backend-specific config
-// - "inline" mode (or ""): Always use config-based auth, ignore discovered auth
-// - unknown mode: Default to config-based auth for safety
-//
-// When useDiscoveredAuth is false, ResolveForBackend is called which handles:
-// 1. Backend-specific config (d.authConfig.Backends[backendName])
-// 2. Default config fallback (d.authConfig.Default)
-// 3. No auth if neither is configured
+// The resolution logic lives in config.OutgoingAuthConfig.ApplyToBackend so the
+// Kubernetes backend watcher's reconciler applies the exact same semantics when it
+// rebuilds a backend (see pkg/vmcp/k8s).
 func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, backendName string) {
-	if d.authConfig == nil {
-		return
-	}
-
-	// Determine if we should use discovered auth or config-based auth
-	var useDiscoveredAuth bool
-	switch d.authConfig.Source {
-	case "discovered":
-		// In discovered mode, use auth discovered from MCPServer (if any exists)
-		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
-		// which will use backend-specific config, then Default, then no auth
-		useDiscoveredAuth = backend.AuthConfig != nil
-	case "inline", "":
-		// For inline mode or empty source, always use config-based auth
-		// Ignore any discovered auth from backends
-		useDiscoveredAuth = false
-	default:
-		// Unknown source mode - default to config-based auth for safety
-		slog.Warn("unknown auth source mode, defaulting to config-based auth", "source", d.authConfig.Source)
-		useDiscoveredAuth = false
-	}
-
-	if useDiscoveredAuth {
-		// Keep the auth discovered from MCPServer (already populated in backend)
-		slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
-	} else {
-		// Use auth from config (inline mode)
-		authConfig := d.authConfig.ResolveForBackend(backendName)
-		if authConfig != nil {
-			backend.AuthConfig = authConfig
-			slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
-		}
-	}
+	d.authConfig.ApplyToBackend(backend, backendName)
 }
 
 // discoverFromStaticConfig converts pre-configured static backends into vmcp.Backend objects
@@ -272,6 +241,7 @@ func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 			Type:          vmcp.BackendType(staticBackend.Type),
 			CABundlePath:  staticBackend.CABundlePath,
 			HealthStatus:  vmcp.BackendHealthy, // Assume healthy, actual health check happens later
+			HeaderForward: d.headerForwardByBackend[wirefmt.NormalizeForEnvVar(staticBackend.Name)],
 			Metadata:      staticBackend.Metadata,
 		}
 

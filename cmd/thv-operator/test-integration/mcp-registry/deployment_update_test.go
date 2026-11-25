@@ -14,7 +14,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 )
 
 var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "deployment-update"), func() {
@@ -206,6 +209,208 @@ var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "dep
 			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
 				_, err := registryHelper.GetRegistry(registry.Name)
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+	})
+
+	Context("spec.imagePullSecrets is the SA-aware path for image pull credentials", func() {
+		It("sets imagePullSecrets on the Deployment when only spec.imagePullSecrets is provided", func() {
+			By("creating a registry with only spec.imagePullSecrets")
+			configMap := configMapHelper.CreateSampleToolHiveRegistry("explicit-ips-deploy-config")
+			registryObj := registryHelper.NewRegistryBuilder("explicit-ips-deploy-test").
+				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
+				Build()
+			registryObj.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "explicit-creds"}}
+			Expect(k8sClient.Create(ctx, registryObj)).Should(Succeed())
+
+			By("waiting for deployment to be created")
+			registryHelper.WaitForRegistryInitialization(registryObj.Name, timingHelper, statusHelper)
+			deployment := waitForDeployment(registryObj.Name)
+
+			By("verifying Deployment pod spec carries the explicit imagePullSecrets")
+			Expect(deployment.Spec.Template.Spec.ImagePullSecrets).To(ContainElement(
+				corev1.LocalObjectReference{Name: "explicit-creds"},
+			))
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registryObj)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry(registryObj.Name)
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+
+		It("sets imagePullSecrets on the ServiceAccount when only spec.imagePullSecrets is provided", func() {
+			By("creating a registry with only spec.imagePullSecrets")
+			configMap := configMapHelper.CreateSampleToolHiveRegistry("explicit-ips-sa-config")
+			registryObj := registryHelper.NewRegistryBuilder("explicit-ips-sa-test").
+				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
+				Build()
+			registryObj.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "sa-creds"}}
+			Expect(k8sClient.Create(ctx, registryObj)).Should(Succeed())
+
+			By("waiting for the registry to start reconciling")
+			registryHelper.WaitForRegistryInitialization(registryObj.Name, timingHelper, statusHelper)
+
+			By("verifying the operator-managed ServiceAccount has the imagePullSecrets")
+			saName := registryapi.GetServiceAccountName(registryObj)
+			Eventually(func() []corev1.LocalObjectReference {
+				sa := &corev1.ServiceAccount{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      saName,
+					Namespace: testNamespace,
+				}, sa); err != nil {
+					return nil
+				}
+				return sa.ImagePullSecrets
+			}, MediumTimeout, DefaultPollingInterval).Should(
+				ContainElement(corev1.LocalObjectReference{Name: "sa-creds"}),
+				"ServiceAccount should carry imagePullSecrets from spec.imagePullSecrets",
+			)
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registryObj)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry(registryObj.Name)
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+
+		It("propagates updates to spec.imagePullSecrets to both Deployment and ServiceAccount", func() {
+			By("creating a registry with an initial spec.imagePullSecrets value")
+			configMap := configMapHelper.CreateSampleToolHiveRegistry("explicit-ips-update-config")
+			registryObj := registryHelper.NewRegistryBuilder("explicit-ips-update-test").
+				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
+				Build()
+			registryObj.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "creds-initial"}}
+			Expect(k8sClient.Create(ctx, registryObj)).Should(Succeed())
+
+			By("waiting for the initial Deployment with the original imagePullSecrets")
+			registryHelper.WaitForRegistryInitialization(registryObj.Name, timingHelper, statusHelper)
+			Eventually(func() []corev1.LocalObjectReference {
+				d, err := k8sHelper.GetDeployment(fmt.Sprintf("%s-api", registryObj.Name))
+				if err != nil {
+					return nil
+				}
+				return d.Spec.Template.Spec.ImagePullSecrets
+			}, MediumTimeout, DefaultPollingInterval).Should(
+				ContainElement(corev1.LocalObjectReference{Name: "creds-initial"}),
+			)
+
+			By("waiting for the ServiceAccount to carry the original imagePullSecrets")
+			saName := registryapi.GetServiceAccountName(registryObj)
+			Eventually(func() []corev1.LocalObjectReference {
+				sa := &corev1.ServiceAccount{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      saName,
+					Namespace: testNamespace,
+				}, sa); err != nil {
+					return nil
+				}
+				return sa.ImagePullSecrets
+			}, MediumTimeout, DefaultPollingInterval).Should(
+				ContainElement(corev1.LocalObjectReference{Name: "creds-initial"}),
+			)
+
+			By("changing spec.imagePullSecrets to a different secret")
+			updatedRegistry, err := registryHelper.GetRegistry(registryObj.Name)
+			Expect(err).NotTo(HaveOccurred())
+			updatedRegistry.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "creds-rotated"}}
+			Expect(registryHelper.UpdateRegistry(updatedRegistry)).To(Succeed())
+
+			By("waiting for Deployment pod spec to be updated to the new imagePullSecrets")
+			Eventually(func() []corev1.LocalObjectReference {
+				d, err := k8sHelper.GetDeployment(fmt.Sprintf("%s-api", registryObj.Name))
+				if err != nil {
+					return nil
+				}
+				return d.Spec.Template.Spec.ImagePullSecrets
+			}, MediumTimeout, DefaultPollingInterval).Should(
+				ContainElement(corev1.LocalObjectReference{Name: "creds-rotated"}),
+				"Deployment should pick up the rotated imagePullSecrets",
+			)
+
+			By("waiting for ServiceAccount to be updated to the new imagePullSecrets")
+			Eventually(func() []corev1.LocalObjectReference {
+				sa := &corev1.ServiceAccount{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      saName,
+					Namespace: testNamespace,
+				}, sa); err != nil {
+					return nil
+				}
+				return sa.ImagePullSecrets
+			}, MediumTimeout, DefaultPollingInterval).Should(
+				ContainElement(corev1.LocalObjectReference{Name: "creds-rotated"}),
+				"ServiceAccount should pick up the rotated imagePullSecrets",
+			)
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registryObj)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry(registryObj.Name)
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+
+		It("lets podTemplateSpec.imagePullSecrets override Deployment while SA still tracks spec.imagePullSecrets", func() {
+			By("creating a registry that sets both spec.imagePullSecrets and podTemplateSpec.imagePullSecrets")
+			configMap := configMapHelper.CreateSampleToolHiveRegistry("explicit-ips-override-config")
+			registryObj := registryHelper.NewRegistryBuilder("explicit-ips-override-test").
+				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
+				Build()
+			registryObj.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "sa-creds"}}
+			registryObj.Spec.PodTemplateSpec = &runtime.RawExtension{
+				Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"deployment-override"}]}}`),
+			}
+			Expect(k8sClient.Create(ctx, registryObj)).Should(Succeed())
+
+			By("waiting for the Deployment to be created")
+			registryHelper.WaitForRegistryInitialization(registryObj.Name, timingHelper, statusHelper)
+
+			By("verifying the Deployment uses the PodTemplateSpec override (atomic replacement)")
+			Eventually(func() []corev1.LocalObjectReference {
+				d, err := k8sHelper.GetDeployment(fmt.Sprintf("%s-api", registryObj.Name))
+				if err != nil {
+					return nil
+				}
+				return d.Spec.Template.Spec.ImagePullSecrets
+			}, MediumTimeout, DefaultPollingInterval).Should(
+				And(
+					ContainElement(corev1.LocalObjectReference{Name: "deployment-override"}),
+					Not(ContainElement(corev1.LocalObjectReference{Name: "sa-creds"})),
+				),
+				"Deployment should use the PodTemplateSpec override and drop the spec.imagePullSecrets default",
+			)
+
+			By("verifying the ServiceAccount still uses spec.imagePullSecrets (PodTemplateSpec does not affect the SA)")
+			saName := registryapi.GetServiceAccountName(registryObj)
+			Eventually(func() []corev1.LocalObjectReference {
+				sa := &corev1.ServiceAccount{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      saName,
+					Namespace: testNamespace,
+				}, sa); err != nil {
+					return nil
+				}
+				return sa.ImagePullSecrets
+			}, MediumTimeout, DefaultPollingInterval).Should(
+				And(
+					ContainElement(corev1.LocalObjectReference{Name: "sa-creds"}),
+					Not(ContainElement(corev1.LocalObjectReference{Name: "deployment-override"})),
+				),
+				"ServiceAccount should reflect spec.imagePullSecrets, not the PodTemplateSpec override",
+			)
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registryObj)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry(registryObj.Name)
 				return errors.IsNotFound(err)
 			}).Should(BeTrue())
 		})

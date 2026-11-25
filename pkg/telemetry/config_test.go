@@ -165,7 +165,7 @@ func TestTelemetryProviderValidation(t *testing.T) {
 // getProviderTypeName returns a readable type name for telemetry providers
 func getProviderTypeName(provider interface{}) string {
 	t := reflect.TypeOf(provider)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		return t.Elem().PkgPath()[len("go.opentelemetry.io/otel/"):] + "." + t.Elem().Name()
 	}
 	return t.PkgPath()[len("go.opentelemetry.io/otel/"):] + "." + t.Name()
@@ -368,4 +368,20 @@ func TestConfigString_HeaderRedaction(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfigString_EnvironmentVariablesRedaction verifies that String() does not
+// print EnvironmentVariables entries, which may carry credentials.
+func TestConfigString_EnvironmentVariablesRedaction(t *testing.T) {
+	t.Parallel()
+
+	config := Config{
+		Endpoint:             "localhost:4318",
+		EnvironmentVariables: []string{"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic dG9rZW46cHc=", "HOME"},
+	}
+
+	output := config.String()
+	assert.NotContains(t, output, "dG9rZW46cHc=")
+	assert.NotContains(t, output, "OTEL_EXPORTER_OTLP_HEADERS")
+	assert.NotContains(t, output, "HOME")
 }

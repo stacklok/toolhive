@@ -55,10 +55,12 @@ func (m *cliManager) Create(ctx context.Context, name string) error {
 		}
 		return fmt.Errorf("failed to create group: %w", err)
 	}
+	closed := false
 	defer func() {
-		if err := writer.Close(); err != nil {
-			// Non-fatal: writer cleanup failure
-			slog.Warn("failed to close writer", "error", err)
+		if !closed {
+			if err := state.AbortWriter(writer); err != nil {
+				slog.Warn("failed to abort group writer", "name", name, "error", err)
+			}
 		}
 	}()
 
@@ -69,12 +71,14 @@ func (m *cliManager) Create(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to write group: %w", err)
 	}
 
-	// Ensure the writer is flushed
-	if syncer, ok := writer.(interface{ Sync() error }); ok {
-		if err := syncer.Sync(); err != nil {
-			return fmt.Errorf("failed to sync group file: %w", err)
+	if err := writer.Close(); err != nil {
+		closed = true
+		if httperr.Code(err) == http.StatusConflict {
+			return fmt.Errorf("%w: %s", ErrGroupAlreadyExists, name)
 		}
+		return fmt.Errorf("failed to close group writer: %w", err)
 	}
+	closed = true
 
 	return nil
 }
@@ -223,10 +227,12 @@ func (m *cliManager) saveGroup(ctx context.Context, group *Group) error {
 	if err != nil {
 		return fmt.Errorf("failed to get writer for group: %w", err)
 	}
+	closed := false
 	defer func() {
-		if err := writer.Close(); err != nil {
-			// Non-fatal: writer cleanup failure
-			slog.Warn("failed to close writer", "error", err)
+		if !closed {
+			if err := state.AbortWriter(writer); err != nil {
+				slog.Warn("failed to abort group writer", "name", group.Name, "error", err)
+			}
 		}
 	}()
 
@@ -236,12 +242,11 @@ func (m *cliManager) saveGroup(ctx context.Context, group *Group) error {
 		return fmt.Errorf("failed to write group: %w", err)
 	}
 
-	// Ensure the writer is flushed
-	if closer, ok := writer.(interface{ Sync() error }); ok {
-		if err := closer.Sync(); err != nil {
-			return fmt.Errorf("failed to sync group file: %w", err)
-		}
+	if err := writer.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("failed to close group writer: %w", err)
 	}
+	closed = true
 
 	return nil
 }

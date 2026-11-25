@@ -15,12 +15,14 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/templates"
+	"github.com/stacklok/toolhive/pkg/llm"
 	"github.com/stacklok/toolhive/pkg/lockfile"
+	"github.com/stacklok/toolhive/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -48,6 +50,7 @@ type Config struct {
 	BuildAuthFiles               map[string]string                   `yaml:"build_auth_files,omitempty"`
 	RuntimeConfigs               map[string]*templates.RuntimeConfig `yaml:"runtime_configs,omitempty"`
 	RegistryAuth                 RegistryAuth                        `yaml:"registry_auth,omitempty"`
+	LLM                          llm.Config                          `yaml:"llm,omitempty"`
 	ContainerRuntime             runtime.SocketConfig                `yaml:"container_runtime,omitempty"`
 }
 
@@ -65,17 +68,10 @@ type RegistryAuth struct {
 
 // RegistryOAuthConfig holds OAuth/OIDC configuration for registry authentication.
 // PKCE (S256) is always enforced per OAuth 2.1 requirements for public clients.
-type RegistryOAuthConfig struct {
-	Issuer       string   `yaml:"issuer"`
-	ClientID     string   `yaml:"client_id"`
-	Scopes       []string `yaml:"scopes,omitempty"`
-	Audience     string   `yaml:"audience,omitempty"`
-	CallbackPort int      `yaml:"callback_port,omitempty"`
-
-	// Cached token references for session restoration across CLI invocations.
-	CachedRefreshTokenRef string    `yaml:"cached_refresh_token_ref,omitempty"`
-	CachedTokenExpiry     time.Time `yaml:"cached_token_expiry,omitempty"`
-}
+//
+// This is a type alias for oidc.ClientConfig so that registry and LLM gateway
+// authentication always share the same field set and validation logic.
+type RegistryOAuthConfig = oidc.ClientConfig
 
 // Secrets contains the settings for secrets management.
 type Secrets struct {
@@ -196,8 +192,11 @@ func createNewConfigWithDefaults() Config {
 	}
 }
 
-// applyBackwardCompatibility applies backward compatibility fixes to existing configs
-func applyBackwardCompatibility(config *Config) error {
+// applyBackwardCompatibility applies backward compatibility fixes to existing configs.
+// Any migration that needs to be persisted is written back to configPath, the same
+// path the config was loaded from, so that path-based loads (e.g. PathProvider) stay
+// isolated. An empty configPath falls back to the default path via saveToPath.
+func applyBackwardCompatibility(config *Config, configPath string) error {
 	// Hack - if the secrets provider type is set to the old `basic` type,
 	// just change it to `encrypted`.
 	if config.Secrets.ProviderType == "basic" {
@@ -208,7 +207,7 @@ func applyBackwardCompatibility(config *Config) error {
 			_ = os.Remove(oldPath)
 		}
 		config.Secrets.ProviderType = string(secrets.EncryptedType)
-		err = config.save()
+		err = config.saveToPath(configPath)
 		if err != nil {
 			return fmt.Errorf("error updating config: %w", err)
 		}
@@ -218,7 +217,7 @@ func applyBackwardCompatibility(config *Config) error {
 	// consider it as setup completed (for existing users)
 	if config.Secrets.ProviderType != "" && !config.Secrets.SetupCompleted {
 		config.Secrets.SetupCompleted = true
-		err := config.save()
+		err := config.saveToPath(configPath)
 		if err != nil {
 			return fmt.Errorf("error updating config for backward compatibility: %w", err)
 		}
@@ -297,19 +296,15 @@ func LoadOrCreateConfigFromPath(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to parse config file yaml: %w", err)
 		}
 
-		// Apply backward compatibility fixes
-		err = applyBackwardCompatibility(&config)
+		// Apply backward compatibility fixes, persisting any migration back to the
+		// same path the config was loaded from.
+		err = applyBackwardCompatibility(&config, configPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to apply backward compatibility fixes: %w", err)
 		}
 	}
 
 	return &config, nil
-}
-
-// Save serializes the config struct and writes it to disk.
-func (c *Config) save() error {
-	return c.saveToPath("")
 }
 
 // saveToPath serializes the config struct and writes it to a specific path.

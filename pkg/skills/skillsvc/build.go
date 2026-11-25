@@ -9,14 +9,26 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/skills"
+)
+
+// Environment variable overrides for the Fulcio/Rekor instances used by
+// keyless signing. Unset means the sigstore public-good instances (core's
+// defaults). Intended for E2E and staging use only — not a supported
+// production configuration knob.
+const (
+	envFulcioURL = "TOOLHIVE_SIGSTORE_FULCIO_URL"
+	envRekorURL  = "TOOLHIVE_SIGSTORE_REKOR_URL"
 )
 
 // Validate checks whether a skill definition is valid.
@@ -40,6 +52,18 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 	}
 	result, err := s.packager.Package(ctx, opts.Path, ociskills.DefaultPackageOptions())
 	if err != nil {
+		// User-input failures (missing SKILL.md, bad frontmatter, symlinks,
+		// size/count limits, unreadable directory) are surfaced as 400 with
+		// the packager's message intact. Anything else is a real 500.
+		switch {
+		case errors.Is(err, ociskills.ErrSkillMDMissing),
+			errors.Is(err, ociskills.ErrInvalidFrontmatter),
+			errors.Is(err, ociskills.ErrInvalidSkillDir),
+			errors.Is(err, ociskills.ErrInvalidSkillFile),
+			errors.Is(err, ociskills.ErrTooManyFiles),
+			errors.Is(err, ociskills.ErrSkillTooLarge):
+			return nil, httperr.WithCode(err, http.StatusBadRequest)
+		}
 		return nil, fmt.Errorf("packaging skill: %w", err)
 	}
 
@@ -64,7 +88,13 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 	}
 
 	if tag != "" {
-		if tagErr := s.ociStore.Tag(ctx, result.IndexDigest, tag); tagErr != nil {
+		// Tag the artifact and stamp the local-build marker on the root-index
+		// descriptor entry so ListBuilds can distinguish this tag from ones
+		// created by OCI pulls (install, content preview). The marker lives
+		// at the descriptor level in index.json, not in the manifest blob,
+		// so it doesn't change the artifact digest and is not carried across
+		// push (push resolves by digest, which returns a plain descriptor).
+		if tagErr := tagAsLocalBuild(ctx, s.ociStore, result.IndexDigest, tag); tagErr != nil {
 			return nil, fmt.Errorf("tagging artifact: %w", tagErr)
 		}
 	}
@@ -93,6 +123,9 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 			http.StatusBadRequest,
 		)
 	}
+	if err := validateSigningInputs(opts); err != nil {
+		return err
+	}
 
 	d, err := s.ociStore.Resolve(ctx, opts.Reference)
 	if err != nil {
@@ -107,10 +140,35 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 		return fmt.Errorf("pushing to registry: %w", err)
 	}
 
+	if opts.NoSign {
+		return nil
+	}
+	// Sign the pushed artifact and attach the signature manifest next to
+	// it, so project-scoped installs can verify it (RFC THV-0080).
+	if _, err := s.artifactSigner().SignOCI(ctx, opts.Reference, d.String(), signer.Options{
+		Key:           opts.Key,
+		IdentityToken: opts.IdentityToken,
+		FulcioURL:     os.Getenv(envFulcioURL),
+		RekorURL:      os.Getenv(envRekorURL),
+	}); err != nil {
+		return httperr.WithCode(fmt.Errorf("signing pushed artifact: %w", err), http.StatusBadRequest)
+	}
 	return nil
 }
 
+// artifactSigner returns the configured signer, defaulting to the Sigstore
+// signer with the composite registry keychain.
+func (s *service) artifactSigner() signer.Signer {
+	if s.sigSigner != nil {
+		return s.sigSigner
+	}
+	return signer.NewDefault(images.NewCompositeKeychain())
+}
+
 // ListBuilds returns all locally-built OCI skill artifacts in the local store.
+// Tags are filtered by the local-build descriptor annotation (set by Build),
+// so artifacts pulled into the store by install or the content API for
+// caching do not appear here.
 func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 	if s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -121,11 +179,20 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 
 	tags, err := s.ociStore.ListTags(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing local OCI builds: %w", err)
+		return nil, fmt.Errorf("listing OCI tags: %w", err)
 	}
 
 	builds := make([]skills.LocalBuild, 0, len(tags))
 	for _, tag := range tags {
+		local, markerErr := isLocalBuild(ctx, s.ociStore, tag)
+		if markerErr != nil {
+			slog.Debug("failed to read local-build marker", "tag", tag, "error", markerErr)
+			continue
+		}
+		if !local {
+			continue
+		}
+
 		d, resolveErr := s.ociStore.Resolve(ctx, tag)
 		if resolveErr != nil {
 			slog.Debug("failed to resolve tag in local OCI store", "tag", tag, "error", resolveErr)
@@ -163,7 +230,8 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 
 // DeleteBuild removes a locally-built OCI skill artifact from the local store.
 // It deletes the tag and, when no other tag shares the same digest, also
-// garbage-collects all associated blobs.
+// garbage-collects all associated blobs. The local-build descriptor
+// annotation disappears from index.json together with the tag.
 func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 	if s.ociStore == nil {
 		return httperr.WithCode(
@@ -172,6 +240,39 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 		)
 	}
 	return s.ociStore.DeleteBuild(ctx, tag)
+}
+
+// validateSigningInputs enforces that a push declares exactly one signing
+// method: a cosign key, an OIDC identity token for keyless signing, or an
+// explicit opt-out. Ambiguous or absent input is rejected here, before the
+// artifact is pushed, rather than surfacing as a signing failure afterward.
+func validateSigningInputs(opts skills.PushOptions) error {
+	methods := 0
+	if opts.Key != "" {
+		methods++
+	}
+	if opts.IdentityToken != "" {
+		methods++
+	}
+	switch {
+	case opts.NoSign && methods > 0:
+		return httperr.WithCode(
+			errors.New("no_sign (--no-sign) cannot be combined with key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods == 0:
+		return httperr.WithCode(
+			errors.New("signing credential required: set key (--key), identity_token (--identity-token) "+
+				"for CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods > 1:
+		return httperr.WithCode(
+			errors.New("specify only one of key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	}
+	return nil
 }
 
 // validateLocalPath checks that a path is non-empty, absolute, and does not

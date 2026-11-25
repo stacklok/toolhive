@@ -9,10 +9,27 @@ import (
 	"errors"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/stacklok/toolhive-core/audit"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 )
 
-// IdentityContextKey is the key used to store Identity in the request context.
-// This provides type-safe context storage and retrieval for authenticated identities.
+// DefaultMaxDelegationDepth is ToolHive's default cap on how many RFC 8693
+// delegation hops are retained when parsing an "act" claim. It is aligned
+// with the issuance-side cap in pkg/authserver/server/tokenexchange/handler.go
+// (maxDelegationDepth) and the claim-nesting cap in
+// pkg/authz/authorizers/cedar/entity.go (maxClaimNestingDepth), both 10.
+//
+// This is deliberately LOWER than toolhive-core's audit.DefaultMaxDelegationDepth
+// (16): core's value is a library-wide parse ceiling, while 10 is ToolHive's own
+// minting cap. Parsing at the mint cap preserves the signal that a chain with
+// Truncated=true could not have been minted by ToolHive's own issuance path.
+const DefaultMaxDelegationDepth = 10
+
+// IdentityContextKey is the key used to store a host Identity in the request context.
+// Authentication middleware typically attaches it on authenticated request paths;
+// its presence in a context alone does not prove that authentication succeeded.
 //
 // Using an empty struct as the key prevents collisions with other context keys,
 // as each empty struct type is distinct even if they have the same name in different packages.
@@ -24,6 +41,16 @@ type IdentityContextKey struct{}
 // This function is typically called by authentication middleware after successful
 // authentication to make the identity available to downstream handlers.
 //
+// Side effect: if the context carries an IdentityHolder (injected by the audit
+// middleware wrapping this call), the identity is also published into it. Two
+// invariants follow for callers on request-derived contexts:
+//   - Last write wins: the holder reports the most recently attached identity,
+//     so audit events carry that principal. Do not attach a different principal
+//     (e.g. a re-minted service identity) on a request-derived context unless
+//     that is the principal audit should report.
+//   - Call only on the request goroutine: the audit middleware reads the holder
+//     when the response is written, so off-goroutine writes would race.
+//
 // Example:
 //
 //	identity := &Identity{PrincipalInfo: PrincipalInfo{Subject: "user123", Name: "Alice"}}
@@ -32,25 +59,127 @@ func WithIdentity(ctx context.Context, identity *Identity) context.Context {
 	if identity == nil {
 		return ctx
 	}
+	// Also publish the identity to an IdentityHolder if one is present, so
+	// middleware wrapping the auth middleware (e.g. audit) can observe the
+	// identity even though the derived context only flows downstream.
+	if holder, ok := IdentityHolderFromContext(ctx); ok {
+		holder.Identity = identity
+	}
 	return context.WithValue(ctx, IdentityContextKey{}, identity)
 }
 
-// IdentityFromContext retrieves an Identity from the context.
-// Returns the identity and true if present, nil and false otherwise.
+// IdentityHolderContextKey is the key used to store an IdentityHolder in the
+// request context.
+type IdentityHolderContextKey struct{}
+
+// IdentityHolder is a mutable carrier that lets middleware running OUTSIDE the
+// auth middleware observe the authenticated identity. Context values only flow
+// downstream, so a wrapper such as the audit middleware cannot read the
+// identity that auth attaches for inner handlers. The wrapper injects an empty
+// holder via WithIdentityHolder before calling the inner chain; WithIdentity
+// fills it when the identity is attached; the wrapper reads it after the inner
+// chain returns.
 //
-// This function is typically called by authorization middleware or handlers that need
-// to check who the authenticated user is.
+// The holder is written and read by the single request goroutine (writes
+// happen-before the wrapper's post-ServeHTTP read), mirroring the audit
+// package's BackendInfo pattern, so no synchronization is needed.
+type IdentityHolder struct {
+	Identity *Identity
+}
+
+// WithIdentityHolder returns a new context carrying the given IdentityHolder.
+func WithIdentityHolder(ctx context.Context, holder *IdentityHolder) context.Context {
+	return context.WithValue(ctx, IdentityHolderContextKey{}, holder)
+}
+
+// IdentityHolderFromContext retrieves the IdentityHolder from the context.
+// Returns (nil, false) if no holder is present.
+func IdentityHolderFromContext(ctx context.Context) (*IdentityHolder, bool) {
+	holder, ok := ctx.Value(IdentityHolderContextKey{}).(*IdentityHolder)
+	return holder, ok && holder != nil
+}
+
+// IdentityFromContext retrieves the host Identity from the context.
+// Returns the identity and true if a non-nil identity is present, nil and false otherwise.
+// A typed-nil *Identity stored directly in the context (bypassing WithIdentity) is
+// treated as absent so callers can safely gate on the boolean without nil checks.
+// Authentication middleware typically attaches this Identity on authenticated
+// request paths, but context lookup alone does not prove that authentication succeeded.
 //
 // Example:
 //
 //	identity, ok := IdentityFromContext(ctx)
 //	if !ok {
-//	    return errors.New("no authenticated identity")
+//	    return errors.New("no identity in context")
 //	}
 //	log.Printf("Request from user: %s", identity.Subject)
 func IdentityFromContext(ctx context.Context) (*Identity, bool) {
 	identity, ok := ctx.Value(IdentityContextKey{}).(*Identity)
-	return identity, ok
+	return identity, ok && identity != nil
+}
+
+// PlatformUserContextKey is a compatibility alias for the authserver's
+// credential-free canonical-user context key. It is deliberately distinct from
+// IdentityContextKey.
+//
+// A value under this key means only "this is the canonical user to key storage
+// on" — it is NOT proof that an authenticated principal is present. The two are
+// kept structurally separate so a storage-scoped user id cannot be mistaken for a
+// host Identity. Consumers that need the authenticated caller may retrieve the host
+// Identity with IdentityFromContext on trusted authenticated request paths, but the
+// context lookup alone is not proof that the Identity was validated. Storage layers
+// that key on the canonical user use CanonicalUserFromContext.
+type PlatformUserContextKey = serveridentity.CanonicalUserContextKey
+
+// WithPlatformUser stores the platform's canonical user identifier in the
+// context using the authserver's shared canonical-user contract. If userID is
+// empty, the original context is returned unchanged.
+//
+// Use this — not WithIdentity — on paths that have resolved the user but have no
+// host Identity to attach (e.g. the OAuth callback, which resolves the user while
+// it is still minting the ToolHive bearer, so no validated token/claims exist yet).
+// Reusing WithIdentity there would place a credential-free stub under the identity
+// key that later readers could mistake for an authenticated principal.
+//
+// Request-serving paths that already carry the host Identity, typically attached
+// after authentication, do NOT need to call this — CanonicalUserFromContext falls
+// back to that Identity's PlatformUserID, so the canonical user is read from one
+// accessor without storing it twice.
+func WithPlatformUser(ctx context.Context, userID string) context.Context {
+	return serveridentity.WithCanonicalUser(ctx, userID)
+}
+
+// PlatformUserFromContext retrieves the platform's canonical user identifier from
+// the shared canonical-user key. Returns the identifier and true if present,
+// including when an empty string was stored directly; returns "" and false when
+// absent or stored with a non-string type.
+//
+// Most callers should use CanonicalUserFromContext, which also resolves the user
+// from the host Identity, typically attached on authenticated request paths. Context
+// lookup alone is not proof of authentication. Use this only when you specifically
+// need the dedicated key and must NOT fall back to an Identity.
+func PlatformUserFromContext(ctx context.Context) (string, bool) {
+	return serveridentity.CanonicalUserFromContext(ctx)
+}
+
+// CanonicalUserFromContext returns the platform's canonical user identifier for
+// storage keying. It is the single accessor storage layers should use, regardless
+// of which path produced the context.
+//
+// It prefers the dedicated canonical-user key (set on identity-less paths such as
+// the OAuth callback) and falls back to the host Identity's PlatformUserID (typically
+// attached on authenticated request paths). Context lookup alone does not prove that
+// authentication succeeded. Returns "" and false if neither is present. A string
+// directly stored under the canonical-user key wins even if empty, so an explicit
+// value overrides the identity-derived value.
+func CanonicalUserFromContext(ctx context.Context) (string, bool) {
+	if userID, ok := PlatformUserFromContext(ctx); ok {
+		return userID, true
+	}
+	if identity, ok := IdentityFromContext(ctx); ok && identity.PlatformUserID != "" {
+		return identity.PlatformUserID, true
+	}
+	return "", false
 }
 
 // claimsToIdentity converts JWT claims to Identity struct.
@@ -70,13 +199,17 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 	// Filter internal claims that should not be externalized (e.g., in
 	// webhook payloads or audit logs). The tsid is a session identifier
 	// used to look up upstream tokens in storage; exposing it widens the
-	// attack surface if a webhook receiver is compromised.
+	// attack surface if a webhook receiver is compromised. The delegated-access
+	// marker is stripped the same way. A check that needs the marker (or the
+	// tsid) must read the raw validated jwt.MapClaims before this point, not
+	// Identity.Claims, which never contains them.
 	filteredClaims := filterInternalClaims(claims)
 
 	identity := &Identity{
 		PrincipalInfo: PrincipalInfo{
-			Subject: sub,
-			Claims:  filteredClaims,
+			Subject:        sub,
+			PlatformUserID: sub,
+			Claims:         filteredClaims,
 		},
 		Token:     token,
 		TokenType: "Bearer",
@@ -90,13 +223,28 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 		identity.Email = email
 	}
 
+	// Parse the RFC 8693 "act" claim (if present) into a delegation chain.
+	// This is primarily for audit: per RFC 8693 §4.1, an authorizer applying
+	// access control MUST consider only the current actor (chain.Chain[0]);
+	// any nested actors in chain.Chain[1:] are informational only.
+	// The parse cannot fail by design: a malformed act claim must never fail
+	// authentication, only be recorded (Malformed/MalformedReason on the chain).
+	if act, ok := claims["act"]; ok && act != nil {
+		chain := audit.ParseDelegationChain(act, DefaultMaxDelegationDepth)
+		if !chain.IsZero() {
+			identity.DelegationChain = chain
+		}
+	}
+
 	return identity, nil
 }
 
 // internalClaims are JWT claim keys used internally by the auth server
 // that must not be externalized in webhook payloads, audit logs, etc.
-// "tsid" is the token session ID used to look up upstream tokens in storage.
-var internalClaims = []string{"tsid"}
+// The token session ID is used to look up upstream tokens in storage. The
+// delegated-access marker gates credential lookup in the gateway, which reads
+// it from the validated raw claims.
+var internalClaims = []string{claimnames.TokenSessionIDKey, claimnames.DelegatedAccessKey}
 
 // filterInternalClaims returns a copy of claims with internal keys removed.
 func filterInternalClaims(claims jwt.MapClaims) jwt.MapClaims {

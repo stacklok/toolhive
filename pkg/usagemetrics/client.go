@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive-core/env"
@@ -24,13 +25,22 @@ const (
 	instanceIDHeader  = "X-Instance-ID"
 	anonymousIDHeader = "X-Anonymous-Id"
 	userAgentHeader   = "User-Agent"
+
+	// EnvVarAnonymousID overrides the anonymous ID sent with usage metrics. The
+	// operator sets it on the workloads it deploys to its own instance ID, so
+	// reports from one cluster share an ID instead of a fixed placeholder.
+	EnvVarAnonymousID = "TOOLHIVE_ANONYMOUS_ID"
 )
 
 // Client sends usage metrics to the API
 type Client struct {
-	endpoint    string
-	client      *http.Client
+	endpoint string
+	client   *http.Client
+	// idMu guards anonymousID, which SendMetrics can fill in later.
+	idMu        sync.Mutex
 	anonymousID string
+	// component overrides the User-Agent component; empty means local/operator
+	component string
 }
 
 // NewClient creates a new metrics client
@@ -40,11 +50,7 @@ func NewClient(endpoint string) *Client {
 	}
 
 	// Get anonymous ID once at client creation and cache for process duration
-	anonymousID, err := updates.TryGetAnonymousID()
-	if err != nil {
-		slog.Debug("failed to get anonymous ID during client creation",
-			"error", err)
-	}
+	anonymousID := resolveAnonymousID(&env.OSReader{})
 
 	return &Client{
 		endpoint:    endpoint,
@@ -57,10 +63,9 @@ func NewClient(endpoint string) *Client {
 
 // SendMetrics sends the metrics record to the API
 func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
-	// Use cached anonymous ID (set at client creation)
 	// For operator-deployed proxies without filesystem access, anonymous_id will be empty,
 	// but we still send metrics with a default value.
-	anonymousID := c.anonymousID
+	anonymousID := c.currentAnonymousID()
 	if anonymousID == "" {
 		// Only use default for operator-deployed proxies (detected via K8s env vars)
 		if rt.IsKubernetesRuntimeWithEnv(&env.OSReader{}) {
@@ -84,7 +89,7 @@ func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(instanceIDHeader, instanceID)   // Proxy instance ID
 	req.Header.Set(anonymousIDHeader, anonymousID) // User anonymous ID (or default for operator)
-	req.Header.Set(userAgentHeader, generateUserAgent())
+	req.Header.Set(userAgentHeader, generateUserAgentWithEnv(&env.OSReader{}, c.component))
 
 	resp, err := c.client.Do(req) // #nosec G704 -- URL is the hardcoded usage metrics endpoint
 	if err != nil {
@@ -103,19 +108,44 @@ func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	return nil
 }
 
-// generateUserAgent creates the user agent string using the OS environment
-// Format: toolhive/[local|operator] [version] [build_type] (os/arch)
-func generateUserAgent() string {
-	return generateUserAgentWithEnv(&env.OSReader{})
+// currentAnonymousID returns the anonymous ID resolved at client creation. While
+// it is empty outside Kubernetes, it is read again: on a fresh machine, or in a
+// container without persistent data, the update check creates the ID after the
+// client was built, and the process would otherwise never report.
+func (c *Client) currentAnonymousID() string {
+	c.idMu.Lock()
+	defer c.idMu.Unlock()
+	if c.anonymousID == "" && !rt.IsKubernetesRuntimeWithEnv(&env.OSReader{}) {
+		c.anonymousID = resolveAnonymousID(&env.OSReader{})
+	}
+	return c.anonymousID
+}
+
+// resolveAnonymousID returns the anonymous ID to report: the operator-provided
+// override if set, otherwise the ID from the local updates file (empty if the
+// file does not exist yet).
+func resolveAnonymousID(envReader env.Reader) string {
+	if id := envReader.Getenv(EnvVarAnonymousID); id != "" {
+		return id
+	}
+	anonymousID, err := updates.TryGetAnonymousID()
+	if err != nil {
+		slog.Debug("failed to get anonymous ID during client creation",
+			"error", err)
+	}
+	return anonymousID
 }
 
 // generateUserAgentWithEnv creates the user agent string using the provided environment reader
-// Format: toolhive/[local|operator] [version] [build_type] (os/arch)
-func generateUserAgentWithEnv(envReader env.Reader) string {
-	// Determine component type
-	envType := "local"
-	if rt.IsKubernetesRuntimeWithEnv(envReader) {
-		envType = "operator"
+// Format: toolhive/[component] [version] [build_type] (os/arch), where component
+// defaults to local or operator when not set.
+func generateUserAgentWithEnv(envReader env.Reader, component string) string {
+	envType := component
+	if envType == "" {
+		envType = "local"
+		if rt.IsKubernetesRuntimeWithEnv(envReader) {
+			envType = "operator"
+		}
 	}
 
 	version := versions.GetVersionInfo().Version

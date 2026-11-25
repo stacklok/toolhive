@@ -17,7 +17,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -57,7 +57,7 @@ func NewK8sReporter(restConfig *rest.Config, name, namespace string) (*K8sReport
 	}
 
 	// Register VirtualMCPServer CRD types
-	if err := mcpv1alpha1.AddToScheme(runtimeScheme); err != nil {
+	if err := mcpv1beta1.AddToScheme(runtimeScheme); err != nil {
 		return nil, fmt.Errorf("failed to add VirtualMCPServer types to scheme: %w", err)
 	}
 
@@ -93,7 +93,7 @@ func (r *K8sReporter) ReportStatus(ctx context.Context, status *vmcptypes.Status
 	// the update with a conflict error, and retry.RetryOnConflict will automatically retry.
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Get the latest version of the VirtualMCPServer resource
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 		if err := r.client.Get(ctx, namespacedName, vmcpServer); err != nil {
 			return fmt.Errorf("failed to get VirtualMCPServer: %w", err)
 		}
@@ -124,84 +124,53 @@ func (*K8sReporter) Start(_ context.Context) (func(context.Context) error, error
 	return noOpShutdown("K8s"), nil
 }
 
-// updateStatus converts vmcp.Status to VirtualMCPServerStatus and updates the resource.
-// Note: This method does NOT update the URL field, as that is infrastructure-level
-// status owned by the operator (the external service URL). The vMCP runtime only
-// reports operational status (phase, backends, conditions).
-func (*K8sReporter) updateStatus(vmcpServer *mcpv1alpha1.VirtualMCPServer, status *vmcptypes.Status) {
-	// Update phase
-	vmcpServer.Status.Phase = convertPhase(status.Phase)
-
-	// Update message
-	vmcpServer.Status.Message = status.Message
-
-	// Update backend count (only counts healthy/ready backends)
-	vmcpServer.Status.BackendCount = status.BackendCount
-
-	// Update discovered backends
-	vmcpServer.Status.DiscoveredBackends = make([]mcpv1alpha1.DiscoveredBackend, 0, len(status.DiscoveredBackends))
+// updateStatus converts vmcp.Status into the runtime-owned status snapshot.
+// The operator projects this snapshot into the public top-level fields, keeping
+// the top-level Conditions array under a single writer.
+func (*K8sReporter) updateStatus(vmcpServer *mcpv1beta1.VirtualMCPServer, status *vmcptypes.Status) {
+	if vmcpServer.Status.Runtime == nil {
+		vmcpServer.Status.Runtime = &mcpv1beta1.VirtualMCPServerRuntimeStatus{}
+	}
+	runtimeStatus := vmcpServer.Status.Runtime
+	runtimeStatus.Phase = convertPhase(status.Phase)
+	runtimeStatus.Message = status.Message
+	runtimeStatus.BackendCount = status.BackendCount
+	runtimeStatus.DiscoveredBackends = make([]mcpv1beta1.DiscoveredBackend, 0, len(status.DiscoveredBackends))
 	for _, backend := range status.DiscoveredBackends {
-		// Convert vmcp.DiscoveredBackend to mcpv1alpha1.DiscoveredBackend
-		// Both types have identical fields, so we can use type conversion
-		vmcpServer.Status.DiscoveredBackends = append(vmcpServer.Status.DiscoveredBackends,
-			mcpv1alpha1.DiscoveredBackend(backend))
+		runtimeStatus.DiscoveredBackends = append(runtimeStatus.DiscoveredBackends,
+			mcpv1beta1.DiscoveredBackend(backend))
 	}
 
-	// Update conditions using meta.SetStatusCondition to preserve LastTransitionTime
-	// when the condition Status hasn't changed. This is important for Kubernetes-style
-	// condition semantics - LastTransitionTime should only update on Status transitions.
-	//
-	// Note: Kubernetes conditions are additive - once set, they persist until explicitly removed.
-	// The status building code (monitor.BuildStatus) is responsible for providing the complete
-	// set of conditions that should be present. We trust that if a condition is missing from
-	// the new status, it should be removed from the resource.
-
-	// First, identify which condition types are present in the new status
-	newConditionTypes := make(map[string]bool)
-	for _, cond := range status.Conditions {
-		newConditionTypes[cond.Type] = true
+	newConditionTypes := make(map[string]bool, len(status.Conditions))
+	for _, condition := range status.Conditions {
+		newConditionTypes[condition.Type] = true
 	}
-
-	// Remove transient condition types that are no longer present.
-	// Transient conditions like "Degraded" only appear when that state is active,
-	// and must be explicitly removed when the system recovers.
-	//
-	// Core conditions (Ready, BackendsDiscovered) should always be present in the new status.
-	// If they're missing, that indicates a bug in the status building code, not normal operation.
-	// We still remove them to stay in sync with the status building code's intent.
-	knownConditionTypes := []string{"Ready", "Degraded", "BackendsDiscovered"}
-	for _, condType := range knownConditionTypes {
-		if !newConditionTypes[condType] {
-			// Log warning for core conditions that should always be present
-			if condType == "Ready" || condType == "BackendsDiscovered" {
-				slog.Warn("core condition missing from new status - this may indicate a bug in status building", "condition", condType)
+	for _, conditionType := range []string{"Ready", "Degraded", "BackendsDiscovered"} {
+		if !newConditionTypes[conditionType] {
+			if conditionType == "Ready" || conditionType == "BackendsDiscovered" {
+				slog.Warn("core condition missing from new status - this may indicate a bug in status building", "condition", conditionType)
 			}
-			meta.RemoveStatusCondition(&vmcpServer.Status.Conditions, condType)
+			meta.RemoveStatusCondition(&runtimeStatus.Conditions, conditionType)
 		}
 	}
-
-	// Now set/update the conditions from the new status
-	for _, newCondition := range status.Conditions {
-		meta.SetStatusCondition(&vmcpServer.Status.Conditions, newCondition)
+	for _, condition := range status.Conditions {
+		meta.SetStatusCondition(&runtimeStatus.Conditions, condition)
 	}
-
-	// Update observed generation
-	vmcpServer.Status.ObservedGeneration = vmcpServer.Generation
 }
 
 // convertPhase converts vmcp.Phase to VirtualMCPServerPhase.
-func convertPhase(phase vmcptypes.Phase) mcpv1alpha1.VirtualMCPServerPhase {
+func convertPhase(phase vmcptypes.Phase) mcpv1beta1.VirtualMCPServerPhase {
 	switch phase {
 	case vmcptypes.PhaseReady:
-		return mcpv1alpha1.VirtualMCPServerPhaseReady
+		return mcpv1beta1.VirtualMCPServerPhaseReady
 	case vmcptypes.PhaseDegraded:
-		return mcpv1alpha1.VirtualMCPServerPhaseDegraded
+		return mcpv1beta1.VirtualMCPServerPhaseDegraded
 	case vmcptypes.PhaseFailed:
-		return mcpv1alpha1.VirtualMCPServerPhaseFailed
+		return mcpv1beta1.VirtualMCPServerPhaseFailed
 	case vmcptypes.PhasePending:
-		return mcpv1alpha1.VirtualMCPServerPhasePending
+		return mcpv1beta1.VirtualMCPServerPhasePending
 	default:
-		return mcpv1alpha1.VirtualMCPServerPhasePending
+		return mcpv1beta1.VirtualMCPServerPhasePending
 	}
 }
 

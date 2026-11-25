@@ -6,8 +6,7 @@ package server
 import (
 	"context"
 
-	mcpserver "github.com/mark3labs/mcp-go/server"
-
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
@@ -25,26 +24,34 @@ type SessionManager interface {
 	// CreateSession completes Phase 2 of the two-phase session creation pattern.
 	// Called from OnRegisterSession hook once context is available; creates backend
 	// connections and replaces the placeholder with a fully-formed MultiSession.
-	CreateSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, error)
-
-	// GetAdaptedTools returns SDK-format tools for the given session with session-scoped
-	// handlers. This enables session-scoped routing: each tool call goes through the
-	// session's backend connections rather than the global router.
-	GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error)
-
-	// GetAdaptedResources returns SDK-format resources for the given session with
-	// session-scoped handlers, analogous to GetAdaptedTools for resources.
-	GetAdaptedResources(sessionID string) ([]mcpserver.ServerResource, error)
+	//
+	// sink, when non-nil, is threaded to MultiSessionFactory.MakeSessionWithID and
+	// reaches every backend connector opened for this session (#5748). Pass nil to
+	// disable asynchronous list_changed consumption for this session.
+	CreateSession(
+		ctx context.Context, sessionID string, sink vmcpsession.ListChangedSink,
+	) (vmcpsession.MultiSession, error)
 
 	// GetMultiSession retrieves the fully-formed MultiSession for the given session ID.
 	// Returns (nil, false) if the session does not exist or is still a placeholder.
-	// Used to access session-scoped backend tool metadata (e.g. for conflict validation).
-	GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool)
+	//
+	// ctx may carry request-scoped values (e.g. *auth.Identity) that implementations
+	// should forward to storage and backend-restore operations. Implementations must
+	// not let caller cancellation abort an in-progress restore that concurrent
+	// waiters depend on.
+	GetMultiSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, bool)
 
 	// DecorateSession retrieves the MultiSession for sessionID, applies fn to it,
 	// and stores the result back. Used to stack session decorators (composite tools,
 	// optimizer) after the base session is created.
 	DecorateSession(sessionID string, fn func(sessiontypes.MultiSession) sessiontypes.MultiSession) error
+
+	// LookupOwner returns the identity binding persisted for sessionID without
+	// restoring the session or contacting backends. An absent or terminated
+	// session, or an ID naming a key that holds no session metadata, yields
+	// transportsession.ErrSessionNotFound; a session that has no owner yet
+	// yields an empty binding. Other errors are storage failures.
+	LookupOwner(ctx context.Context, sessionID string) (string, error)
 
 	// Terminate terminates the session with the given ID, closing all backend connections.
 	Terminate(sessionID string) (bool, error)
@@ -59,4 +66,11 @@ type SessionManager interface {
 	// or health-monitoring components when they detect that a backend session has
 	// expired or been lost. Storage errors are logged but not returned.
 	NotifyBackendExpired(sessionID, workloadID string, metadata map[string]string)
+
+	// EvictStaleSessions evicts every live session that still holds a connection to
+	// a backend no longer present in the registry, closing those connections
+	// (including lingering server-push streams). Each evicted session is rebuilt
+	// without the dropped backend on its next access. It is idempotent and a no-op
+	// when no session is stale. Returns the number of sessions evicted.
+	EvictStaleSessions(ctx context.Context) int
 }

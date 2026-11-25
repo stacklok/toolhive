@@ -89,9 +89,12 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 	if err != nil {
 		return fmt.Errorf("failed to get writer for state: %w", err)
 	}
+	closed := false
 	defer func() {
-		if err := writer.Close(); err != nil {
-			slog.Warn("Failed to close writer", "error", err)
+		if !closed {
+			if err := AbortWriter(writer); err != nil {
+				slog.Warn("failed to abort run configuration writer", "name", config.GetBaseName(), "error", err)
+			}
 		}
 	}()
 
@@ -99,6 +102,11 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 	if err := config.WriteJSON(writer); err != nil {
 		return fmt.Errorf("failed to write run configuration: %w", err)
 	}
+	if err := writer.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("failed to close run configuration writer: %w", err)
+	}
+	closed = true
 
 	slog.Debug("Saved run configuration", "name", config.GetBaseName())
 	return nil
@@ -119,41 +127,6 @@ func LoadRunConfig[T any](ctx context.Context, name string, readJSONFunc ReadJSO
 
 	// Deserialize the configuration using the provided function
 	return readJSONFunc(reader)
-}
-
-// ReadRunConfigJSON deserializes a run configuration from JSON read from the provided reader
-// This is a generic JSON deserializer for any type that can be unmarshalled from JSON
-func ReadRunConfigJSON[T any](r io.Reader) (*T, error) {
-	var config T
-	decoder := json.NewDecoder(r)
-	if err := decoder.Decode(&config); err != nil {
-		return nil, err
-	}
-	return &config, nil
-}
-
-// LoadRunConfigOfType loads a run configuration of a specific type T from the state store
-func LoadRunConfigOfType[T any](ctx context.Context, name string) (*T, error) {
-	return LoadRunConfig(ctx, name, ReadRunConfigJSON[T])
-}
-
-// RunConfigReadJSONFunc defines the function signature for reading a RunConfig from JSON
-// This allows us to accept the runner.ReadJSON function without creating a circular dependency
-type RunConfigReadJSONFunc func(r io.Reader) (interface{}, error)
-
-// LoadRunConfigWithFunc loads a run configuration using a provided read function
-func LoadRunConfigWithFunc(ctx context.Context, name string, readFunc RunConfigReadJSONFunc) (interface{}, error) {
-	reader, err := LoadRunConfigJSON(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err := reader.Close(); err != nil {
-			slog.Warn("Failed to close reader", "error", err)
-		}
-	}()
-
-	return readFunc(reader)
 }
 
 // ReadJSON deserializes JSON from the provided reader into a generic interface

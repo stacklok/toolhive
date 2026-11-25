@@ -5,13 +5,39 @@ package session
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/stacklok/toolhive-core/redisconn"
+)
+
+var (
+	loadIfOwnerScript = redis.NewScript(`
+local current = redis.call("GET", KEYS[1])
+if not current then return false end
+local decoded = cjson.decode(current)
+if not decoded.metadata or decoded.metadata[ARGV[1]] ~= ARGV[2] then return false end
+redis.call("PEXPIRE", KEYS[1], ARGV[3])
+return current`)
+	storeIfOwnerScript = redis.NewScript(`
+local current = redis.call("GET", KEYS[1])
+if not current then return 0 end
+local decoded = cjson.decode(current)
+if not decoded.metadata or decoded.metadata[ARGV[1]] ~= ARGV[2] then return 0 end
+local replacement = cjson.decode(ARGV[3])
+if not replacement.metadata or replacement.metadata[ARGV[1]] ~= ARGV[2] then return 0 end
+redis.call("SET", KEYS[1], ARGV[3], "PX", ARGV[4])
+return 1`)
+	deleteIfOwnerScript = redis.NewScript(`
+local current = redis.call("GET", KEYS[1])
+if not current then return 0 end
+local decoded = cjson.decode(current)
+if not decoded.metadata or decoded.metadata[ARGV[1]] ~= ARGV[2] then return 0 end
+return redis.call("DEL", KEYS[1])`)
 )
 
 // RedisStorage implements the Storage interface backed by Redis.
@@ -21,107 +47,35 @@ type RedisStorage struct {
 	ttl       time.Duration
 }
 
-func validateRedisConfig(cfg *RedisConfig) error {
-	if cfg.Addr != "" && cfg.SentinelConfig != nil {
-		return errors.New("addr and SentinelConfig are mutually exclusive")
+// NewRedisStorage constructs a RedisStorage. Connection-mode topology, timeouts,
+// TLS, and credentials are configured through cfg; keyPrefix is the per-tenant
+// key prefix (e.g. "thv:proxy:session:") and must end with ':' to avoid key
+// collisions. ttl is the sliding-window expiry applied to every key on Store
+// and refreshed on every Load (sliding window): sessions remain valid
+// indefinitely while actively used; revocation requires an explicit Delete call.
+//
+// Connection-mode validation, timeout defaults, client construction (standalone,
+// cluster, or sentinel), TLS plumbing, and connectivity verification are
+// delegated to the shared toolhive-core redisconn package.
+// A connection without verified TLS is allowed but logged at WARN.
+func NewRedisStorage(ctx context.Context, cfg redisconn.Config, keyPrefix string, ttl time.Duration) (*RedisStorage, error) {
+	if err := validateSessionInvariants(keyPrefix, ttl); err != nil {
+		return nil, err
 	}
-	if cfg.Addr == "" && cfg.SentinelConfig == nil {
-		return errors.New("one of Addr (standalone) or SentinelConfig (sentinel) must be set")
-	}
-	if cfg.SentinelConfig != nil {
-		if cfg.SentinelConfig.MasterName == "" {
-			return errors.New("SentinelConfig.MasterName is required")
-		}
-		if len(cfg.SentinelConfig.SentinelAddrs) == 0 {
-			return errors.New("SentinelConfig.SentinelAddrs must not be empty")
-		}
-	}
-	if cfg.KeyPrefix == "" {
-		return errors.New("KeyPrefix is required")
-	}
-	if cfg.KeyPrefix[len(cfg.KeyPrefix)-1] != ':' {
-		return errors.New("KeyPrefix must end with ':' to avoid key collisions (e.g. \"thv:vmcp:session:\")")
-	}
-	return nil
-}
-
-// NewRedisStorage constructs a RedisStorage from a RedisConfig.
-// ttl is the expiry applied to every key on Store and refreshed on every Load (sliding window).
-// Because TTL is sliding, sessions remain valid indefinitely while actively used; revocation
-// requires an explicit Delete call. There is no absolute maximum session lifetime.
-func NewRedisStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*RedisStorage, error) {
-	if err := validateRedisConfig(&cfg); err != nil {
-		return nil, fmt.Errorf("invalid redis configuration: %w", err)
-	}
-	if ttl <= 0 {
-		return nil, fmt.Errorf("ttl must be a positive duration")
-	}
-	client, err := buildRedisClient(ctx, &cfg)
+	warnInsecureRedisTransport(&cfg)
+	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &RedisStorage{
 		client:    client,
-		keyPrefix: cfg.KeyPrefix,
+		keyPrefix: keyPrefix,
 		ttl:       ttl,
 	}, nil
 }
 
-// buildRedisClient applies timeout defaults, resolves TLS, constructs either a
-// standalone or Sentinel client from cfg, and verifies the connection with Ping.
-// cfg is modified in place (timeout defaults written back).
-func buildRedisClient(ctx context.Context, cfg *RedisConfig) (redis.UniversalClient, error) {
-	if cfg.DialTimeout == 0 {
-		cfg.DialTimeout = DefaultDialTimeout
-	}
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = DefaultReadTimeout
-	}
-	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = DefaultWriteTimeout
-	}
-
-	tlsCfg, err := buildRedisTLSConfig(cfg.TLS)
-	if err != nil {
-		return nil, fmt.Errorf("tls configuration error: %w", err)
-	}
-
-	var client redis.UniversalClient
-	if cfg.SentinelConfig != nil {
-		client = redis.NewFailoverClient(&redis.FailoverOptions{
-			MasterName:    cfg.SentinelConfig.MasterName,
-			SentinelAddrs: cfg.SentinelConfig.SentinelAddrs,
-			Username:      cfg.Username,
-			Password:      cfg.Password,
-			DB:            cfg.DB,
-			DialTimeout:   cfg.DialTimeout,
-			ReadTimeout:   cfg.ReadTimeout,
-			WriteTimeout:  cfg.WriteTimeout,
-			TLSConfig:     tlsCfg,
-		})
-	} else {
-		client = redis.NewClient(&redis.Options{
-			Addr:         cfg.Addr,
-			Username:     cfg.Username,
-			Password:     cfg.Password,
-			DB:           cfg.DB,
-			DialTimeout:  cfg.DialTimeout,
-			ReadTimeout:  cfg.ReadTimeout,
-			WriteTimeout: cfg.WriteTimeout,
-			TLSConfig:    tlsCfg,
-		})
-	}
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
-		return nil, fmt.Errorf("failed to connect to redis: %w", err)
-	}
-	return client, nil
-}
-
 // newRedisStorageWithClient creates a RedisStorage with a pre-configured client.
-// Intended for tests only (bypasses config validation and Ping); production callers
-// must use NewRedisStorage.
+// Intended for tests only (bypasses Ping); production callers must use NewRedisStorage.
 func newRedisStorageWithClient(client redis.UniversalClient, keyPrefix string, ttl time.Duration) *RedisStorage {
 	return &RedisStorage{
 		client:    client,
@@ -130,27 +84,45 @@ func newRedisStorageWithClient(client redis.UniversalClient, keyPrefix string, t
 	}
 }
 
-// buildRedisTLSConfig creates a *tls.Config from a RedisTLSConfig.
-func buildRedisTLSConfig(cfg *RedisTLSConfig) (*tls.Config, error) {
-	if cfg == nil {
-		return nil, nil
+// validateSessionInvariants checks the per-storage invariants that the shared
+// toolhive-core redis package does not enforce (key-prefix conventions, TTL
+// bounds).
+func validateSessionInvariants(keyPrefix string, ttl time.Duration) error {
+	if keyPrefix == "" {
+		return errors.New("invalid redis configuration: key prefix is required")
 	}
-	tc := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // G402: configurable per-deployment
+	if keyPrefix[len(keyPrefix)-1] != ':' {
+		return errors.New(
+			`invalid redis configuration: key prefix must end with ':' to avoid key collisions (e.g. "thv:vmcp:session:")`,
+		)
 	}
-	if len(cfg.CACert) > 0 {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(cfg.CACert) {
-			return nil, fmt.Errorf("failed to parse CA certificate PEM data")
-		}
-		tc.RootCAs = pool
+	if ttl <= 0 {
+		return fmt.Errorf("ttl must be a positive duration")
 	}
-	return tc, nil
+	return nil
 }
 
 func (s *RedisStorage) key(id string) string {
 	return s.keyPrefix + id
+}
+
+// Create persists the complete session atomically with SET NX and an expiry.
+func (s *RedisStorage) Create(ctx context.Context, session Session) error {
+	if session == nil || session.ID() == "" {
+		return fmt.Errorf("cannot create nil session or empty ID")
+	}
+	data, err := serializeSession(session)
+	if err != nil {
+		return fmt.Errorf("failed to serialize session: %w", err)
+	}
+	created, err := s.client.SetNX(ctx, s.key(session.ID()), data, s.ttl).Result()
+	if err != nil {
+		return err
+	}
+	if !created {
+		return ErrSessionAlreadyExists
+	}
+	return nil
 }
 
 // Store serializes the session and persists it with SET … EX, refreshing the TTL on every call.
@@ -201,6 +173,67 @@ func (s *RedisStorage) Load(ctx context.Context, id string) (Session, error) {
 	return session, nil
 }
 
+// LoadIfOwner atomically validates ownership, refreshes the TTL, and returns the validated record.
+func (s *RedisStorage) LoadIfOwner(ctx context.Context, id, expectedOwner string) (Session, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session with empty ID")
+	}
+	result, err := loadIfOwnerScript.Run(ctx, s.client, []string{s.key(id)},
+		MetadataKeyIdentityBinding, expectedOwner, max(s.ttl.Milliseconds(), 1)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("failed to conditionally load session: %w", err)
+	}
+	data, ok := result.(string)
+	if !ok {
+		return nil, fmt.Errorf("failed to conditionally load session: unexpected response type %T", result)
+	}
+	sess, err := deserializeSession([]byte(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to deserialize session: %w", err)
+	}
+	return sess, nil
+}
+
+// LoadMetadata retrieves authoritative metadata with GET, without refreshing the key TTL.
+func (s *RedisStorage) LoadMetadata(ctx context.Context, id string) (map[string]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session metadata with empty ID")
+	}
+	data, err := s.client.Get(ctx, s.key(id)).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("failed to load session metadata: %w", err)
+	}
+	var stored sessionData
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to deserialize session metadata: %w", err)
+	}
+	return stored.Metadata, nil
+}
+
+// StoreIfOwner atomically replaces a session only while its ownership binding matches.
+func (s *RedisStorage) StoreIfOwner(ctx context.Context, session Session, expectedOwner string) (bool, error) {
+	if session == nil || session.ID() == "" {
+		return false, fmt.Errorf("cannot store nil session or empty ID")
+	}
+	data, err := serializeSession(session)
+	if err != nil {
+		return false, fmt.Errorf("failed to serialize session: %w", err)
+	}
+	ttlMilliseconds := max(s.ttl.Milliseconds(), 1)
+	result, err := storeIfOwnerScript.Run(ctx, s.client, []string{s.key(session.ID())},
+		MetadataKeyIdentityBinding, expectedOwner, data, ttlMilliseconds).Int()
+	if err != nil {
+		return false, fmt.Errorf("failed to conditionally store session: %w", err)
+	}
+	return result == 1, nil
+}
+
 // Delete removes the Redis key. A missing key is not an error.
 func (s *RedisStorage) Delete(ctx context.Context, id string) error {
 	if id == "" {
@@ -212,6 +245,19 @@ func (s *RedisStorage) Delete(ctx context.Context, id string) error {
 	}
 
 	return nil
+}
+
+// DeleteIfOwner atomically removes a session only while its ownership binding matches.
+func (s *RedisStorage) DeleteIfOwner(ctx context.Context, id, expectedOwner string) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("cannot delete session with empty ID")
+	}
+	result, err := deleteIfOwnerScript.Run(ctx, s.client, []string{s.key(id)},
+		MetadataKeyIdentityBinding, expectedOwner).Int()
+	if err != nil {
+		return false, fmt.Errorf("failed to conditionally delete session: %w", err)
+	}
+	return result == 1, nil
 }
 
 // DeleteExpired is a no-op. Redis TTL handles key expiry natively.

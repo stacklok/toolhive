@@ -14,10 +14,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/scheme"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -69,19 +69,19 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:           "test-image:latest",
 			Transport:       "stdio",
 			ProxyPort:       8080,
 			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplateSpec),
-			ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-				ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-					PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+			ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+				ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+					PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 						Labels: map[string]string{
 							"podspec-testlabel": "true",
 						},
@@ -92,17 +92,17 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 	}
 
 	// Create a new scheme for this test to avoid race conditions
-	s := runtime.NewScheme()
-	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s := testutil.NewScheme(t)
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the pod template metadata overrides labels are merged with Spec.Template.Labels
@@ -169,31 +169,21 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 
 func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	t.Parallel()
-	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Create a test MCPServer (builder defaults match image/transport/port exactly).
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server", "default")
 
 	// Create a new scheme for this test to avoid race conditions
-	s := runtime.NewScheme()
-	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s := testutil.NewScheme(t)
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 }
 
@@ -201,17 +191,17 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 	t.Parallel()
 	// Create a test MCPServer with secrets and custom service account
 	customSA := "custom-mcp-sa"
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server-secrets",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:          "test-image:latest",
 			Transport:      "stdio",
 			ProxyPort:      8080,
 			ServiceAccount: &customSA,
-			Secrets: []mcpv1alpha1.SecretRef{
+			Secrets: []mcpv1beta1.SecretRef{
 				{
 					Name:          "github-token",
 					Key:           "token",
@@ -227,17 +217,17 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 	}
 
 	// Create a new scheme for this test to avoid race conditions
-	s := runtime.NewScheme()
-	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s := testutil.NewScheme(t)
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that secrets are injected via pod template patch
@@ -258,7 +248,7 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 
 	// Parse and verify the pod template patch contains secret environment variables and service account
 	var podTemplateSpec corev1.PodTemplateSpec
-	err := json.Unmarshal([]byte(podTemplatePatch), &podTemplateSpec)
+	err = json.Unmarshal([]byte(podTemplatePatch), &podTemplateSpec)
 	require.NoError(t, err, "Should be able to unmarshal pod template patch")
 
 	// Verify the service account is set in the pod template patch
@@ -310,31 +300,21 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 func TestProxyRunnerSecurityContext(t *testing.T) {
 	t.Parallel()
 
-	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server-env",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Create a test MCPServer (builder defaults match image/transport/port exactly).
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server-env", "default")
 
 	// Create a new scheme for this test to avoid race conditions
-	s := runtime.NewScheme()
-	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s := testutil.NewScheme(t)
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Generate the deployment
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the ProxyRunner's pod and container security context are set
@@ -357,31 +337,21 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 	t.Parallel()
 
-	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server-logs",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Create a test MCPServer (builder defaults match image/transport/port exactly).
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server-logs", "default")
 
 	// Create a new scheme for this test to avoid race conditions
-	s := runtime.NewScheme()
-	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s := testutil.NewScheme(t)
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Create the deployment
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the proxy runner container has the UNSTRUCTURED_LOGS environment variable set to false

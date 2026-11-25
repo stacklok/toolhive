@@ -8,20 +8,23 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 const (
@@ -35,11 +38,13 @@ const (
 // MCPOIDCConfigReconciler reconciles a MCPOIDCConfig object.
 //
 // This controller manages the lifecycle of MCPOIDCConfig resources: validation,
-// config hash computation, finalizer management, reference tracking, and
-// deletion protection when MCPServer resources reference this config.
+// config hash computation, finalizer management, and deletion protection when
+// MCPServer resources reference this config. The set of referencing workloads is
+// recomputed on demand during deletion rather than tracked in status.
 type MCPOIDCConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -47,6 +52,7 @@ type MCPOIDCConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -54,7 +60,7 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	logger := log.FromContext(ctx)
 
 	// Fetch the MCPOIDCConfig instance
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{}
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{}
 	err := r.Get(ctx, req.NamespacedName, oidcConfig)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -70,10 +76,14 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.handleDeletion(ctx, oidcConfig)
 	}
 
-	// Add finalizer if it doesn't exist
+	// Add finalizer if it doesn't exist.
+	// MutateAndPatchSpec wraps an optimistic-lock merge patch: any concurrent
+	// finalizer additions land on the live object via the apiserver, and our
+	// patch only carries the field we changed. See .claude/rules/operator.md.
 	if !controllerutil.ContainsFinalizer(oidcConfig, OIDCConfigFinalizerName) {
-		controllerutil.AddFinalizer(oidcConfig, OIDCConfigFinalizerName)
-		if err := r.Update(ctx, oidcConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+			controllerutil.AddFinalizer(c, OIDCConfigFinalizerName)
+		}); err != nil {
 			logger.Error(err, "Failed to add finalizer")
 			return ctrl.Result{}, err
 		}
@@ -81,29 +91,16 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Validate spec configuration early
-	if err := oidcConfig.Validate(); err != nil {
+	if err := validateOIDCConfigSpec(oidcConfig); err != nil {
 		logger.Error(err, "MCPOIDCConfig spec validation failed")
-		meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeOIDCConfigValid,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonOIDCConfigInvalid,
-			Message:            err.Error(),
-			ObservedGeneration: oidcConfig.Generation,
-		})
-		if updateErr := r.Status().Update(ctx, oidcConfig); updateErr != nil {
-			logger.Error(updateErr, "Failed to update status after validation error")
-		}
-		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
+		return r.handleValidationFailure(ctx, oidcConfig, err)
 	}
 
-	// Validation succeeded - set Valid=True condition
-	conditionChanged := meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeOIDCConfigValid,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonOIDCConfigValid,
-		Message:            "Spec validation passed",
-		ObservedGeneration: oidcConfig.Generation,
-	})
+	// Whether we are recovering from a prior validation failure. Captured before
+	// the success patches below set Valid=True so a single Normal event fires on
+	// the False->True transition.
+	wasInvalid := conditionStatusIs(oidcConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeOIDCConfigValid, metav1.ConditionFalse)
 
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(oidcConfig.Spec)
@@ -115,38 +112,104 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			"oldHash", oidcConfig.Status.ConfigHash,
 			"newHash", configHash)
 
-		oidcConfig.Status.ConfigHash = configHash
-		oidcConfig.Status.ObservedGeneration = oidcConfig.Generation
-
-		if err := r.Status().Update(ctx, oidcConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+			setOIDCConfigValidTrueCondition(c)
+			c.Status.ConfigHash = configHash
+			c.Status.ObservedGeneration = c.Generation
+		}); err != nil {
 			logger.Error(err, "Failed to update MCPOIDCConfig status")
 			return ctrl.Result{}, err
 		}
+		emitConfigRecoveryEvent(r.Recorder, oidcConfig, wasInvalid)
 		return ctrl.Result{}, nil
 	}
 
-	// Refresh ReferencingWorkloads list
-	referencingWorkloads, err := r.findReferencingWorkloads(ctx, oidcConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-	} else if !ctrlutil.WorkloadRefsEqual(oidcConfig.Status.ReferencingWorkloads, referencingWorkloads) {
-		oidcConfig.Status.ReferencingWorkloads = referencingWorkloads
-		conditionChanged = true
+	// Single status patch covering the steady-state success path: ensure the
+	// Valid=True condition is set. MutateAndPatchStatus short-circuits on an
+	// empty diff so the no-op case still skips the wire call (SteadyStateNoOp
+	// behaviour is preserved).
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+		setOIDCConfigValidTrueCondition(c)
+	}); err != nil {
+		logger.Error(err, "Failed to update MCPOIDCConfig status")
+		return ctrl.Result{}, err
 	}
 
-	// Update condition if it changed (even without hash change)
-	if conditionChanged {
-		if err := r.Status().Update(ctx, oidcConfig); err != nil {
-			logger.Error(err, "Failed to update MCPOIDCConfig status after condition change")
-			return ctrl.Result{}, err
-		}
-	}
-
+	emitConfigRecoveryEvent(r.Recorder, oidcConfig, wasInvalid)
 	return ctrl.Result{}, nil
 }
 
+// validateOIDCConfigSpec validates the MCPOIDCConfig spec: type/config
+// consistency via Validate(), then issuer and JWKS URL checks for inline
+// configs. The URL checks run here rather than inside Validate() because the
+// validation package imports the v1beta1 API package (for example
+// validation.ValidateCABundleSource), so calling it from the types package
+// would create an import cycle. This mirrors the MCPRemoteProxy controller,
+// which applies validation.ValidateRemoteURL in its validateSpec step.
+func validateOIDCConfigSpec(oidcConfig *mcpv1beta1.MCPOIDCConfig) error {
+	if err := oidcConfig.Validate(); err != nil {
+		return err
+	}
+	if oidcConfig.Spec.Type != mcpv1beta1.MCPOIDCConfigTypeInline || oidcConfig.Spec.Inline == nil {
+		return nil
+	}
+	if err := validation.ValidateOIDCIssuerURL(oidcConfig.Spec.Inline.Issuer, oidcConfig.Spec.Inline.InsecureAllowHTTP); err != nil {
+		return err
+	}
+	return validation.ValidateJWKSURL(oidcConfig.Spec.Inline.JWKSURL, oidcConfig.Spec.Inline.InsecureAllowHTTP)
+}
+
+// handleValidationFailure records the Valid=False condition for a spec that
+// failed validation and emits a one-shot Warning event on the transition into
+// the invalid state. It never requeues — the user must fix the spec.
+func (r *MCPOIDCConfigReconciler) handleValidationFailure(
+	ctx context.Context, oidcConfig *mcpv1beta1.MCPOIDCConfig, validationErr error,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	// Capture the transition before MutateAndPatchStatus mutates conditions in
+	// place, so the Warning fires only when entering the invalid state rather
+	// than on every reconcile that re-observes it.
+	wasInvalid := conditionStatusIs(oidcConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeOIDCConfigValid, metav1.ConditionFalse)
+	updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonOIDCConfigInvalid,
+			Message:            validationErr.Error(),
+			ObservedGeneration: c.Generation,
+		})
+	})
+	if updateErr != nil {
+		logger.Error(updateErr, "Failed to update status after validation error")
+	}
+	// Emit the Warning only on the transition into the invalid state, and only
+	// once the condition persisted — a status write that keeps failing would
+	// otherwise re-fire the event on every reconcile.
+	if !wasInvalid && updateErr == nil {
+		emitConfigEvent(r.Recorder, oidcConfig, corev1.EventTypeWarning,
+			eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", validationErr.Error())
+	}
+	return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
+}
+
+// setOIDCConfigValidTrueCondition stamps ConditionTypeOIDCConfigValid=True onto
+// the supplied object. It is callable inside a MutateAndPatchStatus closure: the
+// closure receives the freshly-snapshotted object, and SetStatusCondition only
+// mutates Conditions when the desired state differs, so a no-op reconcile
+// produces an empty patch body that the helper skips.
+func setOIDCConfigValidTrueCondition(c *mcpv1beta1.MCPOIDCConfig) {
+	meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonOIDCConfigValid,
+		Message:            "Spec validation passed",
+		ObservedGeneration: c.Generation,
+	})
+}
+
 // calculateConfigHash calculates a hash of the MCPOIDCConfig spec using Kubernetes utilities
-func (*MCPOIDCConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPOIDCConfigSpec) string {
+func (*MCPOIDCConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPOIDCConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
 }
 
@@ -156,7 +219,7 @@ func (*MCPOIDCConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPOIDCConf
 // and the resource can be garbage collected.
 func (r *MCPOIDCConfigReconciler) handleDeletion(
 	ctx context.Context,
-	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+	oidcConfig *mcpv1beta1.MCPOIDCConfig,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -173,24 +236,38 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 				"oidcConfig", oidcConfig.Name,
 				"referencingWorkloads", referencingWorkloads)
 
-			meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-				Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
-				Status:             metav1.ConditionTrue,
-				Reason:             "ReferencedByWorkloads",
-				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
-				ObservedGeneration: oidcConfig.Generation,
+			// Capture the transition before the patch mutates conditions in
+			// place: emit the Warning only when entering the blocked state.
+			wasBlocked := conditionStatusIs(oidcConfig.Status.Conditions,
+				mcpv1beta1.ConditionTypeDeletionBlocked, metav1.ConditionTrue)
+			updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+					Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
+					Status:             metav1.ConditionTrue,
+					Reason:             "ReferencedByWorkloads",
+					Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
+					ObservedGeneration: c.Generation,
+				})
 			})
-			oidcConfig.Status.ReferencingWorkloads = referencingWorkloads
-			if updateErr := r.Status().Update(ctx, oidcConfig); updateErr != nil {
+			if updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
+			}
+			// Emit the Warning only on the transition into the blocked state, and
+			// only once the condition persisted, so a failing status write does
+			// not re-fire the event every reconcile.
+			if !wasBlocked && updateErr == nil {
+				emitConfigEvent(r.Recorder, oidcConfig, corev1.EventTypeWarning,
+					eventReasonDeletionBlocked, eventActionDelete,
+					"deletion blocked while still referenced by workloads: %v", referencingWorkloads)
 			}
 
 			// Requeue to check again later
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
-		controllerutil.RemoveFinalizer(oidcConfig, OIDCConfigFinalizerName)
-		if err := r.Update(ctx, oidcConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+			controllerutil.RemoveFinalizer(c, OIDCConfigFinalizerName)
+		}); err != nil {
 			logger.Error(err, "Failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
@@ -200,208 +277,142 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
+// Field-index keys backing findReferencingWorkloads. MCPServer and MCPRemoteProxy
+// both reference the config via spec.oidcConfigRef; VirtualMCPServer nests it
+// under spec.incomingAuth. The indexes are registered in SetupWithManager.
+const (
+	oidcConfigRefIndexKey     = "spec.oidcConfigRef"
+	vmcpOIDCConfigRefIndexKey = "spec.incomingAuth.oidcConfigRef"
+)
+
+// indexMCPServerByOIDCConfigRef extracts the MCPOIDCConfig name an MCPServer
+// references, for the field index. Returns nil when there is no reference so
+// unreferencing servers are not indexed under the empty key.
+func indexMCPServerByOIDCConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.OIDCConfigRef == nil || server.Spec.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []string{server.Spec.OIDCConfigRef.Name}
+}
+
+// indexVirtualMCPServerByOIDCConfigRef extracts the MCPOIDCConfig name a
+// VirtualMCPServer references via spec.incomingAuth, for the field index.
+func indexVirtualMCPServerByOIDCConfigRef(obj client.Object) []string {
+	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
+	if !ok || vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.OIDCConfigRef == nil || vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []string{vmcp.Spec.IncomingAuth.OIDCConfigRef.Name}
+}
+
+// indexMCPRemoteProxyByOIDCConfigRef extracts the MCPOIDCConfig name an
+// MCPRemoteProxy references, for the field index.
+func indexMCPRemoteProxyByOIDCConfigRef(obj client.Object) []string {
+	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
+	if !ok || proxy.Spec.OIDCConfigRef == nil || proxy.Spec.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []string{proxy.Spec.OIDCConfigRef.Name}
+}
+
 // findReferencingWorkloads returns the workload resources (MCPServer, VirtualMCPServer, and MCPRemoteProxy)
 // that reference this MCPOIDCConfig via their OIDCConfigRef field.
+//
+// Each lookup is served by a field index (registered in SetupWithManager) so the
+// query returns only the referencing workloads instead of listing every workload
+// in the namespace and filtering in memory.
 func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
-	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
-) ([]mcpv1alpha1.WorkloadReference, error) {
-	// Find referencing MCPServers
-	refs, err := ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, oidcConfig.Namespace, oidcConfig.Name,
-		func(server *mcpv1alpha1.MCPServer) *string {
-			if server.Spec.OIDCConfigRef != nil {
-				return &server.Spec.OIDCConfigRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
+	oidcConfig *mcpv1beta1.MCPOIDCConfig,
+) ([]mcpv1beta1.WorkloadReference, error) {
+	var refs []mcpv1beta1.WorkloadReference
+
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(oidcConfig.Namespace),
+		client.MatchingFields{oidcConfigRefIndexKey: oidcConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by oidcConfigRef: %w", err)
+	}
+	for i := range serverList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: serverList.Items[i].Name})
 	}
 
-	// Also check VirtualMCPServers
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
-	if err := r.List(ctx, vmcpList, client.InNamespace(oidcConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list VirtualMCPServers: %w", err)
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(oidcConfig.Namespace),
+		client.MatchingFields{vmcpOIDCConfigRefIndexKey: oidcConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list VirtualMCPServers by oidcConfigRef: %w", err)
 	}
-	for _, vmcp := range vmcpList.Items {
-		if vmcp.Spec.IncomingAuth != nil &&
-			vmcp.Spec.IncomingAuth.OIDCConfigRef != nil &&
-			vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == oidcConfig.Name {
-			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindVirtualMCPServer, Name: vmcp.Name})
-		}
+	for i := range vmcpList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcpList.Items[i].Name})
 	}
 
-	// Check MCPRemoteProxies
-	proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
-	if err := r.List(ctx, proxyList, client.InNamespace(oidcConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
+	if err := r.List(ctx, proxyList, client.InNamespace(oidcConfig.Namespace),
+		client.MatchingFields{oidcConfigRefIndexKey: oidcConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies by oidcConfigRef: %w", err)
 	}
-	for _, proxy := range proxyList.Items {
-		if proxy.Spec.OIDCConfigRef != nil && proxy.Spec.OIDCConfigRef.Name == oidcConfig.Name {
-			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
-		}
+	for i := range proxyList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyList.Items[i].Name})
 	}
 
 	ctrlutil.SortWorkloadRefs(refs)
 	return refs, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer, VirtualMCPServer, and MCPRemoteProxy changes to maintain accurate ReferencingWorkloads status.
-func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPOIDCConfigs.
-	// This handler enqueues both the currently-referenced MCPOIDCConfig AND any
-	// MCPOIDCConfig that still lists this server in ReferencingWorkloads (covers the
-	// case where a server removes its oidcConfigRef — the previously-referenced
-	// config needs to reconcile and clean up the stale entry).
-	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			server, ok := obj.(*mcpv1alpha1.MCPServer)
-			if !ok {
-				return nil
-			}
-
-			seen := make(map[types.NamespacedName]struct{})
-			var requests []reconcile.Request
-
-			// Enqueue the currently-referenced MCPOIDCConfig (if any)
-			if server.Spec.OIDCConfigRef != nil {
-				nn := types.NamespacedName{
-					Name:      server.Spec.OIDCConfigRef.Name,
-					Namespace: server.Namespace,
-				}
-				seen[nn] = struct{}{}
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-			}
-
-			// Also enqueue any MCPOIDCConfig that still lists this server in
-			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-			oidcConfigList := &mcpv1alpha1.MCPOIDCConfigList{}
-			if err := r.List(ctx, oidcConfigList, client.InNamespace(server.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for MCPServer watch")
-				return requests
-			}
-			for _, cfg := range oidcConfigList.Items {
-				nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-				if _, already := seen[nn]; already {
-					continue
-				}
-				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
-						requests = append(requests, reconcile.Request{NamespacedName: nn})
-						break
-					}
-				}
-			}
-
-			return requests
+// oidcConfigRefChangedPredicate builds the watch predicate for a workload type
+// that references an MCPOIDCConfig. Create and Delete events pass through so a
+// new or removed referrer wakes the config; Update events are admitted only when
+// the referenced config name changes, so unrelated spec churn (image, routing,
+// authentication, status) does not enqueue no-op config reconciles. extractRef
+// is the same field-index extractor used to build the reverse-reference index,
+// which keeps the predicate and the index in agreement on what counts as a
+// reference.
+func oidcConfigRefChangedPredicate(extractRef func(client.Object) []string) predicate.Predicate {
+	refName := func(obj client.Object) string {
+		if names := extractRef(obj); len(names) > 0 {
+			return names[0]
+		}
+		return ""
+	}
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return refName(e.ObjectOld) != refName(e.ObjectNew)
 		},
-	)
+		CreateFunc:  func(_ event.CreateEvent) bool { return true },
+		DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
+		GenericFunc: func(_ event.GenericEvent) bool { return false },
+	}
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field indexes backing findReferencingWorkloads: each lets the controller
+	// query only the workloads referencing a given config rather than listing
+	// every workload in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, oidcConfigRefIndexKey, indexMCPServerByOIDCConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer oidcConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.VirtualMCPServer{}, vmcpOIDCConfigRefIndexKey, indexVirtualMCPServerByOIDCConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up VirtualMCPServer oidcConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPRemoteProxy{}, oidcConfigRefIndexKey, indexMCPRemoteProxyByOIDCConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPRemoteProxy oidcConfigRef index: %w", err)
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.MCPOIDCConfig{}).
-		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
-		Watches(
-			&mcpv1alpha1.VirtualMCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToOIDCConfig),
-		).
-		Watches(
-			&mcpv1alpha1.MCPRemoteProxy{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToOIDCConfig),
-		).
+		For(&mcpv1beta1.MCPOIDCConfig{}).
+		Watches(&mcpv1beta1.MCPServer{}, enqueueReferencedConfig(indexMCPServerByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexMCPServerByOIDCConfigRef))).
+		Watches(&mcpv1beta1.VirtualMCPServer{}, enqueueReferencedConfig(indexVirtualMCPServerByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexVirtualMCPServerByOIDCConfigRef))).
+		Watches(&mcpv1beta1.MCPRemoteProxy{}, enqueueReferencedConfig(indexMCPRemoteProxyByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexMCPRemoteProxyByOIDCConfigRef))).
 		Complete(r)
-}
-
-// mapVirtualMCPServerToOIDCConfig maps VirtualMCPServer changes to MCPOIDCConfig reconciliation requests.
-// Enqueues both the currently-referenced config and any config that still lists this
-// VirtualMCPServer in ReferencingWorkloads (handles ref-removal / deletion).
-func (r *MCPOIDCConfigReconciler) mapVirtualMCPServerToOIDCConfig(
-	ctx context.Context, obj client.Object,
-) []reconcile.Request {
-	vmcp, ok := obj.(*mcpv1alpha1.VirtualMCPServer)
-	if !ok {
-		return nil
-	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	// Enqueue the currently-referenced MCPOIDCConfig (if any)
-	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
-		nn := types.NamespacedName{
-			Name:      vmcp.Spec.IncomingAuth.OIDCConfigRef.Name,
-			Namespace: vmcp.Namespace,
-		}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	// Also enqueue any MCPOIDCConfig that still lists this VirtualMCPServer in
-	// ReferencingWorkloads — handles ref-removal and deletion cases.
-	oidcConfigList := &mcpv1alpha1.MCPOIDCConfigList{}
-	if err := r.List(ctx, oidcConfigList, client.InNamespace(vmcp.Namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for VirtualMCPServer watch")
-		return requests
-	}
-	for _, cfg := range oidcConfigList.Items {
-		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-		if _, already := seen[nn]; already {
-			continue
-		}
-		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1alpha1.WorkloadKindVirtualMCPServer && ref.Name == vmcp.Name {
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-				break
-			}
-		}
-	}
-
-	return requests
-}
-
-// mapMCPRemoteProxyToOIDCConfig maps MCPRemoteProxy changes to MCPOIDCConfig reconciliation requests.
-// Enqueues both the currently-referenced config and any config that still lists this
-// MCPRemoteProxy in ReferencingWorkloads (handles ref-removal / deletion).
-func (r *MCPOIDCConfigReconciler) mapMCPRemoteProxyToOIDCConfig(
-	ctx context.Context, obj client.Object,
-) []reconcile.Request {
-	proxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
-	if !ok {
-		return nil
-	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	// Enqueue the currently-referenced MCPOIDCConfig (if any)
-	if proxy.Spec.OIDCConfigRef != nil {
-		nn := types.NamespacedName{
-			Name:      proxy.Spec.OIDCConfigRef.Name,
-			Namespace: proxy.Namespace,
-		}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	// Also enqueue any MCPOIDCConfig that still lists this MCPRemoteProxy in
-	// ReferencingWorkloads — handles ref-removal and deletion cases.
-	oidcConfigList := &mcpv1alpha1.MCPOIDCConfigList{}
-	if err := r.List(ctx, oidcConfigList, client.InNamespace(proxy.Namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for MCPRemoteProxy watch")
-		return requests
-	}
-	for _, cfg := range oidcConfigList.Items {
-		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-		if _, already := seen[nn]; already {
-			continue
-		}
-		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1alpha1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-				break
-			}
-		}
-	}
-
-	return requests
 }

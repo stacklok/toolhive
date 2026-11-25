@@ -11,19 +11,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
+	fositeoauth2 "github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/handler/openid"
 	"github.com/ory/fosite/storage"
 	"github.com/ory/fosite/token/jwt"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // OIDCMockServer represents a lightweight OIDC server using Ory Fosite
 type OIDCMockServer struct {
 	server   *http.Server
+	listener net.Listener
 	provider fosite.OAuth2Provider
 	store    *storage.MemoryStore
 	port     int
@@ -44,41 +48,124 @@ type AuthRequest struct {
 	Scope         string
 }
 
-// NewOIDCMockServer creates a new OIDC mock server using Ory Fosite
-func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...func(*fosite.Config)) (*OIDCMockServer, error) {
+// jwtKeyID is the key ID used in both the JWKS response and the JWT header.
+// pkg/auth's token validator requires the kid claim to look up the signing key.
+const jwtKeyID = "test-key-1"
+
+// OIDCMockOption is a unified option type for configuring the OIDC mock server.
+// Use WithClientAudience for client-registration settings and WithAccessTokenLifespan
+// (or other fosite-level helpers) for token-lifecycle settings. A single constructor
+// accepts both, so tests needing both a custom token lifetime and a specific audience
+// no longer require separate constructors.
+type OIDCMockOption struct {
+	fositeOpt func(*fosite.Config)
+	clientOpt func(*fosite.DefaultClient)
+
+	extraClientID     string
+	extraClientSecret string
+}
+
+// WithAdditionalClient registers one more confidential client. Tokens issued to
+// it through the client_credentials grant carry its ID as the subject, so a test
+// can authenticate two distinct principals against the same issuer. Client-level
+// options such as WithClientAudience apply to it as well.
+func WithAdditionalClient(clientID, clientSecret string) OIDCMockOption {
+	return OIDCMockOption{extraClientID: clientID, extraClientSecret: clientSecret}
+}
+
+// WithClientAudience sets the allowed audience(s) on the registered test client.
+// Use this when the vMCP OIDC config requires a specific audience claim in tokens.
+func WithClientAudience(audiences ...string) OIDCMockOption {
+	return OIDCMockOption{clientOpt: func(c *fosite.DefaultClient) {
+		c.Audience = audiences
+	}}
+}
+
+// NewOIDCMockServer creates a new OIDC mock server using Ory Fosite.
+// Use WithClientAudience to set client-level options and WithAccessTokenLifespan
+// for Fosite-level settings. Both option kinds may be mixed in a single call.
+//
+// The listener is bound before anything else, closing the window between
+// port selection and bind that a separate "pick a port, then bind later"
+// step would leave open. Pass port 0 to let the OS choose an ephemeral port;
+// use Port() to read back the port actually bound.
+func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...OIDCMockOption) (*OIDCMockServer, error) {
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return nil, fmt.Errorf("failed to listen: %w", err)
+	}
+	realPort := listener.Addr().(*net.TCPAddr).Port
+
+	config := defaultFositeConfig(realPort)
+	for _, opt := range opts {
+		if opt.fositeOpt != nil {
+			opt.fositeOpt(config)
+		}
+	}
+	mockServer, err := newOIDCMockServer(realPort, clientID, clientSecret, config, opts...)
+	if err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	mockServer.listener = listener
+	return mockServer, nil
+}
+
+// defaultFositeConfig returns the standard Fosite config for the mock server.
+func defaultFositeConfig(port int) *fosite.Config {
+	issuer := fmt.Sprintf("http://localhost:%d", port)
+	return &fosite.Config{
+		AccessTokenLifespan:   time.Hour,
+		RefreshTokenLifespan:  time.Hour * 24,
+		AuthorizeCodeLifespan: time.Minute * 10,
+		IDTokenLifespan:       time.Hour,
+		IDTokenIssuer:         issuer,
+		AccessTokenIssuer:     issuer,
+		HashCost:              12,
+	}
+}
+
+// newOIDCMockServer is the shared implementation for NewOIDCMockServer.
+func newOIDCMockServer(
+	port int, clientID, clientSecret string, config *fosite.Config, opts ...OIDCMockOption,
+) (*OIDCMockServer, error) {
 	// Generate RSA key for JWT signing
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate RSA key: %w", err)
 	}
 
-	// Create memory store
+	// Create memory store and register the test client, plus any additional
+	// clients. Client-level options apply to every registered client.
 	store := storage.NewMemoryStore()
-
-	// Add test client
-	client := &fosite.DefaultClient{
-		ID:            clientID,
-		Secret:        []byte(clientSecret),
-		RedirectURIs:  []string{"http://localhost:8080/callback", "http://127.0.0.1:8080/callback"},
-		ResponseTypes: []string{"code"},
-		GrantTypes:    []string{"authorization_code", "refresh_token", "client_credentials"},
-		Scopes:        []string{"openid", "profile", "email"},
-	}
-	store.Clients[clientID] = client
-
-	// Create Fosite configuration
-	config := &fosite.Config{
-		AccessTokenLifespan:   time.Hour,
-		RefreshTokenLifespan:  time.Hour * 24,
-		AuthorizeCodeLifespan: time.Minute * 10,
-		IDTokenLifespan:       time.Hour,
-		IDTokenIssuer:         fmt.Sprintf("http://localhost:%d", port),
-		HashCost:              12,
-	}
-
-	// Apply any overrides provided via opts
+	clients := map[string]string{clientID: clientSecret}
 	for _, opt := range opts {
-		opt(config)
+		if opt.extraClientID != "" {
+			clients[opt.extraClientID] = opt.extraClientSecret
+		}
+	}
+	for id, secret := range clients {
+		// Hash the client secret — Fosite's DefaultClientAuthenticationStrategy uses
+		// BCryptHasher.Compare, so the stored secret must be bcrypt-hashed.
+		// Use the same cost as the Fosite config to keep them consistent.
+		hashedSecret, err := bcrypt.GenerateFromPassword([]byte(secret), config.HashCost)
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash client secret: %w", err)
+		}
+		client := &fosite.DefaultClient{
+			ID:            id,
+			Secret:        hashedSecret,
+			RedirectURIs:  []string{"http://localhost:8080/callback", "http://127.0.0.1:8080/callback"},
+			ResponseTypes: []string{"code"},
+			GrantTypes:    []string{"authorization_code", "refresh_token", "client_credentials"},
+			Scopes:        []string{"openid", "profile", "email"},
+		}
+		for _, opt := range opts {
+			if opt.clientOpt != nil {
+				opt.clientOpt(client)
+			}
+		}
+		store.Clients[id] = client
 	}
 
 	// Create JWT strategy
@@ -125,7 +212,6 @@ func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...func(*fo
 	mockServer.setupRoutes(mux)
 
 	mockServer.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
@@ -165,6 +251,7 @@ func (m *OIDCMockServer) handleDiscovery(w http.ResponseWriter, _ *http.Request)
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "profile", "email"},
+		"client_id_metadata_document_supported": true,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -271,11 +358,36 @@ func (m *OIDCMockServer) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create token request
-	accessRequest, err := m.provider.NewAccessRequest(ctx, r, &openid.DefaultSession{})
+	// Create token request.
+	// Use JWTSession so DefaultJWTStrategy can populate JWT claims;
+	// openid.DefaultSession does not implement JWTSessionContainer and causes
+	// a 500 for client_credentials flows.
+	accessRequest, err := m.provider.NewAccessRequest(ctx, r, &fositeoauth2.JWTSession{})
 	if err != nil {
 		m.provider.WriteAccessError(ctx, w, accessRequest, err)
 		return
+	}
+
+	// For client_credentials, grant requested scopes and audiences so they appear
+	// in the issued token's scp/aud claims. Other grant types handle this during
+	// the authorization step, but client_credentials has no authorization step.
+	// Also set the kid in the JWT header so pkg/auth's token validator can look
+	// up the signing key in the JWKS by key ID — it rejects tokens without a kid.
+	if accessRequest.GetGrantTypes().ExactOne("client_credentials") {
+		for _, scope := range accessRequest.GetRequestedScopes() {
+			accessRequest.GrantScope(scope)
+		}
+		for _, aud := range accessRequest.GetRequestedAudience() {
+			accessRequest.GrantAudience(aud)
+		}
+		if jwtSess, ok := accessRequest.GetSession().(*fositeoauth2.JWTSession); ok {
+			jwtSess.GetJWTHeader().Add("kid", jwtKeyID)
+			// Set subject to the client ID — OIDC Core § 5.1 requires a non-empty
+			// sub claim and pkg/auth rejects tokens without one.
+			if jwtClaims, ok := jwtSess.GetJWTClaims().(*jwt.JWTClaims); ok {
+				jwtClaims.Subject = accessRequest.GetClient().GetID()
+			}
+		}
 	}
 
 	// Create token response
@@ -340,7 +452,7 @@ func (m *OIDCMockServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 			{
 				"kty": "RSA",
 				"use": "sig",
-				"kid": "test-key-1",
+				"kid": jwtKeyID,
 				"alg": "RS256",
 				"n":   nB64,
 				"e":   eB64,
@@ -355,7 +467,7 @@ func (m *OIDCMockServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 // Start starts the OIDC mock server
 func (m *OIDCMockServer) Start() error {
 	go func() {
-		if err := m.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := m.server.Serve(m.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Printf("OIDC mock server error: %v\n", err)
 		}
 	}()
@@ -363,6 +475,11 @@ func (m *OIDCMockServer) Start() error {
 	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
 	return nil
+}
+
+// Port returns the port the mock server is bound to.
+func (m *OIDCMockServer) Port() int {
+	return m.port
 }
 
 // Stop stops the OIDC mock server
@@ -375,28 +492,30 @@ func (m *OIDCMockServer) Stop() error {
 	return nil
 }
 
-// GetBaseURL returns the base URL of the mock server
-func (m *OIDCMockServer) GetBaseURL() string {
-	return fmt.Sprintf("http://localhost:%d", m.port)
-}
-
 // EnableAutoComplete enables automatic OAuth flow completion for testing
 func (m *OIDCMockServer) EnableAutoComplete() {
 	m.autoComplete = true
 	m.authRequestChan = make(chan *AuthRequest, 1)
 }
 
-// WaitForAuthRequest waits for an OAuth authorization request and returns its parameters
-func (m *OIDCMockServer) WaitForAuthRequest(timeout time.Duration) (*AuthRequest, error) {
+// WaitForAuthRequest waits for an OAuth authorization request and returns its
+// parameters. The call returns as soon as ctx is cancelled, the timeout
+// elapses, or an auth request arrives — whichever comes first.
+func (m *OIDCMockServer) WaitForAuthRequest(ctx context.Context, timeout time.Duration) (*AuthRequest, error) {
 	if m.authRequestChan == nil {
 		return nil, fmt.Errorf("auto-complete not enabled")
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case req := <-m.authRequestChan:
 		return req, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("timeout waiting for auth request")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -427,8 +546,8 @@ func (*OIDCMockServer) CompleteAuthRequest(authReq *AuthRequest) error {
 }
 
 // WithAccessTokenLifespan sets the lifespan of access tokens for the OIDC mock server.
-func WithAccessTokenLifespan(d time.Duration) func(*fosite.Config) {
-	return func(c *fosite.Config) {
+func WithAccessTokenLifespan(d time.Duration) OIDCMockOption {
+	return OIDCMockOption{fositeOpt: func(c *fosite.Config) {
 		c.AccessTokenLifespan = d
-	}
+	}}
 }

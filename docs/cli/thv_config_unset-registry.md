@@ -24,13 +24,13 @@ thv config unset-registry [flags]
 ### Options
 
 ```
-  -h, --help   help for unset-registry
+  -h, --help[=true|false]   help for unset-registry
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

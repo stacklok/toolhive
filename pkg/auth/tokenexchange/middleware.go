@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Package tokenexchange adapts reusable OAuth token exchange to ToolHive middleware.
 package tokenexchange
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +15,8 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
+	exchange "github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -35,7 +37,7 @@ const (
 const (
 	// EnvClientSecret is the environment variable name for the OAuth client secret
 	// This corresponds to the "client_secret" field in the token exchange configuration
-	//nolint:gosec // G101: This is an environment variable name, not a credential
+	//nolint:gosec // G101: this is an environment variable name, not a credential value
 	EnvClientSecret = "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
 )
 
@@ -62,7 +64,7 @@ type Config struct {
 	ClientID string `json:"client_id"`
 
 	// ClientSecret is the OAuth 2.0 client secret
-	ClientSecret string `json:"client_secret"` //nolint:gosec // G117: field legitimately holds sensitive data
+	ClientSecret string `json:"client_secret"`
 
 	// Audience is the target audience for the exchanged token
 	Audience string `json:"audience"`
@@ -71,8 +73,8 @@ type Config struct {
 	Scopes []string `json:"scopes,omitempty"`
 
 	// SubjectTokenType specifies the type of the subject token being exchanged.
-	// Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
-	// If empty, defaults to tokenTypeAccessToken.
+	// Common values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.
+	// If empty, defaults to oauthproto.TokenTypeAccessToken.
 	SubjectTokenType string `json:"subject_token_type,omitempty"`
 
 	// HeaderStrategy determines how to inject the token
@@ -81,70 +83,6 @@ type Config struct {
 
 	// ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is "custom"
 	ExternalTokenHeaderName string `json:"external_token_header_name,omitempty"`
-}
-
-// Middleware wraps token exchange middleware functionality
-type Middleware struct {
-	middleware types.MiddlewareFunction
-}
-
-// Handler returns the middleware function used by the proxy.
-func (m *Middleware) Handler() types.MiddlewareFunction {
-	return m.middleware
-}
-
-// Close cleans up any resources used by the middleware.
-func (*Middleware) Close() error {
-	// Token exchange middleware doesn't need cleanup
-	return nil
-}
-
-// CreateMiddleware factory function for token exchange middleware
-func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
-	var params MiddlewareParams
-	if err := json.Unmarshal(config.Parameters, &params); err != nil {
-		return fmt.Errorf("failed to unmarshal token exchange middleware parameters: %w", err)
-	}
-
-	// Token exchange config is required when this middleware type is specified
-	if params.TokenExchangeConfig == nil {
-		return fmt.Errorf("token exchange configuration is required but not provided")
-	}
-
-	// Validate configuration
-	if err := validateTokenExchangeConfig(params.TokenExchangeConfig); err != nil {
-		return fmt.Errorf("invalid token exchange configuration: %w", err)
-	}
-
-	middleware, err := createTokenExchangeMiddleware(*params.TokenExchangeConfig, nil, defaultEnvGetter)
-	if err != nil {
-		return fmt.Errorf("invalid token exchange middleware config: %w", err)
-	}
-
-	tokenExchangeMw := &Middleware{
-		middleware: middleware,
-	}
-
-	// Add middleware to runner
-	runner.AddMiddleware(config.Type, tokenExchangeMw)
-
-	return nil
-}
-
-// validateTokenExchangeConfig validates the token exchange configuration
-func validateTokenExchangeConfig(config *Config) error {
-	if config.HeaderStrategy == HeaderStrategyCustom && config.ExternalTokenHeaderName == "" {
-		return fmt.Errorf("external_token_header_name must be specified when header_strategy is '%s'", HeaderStrategyCustom)
-	}
-
-	if config.HeaderStrategy != "" &&
-		config.HeaderStrategy != HeaderStrategyReplace &&
-		config.HeaderStrategy != HeaderStrategyCustom {
-		return fmt.Errorf("invalid header_strategy: %s (valid values: '%s', '%s')",
-			config.HeaderStrategy, HeaderStrategyReplace, HeaderStrategyCustom)
-	}
-
-	return nil
 }
 
 // injectionFunc is a function that injects a token into an HTTP request
@@ -194,8 +132,8 @@ func CreateMiddlewareFromHeader(config Config) (types.MiddlewareFunction, error)
 // This is the recommended approach for external authentication flows (OAuth/OIDC).
 //
 // The middleware will automatically select the appropriate token based on config.SubjectTokenType:
-//   - tokenTypeAccessToken: Uses token.AccessToken
-//   - tokenTypeIDToken or tokenTypeJWT: Uses token.Extra("id_token")
+//   - oauthproto.TokenTypeAccessToken: Uses token.AccessToken
+//   - oauthproto.TokenTypeIDToken or oauthproto.TokenTypeJWT: Uses token.Extra("id_token")
 //
 // This moves the token selection logic into the middleware where it belongs,
 // keeping the command layer focused on configuration.
@@ -209,11 +147,11 @@ func CreateMiddlewareFromTokenSource(
 
 	// Validate SubjectTokenType early to catch configuration errors at startup
 	if config.SubjectTokenType != "" &&
-		config.SubjectTokenType != tokenTypeAccessToken &&
-		config.SubjectTokenType != tokenTypeIDToken &&
-		config.SubjectTokenType != tokenTypeJWT {
+		config.SubjectTokenType != oauthproto.TokenTypeAccessToken &&
+		config.SubjectTokenType != oauthproto.TokenTypeIDToken &&
+		config.SubjectTokenType != oauthproto.TokenTypeJWT {
 		return nil, fmt.Errorf("invalid SubjectTokenType: %s (must be one of: %s, %s, %s)",
-			config.SubjectTokenType, tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT)
+			config.SubjectTokenType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT)
 	}
 
 	// Create a SubjectTokenProvider that handles token selection based on config
@@ -225,7 +163,7 @@ func CreateMiddlewareFromTokenSource(
 
 		// Select appropriate token based on configured type
 		switch config.SubjectTokenType {
-		case tokenTypeIDToken:
+		case oauthproto.TokenTypeIDToken:
 			// Extract ID token from Extra field (standard OIDC approach)
 			idToken, ok := token.Extra("id_token").(string)
 			if !ok || idToken == "" {
@@ -234,7 +172,7 @@ func CreateMiddlewareFromTokenSource(
 			}
 			return idToken, nil
 
-		case "", tokenTypeAccessToken:
+		case "", oauthproto.TokenTypeAccessToken:
 			// Use access token (default)
 			if token.AccessToken == "" {
 				slog.Error("Access token not available")
@@ -286,7 +224,7 @@ func createTokenExchangeMiddleware(
 	}
 
 	// Create base exchange config at startup time with all static fields
-	baseExchangeConfig := ExchangeConfig{
+	baseExchangeConfig := exchange.ExchangeConfig{
 		TokenURL:         config.TokenURL,
 		ClientID:         config.ClientID,
 		ClientSecret:     clientSecret,
@@ -332,7 +270,6 @@ func createTokenExchangeMiddleware(
 
 			// Log some claim information for debugging
 			if sub, exists := claims["sub"]; exists {
-				//nolint:gosec // G706: subject claim is from validated JWT
 				slog.Debug("Performing token exchange for subject", "subject", sub)
 			}
 
@@ -352,7 +289,7 @@ func createTokenExchangeMiddleware(
 			// Token exchange succeeded
 			slog.Debug("Token exchange successful")
 
-			// Inject the exchanged token into the request using the pre-selected strategy
+			// Inject the exchanged token into the request using the preselected strategy
 			if err := injectToken(r, exchangedToken.AccessToken); err != nil {
 				slog.Warn("Failed to inject token", "error", err)
 				http.Error(w, "Token injection failed", http.StatusInternalServerError)

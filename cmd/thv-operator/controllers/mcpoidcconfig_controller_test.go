@@ -9,15 +9,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -25,22 +26,22 @@ func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
 
 	tests := []struct {
 		name string
-		spec mcpv1alpha1.MCPOIDCConfigSpec
+		spec mcpv1beta1.MCPOIDCConfigSpec
 	}{
 		{
 			name: "kubernetesServiceAccount spec",
-			spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-				KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			spec: mcpv1beta1.MCPOIDCConfigSpec{
+				Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+				KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 					Issuer: "https://kubernetes.default.svc",
 				},
 			},
 		},
 		{
 			name: "inline spec",
-			spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			spec: mcpv1beta1.MCPOIDCConfigSpec{
+				Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+				Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 					Issuer:   "https://accounts.google.com",
 					ClientID: "test-client",
 				},
@@ -65,16 +66,16 @@ func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
 	t.Run("different specs produce different hashes", func(t *testing.T) {
 		t.Parallel()
 		r := &MCPOIDCConfigReconciler{}
-		spec1 := mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		spec1 := mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   "https://accounts.google.com",
 				ClientID: "client1",
 			},
 		}
-		spec2 := mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		spec2 := mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   "https://accounts.google.com",
 				ClientID: "client2",
 			},
@@ -92,8 +93,7 @@ func TestMCPOIDCConfigReconciler_ReconcileNotFound(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Empty client — no objects exist
 	fakeClient := fake.NewClientBuilder().
@@ -122,35 +122,22 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   "https://accounts.google.com",
 				ClientID: "test-client",
 			},
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -168,7 +155,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var afterInitial mcpv1alpha1.MCPOIDCConfig
+	var afterInitial mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &afterInitial)
 	require.NoError(t, err)
 	initialHash := afterInitial.Status.ConfigHash
@@ -179,7 +166,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
-	var afterSteady mcpv1alpha1.MCPOIDCConfig
+	var afterSteady mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &afterSteady)
 	require.NoError(t, err)
 	assert.Equal(t, initialHash, afterSteady.Status.ConfigHash, "Hash should not change")
@@ -191,34 +178,21 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
 	// Start with invalid config: type=inline but no inline config
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "recovery-config",
 			Namespace:  "default",
 			Finalizers: []string{OIDCConfigFinalizerName},
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 			// Missing Inline config — invalid
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -231,13 +205,13 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var invalidConfig mcpv1alpha1.MCPOIDCConfig
+	var invalidConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &invalidConfig)
 	require.NoError(t, err)
 
 	var foundFalse bool
 	for _, cond := range invalidConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
+		if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid {
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			foundFalse = true
 		}
@@ -246,7 +220,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	assert.Empty(t, invalidConfig.Status.ConfigHash, "Hash should not be set for invalid config")
 
 	// Fix the config by adding the inline spec
-	invalidConfig.Spec.Inline = &mcpv1alpha1.InlineOIDCSharedConfig{
+	invalidConfig.Spec.Inline = &mcpv1beta1.InlineOIDCSharedConfig{
 		Issuer:   "https://accounts.google.com",
 		ClientID: "test-client",
 	}
@@ -258,15 +232,15 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var recoveredConfig mcpv1alpha1.MCPOIDCConfig
+	var recoveredConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &recoveredConfig)
 	require.NoError(t, err)
 
 	var foundTrue bool
 	for _, cond := range recoveredConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
+		if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid {
 			assert.Equal(t, metav1.ConditionTrue, cond.Status, "Valid condition should recover to True")
-			assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigValid, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonOIDCConfigValid, cond.Reason)
 			foundTrue = true
 		}
 	}
@@ -279,12 +253,12 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 
 	tests := []struct {
 		name                   string
-		oidcConfig             *mcpv1alpha1.MCPOIDCConfig
+		oidcConfig             *mcpv1beta1.MCPOIDCConfig
 		expectFinalizerRemoved bool
 	}{
 		{
 			name: "delete config removes finalizer",
-			oidcConfig: &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig: &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-config",
 					Namespace:  "default",
@@ -293,9 +267,9 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 						Time: time.Now(),
 					},
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer: "https://accounts.google.com",
 					},
 				},
@@ -310,13 +284,11 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{tt.oidcConfig}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withOIDCConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
 				Build()
 
@@ -343,35 +315,22 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   "https://accounts.google.com",
 				ClientID: "test-client",
 			},
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -391,7 +350,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 	// Get updated config and check hash was set
-	var updatedConfig mcpv1alpha1.MCPOIDCConfig
+	var updatedConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash, "Config hash should be set")
@@ -408,7 +367,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get final config and verify hash changed
-	var finalConfig mcpv1alpha1.MCPOIDCConfig
+	var finalConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &finalConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, finalConfig.Status.ConfigHash, "Config hash should still be set")
@@ -421,34 +380,21 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
 	// Invalid config: type is inline but no inline config set
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "invalid-config",
 			Namespace:  "default",
 			Finalizers: []string{OIDCConfigFinalizerName},
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 			// Missing Inline config
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -462,16 +408,16 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check that the Ready condition is set to False
-	var updatedConfig mcpv1alpha1.MCPOIDCConfig
+	var updatedConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 
 	var foundCondition bool
 	for _, cond := range updatedConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
+		if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid {
 			foundCondition = true
 			assert.Equal(t, metav1.ConditionFalse, cond.Status, "Valid condition should be False")
-			assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigInvalid, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonOIDCConfigInvalid, cond.Reason)
 			break
 		}
 	}
@@ -483,15 +429,15 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		config      *mcpv1alpha1.MCPOIDCConfig
+		config      *mcpv1beta1.MCPOIDCConfig
 		expectError bool
 	}{
 		{
 			name: "valid kubernetesServiceAccount config",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						ServiceAccount: "test-sa",
 						Issuer:         "https://kubernetes.default.svc",
 					},
@@ -501,10 +447,10 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "valid inline config",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -514,13 +460,13 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid kubernetesServiceAccount set but type is inline",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						ServiceAccount: "test-sa",
 					},
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer: "https://accounts.google.com",
 					},
 				},
@@ -529,22 +475,22 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid no config variant set",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 				},
 			},
 			expectError: true,
 		},
 		{
 			name: "invalid multiple config variants set",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						ServiceAccount: "test-sa",
 					},
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer: "https://accounts.google.com",
 					},
 				},
@@ -563,6 +509,352 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateOIDCConfigSpec(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      *mcpv1beta1.MCPOIDCConfig
+		expectError bool
+	}{
+		{
+			name: "valid inline config with HTTPS issuer and JWKS URL",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						JWKSURL:  "https://www.googleapis.com/oauth2/v3/certs",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid inline config with empty JWKS URL (auto-discovery)",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid inline config with HTTP issuer when insecureAllowHTTP is set",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:            "http://issuer.dev.local",
+						ClientID:          "test-client",
+						InsecureAllowHTTP: true,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid inline config with HTTP issuer without insecureAllowHTTP",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "http://issuer.example.com",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid inline config with malformed issuer",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "not-a-url",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid inline config with issuer using unsupported scheme",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "ftp://issuer.example.com",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid inline config with non-HTTPS JWKS URL",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						JWKSURL:  "http://www.googleapis.com/oauth2/v3/certs",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "valid inline config with HTTP JWKS URL and insecureAllowHTTP",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:            "http://keycloak:8080/realms/toolhive",
+						JWKSURL:           "http://keycloak:8080/realms/toolhive/protocol/openid-connect/certs",
+						ClientID:          "test-client",
+						InsecureAllowHTTP: true,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "kubernetesServiceAccount config skips URL validation",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
+						ServiceAccount: "test-sa",
+						// Would fail the URL checks if they applied to this type
+						Issuer: "not-a-url",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "type consistency failure is still reported",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					// Missing Inline config
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateOIDCConfigSpec(tt.config)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestMCPOIDCConfigReconciler_URLValidationFailureSetsCondition(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	// Invalid config: HTTP issuer without insecureAllowHTTP
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "insecure-issuer-config",
+			Namespace:  "default",
+			Finalizers: []string{OIDCConfigFinalizerName},
+			Generation: 1,
+		},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+				Issuer:   "http://issuer.example.com",
+				ClientID: "test-client",
+			},
+		},
+	}
+
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      oidcConfig.Name,
+			Namespace: oidcConfig.Namespace,
+		},
+	}
+
+	// Reconcile should not return error (validation failures are not requeued)
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updatedConfig mcpv1beta1.MCPOIDCConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+
+	cond := meta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
+	require.NotNil(t, cond, "Should have a Valid condition")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status, "Valid condition should be False")
+	assert.Equal(t, mcpv1beta1.ConditionReasonOIDCConfigInvalid, cond.Reason)
+	assert.Contains(t, cond.Message, "http://issuer.example.com",
+		"Message should surface the offending issuer URL")
+}
+
+// TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition verifies
+// that when the controller observes a foreign-owned condition already on the
+// object and then writes its own Valid=True, it folds its condition into the
+// existing set rather than dropping the foreign one. It catches the
+// mutate-outside-the-closure bug: if a condition were set before
+// MutateAndPatchStatus took its snapshot, the diff would be empty and the
+// controller-owned Valid condition would never land (the bottom assertion
+// catches that).
+//
+// This case does NOT prove the merge-patch-vs-PUT distinction on its own —
+// under the fake client there is no concurrent writer, so a full PUT of the
+// in-memory object (which still carries the foreign condition loaded at Get)
+// would also persist it. The concurrent-writer guarantee is exercised by
+// TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+				Issuer:   "https://accounts.google.com",
+				ClientID: "test-client",
+			},
+		},
+		Status: mcpv1beta1.MCPOIDCConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               "ForeignControllerSays",
+					Status:             metav1.ConditionTrue,
+					Reason:             "ExternallySet",
+					Message:            "set by a hypothetical sibling owner of this resource",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: oidcConfig.Name, Namespace: oidcConfig.Namespace}}
+
+	// First reconcile adds the finalizer; second runs the success path and
+	// writes Valid=True without touching any foreign condition.
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var after mcpv1beta1.MCPOIDCConfig
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &after))
+
+	foreign := meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays")
+	require.NotNil(t, foreign,
+		"foreign condition must survive an MCPOIDCConfig reconcile — the controller must fold its own condition into the existing set, not replace it")
+	assert.Equal(t, metav1.ConditionTrue, foreign.Status, "foreign condition value must not be modified")
+	assert.Equal(t, "ExternallySet", foreign.Reason)
+
+	// And our own Valid=True landed.
+	own := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
+	require.NotNil(t, own, "controller-owned Valid condition must land")
+	assert.Equal(t, metav1.ConditionTrue, own.Status)
+}
+
+// TestOIDCConfigRefChangedPredicate covers the watch predicate that keeps the
+// blocked-deletion wake-up cheap: create and delete events always pass, generic
+// events never do, and updates pass only when the referenced config name
+// changes (including clearing or adding a reference). This is the sub-30s event
+// path the deletion integration tests rely on.
+func TestOIDCConfigRefChangedPredicate(t *testing.T) {
+	t.Parallel()
+
+	newMCPServer := func(ref string) client.Object {
+		s := &mcpv1beta1.MCPServer{}
+		if ref != "" {
+			s.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: ref}
+		}
+		return s
+	}
+	newVMCP := func(ref string) client.Object {
+		v := &mcpv1beta1.VirtualMCPServer{}
+		if ref != "" {
+			v.Spec.IncomingAuth = &mcpv1beta1.IncomingAuthConfig{
+				OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: ref},
+			}
+		}
+		return v
+	}
+	newProxy := func(ref string) client.Object {
+		p := &mcpv1beta1.MCPRemoteProxy{}
+		if ref != "" {
+			p.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: ref}
+		}
+		return p
+	}
+
+	workloadTypes := []struct {
+		name    string
+		extract func(client.Object) []string
+		build   func(string) client.Object
+	}{
+		{"MCPServer", indexMCPServerByOIDCConfigRef, newMCPServer},
+		{"VirtualMCPServer", indexVirtualMCPServerByOIDCConfigRef, newVMCP},
+		{"MCPRemoteProxy", indexMCPRemoteProxyByOIDCConfigRef, newProxy},
+	}
+
+	updateCases := []struct {
+		name       string
+		oldRef     string
+		newRef     string
+		wantUpdate bool
+	}{
+		{"unchanged reference is dropped", "cfg", "cfg", false},
+		{"no reference on either side is dropped", "", "", false},
+		{"changed reference is admitted", "cfg-a", "cfg-b", true},
+		{"cleared reference is admitted", "cfg", "", true},
+		{"added reference is admitted", "", "cfg", true},
+	}
+
+	for _, wt := range workloadTypes {
+		t.Run(wt.name, func(t *testing.T) {
+			t.Parallel()
+			pred := oidcConfigRefChangedPredicate(wt.extract)
+
+			assert.True(t, pred.Create(event.CreateEvent{Object: wt.build("cfg")}), "create events must pass")
+			assert.True(t, pred.Delete(event.DeleteEvent{Object: wt.build("cfg")}), "delete events must pass")
+			assert.False(t, pred.Generic(event.GenericEvent{Object: wt.build("cfg")}), "generic events must be dropped")
+
+			for _, uc := range updateCases {
+				got := pred.Update(event.UpdateEvent{
+					ObjectOld: wt.build(uc.oldRef),
+					ObjectNew: wt.build(uc.newRef),
+				})
+				assert.Equalf(t, uc.wantUpdate, got, "update: %s", uc.name)
 			}
 		})
 	}

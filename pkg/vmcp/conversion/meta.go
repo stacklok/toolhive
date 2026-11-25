@@ -6,7 +6,8 @@ package conversion
 import (
 	"maps"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
 // FromMCPMeta converts MCP SDK meta to map[string]any for vmcp wrapper types.
@@ -41,9 +42,23 @@ func FromMCPMeta(meta *mcp.Meta) map[string]any {
 // ToMCPMeta converts vmcp meta map to MCP SDK meta for forwarding to clients.
 // This reconstructs the _meta field when sending responses back through the MCP protocol.
 //
+// Reserved io.modelcontextprotocol/* keys are stripped first: vMCP, not the
+// backend, is the client's MCP peer, so a backend must not speak for it. This is
+// the single chokepoint for every Legacy egress that carries backend _meta
+// (serve_handlers, sessionmanager, the elicitation adapter); the Modern path's
+// mirror is newModernResultMeta, and both call the same mcpparser helper so the
+// two revisions cannot drift.
+//
+// Note the Legacy/Modern asymmetry: Modern re-stamps its own
+// io.modelcontextprotocol/serverInfo after stripping, and Legacy deliberately
+// does not — the 2025-11-25 revision has no serverInfo _meta key at all. The
+// missing Legacy stamp is correct, not an oversight.
+//
 // Returns nil if meta is nil or empty, following the MCP specification that
-// _meta is optional and should be omitted when empty.
+// _meta is optional and should be omitted when empty. A map consisting only of
+// reserved keys therefore collapses to nil rather than an empty _meta object.
 func ToMCPMeta(meta map[string]any) *mcp.Meta {
+	meta = mcpparser.StripReservedMeta(meta)
 	if len(meta) == 0 {
 		return nil
 	}

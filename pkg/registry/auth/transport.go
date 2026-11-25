@@ -6,6 +6,8 @@ package auth
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // Transport wraps an http.RoundTripper to add OAuth authentication headers.
@@ -13,6 +15,11 @@ type Transport struct {
 	Base   http.RoundTripper
 	Source TokenSource
 }
+
+// Compile-time assertion: a rename or typo of CloseIdleConnections would
+// otherwise silently make http.Client.CloseIdleConnections a no-op on any
+// client using this transport (see networking.IdleConnectionCloser).
+var _ networking.IdleConnectionCloser = (*Transport)(nil)
 
 // RoundTrip executes a single HTTP transaction with authentication.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -23,7 +30,10 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Get token from source
 	token, err := t.Source.Token(req.Context())
 	if err != nil {
-		return nil, fmt.Errorf("failed to get auth token: %w", err)
+		// Any token acquisition failure is an auth error regardless of cause.
+		// Wrapping with ErrRegistryAuthRequired ensures refreshCache() and other
+		// callers can distinguish auth failures from transient network errors.
+		return nil, fmt.Errorf("%w: failed to get auth token: %w", ErrRegistryAuthRequired, err)
 	}
 
 	// If token is empty, pass through without auth
@@ -44,6 +54,13 @@ func (t *Transport) base() http.RoundTripper {
 		return t.Base
 	}
 	return http.DefaultTransport
+}
+
+// CloseIdleConnections forwards to the base RoundTripper so
+// http.Client.CloseIdleConnections reaches the underlying connection pool
+// instead of stopping at this wrapper (see networking.IdleConnectionCloser).
+func (t *Transport) CloseIdleConnections() {
+	networking.ForwardCloseIdle(t.base())
 }
 
 // WrapTransport wraps an http.RoundTripper with authentication support.

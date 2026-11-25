@@ -33,7 +33,7 @@ stringData:
   token: "ghp_your_personal_access_token_here"
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: git-auth-configyaml
@@ -43,7 +43,6 @@ spec:
   configYAML: |
     sources:
       - name: private-repo
-        format: toolhive
         git:
           repository: https://github.com/your-org/private-mcp-registry
           branch: main

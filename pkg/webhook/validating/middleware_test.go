@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -77,7 +78,7 @@ func TestValidatingMiddleware(t *testing.T) {
 		// Add parsed MCP request and auth identity to context
 		parsedMCP := &mcp.ParsedMCPRequest{
 			Method: "tools/call",
-			ID:     1,
+			ID:     int64(1),
 		}
 		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, parsedMCP)
 
@@ -169,9 +170,9 @@ func TestValidatingMiddleware(t *testing.T) {
 		err := json.Unmarshal(rr.Body.Bytes(), &errResp)
 		require.NoError(t, err)
 
-		errObj, ok := errResp["Error"].(map[string]interface{})
+		errObj, ok := errResp["error"].(map[string]interface{})
 		require.True(t, ok)
-		assert.Equal(t, float64(http.StatusForbidden), errObj["code"])
+		assert.Equal(t, float64(mcp.JSONRPCCodeDenied), errObj["code"])
 		assert.Equal(t, "Request denied by policy", errObj["message"])
 	})
 
@@ -270,6 +271,208 @@ func TestValidatingMiddleware(t *testing.T) {
 	})
 }
 
+// TestValidatingMiddlewareDenialIsConformantJSONRPC pins the sendErrorResponse envelope on
+// the wire: lowercase "jsonrpc"/"id"/"error" keys, no "id" key for a notification, and no
+// "result" key. assert.JSONEq is case-sensitive, so a single assertion catches "Error"/"ID"
+// substituted for "error"/"id" (the historical bug) alongside a missing "jsonrpc" tag.
+func TestValidatingMiddlewareDenialIsConformantJSONRPC(t *testing.T) {
+	t.Parallel()
+
+	// Deterministic denial: the webhook always disallows, driving sendErrorResponse
+	// through the real middleware chain rather than constructing the response by hand.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(webhook.Response{
+			Version: webhook.APIVersion,
+			UID:     "resp-uid",
+			Allowed: false,
+			Message: "ignored", // sendErrorResponse ignores the webhook's message to avoid leaking info
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := webhook.Config{
+		Name:          "test-webhook",
+		URL:           server.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyFail,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+	}
+	client, err := webhook.NewClient(cfg, webhook.TypeValidating, nil)
+	require.NoError(t, err)
+	mw := createValidatingHandler([]clientExecutor{{client: client, config: cfg}}, "test-server", "stdio")
+
+	const wantErr = `"error":{"code":403,"message":"Request denied by policy"}`
+
+	testCases := []struct {
+		name     string
+		id       interface{} // ParsedMCPRequest.ID; nil for a notification
+		wantBody string
+	}{
+		{name: "int64 id", id: int64(42), wantBody: `{"jsonrpc":"2.0","id":42,` + wantErr + `}`},
+		{name: "string id", id: "abc", wantBody: `{"jsonrpc":"2.0","id":"abc",` + wantErr + `}`},
+		{name: "nil id (notification) omits id entirely", id: nil, wantBody: `{"jsonrpc":"2.0",` + wantErr + `}`},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call"}`)))
+			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: tc.id})
+			req = req.WithContext(ctx)
+
+			rr := httptest.NewRecorder()
+			mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler must not be called for a denied request")
+			})).ServeHTTP(rr, req)
+
+			require.Equal(t, http.StatusForbidden, rr.Code)
+			assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+			assert.JSONEq(t, tc.wantBody, rr.Body.String())
+
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &decoded))
+			_, hasID := decoded["id"]
+			assert.Equal(t, tc.id != nil, hasID, "id key presence mismatch")
+			_, hasResult := decoded["result"]
+			assert.False(t, hasResult, "denied response must not contain a result key")
+		})
+	}
+}
+
+// makeJSONBodyOfSize builds a syntactically-valid JSON body of exactly `size`
+// bytes by padding the value of a "data" field with ASCII characters. The
+// resulting bytes are valid JSON-RPC for use as an MCP request body.
+func makeJSONBodyOfSize(tb testing.TB, size int) []byte {
+	tb.Helper()
+	// Envelope structure: {"jsonrpc":"2.0","method":"tools/call","id":1,"data":"<padding>"}
+	const envelope = `{"jsonrpc":"2.0","method":"tools/call","id":1,"data":""}`
+	if size < len(envelope) {
+		tb.Fatalf("requested size %d is smaller than minimum envelope size %d", size, len(envelope))
+	}
+	padding := bytes.Repeat([]byte("a"), size-len(envelope))
+	body := []byte(`{"jsonrpc":"2.0","method":"tools/call","id":1,"data":"`)
+	body = append(body, padding...)
+	body = append(body, []byte(`"}`)...)
+	if len(body) != size {
+		tb.Fatalf("constructed body length %d != requested size %d", len(body), size)
+	}
+	return body
+}
+
+func TestValidatingMiddleware_RequestBodySizeLimit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("body exceeding MaxRequestSize returns 413", func(t *testing.T) {
+		t.Parallel()
+
+		// Use fail-open so that even if the middleware reached the webhook call
+		// (it must NOT, since the size check fires first), the test would still
+		// be unambiguous about the size rejection vs. a downstream error.
+		cfg := webhook.Config{
+			Name:          "test-webhook",
+			URL:           closedServerURL,
+			Timeout:       webhook.DefaultTimeout,
+			FailurePolicy: webhook.FailurePolicyIgnore,
+			TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+		}
+		client, err := webhook.NewClient(cfg, webhook.TypeValidating, nil)
+		require.NoError(t, err)
+		mw := createValidatingHandler([]clientExecutor{{client: client, config: cfg}}, "srv", "stdio")
+
+		body := makeJSONBodyOfSize(t, webhook.MaxRequestSize+1)
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
+		req = req.WithContext(ctx)
+
+		var nextCalled bool
+		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+
+		rr := httptest.NewRecorder()
+		mw(nextHandler).ServeHTTP(rr, req)
+
+		assert.False(t, nextCalled, "next must not be called for oversized requests")
+		assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+
+		// The error response is a JSON-RPC envelope.
+		var errResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+		errObj, ok := errResp["error"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, float64(mcp.CodeInvalidRequest), errObj["code"])
+		assert.Equal(t, "Request body exceeds maximum size", errObj["message"])
+	})
+
+	t.Run("body at MaxRequestSize boundary is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		// Point at a closed port with FailurePolicyIgnore so that the outbound
+		// webhook call fails and is ignored per fail-open. This isolates the
+		// test from depending on a working webhook server.
+		cfg := webhook.Config{
+			Name:          "test-webhook",
+			URL:           closedServerURL,
+			Timeout:       webhook.DefaultTimeout,
+			FailurePolicy: webhook.FailurePolicyIgnore,
+			TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+		}
+		client, err := webhook.NewClient(cfg, webhook.TypeValidating, nil)
+		require.NoError(t, err)
+		mw := createValidatingHandler([]clientExecutor{{client: client, config: cfg}}, "srv", "stdio")
+
+		body := makeJSONBodyOfSize(t, webhook.MaxRequestSize)
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
+		req = req.WithContext(ctx)
+
+		var nextCalled bool
+		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+
+		rr := httptest.NewRecorder()
+		mw(nextHandler).ServeHTTP(rr, req)
+
+		assert.True(t, nextCalled, "next should be called for boundary-size body (fail-open ignores webhook error)")
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+}
+
+// errReader always fails, for exercising the io.ReadAll error path in
+// createValidatingHandler that is distinct from an http.MaxBytesError (the
+// oversized-body case already covered by TestValidatingMiddleware_RequestBodySizeLimit).
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// TestValidatingMiddleware_BodyReadError_MapsToInternalErrorCode pins the JSON-RPC
+// code on the "Failed to read request body" HTTP 500 path (sendErrorResponse's
+// default case in mcp.JSONRPCCodeForStatus), the validating-package equivalent of
+// TestMutatingMiddleware_ScopeViolation_FailPolicy's HTTP 500 assertion.
+func TestValidatingMiddleware_BodyReadError_MapsToInternalErrorCode(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/", errReader{err: errors.New("boom")})
+	ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
+	req = req.WithContext(ctx)
+
+	mw := createValidatingHandler(nil, "srv", "stdio")
+
+	var nextCalled bool
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+
+	rr := httptest.NewRecorder()
+	mw(nextHandler).ServeHTTP(rr, req)
+
+	assert.False(t, nextCalled)
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+
+	var errResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+	errObj, ok := errResp["error"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, float64(mcp.CodeInternalError), errObj["code"])
+}
+
 func TestMiddlewareParams_Validate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -356,6 +559,62 @@ func TestCreateMiddleware(t *testing.T) {
 	require.NoError(t, mw.Close())
 }
 
+func TestCreateMiddleware_ResolvesHMACSecret(t *testing.T) {
+	t.Setenv("TOOLHIVE_SECRETS_PROVIDER", "environment")
+	t.Setenv("TOOLHIVE_SECRET_WEBHOOK_VALIDATING_TEST_HMAC_SECRET", "top-secret")
+
+	var signatureHeader string
+	var timestampHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signatureHeader = r.Header.Get(webhook.SignatureHeader)
+		timestampHeader = r.Header.Get(webhook.TimestampHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(webhook.Response{
+			Version: webhook.APIVersion,
+			UID:     "uid",
+			Allowed: true,
+		})
+	}))
+	defer server.Close()
+
+	runner := &mockRunner{}
+	params := FactoryMiddlewareParams{
+		MiddlewareParams: MiddlewareParams{
+			Webhooks: []webhook.Config{{
+				Name:          "test",
+				URL:           server.URL,
+				Timeout:       webhook.DefaultTimeout,
+				FailurePolicy: webhook.FailurePolicyIgnore,
+				HMACSecretRef: "WEBHOOK_VALIDATING_TEST_HMAC_SECRET",
+				TLSConfig: &webhook.TLSConfig{
+					InsecureSkipVerify: true,
+				},
+			}},
+		},
+		ServerName: "test-server",
+		Transport:  "stdio",
+	}
+	paramsJSON, err := json.Marshal(params)
+	require.NoError(t, err)
+
+	err = CreateMiddleware(&types.MiddlewareConfig{Type: MiddlewareType, Parameters: paramsJSON}, runner)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call","id":1}`)))
+	req = req.WithContext(context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{
+		Method: "tools/call",
+		ID:     int64(1),
+	}))
+
+	rr := httptest.NewRecorder()
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	runner.middlewares[MiddlewareType].Handler()(next).ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.NotEmpty(t, signatureHeader)
+	assert.NotEmpty(t, timestampHeader)
+}
+
 //nolint:paralleltest // Uses httptest server.
 func TestValidatingMiddleware_HTTP422AlwaysDenies(t *testing.T) {
 	tests := []struct {
@@ -398,7 +657,7 @@ func TestValidatingMiddleware_HTTP422AlwaysDenies(t *testing.T) {
 
 			reqBody := []byte(`{"jsonrpc":"2.0","method":"tools/call","id":1}`)
 			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(reqBody))
-			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
 			req = req.WithContext(ctx)
 
 			var nextCalled bool
@@ -508,8 +767,9 @@ func TestMultiWebhookChain(t *testing.T) {
 
 		// Verify error response
 		var errResp map[string]interface{}
-		_ = json.Unmarshal(rr.Body.Bytes(), &errResp)
-		errObj := errResp["Error"].(map[string]interface{})
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+		errObj, ok := errResp["error"].(map[string]interface{})
+		require.True(t, ok)
 		assert.Equal(t, "Request denied by policy", errObj["message"])
 	})
 
@@ -533,8 +793,9 @@ func TestMultiWebhookChain(t *testing.T) {
 
 		// Verify error response
 		var errResp map[string]interface{}
-		_ = json.Unmarshal(rr.Body.Bytes(), &errResp)
-		errObj := errResp["Error"].(map[string]interface{})
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+		errObj, ok := errResp["error"].(map[string]interface{})
+		require.True(t, ok)
 		assert.Equal(t, "Request denied by policy", errObj["message"])
 	})
 
@@ -567,4 +828,88 @@ func TestMultiWebhookChain(t *testing.T) {
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.NotEmpty(t, lastRequest2.UID, "Second webhook should be called")
 	})
+}
+
+// A local failure (here an unreadable mounted HMAC secret) means the webhook was
+// never consulted, so failure_policy: ignore must not let the request through.
+// The request goes through ParsingMiddleware, as in the configured chain.
+func TestValidatingMiddleware_LocalErrorDeniesUnderIgnorePolicy(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(webhook.Response{Version: webhook.APIVersion, Allowed: true}))
+	}))
+	defer server.Close()
+
+	cfg := webhook.Config{
+		Name:          "local-error",
+		URL:           server.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyIgnore,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+		HMACSecretRef: t.TempDir() + "/missing",
+	}
+	client, err := webhook.NewClient(cfg, webhook.TypeValidating, []byte("startup-secret"))
+	require.NoError(t, err)
+
+	var reachedBackend bool
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { reachedBackend = true })
+	handler := mcp.ParsingMiddleware(
+		createValidatingHandler([]clientExecutor{{client: client, config: cfg}}, "srv", "streamable-http")(next))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"x"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	assert.False(t, reachedBackend)
+	assert.Zero(t, calls)
+}
+
+// GHSA-wj8g-gmv2-mpmv regression: a BOM-prefixed request must still reach the
+// webhook. ParsingMiddleware strips the BOM before the webhook builds its
+// payload, so the test goes through it rather than injecting a parsed request.
+func TestValidatingMiddleware_LeadingBOMReachesWebhookThroughParser(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	var received webhook.Request
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(webhook.Response{Version: webhook.APIVersion, Allowed: false}))
+	}))
+	defer server.Close()
+
+	cfg := webhook.Config{
+		Name:          "bom",
+		URL:           server.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyIgnore,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+	}
+	client, err := webhook.NewClient(cfg, webhook.TypeValidating, nil)
+	require.NoError(t, err)
+
+	var reachedBackend bool
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { reachedBackend = true })
+	handler := mcp.ParsingMiddleware(
+		createValidatingHandler([]clientExecutor{{client: client, config: cfg}}, "srv", "streamable-http")(next))
+
+	const jsonBody = `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"x"}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(append(bytes.Clone(mcp.UTF8BOM), jsonBody...)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, 1, calls, "the webhook must be consulted")
+	assert.JSONEq(t, jsonBody, string(received.MCPRequest))
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	assert.False(t, reachedBackend)
 }

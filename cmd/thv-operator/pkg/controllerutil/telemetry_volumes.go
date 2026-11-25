@@ -8,7 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
@@ -16,7 +16,7 @@ import (
 // from an MCPTelemetryConfig's OpenTelemetry configuration.
 // Returns nil slices if no CA bundle is configured.
 func AddTelemetryCABundleVolumes(
-	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
+	telemetryConfig *mcpv1beta1.MCPTelemetryConfig,
 ) ([]corev1.Volume, []corev1.VolumeMount) {
 	if telemetryConfig == nil ||
 		telemetryConfig.Spec.OpenTelemetry == nil ||
@@ -53,7 +53,7 @@ func AddTelemetryCABundleVolumes(
 // TelemetryCABundleFilePath returns the full file path where the CA bundle will be
 // mounted in the proxyrunner container, or empty string if no CA bundle is configured.
 func TelemetryCABundleFilePath(
-	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
+	telemetryConfig *mcpv1beta1.MCPTelemetryConfig,
 ) string {
 	if telemetryConfig == nil ||
 		telemetryConfig.Spec.OpenTelemetry == nil ||

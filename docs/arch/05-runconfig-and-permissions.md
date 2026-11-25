@@ -70,7 +70,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 }
 ```
 
-**Implementation**: `pkg/runner/config.go-49`
+**Implementation**: `pkg/runner/config.go`
 
 #### Runtime Configuration
 
@@ -90,7 +90,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 
 **Fields:**
 - `builder_image`: Override the default base image for the builder stage
-  - Go: Default `golang:1.26-alpine`
+  - Go: Default `golang:1.27-alpine`
   - Node: Default `node:24-alpine`
   - Python: Default `python:3.14-slim`
 - `additional_packages`: Extra packages to install during the build and runtime stages (e.g., build tools, libraries)
@@ -109,12 +109,12 @@ thv run uvx://mcp-server \
 
 **Configuration priority** (highest to lowest):
 1. Per-workload override in `RunConfig.RuntimeConfig`
-2. User config file (`~/.toolhive/config.yaml` `runtimeConfigs` map)
+2. User config file (`$XDG_CONFIG_HOME/toolhive/config.yaml` `runtimeConfigs` map)
 3. Built-in defaults
 
 **Note**: For Go workloads, only the builder image is configurable. The runtime stage always uses `alpine:3.23` for simplicity and security.
 
-**Implementation**: `pkg/runner/config.go-198`, `pkg/container/templates/runtime_config.go`
+**Implementation**: `pkg/runner/config.go`, `pkg/container/templates/runtime_config.go`
 
 #### Transport Configuration
 
@@ -124,7 +124,9 @@ thv run uvx://mcp-server \
   "transport": "stdio",
   "host": "127.0.0.1",
   "port": 8080,
-  "proxy_mode": "streamable-http"
+  "proxy_mode": "streamable-http",
+  "max_request_body_size": 8388608,
+  "proxy_read_timeout": "45s"
 }
 ```
 
@@ -146,8 +148,10 @@ thv run uvx://mcp-server \
 - `target_port`: Container port (SSE/Streamable only)
 - `target_host`: Container host (default: `127.0.0.1`)
 - `proxy_mode`: For stdio: `sse` or `streamable-http`
+- `max_request_body_size`: Maximum inbound MCP request body size in bytes; omitted or zero uses the 8 MiB default
+- `proxy_read_timeout`: Maximum time to read a complete client request, as a Go duration string; omitted or zero uses the secure 30-second default
 
-**Implementation**: `pkg/runner/config.go-76`, `139`
+**Implementation**: `pkg/runner/config.go`
 
 #### Environment Variables
 
@@ -178,7 +182,7 @@ thv run uvx://mcp-server \
 }
 ```
 
-**Implementation**: `pkg/runner/config.go-88`, `290-303`
+**Implementation**: `pkg/runner/config.go`
 
 #### Volumes
 
@@ -196,7 +200,7 @@ thv run uvx://mcp-server \
 
 **Relative paths**: Resolved relative to current directory
 
-**Implementation**: `pkg/runner/config.go-95`
+**Implementation**: `pkg/runner/config.go`
 
 #### Secrets
 
@@ -216,11 +220,10 @@ thv run uvx://mcp-server \
 - `encrypted`: Encrypted local storage
 - `1password`: 1Password SDK integration
 - `environment`: Environment variable provider
-- `none`: No-op provider (for testing)
 
 **Note**: There is no automatic default provider. Users must run `thv secret setup` to configure a provider before using secrets functionality.
 
-**Implementation**: `pkg/runner/config.go`, `307-341`
+**Implementation**: `pkg/runner/config.go`
 
 ### Middleware Configuration
 
@@ -238,7 +241,7 @@ thv run uvx://mcp-server \
       }
     },
     {
-      "type": "authz",
+      "type": "authorization",
       "parameters": {
         "policies": "permit(...);"
       }
@@ -247,17 +250,26 @@ thv run uvx://mcp-server \
 }
 ```
 
-**Middleware types:**
+**Middleware types** (registered in `GetSupportedMiddlewareFactories` in `pkg/runner/middleware.go`):
 - `auth` - JWT authentication
-- `tokenexchange` - OAuth token exchange
+- `tokenexchange` - OAuth 2.0 token exchange (RFC 8693)
+- `upstreamswap` - Swap ToolHive JWTs for upstream IdP tokens (embedded auth server)
+- `awssts` - AWS STS credential exchange
+- `obo` - On-Behalf-Of token flow
+- `mcp-parser` - Parse JSON-RPC (always present)
 - `tool-filter` - Filter tool lists
 - `tool-call-filter` - Filter tool calls
-- `mcp-parser` - Parse JSON-RPC (always present)
+- `ratelimit` - Request rate limiting
+- `usagemetrics` - Usage telemetry
 - `telemetry` - OpenTelemetry
-- `authz` - Cedar authorization
+- `authorization` - Cedar authorization
 - `audit` - Request logging
+- `recovery` - Panic recovery
+- `header-forward` - Forward request headers to upstream (constant: `HeaderForwardMiddlewareName`)
+- `validating-webhook` - Validating admission webhook
+- `mutating-webhook` - Mutating admission webhook
 
-**Implementation**: `pkg/runner/config.go-161`, `pkg/transport/types/transport.go-39`
+**Implementation**: `pkg/runner/config.go`, `pkg/transport/types/transport.go`
 
 ### Tool Filtering
 
@@ -283,7 +295,7 @@ thv run uvx://mcp-server \
 }
 ```
 
-**Implementation**: `pkg/runner/config.go-154`, `464-472`
+**Implementation**: `pkg/runner/config.go`
 
 ## RunConfig Lifecycle
 
@@ -319,7 +331,7 @@ config, err := runner.ReadJSON(reader)
 - Unknown fields ignored (forward compatibility)
 - Required fields validated
 
-**Implementation**: `pkg/runner/config.go-206`
+**Implementation**: `pkg/runner/config.go`
 
 ### State Storage
 
@@ -364,7 +376,7 @@ Permission profiles define security boundaries for MCP servers using a defense-i
 2. **Network isolation** - Control inbound/outbound connections
 3. **Privilege isolation** - Avoid privileged mode
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Profile Structure
 
@@ -377,6 +389,8 @@ type Profile struct {
     Privileged bool                `json:"privileged,omitempty"`
 }
 ```
+
+`NetworkPermissions` also carries a `Mode` field (`"host"`, `"bridge"`, `"none"`) that selects the container runtime network mode; when empty, the runtime default is used. Network isolation is only enforceable in bridge mode; see [Network isolation requires bridge networking](#network-isolation-requires-bridge-networking).
 
 ### Filesystem Permissions
 
@@ -408,7 +422,7 @@ Three formats supported:
 - Architectural reason: Containers run Linux internally, requiring Linux-style paths
 - Example: `C:\Users\name\data:/data` (Windows host → Linux container path)
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 #### Read vs Write
 
@@ -437,7 +451,7 @@ Three formats supported:
 - Command injection patterns rejected
 - Windows paths handled specially
 
-**Implementation**: `pkg/permissions/profile.go-182`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Network Permissions
 
@@ -488,7 +502,7 @@ Three formats supported:
 }
 ```
 
-**Implementation**: `pkg/permissions/profile.go-66`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 #### Inbound Connections
 
@@ -505,7 +519,7 @@ Three formats supported:
 
 **Note**: Inbound restrictions currently have limited implementation.
 
-**Implementation**: `pkg/permissions/profile.go-72`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 #### Network Isolation
 
@@ -523,6 +537,77 @@ When `isolate_network: true` in RunConfig:
 - ACL-based filtering of hosts and ports
 
 **Implementation**: `pkg/container/docker/squid.go`, `pkg/networking/`
+
+##### Host gateway protection (Docker and Podman)
+
+For isolated bridge workloads, both Squid and Envoy block host access by default,
+including when outbound permissions allow all traffic. The shared protected set
+contains all daemon bridge gateway IPs and the names `host.docker.internal`,
+`gateway.docker.internal`, and `host.containers.internal`. It also contains
+every address mapped to those names in the running DNS sidecar's `/etc/hosts`;
+these addresses need not be bridge gateways and are not a fixed link-local IP or
+subnet. On Docker Desktop, for example, `host.docker.internal` is the VM host
+address (such as `192.168.65.254`), which reaches host loopback services but is
+not the gateway of any bridge network. Squid checks destination IPs before
+outbound allows; Envoy applies both authority matching and resolved-address
+filtering.
+
+Host discovery reads the running DNS sidecar's `/etc/hosts` through the runtime
+archive API before proxy or MCP setup. ToolHive uses `dockurr/dnsmasq:latest` in
+bridge mode with the same endpoint map as its proxies, without mounts. Podman
+writes `host.containers.internal` itself. On Docker, which resolves
+`host.docker.internal` through its DNS rather than the hosts file, the sidecar
+is created with the extra hosts entry `host.docker.internal:host-gateway`, so the
+daemon writes its own host address into the file. A sidecar that lacks this
+entry is recreated rather than reused. Workload mounts do not propagate to
+sidecars. Runtime-generated hosts are a prerequisite: ToolHive does not configure
+image-owned hosts or disable runtime hosts management. Rootless sidecars use the
+same runtime host endpoint; all bridge gateways cover rootful Podman's gateway
+selection. Proxy image selection and image entrypoints are unchanged.
+
+The runtime's own alias must be present with a valid address:
+`host.containers.internal` on Podman, `host.docker.internal` on Docker. The other
+names are protected when present. Missing/malformed/oversized hosts data or runtime read failures
+fail deployment with an error, **even with `--allow-docker-gateway`**. The archive
+read is bounded in size and time, with no host DNS, process-host filesystem, or
+hardcoded-address fallback. No extra discovery container is created.
+
+`--allow-docker-gateway` explicitly allows the same hostnames and exact IPs on
+**any port**, for Podman as well as Docker. Merely adding a host alias to an
+outbound allowlist does not override the default host deny. Previously, Podman
+host aliases resolving to non-bridge IPs could escape that protection; they now
+require this explicit opt-in.
+
+This policy is a **deployment-time snapshot**, taken after DNS startup (including
+any startup network recreation), not continuous runtime discovery. Redeploy
+isolated workloads after changing runtime host mappings, rootless network
+configuration, or bridge networks. Restarting an existing container alone does
+not refresh policy. Docker retains its bridge-discovery path without the hosts
+archive read; Kubernetes uses its separate network policy path.
+
+##### Network isolation requires bridge networking
+
+Network isolation is a bridge-topology construct: it builds a per-workload
+`internal=true` network plus DNS (dnsmasq) and egress/ingress (Squid) sidecars,
+attaching the MCP container to the internal network only. This only works when
+the network mode is bridge (`""`, `bridge`, or `default`). For non-bridge modes
+the sidecars have no route out and the workload bypasses them entirely, so
+isolation is dropped:
+
+| Network mode | `--isolate-network` | Behavior |
+| --- | --- | --- |
+| bridge/`""`/`default` | any | Isolation enforced as designed |
+| `host` (or other non-bridge) | defaulted | Isolation dropped, `WARN` logged (dropping isolation reduces confinement) |
+| `host` (or other non-bridge) | explicitly `true` | Build fails with an error naming both ways out |
+| `none` | any | Isolation dropped silently (`DEBUG`), since `none` is already maximally confined |
+
+`host` and `none` are intentionally asymmetric: dropping isolation for a
+host-networked workload is a real reduction in confinement (warn, or fail fast
+when explicitly requested), whereas `none` already blocks all networking, so
+isolation is merely redundant. This is enforced at three layers: config build
+(`pkg/runner/config_builder.go`), config load (`pkg/runner/config.go` `ReadJSON`
+self-heals legacy on-disk configs), and deploy (`pkg/container/docker/client.go`
+as a safety net for restart paths). See issue #5775.
 
 ### Privileged Mode
 
@@ -547,7 +632,35 @@ When `isolate_network: true` in RunConfig:
 }
 ```
 
-**Implementation**: `pkg/permissions/profile.go-44`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
+
+### Read-Only Root Filesystem
+
+`read_only_rootfs` in RunConfig (`thv run --read-only-rootfs`, or
+`read_only_rootfs` in the workload API) mounts the MCP server container's root
+filesystem read-only. It is a RunConfig field rather than a permission profile
+field, so it needs no change to `toolhive-core`.
+
+- **Opt-in**: off by default, because servers that write to their root
+  filesystem today would break.
+- **Scratch space**: `/tmp`, `/var/tmp` and `/run` get a tmpfs mounted
+  `rw,nosuid,nodev,noexec,size=64m`. Setting these explicitly keeps Docker and
+  Podman consistent: Podman's compat API otherwise adds its own executable,
+  uncapped tmpfs on those paths while Docker adds none. A path already targeted
+  by a volume or profile mount is skipped, since Docker rejects duplicate mount
+  points. Any other writable path must come from the profile's `write` mounts.
+- **Docker/Podman only**: the Docker runtime sets `HostConfig.ReadonlyRootfs`.
+  The Kubernetes runtime ignores the field; the operator already sets
+  `readOnlyRootFilesystem: true` on MCP server containers.
+- **Reconciliation**: `compareHostConfig` includes the setting, so changing it
+  recreates an existing container instead of reusing it.
+
+**Example:**
+```json
+{
+  "read_only_rootfs": true
+}
+```
 
 ### Built-in Profiles
 
@@ -573,7 +686,7 @@ When `isolate_network: true` in RunConfig:
 
 **Use for**: Maximum security, no external access needed
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 #### `network` Profile
 
@@ -595,7 +708,7 @@ When `isolate_network: true` in RunConfig:
 
 **Use for**: API calls, web scraping, external services
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Custom Profiles
 
@@ -624,17 +737,17 @@ Custom permission profiles can be defined in JSON files for reusable security po
 
 **Profile resolution**: Profiles can be referenced by name (built-in), file path (custom), or from registry metadata (server-specific defaults).
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Profile Selection
 
 **Priority order:**
 1. Direct profile object: `WithPermissionProfile(profile)` (programmatic use)
-2. Command-line flag: `--permission-profile <name|path>` (supports "none", "network", "stdio", or file path)
+2. Command-line flag: `--permission-profile <name|path>` (supports "none", "network", or file path)
 3. Registry default: From server metadata
 4. Global default: `network`
 
-**Implementation**: `pkg/permissions/`, registry metadata
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`, registry metadata
 
 ## Security Best Practices
 
@@ -683,7 +796,7 @@ Custom permission profiles can be defined in JSON files for reusable security po
 }
 ```
 
-**Implementation**: `pkg/networking/`, `pkg/permissions/profile.go`
+**Implementation**: `pkg/networking/`, `github.com/stacklok/toolhive-core/permissions`
 
 ### Secrets Management
 
@@ -699,7 +812,6 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - **encrypted**: Password-protected local storage
 - **1password**: 1Password SDK integration for enterprise vaults
 - **environment**: CI/CD environment variables
-- **none**: Testing/development no-op provider
 
 **Implementation**: `pkg/secrets/`, `pkg/runner/config.go`
 
@@ -707,10 +819,10 @@ Custom permission profiles can be defined in JSON files for reusable security po
 
 ### Kubernetes
 
-**Pod security context:**
-- RunConfig permission profile → Security context
-- Network policies generated from profile
-- Volume mounts → PersistentVolumeClaims or HostPath
+**Security configuration:**
+- `spec.permissionProfile` is retained for API compatibility but is deprecated and ignored by the operator
+- Configure pod security through `spec.podTemplateSpec` using Kubernetes `securityContext` fields
+- Define Kubernetes `NetworkPolicy` resources separately for network enforcement
 
 **Pod template patches:**
 ```json
@@ -719,7 +831,7 @@ Custom permission profiles can be defined in JSON files for reusable security po
 }
 ```
 
-**Implementation**: Operator converts profiles to K8s resources
+**Implementation**: `spec.podTemplateSpec` configures pod-level controls; Kubernetes `NetworkPolicy` resources are managed separately
 
 ### Docker/Podman
 
@@ -738,3 +850,4 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - [Deployment Modes](01-deployment-modes.md) - RunConfig portability
 - [Transport Architecture](03-transport-architecture.md) - Transport configuration
 - [Operator Architecture](09-operator-architecture.md) - K8s-specific configuration
+- [Registry System](06-registry-system.md) - Registry metadata that seeds RunConfig for a server

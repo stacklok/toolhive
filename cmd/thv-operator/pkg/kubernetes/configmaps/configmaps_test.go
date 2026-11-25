@@ -12,17 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestGet(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully retrieves existing configmap", func(t *testing.T) {
 		t.Parallel()
@@ -115,8 +115,7 @@ func TestGet(t *testing.T) {
 func TestGetValue(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully retrieves configmap value", func(t *testing.T) {
 		t.Parallel()
@@ -297,7 +296,7 @@ func TestNewClient(t *testing.T) {
 	t.Run("creates client successfully", func(t *testing.T) {
 		t.Parallel()
 
-		scheme := runtime.NewScheme()
+		scheme := testutil.NewScheme(t)
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			Build()
@@ -311,8 +310,7 @@ func TestNewClient(t *testing.T) {
 func TestUpsert(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully creates a new configmap", func(t *testing.T) {
 		t.Parallel()
@@ -450,8 +448,7 @@ func TestUpsert(t *testing.T) {
 func TestUpsertWithOwnerReference(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("successfully creates configmap with owner reference", func(t *testing.T) {
 		t.Parallel()

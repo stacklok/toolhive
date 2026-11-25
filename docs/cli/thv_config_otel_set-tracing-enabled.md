@@ -26,13 +26,13 @@ thv config otel set-tracing-enabled <enabled> [flags]
 ### Options
 
 ```
-  -h, --help   help for set-tracing-enabled
+  -h, --help[=true|false]   help for set-tracing-enabled
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

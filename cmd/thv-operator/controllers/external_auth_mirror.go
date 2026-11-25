@@ -1,0 +1,200 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package controllers
+
+import (
+	stderrors "errors"
+	"fmt"
+	"strings"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+)
+
+// Status Condition Parity machinery for #5347. The probe reads a referenced
+// MCPExternalAuthConfig's Valid condition; the per-consumer mirror functions
+// transcribe its reason and message (the latter behind mirroredMessagePrefix)
+// onto the consumer CR's parallel condition.
+// Without this, an invalid MCPExternalAuthConfig (for example a malformed obo
+// config) surfaces its reason only on the referenced resource and the consumer
+// status reports only the generic dispatch failure.
+
+// fallbackInvalidReason is substituted when a source surfaces Valid=False with
+// an empty Reason. metav1.Condition requires Reason to be non-empty and the
+// apiserver rejects empty-Reason patches, so the mirror cannot copy an empty
+// Reason verbatim without trapping the consumer in a noisy reconcile loop.
+const fallbackInvalidReason = "InvalidExternalAuthConfig"
+
+// mirroredMessagePrefix starts the Message of every condition the mirror
+// writes, marking it as mirrored rather than locally owned. A source can
+// surface the same Reason a consumer uses for its own validation failures (a
+// malformed obo config is Valid=False / InvalidConfig), so the Reason alone
+// cannot tell the two owners apart. No local writer of InvalidConfig or
+// InvalidCABundle may start its message with this prefix;
+// TestMirroredMessagePrefix_NotUsedByLocalMessages checks the obo
+// incoming-auth message and the shared CA bundle format
+// (ctrlutil.InvalidCABundleMessage).
+const mirroredMessagePrefix = "Referenced MCPExternalAuthConfig "
+
+// mirroredInvalidExternalAuthConfigError signals that a referenced
+// MCPExternalAuthConfig had Status.Conditions[Valid]=False. Carries the
+// source's reason+message so callers can surface them on the consumer's
+// status without re-fetching the object, and satisfies the error interface
+// so it can travel through error-returning APIs (notably
+// convertBackendAuthConfigToVMCP -> buildOutgoingAuthConfig).
+type mirroredInvalidExternalAuthConfigError struct {
+	Reason  string
+	Message string
+}
+
+func (e *mirroredInvalidExternalAuthConfigError) Error() string {
+	return fmt.Sprintf("invalid (%s): %s", e.Reason, e.Message)
+}
+
+// mirroredExternalAuthConfigInvalid returns a non-nil typed error when the
+// source's Valid condition is False, or nil otherwise. Use
+// [mirroredReasonFromError] to recover the reason from a wrapped chain.
+func mirroredExternalAuthConfigInvalid(
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) *mirroredInvalidExternalAuthConfigError {
+	validCond := meta.FindStatusCondition(externalAuthConfig.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	if validCond == nil || validCond.Status != metav1.ConditionFalse {
+		return nil
+	}
+	reason := validCond.Reason
+	if reason == "" {
+		reason = fallbackInvalidReason
+	}
+	return &mirroredInvalidExternalAuthConfigError{Reason: reason, Message: validCond.Message}
+}
+
+// mirroredReasonFromError returns the mirrored source reason embedded in err
+// (via *mirroredInvalidExternalAuthConfigError) or "" if err does not carry
+// one. Walks the wrap chain via errors.As so it remains correct when callers
+// wrap the typed error with fmt.Errorf("...: %w", err) before passing it on
+// (notably buildOutgoingAuthConfig in the VirtualMCPServer pipeline).
+func mirroredReasonFromError(err error) string {
+	var mirrored *mirroredInvalidExternalAuthConfigError
+	if stderrors.As(err, &mirrored) {
+		return mirrored.Reason
+	}
+	return ""
+}
+
+// ownedByLocalValidation reports whether conditions' entry for conditionType
+// (if any) was set by this operator's own validation rather than mirrored from
+// the referenced MCPExternalAuthConfig. See isLocalValidationFailure.
+func ownedByLocalValidation(conditions []metav1.Condition, conditionType string) bool {
+	return isLocalValidationFailure(meta.FindStatusCondition(conditions, conditionType))
+}
+
+// isLocalValidationFailure reports whether cond is a False condition written by
+// this operator's own validation of the consumer. Two kinds of owner qualify,
+// each with a fixed Reason:
+//
+//   - ConditionReasonInvalidConfig: handleInvalidEmbeddedAuthServerConfig, set
+//     when the assembled RunConfig fails to build (e.g. delegate clients
+//     without an OIDC config), and the obo incoming-auth check
+//     (ctrlutil.ValidateOBOIncomingAuth).
+//   - ConditionReasonInvalidCABundle: the CA bundle check, set when a
+//     referenced bundle ConfigMap is missing its key or holds non-PEM content.
+//
+// These re-derive the same condition after the mirror runs, so clearing it in
+// the mirror would force a fresh LastTransitionTime on every reconcile.
+//
+// A source can surface the same Reason (a malformed obo config is Valid=False /
+// InvalidConfig), so a condition whose Message starts with
+// mirroredMessagePrefix is the mirror's whatever its Reason. Treating it as
+// local would hold it after the source heals back to an unchanged ConfigHash:
+// the mirror would not clear it and the same-hash guard in the
+// set*ExternalAuthConfigValidCondition writers would not overwrite it.
+func isLocalValidationFailure(cond *metav1.Condition) bool {
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		return false
+	}
+	if strings.HasPrefix(cond.Message, mirroredMessagePrefix) {
+		return false
+	}
+	return cond.Reason == mcpv1beta1.ConditionReasonInvalidConfig ||
+		cond.Reason == mcpv1beta1.ConditionReasonInvalidCABundle
+}
+
+// mirroredConditionMessage builds the consumer condition Message for the
+// source sourceName whose Valid=False condition carries sourceMessage. Its
+// mirroredMessagePrefix is what isLocalValidationFailure keys on.
+func mirroredConditionMessage(sourceName, sourceMessage string) string {
+	if sourceMessage == "" {
+		return fmt.Sprintf("%s'%s' is invalid", mirroredMessagePrefix, sourceName)
+	}
+	return fmt.Sprintf("%s'%s' is invalid: %s", mirroredMessagePrefix, sourceName, sourceMessage)
+}
+
+// mirrorInvalidOnMCPServer mirrors the source's Valid=False condition onto the
+// MCPServer's ExternalAuthConfigValidated condition. When the source is healed
+// (Valid=True or absent), it clears any stale mirror so the condition does not
+// outlive its cause — unless the condition currently reflects a different
+// owner's failure (see ownedByLocalValidation). Clearing that condition here
+// would erase the other owner's terminal failure a step before it re-derives
+// the same failure, forcing a fresh LastTransitionTime on every reconcile even
+// though nothing changed. Returns (true, err) when a False
+// mirror was written so the caller can mark Phase=Failed; (false, nil)
+// otherwise.
+//
+// See package-level Status Condition Parity comment for the #5347 motivation.
+func mirrorInvalidOnMCPServer(
+	m *mcpv1beta1.MCPServer,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) (bool, error) {
+	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
+	if mirrored == nil {
+		if !ownedByLocalValidation(m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated) {
+			meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+		}
+		return false, nil
+	}
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+		Status:             metav1.ConditionFalse,
+		Reason:             mirrored.Reason,
+		Message:            mirroredConditionMessage(externalAuthConfig.Name, mirrored.Message),
+		ObservedGeneration: m.Generation,
+	})
+	return true, fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", m.Namespace, externalAuthConfig.Name, mirrored)
+}
+
+// mirrorInvalidOnRemoteProxy mirrors the source's Valid=False condition onto
+// the MCPRemoteProxy's ExternalAuthConfigValidated condition. When the source
+// is healed, it clears any stale mirror defensively — the downstream True
+// writer in handleExternalAuthConfig also sets the success reason, but a
+// future early return between this site and that writer would otherwise leak
+// a stale False. It does NOT clear the condition when it currently reflects a
+// different owner's failure (see ownedByLocalValidation): removing it here
+// would erase that owner's terminal failure a step before it gets re-derived
+// unchanged, forcing setMCPRemoteProxyExternalAuthConfigValidCondition to
+// treat it as new and stamp a fresh LastTransitionTime on every reconcile
+// even though nothing changed. Returns (true, err) when a False mirror was
+// written so the caller can short-circuit; (false, nil) otherwise.
+func mirrorInvalidOnRemoteProxy(
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) (bool, error) {
+	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
+	if mirrored == nil {
+		condType := mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated
+		if !ownedByLocalValidation(proxy.Status.Conditions, condType) {
+			meta.RemoveStatusCondition(&proxy.Status.Conditions, condType)
+		}
+		return false, nil
+	}
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+		Status:             metav1.ConditionFalse,
+		Reason:             mirrored.Reason,
+		Message:            mirroredConditionMessage(externalAuthConfig.Name, mirrored.Message),
+		ObservedGeneration: proxy.Generation,
+	})
+	return true, fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", proxy.Namespace, externalAuthConfig.Name, mirrored)
+}

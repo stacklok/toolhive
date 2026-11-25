@@ -1,0 +1,63 @@
+suite: autoscaling enabled
+# Exercises the autoscaling.enabled coupling across two templates: when the HPA
+# owns scaling, the Deployment must NOT pin a static replica count, and the HPA's
+# CPU/memory metrics are each gated on their target being set. Suite-level `set`
+# turns autoscaling on for every test; each test scopes to one template.
+set:
+  operator.autoscaling.enabled: true
+  operator.autoscaling.minReplicas: 2
+  operator.autoscaling.maxReplicas: 5
+templates:
+  - deployment.yaml
+  - hpa.yaml
+tests:
+  - it: drops the static replica count so the HPA owns scaling
+    template: deployment.yaml
+    asserts:
+      - notExists: { path: spec.replicas }
+
+  - it: renders an HPA with the configured bounds
+    template: hpa.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: HorizontalPodAutoscaler }
+      - equal: { path: spec.minReplicas, value: 2 }
+      - equal: { path: spec.maxReplicas, value: 5 }
+
+  - it: omits the CPU and memory metrics when no targets are set
+    template: hpa.yaml
+    asserts:
+      - notContains:
+          path: spec.metrics
+          content: { type: Resource, resource: { name: cpu, target: { type: Utilization } } }
+          any: true
+      - notContains:
+          path: spec.metrics
+          content: { type: Resource, resource: { name: memory, target: { type: Utilization } } }
+          any: true
+
+  - it: adds a CPU metric only when its target is set
+    template: hpa.yaml
+    set:
+      operator.autoscaling.targetCPUUtilizationPercentage: 80
+    asserts:
+      - contains:
+          path: spec.metrics
+          content:
+            type: Resource
+            resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 80 }
+
+  - it: adds a memory metric only when its target is set
+    template: hpa.yaml
+    set:
+      operator.autoscaling.targetMemoryUtilizationPercentage: 70
+    asserts:
+      - contains:
+          path: spec.metrics
+          content:
+            type: Resource
+            resource:
+              name: memory
+              target: { type: Utilization, averageUtilization: 70 }

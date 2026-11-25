@@ -6,7 +6,11 @@ package router
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
+
+	"github.com/yosida95/uritemplate/v3"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -17,6 +21,19 @@ import (
 // on the discovery middleware injecting DiscoveredCapabilities into the context.
 type sessionRouter struct {
 	routingTable *vmcp.RoutingTable
+
+	// resourceTemplates is the aggregated resource-template table pre-sorted by
+	// template string with each template pre-parsed. These are invariant for a
+	// given routing table, so they are computed once at construction rather than
+	// re-sorted and re-parsed on every RouteResource miss.
+	resourceTemplates []compiledResourceTemplate
+}
+
+// compiledResourceTemplate pairs an aggregated resource-template entry with its
+// pre-parsed RFC 6570 template for matchResourceTemplate.
+type compiledResourceTemplate struct {
+	tmpl   *uritemplate.Template
+	target *vmcp.BackendTarget
 }
 
 // NewSessionRouter creates a Router that routes from the provided RoutingTable
@@ -24,11 +41,80 @@ type sessionRouter struct {
 // composite tool workflow engines because it couples routing to the session
 // rather than to middleware-managed context values.
 func NewSessionRouter(rt *vmcp.RoutingTable) Router {
-	return &sessionRouter{routingTable: rt}
+	return &sessionRouter{routingTable: rt, resourceTemplates: compileResourceTemplates(rt)}
+}
+
+// compileResourceTemplates builds the sorted, pre-parsed resource-template list
+// for a routing table. Template keys are sorted so that when overlapping
+// templates match the same URI (e.g. a greedy "{+path}" template alongside a
+// more specific one) the first-match winner is deterministic and stable across
+// runs. A template string that fails to parse is dropped here (logged once)
+// rather than on every routing miss.
+func compileResourceTemplates(rt *vmcp.RoutingTable) []compiledResourceTemplate {
+	if rt == nil || len(rt.ResourceTemplates) == 0 {
+		return nil
+	}
+	tmplStrs := make([]string, 0, len(rt.ResourceTemplates))
+	for tmplStr := range rt.ResourceTemplates {
+		tmplStrs = append(tmplStrs, tmplStr)
+	}
+	sort.Strings(tmplStrs)
+
+	compiled := make([]compiledResourceTemplate, 0, len(tmplStrs))
+	for _, tmplStr := range tmplStrs {
+		tmpl, err := uritemplate.New(tmplStr)
+		if err != nil {
+			slog.Warn("skipping invalid resource URI template during routing",
+				"template", tmplStr, "error", err)
+			continue
+		}
+		compiled = append(compiled, compiledResourceTemplate{
+			tmpl:   tmpl,
+			target: rt.ResourceTemplates[tmplStr],
+		})
+	}
+	return compiled
+}
+
+// ResolveToolRef resolves a composite-tool step reference ("{workloadID}.{toolName}")
+// to its routing-table key, returning ok=false when the reference does not
+// resolve. It is the shared primitive behind both composite-tool accessibility
+// filtering (compositetools.isToolStepAccessible) and per-step annotation
+// resolution (core.stepAnnotationResolver), so the two paths cannot drift.
+//
+// rt may be nil (returns "", false). Resolution order mirrors ResolveToolName:
+//  1. Exact key: the resolved/conflict-resolved name stored in rt.Tools.
+//  2. Dot convention "{workloadID}.{originalCapabilityName}": workload IDs
+//     are Kubernetes resource names (no dots), so the first dot separates the
+//     workload ID from the original backend capability name. A leading dot
+//     (dotIdx == 0) is rejected so an empty workload ID never matches.
+func ResolveToolRef(rt *vmcp.RoutingTable, stepTool string) (resolvedName string, ok bool) {
+	if rt == nil || rt.Tools == nil || stepTool == "" {
+		return "", false
+	}
+
+	// Fast path: exact key match.
+	if _, exists := rt.Tools[stepTool]; exists {
+		return stepTool, true
+	}
+
+	// Fallback: dot convention "{workloadID}.{toolName}".
+	if dotIdx := strings.Index(stepTool, "."); dotIdx > 0 {
+		workloadID := stepTool[:dotIdx]
+		capName := stepTool[dotIdx+1:]
+		for resolvedName, target := range rt.Tools {
+			if target.WorkloadID == workloadID && target.GetBackendCapabilityName(resolvedName) == capName {
+				return resolvedName, true
+			}
+		}
+	}
+
+	return "", false
 }
 
 // RouteTool resolves a tool name to its backend target using the session's
-// routing table directly.
+// routing table directly. Resolution is delegated to ResolveToolRef so this
+// path cannot drift from composite-tool accessibility filtering.
 //
 // Two naming conventions are supported:
 //
@@ -45,73 +131,84 @@ func NewSessionRouter(rt *vmcp.RoutingTable) Router {
 // tools by their pre-conflict-resolution name (e.g. "my-backend.echo"), while
 // the routing table may store them under a prefixed key ("my-backend_echo").
 func (r *sessionRouter) RouteTool(_ context.Context, toolName string) (*vmcp.BackendTarget, error) {
-	if r.routingTable == nil || r.routingTable.Tools == nil {
+	resolvedName, ok := ResolveToolRef(r.routingTable, toolName)
+	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrToolNotFound, toolName)
 	}
-
-	// Fast path: exact key match.
-	if target, exists := r.routingTable.Tools[toolName]; exists {
-		return target, nil
-	}
-
-	// Fallback: dot convention "{workloadID}.{toolName}".
-	// Workload IDs are Kubernetes resource names and cannot contain dots,
-	// so the first dot unambiguously separates the workload ID from the
-	// original backend capability name.
-	if dotIdx := strings.Index(toolName, "."); dotIdx > 0 {
-		workloadID := toolName[:dotIdx]
-		capName := toolName[dotIdx+1:]
-		for resolvedName, target := range r.routingTable.Tools {
-			if target.WorkloadID == workloadID && target.GetBackendCapabilityName(resolvedName) == capName {
-				return target, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("%w: %s", ErrToolNotFound, toolName)
+	return r.routingTable.Tools[resolvedName], nil
 }
 
 // ResolveToolName returns the routing table key (conflict-resolved name) for
-// toolName. If toolName is an exact key it is returned unchanged. If it uses
-// the dot convention "{workloadID}.{originalCapabilityName}", the matching
-// routing table key is returned. Falls back to returning toolName unchanged
-// when the routing table is absent or the name cannot be resolved (pass-through
-// semantics, consistent with the Router interface contract).
+// toolName via ResolveToolRef. If toolName is an exact key it is returned
+// unchanged. If it uses the dot convention "{workloadID}.{originalCapabilityName}",
+// the matching routing table key is returned. Falls back to returning toolName
+// unchanged when the routing table is absent or the name cannot be resolved
+// (pass-through semantics, consistent with the Router interface contract).
 func (r *sessionRouter) ResolveToolName(_ context.Context, toolName string) string {
-	if r.routingTable == nil || r.routingTable.Tools == nil {
-		return toolName
+	if n, ok := ResolveToolRef(r.routingTable, toolName); ok {
+		return n
 	}
-
-	// Fast path: exact key match.
-	if _, exists := r.routingTable.Tools[toolName]; exists {
-		return toolName
-	}
-
-	// Fallback: dot convention "{workloadID}.{toolName}".
-	if dotIdx := strings.Index(toolName, "."); dotIdx > 0 {
-		workloadID := toolName[:dotIdx]
-		capName := toolName[dotIdx+1:]
-		for resolvedName, target := range r.routingTable.Tools {
-			if target.WorkloadID == workloadID && target.GetBackendCapabilityName(resolvedName) == capName {
-				return resolvedName
-			}
-		}
-	}
-
 	return toolName
 }
 
 // RouteResource resolves a resource URI to its backend target using the
 // session's routing table directly.
+//
+// Resolution order:
+//
+//  1. Exact match against the aggregated concrete resources.
+//  2. Exact match against an aggregated resource-template string.
+//  3. Reject a URI over MaxResourceURILength before expansion matching.
+//  4. Match a concrete URI against the aggregated resource templates (RFC 6570).
+//     This lets a client read a templated resource (e.g.
+//     "file:///logs/2025-01-01.txt" matching "file:///logs/{date}.txt") through
+//     the ordinary resources/read path without a dedicated template read method.
 func (r *sessionRouter) RouteResource(_ context.Context, uri string) (*vmcp.BackendTarget, error) {
-	if r.routingTable == nil || r.routingTable.Resources == nil {
-		return nil, fmt.Errorf("%w: %s", ErrResourceNotFound, uri)
+	if r.routingTable != nil {
+		// Fast path: exact concrete-resource match.
+		if target, exists := r.routingTable.Resources[uri]; exists {
+			return target, nil
+		}
+		// Exact template-string match: per the MCP spec a completion/complete with a
+		// ref/resource (and resources/subscribe on a templated resource) carries the
+		// URI TEMPLATE string itself (e.g. "file:///logs/{date}.txt"), not an
+		// expanded URI. A template does not match its own template string, so look
+		// the string up directly before falling back to template expansion.
+		if target, exists := r.routingTable.ResourceTemplates[uri]; exists {
+			return target, nil
+		}
 	}
-	target, exists := r.routingTable.Resources[uri]
-	if !exists {
-		return nil, fmt.Errorf("%w: %s", ErrResourceNotFound, uri)
+	// Template matching is superlinear in URI length and uncancellable, so refuse
+	// to run it on an oversize client URI. Log the length, never the URI.
+	if len(uri) > vmcp.MaxResourceURILength {
+		slog.Warn("rejecting resource URI over length cap before template matching",
+			"length", len(uri), "max", vmcp.MaxResourceURILength)
+		return nil, fmt.Errorf("%w: URI exceeds %d bytes", ErrResourceNotFound, vmcp.MaxResourceURILength)
 	}
-	return target, nil
+	// Fallback: match the URI against the aggregated resource templates.
+	if target := r.matchResourceTemplate(uri); target != nil {
+		return target, nil
+	}
+	return nil, fmt.Errorf("%w: %s", ErrResourceNotFound, uri)
+}
+
+// matchResourceTemplate returns the backend target for the first precompiled
+// resource template whose RFC 6570 expansion matches uri, or nil when none
+// match. First-match wins over the sorted template keys (see
+// compileResourceTemplates).
+func (r *sessionRouter) matchResourceTemplate(uri string) *vmcp.BackendTarget {
+	// Matcher cost grows faster than linearly with input length and the client
+	// controls uri, so an oversized URI fails closed as not-found.
+	if len(uri) > vmcp.MaxResourceURILength {
+		return nil
+	}
+	for i := range r.resourceTemplates {
+		// Match returns non-nil Values on a match, nil otherwise.
+		if r.resourceTemplates[i].tmpl.Match(uri) != nil {
+			return r.resourceTemplates[i].target
+		}
+	}
+	return nil
 }
 
 // RoutePrompt resolves a prompt name to its backend target using the session's

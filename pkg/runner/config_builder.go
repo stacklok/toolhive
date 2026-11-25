@@ -14,10 +14,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -32,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -63,6 +65,10 @@ type runConfigBuilder struct {
 	registryProxyPort int
 	// Store network mode to apply to permission profile after it's loaded
 	networkMode string
+	// isolateNetworkExplicit records whether the user explicitly requested network
+	// isolation (e.g. --isolate-network was passed) rather than it being the default.
+	// It controls whether an incompatible network mode fails fast or silently degrades.
+	isolateNetworkExplicit bool
 	// Build context determines which validation and features are enabled
 	buildContext BuildContext
 }
@@ -84,6 +90,14 @@ func WithRuntime(deployer rt.Deployer) RunConfigBuilderOption {
 func WithImage(image string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.Image = image
+		return nil
+	}
+}
+
+// WithMCPServerGeneration sets the MCPServer generation as the monotonic version stamp.
+func WithMCPServerGeneration(gen int64) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.MCPServerGeneration = gen
 		return nil
 	}
 }
@@ -168,14 +182,6 @@ func WithRemoteAuth(config *remote.Config) RunConfigBuilderOption {
 func WithName(name string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.Name = name
-		return nil
-	}
-}
-
-// WithMiddlewareConfig sets the middleware configuration
-func WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.config.MiddlewareConfigs = middlewareConfig
 		return nil
 	}
 }
@@ -314,10 +320,38 @@ func WithPermissionProfile(profile *permissions.Profile) RunConfigBuilderOption 
 	}
 }
 
-// WithNetworkIsolation sets network isolation
+// WithNetworkIsolation sets network isolation.
+//
+// Network isolation is only enforceable in bridge mode. When it is requested
+// together with a non-bridge network mode (host/none/custom), the build
+// reconciles the conflict: without the WithNetworkIsolationExplicit companion
+// (i.e. the user did not actively pass --isolate-network), a host/custom
+// conflict degrades to isolation=false with a warning rather than failing fast.
+// See WithNetworkIsolationExplicit and issue #5775.
 func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.IsolateNetwork = isolate
+		return nil
+	}
+}
+
+// WithNetworkIsolationExplicit records whether network isolation was explicitly
+// requested by the user (i.e. --isolate-network was actually passed) rather than
+// defaulted. It exists to drive the fail-fast-vs-degrade decision when isolation
+// conflicts with a non-bridge network mode: when true, a host/custom conflict
+// fails the build so the user learns their request cannot be honored; when false
+// (defaulted), the conflict degrades to isolation=false with a warning. See #5775.
+func WithNetworkIsolationExplicit(explicit bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.isolateNetworkExplicit = explicit
+		return nil
+	}
+}
+
+// WithReadOnlyRootfs sets whether to mount the container's root filesystem as read-only
+func WithReadOnlyRootfs(readOnly bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.ReadOnlyRootfs = readOnly
 		return nil
 	}
 }
@@ -330,10 +364,32 @@ func WithAllowDockerGateway(allow bool) RunConfigBuilderOption {
 	}
 }
 
+// WithAllowedOrigins sets the HTTP Origin-header allowlist used for
+// DNS-rebinding protection (MCP 2025-11-25 §"Security Warning").
+// An empty slice defers the choice to middleware wiring, which derives a
+// loopback-only default when the bind host is loopback and otherwise leaves
+// the middleware disabled.
+func WithAllowedOrigins(origins []string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.AllowedOrigins = origins
+		return nil
+	}
+}
+
 // WithTrustProxyHeaders sets whether to trust X-Forwarded-* headers from reverse proxies
 func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.TrustProxyHeaders = trust
+		return nil
+	}
+}
+
+// WithStrictProtocolValidation sets whether the streamable HTTP proxy rejects
+// requests carrying an unknown/unsupported MCP-Protocol-Version header with
+// HTTP 400. Default false accepts any version string.
+func WithStrictProtocolValidation(strict bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.StrictProtocolValidation = strict
 		return nil
 	}
 }
@@ -350,6 +406,59 @@ func WithStateless(stateless bool) RunConfigBuilderOption {
 func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.EndpointPrefix = prefix
+		return nil
+	}
+}
+
+// WithSessionTTL sets the inactivity timeout for proxy sessions.
+// Zero is valid and means "use the transport default" (2h).
+// Negative values return an error.
+//
+// The value is stored as a Go duration string on RunConfig so it survives a
+// JSON/YAML round-trip in the runconfig API contract; a time.Duration field
+// would serialize as nanoseconds.
+func WithSessionTTL(ttl time.Duration) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if ttl < 0 {
+			return fmt.Errorf("session-ttl must be non-negative, got %s", ttl)
+		}
+		if ttl == 0 {
+			b.config.SessionTTL = ""
+			return nil
+		}
+		b.config.SessionTTL = ttl.String()
+		return nil
+	}
+}
+
+// WithMaxRequestBodySize sets the maximum inbound MCP proxy request body size in bytes.
+// Zero uses the default limit of 8 MiB. Negative values return an error.
+func WithMaxRequestBodySize(maxBytes int64) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if maxBytes < 0 {
+			return fmt.Errorf("max-request-body-size must be non-negative, got %d", maxBytes)
+		}
+		b.config.MaxRequestBodySize = maxBytes
+		return nil
+	}
+}
+
+// WithProxyReadTimeout sets http.Server.ReadTimeout on the proxy, bounding how
+// long the server will spend reading a request (headers + body). Zero is valid
+// and means "use the proxy default" (30s). Negative values return an error.
+//
+// The value is stored as a Go duration string on RunConfig so it survives a
+// JSON/YAML round-trip; a time.Duration field would serialize as nanoseconds.
+func WithProxyReadTimeout(d time.Duration) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if d < 0 {
+			return fmt.Errorf("proxy-read-timeout must be non-negative, got %s", d)
+		}
+		if d == 0 {
+			b.config.ProxyReadTimeout = ""
+			return nil
+		}
+		b.config.ProxyReadTimeout = d.String()
 		return nil
 	}
 }
@@ -442,6 +551,21 @@ func WithAuditEnabled(enableAudit bool, auditConfigPath string) RunConfigBuilder
 	}
 }
 
+// WithTokenValidatorConfig sets a copy of the canonical OIDC token validator configuration.
+func WithTokenValidatorConfig(config *auth.TokenValidatorConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if config == nil {
+			b.config.OIDCConfig = nil
+			return nil
+		}
+
+		configCopy := *config
+		configCopy.Scopes = slices.Clone(config.Scopes)
+		b.config.OIDCConfig = &configCopy
+		return nil
+	}
+}
+
 // WithOIDCConfig configures OIDC settings
 func WithOIDCConfig(
 	oidcIssuer string,
@@ -493,6 +617,25 @@ func WithOIDCConfig(
 	}
 }
 
+// WithOIDCRequiredSubject restricts the token "sub" claim accepted by the OIDC
+// validator: subject requires an exact match, prefix requires a prefix match.
+// Empty values apply no restriction. It must be applied after WithOIDCConfig;
+// setting a restriction when no OIDC configuration exists is an error, so a
+// subject restriction is never silently dropped.
+func WithOIDCRequiredSubject(subject, prefix string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if subject == "" && prefix == "" {
+			return nil
+		}
+		if b.config.OIDCConfig == nil {
+			return errors.New("OIDC subject restriction requires an OIDC configuration")
+		}
+		b.config.OIDCConfig.RequiredSubject = subject
+		b.config.OIDCConfig.RequiredSubjectPrefix = prefix
+		return nil
+	}
+}
+
 // WithTokenExchangeConfig sets the token exchange configuration
 func WithTokenExchangeConfig(config *tokenexchange.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -537,6 +680,22 @@ func WithTelemetryConfigFromFlags(
 	return WithTelemetryConfig(config)
 }
 
+// WithMetricsOnTransportPort records whether /metrics should also be served on the
+// main transport port. Nil means the caller expressed no preference and the current
+// default applies at startup; see telemetry.DefaultMetricsOnTransportPort.
+//
+// Must be applied after the telemetry configuration; it is a no-op when telemetry is
+// disabled, since there is no config to record it on.
+func WithMetricsOnTransportPort(v *bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if v == nil || b.config.TelemetryConfig == nil {
+			return nil
+		}
+		b.config.TelemetryConfig.MetricsOnTransportPort = v
+		return nil
+	}
+}
+
 // WithTelemetryConfig sets the telemetry configuration
 func WithTelemetryConfig(config *telemetry.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -546,7 +705,7 @@ func WithTelemetryConfig(config *telemetry.Config) RunConfigBuilderOption {
 }
 
 // WithRateLimitConfig sets the rate limiting configuration.
-func WithRateLimitConfig(namespace string, config *v1alpha1.RateLimitConfig) RunConfigBuilderOption {
+func WithRateLimitConfig(namespace string, config *v1beta1.RateLimitConfig) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.RateLimitConfig = config
 		b.config.RateLimitNamespace = namespace
@@ -597,20 +756,41 @@ func WithMiddlewareFromFlags(
 		var middlewareConfigs []types.MiddlewareConfig
 
 		// NOTE: order matters here. Specifically, these routines use append
-		// to add new middleware configs, but once these routines are called,
-		// inside the proxy, they are applied in reverse order, so the first
-		// being added here is effectively the last being called at HTTP
-		// request time.
+		// to add new middleware configs. The proxy wraps the handler in
+		// reverse slice order (see applyMiddlewares), so the first entry
+		// added here is the OUTERMOST wrapper and runs first at HTTP request
+		// time; the last entry runs closest to the handler.
 		//
 		// We should avoid doing this and a better pattern would be to let the
 		// actual proxy determine the order of application of middlewares, since
 		// the types of middleware are known at compile time.
 
+		// Audit middleware (if enabled) goes first so it is the outermost
+		// wrapper after the body-limit prepended in runner.Run: every request
+		// that passes the size cap produces an audit event no matter which
+		// middleware rejects it — authentication (401), webhook denials, and
+		// authorization (403, outcome "denied") included. Identity and parsed
+		// MCP data are read back from the inner auth/parser middlewares via
+		// the holder carriers (auth.IdentityHolder, mcp.ParsedRequestHolder).
+		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
+
 		// Add tool filter middlewares
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
 		// Add core middlewares (always present)
-		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
+		embeddedAuthServerIssuer := func() string {
+			if b.config.EmbeddedAuthServerConfig != nil {
+				return b.config.EmbeddedAuthServerConfig.Issuer
+			}
+			return ""
+		}()
+		middlewareConfigs = addCoreMiddlewares(
+			middlewareConfigs,
+			oidcConfig,
+			tokenExchangeConfig,
+			embeddedAuthServerIssuer,
+			disableUsageMetrics,
+		)
 
 		// NOTE: Header forward middleware is NOT added here because secret-backed
 		// headers are not yet resolved at builder time. It is added in Runner.Run()
@@ -621,8 +801,11 @@ func WithMiddlewareFromFlags(
 		//
 		// NOTE: addCoreMiddlewares also injects usage metrics before webhook insertion here,
 		// which differs slightly from PopulateMiddlewareConfigs where usage metrics is added
-		// after webhooks. This is currently benign because usage metrics does not depend on
-		// webhook state, and the broader ordering TODO remains to unify these paths.
+		// after webhooks. Since mutating webhooks republish the parsed request
+		// (mcp.RepublishParsedMCPRequest), the two paths now disagree when a webhook rewrites
+		// the JSON-RPC method: this path counts the method as received, the operator path counts
+		// the method as mutated. Only tool-call counts are affected, and only for a webhook that
+		// patches "method" itself. The broader ordering TODO remains to unify these paths.
 
 		// Add Mutating webhooks before Validating webhooks
 		var err error
@@ -637,20 +820,65 @@ func WithMiddlewareFromFlags(
 			return err
 		}
 
-		// Add optional middlewares
+		// Add optional middlewares. Audit was added at the top of the chain
+		// so authorization denials (403) still produce an audit event with
+		// outcome "denied".
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
 		var authzErr error
 		middlewareConfigs, authzErr = addAuthzMiddleware(middlewareConfigs, authzConfigPath, b.config.EmbeddedAuthServerConfig)
 		if authzErr != nil {
 			return authzErr
 		}
-		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
-		// Add recovery middleware (always present, added last to be outermost wrapper)
+		// Add recovery middleware (always present, added last so it is the
+		// innermost wrapper, executing closest to the handler — matching
+		// PopulateMiddlewareConfigs)
 		middlewareConfigs = addRecoveryMiddleware(middlewareConfigs)
 
 		// Set the populated middleware configs
 		b.config.MiddlewareConfigs = middlewareConfigs
+		return nil
+	}
+}
+
+// WithAdditionalMiddlewareConfigs appends pre-built middleware configs to the
+// RunConfig's AdditionalMiddlewareConfigs slice.
+//
+// Unlike the typed-field middleware (auth, token exchange, AWS STS, ...) that
+// PopulateMiddlewareConfigs derives from RunConfig fields, these configs are
+// supplied already-built by external-auth handlers reached via
+// *[]RunConfigBuilderOption. PopulateMiddlewareConfigs splices them into the
+// backend-egress group — after auth and before recovery — so they survive
+// population and reach the serialized RunConfig the proxyrunner reads.
+//
+// The carrier is generic: upstream moves these configs verbatim and never
+// interprets their parameters; the middleware type identity is supplied by the
+// caller via the config's Type. Multiple calls and multiple arguments are
+// additive; nil entries are skipped.
+//
+// NOTE: the injected configs are consumed only by PopulateMiddlewareConfigs (the
+// operator build path). The CLI flag path (WithMiddlewareFromFlags) builds
+// MiddlewareConfigs directly and never reads AdditionalMiddlewareConfigs, so
+// combining this option with that path would silently drop the injected config.
+//
+// SECURITY: a config's Parameters are serialized verbatim into the RunConfig the
+// operator writes to a ConfigMap — plaintext, not a Secret — readable by anyone
+// with ConfigMap read access in the workload namespace. Injected parameters must
+// therefore NEVER embed raw credentials (client secrets, refresh tokens,
+// service-account keys, …). Reference such secrets by environment-variable name
+// and resolve them at runtime instead, mirroring the typed token-exchange
+// middleware, which leaves its serialized client_secret empty and reads
+// TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET at startup. Because the seam carries
+// parameters opaquely it cannot enforce this — it is a contract the injecting
+// handler must uphold.
+func WithAdditionalMiddlewareConfigs(configs ...*types.MiddlewareConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		for _, c := range configs {
+			if c == nil {
+				continue
+			}
+			b.config.AdditionalMiddlewareConfigs = append(b.config.AdditionalMiddlewareConfigs, *c)
+		}
 		return nil
 	}
 }
@@ -709,11 +937,13 @@ func addCoreMiddlewares(
 	middlewareConfigs []types.MiddlewareConfig,
 	oidcConfig *auth.TokenValidatorConfig,
 	tokenExchangeConfig *tokenexchange.Config,
+	embeddedAuthServerIssuer string,
 	disableUsageMetrics bool,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
-		OIDCConfig: oidcConfig,
+		OIDCConfig:               oidcConfig,
+		EmbeddedAuthServerIssuer: embeddedAuthServerIssuer,
 	}
 	if authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams); err == nil {
 		middlewareConfigs = append(middlewareConfigs, *authConfig)
@@ -838,9 +1068,10 @@ func addAuditMiddleware(
 	return middlewareConfigs
 }
 
-// addRecoveryMiddleware adds recovery middleware (always present, added last to be outermost wrapper)
-// Middleware is applied in reverse order, so adding last means it executes first
-// and catches panics from all other middleware and handlers.
+// addRecoveryMiddleware adds recovery middleware (always present, added last).
+// The proxy wraps the handler in reverse slice order, so the last entry is the
+// INNERMOST wrapper: it catches panics from the handler itself, but not from
+// middleware added earlier in the slice (which wrap it).
 func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
 	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
 	if err != nil {
@@ -923,6 +1154,10 @@ func internalRunConfigBuilder(
 			scopes = registration.DefaultScopes
 		}
 		b.config.OIDCConfig.Scopes = scopes
+	}
+
+	if err := canonicalizeOIDCMiddlewareConfig(b.config); err != nil {
+		return nil, fmt.Errorf("invalid OIDC middleware configuration: %w", err)
 	}
 
 	// When using the CLI validation strategy, this is where the prompting for
@@ -1022,10 +1257,11 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 
 	// Load or default the permission profile
 	// NOTE: This must be done before processing volume mounts
-	c.PermissionProfile, err = b.loadPermissionProfile(imageMetadata)
+	permissionProfile, err := b.loadPermissionProfile(imageMetadata)
 	if err != nil {
 		return err
 	}
+	c.PermissionProfile = clonePermissionProfile(permissionProfile)
 
 	// Apply network mode to permission profile if specified
 	if b.networkMode != "" {
@@ -1035,6 +1271,15 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 		}
 		c.PermissionProfile.Network.Mode = b.networkMode
 		slog.Debug("Setting network mode on permission profile", "network_mode", b.networkMode)
+	}
+
+	// Reconcile network isolation against the resolved network mode. Isolation is
+	// only enforceable in bridge mode; for host/none/custom modes the isolation
+	// sidecars have no route out and the workload bypasses them (issue #5775).
+	// Key off the resolved profile mode so this also covers modes coming from a
+	// permission-profile file rather than the --network flag.
+	if err = b.reconcileNetworkIsolation(); err != nil {
+		return err
 	}
 
 	// Process volume mounts
@@ -1116,6 +1361,51 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	return nil
 }
 
+// reconcileNetworkIsolation drops network isolation when the resolved network
+// mode cannot enforce it. In bridge mode isolation is left untouched. For "none"
+// (already maximally confined) isolation is silently dropped. For host/other
+// non-bridge modes isolation is dropped with a warning, unless the user
+// explicitly requested isolation, in which case the build fails fast.
+func (b *runConfigBuilder) reconcileNetworkIsolation() error {
+	c := b.config
+	if !c.IsolateNetwork {
+		return nil
+	}
+
+	// Resolve the effective network mode from the permission profile.
+	mode := ""
+	if c.PermissionProfile != nil && c.PermissionProfile.Network != nil {
+		mode = c.PermissionProfile.Network.Mode
+	}
+	if networking.IsBridgeMode(mode) {
+		return nil
+	}
+
+	if mode == "none" {
+		// "none" is already maximally confined; isolation is merely redundant.
+		c.IsolateNetwork = false
+		slog.Debug(networking.NetworkIsolationNoneRedundantMsg, "network_mode", mode)
+		return nil
+	}
+
+	// host (or other non-bridge) is less restrictive than isolation, so dropping
+	// it reduces confinement. Fail fast when it was explicitly requested.
+	//
+	// The mode may come from --permission-profile rather than --network, so the
+	// message names the resolved mode instead of assuming a flag the user may
+	// never have passed. See #5794 review discussion.
+	if b.isolateNetworkExplicit {
+		return fmt.Errorf(
+			"network isolation cannot be enforced with the resolved network mode %q: "+
+				"use a bridge network mode to keep enforced isolation, or pass --isolate-network=false to keep %q networking",
+			mode, mode)
+	}
+
+	c.IsolateNetwork = false
+	slog.Warn(networking.NetworkIsolationHostDroppedMsg, "network_mode", mode)
+	return nil
+}
+
 func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *regtypes.ImageMetadata) (*permissions.Profile, error) {
 	// The permission profile object takes precedence over the name or path.
 	if b.config.PermissionProfile != nil {
@@ -1145,6 +1435,37 @@ func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *regtypes.ImageMe
 	// If no metadata is available, use the network permission profile as default.
 	slog.Debug("Using default permission profile", "profile", permissions.ProfileNetwork)
 	return permissions.BuiltinNetworkProfile(), nil
+}
+
+// clonePermissionProfile returns a deep copy that the builder can safely mutate.
+func clonePermissionProfile(profile *permissions.Profile) *permissions.Profile {
+	if profile == nil {
+		return nil
+	}
+
+	cloned := *profile
+	cloned.Read = slices.Clone(profile.Read)
+	cloned.Write = slices.Clone(profile.Write)
+
+	if profile.Network != nil {
+		network := *profile.Network
+		cloned.Network = &network
+
+		if profile.Network.Outbound != nil {
+			outbound := *profile.Network.Outbound
+			outbound.AllowHost = slices.Clone(profile.Network.Outbound.AllowHost)
+			outbound.AllowPort = slices.Clone(profile.Network.Outbound.AllowPort)
+			network.Outbound = &outbound
+		}
+
+		if profile.Network.Inbound != nil {
+			inbound := *profile.Network.Inbound
+			inbound.AllowHost = slices.Clone(profile.Network.Inbound.AllowHost)
+			network.Inbound = &inbound
+		}
+	}
+
+	return &cloned
 }
 
 // processVolumeMounts processes volume mounts and adds them to the permission profile

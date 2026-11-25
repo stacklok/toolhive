@@ -5,6 +5,8 @@
 package controllerutil
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -44,30 +46,53 @@ func GenerateUniqueHeaderInjectionEnvVarName(configName string) string {
 	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 
-// GenerateHeaderForwardSecretEnvVarName generates the environment variable name for a header forward secret.
-// The generated name follows the TOOLHIVE_SECRET_<identifier> pattern expected by the EnvironmentProvider.
+// GenerateUniqueXAAIDPSecretEnvVarName generates a unique environment variable name for XAA
+// IdP client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness across
+// multiple configs. Used by both the converter and deployment controller for consistent naming.
 //
-// Parameters:
-//   - proxyName: The name of the MCPRemoteProxy resource
-//   - headerName: The HTTP header name (e.g., "X-API-Key")
-//
-// Returns the full environment variable name (e.g., "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_MY_PROXY")
-// and the secret identifier portion (e.g., "HEADER_FORWARD_X_API_KEY_MY_PROXY") for use in RunConfig.
-func GenerateHeaderForwardSecretEnvVarName(proxyName, headerName string) (envVarName, secretIdentifier string) {
-	// Sanitize header name for use in env var (uppercase, replace hyphens with underscore)
-	sanitizedHeader := strings.ToUpper(strings.ReplaceAll(headerName, "-", "_"))
-	sanitizedHeader = envVarSanitizer.ReplaceAllString(sanitizedHeader, "_")
-
-	// Sanitize proxy name for use in env var
-	sanitizedProxy := strings.ToUpper(strings.ReplaceAll(proxyName, "-", "_"))
-	sanitizedProxy = envVarSanitizer.ReplaceAllString(sanitizedProxy, "_")
-
-	// Build the secret identifier (what gets stored in RunConfig.AddHeadersFromSecret)
-	secretIdentifier = fmt.Sprintf("HEADER_FORWARD_%s_%s", sanitizedHeader, sanitizedProxy)
-
-	// Build the full env var name (TOOLHIVE_SECRET_ prefix + identifier)
-	// This follows the pattern expected by secrets.EnvironmentProvider
-	envVarName = fmt.Sprintf("TOOLHIVE_SECRET_%s", secretIdentifier)
-
-	return envVarName, secretIdentifier
+// Example: For an ExternalAuthConfig named "my-auth-config", this returns:
+// "TOOLHIVE_XAA_IDP_CLIENT_SECRET_MY_AUTH_CONFIG"
+func GenerateUniqueXAAIDPSecretEnvVarName(configName string) string {
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	sanitized = envVarSanitizer.ReplaceAllString(sanitized, "_")
+	return fmt.Sprintf("TOOLHIVE_XAA_IDP_CLIENT_SECRET_%s", sanitized)
 }
+
+// GenerateUniqueXAATargetSecretEnvVarName generates a unique environment variable name for XAA
+// target AS client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness across
+// multiple configs. Used by both the converter and deployment controller for consistent naming.
+//
+// Example: For an ExternalAuthConfig named "my-auth-config", this returns:
+// "TOOLHIVE_XAA_TARGET_CLIENT_SECRET_MY_AUTH_CONFIG"
+func GenerateUniqueXAATargetSecretEnvVarName(configName string) string {
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	sanitized = envVarSanitizer.ReplaceAllString(sanitized, "_")
+	return fmt.Sprintf("TOOLHIVE_XAA_TARGET_CLIENT_SECRET_%s", sanitized)
+}
+
+// GenerateUniqueOBOSecretEnvVarName generates a unique environment variable name for
+// an OBO client secret mounted into the vMCP pod, incorporating the
+// ExternalAuthConfig name so several OBO backends in one vMCP never collide.
+// Used by both the converter enrichment and the deployment controller for
+// consistent naming. (The proxyrunner pod carries at most one OBO config and
+// uses the fixed obo.ClientSecretEnvVar.)
+//
+// The sanitized, upper-cased name keeps the env var readable, but sanitizing
+// is lossy ("my-cfg" and "my.cfg" both become MY_CFG), so the first 8 hex
+// characters (upper-cased) of the SHA-256 of the raw name are appended to keep
+// distinct config names on distinct env vars.
+//
+// Example: For an ExternalAuthConfig named "my-auth-config", this returns:
+// "TOOLHIVE_OBO_CLIENT_SECRET_MY_AUTH_CONFIG_EB7C1742"
+func GenerateUniqueOBOSecretEnvVarName(configName string) string {
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	sanitized = envVarSanitizer.ReplaceAllString(sanitized, "_")
+	sum := sha256.Sum256([]byte(configName))
+	suffix := strings.ToUpper(hex.EncodeToString(sum[:4]))
+	return fmt.Sprintf("TOOLHIVE_OBO_CLIENT_SECRET_%s_%s", sanitized, suffix)
+}
+
+// Header-forward env-var helpers (constants + name generators + the shared
+// header-name normalizer) moved to pkg/vmcp/headerforward/wirefmt so the
+// runtime can consume them without inverting Go layering. Operator code
+// imports them from there.

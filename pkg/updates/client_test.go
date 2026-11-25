@@ -67,3 +67,31 @@ func TestNewVersionClientForComponent(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldSkipUpdateChecks_SkipEnvVar(t *testing.T) {
+	// Not parallel: mutates process environment via t.Setenv, including the
+	// CI variables that other tests in this binary may also rely on.
+	tests := []struct {
+		name    string
+		value   string
+		wantSet bool
+	}{
+		{name: "unset", value: "", wantSet: false},
+		{name: "true", value: "true", wantSet: true},
+		{name: "TRUE uppercase", value: "TRUE", wantSet: true},
+		{name: "false does not skip", value: "false", wantSet: false},
+		{name: "unrecognized value does not skip", value: "maybe", wantSet: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clear CI vars so the opt-out path is exercised in isolation,
+			// independent of whether the test runs under GitHub Actions.
+			for _, v := range ciEnvVars {
+				t.Setenv(v, "")
+			}
+			t.Setenv(EnvVarSkipUpdateCheck, tt.value)
+			assert.Equal(t, tt.wantSet, ShouldSkipUpdateChecks())
+		})
+	}
+}

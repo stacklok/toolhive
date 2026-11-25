@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
@@ -86,7 +86,7 @@ func (*manager) CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deploy
 // updates (preserving Spec.Replicas for HPA compatibility), or skips if already up-to-date.
 func (m *manager) upsertDeployment(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 	deployment *appsv1.Deployment,
 ) (*appsv1.Deployment, error) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
@@ -138,6 +138,12 @@ func (m *manager) upsertDeployment(
 	for k, v := range deployment.Annotations {
 		existing.Annotations[k] = v
 	}
+	// Prune the hash annotation if desired no longer wants it, otherwise it
+	// survives forever and deploymentNeedsUpdate reports drift on every
+	// reconcile (same bug class as #5817/#5818).
+	if _, wantHash := deployment.Annotations[podTemplateSpecHashAnnotation]; !wantHash {
+		delete(existing.Annotations, podTemplateSpecHashAnnotation)
+	}
 
 	// Ensure owner reference is set on the existing object
 	if err := controllerutil.SetControllerReference(mcpRegistry, existing, m.scheme); err != nil {
@@ -158,7 +164,7 @@ func (m *manager) upsertDeployment(
 // logic to upsertDeployment.
 func (m *manager) ensureDeployment(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 	configMapName string,
 ) (*appsv1.Deployment, error) {
 	deployment, err := m.buildRegistryAPIDeployment(ctx, mcpRegistry, configMapName)
@@ -172,9 +178,9 @@ func (m *manager) ensureDeployment(
 // buildRegistryAPIDeployment creates a Deployment for the registry API. It mounts a ConfigMap
 // created from the raw ConfigYAML string and supports user-provided Volumes, VolumeMounts,
 // and PGPassSecretRef.
-func (*manager) buildRegistryAPIDeployment(
+func (m *manager) buildRegistryAPIDeployment(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 	configMapName string,
 ) (*appsv1.Deployment, error) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
@@ -208,6 +214,7 @@ func (*manager) buildRegistryAPIDeployment(
 		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
 		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
 		WithRegistryServerConfigMount(RegistryAPIContainerName, configMapName),
+		WithImagePullSecrets(m.imagePullSecretsDefaults.Merge(mcpRegistry.Spec.ImagePullSecrets)),
 	}
 
 	// Add user-provided volumes (deserialized from raw JSON)

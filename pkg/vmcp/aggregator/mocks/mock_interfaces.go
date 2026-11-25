@@ -111,23 +111,6 @@ func (mr *MockAggregatorMockRecorder) MergeCapabilities(ctx, resolved, registry 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MergeCapabilities", reflect.TypeOf((*MockAggregator)(nil).MergeCapabilities), ctx, resolved, registry)
 }
 
-// ProcessPreQueriedCapabilities mocks base method.
-func (m *MockAggregator) ProcessPreQueriedCapabilities(ctx context.Context, toolsByBackend map[string][]vmcp.Tool, targets map[string]*vmcp.BackendTarget) ([]vmcp.Tool, []vmcp.Tool, map[string]*vmcp.BackendTarget, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ProcessPreQueriedCapabilities", ctx, toolsByBackend, targets)
-	ret0, _ := ret[0].([]vmcp.Tool)
-	ret1, _ := ret[1].([]vmcp.Tool)
-	ret2, _ := ret[2].(map[string]*vmcp.BackendTarget)
-	ret3, _ := ret[3].(error)
-	return ret0, ret1, ret2, ret3
-}
-
-// ProcessPreQueriedCapabilities indicates an expected call of ProcessPreQueriedCapabilities.
-func (mr *MockAggregatorMockRecorder) ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessPreQueriedCapabilities", reflect.TypeOf((*MockAggregator)(nil).ProcessPreQueriedCapabilities), ctx, toolsByBackend, targets)
-}
-
 // QueryAllCapabilities mocks base method.
 func (m *MockAggregator) QueryAllCapabilities(ctx context.Context, backends []vmcp.Backend) (map[string]*aggregator.BackendCapabilities, error) {
 	m.ctrl.T.Helper()
@@ -288,4 +271,40 @@ func (m *MockToolOverride) ApplyOverrides(ctx context.Context, tools []vmcp.Tool
 func (mr *MockToolOverrideMockRecorder) ApplyOverrides(ctx, tools any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplyOverrides", reflect.TypeOf((*MockToolOverride)(nil).ApplyOverrides), ctx, tools)
+}
+
+// MockCacheInvalidator is a mock of CacheInvalidator interface.
+type MockCacheInvalidator struct {
+	ctrl     *gomock.Controller
+	recorder *MockCacheInvalidatorMockRecorder
+	isgomock struct{}
+}
+
+// MockCacheInvalidatorMockRecorder is the mock recorder for MockCacheInvalidator.
+type MockCacheInvalidatorMockRecorder struct {
+	mock *MockCacheInvalidator
+}
+
+// NewMockCacheInvalidator creates a new mock instance.
+func NewMockCacheInvalidator(ctrl *gomock.Controller) *MockCacheInvalidator {
+	mock := &MockCacheInvalidator{ctrl: ctrl}
+	mock.recorder = &MockCacheInvalidatorMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockCacheInvalidator) EXPECT() *MockCacheInvalidatorMockRecorder {
+	return m.recorder
+}
+
+// InvalidateAll mocks base method.
+func (m *MockCacheInvalidator) InvalidateAll() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "InvalidateAll")
+}
+
+// InvalidateAll indicates an expected call of InvalidateAll.
+func (mr *MockCacheInvalidatorMockRecorder) InvalidateAll() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InvalidateAll", reflect.TypeOf((*MockCacheInvalidator)(nil).InvalidateAll))
 }

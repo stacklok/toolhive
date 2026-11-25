@@ -4,35 +4,50 @@
 // Package client provides MCP protocol client implementation for communicating with backend servers.
 //
 // This package implements the BackendClient interface defined in the vmcp package,
-// using the mark3labs/mcp-go SDK for protocol communication.
+// using the stacklok/toolhive-core/mcpcompat SDK for protocol communication.
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/useragent"
 )
 
 const (
@@ -52,18 +67,176 @@ const (
 	// Note: This limit is enforced per HTTP response, not per MCP request.
 	// A tools/list response with 1000 tools would be limited to 100MB total.
 	maxResponseSize = 100 * 1024 * 1024 // 100 MB
+
+	// defaultBackendRequestTimeout bounds individual backend operations when no
+	// workload-specific timeout is configured.
+	defaultBackendRequestTimeout = 30 * time.Second
+
+	// defaultRefutationTTL is the default lifetime of a modernHintRefuted
+	// entry. Chosen to be long enough that a persistently hint-lying backend
+	// (#6154) pays a negligible probe cost (one server/discover per backend
+	// per 5 minutes, only when calls are flowing), and short enough that a
+	// backend redeployed genuinely Modern self-heals its reported revision
+	// within minutes rather than never.
+	defaultRefutationTTL = 5 * time.Minute
 )
 
-// httpBackendClient implements vmcp.BackendClient using mark3labs/mcp-go HTTP client.
+// Option configures an httpBackendClient.
+type Option func(*httpBackendClient)
+
+// WithDialControl installs a per-connection Control hook on the dialer used to
+// reach every backend. The hook fires after DNS resolution and before the TCP
+// handshake, receiving the resolved peer IP in address — which is why it
+// defeats DNS-rebinding attacks that a host-name–based allow/deny check cannot:
+// a hostname can legitimately resolve to a blocked IP after the name-based check
+// passes.
+//
+// The hook composes with per-backend CA-bundle handling: it augments the
+// internally built *http.Transport rather than replacing it. Supplying it
+// implies the standard dial timeouts (30 s Timeout, 30 s KeepAlive) used
+// throughout this package.
+//
+// The signature matches net.Dialer.Control exactly.
+//
+// Security limitations embedders must understand:
+//
+//   - Per-TCP-dial, not per-request: the hook fires once per TCP connection.
+//     A pooled connection is reused without re-invoking the hook until it is
+//     recycled. Because each backend gets its own isolated transport and
+//     connection pool, a reused connection is always one this hook already
+//     approved on its first dial — reuse cannot reach an unclassified peer.
+//     This client does not offer per-request re-classification.
+//
+//   - Proxy transparency: when http.ProxyFromEnvironment selects a proxy
+//     (HTTP_PROXY/HTTPS_PROXY set), the dial target is the proxy server, so
+//     the hook receives the proxy's IP, not the backend's. Embedders relying
+//     on this hook for SSRF or IP allow-listing must either unset the proxy
+//     env vars or additionally validate the request URL's host before dialing.
+//
+//   - Both IP families: the address argument may be an IPv4 or IPv6 literal
+//     (host:port form); embedders must handle both families — including
+//     IPv4-mapped IPv6 such as ::ffff:127.0.0.1 — in their check. See the
+//     OWASP SSRF Prevention Cheat Sheet for the full set of ranges to deny
+//     (loopback, RFC 1918, link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
+func WithDialControl(control func(network, address string, c syscall.RawConn) error) Option {
+	return func(h *httpBackendClient) {
+		h.dialControl = control
+	}
+}
+
+// WithRefutationTTL overrides how long a refuted Modern-handshake hint
+// suppresses the confirming server/discover probe in legacyInit. Zero or
+// negative restores the default. Production callers should not set this; it
+// exists so tests can shrink the window.
+func WithRefutationTTL(d time.Duration) Option {
+	return func(h *httpBackendClient) {
+		if d > 0 {
+			h.refutationTTL = d
+		}
+	}
+}
+
+// WithRequestTimeoutResolver configures the timeout used for each backend
+// operation. The resolver receives the backend workload ID and may return a
+// workload-specific duration. A nil resolver, or a non-positive result, uses
+// the 30-second default.
+//
+// The resolver may be called concurrently and must therefore be safe for
+// concurrent use. SSE connection lifetimes remain unbounded, but individual
+// operations on those connections are bounded through request contexts.
+func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) Option {
+	return func(h *httpBackendClient) {
+		if resolver != nil {
+			h.requestTimeoutResolver = resolver
+		}
+	}
+}
+
+// httpBackendClient implements vmcp.BackendClient using stacklok/toolhive-core/mcpcompat HTTP client.
 // It supports streamable-HTTP and SSE transports for backend MCP servers.
 type httpBackendClient struct {
-	// clientFactory creates MCP clients for backends.
+	// clientFactory creates MCP clients for backends. The forwarding flag is set
+	// only for the tools/call path — the sole operation during which a backend
+	// may issue server->client requests/notifications (elicitation, sampling,
+	// progress, logging). It gates the continuous-listening SSE stream and the
+	// forwarding handlers so that aggregation/list/read/prompt/complete calls do
+	// NOT open a standalone GET stream (which hangs backends that don't support
+	// one — see the multi-backend optimizer regression).
 	// Abstracted as a function to enable testing with mock clients.
-	clientFactory func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error)
+	clientFactory func(ctx context.Context, target *vmcp.BackendTarget, forwarding bool) (*client.Client, error)
 
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
 	registry vmcpauth.OutgoingAuthRegistry
+
+	// secretsProvider resolves TOOLHIVE_SECRET_<ident> env vars at client-creation
+	// time for per-backend header-forward injection. Nil when no backends declare
+	// headerForward.AddHeadersFromSecret — plaintext-only backends do not require it.
+	secretsProvider secrets.Provider
+
+	// dialControl is an optional per-connection hook injected via WithDialControl.
+	// When non-nil it is installed on the net.Dialer used by every backend transport,
+	// receiving the resolved peer IP before the TCP handshake. Nil reproduces the
+	// default dialer behavior with no hook.
+	dialControl func(network, address string, c syscall.RawConn) error
+
+	// forwarders holds the server->client forwarding requesters (elicitation,
+	// sampling, notifications) bound by server.New via BindForwarders. When set,
+	// the client factory installs handlers on each backend client so a backend's
+	// mid-call server->client traffic is relayed to the downstream client, and
+	// enables continuous listening so standalone-SSE server->client messages are
+	// delivered. Nil (unbound) reproduces the pre-forwarding behavior exactly, so
+	// direct embedders and unit tests without a bound server are unaffected.
+	forwarders atomic.Pointer[boundForwarders]
+
+	// revisions caches each backend's resolved MCP revision, keyed by
+	// target.WorkloadID. An ABSENT key means unprobed — distinct from
+	// RevisionLegacy (0), a resolved result. Populated by probeRevision on the
+	// first ListCapabilities for a backend and read on subsequent calls to skip
+	// the Modern-first discover probe.
+	//
+	// NOTE: never evicted, no singleflight/CAS. Concurrent first-probes are
+	// last-writer-wins-safe: writes are idempotent for a deterministic backend
+	// (every probe agrees). A transient probe failure caches nothing
+	// (probeRevision returns uncached), so a blip cannot pin a revision.
+	//
+	// Self-healing now works both ways under go-sdk v1.7. A mis-cached Modern
+	// backend that has actually negotiated down to Legacy self-heals via
+	// dispatch->reclassify (errModernNegotiatedDown re-probes and flips it). A
+	// mis-cached Legacy backend that has actually become Modern self-heals
+	// in-band instead: the SDK's own client transparently negotiates Modern on
+	// the Legacy dispatch path, and legacyInit reads the genuinely-negotiated
+	// protocol version off every Initialize result and flips the cache directly
+	// when it is Modern — no error or reclassify round trip needed (see
+	// TestListCapabilities_MisCachedLegacy_SelfHealsViaSDKNegotiation in
+	// reclassify_test.go).
+	revisions sync.Map // map[string]mcpparser.Revision
+
+	// modernHintRefuted records backends whose Legacy-handshake protocol-version
+	// hint was contradicted by an authoritative server/discover probe, keyed by
+	// target.WorkloadID. See legacyInit: a backend can negotiate 2026-07-28 on
+	// the Legacy initialize while its discover response is not a valid Modern
+	// envelope, and the hint must not override the probe in that case. Recording
+	// the refutation stops legacyInit re-probing on every subsequent call for a
+	// backend already known to lie.
+	//
+	// The refutation EXPIRES after refutationTTL: a permanently refuted flag
+	// would pin a redeemed backend (one that lied once but was later redeployed
+	// genuinely Modern) to Legacy forever, because legacyInit skips the
+	// confirming probe while the flag stands. With the TTL, a persistent liar
+	// pays one confirming probe per window instead of per call, and a redeemed
+	// backend self-heals within one window.
+	modernHintRefuted sync.Map // map[string]time.Time (refuted-at)
+
+	// refutationTTL bounds how long a modernHintRefuted entry suppresses the
+	// confirming probe in legacyInit. Defaults to defaultRefutationTTL;
+	// configurable via WithRefutationTTL (tests).
+	refutationTTL time.Duration
+
+	// requestTimeoutResolver returns the wall-clock timeout for an individual
+	// backend operation by workload ID. It is immutable after construction and
+	// may be read concurrently.
+	requestTimeoutResolver func(workloadID string) time.Duration
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -73,24 +246,53 @@ type httpBackendClient struct {
 // It must not be nil. To disable authentication, use a registry configured with the
 // "unauthenticated" strategy.
 //
+// Options are additive: nil or absent options reproduce the default behavior exactly.
+// See [WithDialControl] to install a per-connection dial hook for SSRF /
+// DNS-rebinding defense.
+//
 // Returns an error if registry is nil.
-func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
+func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry, opts ...Option) (vmcp.BackendClient, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("registry cannot be nil; use UnauthenticatedStrategy for no authentication")
 	}
 
 	c := &httpBackendClient{
-		registry: registry,
+		registry:        registry,
+		secretsProvider: secrets.NewEnvironmentProvider(),
+		refutationTTL:   defaultRefutationTTL,
+	}
+	for _, o := range opts {
+		o(c)
 	}
 	c.clientFactory = c.defaultClientFactory
 	return c, nil
 }
 
-// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport.
-// If http.DefaultTransport is a *http.Transport, it is cloned directly (preserving any
-// environment-specific settings like TLS config or proxy overrides). Otherwise a transport
-// with the standard Go defaults is constructed, preserving proxy, dial timeout, HTTP/2, and
-// idle-connection settings that a zero-value &http.Transport{} would drop.
+// requestTimeout returns the configured request timeout for workloadID,
+// falling back to the historical 30-second default when no positive override
+// is available.
+func (h *httpBackendClient) requestTimeout(workloadID string) time.Duration {
+	if h.requestTimeoutResolver != nil {
+		if timeout := h.requestTimeoutResolver(workloadID); timeout > 0 {
+			return timeout
+		}
+	}
+	return defaultBackendRequestTimeout
+}
+
+func (h *httpBackendClient) requestContext(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, h.requestTimeout(target.WorkloadID))
+}
+
+// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport,
+// optionally carrying a per-connection dial Control hook, then layers CA-bundle handling on top.
+//
+// The base transport (clone-or-reconstruct plus the optional dial-control dialer) is built by
+// networking.CloneDefaultTransportWithDialControl, the single construction point shared with the
+// persistent session connector (pkg/vmcp/session/internal/backend) so the two dial paths — and
+// their timeout constants — cannot drift. See that helper for the DNS-rebinding rationale.
 //
 // If caBundlePath is non-empty, a custom TLS configuration is applied that trusts both
 // the system root CAs and the certificate(s) in the specified file. This is used for
@@ -99,27 +301,12 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 // If caBundleData is non-empty, the raw PEM bytes are used directly instead of reading
 // from a file. This is used in dynamic mode where CA bundles are fetched from K8s
 // ConfigMaps at discovery time. caBundleData takes precedence over caBundlePath.
-func newBackendTransport(caBundlePath string, caBundleData []byte) (*http.Transport, error) {
-	var t *http.Transport
-	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-		t = dt.Clone()
-	} else {
-		// http.DefaultTransport has been replaced (e.g. in tests or by a third-party library).
-		// Construct a transport with the same defaults as the Go standard library uses for
-		// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
-		t = &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}
-	}
+func newBackendTransport(
+	caBundlePath string,
+	caBundleData []byte,
+	dialControl func(network, address string, c syscall.RawConn) error,
+) (*http.Transport, error) {
+	t := networking.CloneDefaultTransportWithDialControl(dialControl)
 
 	// Resolve CA certificate PEM data: caBundleData takes precedence over caBundlePath
 	var caPEM []byte
@@ -169,34 +356,88 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// identityPropagatingRoundTripper propagates identity and health-check markers to backend HTTP requests.
-// This ensures that identity information from the vMCP handler is available for authentication
-// strategies that need it (e.g., token exchange).
+// identityPropagatingRoundTripper propagates the health-check marker and a
+// fallback identity to backend HTTP requests.
 //
-// The health-check marker is stored at transport creation time and re-injected into every
-// outgoing request, including the DELETE that mcp-go sends when closing a streamable-HTTP
-// session. Without this, mcp-go's Close() creates a fresh context.Background()-based request
-// that loses the health-check marker, causing auth strategies (UpstreamInjectStrategy,
-// TokenExchangeStrategy) to fail with "no identity found in context".
+// Identity invariant: an identity already present on req.Context() is NEVER
+// overridden. The per-request identity placed on the request context by
+// auth.TokenValidator.Middleware carries the freshest upstream tokens (the
+// middleware refreshes them transparently on every incoming request via
+// upstreamtoken.InProcessService.GetAllUpstreamCredentials). Overriding it with a
+// snapshot captured at session-init time would silently re-inject stale
+// upstream access tokens on every backend call, forcing users to re-auth
+// once the captured access token expired (see issue #5323).
+//
+// The fallback identity is used only when req.Context() carries no identity
+// at all. This covers mcp-go's streamable-HTTP Close() path, which constructs
+// its DELETE request from context.Background() and therefore loses any
+// identity attached to the original tool-call context. Without a fallback,
+// auth strategies (UpstreamInjectStrategy, TokenExchangeStrategy, AWSSTSStrategy)
+// would reject the teardown DELETE with "no identity found in context" — the
+// teardown would still complete locally, but the upstream backend would see
+// an unauthenticated DELETE. The fallback may itself be stale, which is
+// acceptable for a session-close: the request is best-effort and any 401
+// from the upstream does not affect functional behavior.
+//
+// The health-check marker is similarly captured at transport creation time and
+// re-injected into every outgoing request — including the Close() DELETE — so
+// that auth strategies correctly skip authentication for health probes even
+// when the request context has been replaced with context.Background().
+//
+// This is the canonical location for the #5323 fallback-only identity
+// invariant. A near-clone exists at identityRoundTripper in
+// pkg/vmcp/session/internal/backend/mcp_session.go (without isHealthCheck
+// support, since health probes do not flow through the session-backed
+// connector). Keep the invariant in sync across both implementations until
+// #5333 lands a shared transport.
 type identityPropagatingRoundTripper struct {
-	base          http.RoundTripper
-	identity      *auth.Identity
-	isHealthCheck bool
+	base http.RoundTripper
+	// fallbackIdentity is injected only when req.Context() carries no identity.
+	// It must never override a non-nil identity present on the request context.
+	//
+	// Shared across all concurrent RoundTrip invocations on this transport; the
+	// pointed-to *auth.Identity (including UpstreamTokens) MUST be treated as
+	// immutable — see pkg/auth/identity.go.
+	fallbackIdentity *auth.Identity
+	isHealthCheck    bool
 }
 
-// RoundTrip implements http.RoundTripper by adding identity and health-check marker to the request context.
+// RoundTrip implements http.RoundTripper.
+//
+// It preserves any identity already present on req.Context() (the fresh,
+// per-request identity placed there by TokenValidator.Middleware). When the
+// request context carries no identity — for example, mcp-go's Close() DELETE
+// is constructed from context.Background() — the captured fallback identity
+// is injected so session-teardown requests can still authenticate. The
+// health-check marker is always re-injected when configured.
 func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
-	if i.identity != nil {
-		ctx = auth.WithIdentity(ctx, i.identity)
+	mutated := false
+
+	// Inject the fallback identity ONLY when the request context carries no
+	// identity. We must never overwrite a non-nil identity already on ctx —
+	// doing so would clobber the freshly refreshed upstream tokens that the
+	// auth middleware places on every incoming request (see #5323).
+	if _, hasIdentity := auth.IdentityFromContext(ctx); !hasIdentity && i.fallbackIdentity != nil {
+		ctx = auth.WithIdentity(ctx, i.fallbackIdentity)
+		mutated = true
 	}
+
 	if i.isHealthCheck {
 		ctx = healthcontext.WithHealthCheckMarker(ctx)
+		mutated = true
 	}
-	if i.identity != nil || i.isHealthCheck {
+
+	if mutated {
 		req = req.Clone(ctx)
 	}
 	return i.base.RoundTrip(req)
+}
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
+// concrete *http.Transport at the bottom of the chain.
+func (i *identityPropagatingRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(i.base)
 }
 
 // tracePropagatingRoundTripper injects W3C Trace Context (traceparent/tracestate) and
@@ -213,6 +454,12 @@ func (t *tracePropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Respo
 	clonedReq := req.Clone(req.Context())
 	t.propagator.Inject(clonedReq.Context(), propagation.HeaderCarrier(clonedReq.Header))
 	return t.base.RoundTrip(clonedReq)
+}
+
+// CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
+// concrete *http.Transport at the bottom of the chain.
+func (t *tracePropagatingRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(t.base)
 }
 
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
@@ -240,6 +487,21 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	return a.base.RoundTrip(reqClone)
 }
 
+// CloseIdleConnections forwards to the wrapped RoundTripper so it reaches the
+// concrete *http.Transport at the bottom of the chain.
+func (a *authRoundTripper) CloseIdleConnections() {
+	networking.ForwardCloseIdle(a.base)
+}
+
+// Compile-time assertions: a rename or typo of CloseIdleConnections on any of
+// these wrappers would silently re-hide the pool at the bottom of the chain
+// (see networking.IdleConnectionCloser).
+var (
+	_ networking.IdleConnectionCloser = (*identityPropagatingRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*tracePropagatingRoundTripper)(nil)
+	_ networking.IdleConnectionCloser = (*authRoundTripper)(nil)
+)
+
 // resolveAuthStrategy resolves the authentication strategy for a backend target.
 // It handles defaulting to "unauthenticated" when no auth config is specified.
 // This method should be called once at client creation time to enable fail-fast
@@ -260,14 +522,111 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 	return strategy, nil
 }
 
-// defaultClientFactory creates mark3labs MCP clients for different transport types.
-func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
-	// Build transport chain (outermost to innermost, request execution order):
-	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
-	//
-	// Clone DefaultTransport per call so each client gets an isolated connection pool,
-	// preventing stale keep-alive connections from one backend affecting others.
-	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData)
+// defaultClientFactory creates mcpcompat MCP clients for different transport types.
+// newStreamableHTTPClient builds a streamable-HTTP backend client. It bounds the
+// response body size and — only when forwarding is requested (the tools/call path)
+// and forwarders are bound — enables continuous listening plus the elicitation/
+// sampling handlers so a backend's mid-call server->client traffic reaches the
+// downstream client. Non-forwarding calls get the plain client (no standalone GET
+// stream), which is byte-for-byte the pre-forwarding construction.
+func (h *httpBackendClient) newStreamableHTTPClient(
+	ctx context.Context, target *vmcp.BackendTarget,
+	baseTransport http.RoundTripper, forwarding bool, fwd *boundForwarders,
+) (*client.Client, error) {
+	// For streamable-HTTP each MCP call is a single bounded HTTP request/response
+	// pair, so a per-response body size limit is safe.
+	sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := baseTransport.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.LimitReader(resp.Body, maxResponseSize),
+			Closer: resp.Body,
+		}
+		return resp, nil
+	})
+	requestTimeout := h.requestTimeout(target.WorkloadID)
+	httpClient := newBackendHTTPClient(sizeLimitedTransport, requestTimeout)
+	transportOpts := []transport.StreamableHTTPCOption{
+		transport.WithHTTPTimeout(requestTimeout),
+		transport.WithHTTPBasicClient(httpClient),
+	}
+	if fwd != nil && forwarding {
+		// A backend's mid-call elicitation/sampling request is routed by the go-sdk
+		// onto the standalone SSE stream (the shim server replies with
+		// application/json), so the backend client must hold that stream open for the
+		// request to arrive and be answered. Only enabled for the tools/call path:
+		// opening this GET stream against a backend that does not support one hangs
+		// the call, so aggregation/list/read/prompt/complete must not enable it.
+		transportOpts = append(transportOpts, transport.WithContinuousListening())
+		return client.NewStreamableHttpClientWithOpts(
+			target.BaseURL, transportOpts, forwardingClientOptions(ctx, fwd),
+		)
+	}
+	return client.NewStreamableHttpClient(target.BaseURL, transportOpts...)
+}
+
+// newSSEClient builds an SSE backend client. For SSE the entire session is one
+// long-lived HTTP response body, so — unlike the streamable-HTTP client — no
+// response-body size limit and no http.Client.Timeout apply: the former would
+// silently terminate the stream after maxResponseSize CUMULATIVE bytes, the
+// latter would kill the stream. When forwarding is requested (the tools/call
+// path) and forwarders are bound, the elicitation/sampling handlers are
+// installed so a backend's mid-call server->client traffic reaches the
+// downstream client; SSE carries those requests on the already-open event
+// stream, so no continuous-listening option is needed. Non-forwarding calls get
+// the plain client, byte-for-byte the pre-forwarding construction.
+func (*httpBackendClient) newSSEClient(
+	ctx context.Context, target *vmcp.BackendTarget,
+	baseTransport http.RoundTripper, forwarding bool, fwd *boundForwarders,
+) (*client.Client, error) {
+	c, err := client.NewSSEMCPClient(
+		target.BaseURL,
+		// timeout 0: SSE is one long-lived stream, so no client timeout.
+		transport.WithHTTPClient(newBackendHTTPClient(baseTransport, 0)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SSE client: %w", err)
+	}
+	if fwd != nil && forwarding {
+		// NewSSEMCPClient accepts only transport options, so the client options
+		// are applied post-construction; both run before the caller's Initialize,
+		// which is what the handlers' capability declaration requires.
+		for _, opt := range forwardingClientOptions(ctx, fwd) {
+			opt(c)
+		}
+	}
+	return c, nil
+}
+
+// buildBackendRoundTripper assembles the per-call backend RoundTripper chain
+// shared by every backend transport (streamable-HTTP, SSE, and the raw Modern
+// shim). Outermost to innermost, in request execution order:
+//
+//	trace propagation → identity propagation → header-forward → User-Agent → authentication → TLS/HTTP
+//
+// The User-Agent stage sits inside header-forward so a User-Agent an operator
+// forwards (passthroughHeaders or headerForward) wins over the vMCP default.
+// The nesting order is load-bearing: identity MUST wrap auth so the fresh
+// per-request identity is on the context before an auth strategy reads it (#5323).
+// The transport is isolated per call so each client gets its own connection pool,
+// preventing stale keep-alive connections from one backend affecting others.
+//
+// ctx is the LIVE per-call context: the header-forward and identity layers read
+// forwarded headers and the fallback identity/health-check marker off it, so
+// callers MUST pass the real request context, never context.Background().
+//
+// This returns the CHAIN, not a wrapped *http.Client: streamable-HTTP wraps it in
+// a size-limited/30s client, SSE wraps it bare (long-lived), and the Modern shim
+// picks its own bound — see the callers.
+func (h *httpBackendClient) buildBackendRoundTripper(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (http.RoundTripper, error) {
+	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData, h.dialControl)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for backend %s: %w", target.WorkloadID, err)
 	}
@@ -296,16 +655,62 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Extract identity and health-check marker from context and propagate them to backend
-	// requests. The health-check marker must be carried through to the DELETE request that
-	// mcp-go emits when closing a streamable-HTTP session: mcp-go creates that request with
-	// context.Background(), which loses both the identity and the health-check marker that
-	// were present on the original ListCapabilities call context.
-	identity, _ := auth.IdentityFromContext(ctx)
+	// Merge the live per-request forwarded headers (captured by headerforward.CaptureMiddleware
+	// into the request context) with the static per-backend header-forward config. This factory
+	// runs on every backend call, so forwarding is per-request: each call reflects the current
+	// incoming header value. Restricted names and static-config collisions are rejected by
+	// MergeForwardedHeaders.
+	// Identify vMCP to the backend unless header-forward (outer) already set a
+	// User-Agent; see buildBackendRoundTripper's doc comment for the ordering.
+	baseTransport = useragent.NewRoundTripper(baseTransport)
+
+	mergedHeaderForward, mergeErr := headerforward.MergeForwardedHeaders(
+		target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx),
+	)
+	if mergeErr != nil {
+		return nil, fmt.Errorf("failed to merge forwarded headers for backend %s: %w", target.WorkloadID, mergeErr)
+	}
+	baseTransport, err = headerforward.BuildHeaderForwardTripper(
+		ctx, baseTransport, mergedHeaderForward, h.secretsProvider, target.WorkloadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header-forward transport: %w", err)
+	}
+
+	// Capture a fallback identity and the health-check marker from the construction
+	// context. These are used ONLY when the per-request context lacks them.
+	//
+	// Scope note: httpBackendClient calls this factory on every CallTool /
+	// ReadResource / GetPrompt / ListCapabilities with the per-call context, so
+	// the captured "fallback" is per-call, not per-session, in this path. The
+	// always-stale capture-at-session-init behavior that caused #5323 lives in
+	// the persistent-session path (pkg/vmcp/session/internal/backend); this
+	// transport uses the same RoundTripper out of consistency, not because it
+	// suffered the same bug.
+	//
+	// Fallback injection scope: the round-tripper injects the captured fallback
+	// identity on ANY outgoing request whose context lacks an identity — not
+	// only the teardown DELETE. In the current code paths the only known caller
+	// that drops the per-request identity is mcp-go's streamable-HTTP Close()
+	// (which builds its DELETE from context.Background()), so in practice the
+	// fallback only fires for teardown. If a future code path wraps the client
+	// with a context that doesn't carry identity (audit, telemetry, background
+	// reconciliation), it will be silently authenticated using the captured
+	// snapshot. Add an explicit method/URL gate if that becomes undesirable.
+	//
+	//   - Normal backend requests inherit the fresh, per-request identity placed on
+	//     the request context by auth.TokenValidator.Middleware. The transport
+	//     preserves it untouched so upstream-token refresh is not bypassed (#5323).
+	//
+	//   - mcp-go's streamable-HTTP Close() builds its DELETE from context.Background(),
+	//     which loses both the identity and the health-check marker. Re-injecting them
+	//     here keeps the teardown DELETE authenticated and tagged as a health-check
+	//     probe when the original session was a probe (#4613).
+	fallbackIdentity, _ := auth.IdentityFromContext(ctx)
 	baseTransport = &identityPropagatingRoundTripper{
-		base:          baseTransport,
-		identity:      identity,
-		isHealthCheck: healthcontext.IsHealthCheck(ctx),
+		base:             baseTransport,
+		fallbackIdentity: fallbackIdentity,
+		isHealthCheck:    healthcontext.IsHealthCheck(ctx),
 	}
 
 	// Inject W3C Trace Context headers (traceparent/tracestate) into outgoing requests.
@@ -315,57 +720,50 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		propagator: otel.GetTextMapPropagator(),
 	}
 
+	return baseTransport, nil
+}
+
+func (h *httpBackendClient) defaultClientFactory(
+	ctx context.Context, target *vmcp.BackendTarget, forwarding bool,
+) (*client.Client, error) {
+	baseTransport, err := h.buildBackendRoundTripper(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+
+	// Snapshot the bound server->client forwarders (nil when unbound). When set,
+	// the client is built with elicitation/sampling handlers and continuous
+	// listening so a backend's mid-call server->client traffic reaches the
+	// downstream client; when nil, construction is byte-for-byte the pre-forwarding
+	// path.
+	fwd := h.forwarders.Load()
+
 	var c *client.Client
 
 	switch target.TransportType {
 	case "streamable-http", "streamable":
 		// "streamable" is a legacy alias for "streamable-http".
-		//
-		// For streamable-HTTP each MCP call is a single bounded HTTP
-		// request/response pair, so a per-response body size limit is safe.
-		sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			resp, err := baseTransport.RoundTrip(req)
-			if err != nil {
-				return nil, err
-			}
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{
-				Reader: io.LimitReader(resp.Body, maxResponseSize),
-				Closer: resp.Body,
-			}
-			return resp, nil
-		})
-		httpClient := &http.Client{
-			Transport: sizeLimitedTransport,
-			Timeout:   30 * time.Second,
-		}
-		c, err = client.NewStreamableHttpClient(
-			target.BaseURL,
-			transport.WithHTTPTimeout(30*time.Second),
-			transport.WithHTTPBasicClient(httpClient),
-		)
+		c, err = h.newStreamableHTTPClient(ctx, target, baseTransport, forwarding, fwd)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create streamable-http client: %w", err)
 		}
 
 	case "sse":
-		// For SSE the entire session is one long-lived HTTP response body.
-		// Applying io.LimitReader would silently terminate the stream after
-		// maxResponseSize cumulative bytes — not per-event — which is wrong.
-		// http.Client.Timeout is also omitted: it would kill the stream.
-		httpClient := &http.Client{Transport: baseTransport}
-		c, err = client.NewSSEMCPClient(
-			target.BaseURL,
-			transport.WithHTTPClient(httpClient),
-		)
+		c, err = h.newSSEClient(ctx, target, baseTransport, forwarding, fwd)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create SSE client: %w", err)
+			return nil, err
 		}
 
 	default:
 		return nil, fmt.Errorf("%w: %s (supported: streamable-http, sse)", vmcp.ErrUnsupportedTransport, target.TransportType)
+	}
+
+	// Register the notification forwarder before Initialize (the caller runs it
+	// after this factory returns) so a backend's mid-call progress/logging
+	// notifications are relayed to the downstream client. OnNotification is a
+	// post-construction method, so it applies to both transports.
+	if fwd != nil && forwarding && fwd.notifier != nil {
+		c.OnNotification(newNotificationForwarder(ctx, fwd.notifier))
 	}
 
 	// Start the client connection
@@ -376,6 +774,13 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	// Note: Initialization is deferred to the caller (e.g., ListCapabilities)
 	// so that ServerCapabilities can be captured and used for conditional querying
 	return c, nil
+}
+
+// isAuthorizationRequired reports whether err is one of the mcp-go authorization-required
+// sentinels. Extracted to keep wrapBackendError within the cyclomatic complexity limit.
+func isAuthorizationRequired(err error) bool {
+	return errors.Is(err, transport.ErrAuthorizationRequired) ||
+		errors.Is(err, transport.ErrOAuthAuthorizationRequired)
 }
 
 // wrapBackendError wraps an error with the appropriate sentinel error based on error type.
@@ -429,17 +834,47 @@ func wrapBackendError(err error, backendID string, operation string) error {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
-	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
-	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
-	// We cannot distinguish auth failures from routing errors without the raw status code,
-	// so we surface a clear message and classify as backend unavailable to allow recovery.
+	// transport.ErrAuthorizationRequired is returned (wrapped in *transport.Error
+	// and *transport.AuthorizationRequiredError) for 401 responses with a
+	// WWW-Authenticate header. transport.ErrOAuthAuthorizationRequired is the
+	// companion sentinel from the OAuth-handler path. Both must map to
+	// ErrAuthenticationFailed so health monitoring engages the auth-aware
+	// branch (#4935) instead of treating the probe as unhealthy (#5223).
+	if isAuthorizationRequired(err) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	// ErrLegacySSEServer is toolhive-core's sentinel for a 4xx (except 401) on
+	// initialize POST against the "sse" transport type, where the SDK client
+	// cannot distinguish an auth rejection from a legacy SSE-only server without
+	// the raw status code. Under the streamable-http transport this arm is dead:
+	// mcp-go's streamable-HTTP client surfaces a generic HTTP status error for a
+	// 403 on initialize (e.g. "request failed with status 403"), not this
+	// sentinel, so that case falls through to the string-based classification
+	// below and still maps to ErrBackendUnavailable (see
+	// TestRegression_403OnInitialize_LegacySSEFallback). This arm only fires for
+	// the sse transport type; it is kept for backend targets still configured
+	// with legacy SSE.
 	if errors.Is(err, transport.ErrLegacySSEServer) {
 		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
-		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",
+		// Second %w preserves ErrLegacySSEServer in the chain so a revision
+		// mismatch (Legacy initialize against a Modern backend) is detectable via
+		// errors.Is; renders identically to %v.
+		return fmt.Errorf("%w: failed to %s for backend %s (%s): %w",
 			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
 	}
 
-	// 5. String-based detection: Fall back to pattern matching for cases where
+	// 5. ErrUpstreamTokenNotFound: upstream provider token missing from identity.
+	// Explicit sentinel check takes priority over the string-based "authentication failed"
+	// fallback below, which would also match (via the authRoundTripper error message)
+	// but is fragile. This maps to ErrAuthenticationFailed so the pre-check middleware
+	// and health monitors classify the error correctly.
+	if errors.Is(err, authtypes.ErrUpstreamTokenNotFound) {
+		return fmt.Errorf("%w: failed to %s for backend %s (upstream token missing): %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+
+	// 6. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {
@@ -459,14 +894,20 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrBackendUnavailable, operation, backendID, err)
 	}
 
-	// Default to backend unavailable for unknown errors
-	return fmt.Errorf("%w: failed to %s for backend %s: %v",
+	// Default to backend unavailable for unknown errors. Second %w preserves the
+	// origin error (e.g. mcp.ErrMethodNotFound from a Legacy initialize against a
+	// Modern backend, or errWrongEra from a Modern probe against a Legacy backend)
+	// so a revision mismatch is detectable via errors.Is; renders identically to %v.
+	return fmt.Errorf("%w: failed to %s for backend %s: %w",
 		vmcp.ErrBackendUnavailable, operation, backendID, err)
 }
 
-// initializeClient performs MCP protocol initialization handshake and returns server capabilities.
-// This allows the caller to determine which optional features the server supports.
-func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabilities, error) {
+// initializeClient performs MCP protocol initialization handshake and returns
+// server capabilities plus the actually-negotiated protocol version. The
+// latter comes straight from the SDK's InitializeResult, so it reflects the
+// real negotiation outcome (e.g. a Modern-first Connect() that negotiated
+// down) even though ProtocolVersion is requested as mcp.LATEST_PROTOCOL_VERSION.
+func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabilities, string, error) {
 	result, err := c.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
@@ -485,58 +926,643 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return &result.Capabilities, nil
+	return &result.Capabilities, result.ProtocolVersion, nil
 }
 
 // queryTools queries tools from a backend if the server advertises tool support.
+// It follows MCP pagination cursors so backends that paginate (mcpcompat
+// paginates at DefaultPageSize=1000) contribute their complete tool set rather
+// than only the first page.
 func queryTools(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListToolsResult, error) {
 	if supported {
-		result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+		tools, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
+			req := mcp.ListToolsRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListTools(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Tools, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list tools from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListToolsResult{Tools: tools}, nil
 	}
 	slog.Debug("backend does not advertise tools capability, skipping tools query", "backend", backendID)
 	return &mcp.ListToolsResult{Tools: []mcp.Tool{}}, nil
 }
 
-// queryResources queries resources from a backend if the server advertises resource support.
+// queryResources queries resources from a backend if the server advertises
+// resource support. It follows MCP pagination cursors (see queryTools).
 func queryResources(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListResourcesResult, error) {
 	if supported {
-		result, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+		resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
+			req := mcp.ListResourcesRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListResources(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Resources, result.NextCursor, nil
+		})
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Warn("backend advertised resources capability but does not implement resources/list",
+				"backendID", backendID, "method", "resources/list")
+			return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to list resources from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListResourcesResult{Resources: resources}, nil
 	}
 	slog.Debug("backend does not advertise resources capability, skipping resources query", "backend", backendID)
 	return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
 }
 
-// queryPrompts queries prompts from a backend if the server advertises prompt support.
+// queryResourceTemplates queries resource templates from a backend if the server
+// advertises resource support. Resource templates are gated on the same
+// serverCaps.Resources advertisement as plain resources (there is no separate
+// capability flag for templates). It follows MCP pagination cursors (see queryTools).
+func queryResourceTemplates(
+	ctx context.Context, c *client.Client, supported bool, backendID string,
+) (*mcp.ListResourceTemplatesResult, error) {
+	if supported {
+		templates, err := pagination.ListAll(
+			ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.ResourceTemplate, mcp.Cursor, error) {
+				req := mcp.ListResourceTemplatesRequest{}
+				req.Params.Cursor = cursor
+				result, err := c.ListResourceTemplates(ctx, req)
+				if err != nil {
+					return nil, "", err
+				}
+				return result.ResourceTemplates, result.NextCursor, nil
+			})
+		// A backend that advertises the resources capability but does not
+		// implement resources/templates/list (JSON-RPC -32601) degrades to an
+		// empty template list — its other capabilities still aggregate. Other
+		// errors still propagate and drop the backend's capability set.
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Debug("backend does not implement resources/templates/list, treating templates as empty",
+				"backend", backendID)
+			return &mcp.ListResourceTemplatesResult{ResourceTemplates: []mcp.ResourceTemplate{}}, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to list resource templates from backend %s: %w", backendID, err)
+		}
+		return &mcp.ListResourceTemplatesResult{ResourceTemplates: templates}, nil
+	}
+	slog.Debug("backend does not advertise resources capability, skipping resource templates query", "backend", backendID)
+	return &mcp.ListResourceTemplatesResult{ResourceTemplates: []mcp.ResourceTemplate{}}, nil
+}
+
+// queryPrompts queries prompts from a backend if the server advertises prompt
+// support. It follows MCP pagination cursors (see queryTools).
 func queryPrompts(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListPromptsResult, error) {
 	if supported {
-		result, err := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
+		prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
+			req := mcp.ListPromptsRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListPrompts(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Prompts, result.NextCursor, nil
+		})
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Warn("backend advertised prompts capability but does not implement prompts/list",
+				"backendID", backendID, "method", "prompts/list")
+			return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to list prompts from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListPromptsResult{Prompts: prompts}, nil
 	}
 	slog.Debug("backend does not advertise prompts capability, skipping prompts query", "backend", backendID)
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
 }
 
-// ListCapabilities queries a backend for its MCP capabilities.
-// Returns tools, resources, and prompts exposed by the backend.
-// Only queries capabilities that the server advertises during initialization.
-func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
-	slog.Debug("querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
+// cachedRevision returns the cached MCP revision for a backend. The second
+// return is false when the backend has never been probed (distinct from a
+// resolved RevisionLegacy).
+func (h *httpBackendClient) cachedRevision(workloadID string) (mcpparser.Revision, bool) {
+	v, ok := h.revisions.Load(workloadID)
+	if !ok {
+		return 0, false
+	}
+	return v.(mcpparser.Revision), true
+}
 
+// setRevision records a backend's resolved MCP revision.
+func (h *httpBackendClient) setRevision(workloadID string, rev mcpparser.Revision) {
+	h.revisions.Store(workloadID, rev)
+}
+
+// Compile-time guard that this client still satisfies the optional read-model
+// every consumer type-asserts to. Without it, renaming or dropping
+// CachedRevision below would compile cleanly and silently disable the telemetry
+// revision label, the /status field, and the session layer's Modern-connect
+// skip — each of which degrades gracefully by design when the assertion fails.
+var _ vmcp.RevisionReporter = (*httpBackendClient)(nil)
+
+// CachedRevision reports a backend's resolved MCP revision for status/telemetry
+// read-models. The second return is false when the backend has never been probed.
+// Exported (not on vmcp.BackendClient) so the telemetry decorator, health
+// monitor and session factory can read it via vmcp.RevisionReporter without an
+// interface/mock change.
+func (h *httpBackendClient) CachedRevision(workloadID string) (mcpparser.Revision, bool) {
+	return h.cachedRevision(workloadID)
+}
+
+// buildModernHTTPClient wraps the shared backend RoundTripper chain (auth,
+// identity, header-forward, trace, TLS/SSRF — see buildBackendRoundTripper) in an
+// *http.Client for the raw Modern shim. This is a LIVE production path: the
+// discover probe must carry the same security controls as every other backend
+// call, so it must NOT use a bare http.Client. Its workload-aware timeout
+// matches the streamable-HTTP client; the response body is bounded inside modernCall
+// (io.LimitReader), so no size-limit transport wrapper is needed here.
+func (h *httpBackendClient) buildModernHTTPClient(ctx context.Context, target *vmcp.BackendTarget) (*http.Client, error) {
+	rt, err := h.buildBackendRoundTripper(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	return newBackendHTTPClient(rt, h.requestTimeout(target.WorkloadID)), nil
+}
+
+// newBackendHTTPClient is the single choke point for every backend *http.Client
+// (Legacy streamable/SSE and Modern shim). It installs SameHostRedirectPolicy so a
+// malicious backend's cross-host 30x cannot exfiltrate the auth/identity/
+// header-forward credentials the RoundTripper chain re-injects on each hop — Go's
+// built-in Authorization stripping does not cover RoundTripper-injected headers.
+// timeout 0 means no client timeout (long-lived SSE stream).
+func newBackendHTTPClient(rt http.RoundTripper, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport:     rt,
+		Timeout:       timeout,
+		CheckRedirect: networking.SameHostRedirectPolicy(),
+	}
+}
+
+// modernDiscover issues a Modern server/discover and returns the backend's
+// capability flags. Used both by probeRevision and, on a Modern cache hit, by
+// ListCapabilities to re-fetch the flags without re-running the fallback ladder.
+//
+// A clean discover response is not, by itself, proof the peer speaks Modern —
+// supportedVersions is the authoritative signal. See errModernNegotiatedDown
+// (modern.go) for why. Concretely: when supportedVersions does not contain
+// MCPVersionModern (including when it is absent or empty), this returns
+// errModernNegotiatedDown instead of the capabilities, so callers do not mistake
+// a negotiated-down Legacy backend for Modern.
+func (h *httpBackendClient) modernDiscover(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (*mcp.ServerCapabilities, error) {
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	defer hc.CloseIdleConnections()
+	return discoverModernCapabilities(ctx, hc, target.BaseURL)
+}
+
+// discoverModernCapabilities issues the Modern server/discover call over an
+// already-built hc and applies the supportedVersions check (see modernDiscover's
+// doc comment for why a clean response alone does not prove Modern). Split out
+// so probeRevision can share this exact check over the *http.Client it must
+// build anyway (to hard-fail on a genuine transport misconfiguration before
+// classifying anything), instead of building the client twice.
+func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint string) (*mcp.ServerCapabilities, error) {
+	var discover struct {
+		Capabilities      mcp.ServerCapabilities `json:"capabilities"`
+		SupportedVersions []string               `json:"supportedVersions"`
+	}
+	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", nil, &discover, "", nil); err != nil {
+		return nil, err
+	}
+	// Exact-match on MCPVersionModern (2026-07-28): vMCP's shim only speaks that
+	// one Modern wire shape, so a backend must advertise exactly it to be driven
+	// Modern. This is intentionally stricter than go-sdk's reference client
+	// (negotiated >= 2026-07-28). TRIPWIRE: when a newer Modern revision is
+	// added, this must become a set/range check (alongside the sibling
+	// exact-match in classifyUnsupportedProtocolVersion, modern.go) or a
+	// newer-only backend is wrongly classified Legacy — TestProbeRevision_RealBackends
+	// will catch it.
+	if !slices.Contains(discover.SupportedVersions, mcpparser.MCPVersionModern) {
+		return nil, fmt.Errorf("%w: supportedVersions=%v", errModernNegotiatedDown, discover.SupportedVersions)
+	}
+	return &discover.Capabilities, nil
+}
+
+// probeRevision resolves a backend's MCP revision, Modern-first.
+//
+// It attempts a Modern server/discover (via discoverModernCapabilities, the same
+// supportedVersions-checking core modernDiscover uses) and:
+//   - classifies MODERN (and caches it) when the discover result's
+//     supportedVersions contains MCPVersionModern, on a Modern-specific
+//     protocol error (-3202x) which proves the peer validated our Modern
+//     headers/_meta, or on an input_required envelope (only returned after
+//     decoding a valid Modern envelope, so it too proves Modern);
+//   - classifies LEGACY (and caches it) on a GENUINE not-Modern signal —
+//     errWrongEra, a -32601 (discover is mandatory for Modern), a generic
+//     JSON-RPC error, a bare 404/400/405, an empty/non-JSON body, a
+//     200-with-Legacy-result, OR errModernNegotiatedDown (a clean discover
+//     envelope whose supportedVersions lacks 2026-07-28 — see
+//     errModernNegotiatedDown in modern.go for why a clean response alone is not
+//     proof of Modern);
+//   - returns the error UNCACHED (leaving the backend unprobed) on an
+//     INCONCLUSIVE outcome — an auth blip (errModernAuth, 401/403) or a transient
+//     failure (errModernTransient: 408/429/5xx, mid-read, or transport/timeout).
+//     Caching on these would flip a Modern backend to Legacy on a brief outage;
+//     leaving it unprobed lets the next call re-probe once the outage clears.
+//
+// A hard error is also returned when the backend transport cannot be built at all
+// (e.g. invalid auth/CA config); that is a genuine misconfiguration. Note that
+// dispatch, the sole caller, does not distinguish these error classes — it falls
+// back to Legacy uncached on any error this function returns. A "sse" target
+// (see below) returns before that check runs, so its transport is first
+// validated on the Legacy call path instead.
+// The resolved capabilities are intentionally not returned: callers that need
+// them (ListCapabilities) re-fetch via modernDiscover, so probeRevision only
+// classifies and caches the revision.
+//
+// A "sse" target is classified Legacy without a network call. TransportType ==
+// "sse" specifically names the deprecated 2024-11-05 two-endpoint transport
+// (GET /sse + POST /messages) — see ssecommon.HTTPSSEEndpoint and the GET-only
+// httpsse proxy — not "any backend that happens to use SSE" (Modern itself uses
+// SSE response streams). modernCall is a single-endpoint POST, so it can never
+// reach a Modern endpoint through an /sse BaseURL, even for a dual-era server
+// that also hosts a Modern endpoint, because that lives at a different path.
+// This also sidesteps POSTing into a GET-only stream and hanging to the client
+// timeout (errModernTransient, uncached, re-probed on every call).
+func (h *httpBackendClient) probeRevision(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (mcpparser.Revision, error) {
+	if target.TransportType == "sse" {
+		// The 2024-11-05 two-endpoint transport (GET /sse + POST /messages) has no
+		// Modern endpoint to discover at this BaseURL — see the doc comment above.
+		// Note: HTTP+SSE is Deprecated per the MCP spec, not removed; this gate is
+		// ToolHive routing, not a protocol requirement.
+		h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+		return mcpparser.RevisionLegacy, nil
+	}
+
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return 0, fmt.Errorf("failed to build transport for backend %s: %w", target.WorkloadID, err)
+	}
+	defer hc.CloseIdleConnections()
+
+	_, err = discoverModernCapabilities(ctx, hc, target.BaseURL)
+	switch {
+	case err == nil:
+		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
+		return mcpparser.RevisionModern, nil
+	case errors.Is(err, errModernProtocolError), errors.Is(err, errModernInputRequired):
+		// Both prove the peer is Modern: -3202x means it validated our Modern
+		// protocol metadata; input_required is only returned after decoding a valid
+		// Modern envelope (resultType present, != "complete").
+		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
+		return mcpparser.RevisionModern, nil
+	case errors.Is(err, errModernAuth), errors.Is(err, errModernTransient):
+		// Inconclusive: an auth blip or a transient outage tells us nothing about
+		// the revision. Leave the backend unprobed so the next call re-probes.
+		return 0, err
+	default:
+		// Includes errModernNegotiatedDown (a clean-but-negotiated-down discover
+		// envelope) alongside errWrongEra and every other genuine not-Modern
+		// signal: all fall back to Legacy here.
+		slog.Debug("backend is not Modern; falling back to Legacy",
+			"backend", target.WorkloadID, "probe_error", err)
+		h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+		return mcpparser.RevisionLegacy, nil
+	}
+}
+
+// modernEnumerate builds a backend's CapabilityList by enumerating each
+// capability the discover flags advertise, via the Modern (2026-07-28) shim.
+// Each list is gated on the matching discover flag (mirroring the Legacy
+// initialize-path gating) and follows nextCursor across pages (#5851).
+//
+// caps may be nil: a Modern backend that rejected our discover with a -3202x
+// protocol error (errModernProtocolError) is still classified Modern but yields
+// no capability flags, so nothing is enumerated and an empty list is returned —
+// the same outcome on the first probe and on later cache hits.
+func (h *httpBackendClient) modernEnumerate(
+	ctx context.Context, target *vmcp.BackendTarget, caps *mcp.ServerCapabilities,
+) (*vmcp.CapabilityList, error) {
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	defer hc.CloseIdleConnections()
+	endpoint := target.BaseURL
+
+	var tools []mcp.Tool
+	if caps != nil && caps.Tools != nil {
+		tools, err = modernListAll[mcp.Tool](ctx, hc, endpoint, "tools/list", "tools", target.WorkloadName)
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "list tools")
+		}
+	}
+
+	var resources []mcp.Resource
+	var templates []mcp.ResourceTemplate
+	if caps != nil && caps.Resources != nil {
+		resources, err = modernListOptional[mcp.Resource](
+			ctx, hc, endpoint, "resources/list", "resources", target.WorkloadName, true,
+		)
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
+		}
+
+		// Resource templates share the resources capability flag. A backend that
+		// does not implement resources/templates/list (-32601) degrades to an
+		// empty template list, mirroring the Legacy queryResourceTemplates path.
+		templates, err = modernListOptional[mcp.ResourceTemplate](
+			ctx, hc, endpoint, "resources/templates/list", "resourceTemplates", target.WorkloadName, true,
+		)
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
+		}
+	}
+
+	var prompts []mcp.Prompt
+	if caps != nil && caps.Prompts != nil {
+		prompts, err = modernListOptional[mcp.Prompt](
+			ctx, hc, endpoint, "prompts/list", "prompts", target.WorkloadName, true,
+		)
+		if err != nil {
+			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
+		}
+	}
+
+	slog.Debug("backend capabilities queried (modern)",
+		"backend", target.WorkloadName,
+		"tools", len(tools), "resources", len(resources),
+		"resource_templates", len(templates), "prompts", len(prompts))
+	return newCapabilityListFromMCP(target.WorkloadID, tools, resources, templates, prompts), nil
+}
+
+// modernListOptional enumerates an optional capability list via modernListAll.
+// Unlike tools/list — where a failure means the backend is genuinely unusable —
+// an optional list degrades instead of failing the whole enumeration:
+//
+//   - a transient failure (errModernTransient: HTTP 408/429/5xx, a mid-stream
+//     read failure, or a transport/network error), after the mandatory
+//     tools/list has already succeeded, yields an empty list with a WARN;
+//   - a -32601 not-implemented (mcp.ErrMethodNotFound) yields an empty list
+//     when degradeNotFound is set. This is used for optional resource and
+//     prompt surfaces so a backend's remaining capabilities can still aggregate.
+//
+// Any other error is returned to the caller, which fails the enumeration.
+func modernListOptional[T any](
+	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string, degradeNotFound bool,
+) ([]T, error) {
+	items, err := modernListAll[T](ctx, hc, endpoint, method, itemsField, backend)
+	switch {
+	case errors.Is(err, errModernTransient):
+		slog.Warn(method+" transiently unavailable; degrading to empty list",
+			"backend", backend, "error", err)
+		return nil, nil
+	case errors.Is(err, mcp.ErrMethodNotFound) && degradeNotFound:
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	return items, nil
+}
+
+// cursorParams builds the Modern list request params carrying a pagination
+// cursor, or nil for the first page.
+func cursorParams(cursor mcp.Cursor) map[string]any {
+	if cursor == "" {
+		return nil
+	}
+	return map[string]any{"cursor": string(cursor)}
+}
+
+// modernListAll fetches every page of a Modern */list method, following
+// nextCursor (#5851). itemsField is the result key holding the item array
+// ("tools", "resources", "resourceTemplates", "prompts"); the envelope is decoded
+// into a raw-message map so one helper serves all four list shapes.
+//
+// Items are decoded one at a time. An item the compat types cannot decode is
+// skipped with a warning naming it, so one bad item does not hide every other
+// item the backend advertises. The item is not necessarily invalid: the compat
+// types model less than the spec allows (for example a tool whose top-level
+// outputSchema "type" is a JSON Schema type array is valid but cannot be
+// represented), so a skip means vMCP could not use the item, not that the
+// backend broke the protocol. A JSON null item carries nothing to advertise and
+// is skipped the same way. An items field that is not an array is a
+// protocol-level fault and still fails the page.
+func modernListAll[T any](
+	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string,
+) ([]T, error) {
+	return pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]T, mcp.Cursor, error) {
+		var page map[string]json.RawMessage
+		if err := modernCall(ctx, hc, endpoint, method, cursorParams(cursor), "", nil, &page, "", nil); err != nil {
+			return nil, "", err
+		}
+		var items []T
+		if raw, ok := page[itemsField]; ok {
+			var rawItems []json.RawMessage
+			if err := json.Unmarshal(raw, &rawItems); err != nil {
+				return nil, "", fmt.Errorf("decoding %s from %s: %w", itemsField, method, err)
+			}
+			items = make([]T, 0, len(rawItems))
+			for i, rawItem := range rawItems {
+				var item T
+				if bytes.Equal(bytes.TrimSpace(rawItem), []byte("null")) {
+					slog.Warn("skipping null item in "+method+" response",
+						"backend", backend, "field", itemsField, "index", i)
+					continue
+				}
+				if err := json.Unmarshal(rawItem, &item); err != nil {
+					slog.Warn("skipping undecodable item in "+method+" response",
+						"backend", backend, "field", itemsField, "index", i,
+						"item", itemIdentifier(rawItem), "error", err)
+					continue
+				}
+				items = append(items, item)
+			}
+		}
+		var next mcp.Cursor
+		if raw, ok := page["nextCursor"]; ok {
+			_ = json.Unmarshal(raw, &next) // best-effort: a malformed cursor ends pagination
+		}
+		return items, next, nil
+	})
+}
+
+// itemIdentifier returns the name (or, for resources, the uri) of a raw list
+// item for logging, or "" when it carries neither as a string. The keys are
+// decoded separately so a wrongly typed name does not hide a usable uri.
+func itemIdentifier(raw json.RawMessage) string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return ""
+	}
+	for _, key := range []string{"name", "uri"} {
+		var value string
+		if err := json.Unmarshal(fields[key], &value); err == nil && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// newCapabilityListFromMCP converts backend mcp types into the vmcp domain
+// CapabilityList, tagging every item with backendID. Shared by the Legacy
+// (initialize+enumerate) and Modern (discover+enumerate) paths so both produce
+// identical domain shapes.
+func newCapabilityListFromMCP(
+	backendID string,
+	tools []mcp.Tool, resources []mcp.Resource, templates []mcp.ResourceTemplate, prompts []mcp.Prompt,
+) *vmcp.CapabilityList {
+	capabilities := &vmcp.CapabilityList{
+		Tools:             make([]vmcp.Tool, 0, len(tools)),
+		Resources:         make([]vmcp.Resource, 0, len(resources)),
+		ResourceTemplates: make([]vmcp.ResourceTemplate, 0, len(templates)),
+		Prompts:           make([]vmcp.Prompt, len(prompts)),
+	}
+
+	for _, tool := range tools {
+		inputSchema := conversion.ConvertToolInputSchema(tool.InputSchema)
+
+		// SEP-2243 requires a Streamable HTTP client to reject a tool definition
+		// whose x-mcp-header annotations violate the extension's constraints, and
+		// vMCP is this backend's client. Rejecting here — at the single ingestion
+		// seam both the Legacy and Modern paths share — also protects vMCP's own
+		// downstream clients: an invalid annotation republished in the aggregated
+		// tools/list would make a conformant downstream client reject the whole
+		// list, taking every other backend's tools down with it. Dropping the one
+		// offending tool is the narrower failure.
+		if err := mcpparser.ValidateParamHeaders(inputSchema); err != nil {
+			slog.Warn("rejecting backend tool with invalid x-mcp-header annotation",
+				"backend", backendID, "tool", tool.Name, "error", err)
+			continue
+		}
+
+		capabilities.Tools = append(capabilities.Tools, vmcp.Tool{
+			Name:         tool.Name,
+			Description:  tool.Description,
+			InputSchema:  inputSchema,
+			OutputSchema: conversion.ConvertToolOutputSchema(tool.OutputSchema),
+			Annotations:  conversion.ConvertToolAnnotations(tool.Annotations),
+			BackendID:    backendID,
+		})
+	}
+
+	for _, resource := range resources {
+		// go-sdk's AddResource panics when url.Parse rejects a resource URI, and
+		// the URI is backend-controlled. Both the registration and list_changed
+		// resync paths register these resources on a session, so one malformed
+		// URI would crash the whole vMCP process and every other backend with it.
+		// Dropping at this shared ingestion seam, like the tool rejection above,
+		// keeps the failure to the single offending resource.
+		if _, err := url.Parse(resource.URI); err != nil {
+			slog.Warn("rejecting backend resource with unparsable URI",
+				"backend", backendID, "resource", resource.Name, "error", err)
+			continue
+		}
+
+		capabilities.Resources = append(capabilities.Resources, vmcp.Resource{
+			URI:         resource.URI,
+			Name:        resource.Name,
+			Description: resource.Description,
+			MimeType:    resource.MIMEType,
+			BackendID:   backendID,
+		})
+	}
+
+	// Resource templates are passed through without URI-template rewriting, like
+	// resources, but each is bounded first: the URI template library's compile
+	// and match cost grows with the template's size, and every later request
+	// that reaches template matching pays it. Dropping the one offending
+	// template is the narrower failure than letting a backend exhaust vMCP's
+	// memory, which would take every other backend down with it.
+	for _, template := range templates {
+		if err := validateResourceTemplate(template.URITemplate); err != nil {
+			slog.Warn("rejecting backend resource template that exceeds the size bounds",
+				"backend", backendID, "name", template.Name, "error", err)
+			continue
+		}
+		capabilities.ResourceTemplates = append(capabilities.ResourceTemplates, vmcp.ResourceTemplate{
+			URITemplate: template.URITemplate,
+			Name:        template.Name,
+			Description: template.Description,
+			MimeType:    template.MIMEType,
+			BackendID:   backendID,
+		})
+	}
+
+	for i, prompt := range prompts {
+		args := make([]vmcp.PromptArgument, len(prompt.Arguments))
+		for j, arg := range prompt.Arguments {
+			args[j] = vmcp.PromptArgument{
+				Name:        arg.Name,
+				Description: arg.Description,
+				Required:    arg.Required,
+			}
+		}
+		capabilities.Prompts[i] = vmcp.Prompt{
+			Name:        prompt.Name,
+			Description: prompt.Description,
+			Arguments:   args,
+			BackendID:   backendID,
+		}
+	}
+
+	return capabilities
+}
+
+// ListCapabilities queries a backend for its MCP capabilities, selecting the
+// Legacy or Modern path by revision. Returns tools, resources, and prompts
+// exposed by the backend.
+//
+// Like the call verbs it routes through dispatch, so a mis-cached backend (e.g. a
+// first-probe blip that pinned Legacy) self-corrects: the failing path triggers a
+// re-probe and one retry under the corrected revision.
+func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
+
+	slog.Debug("querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
+	var out *vmcp.CapabilityList
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernListCapabilities(ctx, target)
+		} else {
+			out, err = h.legacyListCapabilities(ctx, target)
+		}
+		return err
+	})
+	return out, err
+}
+
+// modernListCapabilities resolves capabilities via Modern server/discover +
+// enumeration. A -3202x protocol error is tolerated as nil caps (the backend is
+// Modern but rejected our discover), yielding an empty list — consistent with
+// probeRevision's classification.
+func (h *httpBackendClient) modernListCapabilities(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (*vmcp.CapabilityList, error) {
+	caps, err := h.modernDiscover(ctx, target)
+	if err != nil && !errors.Is(err, errModernProtocolError) {
+		return nil, wrapBackendError(err, target.WorkloadID, "modern discover")
+	}
+	return h.modernEnumerate(ctx, target, caps)
+}
+
+// legacyListCapabilities is the initialize + enumerate path (unchanged behavior).
+func (h *httpBackendClient) legacyListCapabilities(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (*vmcp.CapabilityList, error) {
 	// Create a client for this backend (not yet initialized)
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -547,9 +1573,9 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	}()
 
 	// Initialize the client and get server capabilities
-	serverCaps, err := initializeClient(ctx, c)
+	serverCaps, _, err := h.legacyInit(ctx, c, target)
 	if err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+		return nil, err
 	}
 
 	slog.Debug("backend capabilities",
@@ -570,59 +1596,22 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 		return nil, wrapBackendError(err, target.WorkloadID, "list resources")
 	}
 
+	// Resource templates share the same server capability advertisement as resources.
+	resourceTemplatesResp, err := queryResourceTemplates(ctx, c, serverCaps.Resources != nil, target.WorkloadID)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "list resource templates")
+	}
+
 	promptsResp, err := queryPrompts(ctx, c, serverCaps.Prompts != nil, target.WorkloadID)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
 	}
 
-	// Convert MCP types to vmcp types
-	capabilities := &vmcp.CapabilityList{
-		Tools:     make([]vmcp.Tool, len(toolsResp.Tools)),
-		Resources: make([]vmcp.Resource, len(resourcesResp.Resources)),
-		Prompts:   make([]vmcp.Prompt, len(promptsResp.Prompts)),
-	}
-
-	// Convert tools
-	for i, tool := range toolsResp.Tools {
-		capabilities.Tools[i] = vmcp.Tool{
-			Name:         tool.Name,
-			Description:  tool.Description,
-			InputSchema:  conversion.ConvertToolInputSchema(tool.InputSchema),
-			OutputSchema: conversion.ConvertToolOutputSchema(tool.OutputSchema),
-			Annotations:  conversion.ConvertToolAnnotations(tool.Annotations),
-			BackendID:    target.WorkloadID,
-		}
-	}
-
-	// Convert resources
-	for i, resource := range resourcesResp.Resources {
-		capabilities.Resources[i] = vmcp.Resource{
-			URI:         resource.URI,
-			Name:        resource.Name,
-			Description: resource.Description,
-			MimeType:    resource.MIMEType,
-			BackendID:   target.WorkloadID,
-		}
-	}
-
-	// Convert prompts
-	for i, prompt := range promptsResp.Prompts {
-		args := make([]vmcp.PromptArgument, len(prompt.Arguments))
-		for j, arg := range prompt.Arguments {
-			args[j] = vmcp.PromptArgument{
-				Name:        arg.Name,
-				Description: arg.Description,
-				Required:    arg.Required,
-			}
-		}
-
-		capabilities.Prompts[i] = vmcp.Prompt{
-			Name:        prompt.Name,
-			Description: prompt.Description,
-			Arguments:   args,
-			BackendID:   target.WorkloadID,
-		}
-	}
+	// Convert MCP types to vmcp types (shared with the Modern enumeration path).
+	capabilities := newCapabilityListFromMCP(
+		target.WorkloadID,
+		toolsResp.Tools, resourcesResp.Resources, resourceTemplatesResp.ResourceTemplates, promptsResp.Prompts,
+	)
 
 	// TODO: Query server capabilities to detect logging/sampling support
 	// This requires additional MCP protocol support for capabilities introspection
@@ -631,26 +1620,309 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 		"backend", target.WorkloadName,
 		"tools", len(capabilities.Tools),
 		"resources", len(capabilities.Resources),
+		"resource_templates", len(capabilities.ResourceTemplates),
 		"prompts", len(capabilities.Prompts))
 
 	return capabilities, nil
 }
 
-// CallTool invokes a tool on the backend MCP server.
-// Returns the complete tool result including _meta field.
+// errLegacyInitFailed marks a Legacy initialize-step failure (see legacyInit).
+// It scopes the Legacy revision-mismatch signal to the initialize step so a
+// data-plane -32601 from a genuine tool/resource/prompt/completion call on a real
+// Legacy backend (a legitimately unimplemented method) never triggers a re-probe.
+var errLegacyInitFailed = errors.New("legacy initialize step failed")
+
+// legacyInit runs the Legacy initialize handshake, tagging any failure with
+// errLegacyInitFailed (in addition to wrapBackendError's classification) so the
+// revision-mismatch check can tell an initialize rejection apart from a
+// data-plane error later in the same call.
 //
-//nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
+// It also self-heals a mis-cached Legacy->Modern backend in-band: under go-sdk
+// v1.7 the SDK's own client transparently negotiates Modern on this path (see
+// the revisions field comment), so the call succeeds and dispatch's
+// reclassify-on-error trigger never fires. The negotiated protocol version
+// returned by initializeClient is genuine either way (discover or plain
+// initialize), so when it equals MCPVersionModern the cache is flipped here
+// instead of waiting for an error that will never come.
+//
+// The negotiated version is a HINT, not proof, and it is only allowed to
+// override an existing classification once server/discover has confirmed it.
+// The two genuinely disagree in the field: github-mcp-server v1.6.0 negotiates
+// 2026-07-28 on the Legacy initialize while answering server/discover with a
+// body carrying no resultType, which modernCall rightly rejects as
+// Legacy-shaped. Promoting on the hint alone made the two self-corrections
+// fight -- the probe cached Legacy, this promoted back to Modern, the next
+// Modern call failed on that same body and reclassified to Legacy -- so every
+// other health check failed indefinitely (#6154).
+//
+// So: with no cached revision the hint is trusted outright (that is the
+// uncached-Legacy fallback dispatch takes when a probe errors, and the case
+// this self-heal was written for). Against a cached Legacy classification the
+// hint must win a confirming probe first; probeRevision caches whatever it
+// finds, so a genuinely Modern backend still self-heals in one extra round
+// trip. A refuted hint is remembered (modernHintRefuted) so the confirming
+// probe runs at most once per refutationTTL window per backend rather than on
+// every call — and a redeemed backend (refuted once, later genuinely Modern)
+// self-heals within one window instead of never.
+func (h *httpBackendClient) legacyInit(
+	ctx context.Context, c *client.Client, target *vmcp.BackendTarget,
+) (*mcp.ServerCapabilities, string, error) {
+	backendID := target.WorkloadID
+	caps, negotiatedVersion, err := initializeClient(ctx, c)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
+	}
+	if negotiatedVersion != mcpparser.MCPVersionModern {
+		return caps, negotiatedVersion, nil
+	}
+
+	cached, isCached := h.cachedRevision(backendID)
+	switch {
+	case !isCached:
+		h.setRevision(backendID, mcpparser.RevisionModern)
+	case cached == mcpparser.RevisionLegacy:
+		if h.hintRefuted(backendID) {
+			break
+		}
+		// probeRevision caches its own verdict, so a confirmation needs no
+		// setRevision here. A probe error leaves the cache untouched.
+		if probed, perr := h.probeRevision(ctx, target); perr == nil && probed != mcpparser.RevisionModern {
+			slog.DebugContext(ctx, "legacy handshake negotiated Modern but discover disagrees; keeping Legacy",
+				"backend", backendID, "negotiated", negotiatedVersion)
+			h.modernHintRefuted.Store(backendID, time.Now())
+		}
+	}
+	return caps, negotiatedVersion, nil
+}
+
+// hintRefuted reports whether backendID's Modern-handshake hint is currently
+// refuted: a refutation was recorded and has not yet aged past refutationTTL.
+// An expired entry is deleted so the map stays bounded by live backends.
+func (h *httpBackendClient) hintRefuted(backendID string) bool {
+	v, ok := h.modernHintRefuted.Load(backendID)
+	if !ok {
+		return false
+	}
+	refutedAt, ok := v.(time.Time)
+	if !ok || time.Since(refutedAt) > h.refutationTTL {
+		h.modernHintRefuted.Delete(backendID)
+		return false
+	}
+	return true
+}
+
+// dispatch resolves the backend's MCP revision (cache hit, else probeRevision)
+// and runs fn with it. Every call verb AND ListCapabilities route through this
+// seam so revision selection — and self-correction — lives in one place.
+//
+// A probeRevision error of any kind (inconclusive probe or transport-build
+// failure) falls back to Legacy — the pre-dual-era default — WITHOUT caching,
+// so a genuinely Modern backend re-probes on the next call instead of being
+// pinned to Legacy by one bad probe.
+//
+// On a revision mismatch (isRevisionMismatch), dispatch always re-probes
+// authoritatively and flips the cache so future calls use the corrected
+// revision. It RETRIES fn only when the failure proves the backend did NOT
+// execute the request — a protocol rejection (errWrongEra) or a Legacy
+// initialize-step failure. A Legacy-shaped success body (errLegacyResponseBody)
+// means a lenient backend MAY have executed a side-effecting request, so the
+// cache is flipped but fn is NOT re-run. The retry is unconditionally single
+// (no re-check), so it can never loop.
+//
+// When the revision was resolved in THIS call (uncached), a mismatch is surfaced
+// directly without re-probing: on a successful probe a re-probe would just repeat
+// the same answer, and on the Legacy fallback above there is no cached revision to
+// correct — the next call re-probes anyway once the outage clears.
+func (h *httpBackendClient) dispatch(
+	ctx context.Context, target *vmcp.BackendTarget,
+	fn func(ctx context.Context, rev mcpparser.Revision) error,
+) error {
+	rev, cached := h.cachedRevision(target.WorkloadID)
+	if !cached {
+		probed, err := h.probeRevision(ctx, target)
+		if err != nil {
+			// A failed probe (auth blip / transient 5xx / timeout / connection
+			// refused, or a transport that could not be built) says nothing about
+			// the revision and must NOT fail a backend that is reachable on the
+			// Legacy path — which re-validates the transport itself. Fall back to Legacy —
+			// the pre-dual-era default — WITHOUT caching, so a transient outage
+			// never pins a revision and a genuinely Modern backend is corrected on
+			// the next call's re-probe.
+			slog.DebugContext(ctx, "revision probe inconclusive; attempting Legacy uncached",
+				"backend", target.WorkloadID, "probe_error", err)
+			rev = mcpparser.RevisionLegacy
+		} else {
+			rev = probed
+		}
+	}
+
+	err := fn(ctx, rev)
+	if err == nil || !isRevisionMismatch(rev, err) {
+		return err
+	}
+	if !cached {
+		// The revision was just probed authoritatively; a re-probe would agree, so
+		// this is a genuine error (or a lenient backend), not a stale cache.
+		return err
+	}
+
+	corrected := h.reclassify(ctx, target, rev)
+	if corrected == rev {
+		// Re-probe agreed with the cache: the mismatch was not a revision problem.
+		return err
+	}
+	if errors.Is(err, errLegacyResponseBody) {
+		// Cache is now corrected for future calls, but the backend may have
+		// already executed this request — do NOT re-run it (no double-execution).
+		return err
+	}
+	return fn(ctx, corrected)
+}
+
+// reclassify re-probes the backend authoritatively (overwriting the cached
+// revision via probeRevision) and returns the corrected revision. On an actual
+// era change it emits a WARN and increments the reclassification counter; a
+// same-era re-probe (or a re-probe that can't run) is silent and returns prev.
+func (h *httpBackendClient) reclassify(
+	ctx context.Context, target *vmcp.BackendTarget, prev mcpparser.Revision,
+) mcpparser.Revision {
+	corrected, err := h.probeRevision(ctx, target)
+	if err != nil {
+		// Transport couldn't even be built to re-probe; keep the prior revision.
+		return prev
+	}
+	if corrected != prev {
+		slog.WarnContext(ctx, "backend MCP revision reclassified after mismatch",
+			"backend", target.WorkloadID, "old", prev.String(), "new", corrected.String())
+		backendtelemetry.RecordRevisionReclassification(ctx)
+	}
+	return corrected
+}
+
+// isRevisionMismatch reports whether err from an attempt made under rev signals
+// that the backend actually speaks the OTHER MCP revision (triggering a cache
+// reclassification). It is deliberately narrow, and keyed on rev because the same
+// sentinel means different things per era:
+//
+//   - Modern attempt: errWrongEra (protocol rejection), errLegacyResponseBody (a
+//     Legacy-shaped success body), or errModernNegotiatedDown (a cached-Modern
+//     backend's discover now reports supportedVersions without 2026-07-28 — e.g.
+//     redeployed stateless->stateful). A data-plane -32601 comes back as
+//     mcp.ErrMethodNotFound and is a real not-found on a genuine Modern backend,
+//     NOT a mismatch.
+//   - Legacy attempt: an initialize-STEP rejection only — errLegacyInitFailed
+//     together with mcp.ErrMethodNotFound or transport.ErrLegacySSEServer. A
+//     data-plane -32601 (a legitimately unimplemented method on a real Legacy
+//     backend) lacks the errLegacyInitFailed marker and is NOT a mismatch.
+//
+// Auth failures are never a mismatch: their sentinels (ErrUnauthorized,
+// ErrAuthorizationRequired, ErrUpstreamTokenNotFound, ErrAuthenticationFailed) do
+// not wrap the era sentinels above, so they are excluded by construction.
+//
+// NOTE: mismatch != safe-to-retry. dispatch reclassifies on any mismatch but only
+// re-runs fn when no execution could have occurred (see dispatch).
+func isRevisionMismatch(rev mcpparser.Revision, err error) bool {
+	if err == nil {
+		return false
+	}
+	if rev == mcpparser.RevisionModern {
+		return errors.Is(err, errWrongEra) || errors.Is(err, errLegacyResponseBody) ||
+			errors.Is(err, errModernNegotiatedDown)
+	}
+	return errors.Is(err, errLegacyInitFailed) &&
+		(errors.Is(err, mcp.ErrMethodNotFound) || errors.Is(err, transport.ErrLegacySSEServer))
+}
+
+// CallTool invokes a tool on the backend MCP server, selecting the Legacy or
+// Modern (2026-07-28) path by the backend's resolved revision. Returns the
+// complete tool result including _meta.
 func (h *httpBackendClient) CallTool(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
+	paramHeaders map[string]string,
 ) (*vmcp.ToolCallResult, error) {
-	slog.Debug("calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
 
+	slog.Debug("calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
+	var out *vmcp.ToolCallResult
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernCallTool(ctx, target, toolName, arguments, meta, paramHeaders)
+		} else {
+			// paramHeaders is deliberately dropped here: SEP-2243's Mcp-Param-*
+			// mirroring belongs to the 2026-07-28 revision, and a Legacy backend
+			// neither expects the headers nor rejects their absence.
+			out, err = h.legacyCallTool(ctx, target, toolName, arguments, meta)
+		}
+		return err
+	})
+	return out, err
+}
+
+// modernCallTool invokes tools/call over the Modern (2026-07-28) shim. The
+// advertised tool name is translated to the backend's capability name for BOTH
+// the body identifier and the Mcp-Name header — the server rejects a mismatch
+// (-32020). The caller's _meta is forwarded (modernCall strips reserved keys and
+// overlays vMCP's) and the result _meta is forwarded back to core.
+//
+// paramHeaders carries the SEP-2243 Mcp-Param-* headers derived from the tool's
+// x-mcp-header-designated arguments. A backend that designated a parameter and
+// does not receive its header rejects the call with -32020, so omitting them
+// makes any annotating Modern backend uncallable.
+func (h *httpBackendClient) modernCallTool(
+	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any,
+	paramHeaders map[string]string,
+) (*vmcp.ToolCallResult, error) {
+	backendToolName := target.GetBackendCapabilityName(toolName)
+	if backendToolName != toolName {
+		slog.Debug("translating tool name", "client_name", toolName, "backend_name", backendToolName)
+	}
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	defer hc.CloseIdleConnections()
+	params := map[string]any{"name": backendToolName, "arguments": arguments}
+	if len(meta) > 0 {
+		params["_meta"] = meta
+	}
+
+	// Modern logging parity with the Legacy path (enableBackendLogging): when
+	// server->client forwarding is bound, opt the call in to the backend's
+	// notifications/message at debug level via the per-request logLevel _meta key
+	// (the Modern replacement for the removed logging/setLevel RPC), and relay any
+	// interleaved notifications to the downstream client. Both are no-ops when
+	// forwarding is unbound — no logLevel key is sent and no listener is attached.
+	fwd := h.forwarders.Load()
+	var logLevel string
+	var onNotification func(string, json.RawMessage)
+	if fwd != nil && fwd.notifier != nil {
+		logLevel = string(mcp.LoggingLevelDebug)
+		onNotification = newModernNotificationForwarder(ctx, fwd.notifier)
+	}
+
+	var result mcp.CallToolResult
+	if err := modernCall(
+		ctx, hc, target.BaseURL, "tools/call", params, backendToolName, paramHeaders, &result, logLevel, onNotification,
+	); err != nil {
+		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
+	}
+	return toolResultFromMCP(slog.Default(), &result, toolName, target.WorkloadID), nil
+}
+
+// legacyCallTool is the initialize + SDK CallTool path (unchanged behavior).
+//
+//nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
+func (h *httpBackendClient) legacyCallTool(
+	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments, meta map[string]any,
+) (*vmcp.ToolCallResult, error) {
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, true)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -660,10 +1932,17 @@ func (h *httpBackendClient) CallTool(
 		}
 	}()
 
-	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+	// Initialize the client and capture the backend's advertised capabilities.
+	serverCaps, negotiatedVersion, err := h.legacyInit(ctx, c, target)
+	if err != nil {
+		return nil, err
 	}
+
+	// When forwarders are bound and the backend advertises logging, request debug
+	// level so the backend emits notifications/message during the call; the
+	// notification forwarder relays them to the downstream client. Best-effort:
+	// a failure here must not fail the tool call.
+	h.enableBackendLogging(ctx, c, serverCaps, negotiatedVersion, target.WorkloadID)
 
 	// Call the tool using the original capability name from the backend's perspective.
 	// When conflict resolution renames tools (e.g., "fetch" → "fetch_fetch"),
@@ -673,11 +1952,22 @@ func (h *httpBackendClient) CallTool(
 		slog.Debug("translating tool name", "client_name", toolName, "backend_name", backendToolName)
 	}
 
+	// Strip the reserved io.modelcontextprotocol/* keys before forwarding to this
+	// Legacy (session-based, stateful) backend: a downstream Modern caller's
+	// _meta.protocolVersion is only valid on a stateless Modern hop, and go-sdk
+	// v1.7 hard-rejects ANY _meta.protocolVersion on a stateful server (HTTP 400)
+	// regardless of its value — see mcpparser.StripReservedMeta.
+	//
+	// conversion.ToMCPMeta below now strips too, so this is belt-and-suspenders;
+	// it stays because the HTTP-400 hazard is specific to this hop and deserves a
+	// guard at the site that knows why. (modernCallTool, which builds its _meta
+	// directly and never reaches ToMCPMeta, needs the helper outright.)
+	meta = mcpparser.StripReservedMeta(meta)
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      backendToolName,
 			Arguments: arguments,
-			Meta:      conversion.ToMCPMeta(meta),
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, meta)),
 		},
 	})
 	if err != nil {
@@ -685,11 +1975,34 @@ func (h *httpBackendClient) CallTool(
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 
+	// Flush the backend's server->client stream before the deferred Close tears
+	// down this per-call client, so a fire-and-forget notification the backend
+	// emitted mid-call (progress/logging) is relayed downstream instead of being
+	// dropped. See drainServerToClientNotifications for the lost-notification race.
+	h.drainServerToClientNotifications(ctx, c)
+
+	return toolResultFromMCP(slog.Default(), result, toolName, target.WorkloadID), nil
+}
+
+// toolResultFromMCP converts an mcp.CallToolResult into the vmcp domain result,
+// shared by the Legacy and Modern tools/call paths so both handle IsError
+// logging, structuredContent, and _meta forwarding identically.
+//
+// logger receives the IsError line. Callers pass slog.Default(); tests pass
+// their own logger, so they assert on that line without swapping the
+// process-global slog default.
+func toolResultFromMCP(
+	logger *slog.Logger, result *mcp.CallToolResult, toolName, backendID string,
+) *vmcp.ToolCallResult {
 	// Extract _meta field from backend response
 	responseMeta := conversion.FromMCPMeta(result.Meta)
 
-	// Log if tool returned IsError=true (MCP protocol-level error, not a transport error)
-	// We still return the full result to preserve metadata and error details for the client
+	// Log if tool returned IsError=true (MCP protocol-level error, not a transport error).
+	// The full result, error text included, still goes back to the client below.
+	// A caller can trigger this on every call, and the error text often repeats the
+	// call's arguments (a query the backend could not parse, an identifier, a file
+	// name), so the line is Debug only. Operators count these results with
+	// toolhive_vmcp_backend_tool_errors, recorded by the backend telemetry decorator.
 	if result.IsError {
 		var errorMsg string
 		if len(result.Content) > 0 {
@@ -703,11 +2016,11 @@ func (h *httpBackendClient) CallTool(
 
 		// Log with metadata for distributed tracing
 		if responseMeta != nil {
-			slog.Warn("tool returned IsError=true",
-				"tool", toolName, "backend", target.WorkloadID, "error", errorMsg, "meta", responseMeta)
+			logger.Debug("tool returned IsError=true",
+				"tool", toolName, "backend", backendID, "error", errorMsg, "meta", responseMeta)
 		} else {
-			slog.Warn("tool returned IsError=true",
-				"tool", toolName, "backend", target.WorkloadID, "error", errorMsg)
+			logger.Debug("tool returned IsError=true",
+				"tool", toolName, "backend", backendID, "error", errorMsg)
 		}
 		// Continue processing - we return the result with IsError flag and metadata preserved
 	}
@@ -721,12 +2034,12 @@ func (h *httpBackendClient) CallTool(
 	var structuredContent map[string]any
 	if result.StructuredContent != nil {
 		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
-			slog.Debug("using structured content from tool", "tool", toolName, "backend", target.WorkloadID)
+			slog.Debug("using structured content from tool", "tool", toolName, "backend", backendID)
 			structuredContent = structuredMap
 		} else {
 			// StructuredContent is not an object - fall through to Content processing
 			slog.Debug("structuredContent is not an object, falling back to Content",
-				"tool", toolName, "backend", target.WorkloadID)
+				"tool", toolName, "backend", backendID)
 		}
 	}
 
@@ -742,18 +2055,85 @@ func (h *httpBackendClient) CallTool(
 		StructuredContent: structuredContent,
 		IsError:           result.IsError,
 		Meta:              responseMeta,
-	}, nil
+	}
 }
 
-// ReadResource retrieves a resource from the backend MCP server.
-// Returns the complete resource result including _meta field.
+// ReadResource retrieves a resource from the backend MCP server, selecting the
+// Legacy or Modern path by revision. Returns the complete resource result
+// including _meta.
 func (h *httpBackendClient) ReadResource(
 	ctx context.Context, target *vmcp.BackendTarget, uri string,
 ) (*vmcp.ResourceReadResult, error) {
-	slog.Debug("reading resource from backend", "resource", uri, "backend", target.WorkloadName)
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
 
+	slog.Debug("reading resource from backend", "resource", uri, "backend", target.WorkloadName)
+	var out *vmcp.ResourceReadResult
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernReadResource(ctx, target, uri)
+		} else {
+			out, err = h.legacyReadResource(ctx, target, uri)
+		}
+		return err
+	})
+	return out, err
+}
+
+// modernReadResource invokes resources/read over the Modern shim. The URI is
+// translated to the backend's capability name for both the body and the Mcp-Name
+// header (server rejects a mismatch), and the result _meta is forwarded to core.
+func (h *httpBackendClient) modernReadResource(
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
+) (*vmcp.ResourceReadResult, error) {
+	backendURI := target.GetBackendCapabilityName(uri)
+	if backendURI != uri {
+		slog.Debug("translating resource URI", "client_uri", uri, "backend_uri", backendURI)
+	}
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	defer hc.CloseIdleConnections()
+	// mcp.ResourceContents is an interface with no JSON unmarshaler, so it cannot
+	// decode directly. Decode the wire shape, rebuild the discriminated mcp types
+	// (blob takes precedence, symmetric with conversion.ToMCPResourceContents),
+	// then hand off to the SAME converter legacyReadResource uses so the
+	// content->vmcp mapping is shared, not duplicated.
+	var res struct {
+		Contents []struct {
+			URI      string `json:"uri"`
+			MIMEType string `json:"mimeType"`
+			Text     string `json:"text"`
+			Blob     string `json:"blob"`
+		} `json:"contents"`
+		Meta map[string]any `json:"_meta"`
+	}
+	params := map[string]any{"uri": backendURI}
+	if err := modernCall(ctx, hc, target.BaseURL, "resources/read", params, backendURI, nil, &res, "", nil); err != nil {
+		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
+	}
+	mcpContents := make([]mcp.ResourceContents, len(res.Contents))
+	for i, c := range res.Contents {
+		if c.Blob != "" {
+			mcpContents[i] = mcp.BlobResourceContents{URI: c.URI, MIMEType: c.MIMEType, Blob: c.Blob}
+		} else {
+			mcpContents[i] = mcp.TextResourceContents{URI: c.URI, MIMEType: c.MIMEType, Text: c.Text}
+		}
+	}
+	return &vmcp.ResourceReadResult{
+		Contents: conversion.ConvertMCPResourceContents(mcpContents),
+		Meta:     res.Meta,
+	}, nil
+}
+
+// legacyReadResource is the initialize + SDK ReadResource path (unchanged behavior).
+func (h *httpBackendClient) legacyReadResource(
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
+) (*vmcp.ResourceReadResult, error) {
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -764,8 +2144,8 @@ func (h *httpBackendClient) ReadResource(
 	}()
 
 	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+	if _, _, err := h.legacyInit(ctx, c, target); err != nil {
+		return nil, err
 	}
 
 	// Read the resource using the original URI from the backend's perspective.
@@ -775,9 +2155,12 @@ func (h *httpBackendClient) ReadResource(
 		slog.Debug("translating resource URI", "client_uri", uri, "backend_uri", backendURI)
 	}
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See TestOutboundMetaTraceContext for details/tripwire.
 	result, err := c.ReadResource(ctx, mcp.ReadResourceRequest{
 		Params: mcp.ReadResourceParams{
-			URI: backendURI,
+			URI:  backendURI,
+			Meta: conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
 		},
 	})
 	if err != nil {
@@ -787,26 +2170,89 @@ func (h *httpBackendClient) ReadResource(
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
 
-	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
-	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
 		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     meta,
 	}, nil
 }
 
-// GetPrompt retrieves a prompt from the backend MCP server.
-// Returns the complete prompt result including _meta field.
+// GetPrompt retrieves a prompt from the backend MCP server, selecting the Legacy
+// or Modern path by revision. Returns the complete prompt result including _meta.
 func (h *httpBackendClient) GetPrompt(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	slog.Debug("getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
 
+	slog.Debug("getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
+	var out *vmcp.PromptGetResult
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernGetPrompt(ctx, target, name, arguments)
+		} else {
+			out, err = h.legacyGetPrompt(ctx, target, name, arguments)
+		}
+		return err
+	})
+	return out, err
+}
+
+// modernGetPrompt invokes prompts/get over the Modern shim. The prompt name is
+// translated to the backend's capability name for both the body and the Mcp-Name
+// header (server rejects a mismatch); the result _meta is forwarded to core.
+// Message content is decoded via mcp.UnmarshalContent so it goes through the same
+// content conversion as the Legacy path.
+func (h *httpBackendClient) modernGetPrompt(
+	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
+) (*vmcp.PromptGetResult, error) {
+	backendPromptName := target.GetBackendCapabilityName(name)
+	if backendPromptName != name {
+		slog.Debug("translating prompt name", "client_name", name, "backend_name", backendPromptName)
+	}
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	defer hc.CloseIdleConnections()
+	params := map[string]any{
+		"name":      backendPromptName,
+		"arguments": conversion.ConvertPromptArguments(arguments),
+	}
+	var res struct {
+		Description string `json:"description"`
+		Messages    []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Meta map[string]any `json:"_meta"`
+	}
+	if err := modernCall(ctx, hc, target.BaseURL, "prompts/get", params, backendPromptName, nil, &res, "", nil); err != nil {
+		return nil, fmt.Errorf("prompt get failed on backend %s: %w", target.WorkloadID, err)
+	}
+	messages := make([]vmcp.PromptMessage, 0, len(res.Messages))
+	for _, m := range res.Messages {
+		content, err := mcp.UnmarshalContent(m.Content)
+		if err != nil {
+			return nil, fmt.Errorf("prompt get: decoding message content from backend %s: %w", target.WorkloadID, err)
+		}
+		messages = append(messages, vmcp.PromptMessage{
+			Role:    m.Role,
+			Content: conversion.ConvertMCPContent(content),
+		})
+	}
+	return &vmcp.PromptGetResult{Messages: messages, Description: res.Description, Meta: res.Meta}, nil
+}
+
+// legacyGetPrompt is the initialize + SDK GetPrompt path (unchanged behavior).
+func (h *httpBackendClient) legacyGetPrompt(
+	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
+) (*vmcp.PromptGetResult, error) {
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -817,8 +2263,8 @@ func (h *httpBackendClient) GetPrompt(
 	}()
 
 	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, wrapBackendError(err, target.WorkloadID, "initialize client")
+	if _, _, err := h.legacyInit(ctx, c, target); err != nil {
+		return nil, err
 	}
 
 	// Get the prompt using the original prompt name from the backend's perspective.
@@ -830,10 +2276,13 @@ func (h *httpBackendClient) GetPrompt(
 
 	stringArgs := conversion.ConvertPromptArguments(arguments)
 
+	// Forward-compat: mcpcompat drops Params.Meta on this path today (no-op on
+	// the wire). See TestOutboundMetaTraceContext for details/tripwire.
 	result, err := c.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
 			Name:      backendPromptName,
 			Arguments: stringArgs,
+			Meta:      conversion.ToMCPMeta(telemetry.MetaWithTraceContext(ctx, nil)),
 		},
 	})
 	if err != nil {
@@ -845,4 +2294,181 @@ func (h *httpBackendClient) GetPrompt(
 		Description: result.Description,
 		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil
+}
+
+// Complete requests argument-completion candidates from the backend MCP server,
+// selecting the Legacy or Modern path by revision. Returns an empty (non-nil)
+// result when the backend does not advertise completions, matching the MCP
+// spec's lenient completion semantics.
+func (h *httpBackendClient) Complete(
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	ref vmcp.CompletionRef,
+	argName, argValue string,
+	contextArgs map[string]string,
+) (*vmcp.CompletionResult, error) {
+	ctx, cancel := h.requestContext(ctx, target)
+	defer cancel()
+
+	slog.Debug("requesting completion from backend", "ref_type", ref.Type, "backend", target.WorkloadName)
+	var out *vmcp.CompletionResult
+	err := h.dispatch(ctx, target, func(ctx context.Context, rev mcpparser.Revision) error {
+		var err error
+		if rev == mcpparser.RevisionModern {
+			out, err = h.modernComplete(ctx, target, ref, argName, argValue, contextArgs)
+		} else {
+			out, err = h.legacyComplete(ctx, target, ref, argName, argValue, contextArgs)
+		}
+		return err
+	})
+	return out, err
+}
+
+// modernComplete invokes completion/complete over the Modern shim (not a
+// name-required method, so no Mcp-Name). A prompt ref's name is translated to the
+// backend capability name. A backend without completions answers -32601, which is
+// treated as an empty result (lenient completion semantics).
+func (h *httpBackendClient) modernComplete(
+	ctx context.Context, target *vmcp.BackendTarget,
+	ref vmcp.CompletionRef, argName, argValue string, contextArgs map[string]string,
+) (*vmcp.CompletionResult, error) {
+	hc, err := h.buildModernHTTPClient(ctx, target)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	defer hc.CloseIdleConnections()
+	refMap, err := modernCompletionRef(target, ref)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{
+		"ref":      refMap,
+		"argument": map[string]any{"name": argName, "value": argValue},
+	}
+	if len(contextArgs) > 0 {
+		params["context"] = map[string]any{"arguments": contextArgs}
+	}
+	var res struct {
+		Completion struct {
+			Values  []string `json:"values"`
+			Total   int      `json:"total"`
+			HasMore bool     `json:"hasMore"`
+		} `json:"completion"`
+	}
+	err = modernCall(ctx, hc, target.BaseURL, "completion/complete", params, "", nil, &res, "", nil)
+	if errors.Is(err, mcp.ErrMethodNotFound) {
+		return &vmcp.CompletionResult{Values: []string{}}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("completion failed on backend %s: %w", target.WorkloadID, err)
+	}
+	values := res.Completion.Values
+	if values == nil {
+		values = []string{}
+	}
+	return &vmcp.CompletionResult{Values: values, Total: res.Completion.Total, HasMore: res.Completion.HasMore}, nil
+}
+
+// modernCompletionRef builds the Modern completion/complete ref params, mirroring
+// buildCompletionRef's translation: a prompt ref's name is translated to the
+// backend capability name; a resource ref's URI is passed through.
+func modernCompletionRef(target *vmcp.BackendTarget, ref vmcp.CompletionRef) (map[string]any, error) {
+	switch ref.Type {
+	case vmcp.CompletionRefTypePrompt:
+		backendName := target.GetBackendCapabilityName(ref.Name)
+		if backendName != ref.Name {
+			slog.Debug("translating prompt name for completion", "client_name", ref.Name, "backend_name", backendName)
+		}
+		return map[string]any{"type": ref.Type, "name": backendName}, nil
+	case vmcp.CompletionRefTypeResource:
+		return map[string]any{"type": ref.Type, "uri": ref.URI}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported completion ref type %q", vmcp.ErrInvalidInput, ref.Type)
+	}
+}
+
+// legacyComplete is the initialize + SDK Complete path (unchanged behavior).
+func (h *httpBackendClient) legacyComplete(
+	ctx context.Context,
+	target *vmcp.BackendTarget,
+	ref vmcp.CompletionRef,
+	argName, argValue string,
+	contextArgs map[string]string,
+) (*vmcp.CompletionResult, error) {
+	// Create a client for this backend
+	c, err := h.clientFactory(ctx, target, false)
+	if err != nil {
+		return nil, wrapBackendError(err, target.WorkloadID, "create client")
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			slog.Debug("failed to close client", "error", err)
+		}
+	}()
+
+	// Initialize the client and capture the backend's advertised capabilities.
+	serverCaps, _, err := h.legacyInit(ctx, c, target)
+	if err != nil {
+		return nil, err
+	}
+
+	// Backends that do not advertise completions cannot serve completion/complete;
+	// return an empty result rather than erroring (lenient completion semantics).
+	if serverCaps.Completions == nil {
+		slog.Debug("backend does not advertise completions capability, returning empty completion",
+			"backend", target.WorkloadID)
+		return &vmcp.CompletionResult{Values: []string{}}, nil
+	}
+
+	mcpRef, err := buildCompletionRef(target, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	params := mcp.CompleteParams{
+		Ref: mcpRef,
+		Argument: mcp.CompleteArgument{
+			Name:  argName,
+			Value: argValue,
+		},
+	}
+	if len(contextArgs) > 0 {
+		params.Context = &mcp.CompleteContext{Arguments: contextArgs}
+	}
+
+	result, err := c.Complete(ctx, mcp.CompleteRequest{Params: params})
+	if err != nil {
+		return nil, fmt.Errorf("completion failed on backend %s: %w", target.WorkloadID, err)
+	}
+
+	values := result.Completion.Values
+	if values == nil {
+		values = []string{}
+	}
+	return &vmcp.CompletionResult{
+		Values:  values,
+		Total:   result.Completion.Total,
+		HasMore: result.Completion.HasMore,
+	}, nil
+}
+
+// buildCompletionRef converts a domain CompletionRef into the mcp-go-shaped
+// PromptReference/ResourceReference the shim client expects. For a prompt ref the
+// name is translated to the backend's own capability name (mirroring GetPrompt);
+// for a resource ref the URI is passed through unchanged (mirroring ReadResource,
+// whose translation is the identity for non-renamed resources).
+func buildCompletionRef(target *vmcp.BackendTarget, ref vmcp.CompletionRef) (any, error) {
+	switch ref.Type {
+	case vmcp.CompletionRefTypePrompt:
+		backendName := target.GetBackendCapabilityName(ref.Name)
+		if backendName != ref.Name {
+			slog.Debug("translating prompt name for completion",
+				"client_name", ref.Name, "backend_name", backendName)
+		}
+		return mcp.PromptReference{Type: ref.Type, Name: backendName}, nil
+	case vmcp.CompletionRefTypeResource:
+		return mcp.ResourceReference{Type: ref.Type, URI: ref.URI}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported completion ref type %q", vmcp.ErrInvalidInput, ref.Type)
+	}
 }

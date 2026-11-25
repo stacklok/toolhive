@@ -9,16 +9,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -27,11 +30,6 @@ import (
 const (
 	defaultMaxBackendInitConcurrency = 10
 	defaultBackendInitTimeout        = 30 * time.Second
-
-	// MetadataKeyIdentitySubject is the transport-session metadata key that
-	// holds the subject claim of the authenticated caller (identity.Subject).
-	// Set at session creation; empty for anonymous callers.
-	MetadataKeyIdentitySubject = "vmcp.identity.subject"
 
 	// MetadataKeyBackendIDs is the transport-session metadata key that holds
 	// a comma-separated, sorted list of successfully-connected backend IDs.
@@ -46,17 +44,22 @@ const (
 	MetadataKeyBackendSessionPrefix = "vmcp.backend.session."
 )
 
-var (
-	// defaultHMACSecret is the fallback HMAC secret used when WithHMACSecret is not provided.
-	// WARNING: This is INSECURE and should ONLY be used for testing/development.
-	// Production deployments MUST provide a secure secret via WithHMACSecret option.
-	//
-	// NOTE: In multi-replica deployments, all replicas must use the same HMAC secret,
-	// injected via the VMCP_SESSION_HMAC_SECRET environment variable. If replicas use
-	// different secrets, cross-pod token validation will silently reject legitimate
-	// callers. The default insecure secret must NOT be used in production.
-	defaultHMACSecret = []byte("insecure-default-for-testing-only-change-in-production")
-)
+// ParseBackendIDs decodes the MetadataKeyBackendIDs wire format — a
+// comma-separated list of backend workload IDs — into a slice of trimmed,
+// non-empty IDs, preserving order. It is the single decoder for that format
+// (populateBackendMetadata is the matching encoder); callers that need set
+// membership build a map from the result. An empty or whitespace-only input
+// yields an empty slice.
+func ParseBackendIDs(csv string) []string {
+	parts := strings.Split(csv, ",")
+	ids := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			ids = append(ids, t)
+		}
+	}
+	return ids
+}
 
 // MultiSessionFactory creates new MultiSessions for connecting clients.
 type MultiSessionFactory interface {
@@ -67,28 +70,35 @@ type MultiSessionFactory interface {
 	// The id parameter must be non-empty and should be a valid MCP session ID
 	// (visible ASCII characters, 0x21 to 0x7E per the MCP specification).
 	//
-	// The allowAnonymous parameter controls whether the session allows nil caller
-	// identity. If false, all session method calls must provide a valid caller
-	// that matches the session creator's identity.
+	// Whether the session allows anonymous (nil) caller identity is derived
+	// internally from identity via ShouldAllowAnonymous.
 	//
 	// All other behaviour (partial initialisation, bounded concurrency, etc.)
 	// is identical to MakeSession.
+	//
+	// sink, when non-nil, is threaded to every backend connector for this
+	// session and invoked (best-effort, on the backend receive-loop goroutine)
+	// when a backend emits a notification consumed asynchronously — currently
+	// only notifications/tools/list_changed (#5748). Pass nil to leave that
+	// consumption disabled for this session.
 	MakeSessionWithID(
 		ctx context.Context,
 		id string,
 		identity *auth.Identity,
-		allowAnonymous bool,
 		backends []*vmcp.Backend,
+		sink ListChangedSink,
 	) (MultiSession, error)
 
 	// RestoreSession reconstructs a live MultiSession from persisted metadata.
 	// It reconnects to the backends whose IDs are listed in storedMetadata under
 	// MetadataKeyBackendIDs, rebuilds the routing table, and reapplies the
-	// hijack-prevention decorator using the stored token hash and salt.
+	// session-binding decorator from the stored identity binding.
 	//
 	// Use this when the node-local session cache misses — for example after a
 	// pod restart or when a request is routed to a different pod. It is more
 	// expensive than a cache hit because it opens new backend connections.
+	// Because MCP clients cannot be serialised, sticky sessions (session affinity
+	// at the load balancer) minimise how often this path is taken.
 	//
 	// allBackends is the current backend list from the registry; RestoreSession
 	// filters it to the subset originally included in this session.
@@ -101,7 +111,8 @@ type MultiSessionFactory interface {
 }
 
 // backendConnector creates a connected, initialised backend Session for use
-// within a single MultiSession. It is called once per backend during MakeSession.
+// within a single MultiSession. It is called once per backend that is not
+// skipped as Modern (see initOneBackend) during MakeSession.
 //
 // The connector is responsible for:
 //  1. Creating and starting the MCP client transport.
@@ -113,26 +124,39 @@ type MultiSessionFactory interface {
 // Mcp-Session-Id hint during Initialize so the backend can resume rather than
 // re-initialize. Pass an empty string for brand-new sessions.
 //
+// sink, when non-nil, is invoked (best-effort, possibly from a receive-loop
+// goroutine) whenever this backend emits a notification the connector consumes
+// asynchronously (currently only notifications/tools/list_changed). Pass nil to
+// leave that consumption disabled; a connector that does not support it may
+// ignore the parameter entirely. See backend.ListChangedSink.
+//
 // The returned backend.Session owns the underlying transport connection and
 // must be closed when the session ends. The returned CapabilityList is used
 // to populate the session's routing table and capability lists.
 //
 // On error the factory treats the failure as a partial failure: a warning is
-// logged and the backend is excluded from the session.
+// logged and the backend is excluded from the session — except when the
+// backend's revision has meanwhile resolved to Modern, in which case
+// initOneBackend logs at DEBUG instead (see initOneBackend's doc comment for
+// why a Modern backend's session-establishment sequence fails there).
 type backendConnector func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	sessionHint string,
+	sink backend.ListChangedSink,
 ) (backend.Session, *vmcp.CapabilityList, error)
 
 // defaultMultiSessionFactory is the production MultiSessionFactory implementation.
 type defaultMultiSessionFactory struct {
-	connector          backendConnector
-	maxConcurrency     int
-	backendInitTimeout time.Duration
-	hmacSecret         []byte                // Server-managed secret for HMAC-SHA256 token hashing
-	aggregator         aggregator.Aggregator // Optional: applies tool transforms (overrides, conflict resolution, filter)
+	connector              backendConnector
+	maxConcurrency         int
+	backendInitTimeout     time.Duration
+	backendInitTimeoutSet  bool
+	revisionLookup         func(workloadID string) (mcpparser.Revision, bool)
+	requestTimeoutResolver func(workloadID string) time.Duration
+	listChangedAllowed     func(workloadID string) bool
+	dialControlResolver    func(workloadID string) func(network, address string, c syscall.RawConn) error
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -150,59 +174,144 @@ func WithMaxBackendInitConcurrency(n int) MultiSessionFactoryOption {
 
 // WithBackendInitTimeout sets the per-backend timeout during MakeSession.
 // Defaults to 30 s.
+//
+// An explicit value is authoritative: unlike the default, it is not extended by
+// a longer WithRequestTimeoutResolver result. Lower it when a backend can stall
+// the handshake rather than answering or failing promptly, so session init
+// fails fast instead of outliving the client's own connect timeout.
 func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
 		if d > 0 {
 			f.backendInitTimeout = d
+			f.backendInitTimeoutSet = true
 		}
 	}
 }
 
-// WithHMACSecret sets the server-managed secret used for HMAC-SHA256 token hashing.
-// The secret should be 32+ bytes and loaded from secure configuration (e.g., environment
-// variable, secret management system).
+// WithRequestTimeoutResolver configures the timeout used for individual
+// backend operations. The resolver receives a backend workload ID and may
+// return a workload-specific duration. A nil resolver, or a non-positive
+// result, preserves the historical 30-second default.
 //
-// The secret is defensively copied to prevent external modification after assignment.
-// Empty or nil secrets are rejected (function is a no-op) to prevent accidental security downgrades.
-//
-// If not set, a default insecure secret is used (NOT RECOMMENDED for production).
-func WithHMACSecret(secret []byte) MultiSessionFactoryOption {
+// The resolver may be called concurrently and must therefore be safe for
+// concurrent use. A workload timeout longer than the DEFAULT initialization
+// timeout also extends that workload's initialization deadline; the shorter
+// configured value never reduces the default allowance. It does not extend an
+// explicit WithBackendInitTimeout, which is a deliberate cap.
+func WithRequestTimeoutResolver(resolver func(workloadID string) time.Duration) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
-		// Reject empty/nil secrets to prevent silent security downgrade
-		if len(secret) == 0 {
-			slog.Warn("WithHMACSecret: empty or nil secret rejected, falling back to default insecure secret",
-				"recommendation", "provide a secure secret via VMCP_SESSION_HMAC_SECRET environment variable")
-			return
+		if resolver != nil {
+			f.requestTimeoutResolver = resolver
 		}
-		// Make a defensive copy to prevent external modification
-		f.hmacSecret = append([]byte(nil), secret...)
 	}
 }
 
-// WithAggregator configures the factory to apply per-backend tool overrides,
-// conflict resolution, and advertising filters when building sessions.
-// If not set, raw backend tool names are used unchanged.
-func WithAggregator(agg aggregator.Aggregator) MultiSessionFactoryOption {
+// WithListChangedFilter decides, per backend, whether this factory subscribes
+// to that backend's list_changed notifications. Returning false drops the sink
+// for that backend only, which is what stops the connector opening a standalone
+// notification stream against it.
+//
+// The point is to make session init independent of a stream some backends never
+// service. The connector already treats a nil sink as "do not subscribe", but
+// the server supplies a sink for every session, so that path was unreachable in
+// production: a backend that accepts the subscribe and then never answers it
+// stalls the handshake for the whole init allowance, and clients with their own
+// connect timeout give up first. Excluding such a backend costs it live
+// list_changed propagation and nothing else; its tools are still aggregated and
+// callable, and they refresh on the next session.
+//
+// A nil filter, the default, subscribes to every backend exactly as before.
+// The filter may be called concurrently and must be safe for concurrent use.
+func WithListChangedFilter(allowed func(workloadID string) bool) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
-		f.aggregator = agg
+		if allowed != nil {
+			f.listChangedAllowed = allowed
+		}
+	}
+}
+
+// WithRevisionLookup supplies a function that reports a backend's cached MCP
+// revision (Legacy vs. Modern) by workload ID, so initOneBackend can skip
+// connecting to a backend known to speak the stateless Modern (2026-07-28)
+// revision. The Modern request path does not use this persistent backend
+// session, so skipping it avoids unnecessary connection setup — see
+// initOneBackend's doc comment for the rationale.
+//
+// The lookup's second return distinguishes "known Modern" from "unprobed"
+// (including RevisionLegacy's zero value): only a confirmed Modern result
+// skips the connect. A nil lookup (the default) or a cache miss reproduces
+// today's behaviour exactly — every backend gets an unconditional connect
+// attempt.
+//
+// A func value, not an interface, per the option-pattern rule in
+// .claude/rules/go-style.md: it stays compile-time safe without exposing
+// CachedRevision on vmcp.BackendClient for every implementation to satisfy.
+//
+// Concurrency: lookup is called from the per-backend init goroutines started
+// by makeBaseSession, up to maxConcurrency at once, so it must be safe for
+// concurrent use.
+func WithRevisionLookup(lookup func(workloadID string) (mcpparser.Revision, bool)) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.revisionLookup = lookup
+	}
+}
+
+// WithDialControlResolver supplies a dial-control hook chosen per backend, so an
+// embedder can apply a per-backend dial policy to the connections opened at
+// session init (MakeSessionWithID and RestoreSession). Mirrors WithRevisionLookup
+// / WithRequestTimeoutResolver: the resolver receives a backend workload ID and
+// returns the net.Dialer.Control hook to install for that backend, or nil to
+// leave it on http.DefaultTransport.
+//
+// The returned hook fires after DNS resolution and before the TCP handshake,
+// receiving the resolved peer IP — so it can enforce a per-backend dial policy
+// (e.g. refuse dials into private ranges to blunt SSRF / DNS-rebinding) on
+// backend endpoints that may be operator- or attacker-influenceable. A nil
+// resolver (the default), or a resolver that returns nil for a given workload,
+// leaves that backend's transport on http.DefaultTransport — byte-for-byte
+// unchanged from the no-hook path.
+//
+// It is the session-factory counterpart to pkg/vmcp/client.WithDialControl,
+// which guards the aggregation and tool-call paths; without this option those
+// paths could be guarded while session-init dials were not. The returned hook
+// matches net.Dialer.Control exactly, but the option shapes differ: this one is
+// a per-backend resolver, whereas client.WithDialControl is not (yet) per-backend.
+// See backend.WithDialControlResolver for the full security caveats — including
+// that the resolver only SELECTS a hook, so the returned hook must itself inspect
+// the resolved address or it gives no SSRF/DNS-rebinding protection (per-TCP-dial
+// not per-request, proxy transparency, both IP families).
+//
+// Concurrency: the resolver is called from the per-backend init goroutines
+// started by makeBaseSession, up to maxConcurrency at once, so it must be safe
+// for concurrent use.
+func WithDialControlResolver(
+	resolver func(workloadID string) func(network, address string, c syscall.RawConn) error,
+) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		f.dialControlResolver = resolver
 	}
 }
 
 // NewSessionFactory creates a MultiSessionFactory that connects to backends
 // over HTTP using the given outgoing auth registry.
 func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSessionFactoryOption) MultiSessionFactory {
-	return newSessionFactoryWithConnector(backend.NewHTTPConnector(registry), opts...)
+	f := newSessionFactoryWithConnector(nil, opts...)
+	f.connector = backend.NewHTTPConnector(
+		registry,
+		backend.WithRequestTimeoutResolver(f.requestTimeoutResolver),
+		backend.WithDialControlResolver(f.dialControlResolver),
+	)
+	return f
 }
 
 // newSessionFactoryWithConnector creates a MultiSessionFactory backed by an
 // arbitrary connector. Used by tests to inject a fake connector without
 // requiring real HTTP backends.
-func newSessionFactoryWithConnector(connector backendConnector, opts ...MultiSessionFactoryOption) MultiSessionFactory {
+func newSessionFactoryWithConnector(connector backendConnector, opts ...MultiSessionFactoryOption) *defaultMultiSessionFactory {
 	f := &defaultMultiSessionFactory{
 		connector:          connector,
 		maxConcurrency:     defaultMaxBackendInitConcurrency,
 		backendInitTimeout: defaultBackendInitTimeout,
-		hmacSecret:         defaultHMACSecret, // Initialize with default (insecure) secret
 	}
 	for _, opt := range opts {
 		opt(f)
@@ -221,28 +330,104 @@ type initResult struct {
 // It is called from a goroutine inside MakeSession and handles all partial-
 // initialisation cases: connector errors, and nil conn/caps without an error.
 // Returns a non-nil *initResult on success, nil when the backend should be
-// skipped (failure already logged as a warning).
+// skipped. The second return is true when the skip is a deliberate Modern
+// (2026-07-28 revision) skip rather than a failure.
+//
+// Why a known Modern backend is skipped. go-sdk can negotiate Modern
+// through server/discover, and its stateful-server rejection is no longer the
+// `session not found` behavior described by the earlier comment. The go-sdk client
+// can open subscriptions/listen when the backend advertises push capabilities;
+// that is a long-lived per-request stream, not a session the vMCP factory needs
+// to retain. This factory holds backend sessions for the Legacy session path
+// (including list_changed forwarding and resume hints), while Modern calls use
+// the request-scoped `modernCall` path and carry their protocol metadata on each
+// request. A confirmed Modern backend therefore has no useful persistent
+// BackendClient session to add to this MultiSession.
+//
+// Known caveat (#5992): the direction that matters here — a backend redeployed
+// stateless→stateful, so a cached Modern label is now wrong — self-corrects only
+// on error. The Modern call fails, dispatch's isRevisionMismatch fires and
+// reclassify flips the cache (pkg/vmcp/client/client.go). (The opposite
+// direction, Legacy→Modern, does self-heal on success: legacyInit flips the
+// cache when initialize negotiates Modern, added in #5997.) So calls are never
+// wrong for long, but until some call has re-probed, this method keeps skipping
+// a backend that now wants a connection, and that session holds none for it —
+// list_changed propagation is lost until a NEW session is created after the
+// reclassification. Closing that window needs a periodic re-probe, which is
+// #5992's remaining scope, not this method's.
+//
+// Cold start: the revision cache is populated by the first backend call
+// through dispatch (probeRevision) or, when configured, the health monitor's
+// periodic check — neither is ordered before the first client session. Until
+// that cache is warm, each new session may ask the connector to create a
+// backend client before vMCP knows it is Modern; those sessions can therefore
+// incur unnecessary connection setup. Sessions created after the cache is warm
+// skip the Modern backend connection.
 func (f *defaultMultiSessionFactory) initOneBackend(
 	ctx context.Context,
 	b *vmcp.Backend,
 	identity *auth.Identity,
 	sessionHint string,
-) *initResult {
-	bCtx, cancel := context.WithTimeout(ctx, f.backendInitTimeout)
+	sink backend.ListChangedSink,
+) (*initResult, bool) {
+	target := vmcp.BackendToTarget(b)
+
+	if f.isKnownModern(target.WorkloadID) {
+		slog.Debug("Skipping backend connection for Modern backend; no session to hold",
+			"backendID", b.ID,
+			"backendName", b.Name,
+		)
+		return nil, true
+	}
+
+	// A longer per-workload request timeout extends the DEFAULT init allowance
+	// so a slow backend still gets to finish. An explicit backend-init timeout
+	// is a deliberate cap and is never raised: the operator set it precisely
+	// because this backend can stall the handshake past the client's patience.
+	initTimeout := f.backendInitTimeout
+	if !f.backendInitTimeoutSet && f.requestTimeoutResolver != nil {
+		if requestTimeout := f.requestTimeoutResolver(target.WorkloadID); requestTimeout > initTimeout {
+			initTimeout = requestTimeout
+		}
+	}
+	bCtx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
 
-	target := vmcp.BackendToTarget(b)
-	conn, caps, err := f.connector(bCtx, target, identity, sessionHint)
+	// Dropping the sink here is what keeps a backend that never services the
+	// subscribe from stalling this handshake: the connector only opens the
+	// standalone notification stream when it has a sink to feed.
+	if sink != nil && !f.listChangedEnabled(target.WorkloadID) {
+		slog.Debug("Backend excluded from list_changed propagation; not subscribing",
+			"backendID", b.ID,
+			"backendName", b.Name,
+		)
+		sink = nil
+	}
+
+	conn, caps, err := f.connector(bCtx, target, identity, sessionHint, sink)
 	if err != nil {
 		if conn != nil {
 			_ = conn.Close()
+		}
+		// Narrows the WARN to DEBUG when the backend has resolved to Modern
+		// since the pre-connect check — either an era mismatch that lost the
+		// cold-start race (the expected case, see this method's doc comment) or
+		// an unrelated genuine failure (transport, auth) on a backend that
+		// happens to be Modern. Both are cases where a WARN would misinform.
+		if f.isKnownModern(target.WorkloadID) {
+			slog.Debug("Backend failed to initialise and is now known Modern; skipping",
+				"backendID", b.ID,
+				"backendName", b.Name,
+				"error", err,
+			)
+			return nil, true
 		}
 		slog.Warn("Failed to initialise backend for session; continuing without it",
 			"backendID", b.ID,
 			"backendName", b.Name,
 			"error", err,
 		)
-		return nil
+		return nil, false
 	}
 	if conn == nil || caps == nil {
 		if conn != nil {
@@ -252,9 +437,29 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 			"backendID", b.ID,
 			"backendName", b.Name,
 		)
-		return nil
+		return nil, false
 	}
-	return &initResult{target: target, conn: conn, caps: caps}
+	return &initResult{target: target, conn: conn, caps: caps}, false
+}
+
+// listChangedEnabled reports whether workloadID should be subscribed to. No
+// filter means subscribe, preserving the historical behaviour.
+func (f *defaultMultiSessionFactory) listChangedEnabled(workloadID string) bool {
+	if f.listChangedAllowed == nil {
+		return true
+	}
+	return f.listChangedAllowed(workloadID)
+}
+
+// isKnownModern reports whether workloadID's cached revision is confirmed
+// Modern. Returns false for an unprobed backend or when no lookup is
+// configured — indistinguishable from "attempt the connect" in either case.
+func (f *defaultMultiSessionFactory) isKnownModern(workloadID string) bool {
+	if f.revisionLookup == nil {
+		return false
+	}
+	rev, known := f.revisionLookup(workloadID)
+	return known && rev == mcpparser.RevisionModern
 }
 
 // buildRoutingTable populates a RoutingTable and capability lists from a sorted
@@ -293,86 +498,18 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 	return rt, tools, resources, prompts
 }
 
-// buildRoutingTableWithAggregator applies the aggregator's full transformation
-// pipeline (overrides, conflict resolution, advertising filter) to the raw
-// backend capabilities in results, producing resolved tool names identical to
-// the standard aggregation path. Resources and prompts pass through unchanged.
-//
-// Returns the routing table, advertised tools (for MCP clients), all resolved
-// tools (for schema lookup), resources, prompts, and any error.
-func buildRoutingTableWithAggregator(
-	ctx context.Context,
-	agg aggregator.Aggregator,
-	results []initResult,
-) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
-	toolsByBackend := make(map[string][]vmcp.Tool, len(results))
-	targets := make(map[string]*vmcp.BackendTarget, len(results))
-	for i := range results {
-		r := &results[i]
-		toolsByBackend[r.target.WorkloadID] = r.caps.Tools
-		targets[r.target.WorkloadID] = r.target
-	}
-
-	advertisedTools, allResolvedTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-
-	rt := &vmcp.RoutingTable{
-		Tools:     toolsRouting,
-		Resources: make(map[string]*vmcp.BackendTarget),
-		Prompts:   make(map[string]*vmcp.BackendTarget),
-	}
-
-	var allResources []vmcp.Resource
-	var allPrompts []vmcp.Prompt
-	for _, r := range results {
-		for _, res := range r.caps.Resources {
-			if _, ok := rt.Resources[res.URI]; !ok {
-				allResources = append(allResources, res)
-				rt.Resources[res.URI] = r.target
-			}
-		}
-		for _, prompt := range r.caps.Prompts {
-			if _, ok := rt.Prompts[prompt.Name]; !ok {
-				allPrompts = append(allPrompts, prompt)
-				rt.Prompts[prompt.Name] = r.target
-			}
-		}
-	}
-
-	return rt, advertisedTools, allResolvedTools, allResources, allPrompts, nil
-}
-
 // MakeSessionWithID implements MultiSessionFactory.
 func (f *defaultMultiSessionFactory) MakeSessionWithID(
 	ctx context.Context,
 	id string,
 	identity *auth.Identity,
-	allowAnonymous bool,
 	backends []*vmcp.Backend,
+	sink ListChangedSink,
 ) (MultiSession, error) {
 	if err := validateSessionID(id); err != nil {
 		return nil, err
 	}
-
-	// Validate allowAnonymous is consistent with identity to prevent security footguns.
-	// If identity has a token, allowAnonymous must be false (caller wants a bound session).
-	// If identity is nil or has no token, allowAnonymous should be true (anonymous session).
-	if identity != nil && identity.Token != "" && allowAnonymous {
-		return nil, fmt.Errorf(
-			"invalid session configuration: cannot create anonymous session " +
-				"(allowAnonymous=true) with bearer token (identity.Token is non-empty)",
-		)
-	}
-	if (identity == nil || identity.Token == "") && !allowAnonymous {
-		return nil, fmt.Errorf(
-			"invalid session configuration: cannot create bound session " +
-				"(allowAnonymous=false) without bearer token (identity is nil or has empty token)",
-		)
-	}
-
-	return f.makeSession(ctx, id, identity, backends)
+	return f.makeSession(ctx, id, identity, backends, sink)
 }
 
 // validateSessionID checks that id is non-empty and contains only visible
@@ -406,24 +543,23 @@ func populateBackendMetadata(transportSess transportsession.Session, results []i
 			transportSess.SetMetadata(MetadataKeyBackendSessionPrefix+r.target.WorkloadID, sessID)
 		}
 	}
-	// Always write MetadataKeyBackendIDs, even for zero-backend sessions ("").
-	// This distinguishes an explicit zero-backend state from absent/corrupted metadata
-	// in RestoreSession, preventing filterBackendsByStoredIDs from silently
-	// falling back to all backends when the key is missing.
+	// Always write MetadataKeyBackendIDs — key presence distinguishes explicit
+	// zero-backend from absent/corrupted metadata (see const doc).
 	transportSess.SetMetadata(MetadataKeyBackendIDs, strings.Join(ids, ","))
 }
 
 // makeBaseSession initialises backends and assembles a defaultMultiSession
-// WITHOUT applying the hijack-prevention security wrapper.
+// WITHOUT applying the session-binding security wrapper.
 // Callers are responsible for wrapping the result with the appropriate decorator
-// (PreventSessionHijacking for new sessions, RestoreHijackPrevention for restored ones).
+// (BindSession for new sessions, RestoreSessionBinding for restored ones).
 func (f *defaultMultiSessionFactory) makeBaseSession(
 	ctx context.Context,
 	sessID string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 	sessionHints map[string]string,
-) (*defaultMultiSession, error) {
+	sink backend.ListChangedSink,
+) *defaultMultiSession {
 	filtered := make([]*vmcp.Backend, 0, len(backends))
 	for _, b := range backends {
 		if b == nil {
@@ -435,6 +571,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	backends = filtered
 
 	rawResults := make([]*initResult, len(backends))
+	modernSkipped := make([]bool, len(backends))
 	sem := make(chan struct{}, f.maxConcurrency)
 	var wg sync.WaitGroup
 	wg.Add(len(backends))
@@ -443,7 +580,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			rawResults[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID])
+			rawResults[i], modernSkipped[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID], sink)
 		}(i, b)
 	}
 	wg.Wait()
@@ -463,34 +600,24 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 		return results[i].target.WorkloadID < results[j].target.WorkloadID
 	})
 
-	if len(results) == 0 && len(backends) > 0 {
-		slog.Warn("All backends failed to initialise; session will have no capabilities",
+	// Only warn when at least one backend was actually expected to hold a
+	// session — a set that skipped every backend as Modern is working as
+	// designed, not a failure. The message deliberately does NOT say the session
+	// has no capabilities: on the Serve path those come from the core, not from
+	// these connections, so a session with zero held connections still lists and
+	// calls tools normally. What is actually lost is list_changed propagation.
+	if len(results) == 0 && len(backends) > 0 && slices.Contains(modernSkipped, false) {
+		slog.Warn("No backend held a session for this session; every non-Modern backend failed to initialise",
 			"backendCount", len(backends))
 	}
 
-	var (
-		routingTable     *vmcp.RoutingTable
-		advertisedTools  []vmcp.Tool
-		allResolvedTools []vmcp.Tool
-		allResources     []vmcp.Resource
-		allPrompts       []vmcp.Prompt
-	)
-	if f.aggregator != nil {
-		var aggErr error
-		routingTable, advertisedTools, allResolvedTools, allResources, allPrompts, aggErr =
-			buildRoutingTableWithAggregator(ctx, f.aggregator, results)
-		if aggErr != nil {
-			return nil, fmt.Errorf("failed to process backend capabilities: %w", aggErr)
-		}
-	} else {
-		routingTable, advertisedTools, allResources, allPrompts = buildRoutingTable(results)
-		allResolvedTools = advertisedTools // no filter when no aggregator
-	}
+	// The core is the single source of capability aggregation/advertising (the factory never
+	// aggregates), so the routing table is built from the raw backend capabilities with no
+	// overrides/conflict-resolution/filter; advertised and resolved tools are identical.
+	routingTable, advertisedTools, allResources, allPrompts := buildRoutingTable(results)
+	allResolvedTools := advertisedTools
 
 	transportSess := transportsession.NewStreamableSession(sessID)
-	if identity != nil && identity.Subject != "" {
-		transportSess.SetMetadata(MetadataKeyIdentitySubject, identity.Subject)
-	}
 	populateBackendMetadata(transportSess, results)
 
 	return &defaultMultiSession{
@@ -503,26 +630,25 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 		prompts:         allPrompts,
 		backendSessions: backendSessions,
 		queue:           newAdmissionQueue(),
-	}, nil
+	}
 }
 
 // makeSession is the shared implementation for MakeSession and MakeSessionWithID.
-// It builds the base session via makeBaseSession, then applies the hijack-prevention
+// It builds the base session via makeBaseSession, then applies the session-binding
 // security wrapper using the caller's identity.
 func (f *defaultMultiSessionFactory) makeSession(
 	ctx context.Context,
 	sessID string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
+	sink backend.ListChangedSink,
 ) (MultiSession, error) {
-	baseSession, err := f.makeBaseSession(ctx, sessID, identity, backends, nil)
-	if err != nil {
-		return nil, err
-	}
+	baseSession := f.makeBaseSession(ctx, sessID, identity, backends, nil, sink)
 
-	// Apply hijack prevention: computes token binding, stores metadata, and wraps
-	// the session with validation logic.
-	decorated, err := security.PreventSessionHijacking(baseSession, f.hmacSecret, identity)
+	// Apply session binding: extracts the (iss, sub) identity tuple, stores it in
+	// session metadata under MetadataKeyIdentityBinding, and wraps the session with
+	// validation logic that checks every subsequent caller against that binding.
+	decorated, err := security.BindSession(baseSession, identity)
 	if err != nil {
 		_ = baseSession.Close()
 		return nil, err
@@ -532,8 +658,10 @@ func (f *defaultMultiSessionFactory) makeSession(
 
 // RestoreSession implements MultiSessionFactory.
 // It reconnects to the backends whose IDs are listed in storedMetadata, rebuilds
-// the routing table, and reapplies the hijack-prevention decorator from the stored
-// token hash and salt — without recomputing them from a (unavailable) token.
+// the routing table, and reapplies the session-binding decorator from the stored
+// identity binding. Because the original bearer token is not persisted, backend
+// connectors receive nil identity; live requests carry a fully-populated identity
+// on req.Context() from TokenValidator.Middleware.
 func (f *defaultMultiSessionFactory) RestoreSession(
 	ctx context.Context,
 	id string,
@@ -557,13 +685,34 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	// Filter allBackends to the subset originally connected in this session.
 	filteredBackends := filterBackendsByStoredIDs(allBackends, storedBackendIDs)
 
-	// Reconstruct a minimal identity from stored metadata. The original bearer
-	// token is never persisted (only its HMAC-SHA256 hash is), so Token is empty.
-	// The security decorator is restored from the stored hash/salt below.
-	var identity *auth.Identity
-	if subject := storedMetadata[MetadataKeyIdentitySubject]; subject != "" {
-		identity = &auth.Identity{}
-		identity.Subject = subject
+	// Validate and read the stored identity binding. This key is written by
+	// BindSession at session-creation time and identifies whether the session
+	// was bound to an authenticated identity or was anonymous.
+	storedBinding, hasBinding := storedMetadata[sessiontypes.MetadataKeyIdentityBinding]
+	if !hasBinding {
+		// Legacy token-hash key present confirms not corrupted — safe to invalidate.
+		if _, hasLegacy := storedMetadata[sessiontypes.MetadataKeyTokenHash]; hasLegacy {
+			slog.Warn("RestoreSession: legacy session missing identity binding; invalidating",
+				"reason", "legacy_session_missing_identity_binding",
+			)
+			return nil, transportsession.ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("RestoreSession: %q metadata key absent (corrupted session metadata)",
+			sessiontypes.MetadataKeyIdentityBinding)
+	}
+
+	// Validate that the stored binding is parsable (or the unauthenticated
+	// sentinel) before proceeding. A malformed value indicates corrupted metadata.
+	// We do NOT construct a partial *auth.Identity here: the original bearer
+	// token is not persisted, so UpstreamTokens cannot be recovered. Fabricating
+	// a struct with empty Token and UpstreamTokens would violate the contract that
+	// a non-nil *auth.Identity is always fully populated (see pkg/auth/identity.go).
+	// Backend connectors receive nil identity; live tool calls already carry a
+	// complete identity on req.Context() from TokenValidator.Middleware. See #5336.
+	if !binding.IsUnauthenticated(storedBinding) {
+		if _, _, ok := binding.Parse(storedBinding); !ok {
+			return nil, fmt.Errorf("RestoreSession: stored identity binding is malformed: %q", storedBinding)
+		}
 	}
 
 	// Extract stored per-backend session IDs as hints so each backend can
@@ -576,45 +725,24 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	}
 
 	// Build the base session (backend connections + routing table) without the
-	// security wrapper. The wrapper is applied separately using stored hash/salt.
-	baseSession, err := f.makeBaseSession(ctx, id, identity, filteredBackends, sessionHints)
-	if err != nil {
-		return nil, fmt.Errorf("RestoreSession: failed to rebuild backend connections: %w", err)
-	}
+	// security wrapper. Pass nil identity — see comment above. Pass nil sink: a
+	// cross-pod restore has no SDK ClientSession to resync (the restoring pod may
+	// not be the one serving the client's connection), so tools list_changed
+	// propagation on this path is a follow-up (#5748 scope: the CreateSession
+	// path only).
+	baseSession := f.makeBaseSession(ctx, id, nil, filteredBackends, sessionHints, nil)
 
-	// Restore only the security keys (token hash and salt) from stored metadata.
-	// MetadataKeyIdentitySubject is already set by makeBaseSession via the
-	// reconstructed identity. MetadataKeyBackendIDs and the per-backend session
-	// keys (MetadataKeyBackendSessionPrefix.*) are freshly computed by
-	// makeBaseSession from the actual reconnected backends; overwriting them with
-	// stored values would make metadata inconsistent if any backend failed to
-	// reconnect during restore.
-	for _, key := range []string{
-		sessiontypes.MetadataKeyTokenHash,
-		sessiontypes.MetadataKeyTokenSalt,
-	} {
-		if v, ok := storedMetadata[key]; ok {
-			baseSession.SetMetadata(key, v)
-		}
-	}
+	// Restore only the identity-binding key from stored metadata. The other
+	// keys (MetadataKeyBackendIDs, MetadataKeyBackendSessionPrefix.*) are
+	// freshly computed by makeBaseSession from the actual reconnected backends;
+	// overwriting them with stored values would make metadata inconsistent if
+	// any backend failed to reconnect during restore.
+	baseSession.SetMetadata(sessiontypes.MetadataKeyIdentityBinding, storedBinding)
 
-	// Recreate the hijack-prevention decorator using the stored hash and salt,
-	// not by recomputing from identity.Token (which is unavailable at restore time).
-	//
-	// Fail closed if the token-hash key is entirely absent from stored metadata:
-	// PreventSessionHijacking always writes the key (empty string for anonymous,
-	// non-empty for authenticated), so an absent key indicates corrupted or
-	// truncated metadata — not a legitimately anonymous session.
-	storedHash, hashKeyPresent := storedMetadata[sessiontypes.MetadataKeyTokenHash]
-	if !hashKeyPresent {
-		_ = baseSession.Close()
-		return nil, fmt.Errorf("RestoreSession: token hash metadata key absent (corrupted session metadata)")
-	}
-	storedSalt := storedMetadata[sessiontypes.MetadataKeyTokenSalt]
-	restored, err := security.RestoreHijackPrevention(baseSession, storedHash, storedSalt, f.hmacSecret)
+	restored, err := security.RestoreSessionBinding(baseSession, storedBinding)
 	if err != nil {
 		_ = baseSession.Close()
-		return nil, fmt.Errorf("RestoreSession: failed to restore hijack prevention: %w", err)
+		return nil, fmt.Errorf("RestoreSession: failed to restore session binding: %w", err)
 	}
 	return restored, nil
 }
@@ -627,15 +755,13 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 // omit the key entirely (corrupted/absent metadata) must be handled by the caller before
 // invoking this function — relying on empty-string to mean "all backends" is a footgun.
 func filterBackendsByStoredIDs(allBackends []*vmcp.Backend, storedIDs string) []*vmcp.Backend {
-	if storedIDs == "" {
+	ids := ParseBackendIDs(storedIDs)
+	if len(ids) == 0 {
 		return nil
 	}
-	parts := strings.Split(storedIDs, ",")
-	idSet := make(map[string]struct{}, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			idSet[t] = struct{}{}
-		}
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		idSet[id] = struct{}{}
 	}
 	filtered := make([]*vmcp.Backend, 0, len(idSet))
 	for _, b := range allBackends {

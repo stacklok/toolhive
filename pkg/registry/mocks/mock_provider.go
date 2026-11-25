@@ -40,6 +40,21 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
+// GetPlugin mocks base method.
+func (m *MockProvider) GetPlugin(namespace, name string) (*registry.Plugin, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPlugin", namespace, name)
+	ret0, _ := ret[0].(*registry.Plugin)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetPlugin indicates an expected call of GetPlugin.
+func (mr *MockProviderMockRecorder) GetPlugin(namespace, name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPlugin", reflect.TypeOf((*MockProvider)(nil).GetPlugin), namespace, name)
+}
+
 // GetRegistry mocks base method.
 func (m *MockProvider) GetRegistry() (*registry.Registry, error) {
 	m.ctrl.T.Helper()
@@ -85,6 +100,21 @@ func (mr *MockProviderMockRecorder) GetSkill(namespace, name any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSkill", reflect.TypeOf((*MockProvider)(nil).GetSkill), namespace, name)
 }
 
+// ListAvailablePlugins mocks base method.
+func (m *MockProvider) ListAvailablePlugins() ([]registry.Plugin, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListAvailablePlugins")
+	ret0, _ := ret[0].([]registry.Plugin)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListAvailablePlugins indicates an expected call of ListAvailablePlugins.
+func (mr *MockProviderMockRecorder) ListAvailablePlugins() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAvailablePlugins", reflect.TypeOf((*MockProvider)(nil).ListAvailablePlugins))
+}
+
 // ListAvailableSkills mocks base method.
 func (m *MockProvider) ListAvailableSkills() ([]registry.Skill, error) {
 	m.ctrl.T.Helper()
@@ -113,6 +143,21 @@ func (m *MockProvider) ListServers() ([]registry.ServerMetadata, error) {
 func (mr *MockProviderMockRecorder) ListServers() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListServers", reflect.TypeOf((*MockProvider)(nil).ListServers))
+}
+
+// SearchPlugins mocks base method.
+func (m *MockProvider) SearchPlugins(query string) ([]registry.Plugin, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SearchPlugins", query)
+	ret0, _ := ret[0].([]registry.Plugin)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SearchPlugins indicates an expected call of SearchPlugins.
+func (mr *MockProviderMockRecorder) SearchPlugins(query any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchPlugins", reflect.TypeOf((*MockProvider)(nil).SearchPlugins), query)
 }
 
 // SearchServers mocks base method.

@@ -29,13 +29,20 @@ type BackendStatus struct {
 	Health    string `json:"health"`              // "healthy", "degraded", "unhealthy", "unauthenticated", "unknown"
 	Transport string `json:"transport"`           // MCP transport protocol
 	AuthType  string `json:"auth_type,omitempty"` // "unauthenticated", "header_injection", "token_exchange"
+	// MCPRevision is the backend's resolved MCP protocol revision ("2025-11-25"
+	// or "2026-07-28"), mirroring the value the operator surfaces on
+	// VirtualMCPServer.status.discoveredBackends[]. Empty when the backend has
+	// not been probed yet or when health monitoring is disabled, since the
+	// revision is only observable through the live health state.
+	MCPRevision string `json:"mcp_revision,omitempty"`
 }
 
 // handleStatus handles /status HTTP requests for operational visibility.
 //
 // Security Note: This endpoint is unauthenticated to support operator consumption
-// and debugging. It exposes operational metadata (backend names, auth types)
-// but NOT secrets, tokens, internal URLs, or request data. In sensitive multi-tenant
+// and debugging. It exposes operational metadata (backend names, auth types,
+// negotiated MCP protocol revision) but NOT secrets, tokens, internal URLs, or
+// request data. In sensitive multi-tenant
 // deployments, restrict access to this endpoint via network policies.
 //
 // For minimal health checking (load balancers), use /health instead.
@@ -60,40 +67,53 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // buildStatusResponse builds the StatusResponse from server state.
 // Uses the provided context for request cancellation and tracing propagation.
 func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
-	// Get current backends from registry (supports dynamic backend changes)
-	backends := s.backendRegistry.List(ctx)
+	// Get current backends from registry (supports dynamic backend changes).
+	// The registry is owned by the core and may not be wired into the transport
+	// yet (the Serve skeleton, before later Phase 2 tasks relocate it); a nil
+	// registry yields an empty backend view rather than a panic. This is expected
+	// only on a Serve-built skeleton — on the server.New path the registry is a
+	// required arg, so a nil there is a wiring bug; log at Debug so it is
+	// observable when investigating without spamming routine /status polls.
+	var backends []vmcp.Backend
+	if s.backendRegistry != nil {
+		backends = s.backendRegistry.List(ctx)
+	} else {
+		slog.Debug("status: backend registry not wired; reporting empty backend view")
+	}
 	backendStatuses := make([]BackendStatus, 0, len(backends))
 
 	// Get live health states from the health monitor (if enabled) so that
 	// /status reflects the same runtime health as /api/backends/health.
 	// Skip the call — and the map allocation — entirely when monitoring is
 	// disabled. Reading from a nil map is safe in Go and returns zero values.
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
-
 	var liveHealthStates map[string]*health.State
-	if healthMon != nil {
+	if healthMon := s.backendHealth(); healthMon != nil {
 		liveHealthStates = healthMon.GetAllBackendStates()
 	}
 
 	hasHealthyBackend := false
 	for _, backend := range backends {
 		// Prefer the live health monitor state over the static registry value.
+		// The MCP revision has no static counterpart — it is only ever observable
+		// through the live state, so it stays empty when health monitoring is
+		// disabled or the backend has not been probed yet.
 		healthStatus := backend.HealthStatus
+		var mcpRevision string
 		if liveState, ok := liveHealthStates[backend.ID]; ok {
 			healthStatus = liveState.Status
+			mcpRevision = liveState.MCPRevision
 		}
 
 		status := BackendStatus{
-			Name:      backend.Name,
-			Health:    string(healthStatus),
-			Transport: backend.TransportType,
-			AuthType:  getAuthType(backend.AuthConfig),
+			Name:        backend.Name,
+			Health:      string(healthStatus),
+			Transport:   backend.TransportType,
+			AuthType:    getAuthType(backend.AuthConfig),
+			MCPRevision: mcpRevision,
 		}
 		backendStatuses = append(backendStatuses, status)
 
-		if healthStatus == vmcp.BackendHealthy || healthStatus == vmcp.BackendUnauthenticated {
+		if healthStatus == vmcp.BackendHealthy {
 			hasHealthyBackend = true
 		}
 	}

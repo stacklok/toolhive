@@ -17,6 +17,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oauthtest"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -271,15 +272,13 @@ func TestCreateTokenExchangeMiddleware_Success(t *testing.T) {
 					receivedScopes = r.Form.Get("scope")
 				}
 
-				resp := response{
-					AccessToken:     "exchanged-token",
-					TokenType:       "Bearer",
-					IssuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
-					ExpiresIn:       3600,
-				}
+				body := oauthtest.NewResponse().
+					WithAccessToken("exchanged-token").
+					WithExpiresIn(3600).
+					Build()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(resp)
+				_, _ = w.Write(body)
 			}))
 			defer exchangeServer.Close()
 
@@ -447,14 +446,12 @@ func TestCreateTokenExchangeMiddleware_Failures(t *testing.T) {
 		{
 			name: "invalid injection config",
 			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
-				resp := response{
-					AccessToken:     "exchanged-token",
-					TokenType:       "Bearer",
-					IssuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
-				}
+				body := oauthtest.NewResponse().
+					WithAccessToken("exchanged-token").
+					Build()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(resp)
+				_, _ = w.Write(body)
 			},
 			headerStrategy:     HeaderStrategyCustom,
 			customHeaderName:   "", // Missing header name causes injection failure
@@ -684,15 +681,13 @@ func TestCreateTokenExchangeMiddleware_EnvironmentVariable(t *testing.T) {
 					receivedClientSecret = password
 				}
 
-				resp := response{
-					AccessToken:     "exchanged-token",
-					TokenType:       "Bearer",
-					IssuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
-					ExpiresIn:       3600,
-				}
+				body := oauthtest.NewResponse().
+					WithAccessToken("exchanged-token").
+					WithExpiresIn(3600).
+					Build()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(resp)
+				_, _ = w.Write(body)
 			}))
 			defer exchangeServer.Close()
 

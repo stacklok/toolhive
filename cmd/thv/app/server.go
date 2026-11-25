@@ -16,7 +16,6 @@ import (
 
 	s "github.com/stacklok/toolhive/pkg/api"
 	"github.com/stacklok/toolhive/pkg/auth"
-	mcpserver "github.com/stacklok/toolhive/pkg/mcp/server"
 	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 )
@@ -26,9 +25,6 @@ var (
 	port                   int
 	enableDocs             bool
 	socketPath             string
-	enableMCPServer        bool
-	mcpServerPort          string
-	mcpServerHost          string
 	sentryDSN              string
 	sentryEnvironment      string
 	sentryTracesSampleRate float64
@@ -62,9 +58,8 @@ var serveCmd = &cobra.Command{
 			env = os.Getenv("SENTRY_ENVIRONMENT")
 		}
 
-		// Initialize Sentry for error reporting and panic capture.
-		// Must happen before telemetry.NewServeProvider so the Sentry span
-		// processor is registered in time to be picked up by NewProvider.
+		// Initialize Sentry for error reporting and trace export. This must happen
+		// before telemetry.NewServeProvider so its trace exporter is registered.
 		sentryCfg := sentrypkg.Config{
 			DSN:              dsn,
 			Environment:      env,
@@ -74,20 +69,19 @@ var serveCmd = &cobra.Command{
 		if err := sentrypkg.Init(sentryCfg); err != nil {
 			return fmt.Errorf("failed to initialize sentry: %w", err)
 		}
+		defer sentrypkg.Close()
 
 		// Initialize OTEL provider from global config (thv config otel set-endpoint).
-		// If Sentry is also initialized, the Sentry span processor is wired in so spans
-		// are exported to both the configured OTLP backend and Sentry simultaneously.
+		// When Sentry is initialized, its trace exporter is added as a span processor,
+		// so spans reach both the configured OTLP backend and Sentry.
 		otelProvider, otelEnabled, err := telemetry.NewServeProvider(ctx)
 		if err != nil {
 			return err
 		}
 
 		// Shutdown ordering is intentionally LIFO via defer:
-		//   1. OTEL provider shuts down first — flushes the Sentry span processor
-		//      (which calls hub.Flush internally) before the Sentry client is closed.
-		//   2. Sentry client closes second — safe because the span processor has
-		//      already flushed by the time sentrypkg.Close() runs.
+		//   1. OTEL provider shuts down first, flushing the Sentry trace exporter.
+		//   2. Sentry client closes second, after trace export has completed.
 		// Using defer instead of a goroutine makes the ordering deterministic.
 		if otelProvider != nil {
 			defer func() {
@@ -98,8 +92,6 @@ var serveCmd = &cobra.Command{
 				}
 			}()
 		}
-		defer sentrypkg.Close()
-
 		// If socket path is provided, use it; otherwise use host:port
 		address := fmt.Sprintf("%s:%d", host, port)
 		isUnixSocket := false
@@ -129,40 +121,13 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		// Optionally start MCP server if experimental flag is enabled
-		if enableMCPServer {
-			fmt.Println("EXPERIMENTAL: Starting embedded MCP server")
-
-			mcpConfig := &mcpserver.Config{
-				Host: mcpServerHost,
-				Port: mcpServerPort,
-			}
-
-			go func() {
-				mcpServer, err := mcpserver.New(ctx, mcpConfig)
-				if err != nil {
-					slog.Error("Failed to create MCP server, continuing without it", "error", err)
-					return
-				}
-
-				go func() {
-					<-ctx.Done()
-					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer shutdownCancel()
-					if err := mcpServer.Shutdown(shutdownCtx); err != nil {
-						slog.Error("Failed to shutdown MCP server", "error", err)
-					}
-				}()
-
-				if err := mcpServer.Start(); err != nil {
-					slog.Error("MCP server error", "error", err)
-				}
-			}()
-		}
-
 		// Use ServerBuilder directly to set otelEnabled without adding it as a
 		// positional parameter on the Serve() convenience function.
 		nonce, err := s.GenerateNonce()
+		if err != nil {
+			return err
+		}
+		keySigningCapability, err := s.GenerateKeySigningCapability()
 		if err != nil {
 			return err
 		}
@@ -172,6 +137,7 @@ var serveCmd = &cobra.Command{
 			WithDebugMode(debugMode).
 			WithDocs(enableDocs).
 			WithNonce(nonce).
+			WithKeySigningCapability(keySigningCapability).
 			WithOIDCConfig(oidcConfig).
 			WithOtelEnabled(otelEnabled)
 
@@ -192,16 +158,9 @@ func init() {
 	serveCmd.Flags().IntVar(&port, "port", 8080, "Port to bind the server to")
 	serveCmd.Flags().BoolVar(&enableDocs, "openapi", false,
 		"Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)")
-	serveCmd.Flags().StringVar(&socketPath, "socket", "", "UNIX socket path to bind the "+
-		"server to (overrides host and port if provided)")
-
-	// Add experimental MCP server flags
-	serveCmd.Flags().BoolVar(&enableMCPServer, "experimental-mcp", false,
-		"EXPERIMENTAL: Enable embedded MCP server for controlling ToolHive")
-	serveCmd.Flags().StringVar(&mcpServerPort, "experimental-mcp-port", mcpserver.DefaultMCPPort,
-		"EXPERIMENTAL: Port for the embedded MCP server")
-	serveCmd.Flags().StringVar(&mcpServerHost, "experimental-mcp-host", "localhost",
-		"EXPERIMENTAL: Host for the embedded MCP server")
+	serveCmd.Flags().StringVar(&socketPath, "socket", "",
+		`UNIX socket path or, on Windows, a named pipe (\\.\pipe\<name>) to bind the `+
+			"server to (overrides host and port if provided)")
 
 	// Add Sentry flags. The DSN and environment also fall back to the SENTRY_DSN
 	// and SENTRY_ENVIRONMENT environment variables respectively, which is the

@@ -1,4 +1,4 @@
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: ($testPrefix)
@@ -8,9 +8,6 @@ spec:
   transport: stdio
   proxyMode: sse
   proxyPort: 8080
-  permissionProfile:
-    type: builtin
-    name: network
   resources:
     limits:
       cpu: "100m"
@@ -26,4 +23,3 @@ spec:
         test.toolhive.stacklok.dev/custom-annotation: "custom-value-123"
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
-

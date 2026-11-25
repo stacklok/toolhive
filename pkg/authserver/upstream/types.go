@@ -28,7 +28,17 @@ type Identity struct {
 	// Tokens contains the tokens obtained from the upstream IDP.
 	Tokens *Tokens
 
-	// Subject is the canonical user identifier from the upstream IDP (the "sub" claim).
+	// Subject is the canonical user identifier carried into session storage
+	// and issued JWTs. Source by provider type:
+	//   - OIDC: "sub" from the validated ID token.
+	//   - OAuth2 with userInfo: "sub" (or field-mapped) from userinfo.
+	//   - OAuth2 without userInfo: synthesized "tk-…" value derived from the
+	//     access token (Synthetic=true; see synthesizeSubjectFromAccessToken).
+	//
+	// Stability: stable across refresh-token rotation that preserves the
+	// access token; in synthesis mode it rotates per fresh authorization
+	// code flow, so callers must treat synthesized Subjects as ephemeral
+	// session keys, not stable per-user identifiers.
 	Subject string
 
 	// Name is the user's display name from the upstream IDP (optional).
@@ -36,6 +46,44 @@ type Identity struct {
 
 	// Email is the user's email address from the upstream IDP (optional).
 	Email string
+
+	// Synthetic is true when Subject was generated locally because the
+	// upstream has no userinfo or ID-token-derived identity. Synthetic
+	// subjects rotate per re-auth; callers MUST NOT persist them as stable
+	// per-user keys (doing so grows `users` without bound). Use the
+	// synthesized Subject as an ephemeral session key only.
+	Synthetic bool
+
+	// Claims holds the raw claims resolved from the upstream IDP for this
+	// identity, for downstream authorization-policy inputs. Source by provider
+	// type:
+	//   - OIDC: all claims from the validated ID token.
+	//   - OAuth2 with userInfo: all claims from the userinfo response.
+	//   - OAuth2 with identityFromToken, or synthetic OAuth2: nil — those paths
+	//     resolve only scalar subject/name/email (or nothing), with no structured
+	//     claim set to carry.
+	// These are informational enrichment only: they are NOT used for user
+	// resolution or token storage. May be nil.
+	Claims map[string]any
+
+	// VerifiedIssuer and VerifiedSubject are the exact iss and sub from an
+	// upstream ID token after signature, issuer, audience, and nonce validation.
+	// Only OIDCProviderImpl populates them. They are distinct from Subject, which
+	// may be configured to use a mapped claim for ToolHive user resolution.
+	// They stay the raw ID-token values even when SubjectClaim maps Subject to
+	// another claim, which is why they are used for the RFC 9493 sub_id claim.
+	VerifiedIssuer  string
+	VerifiedSubject string
+
+	// VerifiedStableClaim and VerifiedStableValue are the claim name the upstream is
+	// configured to key users on (SubjectClaim, or "sub" when unset) and that claim's
+	// value from the same validated ID token. Only OIDCProviderImpl populates them.
+	//
+	// The four Verified* fields mirror session.UpstreamSubject, which this package
+	// cannot import. Keep them in step with it and with verifiedUpstreamIdentity in
+	// server/handlers/callback.go.
+	VerifiedStableClaim string
+	VerifiedStableValue string
 }
 
 // ErrIdentityResolutionFailed indicates identity could not be determined.

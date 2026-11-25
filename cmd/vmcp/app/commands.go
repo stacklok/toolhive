@@ -7,10 +7,12 @@ package app
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/pkg/versions"
 	vmcpcli "github.com/stacklok/toolhive/pkg/vmcp/cli"
 )
@@ -36,6 +38,17 @@ observable, and controlled way to expose multiple MCP servers through a single e
 		if err := cmd.Help(); err != nil {
 			slog.Error(fmt.Sprintf("Error displaying help: %v", err))
 		}
+	},
+	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		// Re-initialize logger now that cobra has parsed flags and viper has
+		// the correct value for "debug". The logger installed in main() runs
+		// before flag parsing, so the --debug flag is not yet visible there.
+		var opts []logging.Option
+		if viper.GetBool("debug") {
+			opts = append(opts, logging.WithLevel(slog.LevelDebug))
+		}
+		slog.SetDefault(logging.New(opts...))
+		return nil
 	},
 }
 
@@ -84,12 +97,14 @@ from all configured backend MCP servers.`,
 			host, _ := cmd.Flags().GetString("host")
 			port, _ := cmd.Flags().GetInt("port")
 			enableAudit, _ := cmd.Flags().GetBool("enable-audit")
+			sessionTTL, _ := cmd.Flags().GetDuration("session-ttl")
 
 			return vmcpcli.Serve(cmd.Context(), vmcpcli.ServeConfig{
 				ConfigPath:  configPath,
 				Host:        host,
 				Port:        port,
 				EnableAudit: enableAudit,
+				SessionTTL:  sessionTTL,
 			})
 		},
 	}
@@ -98,6 +113,8 @@ from all configured backend MCP servers.`,
 	cmd.Flags().String("host", "127.0.0.1", "Host address to bind to")
 	cmd.Flags().Int("port", 4483, "Port to listen on")
 	cmd.Flags().Bool("enable-audit", false, "Enable audit logging with default configuration")
+	cmd.Flags().Duration("session-ttl", time.Duration(0),
+		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (30m)")
 
 	return cmd
 }

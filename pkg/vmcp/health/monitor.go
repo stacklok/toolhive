@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync"
 	"time"
 
@@ -47,6 +48,37 @@ type StatusProvider interface {
 	// This method is safe for concurrent access and does not block on health checks.
 	QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool)
 }
+
+// Reporter is the read-and-sync surface a running Monitor exposes to the transport/status
+// layer. The core owns the Monitor (builds it, starts it, stops it in Close, and filters
+// capabilities with it); callers that only report on or sync backend health depend on this
+// interface rather than the concrete *Monitor. *Monitor implements it.
+type Reporter interface {
+	StatusProvider
+
+	// GetBackendStatus returns the current health status for a backend, or an error if the
+	// backend is not monitored.
+	GetBackendStatus(backendID string) (vmcp.BackendHealthStatus, error)
+	// GetBackendState returns the full health state of a backend, or an error if unmonitored.
+	GetBackendState(backendID string) (*State, error)
+	// GetAllBackendStates returns the health states of all monitored backends.
+	GetAllBackendStates() map[string]*State
+	// GetHealthSummary returns an aggregate summary across all monitored backends.
+	GetHealthSummary() Summary
+	// WaitForInitialHealthChecks blocks until every backend has completed its first check.
+	WaitForInitialHealthChecks()
+	// UpdateBackends reconciles the monitored set with newBackends (dynamic registries).
+	UpdateBackends(newBackends []vmcp.Backend)
+	// BuildStatus assembles the aggregate vMCP status from current backend health.
+	BuildStatus() *vmcp.Status
+	// OnChange registers fn to be notified, debounced, when the monitored
+	// backend catalog changes — a backend's advertisability flips or the
+	// monitored set gains/loses backends. See Monitor.OnChange for the full
+	// contract.
+	OnChange(fn ChangeListener)
+}
+
+var _ Reporter = (*Monitor)(nil)
 
 // backendCheck manages the health check goroutine lifecycle for a single backend.
 // It owns the backend snapshot and the cancel function for its goroutine, keeping
@@ -93,8 +125,16 @@ type Monitor struct {
 	// checker performs health checks on backends.
 	checker vmcp.HealthChecker
 
+	// revisions reads each backend's negotiated MCP revision for the status
+	// read-model. Nil when the client does not implement vmcp.RevisionReporter.
+	revisions vmcp.RevisionReporter
+
 	// statusTracker tracks health status for all backends.
 	statusTracker *statusTracker
+
+	// changes debounces backend-catalog change events (advertisability flips,
+	// backend set changes) and fans them out to OnChange listeners.
+	changes *changeNotifier
 
 	// checkInterval is how often to perform health checks.
 	checkInterval time.Duration
@@ -226,13 +266,40 @@ func NewMonitor(
 	// The status tracker will lazily initialize circuit breakers as needed
 	statusTracker := newStatusTracker(config.UnhealthyThreshold, config.CircuitBreaker)
 
+	// The client (directly or via the telemetry decorator) optionally reports the
+	// negotiated MCP revision for the status read-model; nil when unsupported.
+	revisions, _ := client.(vmcp.RevisionReporter)
+
 	return &Monitor{
 		checker:       checker,
+		revisions:     revisions,
 		statusTracker: statusTracker,
+		// Debounce catalog-change notifications to the check cadence: transitions
+		// are only detected once per interval per backend, so one window bounds a
+		// multi-backend flap (e.g. a network partition) to a single fan-out.
+		changes:       newChangeNotifier(config.CheckInterval),
 		checkInterval: config.CheckInterval,
 		backends:      backends,
 		activeChecks:  make(map[string]*backendCheck),
 	}, nil
+}
+
+// OnChange registers fn to be notified when the monitored backend catalog
+// changes: a backend's advertisability flips (healthy/degraded ⇄
+// unhealthy/unknown/unauthenticated — the same partition the core's capability
+// aggregation filters by) or UpdateBackends adds/removes backends.
+//
+// Notifications are debounced to the monitor's check interval: the first
+// change after a quiet period is delivered immediately and further changes
+// within the window coalesce into one trailing delivery, so a flapping
+// backend cannot storm listeners. fn runs on a dedicated goroutine and may
+// call back into the Monitor's read methods, but MUST NOT call Stop (Stop
+// waits for in-flight notifications and would deadlock).
+//
+// Safe to call before or after Start. Listeners cannot be unregistered; they
+// stop being invoked once the monitor is stopped.
+func (m *Monitor) OnChange(fn ChangeListener) {
+	m.changes.subscribe(fn)
 }
 
 // Start begins health monitoring for all backends.
@@ -313,6 +380,11 @@ func (m *Monitor) Stop() error {
 	m.stopped = true
 	m.mu.Unlock()
 
+	// Stop the change notifier first: this cancels any pending debounced
+	// delivery, suppresses notifications from in-flight checks, and waits for
+	// running listener invocations — so no listener outlives Stop.
+	m.changes.stop()
+
 	// Wait for all goroutines to complete
 	m.wg.Wait()
 	slog.Info("health monitor stopped")
@@ -345,6 +417,12 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	// This ensures GetHealthSummary sees new backends before their health checks complete
 	m.backends = newBackends
 
+	// Track whether the monitored set's membership changes (add/remove) so
+	// OnChange listeners are notified once, after the reconciliation below.
+	// Property changes to an existing backend (URL/transport) restart its check
+	// goroutine but do not change catalog membership, so they do not notify.
+	membershipChanged := false
+
 	// Start monitoring for new or changed backends
 	for id, backend := range newBackendsMap {
 		if existing, ok := m.activeChecks[id]; ok {
@@ -358,6 +436,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 			existing.stop()
 		} else {
 			slog.Info("starting health monitoring for new backend", "backend", backend.Name)
+			membershipChanged = true
 		}
 
 		bc := &backendCheck{backend: backend}
@@ -376,7 +455,12 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 			delete(m.activeChecks, id)
 			// Remove backend from status tracker so it no longer appears in status reports
 			m.statusTracker.RemoveBackend(id)
+			membershipChanged = true
 		}
+	}
+
+	if membershipChanged {
+		m.changes.notify()
 	}
 }
 
@@ -427,13 +511,19 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 		return
 	}
 
-	// Create BackendTarget from Backend
+	// Create BackendTarget from Backend. Carry CA bundle and header-forward config
+	// so health checks hit the backend with the same TLS trust and header injection
+	// as list/call requests — otherwise a healthy-to-the-monitor backend could fail
+	// for real traffic (or vice versa).
 	target := &vmcp.BackendTarget{
 		WorkloadID:    backend.ID,
 		WorkloadName:  backend.Name,
 		BaseURL:       backend.BaseURL,
 		TransportType: backend.TransportType,
+		CABundlePath:  backend.CABundlePath,
+		CABundleData:  backend.CABundleData,
 		AuthConfig:    backend.AuthConfig,
+		HeaderForward: backend.HeaderForward,
 		HealthStatus:  vmcp.BackendUnknown, // Status is determined by the health check
 		Metadata:      backend.Metadata,
 	}
@@ -445,15 +535,29 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 	// Perform health check
 	status, err := m.checker.CheckHealth(healthCheckCtx, target)
 
-	// Record result in status tracker
+	// Record result in status tracker. When the result flips the backend's
+	// advertisability, notify OnChange listeners (debounced) so live sessions
+	// can re-derive their advertised capability set.
+	var advertisabilityChanged bool
 	if err != nil {
 		slog.Debug("health check failed for backend", "backend", backend.Name, "error", err, "status", status)
-		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
+		advertisabilityChanged = m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
 	} else {
 		// Pass status to RecordSuccess - it may be healthy or degraded (from slow response)
 		// RecordSuccess will further check for recovering state (had recent failures)
 		slog.Debug("health check succeeded for backend", "backend", backend.Name, "status", status)
-		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
+		advertisabilityChanged = m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
+	}
+	if advertisabilityChanged {
+		m.changes.notify()
+	}
+
+	// Refresh the MCP revision read-model from the client's cache (empty until the
+	// backend is probed). Read-only; a no-op when the client doesn't report it.
+	if m.revisions != nil {
+		if rev, ok := m.revisions.CachedRevision(backend.ID); ok {
+			m.statusTracker.RecordRevision(backend.ID, rev.String())
+		}
 	}
 }
 
@@ -548,8 +652,14 @@ type Summary struct {
 }
 
 // Routable returns the number of backends that can serve traffic.
-// This includes healthy backends and unauthenticated backends (which are
-// reachable but require per-request user auth, e.g., upstream OAuth).
+//
+// TODO(#4920 follow-up): This counts BackendUnauthenticated toward the routable
+// total for historical reasons (PR #4866 added this when BackendUnauthenticated
+// meant "reachable but needs per-request user auth"). After the #4920 fix,
+// BackendUnauthenticated indicates misconfiguration (backend requires auth but
+// no outgoing auth strategy is configured) and should not be considered routable.
+// Revert to `s.Healthy` in a follow-up PR that also updates the operator status
+// collector and controller counterparts of this logic.
 func (s Summary) Routable() int {
 	return s.Healthy + s.Unauthenticated
 }
@@ -564,11 +674,11 @@ func (s Summary) String() string {
 // This converts backend health information into the format needed for status reporting
 // to the Kubernetes API or CLI output.
 //
-// Phase determination (unauthenticated backends are routable — they need per-request user auth
-// but are reachable and running):
-// - Ready: All backends healthy or unauthenticated, or no backends configured (cold start)
+// Phase determination (see Summary.Routable for the TODO about unauthenticated
+// backends being counted as routable — legacy from PR #4866, to be reverted):
+// - Ready: All backends routable, or no backends configured (cold start)
 // - Pending: Backends configured but no health check data yet (waiting for first check)
-// - Degraded: Some backends routable (healthy/unauthenticated), some degraded/unhealthy
+// - Degraded: Some backends routable, some degraded/unhealthy
 // - Failed: No routable backends (and at least one backend exists)
 //
 // Returns a Status instance with current health information and discovered backends.
@@ -606,12 +716,12 @@ func (m *Monitor) BuildStatus() *vmcp.Status {
 }
 
 // determinePhase determines the overall phase based on backend health.
-// Unauthenticated backends are treated as routable — they are reachable and running,
-// they just require per-request user auth (e.g., upstream OAuth).
+// See Summary.Routable for the TODO about unauthenticated backends being
+// counted as routable (legacy from PR #4866, to be reverted in a follow-up).
 // Takes both the health summary and the count of configured backends to distinguish:
 // - No backends configured (configuredCount==0): Ready (cold start)
 // - Backends configured but no health data (configuredCount>0 && summary.Total==0): Pending
-// - Has health data: Ready/Degraded/Failed based on routable (healthy + unauthenticated) count
+// - Has health data: Ready/Degraded/Failed based on routable count
 func determinePhase(summary Summary, configuredBackendCount int) vmcp.Phase {
 	if summary.Total == 0 {
 		// No health data yet - distinguish cold start from waiting for first check
@@ -697,6 +807,7 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 				CircuitBreakerState: string(state.CircuitState),
 				CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
 				ConsecutiveFailures: state.ConsecutiveFailures,
+				MCPRevision:         state.MCPRevision,
 			})
 			continue
 		}
@@ -714,6 +825,7 @@ func (m *Monitor) convertToDiscoveredBackends(allStates map[string]*State) []vmc
 			CircuitBreakerState: string(state.CircuitState),
 			CircuitLastChanged:  metav1.NewTime(state.CircuitLastChanged),
 			ConsecutiveFailures: state.ConsecutiveFailures,
+			MCPRevision:         state.MCPRevision,
 		})
 	}
 
@@ -785,7 +897,7 @@ func formatBackendMessage(state *State) string {
 		case vmcp.BackendUnhealthy:
 			baseMsg = "Unhealthy"
 		case vmcp.BackendUnauthenticated:
-			baseMsg = "Authentication required"
+			baseMsg = "Authentication misconfigured (backend requires auth, none configured)"
 		case vmcp.BackendUnknown:
 			baseMsg = "Unknown"
 		default:
@@ -929,7 +1041,14 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 
 // backendChanged returns true if the backend's health-check-relevant properties have changed.
 // This is used by UpdateBackends to detect when an existing backend needs its monitoring
-// goroutine restarted (e.g., URL updated after operator reconcile).
+// goroutine restarted (e.g., URL updated after operator reconcile, or outgoing auth
+// added, removed, or changed). AuthConfig matters because probe classification depends
+// on it: a 401 from an auth-configured backend is the expected answer to a
+// credential-less probe and counts as healthy, while the same 401 without an auth
+// config means misconfiguration — so a check loop probing with a stale copy inverts
+// the classification and the backend is dropped from aggregation (#6509).
 func backendChanged(old, updated vmcp.Backend) bool {
-	return old.BaseURL != updated.BaseURL || old.TransportType != updated.TransportType
+	return old.BaseURL != updated.BaseURL ||
+		old.TransportType != updated.TransportType ||
+		!reflect.DeepEqual(old.AuthConfig, updated.AuthConfig)
 }

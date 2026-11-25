@@ -49,10 +49,15 @@ func init() {
 func skillListCmdFunc(cmd *cobra.Command, _ []string) error {
 	c := newSkillClient(cmd.Context())
 
+	projectRoot, err := absProjectRoot(skillListProjectRoot)
+	if err != nil {
+		return err
+	}
+
 	installed, err := c.List(cmd.Context(), skills.ListOptions{
 		Scope:       skills.Scope(skillListScope),
 		ClientApp:   skillListClient,
-		ProjectRoot: skillListProjectRoot,
+		ProjectRoot: projectRoot,
 		Group:       skillListGroup,
 	})
 	if err != nil {

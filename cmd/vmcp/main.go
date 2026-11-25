@@ -12,20 +12,16 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/spf13/viper"
-
 	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/cmd/vmcp/app"
 )
 
 func main() {
-	// Initialize the logger
-	var opts []logging.Option
-	if viper.GetBool("debug") {
-		opts = append(opts, logging.WithLevel(slog.LevelDebug))
-	}
-	l := logging.New(opts...)
-	slog.SetDefault(l)
+	// Install a default INFO-level logger so any early errors (before cobra
+	// finishes parsing flags) still produce structured output. The real
+	// logger — which honors the --debug flag — is installed in the root
+	// command's PersistentPreRunE once viper has seen the parsed flags.
+	slog.SetDefault(logging.New())
 
 	// Create a context that will be canceled on signal
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)

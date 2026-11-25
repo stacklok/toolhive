@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -49,17 +50,19 @@ type FetchOption func(*fetchOptions)
 
 // fetchOptions holds the configuration for a fetch request.
 type fetchOptions struct {
-	method       string
-	headers      http.Header
-	body         io.Reader
-	errorHandler func(*http.Response, []byte) error
+	method          string
+	headers         http.Header
+	body            io.Reader
+	errorHandler    func(*http.Response, []byte) error
+	maxResponseSize int64
 }
 
 // newFetchOptions creates default fetch options.
 func newFetchOptions() *fetchOptions {
 	return &fetchOptions{
-		method:  http.MethodGet,
-		headers: make(http.Header),
+		method:          http.MethodGet,
+		headers:         make(http.Header),
+		maxResponseSize: maxResponseSize,
 	}
 }
 
@@ -84,8 +87,19 @@ func WithBody(body io.Reader) FetchOption {
 	}
 }
 
+// WithMaxResponseSize sets a custom maximum response body size in bytes.
+// The default is 1 MB. Use this to enforce tighter limits for endpoints that
+// are expected to return small documents (e.g. OAuth metadata, CIMD documents).
+func WithMaxResponseSize(size int64) FetchOption {
+	return func(opts *fetchOptions) {
+		opts.maxResponseSize = size
+	}
+}
+
 // WithErrorHandler sets a custom error handler for non-200 responses.
-// The handler receives the response and body, and should return an error.
+// The handler receives the response and the body bytes that arrived before
+// the read ended, which is a prefix of the body, or nothing, when the
+// connection dropped or the read timed out; it should return an error.
 // If the handler returns nil, the default HTTPError will be returned.
 // This is useful for parsing structured error responses (e.g., OAuth error responses).
 func WithErrorHandler(handler func(*http.Response, []byte) error) FetchOption {
@@ -96,7 +110,9 @@ func WithErrorHandler(handler func(*http.Response, []byte) error) FetchOption {
 
 // FetchJSON performs an HTTP request and parses the JSON response body.
 // It sets the Accept header to application/json by default.
-// For non-200 responses, it returns an HTTPError or the result of a custom error handler.
+// For non-200 responses, it returns an HTTPError or the result of a custom
+// error handler, whether or not the body could be read in full; a failure to
+// read the body is reported only for a 200 response.
 func FetchJSON[T any](
 	ctx context.Context,
 	client HTTPClient,
@@ -131,13 +147,15 @@ func FetchJSON[T any](
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Read body with size limit
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
+	// Read body with size limit. The read error is checked only after the
+	// status: a non-200 status is the host's answer whatever happened to the
+	// body, so a body cut short or stalled must not turn a 4xx into a
+	// transport failure.
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, options.maxResponseSize))
 
-	// Handle non-200 responses
+	// Handle non-200 responses. The body handed to the error handler is
+	// whatever arrived before the read ended, possibly a prefix or nothing;
+	// the read error itself is deliberately not reported for these responses.
 	if resp.StatusCode != http.StatusOK {
 		// Try custom error handler first
 		if options.errorHandler != nil {
@@ -150,9 +168,16 @@ func FetchJSON[T any](
 		return nil, NewHTTPError(resp.StatusCode, requestURL, resp.Status)
 	}
 
-	// Validate Content-Type for successful responses
+	if readErr != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", readErr)
+	}
+
+	// Validate Content-Type for successful responses. Accept application/json
+	// and application/*+json subtypes (RFC 6839) — the old strings.Contains check
+	// incorrectly rejected valid subtypes like application/ld+json.
 	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(strings.ToLower(contentType), contentTypeJSON) {
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	if mediaType != contentTypeJSON && (!strings.HasPrefix(mediaType, "application/") || !strings.HasSuffix(mediaType, "+json")) {
 		return nil, fmt.Errorf("unexpected content type: %s", contentType)
 	}
 

@@ -8,11 +8,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -67,7 +67,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					CallTool(gomock.Any(), target, "test_tool", map[string]any{
 						"input": "test",
 						"count": 42,
-					}, gomock.Any()).
+					}, gomock.Any(), gomock.Any()).
 					Return(&vmcp.ToolCallResult{StructuredContent: expectedResult}, nil)
 			},
 			request: mcp.CallToolRequest{
@@ -172,7 +172,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any(), gomock.Any()).
 					Return(&vmcp.ToolCallResult{
 						Content: []vmcp.Content{
 							{Type: vmcp.ContentTypeText, Text: "tool execution failed"},
@@ -206,7 +206,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any(), gomock.Any()).
 					Return(nil, vmcp.ErrBackendUnavailable)
 			},
 			request: mcp.CallToolRequest{
@@ -235,7 +235,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					Return(target, nil)
 
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any()).
+					CallTool(gomock.Any(), target, "test_tool", map[string]any{"input": "test"}, gomock.Any(), gomock.Any()).
 					Return(nil, errors.New("unknown backend error"))
 			},
 			request: mcp.CallToolRequest{
@@ -269,7 +269,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 				// Handler factory now passes the client-facing name (backend1_fetch)
 				// Backend client handles translation to original name (fetch)
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "backend1_fetch", map[string]any{"url": "https://example.com"}, gomock.Any()).
+					CallTool(gomock.Any(), target, "backend1_fetch", map[string]any{"url": "https://example.com"}, gomock.Any(), gomock.Any()).
 					Return(&vmcp.ToolCallResult{StructuredContent: expectedResult}, nil)
 			},
 			request: mcp.CallToolRequest{

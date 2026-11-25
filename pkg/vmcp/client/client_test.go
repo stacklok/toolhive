@@ -13,19 +13,24 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	gosync "sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/propagation"
@@ -33,7 +38,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authmocks "github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
@@ -49,7 +60,7 @@ func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("factory error")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -63,6 +74,11 @@ func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
 			BaseURL:       "http://localhost:8080",
 			TransportType: "streamable-http",
 		}
+
+		// Pre-seed the revision cache to Legacy so ListCapabilities skips the
+		// Modern discover probe (which would need a real transport/registry) and
+		// goes straight to the injected clientFactory under test.
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 
 		capabilities, err := backendClient.ListCapabilities(context.Background(), target)
 
@@ -94,6 +110,17 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 		assert.Empty(t, result.Resources)
 	})
 
+	t.Run("queryResourceTemplates with unsupported capability returns empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		// Resource templates are gated on the resources capability; when the backend
+		// does not advertise resources, the query is skipped and returns empty.
+		result, err := queryResourceTemplates(context.Background(), nil, false, "test-backend")
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Empty(t, result.ResourceTemplates)
+	})
+
 	t.Run("queryPrompts with unsupported capability returns empty slice", func(t *testing.T) {
 		t.Parallel()
 
@@ -110,9 +137,9 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 func TestNewBackendTransport_IsolatesFromDefault(t *testing.T) {
 	t.Parallel()
 
-	t1, err1 := newBackendTransport("", nil)
+	t1, err1 := newBackendTransport("", nil, nil)
 	require.NoError(t, err1)
-	t2, err2 := newBackendTransport("", nil)
+	t2, err2 := newBackendTransport("", nil, nil)
 	require.NoError(t, err2)
 
 	// Each call must return a distinct transport — not the shared DefaultTransport.
@@ -256,7 +283,7 @@ func TestNewBackendTransport_CustomCA(t *testing.T) {
 			t.Parallel()
 
 			caPath := tt.setupFile(t)
-			tr, err := newBackendTransport(caPath, tt.caBundleData)
+			tr, err := newBackendTransport(caPath, tt.caBundleData, nil)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -315,7 +342,7 @@ func TestDefaultClientFactory_UnsupportedTransport(t *testing.T) {
 			require.NoError(t, err)
 			httpClient := backendClient.(*httpBackendClient)
 
-			_, err = httpClient.defaultClientFactory(context.Background(), target)
+			_, err = httpClient.defaultClientFactory(context.Background(), target, false)
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, vmcp.ErrUnsupportedTransport)
@@ -331,7 +358,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -346,7 +373,8 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
-		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil)
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+		result, err := backendClient.CallTool(context.Background(), target, "test_tool", map[string]any{}, nil, nil)
 
 		require.Error(t, err)
 		assert.Nil(t, result)
@@ -361,7 +389,7 @@ func TestHTTPBackendClient_ReadResource_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -376,6 +404,7 @@ func TestHTTPBackendClient_ReadResource_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		data, err := backendClient.ReadResource(context.Background(), target, "test://resource")
 
 		require.Error(t, err)
@@ -391,7 +420,7 @@ func TestHTTPBackendClient_GetPrompt_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -406,6 +435,7 @@ func TestHTTPBackendClient_GetPrompt_WithMockFactory(t *testing.T) {
 			TransportType: "streamable-http",
 		}
 
+		backendClient.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
 		prompt, err := backendClient.GetPrompt(context.Background(), target, "test_prompt", map[string]any{"arg": "value"})
 
 		require.Error(t, err)
@@ -724,6 +754,153 @@ func TestNewHTTPBackendClient_NilRegistry(t *testing.T) {
 	})
 }
 
+func TestHTTPBackendClient_RequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resolver func(string) time.Duration
+		want     time.Duration
+	}{
+		{name: "nil resolver uses default", want: defaultBackendRequestTimeout},
+		{
+			name: "positive workload timeout is used",
+			resolver: func(string) time.Duration {
+				return 240 * time.Second
+			},
+			want: 240 * time.Second,
+		},
+		{
+			name:     "zero timeout uses default",
+			resolver: func(string) time.Duration { return 0 },
+			want:     defaultBackendRequestTimeout,
+		},
+		{
+			name:     "negative timeout uses default",
+			resolver: func(string) time.Duration { return -time.Second },
+			want:     defaultBackendRequestTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backendClient := &httpBackendClient{requestTimeoutResolver: tt.resolver}
+			assert.Equal(t, tt.want, backendClient.requestTimeout("elastic"))
+		})
+	}
+}
+
+func TestHTTPBackendClient_ModernHTTPClientUsesWorkloadTimeout(t *testing.T) {
+	t.Parallel()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy(
+		authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+	))
+	backendClient, err := NewHTTPBackendClient(
+		registry,
+		WithRequestTimeoutResolver(func(workloadID string) time.Duration {
+			if workloadID == "elastic" {
+				return 240 * time.Second
+			}
+			return defaultBackendRequestTimeout
+		}),
+	)
+	require.NoError(t, err)
+
+	clientImpl := backendClient.(*httpBackendClient)
+	httpClient, err := clientImpl.buildModernHTTPClient(t.Context(), &vmcp.BackendTarget{
+		WorkloadID: "elastic",
+		BaseURL:    "http://127.0.0.1:1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 240*time.Second, httpClient.Timeout)
+}
+
+// TestHTTPBackendClient_RequestTimeoutIntegration proves that the resolved
+// workload timeout reaches the real streamable-HTTP tools/call path used by the
+// vMCP core. The paired timeout/success cases prevent the historical fixed
+// 30-second timeout from satisfying the test accidentally.
+func TestHTTPBackendClient_RequestTimeoutIntegration(t *testing.T) {
+	t.Parallel()
+
+	const toolDelay = 300 * time.Millisecond
+
+	tests := []struct {
+		name           string
+		resolver       func(string) time.Duration
+		wantTimeoutErr bool
+	}{
+		{
+			name:           "default timeout is enforced",
+			resolver:       func(string) time.Duration { return 100 * time.Millisecond },
+			wantTimeoutErr: true,
+		},
+		{
+			name: "workload override permits slow response",
+			resolver: func(workloadID string) time.Duration {
+				if workloadID == "elastic" {
+					return 2 * time.Second
+				}
+				return 100 * time.Millisecond
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mcpSrv := mcpserver.NewMCPServer("timeout-test", "1.0.0")
+			mcpSrv.AddTool(
+				mcp.NewTool("slow_echo", mcp.WithString("input", mcp.Required())),
+				func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					time.Sleep(toolDelay)
+					args, _ := req.Params.Arguments.(map[string]any)
+					input, _ := args["input"].(string)
+					return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(input)}}, nil
+				},
+			)
+			ts := httptest.NewServer(mcpserver.NewStreamableHTTPServer(mcpSrv))
+			t.Cleanup(ts.Close)
+
+			registry := auth.NewDefaultOutgoingAuthRegistry()
+			require.NoError(t, registry.RegisterStrategy(
+				authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+			))
+			backendClient, err := NewHTTPBackendClient(
+				registry, WithRequestTimeoutResolver(tt.resolver),
+			)
+			require.NoError(t, err)
+
+			clientImpl := backendClient.(*httpBackendClient)
+			clientImpl.revisions.Store("elastic", mcpparser.RevisionLegacy)
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "elastic",
+				WorkloadName:  "elastic",
+				BaseURL:       ts.URL,
+				TransportType: "streamable-http",
+			}
+
+			result, err := backendClient.CallTool(
+				t.Context(), target, "slow_echo", map[string]any{"input": "slow response"}, nil, nil,
+			)
+			if tt.wantTimeoutErr {
+				require.Error(t, err)
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, result.Content, 1)
+			assert.Equal(t, "slow response", result.Content[0].Text)
+		})
+	}
+}
+
 // TestTracePropagatingRoundTripper tests the trace context propagation RoundTripper.
 func TestTracePropagatingRoundTripper(t *testing.T) {
 	t.Parallel()
@@ -1001,6 +1178,54 @@ func TestWrapBackendError(t *testing.T) {
 			err:          context.DeadlineExceeded,
 			wantSentinel: vmcp.ErrTimeout,
 		},
+		{
+			// mcp-go v0.49.0 added ErrAuthorizationRequired for 401 responses
+			// with a WWW-Authenticate header. Issue #5223: probe of GitHub
+			// Copilot's MCP returns this; without recognizing the sentinel here
+			// the error falls through to ErrBackendUnavailable and the health
+			// monitor never engages the auth-aware branch (#4935).
+			name:         "ErrAuthorizationRequired maps to ErrAuthenticationFailed",
+			err:          transport.ErrAuthorizationRequired,
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// Production chain mcp-go produces: transport.Error wrapping
+			// *AuthorizationRequiredError. Error() formats as
+			// "transport error: authorization required" — byte-for-byte
+			// the string seen in North's WARN logs (issue #5223). Both
+			// layers Unwrap() to the sentinel so errors.Is must succeed.
+			name:         "wrapped AuthorizationRequiredError (production chain) maps to ErrAuthenticationFailed",
+			err:          transport.NewError(&transport.AuthorizationRequiredError{}),
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// Companion sentinel for the OAuth-handler path. Less hot in
+			// practice but belongs in the same matcher block; the existing
+			// transport.ErrUnauthorized check would not catch it.
+			name:         "ErrOAuthAuthorizationRequired maps to ErrAuthenticationFailed",
+			err:          transport.ErrOAuthAuthorizationRequired,
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// ErrUpstreamTokenNotFound is returned by the outgoing auth strategies
+			// (upstream_inject, token_exchange, aws_sts) when the upstream provider
+			// token is absent from the identity. Must map to ErrAuthenticationFailed
+			// via an explicit errors.Is check rather than the fragile "authentication
+			// failed" substring match that also matches the authRoundTripper's wrapper.
+			name:            "ErrUpstreamTokenNotFound maps to ErrAuthenticationFailed",
+			err:             authtypes.ErrUpstreamTokenNotFound,
+			wantSentinel:    vmcp.ErrAuthenticationFailed,
+			wantMsgContains: "upstream token missing",
+		},
+		{
+			// The authRoundTripper wraps ErrUpstreamTokenNotFound with additional
+			// context; errors.Is must still find the sentinel through the chain.
+			name: "wrapped ErrUpstreamTokenNotFound maps to ErrAuthenticationFailed",
+			err: fmt.Errorf("authentication failed for backend foo: provider %q: %w",
+				"my-provider", authtypes.ErrUpstreamTokenNotFound),
+			wantSentinel:    vmcp.ErrAuthenticationFailed,
+			wantMsgContains: "upstream token missing",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1026,13 +1251,98 @@ func TestWrapBackendError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // identityPropagatingRoundTripper
 // ---------------------------------------------------------------------------
+//
+// See identityPropagatingRoundTripper in pkg/vmcp/client/client.go for the
+// canonical description of the #5323 fallback-only identity invariant.
+//
+// Tests below are grouped to reflect this hierarchy:
+//   1. Per-request identity (normal path)            — *_PerRequestIdentity_*
+//   2. Fallback identity (no-identity-on-context)    — *_FallbackIdentity_*
+//   3. Health-check marker propagation               — *_HealthCheck*
 
-func TestIdentityPropagatingRoundTripper_WithIdentity_PropagatesIdentityInContext(t *testing.T) {
+// --- Per-request identity (normal path) -----------------------------------
+
+// TestIdentityPropagatingRoundTripper_PerRequestIdentity_FlowsThroughUnchanged
+// verifies the normal per-request flow: identity is on req.Context() (placed by
+// TokenValidator.Middleware), no fallback is configured, and the transport leaves
+// the identity untouched so the freshly refreshed upstream tokens reach the
+// downstream auth strategies. This is the path taken on every authenticated
+// tool call.
+func TestIdentityPropagatingRoundTripper_PerRequestIdentity_FlowsThroughUnchanged(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "user-1"}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: identity}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil}
+
+	fresh := &pkgauth.Identity{
+		PrincipalInfo:  pkgauth.PrincipalInfo{Subject: "fresh-user"},
+		UpstreamTokens: map[string]string{"provider": "fresh-token"},
+	}
+	ctx := pkgauth.WithIdentity(context.Background(), fresh)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok)
+	assert.Equal(t, "fresh-user", got.Subject)
+	assert.Equal(t, "fresh-token", got.UpstreamTokens["provider"])
+}
+
+// TestIdentityPropagatingRoundTripper_PerRequestIdentity_NotOverriddenByFallback
+// is the regression test for issue #5323: a fresh identity already on
+// req.Context() (placed there by TokenValidator.Middleware on every incoming
+// request) must survive the transport untouched, even when a stale fallback
+// identity is captured. Overriding it would silently re-inject stale upstream
+// tokens on every backend call and is exactly the bug this PR fixes.
+func TestIdentityPropagatingRoundTripper_PerRequestIdentity_NotOverriddenByFallback(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	stale := &pkgauth.Identity{
+		PrincipalInfo: pkgauth.PrincipalInfo{Subject: "stale-user"},
+		UpstreamTokens: map[string]string{
+			"provider": "stale-token",
+		},
+	}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: stale}
+
+	fresh := &pkgauth.Identity{
+		PrincipalInfo: pkgauth.PrincipalInfo{Subject: "fresh-user"},
+		UpstreamTokens: map[string]string{
+			"provider": "fresh-token",
+		},
+	}
+	ctx := pkgauth.WithIdentity(context.Background(), fresh)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok, "identity from req.Context() must be present downstream")
+	assert.Equal(t, "fresh-user", got.Subject,
+		"identity on req.Context() must not be overridden by the captured fallback (#5323)")
+	assert.Equal(t, "fresh-token", got.UpstreamTokens["provider"],
+		"fresh upstream tokens must reach auth strategies unchanged (#5323)")
+}
+
+// --- Fallback identity (teardown / no-identity-on-context path) ------------
+
+// TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity
+// verifies that the fallback identity is injected when req.Context() carries no
+// identity (e.g. mcp-go's Close() DELETE built from context.Background()).
+func TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	fallback := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "fallback-user"}}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: fallback}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1042,15 +1352,15 @@ func TestIdentityPropagatingRoundTripper_WithIdentity_PropagatesIdentityInContex
 
 	require.NotNil(t, base.capturedReq)
 	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
-	require.True(t, ok, "identity should be in downstream request context")
-	assert.Equal(t, "user-1", got.Subject)
+	require.True(t, ok, "fallback identity should be in downstream request context")
+	assert.Equal(t, "fallback-user", got.Subject)
 }
 
-func TestIdentityPropagatingRoundTripper_NilIdentity_NoIdentityInContext(t *testing.T) {
+func TestIdentityPropagatingRoundTripper_FallbackIdentity_NilFallback_NoIdentityInContext(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1060,14 +1370,16 @@ func TestIdentityPropagatingRoundTripper_NilIdentity_NoIdentityInContext(t *test
 
 	require.NotNil(t, base.capturedReq)
 	_, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
-	assert.False(t, ok, "no identity should be in downstream context when nil identity configured")
+	assert.False(t, ok, "no identity should be in downstream context when no fallback and no req-ctx identity")
 }
+
+// --- Health-check marker propagation ---------------------------------------
 
 func TestIdentityPropagatingRoundTripper_HealthCheck_PropagatesMarker(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: true}
 
 	// Simulate mcp-go Close(): request created with context.Background(), no health check marker.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, "http://backend.example.com/mcp", nil)
@@ -1085,7 +1397,7 @@ func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: false}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: false}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1098,12 +1410,12 @@ func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing
 		"health check marker should not be injected for non-health-check transports")
 }
 
-func TestIdentityPropagatingRoundTripper_HealthCheckWithIdentity_PropagatesBoth(t *testing.T) {
+func TestIdentityPropagatingRoundTripper_HealthCheckWithFallbackIdentity_PropagatesBoth(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
 	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "svc-account"}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: identity, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: identity, isHealthCheck: true}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1127,7 +1439,7 @@ func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContext
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: true}
 
 	originalCtx := context.Background() // no health check marker — simulates mcp-go Close()
 	req, err := http.NewRequestWithContext(originalCtx, http.MethodDelete, "http://backend.example.com/mcp", nil)
@@ -1143,4 +1455,843 @@ func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContext
 	require.NotNil(t, base.capturedReq)
 	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
 		"downstream request must carry health check marker")
+}
+
+// ---------------------------------------------------------------------------
+// WithDialControl / newBackendTransport — dial hook
+// ---------------------------------------------------------------------------
+
+// TestNewBackendTransport_WithDialControl verifies that a non-nil dialControl
+// causes newBackendTransport to wire a hook that fires on dial. The control
+// hook fires BEFORE the TCP handshake completes, so no accepting server is
+// needed — we open a listener for the address but don't accept, then assert
+// the hook fired regardless of the dial outcome.
+func TestNewBackendTransport_WithDialControl(t *testing.T) {
+	t.Parallel()
+
+	var hookFired atomic.Bool
+	control := func(_, _ string, _ syscall.RawConn) error {
+		hookFired.Store(true)
+		return nil
+	}
+
+	// Open a listener to obtain a valid address; we don't need to accept.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	tr, err := newBackendTransport("", nil, control)
+	require.NoError(t, err)
+
+	conn, dialErr := tr.DialContext(t.Context(), "tcp", ln.Addr().String())
+	if dialErr == nil && conn != nil {
+		_ = conn.Close()
+	}
+	assert.True(t, hookFired.Load(), "control hook must fire during DialContext")
+}
+
+// TestWithDialControl_EndToEnd verifies that a Control hook installed via
+// WithDialControl is invoked on every TCP dial made by the client constructed
+// with NewHTTPBackendClient.
+func TestWithDialControl_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("control hook fires on successful dial", func(t *testing.T) {
+		t.Parallel()
+
+		var hookFired atomic.Bool
+		control := func(_, _ string, _ syscall.RawConn) error {
+			hookFired.Store(true)
+			return nil
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       ts.URL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.NoError(t, err)
+		assert.True(t, hookFired.Load(), "dial control hook must fire on connection to backend")
+	})
+
+	t.Run("control hook returning error blocks the dial", func(t *testing.T) {
+		t.Parallel()
+
+		dialErr := errors.New("dial blocked by control hook")
+		control := func(_, _ string, _ syscall.RawConn) error {
+			return dialErr
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       ts.URL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.Error(t, err, "ListCapabilities must fail when the dial control hook blocks the connection")
+		assert.Contains(t, err.Error(), dialErr.Error())
+	})
+
+	t.Run("control hook receives resolved IP not hostname", func(t *testing.T) {
+		t.Parallel()
+
+		var capturedAddr atomic.Value
+		control := func(_, address string, _ syscall.RawConn) error {
+			capturedAddr.Store(address)
+			return nil
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		// Force DNS resolution by using "localhost" instead of the literal 127.0.0.1
+		// that httptest.NewServer embeds in ts.URL. Without this substitution the
+		// hook would receive 127.0.0.1 regardless, making the assertion tautological.
+		baseURL := strings.Replace(ts.URL, "127.0.0.1", "localhost", 1)
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       baseURL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.NoError(t, err)
+
+		addr, _ := capturedAddr.Load().(string)
+		require.NotEmpty(t, addr, "control hook must receive the address")
+		host, _, err := net.SplitHostPort(addr)
+		require.NoError(t, err)
+		// The hook must see the resolved IP, not the name "localhost".
+		// net.ParseIP returns non-nil only for valid IP literals.
+		assert.NotNil(t, net.ParseIP(host),
+			"control hook address %q must be an IP literal (resolved), not a hostname", host)
+		assert.NotEqual(t, "localhost", host,
+			"control hook must receive the resolved IP, not the original hostname (DNS-rebinding defense point)")
+	})
+}
+
+// ExampleWithDialControl shows how an embedder installs a dial-control hook
+// that rejects connections to non-public IP ranges — the building block of an
+// SSRF / DNS-rebinding defense. The hook receives the resolved peer IP, so it
+// classifies the address the kernel is about to connect to rather than the
+// (re-resolvable) hostname. A production check should additionally cover the
+// ranges listed in the WithDialControl doc comment (CGNAT, IPv6 ULA, etc.).
+func ExampleWithDialControl() {
+	denyNonPublic := func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("unresolved dial address %q", address)
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return fmt.Errorf("blocked connection to non-public IP %s", ip)
+		}
+		return nil
+	}
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+	); err != nil {
+		panic(err)
+	}
+
+	backendClient, err := NewHTTPBackendClient(registry, WithDialControl(denyNonPublic))
+	if err != nil {
+		panic(err)
+	}
+	_ = backendClient
+}
+
+// TestListCapabilities_MethodNotFoundResourceTemplates verifies FIX: a backend
+// that advertises the resources capability but answers resources/templates/list
+// with JSON-RPC -32601 (method not found) degrades to an EMPTY template list
+// instead of dropping its entire capability set — its concrete resources still
+// aggregate.
+func TestListCapabilities_MethodNotFoundResourceTemplates(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := mcpserver.NewMCPServer("partial-backend", "1.0.0")
+	mcpServer.AddResource(
+		mcp.Resource{
+			URI:      "file:///readme.txt",
+			Name:     "Readme",
+			MIMEType: "text/plain",
+		},
+		func(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			return []mcp.ResourceContents{
+				mcp.TextResourceContents{
+					URI:      req.Params.URI,
+					MIMEType: "text/plain",
+					Text:     "hello",
+				},
+			}, nil
+		},
+	)
+
+	// resources/templates/list is not implemented: answer it with a JSON-RPC
+	// -32601 (method not found) while delegating everything else to the server.
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rawMessage, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(rawMessage, &probe); err == nil && probe.Method == "resources/templates/list" {
+			resp := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      probe.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			}
+			respBytes, _ := json.Marshal(resp)
+			_, _ = w.Write(respBytes)
+			return
+		}
+
+		response := mcpServer.HandleMessage(r.Context(), rawMessage)
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(responseBytes)
+	})
+
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+	backendClient, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "partial-backend",
+		WorkloadName:  "Partial Backend",
+		BaseURL:       server.URL,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := backendClient.ListCapabilities(t.Context(), target)
+	require.NoError(t, err, "a -32601 on resources/templates/list must not drop the backend")
+	require.NotNil(t, caps)
+
+	assert.Empty(t, caps.ResourceTemplates, "templates must degrade to an empty list")
+	require.Len(t, caps.Resources, 1, "the backend's concrete resources must still aggregate")
+	assert.Equal(t, "file:///readme.txt", caps.Resources[0].URI)
+}
+
+// TestListCapabilities_MethodNotFoundResources verifies that a backend which
+// advertises the resources capability but answers resources/list with JSON-RPC
+// -32601 (method not found) degrades to an empty resource list instead of
+// dropping its entire capability set — its tools still aggregate.
+// This mirrors the existing tolerance in the session-init path
+// (queryBackendResources in mcp_session.go) and fixes the health-check path
+// that was missing this tolerance (#6339).
+func TestListCapabilities_MethodNotFoundResources(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := mcpserver.NewMCPServer("tools-and-resources-backend", "1.0.0",
+		mcpserver.WithResourceCapabilities(true, false),
+	)
+	mcpServer.AddTool(
+		mcp.Tool{Name: "my-tool", Description: "a test tool"},
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
+		},
+	)
+
+	// resources/list is not implemented: answer it with a JSON-RPC
+	// -32601 (method not found) while delegating everything else to the server.
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rawMessage, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(rawMessage, &probe); err == nil && probe.Method == "resources/list" {
+			resp := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      probe.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			}
+			respBytes, _ := json.Marshal(resp)
+			_, _ = w.Write(respBytes)
+			return
+		}
+
+		response := mcpServer.HandleMessage(r.Context(), rawMessage)
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(responseBytes)
+	})
+
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+	backendClient, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "tools-and-resources-backend",
+		WorkloadName:  "Tools And Resources Backend",
+		BaseURL:       server.URL,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := backendClient.ListCapabilities(t.Context(), target)
+	require.NoError(t, err, "a -32601 on resources/list must not drop the backend")
+	require.NotNil(t, caps)
+
+	assert.Empty(t, caps.Resources, "resources must degrade to an empty list")
+	require.Len(t, caps.Tools, 1, "the backend's tools must still aggregate")
+	assert.Equal(t, "my-tool", caps.Tools[0].Name)
+}
+
+// TestListCapabilities_MethodNotFoundPrompts verifies that a backend which
+// advertises the prompts capability but answers prompts/list with JSON-RPC
+// -32601 (method not found) degrades to an empty prompt list instead of
+// dropping its entire capability set — its tools still aggregate.
+func TestListCapabilities_MethodNotFoundPrompts(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := mcpserver.NewMCPServer("tools-and-prompts-backend", "1.0.0",
+		mcpserver.WithPromptCapabilities(true),
+	)
+	mcpServer.AddTool(
+		mcp.Tool{Name: "my-tool", Description: "a test tool"},
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
+		},
+	)
+
+	// prompts/list is not implemented: answer it with a JSON-RPC
+	// -32601 (method not found) while delegating everything else to the server.
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rawMessage, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(rawMessage, &probe); err == nil && probe.Method == "prompts/list" {
+			resp := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      probe.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			}
+			respBytes, _ := json.Marshal(resp)
+			_, _ = w.Write(respBytes)
+			return
+		}
+
+		response := mcpServer.HandleMessage(r.Context(), rawMessage)
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(responseBytes)
+	})
+
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+	backendClient, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "tools-and-prompts-backend",
+		WorkloadName:  "Tools And Prompts Backend",
+		BaseURL:       server.URL,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := backendClient.ListCapabilities(t.Context(), target)
+	require.NoError(t, err, "a -32601 on prompts/list must not drop the backend")
+	require.NotNil(t, caps)
+
+	assert.Empty(t, caps.Prompts, "prompts must degrade to an empty list")
+	require.Len(t, caps.Tools, 1, "the backend's tools must still aggregate")
+	assert.Equal(t, "my-tool", caps.Tools[0].Name)
+}
+
+// TestListCapabilities_ToolsOnlyBackendSkipsUnadvertisedSurfaces is a regression
+// test for #6339. A tools-only backend (no resources or prompts capability
+// advertised in its initialize response) must not have resources/list or
+// prompts/list called at all. This verifies that the ListCapabilities path
+// consults the serverCapabilities before probing optional surfaces.
+func TestListCapabilities_ToolsOnlyBackendSkipsUnadvertisedSurfaces(t *testing.T) {
+	t.Parallel()
+
+	var resourcesListCalls atomic.Int32
+	var promptsListCalls atomic.Int32
+
+	// A tools-only server: no resources or prompts capability advertised.
+	mcpServer := mcpserver.NewMCPServer("tools-only-backend", "1.0.0")
+	mcpServer.AddTool(
+		mcp.Tool{Name: "my-tool", Description: "a test tool"},
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
+		},
+	)
+
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rawMessage, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(rawMessage, &probe); err == nil {
+			switch probe.Method {
+			case "resources/list", "resources/templates/list":
+				resourcesListCalls.Add(1)
+			case "prompts/list":
+				promptsListCalls.Add(1)
+			}
+		}
+
+		response := mcpServer.HandleMessage(r.Context(), rawMessage)
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(responseBytes)
+	})
+
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+	backendClient, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "tools-only-backend",
+		WorkloadName:  "Tools Only Backend",
+		BaseURL:       server.URL,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := backendClient.ListCapabilities(t.Context(), target)
+	require.NoError(t, err, "tools-only backend must not fail ListCapabilities")
+	require.NotNil(t, caps)
+
+	// The backend's tools must aggregate normally.
+	require.Len(t, caps.Tools, 1, "the backend's tools must aggregate")
+	assert.Equal(t, "my-tool", caps.Tools[0].Name)
+
+	// Unadvertised surfaces must not have been probed.
+	assert.Zero(t, resourcesListCalls.Load(),
+		"resources/list must not be called when backend does not advertise resources capability")
+	assert.Zero(t, promptsListCalls.Load(),
+		"prompts/list must not be called when backend does not advertise prompts capability")
+
+	// Resources and prompts must be empty.
+	assert.Empty(t, caps.Resources)
+	assert.Empty(t, caps.Prompts)
+}
+
+// TestDefaultClientFactory_SSEForwarding verifies the SSE transport gets the
+// same elicitation/sampling forwarding handlers as streamable-http when
+// forwarding is requested and forwarders are bound, and that Initialize declares
+// the corresponding client capabilities to the backend (without them a
+// backend's mid-call elicitation/create or sampling/createMessage is rejected
+// instead of relayed).
+func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		bindForwarders  bool
+		forwarding      bool
+		wantElicitCap   bool
+		wantSamplingCap bool
+	}{
+		{
+			name:            "bound forwarders and forwarding requested declare elicitation and sampling",
+			bindForwarders:  true,
+			forwarding:      true,
+			wantElicitCap:   true,
+			wantSamplingCap: true,
+		},
+		{
+			name:           "bound forwarders without forwarding request declares neither",
+			bindForwarders: true,
+			forwarding:     false,
+		},
+		{
+			name:           "unbound forwarders declare neither",
+			bindForwarders: false,
+			forwarding:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Minimal SSE server: one event carrying the endpoint, then the
+			// MCP endpoint answers initialize and reports the client's declared
+			// capabilities back to the test.
+			var (
+				mu          gosync.Mutex
+				gotElicit   bool
+				gotSampling bool
+			)
+			var mcpEndpoint string
+			// events carries JSON-RPC responses the /mcp POST handler queues for
+			// delivery on the SSE stream (legacy SSE transport semantics).
+			events := make(chan []byte, 16)
+			mux := http.NewServeMux()
+			mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+				rawMessage, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, "Failed to read request", http.StatusBadRequest)
+					return
+				}
+				defer r.Body.Close()
+				var req struct {
+					Method string `json:"method"`
+					ID     any    `json:"id"`
+					Params struct {
+						Capabilities struct {
+							Elicitation map[string]any `json:"elicitation"`
+							Sampling    map[string]any `json:"sampling"`
+						} `json:"capabilities"`
+					} `json:"params"`
+				}
+				if err := json.Unmarshal(rawMessage, &req); err != nil {
+					http.Error(w, "Bad request", http.StatusBadRequest)
+					return
+				}
+				if req.Method == "server/discover" {
+					// go-sdk v1.7's Connect() is Modern-first (SEP-2575): it always
+					// tries server/discover before falling back to legacy initialize.
+					// Answer -32601 (method not found) over the SSE message channel so
+					// the client falls back to initialize below (which this fake
+					// already handles), instead of hanging waiting for a response that
+					// never comes.
+					respBytes, _ := json.Marshal(map[string]any{
+						"jsonrpc": "2.0",
+						"id":      req.ID,
+						"error":   map[string]any{"code": -32601, "message": "method not found"},
+					})
+					w.WriteHeader(http.StatusAccepted)
+					select {
+					case events <- respBytes:
+					case <-time.After(5 * time.Second):
+						// t.Errorf, not t.Fatal: this runs on the server's own goroutine
+						// (Fatal's runtime.Goexit would kill the wrong one).
+						t.Errorf("timed out queuing server/discover fallback response for SSE delivery")
+					}
+					return
+				}
+				if req.Method != "initialize" {
+					// Notifications (initialized, cancelled) need no response body.
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				mu.Lock()
+				gotElicit = req.Params.Capabilities.Elicitation != nil
+				gotSampling = req.Params.Capabilities.Sampling != nil
+				mu.Unlock()
+
+				respBytes, _ := json.Marshal(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]any{
+						"protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
+						"capabilities":    map[string]any{},
+						"serverInfo":      map[string]any{"name": "sse-backend", "version": "1.0.0"},
+					},
+				})
+				// Per the legacy SSE transport, the server answers a client POST
+				// with 202 Accepted and delivers the JSON-RPC response as a
+				// "message" event on the client's SSE stream.
+				w.WriteHeader(http.StatusAccepted)
+				select {
+				case events <- respBytes:
+				case <-time.After(5 * time.Second):
+					// t.Errorf, not t.Fatal: this runs on the server's own goroutine.
+					t.Errorf("timed out queuing initialize response for SSE delivery")
+				}
+			})
+			mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", mcpEndpoint)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				for {
+					select {
+					case <-r.Context().Done():
+						return
+					case msg := <-events:
+						_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
+						if f, ok := w.(http.Flusher); ok {
+							f.Flush()
+						}
+					}
+				}
+			})
+			httpServer := httptest.NewServer(mux)
+			defer httpServer.Close()
+			mcpEndpoint = httpServer.URL + "/mcp"
+
+			registry := auth.NewDefaultOutgoingAuthRegistry()
+			require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+			backendClient, err := NewHTTPBackendClient(registry)
+			require.NoError(t, err)
+			httpClient := backendClient.(*httpBackendClient)
+
+			if tt.bindForwarders {
+				httpClient.BindForwarders(
+					&stubElicitationRequester{},
+					&stubSamplingRequester{},
+					nil,
+				)
+			}
+
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "sse-backend",
+				WorkloadName:  "SSE Backend",
+				BaseURL:       httpServer.URL + "/sse",
+				TransportType: "sse",
+			}
+
+			c, err := httpClient.defaultClientFactory(t.Context(), target, tt.forwarding)
+			require.NoError(t, err)
+			defer func() { _ = c.Close() }()
+
+			// The handlers themselves live on unexported mcpcompat Client fields, so
+			// the observable assertion is the capability declaration: the go-sdk
+			// auto-declares elicitation/sampling at initialize exactly when the
+			// corresponding handler is installed.
+			initCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			_, _, err = initializeClient(initCtx, c)
+			require.NoError(t, err)
+
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, tt.wantElicitCap, gotElicit,
+				"elicitation capability declaration must match handler installation")
+			assert.Equal(t, tt.wantSamplingCap, gotSampling,
+				"sampling capability declaration must match handler installation")
+		})
+	}
+}
+
+// stubElicitationRequester is a no-op ElicitationRequester used to bind
+// forwarders in client-factory tests; only its non-nil-ness matters.
+type stubElicitationRequester struct{}
+
+func (*stubElicitationRequester) RequestElicitation(context.Context, vmcp.ElicitationRequest) (*vmcp.ElicitationResult, error) {
+	return nil, errors.New("stub: no downstream session")
+}
+
+// stubSamplingRequester is a no-op SamplingRequester used to bind forwarders in
+// client-factory tests; only its non-nil-ness matters.
+type stubSamplingRequester struct{}
+
+func (*stubSamplingRequester) RequestSampling(context.Context, vmcp.SamplingRequest) (*vmcp.SamplingResult, error) {
+	return nil, errors.New("stub: no downstream session")
+}
+
+// idleSpy is a RoundTripper that records CloseIdleConnections calls.
+type idleSpy struct{ closed int }
+
+func (*idleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *idleSpy) CloseIdleConnections() { s.closed++ }
+
+// TestModernChain_CloseIdleConnectionsForwards verifies the trace/identity/auth
+// wrapper chain forwards CloseIdleConnections down to the concrete transport at
+// the bottom (a plain hc.CloseIdleConnections would otherwise be a silent no-op).
+func TestModernChain_CloseIdleConnectionsForwards(t *testing.T) {
+	t.Parallel()
+
+	spy := &idleSpy{}
+	chain := &tracePropagatingRoundTripper{
+		base: &identityPropagatingRoundTripper{
+			base: &authRoundTripper{base: spy},
+		},
+	}
+
+	// Reached the way http.Client.CloseIdleConnections reaches its transport.
+	chain.CloseIdleConnections()
+	assert.Equal(t, 1, spy.closed, "CloseIdleConnections must reach the bottom transport")
+}
+
+// TestNewBackendHTTPClient_RedirectPolicy verifies the shared choke point installs
+// SameHostRedirectPolicy: a cross-host 30x is refused (so the RoundTripper-injected
+// credential never reaches the attacker host), while a same-host redirect is
+// followed.
+func TestNewBackendHTTPClient_RedirectPolicy(t *testing.T) {
+	t.Parallel()
+
+	// inject mimics the auth/header-forward chain: it sets a credential on EVERY hop.
+	inject := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		req.Header.Set("Authorization", "secret")
+		return http.DefaultTransport.RoundTrip(req)
+	})
+
+	t.Run("cross-host redirect refused, no credential leak", func(t *testing.T) {
+		t.Parallel()
+
+		var attackerSawAuth atomic.Bool
+		attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "" {
+				attackerSawAuth.Store(true)
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(attacker.Close)
+
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Redirect(w, &http.Request{}, attacker.URL, http.StatusFound)
+		}))
+		t.Cleanup(origin.Close)
+
+		hc := newBackendHTTPClient(inject, 5*time.Second)
+		resp, err := hc.Get(origin.URL) //nolint:noctx // test
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		require.Error(t, err)
+		assert.ErrorIs(t, err, networking.ErrRedirectRefused)
+		assert.False(t, attackerSawAuth.Load(), "credential must not reach the cross-host redirect target")
+	})
+
+	t.Run("same-host redirect followed", func(t *testing.T) {
+		t.Parallel()
+
+		var landed atomic.Bool
+		mux := http.NewServeMux()
+		mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/end", http.StatusFound)
+		})
+		mux.HandleFunc("/end", func(w http.ResponseWriter, _ *http.Request) {
+			landed.Store(true)
+			w.WriteHeader(http.StatusOK)
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		hc := newBackendHTTPClient(inject, 5*time.Second)
+		resp, err := hc.Get(srv.URL + "/start") //nolint:noctx // test
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.True(t, landed.Load(), "same-host redirect must be followed")
+	})
 }

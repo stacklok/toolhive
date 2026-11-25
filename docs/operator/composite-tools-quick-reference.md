@@ -5,7 +5,7 @@ Quick reference for Virtual MCP Composite Tool workflows.
 ## Basic Workflow Structure
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: my-workflow
@@ -21,6 +21,23 @@ spec:
       type: string
       description: Description of the parameter
       required: false
+
+  annotations:                   # Optional: explicit MCP tool annotations
+    title: My Workflow           # Derivation runs at advertise time, not CRD
+                                 # admission. The floor is fail-closed: with
+                                 # one or more tool steps it is always non-nil,
+                                 # and any step with nil/unknown annotations
+                                 # taints it to readOnly=false,
+                                 # destructive=true, openWorld=true.
+    readOnlyHint: false          # ⚠ An explicit readOnlyHint: true here would
+                                 # CONTRADICT the floor whenever a step tool
+                                 # does not declare readOnlyHint: true (the
+                                 # common case), dropping the composite tool
+                                 # from tools/list at runtime with a warning.
+                                 # thv vmcp validate does NOT catch this — it
+                                 # surfaces only in the vMCP logs. Prefer
+                                 # leaving readOnlyHint unset (derive it) or
+                                 # declaring a value no safer than the floor.
 
   steps:                         # Required: workflow steps
     - id: step1
@@ -284,6 +301,7 @@ steps:
 - ✅ forEach maxParallel: 50 (hard cap), defaults to DAG maxParallel (10)
 - ✅ forEach inner step must be type `tool` (no nested forEach or elicitation)
 - ✅ forEach `itemVar` cannot be `index` (reserved)
+- ✅ Annotations must not contradict the step-derived safety floor (e.g. `readOnlyHint: true` when a step is not read-only) — a contradicting composite tool is **dropped from `tools/list` at runtime** with a warning in the vMCP logs (more-conservative hints, e.g. `readOnlyHint: false`, are allowed)
 
 **Note**: Max retry and max steps limits are currently enforced at runtime. Future work may add CRD-level validation (`+kubebuilder:validation:MaxItems=100`) and webhook validation to fail at submission time rather than execution time.
 

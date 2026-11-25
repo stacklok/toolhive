@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"slices"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -35,6 +38,10 @@ import (
 // All middleware types now directly create and inject Identity into the context,
 // eliminating the need for a separate conversion layer.
 //
+// The serverName parameter is the VirtualMCPServer name and is used as the Cedar
+// resource entity name in authorization policy evaluation. It must match the
+// resource name used when compiling Cedar policies for this server.
+//
 // The passThroughTools parameter is optional (pass nil for none). Tool names in
 // this set bypass the response filter's policy check in tools/list responses.
 // This is used when the optimizer is enabled: its meta-tools (find_tool, call_tool)
@@ -50,9 +57,11 @@ import (
 func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
+	serverName string,
 	passThroughTools map[string]struct{},
 	upstreamReader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
+	embeddedAuthServerIssuer string,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -67,7 +76,8 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader, keyProvider)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(
+			ctx, cfg.OIDC, upstreamReader, keyProvider, embeddedAuthServerIssuer)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -80,17 +90,32 @@ func NewIncomingAuthMiddleware(
 		return nil, nil, nil, err
 	}
 
+	// A pinned primaryUpstreamProvider says "only claims asserted by that upstream
+	// may drive policy", which only means something when incoming auth can produce
+	// an upstream session. Under local or anonymous auth it never can, so every
+	// request would be judged on synthetic claims (sub=anonymous, or a local
+	// username) that no upstream asserted. Reject the combination here rather than
+	// serving it: the operator enforces the same rule for VirtualMCPServer at
+	// cmd/thv-operator/controllers/virtualmcpserver_controller.go, but that check
+	// does not run for a hand-written vmcp config.
+	if cfg.Authz != nil && cfg.Authz.PrimaryUpstreamProvider != "" && cfg.Type != config.IncomingAuthTypeOIDC {
+		return nil, nil, nil, fmt.Errorf(
+			"authz primaryUpstreamProvider %q requires an upstream session, which %q incoming auth cannot provide; "+
+				"remove primaryUpstreamProvider or use oidc incoming auth",
+			cfg.Authz.PrimaryUpstreamProvider, cfg.Type)
+	}
+
 	// If authorization is configured, create authz middleware separately.
 	// Authz is returned as its own middleware so the caller can place it after
 	// discovery and annotation-enrichment in the middleware chain, giving
 	// Cedar policies access to discovered tool annotations.
 	var authzMiddleware func(http.Handler) http.Handler
 	if cfg.Authz != nil && cfg.Authz.Type == "cedar" && len(cfg.Authz.Policies) > 0 {
-		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz, passThroughTools)
+		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz, serverName, passThroughTools)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to create authorization middleware: %w", err)
 		}
-		slog.Info("authorization middleware enabled with Cedar policies")
+		slog.Debug("authorization middleware enabled with Cedar policies", "server_name", serverName)
 	}
 
 	// Auth middleware composes auth + parser.
@@ -105,41 +130,80 @@ func NewIncomingAuthMiddleware(
 }
 
 // newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
+// serverName is forwarded to CreateMiddlewareFromConfig as the Cedar resource entity name.
 func newCedarAuthzMiddleware(
-	authzCfg *config.AuthzConfig, passThroughTools map[string]struct{},
+	authzCfg *config.AuthzConfig, serverName string, passThroughTools map[string]struct{},
 ) (func(http.Handler) http.Handler, error) {
 	if authzCfg == nil || len(authzCfg.Policies) == 0 {
 		return nil, fmt.Errorf("cedar authorization requires at least one policy")
 	}
+	if serverName == "" {
+		return nil, fmt.Errorf("serverName must not be empty: Cedar resource-scoped policies require a non-empty server name")
+	}
 
 	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
-	// Build the Cedar config structure expected by the authorizer factory.
-	// PrimaryUpstreamProvider is forwarded so Cedar evaluates claims from the
-	// upstream IDP token when the embedded auth server is active.
-	cedarConfig := cedar.Config{
-		Version: "1.0",
-		Type:    cedar.ConfigType,
-		Options: &cedar.ConfigOptions{
-			Policies:                authzCfg.Policies,
-			EntitiesJSON:            "[]",
-			PrimaryUpstreamProvider: authzCfg.PrimaryUpstreamProvider,
-		},
-	}
-
-	// Create the authz Config using the factory method
-	authzConfig, err := authorizers.NewConfig(cedarConfig)
+	authzConfig, err := buildCedarAuthzConfig(authzCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create authz config: %w", err)
 	}
 
 	// Create the middleware using the existing factory
-	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, "vmcp", passThroughTools)
+	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, serverName, passThroughTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cedar middleware: %w", err)
 	}
 
 	return middlewareFn, nil
+}
+
+// BuildAuthzConfig builds the authorizer-agnostic *authz.Config that the vMCP core
+// admission seam (core.Config.Authz) consumes from the incoming-auth config, or
+// (nil, nil) when no Cedar policies are configured.
+//
+// It is the SAME config newCedarAuthzMiddleware builds the HTTP authz middleware from,
+// surfaced so the composition root can feed it to core.New via server.Config.Authz once
+// server.New routes through Serve. The nil return mirrors that middleware's nil result
+// for the no-policies case, preserving allow-all parity (a nil core Authz is allow-all).
+func BuildAuthzConfig(authzCfg *config.AuthzConfig) (*authz.Config, error) {
+	if authzCfg == nil || authzCfg.Type != "cedar" || len(authzCfg.Policies) == 0 {
+		return nil, nil
+	}
+	return buildCedarAuthzConfig(authzCfg)
+}
+
+// buildCedarAuthzConfig converts the vMCP Cedar authz config into the authorizer-agnostic
+// authorizers.Config (aliased as authz.Config) consumed by both the HTTP authz middleware
+// (newCedarAuthzMiddleware) and the core admission seam (via BuildAuthzConfig). Callers
+// guarantee authzCfg is non-nil with at least one policy.
+func buildCedarAuthzConfig(authzCfg *config.AuthzConfig) (*authz.Config, error) {
+	// Default EntitiesJSON to "[]" when the operator/CLI did not set it. Cedar
+	// requires a valid JSON array; an empty string would fail to parse.
+	entitiesJSON := authzCfg.EntitiesJSON
+	if entitiesJSON == "" {
+		entitiesJSON = "[]"
+	}
+
+	// Build the Cedar config structure expected by the authorizer factory.
+	// PrimaryUpstreamProvider is forwarded so Cedar evaluates claims from the
+	// upstream IDP token when the embedded auth server is active.
+	// GroupClaimName, RoleClaimName, and GroupEntityType plumb the enterprise
+	// JWT-to-entity mapping (groups/roles claims → Cedar parent UIDs) through
+	// to the authorizer.
+	cedarConfig := cedar.Config{
+		Version: "1.0",
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:                authzCfg.Policies,
+			EntitiesJSON:            entitiesJSON,
+			PrimaryUpstreamProvider: authzCfg.PrimaryUpstreamProvider,
+			GroupClaimName:          authzCfg.GroupClaimName,
+			RoleClaimName:           authzCfg.RoleClaimName,
+			GroupEntityType:         authzCfg.GroupEntityType,
+		},
+	}
+
+	return authorizers.NewConfig(cedarConfig)
 }
 
 // newOIDCAuthMiddleware creates OIDC authentication middleware.
@@ -154,6 +218,7 @@ func newOIDCAuthMiddleware(
 	oidcCfg *config.OIDCConfig,
 	reader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
+	embeddedAuthServerIssuer string,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -166,16 +231,13 @@ func newOIDCAuthMiddleware(
 		slog.Warn("no Resource defined in OIDC configuration")
 	}
 
-	oidcConfig := &auth.TokenValidatorConfig{
-		Issuer:            oidcCfg.Issuer,
-		ClientID:          oidcCfg.ClientID,
-		Audience:          oidcCfg.Audience,
-		ResourceURL:       oidcCfg.Resource,
-		JWKSURL:           oidcCfg.JWKSURL,
-		IntrospectionURL:  oidcCfg.IntrospectionURL,
-		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
-		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
-		Scopes:            oidcCfg.Scopes,
+	if err := checkJWKSAuthTokenFile(oidcCfg.JWKSAuthTokenPath); err != nil {
+		return nil, nil, err
+	}
+
+	oidcConfig, err := oidcTokenValidatorConfig(oidcCfg, &env.OSReader{})
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Wire optional dependencies from the embedded auth server so the JWT
@@ -188,6 +250,9 @@ func newOIDCAuthMiddleware(
 	if reader != nil {
 		opts = append(opts, auth.WithUpstreamTokenReader(reader))
 	}
+	if embeddedAuthServerIssuer != "" {
+		opts = append(opts, auth.WithEmbeddedAuthServerIssuer(embeddedAuthServerIssuer))
+	}
 
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
 	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, opts...)
@@ -199,6 +264,73 @@ func newOIDCAuthMiddleware(
 		"issuer", oidcCfg.Issuer, "client_id", oidcCfg.ClientID, "resource", oidcCfg.Resource)
 
 	return authMw, authInfo, nil
+}
+
+// oidcTokenValidatorConfig maps the incoming OIDC configuration to the token
+// validator, resolving ClientSecretEnv from the process environment. The
+// environment is read here rather than in the YAML loader or the operator so
+// both entry points share the same behavior and the secret never lands in
+// configuration.
+func oidcTokenValidatorConfig(oidcCfg *config.OIDCConfig, envReader env.Reader) (*auth.TokenValidatorConfig, error) {
+	clientSecret := ""
+	if oidcCfg.ClientSecretEnv != "" {
+		clientSecret = envReader.Getenv(oidcCfg.ClientSecretEnv)
+		if clientSecret == "" {
+			return nil, fmt.Errorf("OIDC client secret environment variable %q is not set or empty", oidcCfg.ClientSecretEnv)
+		}
+	}
+
+	return &auth.TokenValidatorConfig{
+		Issuer:                oidcCfg.Issuer,
+		ClientID:              oidcCfg.ClientID,
+		Audience:              oidcCfg.Audience,
+		RequiredSubject:       oidcCfg.RequiredSubject,
+		RequiredSubjectPrefix: oidcCfg.RequiredSubjectPrefix,
+		ResourceURL:           oidcCfg.Resource,
+		JWKSURL:               oidcCfg.JWKSURL,
+		IntrospectionURL:      oidcCfg.IntrospectionURL,
+		AllowPrivateIP:        oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
+		InsecureAllowHTTP:     oidcCfg.InsecureAllowHTTP,
+		Scopes:                oidcCfg.Scopes,
+		CACertPath:            oidcCfg.CABundlePath,
+		AuthTokenFile:         oidcCfg.JWKSAuthTokenPath,
+		ClientSecret:          clientSecret,
+	}, nil
+}
+
+// IncomingBearerChallenge returns the parameters of the WWW-Authenticate
+// challenges the incoming token validator sends: its issuer as realm, its
+// resource URL for the RFC 9728 metadata, and its scopes. Another vMCP
+// component that refuses a token with 401, such as call binding, sends them
+// too. It returns the zero value for incoming auth without OIDC.
+func IncomingBearerChallenge(cfg *config.IncomingAuthConfig) auth.BearerChallenge {
+	if cfg == nil || cfg.Type != config.IncomingAuthTypeOIDC || cfg.OIDC == nil {
+		return auth.BearerChallenge{}
+	}
+	return auth.BearerChallenge{
+		Realm:       cfg.OIDC.Issuer,
+		ResourceURL: cfg.OIDC.Resource,
+		Scopes:      slices.Clone(cfg.OIDC.Scopes),
+	}
+}
+
+// checkJWKSAuthTokenFile fails when jwksAuthTokenPath is set but does not name
+// a readable regular file. The token validator would fail on the same file a
+// few layers down; this error names the setting and how to fix it.
+func checkJWKSAuthTokenFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	const fix = "mount the token file into the vMCP pod (for a kubernetesServiceAccount MCPOIDCConfig, " +
+		"the service-account token), or unset jwksAuthTokenPath (useClusterAuth: false)"
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("incomingAuth.oidc.jwksAuthTokenPath %q is not accessible: %w; %s", path, err, fix)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("incomingAuth.oidc.jwksAuthTokenPath %q is not a regular file; %s", path, fix)
+	}
+	return nil
 }
 
 // newLocalAuthMiddleware creates local OS user authentication middleware.

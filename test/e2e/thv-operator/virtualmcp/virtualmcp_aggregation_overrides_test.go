@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -44,40 +45,36 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 			images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with tool overrides")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-						// Tool overrides: rename echo to custom_echo_tool with new description
-						// Note: Filter uses the user-facing name (after override), so we filter by
-						// the renamed tool name, not the original name.
-						Tools: []*vmcpconfig.WorkloadToolConfig{
-							{
-								Workload: backendName,
-								Filter:   []string{renamedToolName}, // Filter by user-facing name (after override)
-								Overrides: map[string]*vmcpconfig.ToolOverride{
-									originalToolName: {
-										Name:        renamedToolName,
-										Description: newDescription,
-									},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+					// Tool overrides: rename echo to custom_echo_tool with new description
+					// Note: Filter uses the user-facing name (after override), so we filter by
+					// the renamed tool name, not the original name.
+					Tools: []*vmcpconfig.WorkloadToolConfig{
+						{
+							Workload: backendName,
+							Filter:   []string{renamedToolName}, // Filter by user-facing name (after override)
+							Overrides: map[string]*vmcpconfig.ToolOverride{
+								originalToolName: {
+									Name:        renamedToolName,
+									Description: newDescription,
 								},
 							},
 						},
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -91,16 +88,11 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend MCPServer")
-		backend := &mcpv1alpha1.MCPServer{
+		backend := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendName,
 				Namespace: testNamespace,
@@ -109,7 +101,7 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 		_ = k8sClient.Delete(ctx, backend)
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -178,7 +170,7 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 
 	Context("when verifying override configuration", func() {
 		It("should have correct aggregation configuration with tool overrides", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,

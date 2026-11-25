@@ -8,8 +8,9 @@ import (
 	"testing"
 
 	"github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,7 @@ func TestStopWorkload_NotRunning_ReturnsNil(t *testing.T) {
 	// Arrange: find by exact name and inspect -> not running
 	call := 0
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			call++
 			if call == 1 {
 				// First call: base-name label lookup -> none found
@@ -40,19 +41,17 @@ func TestStopWorkload_NotRunning_ReturnsNil(t *testing.T) {
 			require.Equal(t, "cid-not-running", id)
 			// Not running
 			ns := &container.NetworkSettings{}
-			ns.Ports = nat.PortMap{}
+			ns.Ports = network.PortMap{}
 			return container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/svc",
-					State: &container.State{Status: "exited", Running: false},
-				},
+				Name:                    "/svc",
+				State:                   &container.State{Status: "exited", Running: false},
 				Config:                  &container.Config{Image: "img", Labels: map[string]string{"toolhive": "true"}},
 				NetworkSettings:         ns,
 				ImageManifestDescriptor: nil,
 			}, nil
 		},
 		// stopFunc should not be called
-		stopFunc: func(_ context.Context, _ string, _ container.StopOptions) error {
+		stopFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStopOptions) error {
 			t.Fatalf("ContainerStop should not be called for not-running container")
 			return nil
 		},
@@ -72,7 +71,7 @@ func TestStopWorkload_Running_CallsContainerStop(t *testing.T) {
 	called := false
 	call := 0
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			call++
 			if call == 1 {
 				return []container.Summary{}, nil
@@ -89,17 +88,15 @@ func TestStopWorkload_Running_CallsContainerStop(t *testing.T) {
 		inspectFunc: func(_ context.Context, id string) (container.InspectResponse, error) {
 			require.Equal(t, "cid-running", id)
 			ns := &container.NetworkSettings{}
-			ns.Ports = nat.PortMap{}
+			ns.Ports = network.PortMap{}
 			return container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/app",
-					State: &container.State{Status: "running", Running: true},
-				},
+				Name:            "/app",
+				State:           &container.State{Status: "running", Running: true},
 				Config:          &container.Config{Image: "img", Labels: map[string]string{"toolhive": "true"}},
 				NetworkSettings: ns,
 			}, nil
 		},
-		stopFunc: func(_ context.Context, id string, _ container.StopOptions) error {
+		stopFunc: func(_ context.Context, id string, _ mobyclient.ContainerStopOptions) error {
 			// The implementation stops by workloadName (not ID), verify that
 			assert.Equal(t, "app", id)
 			called = true
@@ -118,7 +115,7 @@ func TestStopWorkload_NotFound_ReturnsNil(t *testing.T) {
 
 	// Simulate a case where a container appears in listing, but inspect returns NotFound
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			// Exact name lookup will find a candidate
 			return []container.Summary{
 				{
@@ -140,4 +137,70 @@ func TestStopWorkload_NotFound_ReturnsNil(t *testing.T) {
 	err := c.StopWorkload(t.Context(), "gone")
 	// StopWorkload should treat a not-found workload as success
 	require.NoError(t, err)
+}
+
+// TestStopProxyContainer_HandlesEnvoyAndSquidTopologies exercises the building
+// block of the shared cleanup path. StopWorkload iterates the fixed proxy
+// suffixes (-egress, -ingress, -dns) and calls stopProxyContainer for each; this
+// test verifies stopProxyContainer's per-container contract directly: stop a
+// container that exists, and silently tolerate one that does not. That tolerance
+// is what lets the same suffix iteration clean up both the 3-container Squid
+// workload and the 2-container Envoy workload (which has no -ingress container)
+// without backend-specific logic. See #5902.
+func TestStopProxyContainer_HandlesEnvoyAndSquidTopologies(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		containerName string
+		present       bool // whether the named proxy container exists
+		wantStopped   bool
+	}{
+		{
+			name:          "present container is stopped (Squid egress/ingress/dns, Envoy egress/dns)",
+			containerName: "app-egress",
+			present:       true,
+			wantStopped:   true,
+		},
+		{
+			name:          "absent ingress is tolerated (Envoy has no -ingress container)",
+			containerName: "app-ingress",
+			present:       false,
+			wantStopped:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var stoppedID string
+			api := &fakeDockerAPI{
+				listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
+					if !tt.present {
+						return []container.Summary{}, nil
+					}
+					return []container.Summary{
+						{ID: "cid-" + tt.containerName, Names: []string{"/" + tt.containerName}},
+					}, nil
+				},
+				stopFunc: func(_ context.Context, id string, _ mobyclient.ContainerStopOptions) error {
+					stoppedID = id
+					return nil
+				},
+			}
+			c := &Client{api: api}
+
+			// Must not panic or error regardless of whether the container exists.
+			c.stopProxyContainer(t.Context(), tt.containerName, 30)
+
+			if tt.wantStopped {
+				assert.Equal(t, "cid-"+tt.containerName, stoppedID,
+					"expected the existing proxy container to be stopped")
+			} else {
+				assert.Empty(t, stoppedID,
+					"expected no ContainerStop call for an absent proxy container")
+			}
+		})
+	}
 }

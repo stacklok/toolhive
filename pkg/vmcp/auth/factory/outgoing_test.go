@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/env"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -27,12 +28,14 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, registry)
 
-		// Verify all three strategies are registered
+		// Verify all strategies are registered
 		strategyTypes := []string{
 			authtypes.StrategyTypeUnauthenticated,
 			authtypes.StrategyTypeHeaderInjection,
 			authtypes.StrategyTypeTokenExchange,
 			authtypes.StrategyTypeUpstreamInject,
+			authtypes.StrategyTypeAwsSts,
+			authtypes.StrategyTypeOBO,
 		}
 
 		for _, strategyType := range strategyTypes {
@@ -145,6 +148,23 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		assert.NoError(t, err, "unauthenticated strategy should accept empty strategy")
 	})
 
+	t.Run("obo strategy is the built-in Entra OBO strategy", func(t *testing.T) {
+		t.Parallel()
+
+		registry, err := NewOutgoingAuthRegistry(context.Background(), &env.OSReader{})
+		require.NoError(t, err)
+
+		strategy, err := registry.GetStrategy(authtypes.StrategyTypeOBO)
+		require.NoError(t, err, "obo strategy should be registered")
+		assert.IsType(t, &strategies.OBOStrategy{}, strategy)
+
+		// A strategy with no OBO block at all is rejected by the real validator,
+		// not by a licensing stub.
+		err = strategy.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "OBO configuration is required")
+	})
+
 	t.Run("all strategies have correct names", func(t *testing.T) {
 		t.Parallel()
 
@@ -164,6 +184,8 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			{authtypes.StrategyTypeHeaderInjection, "header_injection"},
 			{authtypes.StrategyTypeTokenExchange, "token_exchange"},
 			{authtypes.StrategyTypeUpstreamInject, "upstream_inject"},
+			{authtypes.StrategyTypeAwsSts, "aws_sts"},
+			{authtypes.StrategyTypeOBO, "obo"},
 		}
 
 		for _, tc := range testCases {

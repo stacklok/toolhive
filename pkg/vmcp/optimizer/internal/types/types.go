@@ -10,9 +10,22 @@ import (
 	"context"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 )
+
+// SearchQuery describes a tool search request.
+//
+// The two fields feed different arms of hybrid search: Description is embedded
+// for semantic matching, Keywords build the FTS5/BM25 expression. When Keywords
+// is empty the lexical arm falls back to Description.
+type SearchQuery struct {
+	// Description is a natural language description of the desired capability.
+	Description string
+
+	// Keywords are optional discrete terms for the keyword-search arm.
+	Keywords []string
+}
 
 // ToolStore defines the interface for storing and searching tools.
 // Implementations may use in-memory maps, SQLite FTS5, or other backends.
@@ -24,18 +37,30 @@ type ToolStore interface {
 	// Tools are identified by name; duplicate names are overwritten.
 	UpsertTools(ctx context.Context, tools []server.ServerTool) error
 
-	// Search finds tools matching the query string.
+	// Search finds tools matching q. Description is embedded for semantic
+	// matching; Keywords build the FTS5/BM25 expression, falling back to
+	// Description when empty.
 	// The allowedTools parameter limits results to only tools with names in the given set.
 	// If allowedTools is empty, no results are returned (empty = no access).
 	// Returns matches ranked by relevance. The returned mcp.Tool values contain
 	// only Name and Description; the caller is responsible for enriching with schemas.
-	Search(ctx context.Context, query string, allowedTools []string) ([]mcp.Tool, error)
+	Search(ctx context.Context, q SearchQuery, allowedTools []string) ([]mcp.Tool, error)
 
 	// Close releases any resources held by the store (e.g., database connections).
 	// For in-memory stores this is a no-op.
 	// It is safe to call Close multiple times.
 	Close() error
 }
+
+// Embedding provider identifiers select the wire protocol used to talk to the
+// embedding service. They match config.OptimizerConfig.EmbeddingProvider.
+const (
+	// EmbeddingProviderTEI speaks the HuggingFace Text Embeddings Inference API.
+	EmbeddingProviderTEI = "tei"
+
+	// EmbeddingProviderOpenAI speaks the OpenAI-compatible /embeddings API.
+	EmbeddingProviderOpenAI = "openai"
+)
 
 // EmbeddingClient generates vector embeddings from text.
 // Implementations may use local models, remote APIs, or deterministic fakes.
@@ -46,6 +71,15 @@ type EmbeddingClient interface {
 
 	// EmbedBatch returns vector embeddings for multiple texts.
 	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
+
+	// ModelID returns the identity of the model currently serving requests.
+	// Implementations that fix the model by configuration return the
+	// configured name; implementations whose backend can be replaced
+	// underneath a running process (e.g. TEI, where the model is a property
+	// of the container rather than of the client) must query it live, so two
+	// calls can observe a swap. Callers own any caching or fallback policy
+	// for the error case.
+	ModelID(ctx context.Context) (string, error)
 
 	// Close releases any resources held by the client.
 	Close() error
@@ -69,6 +103,25 @@ type OptimizerConfig struct {
 	// EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.
 	// Zero means use the default timeout (30s).
 	EmbeddingServiceTimeout time.Duration
+
+	// EmbeddingProvider selects the embedding backend wire protocol
+	// (EmbeddingProviderTEI or EmbeddingProviderOpenAI). Empty defaults to TEI.
+	EmbeddingProvider string
+
+	// EmbeddingModel is the model name requested from an OpenAI-compatible
+	// embedding service (e.g. "text-embedding-3-small"). Unused by the TEI
+	// provider, where the model is fixed by the running container.
+	EmbeddingModel string
+
+	// EmbeddingAPIKey is the bearer token sent to an OpenAI-compatible embedding
+	// service. Empty means no Authorization header is sent, which supports
+	// keyless in-cluster gateways. Never populated for the TEI provider.
+	EmbeddingAPIKey string
+
+	// EmbeddingHeaders holds additional HTTP headers sent with every request
+	// to an OpenAI-compatible embedding service. Never populated for the TEI
+	// provider.
+	EmbeddingHeaders map[string]string
 
 	// MaxToolsToReturn limits the number of tools returned by FindTool.
 	MaxToolsToReturn *int

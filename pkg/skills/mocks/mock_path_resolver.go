@@ -108,6 +108,21 @@ func (mr *MockInstallerMockRecorder) Extract(layerData, targetDir, force any) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Extract", reflect.TypeOf((*MockInstaller)(nil).Extract), layerData, targetDir, force)
 }
 
+// ExtractPlugin mocks base method.
+func (m *MockInstaller) ExtractPlugin(layerData []byte, targetDir string, force bool) (*skills.ExtractResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ExtractPlugin", layerData, targetDir, force)
+	ret0, _ := ret[0].(*skills.ExtractResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ExtractPlugin indicates an expected call of ExtractPlugin.
+func (mr *MockInstallerMockRecorder) ExtractPlugin(layerData, targetDir, force any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExtractPlugin", reflect.TypeOf((*MockInstaller)(nil).ExtractPlugin), layerData, targetDir, force)
+}
+
 // Remove mocks base method.
 func (m *MockInstaller) Remove(skillDir string) error {
 	m.ctrl.T.Helper()

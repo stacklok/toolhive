@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,7 +60,12 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	// Create clients for each webhook.
 	var executors []clientExecutor
 	for i, whCfg := range params.Webhooks {
-		client, err := webhook.NewClient(whCfg, webhook.TypeMutating, nil) // HMAC secret not yet plumbed
+		hmacSecret, err := webhook.ResolveSecret(context.Background(), whCfg.HMACSecretRef)
+		if err != nil {
+			return fmt.Errorf("failed to resolve HMAC secret for webhook[%d] (%q): %w", i, whCfg.Name, err)
+		}
+
+		client, err := webhook.NewClient(whCfg, webhook.TypeMutating, hmacSecret)
 		if err != nil {
 			return fmt.Errorf("failed to create client for webhook[%d] (%q): %w", i, whCfg.Name, err)
 		}
@@ -76,16 +82,25 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 func createMutatingHandler(executors []clientExecutor, serverName, transport string) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip if it's not a parsed MCP request (middleware runs after mcp parser).
+			// The configured chain MUST place MCP parsing before this middleware.
+			// A nil POST context may be an admitted response or a missing-parser
+			// misconfiguration. These controls do not apply to non-POST traffic.
 			parsedMCP := mcp.GetParsedMCPRequest(r.Context())
 			if parsedMCP == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// Read the request body to get the raw MCP request.
+			// Read the request body to get the raw MCP request, capped at MaxRequestSize
+			// to prevent unbounded memory consumption from oversized inbound requests.
+			r.Body = http.MaxBytesReader(w, r.Body, webhook.MaxRequestSize)
 			bodyBytes, err := io.ReadAll(r.Body)
 			if err != nil {
+				var maxErr *http.MaxBytesError
+				if errors.As(err, &maxErr) {
+					sendErrorResponse(w, http.StatusRequestEntityTooLarge, "Request body exceeds maximum size", parsedMCP.ID)
+					return
+				}
 				sendErrorResponse(w, http.StatusInternalServerError, "Failed to read request body", parsedMCP.ID)
 				return
 			}
@@ -116,8 +131,31 @@ func createMutatingHandler(executors []clientExecutor, serverName, transport str
 				return
 			}
 
+			// A mutating webhook rewrote the body, so the parse cached by ParsingMiddleware
+			// now describes a request the backend will not execute. Refresh it for downstream
+			// consumers and publish it through the holder so outer audit and telemetry
+			// wrappers observe the final request after the inner chain returns.
+			if !bytes.Equal(bodyBytes, mutatedBody) {
+				republished, err := mcp.RepublishParsedMCPRequest(r, mutatedBody)
+				if err != nil {
+					var batchErr *mcp.BatchUnsupportedError
+					if errors.As(err, &batchErr) {
+						mcp.WriteBatchUnsupportedError(w)
+						return
+					}
+					slog.Error("Mutating webhook produced an unparsable MCP request", "error", err)
+					sendErrorResponse(w, http.StatusInternalServerError, "Webhook produced an invalid MCP request", parsedMCP.ID)
+					return
+				}
+				r = republished
+			}
+
 			// Replace the request body with the (potentially mutated) MCP body for downstream handlers.
+			// ContentLength must be updated alongside it: a patch almost always changes the body
+			// length, and the reverse proxy rejects a forwarded request whose declared length
+			// disagrees with the body it can actually read.
 			r.Body = io.NopCloser(bytes.NewBuffer(mutatedBody))
+			r.ContentLength = int64(len(mutatedBody))
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -177,7 +215,8 @@ func executeSingleMutation(
 			return nil, err
 		}
 
-		if exec.config.FailurePolicy == webhook.FailurePolicyIgnore {
+		// A local error means the webhook was never consulted, so it is never ignored.
+		if exec.config.FailurePolicy == webhook.FailurePolicyIgnore && !webhook.IsLocalError(err) {
 			slog.Warn("Mutating webhook error ignored due to fail-open policy", "webhook", whName, "error", err)
 			return currentBody, nil
 		}
@@ -303,18 +342,20 @@ func readSourceIP(r *http.Request) string {
 }
 
 func sendErrorResponse(w http.ResponseWriter, statusCode int, message string, msgID interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
 	id, err := mcp.ConvertToJSONRPC2ID(msgID)
 	if err != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails.
 	}
+	code := mcp.JSONRPCCodeForStatus(statusCode)
 
 	// Return a JSON-RPC 2.0 error so MCP clients can parse the denial.
 	errResp := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(int64(statusCode), message),
+		Error: jsonrpc2.NewError(code, message),
 	}
-	_ = json.NewEncoder(w).Encode(errResp)
+
+	// The helper encodes before writing any header, so an encode failure never
+	// leaves a half-written response (e.g. a status header followed by a
+	// second write). Nothing to do on a write error for a denial body.
+	_ = mcp.WriteJSONRPCError(w, statusCode, errResp)
 }

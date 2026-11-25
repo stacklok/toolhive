@@ -129,9 +129,21 @@ func createReplaceInjector() injectionFunc {
 }
 
 // createCustomInjector creates an injection function that adds the token to a custom header.
+//
+// It also strips the client's original Authorization header (the ToolHive-issued
+// JWT) so it is never forwarded to the backend: that token was minted for the
+// proxy, not the upstream, and leaking it is credential passthrough (#5504). The
+// "replace" strategy avoids this implicitly because it overwrites Authorization;
+// the custom strategy must strip it explicitly. When the custom header name is
+// itself Authorization (case-insensitive), the Set above already replaced the JWT
+// with the upstream token, so it must be left in place.
 func createCustomInjector(headerName string) injectionFunc {
+	stripAuthorization := http.CanonicalHeaderKey(headerName) != "Authorization"
 	return func(r *http.Request, token string) {
 		r.Header.Set(headerName, fmt.Sprintf("Bearer %s", token))
+		if stripAuthorization {
+			r.Header.Del("Authorization")
+		}
 	}
 }
 

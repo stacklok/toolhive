@@ -14,11 +14,15 @@ import (
 	"net/url"
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/registry/auth"
 	"github.com/stacklok/toolhive/pkg/versions"
+	"github.com/stacklok/toolhive/pkg/yamlutil"
 )
+
+// maxOpenAPISpecSize caps the /openapi.yaml body read by ValidateEndpoint.
+const maxOpenAPISpecSize = 1 << 20
 
 // Client represents an MCP Registry API client
 type Client interface {
@@ -284,25 +288,29 @@ func (c *mcpRegistryClient) ValidateEndpoint(ctx context.Context) error {
 		return fmt.Errorf("/openapi.yaml not found (status %d) - not a valid MCP Registry API", resp.StatusCode)
 	}
 
-	// Parse the OpenAPI spec
-	data, err := io.ReadAll(resp.Body)
+	// Bound the read: the upstream registry spec is about 64KB.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxOpenAPISpecSize+1))
 	if err != nil {
 		return fmt.Errorf("failed to read /openapi.yaml: %w", err)
 	}
+	if int64(len(data)) > maxOpenAPISpecSize {
+		return fmt.Errorf("/openapi.yaml exceeds maximum size of %d bytes", maxOpenAPISpecSize)
+	}
 
-	var openapiSpec map[string]interface{}
-	if err := yaml.Unmarshal(data, &openapiSpec); err != nil {
+	// Read the two fields we need straight from the node tree. Decoding the
+	// whole spec into a Go value would compare every pair of keys in each
+	// mapping, which is quadratic in the number of keys.
+	doc, err := yamlutil.Parse(data)
+	if err != nil {
 		return fmt.Errorf("failed to parse /openapi.yaml: %w", err)
 	}
 
-	// Check for 'info' section
-	info, ok := openapiSpec["info"].(map[string]interface{})
-	if !ok {
+	info := yamlutil.MappingValue(doc, "info")
+	if info == nil || info.Kind != yaml.MappingNode {
 		return fmt.Errorf("/openapi.yaml missing 'info' section")
 	}
 
-	// Check version
-	version, ok := info["version"].(string)
+	version, ok := stringScalar(yamlutil.MappingValue(info, "version"))
 	if !ok {
 		return fmt.Errorf("/openapi.yaml info section missing 'version' field")
 	}
@@ -313,7 +321,7 @@ func (c *mcpRegistryClient) ValidateEndpoint(ctx context.Context) error {
 	}
 
 	// Check description contains GitHub URL
-	description, ok := info["description"].(string)
+	description, ok := stringScalar(yamlutil.MappingValue(info, "description"))
 	if !ok {
 		return fmt.Errorf("/openapi.yaml info section missing 'description' field")
 	}
@@ -324,6 +332,14 @@ func (c *mcpRegistryClient) ValidateEndpoint(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// stringScalar returns the value of n if it is a string scalar.
+func stringScalar(n *yaml.Node) (string, bool) {
+	if n == nil || n.Kind != yaml.ScalarNode || n.ShortTag() != "!!str" {
+		return "", false
+	}
+	return n.Value, true
 }
 
 // contains checks if a string contains a substring

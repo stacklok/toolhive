@@ -9,11 +9,29 @@ package script
 import (
 	"context"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive/pkg/script/internal/core"
 )
 
 // DefaultStepLimit is the default maximum number of Starlark execution steps.
 const DefaultStepLimit uint64 = 100_000
+
+// ErrStepLimitExceeded is matched (with errors.Is) by the error Execute returns
+// when the script, or a callable it ran under parallel(), used up its step
+// budget. The error message itself is the interpreter's.
+var ErrStepLimitExceeded = core.ErrStepLimitExceeded
+
+// Stats describes what one Execute call did. It carries no script content.
+type Stats struct {
+	// Steps is the number of Starlark execution steps, summed over the
+	// script and every callable it ran under parallel().
+	Steps uint64
+	// ParallelCalls is the number of parallel() calls the script made.
+	ParallelCalls int
+	// ParallelTasks is the number of callables those parallel() calls
+	// started, summed over all of them.
+	ParallelTasks int
+}
 
 // Executor runs Starlark scripts and describes the virtual tool.
 //
@@ -66,6 +84,11 @@ type Config struct {
 	// ParallelMax is the maximum number of concurrent goroutines that
 	// parallel() can spawn. Zero means unlimited.
 	ParallelMax int
+
+	// OnStats, when non-nil, is called once per Execute with what the
+	// execution did, whether it succeeded or failed. It runs on the Execute
+	// goroutine just before Execute returns, so it must be cheap.
+	OnStats func(Stats)
 }
 
 // New creates an Executor bound to the given tools and configuration.

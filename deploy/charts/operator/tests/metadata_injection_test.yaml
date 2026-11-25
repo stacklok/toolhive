@@ -1,0 +1,31 @@
+suite: optional metadata injection
+# The optional annotations/labels blocks are `with`/`if` gated and indented by
+# hand. A broken gate or wrong indent silently drops user metadata — this bit
+# the chart before (ServiceAccount annotation indent, #4602). Assert the blocks
+# are absent on defaults and correctly injected when set.
+templates:
+  - deployment.yaml
+  - serviceaccount.yaml
+tests:
+  - it: injects pod annotations and labels when set
+    template: deployment.yaml
+    set:
+      operator.podAnnotations: { prometheus.io/scrape: "true" }
+      operator.podLabels: { team: platform }
+    asserts:
+      - equal: { path: 'spec.template.metadata.annotations["prometheus.io/scrape"]', value: "true" }
+      - equal: { path: spec.template.metadata.labels.team, value: platform }
+
+  - it: injects ServiceAccount annotations and labels when set
+    template: serviceaccount.yaml
+    set:
+      operator.serviceAccount.annotations: { eks.amazonaws.com/role-arn: arn:aws:iam::123:role/op }
+      operator.serviceAccount.labels: { team: platform }
+    asserts:
+      - equal: { path: 'metadata.annotations["eks.amazonaws.com/role-arn"]', value: "arn:aws:iam::123:role/op" }
+      - equal: { path: metadata.labels.team, value: platform }
+
+  - it: omits the ServiceAccount annotations block on defaults
+    template: serviceaccount.yaml
+    asserts:
+      - notExists: { path: metadata.annotations }

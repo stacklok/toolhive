@@ -12,9 +12,19 @@ import (
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
-// versionPollInterval is how often to check the registry version for changes.
-// Exposed as a package-level var so tests can set a shorter interval.
-var versionPollInterval = 2 * time.Second
+// defaultVersionPollInterval is how often to check the registry version for
+// changes when a Server does not override it.
+const defaultVersionPollInterval = 2 * time.Second
+
+// pollInterval returns this Server's version-poll interval, falling back to the
+// package default. Reading it per-Server rather than from a mutable package var
+// is what lets a test shorten it while staying parallel-safe.
+func (s *Server) pollInterval() time.Duration {
+	if s.versionPollInterval > 0 {
+		return s.versionPollInterval
+	}
+	return defaultVersionPollInterval
+}
 
 // StatusReportingConfig configures periodic status reporting.
 type StatusReportingConfig struct {
@@ -59,10 +69,7 @@ func (s *Server) periodicStatusReporting(ctx context.Context, config StatusRepor
 	// Wait for initial health checks to complete before first status report
 	// This ensures that the first status report has accurate health information
 	// rather than reporting with backendCount=0 before checks complete
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
-	if healthMon != nil {
+	if healthMon := s.backendHealth(); healthMon != nil {
 		slog.Debug("waiting for initial health checks to complete before first status report")
 		healthMon.WaitForInitialHealthChecks()
 		slog.Debug("initial health checks complete, proceeding with status reporting")
@@ -78,7 +85,7 @@ func (s *Server) periodicStatusReporting(ctx context.Context, config StatusRepor
 	var versionTickerC <-chan time.Time
 	var lastRegistryVersion uint64
 	if isDynamic {
-		versionTicker := time.NewTicker(versionPollInterval)
+		versionTicker := time.NewTicker(s.pollInterval())
 		defer versionTicker.Stop()
 		versionTickerC = versionTicker.C
 	}
@@ -120,20 +127,15 @@ func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter)
 	if dynamicReg, ok := s.backendRegistry.(vmcp.DynamicRegistry); ok {
 		currentBackends := dynamicReg.List(ctx)
 		slog.Debug("refreshing backends from registry", "backends", len(currentBackends))
-		s.healthMonitorMu.RLock()
-		healthMon := s.healthMonitor
-		s.healthMonitorMu.RUnlock()
-		if healthMon != nil {
+		if healthMon := s.backendHealth(); healthMon != nil {
 			healthMon.UpdateBackends(currentBackends)
 		}
 	}
 
-	// Build status from health monitor if available
+	// Build status from the core-owned health monitor if available
 	var status *vmcp.Status
-
-	s.healthMonitorMu.RLock()
-	if s.healthMonitor != nil {
-		status = s.healthMonitor.BuildStatus()
+	if healthMon := s.backendHealth(); healthMon != nil {
+		status = healthMon.BuildStatus()
 	} else {
 		// No health monitor - create minimal status
 		status = &vmcp.Status{
@@ -142,7 +144,6 @@ func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter)
 			Timestamp: time.Now(),
 		}
 	}
-	s.healthMonitorMu.RUnlock()
 
 	// Log status at debug level
 	slog.Debug("reporting status",

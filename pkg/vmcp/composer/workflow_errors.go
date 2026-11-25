@@ -37,45 +37,15 @@ var (
 
 	// ErrToolCallFailed indicates a tool call failed.
 	ErrToolCallFailed = errors.New("tool call failed")
+
+	// errSkipRemaining is an internal control-flow sentinel used by the
+	// "skip_remaining" elicitation action. It is not a failure: it signals the
+	// DAG executor to stop scheduling further steps so that every step not yet
+	// run is marked skipped and the workflow still completes successfully. It
+	// never escapes ExecuteWorkflow, which converts it into a completed result
+	// (or a timeout/failure if the workflow context ended while the gate waited).
+	errSkipRemaining = errors.New("skip remaining steps")
 )
-
-// WorkflowError wraps workflow execution errors with context.
-type WorkflowError struct {
-	// WorkflowID is the workflow execution ID.
-	WorkflowID string
-
-	// StepID is the step that caused the error (if applicable).
-	StepID string
-
-	// Message is the error message.
-	Message string
-
-	// Cause is the underlying error.
-	Cause error
-}
-
-// Error implements the error interface.
-func (e *WorkflowError) Error() string {
-	if e.StepID != "" {
-		return fmt.Sprintf("workflow %s, step %s: %s: %v", e.WorkflowID, e.StepID, e.Message, e.Cause)
-	}
-	return fmt.Sprintf("workflow %s: %s: %v", e.WorkflowID, e.Message, e.Cause)
-}
-
-// Unwrap returns the underlying error for errors.Is and errors.As.
-func (e *WorkflowError) Unwrap() error {
-	return e.Cause
-}
-
-// NewWorkflowError creates a new workflow error.
-func NewWorkflowError(workflowID, stepID, message string, cause error) *WorkflowError {
-	return &WorkflowError{
-		WorkflowID: workflowID,
-		StepID:     stepID,
-		Message:    message,
-		Cause:      cause,
-	}
-}
 
 // ValidationError wraps workflow validation errors.
 type ValidationError struct {

@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -28,7 +28,7 @@ func (*HeaderInjectionConverter) StrategyType() string {
 // Sets HeaderValueEnv when ValueSecretRef is present, similar to token exchange.
 // Secrets are mounted as environment variables, not resolved into ConfigMap.
 func (*HeaderInjectionConverter) ConvertToStrategy(
-	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuth *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	headerInjection := externalAuth.Spec.HeaderInjection
 	if headerInjection == nil {
@@ -52,7 +52,7 @@ func (*HeaderInjectionConverter) ConvertToStrategy(
 // (see ConvertToStrategy).
 func (*HeaderInjectionConverter) ResolveSecrets(
 	ctx context.Context,
-	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuth *mcpv1beta1.MCPExternalAuthConfig,
 	k8sClient client.Client,
 	namespace string,
 	strategy *authtypes.BackendAuthStrategy,

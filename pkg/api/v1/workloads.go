@@ -16,11 +16,15 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
+	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
 )
 
 const (
@@ -41,6 +45,21 @@ type WorkloadRoutes struct {
 	debugMode        bool
 	groupManager     groups.Manager
 	workloadService  *WorkloadService
+
+	// loadRunConfig loads a single workload's saved RunConfig. Injected so the
+	// upgrade-check handlers can be unit tested without the global state store.
+	loadRunConfig runConfigLoader
+	// listRunConfigNames lists all saved RunConfig names. Injected for the same
+	// testability reason as loadRunConfig.
+	listRunConfigNames runConfigLister
+	// registryProvider returns the registry provider used by upgrade checks.
+	// Injected so tests can supply a mock provider.
+	registryProvider registryProviderFunc
+	// applierFactory builds the applier used by the POST upgrade handler. It is
+	// always populated in WorkloadRouter with the real registry/pull-backed
+	// upgrade.Applier; injected so tests can supply a stub that exercises the
+	// apply path without resolving and pulling a real image.
+	applierFactory upgradeApplierFactory
 }
 
 //	@title			ToolHive API
@@ -64,11 +83,33 @@ func WorkloadRouter(
 	)
 
 	routes := WorkloadRoutes{
-		workloadManager:  workloadManager,
-		containerRuntime: containerRuntime,
-		debugMode:        debugMode,
-		groupManager:     groupManager,
-		workloadService:  workloadService,
+		workloadManager:    workloadManager,
+		containerRuntime:   containerRuntime,
+		debugMode:          debugMode,
+		groupManager:       groupManager,
+		workloadService:    workloadService,
+		loadRunConfig:      runner.LoadState,
+		listRunConfigNames: defaultRunConfigLister,
+		registryProvider: func() (registry.Provider, error) {
+			return registry.GetDefaultProviderWithConfig(
+				workloadService.configProvider,
+				registry.WithInteractive(false),
+			)
+		},
+	}
+	// applierFactory builds the real registry/pull-backed upgrade applier. It is
+	// assigned after routes is constructed so the closure can reuse the route's
+	// own newUpgradeChecker (which shares the registry provider above).
+	routes.applierFactory = func() (workloadUpgradeApplier, error) {
+		checker, err := routes.newUpgradeChecker()
+		if err != nil {
+			return nil, err
+		}
+		applier, err := upgrade.NewApplier(workloadManager, checker, workloadService.configProvider)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create upgrade applier: %w", err)
+		}
+		return applier, nil
 	}
 
 	r := chi.NewRouter()
@@ -80,6 +121,14 @@ func WorkloadRouter(
 	r.With(stdTimeout).Post("/stop", apierrors.ErrorHandler(routes.stopWorkloadsBulk))
 	r.With(stdTimeout).Post("/restart", apierrors.ErrorHandler(routes.restartWorkloadsBulk))
 	r.With(stdTimeout).Post("/delete", apierrors.ErrorHandler(routes.deleteWorkloadsBulk))
+	// Register the literal /upgrade-check before /{name} so chi routes it
+	// distinctly from the single-workload wildcard.
+	r.With(stdTimeout).Get("/upgrade-check", apierrors.ErrorHandler(routes.upgradeCheckBulk))
+	r.With(stdTimeout).Get("/{name}/upgrade-check", apierrors.ErrorHandler(routes.upgradeCheckSingle))
+	// The upgrade apply path verifies and pulls the candidate image, so it gets
+	// the longer timeout. The /{name}/upgrade sub-path is distinct from /{name}
+	// and is never shadowed by the single-workload wildcard.
+	r.With(longTimeout).Post("/{name}/upgrade", apierrors.ErrorHandler(routes.upgradeWorkload))
 	r.With(stdTimeout).Get("/{name}", apierrors.ErrorHandler(routes.getWorkload))
 	r.With(longTimeout).Post("/{name}/edit", apierrors.ErrorHandler(routes.updateWorkload))
 	r.With(stdTimeout).Post("/{name}/stop", apierrors.ErrorHandler(routes.stopWorkload))
@@ -121,9 +170,18 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) e
 				http.StatusBadRequest,
 			)
 		}
+		// FilterByGroup silently returns an empty slice for an unknown group,
+		// so check existence explicitly to honor the documented 404.
+		exists, existsErr := s.groupManager.Exists(ctx, groupFilter)
+		if existsErr != nil {
+			return fmt.Errorf("failed to check group existence: %w", existsErr)
+		}
+		if !exists {
+			return fmt.Errorf("%w: %s", groups.ErrGroupNotFound, groupFilter)
+		}
 		workloadList, err = workloads.FilterByGroup(workloadList, groupFilter)
 		if err != nil {
-			return err // groups.ErrGroupNotFound already has 404 status code
+			return err
 		}
 	}
 
@@ -269,6 +327,9 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 //
 //	@Summary		Create a new workload
 //	@Description	Create and start a new workload
+//	@Description	runtime_config is only accepted for protocol-scheme images
+//	@Description	(uvx://, npx://, go://); supplying it with an ordinary image
+//	@Description	reference or a remote url is rejected with 400.
 //	@Tags			workloads
 //	@Accept			json
 //	@Produce		json
@@ -345,6 +406,10 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //
 //	@Summary		Update workload
 //	@Description	Update an existing workload configuration
+//	@Description	runtime_config on a non-protocol-scheme image is accepted only when it
+//	@Description	exactly matches the workload's persisted config and the image and url
+//	@Description	are unchanged (an inert echo, e.g. from a prior GET); otherwise it is
+//	@Description	rejected with 400.
 //	@Tags			workloads
 //	@Accept			json
 //	@Produce		json
@@ -643,10 +708,68 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) er
 		return err // ErrRunConfigNotFound (404) already has status code
 	}
 
-	// Return the configuration as JSON
+	redactedRunConfig, err := redactRunConfigOIDCClientSecrets(runConfig)
+	if err != nil {
+		return fmt.Errorf("failed to redact workload configuration: %w", err)
+	}
+
+	// Return the configuration as JSON.
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(runConfig); err != nil {
+	if err := json.NewEncoder(w).Encode(redactedRunConfig); err != nil {
 		return fmt.Errorf("failed to encode workload configuration: %w", err)
 	}
 	return nil
+}
+
+// redactRunConfigOIDCClientSecrets returns a copy suitable for export without
+// OIDC client secrets. It leaves the loaded configuration untouched.
+func redactRunConfigOIDCClientSecrets(runConfig *runner.RunConfig) (*runner.RunConfig, error) {
+	redacted := *runConfig
+	if runConfig.OIDCConfig != nil {
+		oidcConfig := *runConfig.OIDCConfig
+		oidcConfig.ClientSecret = ""
+		redacted.OIDCConfig = &oidcConfig
+	}
+
+	middlewareConfigs, err := redactAuthMiddlewareConfigs(runConfig.MiddlewareConfigs)
+	if err != nil {
+		return nil, err
+	}
+	additionalMiddlewareConfigs, err := redactAuthMiddlewareConfigs(runConfig.AdditionalMiddlewareConfigs)
+	if err != nil {
+		return nil, err
+	}
+	redacted.MiddlewareConfigs = middlewareConfigs
+	redacted.AdditionalMiddlewareConfigs = additionalMiddlewareConfigs
+
+	return &redacted, nil
+}
+
+func redactAuthMiddlewareConfigs(configs []transporttypes.MiddlewareConfig) ([]transporttypes.MiddlewareConfig, error) {
+	redacted := make([]transporttypes.MiddlewareConfig, len(configs))
+	copy(redacted, configs)
+
+	for i := range redacted {
+		if redacted[i].Type != auth.MiddlewareType {
+			continue
+		}
+
+		var params auth.MiddlewareParams
+		if err := json.Unmarshal(configs[i].Parameters, &params); err != nil {
+			return nil, fmt.Errorf("failed to decode auth middleware configuration: %w", err)
+		}
+		if params.OIDCConfig != nil {
+			oidcConfig := *params.OIDCConfig
+			oidcConfig.ClientSecret = ""
+			params.OIDCConfig = &oidcConfig
+		}
+
+		parameters, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode auth middleware configuration: %w", err)
+		}
+		redacted[i].Parameters = parameters
+	}
+
+	return redacted, nil
 }

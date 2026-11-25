@@ -9,15 +9,15 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // GenerateOpenTelemetryEnvVarsFromRef generates OpenTelemetry environment variables
 // from an MCPTelemetryConfig resource and its per-server reference overrides.
 // This includes OTEL_RESOURCE_ATTRIBUTES and secret-backed sensitive header env vars.
 func GenerateOpenTelemetryEnvVarsFromRef(
-	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
-	ref *mcpv1alpha1.MCPTelemetryConfigReference,
+	telemetryConfig *mcpv1beta1.MCPTelemetryConfig,
+	ref *mcpv1beta1.MCPTelemetryConfigReference,
 	resourceName string,
 	namespace string,
 ) []corev1.EnvVar {

@@ -179,8 +179,8 @@ func TestForEachStep_ErrorContinue(t *testing.T) {
 		Return(target, nil).Times(2)
 
 	callCount := int32(0)
-	te.Backend.EXPECT().CallTool(gomock.Any(), target, "osv.query_vulnerability", gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ interface{}, _ interface{}, _ interface{}, _ map[string]any, _ interface{}) (*vmcp.ToolCallResult, error) {
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "osv.query_vulnerability", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ interface{}, _ interface{}, _ interface{}, _ map[string]any, _ interface{}, _ interface{}) (*vmcp.ToolCallResult, error) {
 			n := atomic.AddInt32(&callCount, 1)
 			if n == 1 {
 				return nil, fmt.Errorf("network error")
@@ -345,7 +345,7 @@ func TestForEachStep_BoundedParallelism(t *testing.T) {
 	}
 	te.Router.EXPECT().RouteTool(gomock.Any(), "osv.query_vulnerability").
 		Return(target, nil).Times(5)
-	te.Backend.EXPECT().CallTool(gomock.Any(), target, "osv.query_vulnerability", gomock.Any(), gomock.Any()).
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "osv.query_vulnerability", gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ToolCallResult{
 			StructuredContent: map[string]any{"vulns": []any{}},
 		}, nil).Times(5)
@@ -400,8 +400,8 @@ func TestForEachStep_TemplateContext(t *testing.T) {
 
 	// Use a sync.Map to safely capture args from concurrent goroutines
 	var capturedArgs sync.Map
-	te.Backend.EXPECT().CallTool(gomock.Any(), target, "echo.echo", gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ interface{}, _ interface{}, _ interface{}, args map[string]any, _ interface{}) (*vmcp.ToolCallResult, error) {
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "echo.echo", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ interface{}, _ interface{}, _ interface{}, args map[string]any, _ interface{}, _ interface{}) (*vmcp.ToolCallResult, error) {
 			// Key by the index value to avoid ordering issues
 			capturedArgs.Store(args["index"], args["value"])
 			return &vmcp.ToolCallResult{

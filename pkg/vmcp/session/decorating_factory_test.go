@@ -48,7 +48,7 @@ func TestNewDecoratingFactory_DecoratorsAppliedInOrder(t *testing.T) {
 	}
 
 	factory := session.NewDecoratingFactory(base, dec1, dec2)
-	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, true, nil)
+	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, []int{1, 2}, order)
 }
@@ -70,7 +70,7 @@ func TestNewDecoratingFactory_DecoratorError_ClosesSession(t *testing.T) {
 		return nil, decErr
 	})
 
-	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, true, nil)
+	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, nil, nil)
 	require.ErrorIs(t, err, decErr)
 }
 
@@ -93,7 +93,7 @@ func TestNewDecoratingFactory_SecondDecoratorError_ClosesCurrentSession(t *testi
 	dec2 := func(_ context.Context, _ session.MultiSession) (session.MultiSession, error) { return nil, decErr }
 
 	factory := session.NewDecoratingFactory(base, dec1, dec2)
-	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, true, nil)
+	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, nil, nil)
 	require.ErrorIs(t, err, decErr)
 }
 
@@ -113,7 +113,7 @@ func TestNewDecoratingFactory_NilReturnWithNoError_ClosesSession(t *testing.T) {
 		return nil, nil // buggy decorator
 	})
 
-	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, true, nil)
+	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil session")
 }
@@ -135,7 +135,7 @@ func TestNewDecoratingFactory_CloseErrorOnDecoratorFailure_DoesNotSuppressOrigin
 		return nil, decErr
 	})
 
-	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, true, nil)
+	_, err := factory.MakeSessionWithID(context.Background(), "id", nil, nil, nil)
 	// The original decorator error, not the close error, is returned.
 	require.ErrorIs(t, err, decErr)
 }
@@ -156,7 +156,7 @@ func TestNewDecoratingFactory_HappyPath_ReturnsFinalSession(t *testing.T) {
 		func(_ context.Context, _ session.MultiSession) (session.MultiSession, error) { return finalSess, nil },
 	)
 
-	got, err := factory.MakeSessionWithID(context.Background(), "id", nil, true, nil)
+	got, err := factory.MakeSessionWithID(context.Background(), "id", nil, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, finalSess, got)
 }

@@ -23,29 +23,37 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/opencontainers/go-digest"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/plugins/adapters"
+	"github.com/stacklok/toolhive/pkg/plugins/pluginsvc"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
@@ -53,37 +61,47 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
+	"github.com/stacklok/toolhive/pkg/transport/middleware/origin"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // Not sure if these values need to be configurable.
 const (
-	middlewareTimeout  = 60 * time.Second
-	readHeaderTimeout  = 10 * time.Second
+	middlewareTimeout = 60 * time.Second
+	readHeaderTimeout = 10 * time.Second
+	// readTimeout bounds reading the entire request (headers + body), mitigating
+	// slow-upload connection exhaustion. WriteTimeout is intentionally NOT set:
+	// the workload router serves multi-minute responses (image pulls) that a
+	// server-level write deadline would sever (see setupDefaultRoutes).
+	readTimeout        = 30 * time.Second
+	idleTimeout        = 120 * time.Second
 	shutdownTimeout    = 30 * time.Second
-	nonceBytes         = 16
+	randomTokenBytes   = 16
 	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
 	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
 
 // ServerBuilder provides a fluent interface for building and configuring the API server
 type ServerBuilder struct {
-	address          string
-	isUnixSocket     bool
-	debugMode        bool
-	enableDocs       bool
-	nonce            string
-	oidcConfig       *auth.TokenValidatorConfig
-	otelEnabled      bool
-	middlewares      []func(http.Handler) http.Handler
-	customRoutes     map[string]http.Handler
-	containerRuntime runtime.Runtime
-	clientManager    client.Manager
-	workloadManager  workloads.Manager
-	groupManager     groups.Manager
-	skillManager     skills.SkillService
-	skillStoreCloser io.Closer
+	address              string
+	isUnixSocket         bool
+	debugMode            bool
+	enableDocs           bool
+	nonce                string
+	keySigningCapability string
+	oidcConfig           *auth.TokenValidatorConfig
+	otelEnabled          bool
+	middlewares          []func(http.Handler) http.Handler
+	customRoutes         map[string]http.Handler
+	containerRuntime     runtime.Runtime
+	clientManager        client.Manager
+	workloadManager      workloads.Manager
+	groupManager         groups.Manager
+	skillManager         skills.SkillService
+	skillStoreCloser     io.Closer
+	pluginManager        plugins.PluginService
+	pluginStoreCloser    io.Closer
 }
 
 // NewServerBuilder creates a new ServerBuilder with default configuration
@@ -126,6 +144,13 @@ func (b *ServerBuilder) WithNonce(nonce string) *ServerBuilder {
 	return b
 }
 
+// WithKeySigningCapability sets the bearer capability required by requests
+// that ask the server to open a private signing key.
+func (b *ServerBuilder) WithKeySigningCapability(capability string) *ServerBuilder {
+	b.keySigningCapability = capability
+	return b
+}
+
 // WithOIDCConfig sets the OIDC configuration
 func (b *ServerBuilder) WithOIDCConfig(oidcConfig *auth.TokenValidatorConfig) *ServerBuilder {
 	b.oidcConfig = oidcConfig
@@ -141,47 +166,33 @@ func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
 	return b
 }
 
-// WithMiddleware adds middleware to the server
+// WithMiddleware appends HTTP middleware that runs after the default middleware
+// stack (request-ID, body-size limit, headers, update-check, Origin validation,
+// JSON content-type enforcement, auth) and before route handlers. Part of the
+// route handlers. Part of the ApplyServerExtensions extension point — used by
+// downstream consumers to inject custom authentication or request-scoping
+// middleware into the API server.
+//
+// Public extension API. Do not remove based on deadcode analysis alone:
+// callers may live in repositories that are not visible to this module's
+// analyzer. The test in server_test.go intentionally exercises this method
+// to keep it reachable.
 func (b *ServerBuilder) WithMiddleware(mw ...func(http.Handler) http.Handler) *ServerBuilder {
 	b.middlewares = append(b.middlewares, mw...)
 	return b
 }
 
-// WithRoute adds a custom route to the server
+// WithRoute mounts a sub-router at the given prefix. The caller is responsible
+// for any per-route timeout middleware. Part of the ApplyServerExtensions
+// extension point — used by downstream consumers to add API surface alongside
+// the built-in routes.
+//
+// Public extension API. Do not remove based on deadcode analysis alone:
+// callers may live in repositories that are not visible to this module's
+// analyzer. The test in server_test.go intentionally exercises this method
+// to keep it reachable.
 func (b *ServerBuilder) WithRoute(prefix string, handler http.Handler) *ServerBuilder {
 	b.customRoutes[prefix] = handler
-	return b
-}
-
-// WithContainerRuntime sets the container runtime
-func (b *ServerBuilder) WithContainerRuntime(containerRuntime runtime.Runtime) *ServerBuilder {
-	b.containerRuntime = containerRuntime
-	return b
-}
-
-// WithClientManager sets the client manager
-func (b *ServerBuilder) WithClientManager(manager client.Manager) *ServerBuilder {
-	b.clientManager = manager
-	return b
-}
-
-// WithWorkloadManager sets the workload manager
-func (b *ServerBuilder) WithWorkloadManager(manager workloads.Manager) *ServerBuilder {
-	b.workloadManager = manager
-	return b
-}
-
-// WithGroupManager sets the group manager
-func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder {
-	b.groupManager = manager
-	return b
-}
-
-// WithSkillManager sets the skill service manager.
-// The caller is responsible for closing any underlying resources
-// when providing an external skill service.
-func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBuilder {
-	b.skillManager = manager
 	return b
 }
 
@@ -221,12 +232,46 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r.Use(
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
-		requestBodySizeLimitMiddleware(maxRequestBodySize),
+		bodylimit.Middleware(maxRequestBodySize),
 		headersMiddleware,
 	)
 
 	// Add update check middleware
 	r.Use(updateCheckMiddleware())
+
+	// Reject cross-origin browser requests before they reach auth or handlers.
+	// The management API creates workloads with caller-named host bind mounts,
+	// so a cross-origin page must not be able to drive it (GHSA-xv9h-79wp-q9w6).
+	// Skipped for UNIX-socket mode, which no web page can reach.
+	if !b.isUnixSocket {
+		// A loopback bind yields a loopback-only allowlist; a non-loopback bind
+		// (or --port 0, whose real port is unknown until the listener binds)
+		// yields none, which makes origin.NewHandler a pass-through — matching
+		// the `thv proxy` behaviour, where operators exposing a public listener
+		// must front it with a reverse proxy that enforces Origin. We WARN in
+		// that case so the disabled protection is visible. A parse error needs
+		// no handling here: the same address fails net.Listen in NewServer, so
+		// there is no running-but-unprotected window.
+		if host, portStr, err := net.SplitHostPort(b.address); err == nil {
+			port, _ := strconv.Atoi(portStr) // non-numeric → 0 → empty allowlist below
+			allowed := origin.ResolveAllowedOrigins(host, port, nil)
+			if len(allowed) == 0 {
+				slog.Warn("API server Origin validation is disabled for this bind address; "+
+					"cross-origin browser requests are not rejected at this layer. "+
+					"Front a non-loopback listener with a reverse proxy that enforces Origin.",
+					"address", b.address)
+			}
+			r.Use(origin.NewHandler(allowed))
+		}
+		// Defence in depth: require application/json on state-changing requests
+		// that carry a body. text/plain, form encodings, and an absent
+		// Content-Type are all CORS "simple" — a cross-origin page can send them
+		// with no preflight, and the handlers decode any body as JSON regardless
+		// of Content-Type. Requiring application/json forces a preflight the
+		// browser will not clear. Empty-body mutating routes (e.g. stop/restart)
+		// are unaffected.
+		r.Use(enforceJSONContentType)
+	}
 
 	// Add authentication middleware
 	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, b.oidcConfig)
@@ -289,46 +334,112 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 	}
 
 	if b.skillManager == nil {
-		store, storeErr := sqlite.NewDefaultSkillStore()
-		if storeErr != nil {
-			return fmt.Errorf("failed to create skill store: %w", storeErr)
+		if err := b.createDefaultSkillManager(); err != nil {
+			return err
 		}
-		b.skillStoreCloser = store
-		cm, cmErr := client.NewClientManager()
-		if cmErr != nil {
-			_ = store.Close()
-			return fmt.Errorf("failed to create client manager for skills: %w", cmErr)
-		}
-
-		ociStore, ociErr := ociskills.NewStore(ociskills.DefaultStoreRoot())
-		if ociErr != nil {
-			_ = store.Close()
-			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
-		}
-		ociRegistry, regErr := newOCIRegistryClient()
-		if regErr != nil {
-			_ = store.Close()
-			// ociStore is directory-backed with no open handles; no cleanup needed.
-			return fmt.Errorf("failed to create OCI registry client: %w", regErr)
-		}
-		packager := ociskills.NewPackager(ociStore)
-
-		skillOpts := []skillsvc.Option{
-			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
-			skillsvc.WithOCIStore(ociStore),
-			skillsvc.WithPackager(packager),
-			skillsvc.WithRegistryClient(ociRegistry),
-			skillsvc.WithGroupManager(b.groupManager),
-		}
-
-		skillOpts = append(skillOpts,
-			skillsvc.WithSkillLookup(lazySkillLookup{}),
-			skillsvc.WithGitResolver(gitresolver.NewResolver()),
-		)
-
-		b.skillManager = skillsvc.New(store, skillOpts...)
 	}
 
+	if b.pluginManager == nil {
+		if err := b.createDefaultPluginManager(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// createDefaultSkillManager builds the default skill service (skillsvc.New)
+// wired with a SQLite skill store, the OCI skill store/packager/registry,
+// a path resolver backed by the client manager, the group manager, the
+// lazy registry lookup, and the git resolver.
+func (b *ServerBuilder) createDefaultSkillManager() error {
+	store, storeErr := sqlite.NewDefaultSkillStore()
+	if storeErr != nil {
+		return fmt.Errorf("failed to create skill store: %w", storeErr)
+	}
+	b.skillStoreCloser = store
+	cm, cmErr := client.NewClientManager()
+	if cmErr != nil {
+		_ = store.Close()
+		return fmt.Errorf("failed to create client manager for skills: %w", cmErr)
+	}
+
+	ociStore, ociErr := ociskills.NewStore(ociskills.DefaultStoreRoot())
+	if ociErr != nil {
+		_ = store.Close()
+		return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
+	}
+	ociRegistry, regErr := newOCIRegistryClient()
+	if regErr != nil {
+		_ = store.Close()
+		// ociStore is directory-backed with no open handles; no cleanup needed.
+		return fmt.Errorf("failed to create OCI registry client: %w", regErr)
+	}
+	packager := ociskills.NewPackager(ociStore)
+
+	skillOpts := []skillsvc.Option{
+		skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
+		skillsvc.WithOCIStore(ociStore),
+		skillsvc.WithPackager(packager),
+		skillsvc.WithRegistryClient(ociRegistry),
+		skillsvc.WithGroupManager(b.groupManager),
+	}
+
+	skillOpts = append(skillOpts,
+		skillsvc.WithSkillLookup(lazySkillLookup{}),
+		skillsvc.WithGitResolver(gitresolver.NewResolver()),
+	)
+
+	b.skillManager = skillsvc.New(store, skillOpts...)
+	return nil
+}
+
+// createDefaultPluginManager builds the default plugin service (pluginsvc.New)
+// wired with a SQLite plugin store, the OCI plugin store/packager/registry,
+// per-client materialization adapters, and the group manager. Mirrors the
+// skill-manager block in createDefaultManagers.
+func (b *ServerBuilder) createDefaultPluginManager() error {
+	store, storeErr := sqlite.NewDefaultPluginStore()
+	if storeErr != nil {
+		return fmt.Errorf("failed to create plugin store: %w", storeErr)
+	}
+	b.pluginStoreCloser = store
+	cm, cmErr := client.NewClientManager()
+	if cmErr != nil {
+		_ = store.Close()
+		return fmt.Errorf("failed to create client manager for plugins: %w", cmErr)
+	}
+
+	ociStore, ociErr := ociplugins.NewStore(ociplugins.DefaultStoreRoot())
+	if ociErr != nil {
+		_ = store.Close()
+		return fmt.Errorf("failed to create OCI plugin store: %w", ociErr)
+	}
+	ociRegistry, regErr := newPluginOCIRegistryClient()
+	if regErr != nil {
+		_ = store.Close()
+		// ociStore is directory-backed with no open handles; no cleanup needed.
+		return fmt.Errorf("failed to create plugin OCI registry client: %w", regErr)
+	}
+	packager := ociplugins.NewPackager(ociStore)
+
+	materializers := map[string]plugins.MaterializationAdapter{
+		string(client.ClaudeCode): adapters.NewClaudeCodeAdapter(cm),
+		string(client.Codex):      adapters.NewCodexAdapter(cm),
+	}
+
+	pluginOpts := []pluginsvc.Option{
+		pluginsvc.WithStore(store),
+		pluginsvc.WithOCIStore(ociStore),
+		pluginsvc.WithPackager(packager),
+		pluginsvc.WithRegistryClient(ociRegistry),
+		pluginsvc.WithGroupManager(b.groupManager),
+		pluginsvc.WithMaterializers(materializers),
+		pluginsvc.WithClientManager(cm),
+		pluginsvc.WithPluginLookup(lazyPluginLookup{}),
+	}
+
+	b.pluginManager = pluginsvc.New(pluginOpts...)
 	return nil
 }
 
@@ -344,6 +455,15 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		b.debugMode,
 	))
 
+	// Skills router does the same: install, sync, and upgrade pull OCI
+	// artifacts, so a flat 60s cap would sever them mid-transfer.
+	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager,
+		v1.WithKeySigningCapability(b.keySigningCapability)))
+
+	// Plugins router likewise: install, build, and push move OCI artifacts.
+	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager,
+		v1.WithKeySigningCapability(b.keySigningCapability)))
+
 	// All other routes get standard timeout
 	standardRouters := map[string]http.Handler{
 		"/health":               v1.HealthcheckRouter(b.containerRuntime, b.nonce),
@@ -353,7 +473,6 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
-		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
 		"/registry":             v1.RegistryV01Router(),
 	}
 	for prefix, router := range standardRouters {
@@ -366,41 +485,58 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 	}
 }
 
+// namedPipePrefix is the Windows named-pipe namespace prefix. The canonical
+// definition lives in pkg/server/discovery so the listener and dialer cannot
+// drift; pkg/api re-aliases it here so per-platform socket files do not need
+// to import discovery directly.
+const namedPipePrefix = discovery.NamedPipePrefix
+
+// isNamedPipeAddress reports whether address is a Windows named-pipe path.
+// The check is platform-agnostic so callers on non-Windows can fail fast with
+// a clear error before reaching the listener code. The comparison is
+// case-insensitive because the Windows pipe namespace is case-insensitive at
+// the kernel layer; without EqualFold an address like \\.\Pipe\foo would
+// silently fall through to AF_UNIX and then fail to bind.
+func isNamedPipeAddress(address string) bool {
+	return len(address) >= len(namedPipePrefix) &&
+		strings.EqualFold(address[:len(namedPipePrefix)], namedPipePrefix)
+}
+
 func setupTCPListener(address string) (net.Listener, error) {
 	return net.Listen("tcp", address)
 }
 
-func setupUnixSocket(address string) (net.Listener, error) {
-	// Remove the socket file if it already exists
-	if _, err := os.Stat(address); err == nil {
-		if err := os.Remove(address); err != nil {
-			return nil, fmt.Errorf("failed to remove existing socket: %w", err)
+// enforceJSONContentType refuses state-changing requests that carry a body
+// without an application/json content type. The three CORS "simple" content
+// types (text/plain, application/x-www-form-urlencoded, multipart/form-data)
+// and an absent Content-Type are all exempt from CORS preflight, so a
+// cross-origin page can send them without the browser consulting the server;
+// the handlers then decode the body as JSON regardless of Content-Type
+// (GHSA-xv9h-79wp-q9w6). Requiring application/json forces a preflight the
+// browser will not clear.
+//
+// Requests with no body are left alone: ContentLength is 0 for an empty body,
+// so mutating routes that take no body (e.g. /workloads/{name}/stop) still
+// work. A chunked request has ContentLength -1 (unknown), which is != 0 and so
+// takes the strict path — the safe choice. GET/HEAD are never gated.
+func enforceJSONContentType(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if r.ContentLength == 0 {
+				break // no body to decode, nothing to smuggle
+			}
+			// mime.ParseMediaType lowercases the type and strips any
+			// ";charset=" parameter, so "application/json; charset=UTF-8"
+			// still matches; an absent or unparsable value fails closed.
+			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || mediaType != "application/json" {
+				http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+				return
+			}
 		}
-	}
-
-	// Create the directory for the socket file if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(address), 0750); err != nil {
-		return nil, fmt.Errorf("failed to create socket directory: %w", err)
-	}
-
-	// Create UNIX socket listener
-	listener, err := net.Listen("unix", address)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create UNIX socket listener: %w", err)
-	}
-
-	// Set file permissions on the socket to allow other local processes to connect
-	if err := os.Chmod(address, socketPermissions); err != nil {
-		return nil, fmt.Errorf("failed to set socket permissions: %w", err)
-	}
-
-	return listener, nil
-}
-
-func cleanupUnixSocket(address string) {
-	if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
-		slog.Warn("failed to remove socket file", "error", err)
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func headersMiddleware(next http.Handler) http.Handler {
@@ -408,6 +544,8 @@ func headersMiddleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Type", "application/json")
 		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -441,98 +579,6 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 	}
 }
 
-// maxBytesTracker wraps an io.ReadCloser to track bytes read and detect size limit violations
-type maxBytesTracker struct {
-	io.ReadCloser
-	bytesRead     *int64
-	limit         int64
-	limitExceeded *bool
-}
-
-func (t *maxBytesTracker) Read(p []byte) (n int, err error) {
-	n, err = t.ReadCloser.Read(p)
-	*t.bytesRead += int64(n)
-
-	// Check if we've reached/exceeded the limit or if this is a MaxBytesError
-	// Use >= because MaxBytesReader stops AT the limit, not after it
-	if *t.bytesRead >= t.limit {
-		*t.limitExceeded = true
-	}
-
-	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			*t.limitExceeded = true
-		}
-	}
-
-	return n, err
-}
-
-// bodySizeResponseWriter wraps http.ResponseWriter to convert 400 to 413 only when
-// MaxBytesReader's limit was exceeded (not for validation errors)
-type bodySizeResponseWriter struct {
-	http.ResponseWriter
-	limitExceeded *bool
-	written       bool
-}
-
-func (w *bodySizeResponseWriter) WriteHeader(statusCode int) {
-	// Only convert 400 to 413 if MaxBytesReader's limit was actually exceeded
-	if statusCode == http.StatusBadRequest && !w.written && *w.limitExceeded {
-		statusCode = http.StatusRequestEntityTooLarge
-	}
-	w.written = true
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (w *bodySizeResponseWriter) Write(b []byte) (int, error) {
-	if !w.written {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-// requestBodySizeLimitMiddleware limits request body size, returns a 413 for request bodies larger than maxSize.
-func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check Content-Length header first for early rejection
-			if r.ContentLength > maxSize {
-				slog.Warn("request body size exceeds limit", //nolint:gosec // G706: request metadata for diagnostics
-					"content_length", r.ContentLength, "limit", maxSize, "method", r.Method, "path", r.URL.Path)
-				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
-				return
-			}
-
-			// Track if MaxBytesReader's limit is exceeded
-			limitExceeded := false
-			bytesRead := int64(0)
-
-			// Wrap ResponseWriter to intercept only MaxBytesReader errors
-			wrappedWriter := &bodySizeResponseWriter{
-				ResponseWriter: w,
-				limitExceeded:  &limitExceeded,
-				written:        false,
-			}
-
-			// Set MaxBytesReader as a safety net for requests without Content-Length
-			limitedBody := http.MaxBytesReader(wrappedWriter, r.Body, maxSize)
-
-			// Wrap the limited body to detect when size limit is exceeded
-			tracker := &maxBytesTracker{
-				ReadCloser:    limitedBody,
-				bytesRead:     &bytesRead,
-				limit:         maxSize,
-				limitExceeded: &limitExceeded,
-			}
-			r.Body = tracker
-
-			next.ServeHTTP(wrappedWriter, r)
-		})
-	}
-}
-
 // getComponentAndVersionFromRequest determines the component name, version, and ui release build from the request
 func getComponentAndVersionFromRequest(r *http.Request) (string, string, bool) {
 	clientType := r.Header.Get("X-Client-Type")
@@ -549,13 +595,15 @@ func getComponentAndVersionFromRequest(r *http.Request) (string, string, bool) {
 
 // Server represents a configured HTTP server
 type Server struct {
-	httpServer   *http.Server
-	listener     net.Listener
-	address      string
-	isUnixSocket bool
-	addrType     string
-	nonce        string
-	storeCloser  io.Closer
+	httpServer           *http.Server
+	listener             net.Listener
+	address              string
+	isUnixSocket         bool
+	addrType             string
+	nonce                string
+	keySigningCapability string
+	skillStoreCloser     io.Closer
+	pluginStoreCloser    io.Closer
 }
 
 // NewServer creates a new Server instance from a pre-configured builder
@@ -575,16 +623,27 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		Addr:              builder.address,
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
+		// ReadTimeout bounds reading the entire request (headers + body) so a
+		// slow client upload cannot hold a connection open indefinitely.
+		ReadTimeout: readTimeout,
+		// IdleTimeout caps how long a keep-alive connection can sit idle.
+		// On Windows named pipes winio.MaxInstances defaults to 255, so a
+		// slow client cannot hold an instance forever and starve new
+		// connections; on POSIX it bounds keep-alive resource use the same
+		// way the http stdlib defaults would for a tcp listener.
+		IdleTimeout: idleTimeout,
 	}
 
 	return &Server{
-		httpServer:   httpServer,
-		listener:     listener,
-		address:      builder.address,
-		isUnixSocket: builder.isUnixSocket,
-		addrType:     addrType,
-		nonce:        builder.nonce,
-		storeCloser:  builder.skillStoreCloser,
+		httpServer:           httpServer,
+		listener:             listener,
+		address:              builder.address,
+		isUnixSocket:         builder.isUnixSocket,
+		addrType:             addrType,
+		nonce:                builder.nonce,
+		keySigningCapability: builder.keySigningCapability,
+		skillStoreCloser:     builder.skillStoreCloser,
+		pluginStoreCloser:    builder.pluginStoreCloser,
 	}, nil
 }
 
@@ -592,7 +651,7 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 // bound address from the listener (important when binding to port 0).
 func (s *Server) ListenURL() string {
 	if s.isUnixSocket {
-		return fmt.Sprintf("unix://%s", s.address)
+		return socketURL(s.address)
 	}
 	return fmt.Sprintf("http://%s", s.listener.Addr().String())
 }
@@ -637,14 +696,23 @@ func (s *Server) writeDiscoveryFile(ctx context.Context) error {
 		return nil
 	}
 
-	// Ensure the discovery directory exists before acquiring the lock,
-	// since the lock file is created in the same directory.
-	discoveryPath := discovery.FilePath()
-	if err := os.MkdirAll(filepath.Dir(discoveryPath), 0700); err != nil {
-		return fmt.Errorf("failed to create discovery directory: %w", err)
+	// Create and lock down the discovery directory before acquiring the lock,
+	// since the lock file is created in the same directory and Discover below
+	// trusts whatever server.json it finds there. Restricting only on the write
+	// would be too late: a StateRunning result returns before the write, and
+	// the lock file itself would be taken in a directory other accounts can
+	// still write to.
+	secure, err := discovery.EnsureSecureDirEx()
+	if err != nil {
+		return err
 	}
+	discoveryPath := discovery.FilePath()
 
 	return fileutils.WithFileLock(discoveryPath, func() error {
+		if err := discovery.ReconcileDiscoveryAfterInsecureUpgrade(ctx, secure.RepairedInsecureChain); err != nil {
+			return err
+		}
+
 		// Guard against overwriting another server's discovery file.
 		result, err := discovery.Discover(ctx)
 		if err != nil {
@@ -670,10 +738,11 @@ func (s *Server) writeDiscoveryFile(ctx context.Context) error {
 		}
 
 		info := &discovery.ServerInfo{
-			URL:       s.ListenURL(),
-			PID:       os.Getpid(),
-			Nonce:     s.nonce,
-			StartedAt: time.Now().UTC(),
+			URL:                  s.ListenURL(),
+			PID:                  os.Getpid(),
+			Nonce:                s.nonce,
+			KeySigningCapability: s.keySigningCapability,
+			StartedAt:            time.Now().UTC(),
 		}
 		if err := discovery.WriteServerInfo(info); err != nil {
 			return fmt.Errorf("failed to write discovery file: %w", err)
@@ -705,9 +774,14 @@ func (s *Server) cleanup() {
 			slog.Warn("failed to remove discovery file", "error", err)
 		}
 	}
-	if s.storeCloser != nil {
-		if err := s.storeCloser.Close(); err != nil {
+	if s.skillStoreCloser != nil {
+		if err := s.skillStoreCloser.Close(); err != nil {
 			slog.Warn("failed to close skill store", "error", err)
+		}
+	}
+	if s.pluginStoreCloser != nil {
+		if err := s.pluginStoreCloser.Close(); err != nil {
+			slog.Warn("failed to close plugin store", "error", err)
 		}
 	}
 	if s.isUnixSocket {
@@ -715,35 +789,141 @@ func (s *Server) cleanup() {
 	}
 }
 
-// createListener creates the appropriate listener based on the configuration
+// createListener creates the appropriate listener based on the configuration.
+// Named-pipe addresses are only supported on Windows; other platforms reject
+// them up front rather than creating a literal-backslash file via AF_UNIX.
 func createListener(address string, isUnixSocket bool) (net.Listener, string, error) {
-	var listener net.Listener
-	var addrType string
-	var err error
-
-	if isUnixSocket {
-		listener, err = setupUnixSocket(address)
-		addrType = "UNIX socket"
-	} else {
-		listener, err = setupTCPListener(address)
-		addrType = "HTTP"
+	if !isUnixSocket {
+		listener, err := setupTCPListener(address)
+		if err != nil {
+			return nil, "", err
+		}
+		return listener, "HTTP", nil
 	}
 
+	addrType := "UNIX socket"
+	if isNamedPipeAddress(address) {
+		if !supportsNamedPipe() {
+			return nil, "", fmt.Errorf("named pipe addresses are only supported on Windows: %s", address)
+		}
+		addrType = "Windows named pipe"
+	}
+
+	listener, err := setupUnixSocket(address)
 	if err != nil {
 		return nil, "", err
 	}
-
 	return listener, addrType, nil
 }
 
 // newOCIRegistryClient creates an OCI registry client. In dev mode
-// (TOOLHIVE_DEV=true), plain HTTP is enabled for local test registries.
+// (TOOLHIVE_DEV=true), plain HTTP is used for loopback registries only (e.g.
+// a local test registry started by e2e tests) via devModeOCIRegistryClient.
+//
+// Plain HTTP must NOT be applied to real registries such as ghcr.io: those
+// registries redirect an initial plain-HTTP request to HTTPS, and oras-go
+// refuses to complete the WWW-Authenticate/token-fetch handshake across that
+// redirect (a guard against leaking credentials across origins on redirect,
+// see GHSA-vh4v-2xq2-g5cg). The pull then fails with a bare 401 instead of
+// retrying with a fetched (possibly anonymous) bearer token.
 func newOCIRegistryClient() (ociskills.RegistryClient, error) {
-	var opts []ociskills.RegistryOption
-	if os.Getenv("TOOLHIVE_DEV") == "true" {
-		opts = append(opts, ociskills.WithPlainHTTP(true))
+	secure, err := ociskills.NewRegistry()
+	if err != nil {
+		return nil, err
 	}
-	return ociskills.NewRegistry(opts...)
+	if os.Getenv("TOOLHIVE_DEV") != "true" {
+		return secure, nil
+	}
+	plain, err := ociskills.NewRegistry(ociskills.WithPlainHTTP(true))
+	if err != nil {
+		return nil, err
+	}
+	return &devModeOCIRegistryClient{secure: secure, plain: plain}, nil
+}
+
+// devModeOCIRegistryClient dispatches each Pull/Push to a plain-HTTP client
+// when the target reference's host is loopback (a local test registry), and
+// to a normal TLS client otherwise. This keeps TOOLHIVE_DEV=true's
+// local-test-registry support (see gitresolver.isDevMode for the analogous
+// SSRF relaxation) without silently disabling TLS for real registries.
+type devModeOCIRegistryClient struct {
+	secure ociskills.RegistryClient
+	plain  ociskills.RegistryClient
+}
+
+func (c *devModeOCIRegistryClient) Pull(
+	ctx context.Context, store *ociskills.Store, ref string,
+) (digest.Digest, error) {
+	return c.clientFor(ref).Pull(ctx, store, ref)
+}
+
+func (c *devModeOCIRegistryClient) Push(
+	ctx context.Context, store *ociskills.Store, manifestDigest digest.Digest, ref string,
+) error {
+	return c.clientFor(ref).Push(ctx, store, manifestDigest, ref)
+}
+
+func (c *devModeOCIRegistryClient) clientFor(ref string) ociskills.RegistryClient {
+	if networking.IsLocalhost(ociRefHost(ref)) {
+		return c.plain
+	}
+	return c.secure
+}
+
+// ociRefHost extracts the "host[:port]" portion of an OCI reference such as
+// "ghcr.io/org/repo:tag" or "localhost:5000/repo@sha256:...".
+func ociRefHost(ref string) string {
+	if idx := strings.IndexByte(ref, '/'); idx >= 0 {
+		return ref[:idx]
+	}
+	return ref
+}
+
+// newPluginOCIRegistryClient creates an OCI registry client for plugin
+// artifacts. In dev mode (TOOLHIVE_DEV=true), plain HTTP is used for loopback
+// registries only via devModePluginRegistryClient. Mirrors
+// newOCIRegistryClient (which is the skills analogue) but typed for the
+// toolhive-core oci/plugins package.
+func newPluginOCIRegistryClient() (ociplugins.RegistryClient, error) {
+	secure, err := ociplugins.NewRegistry()
+	if err != nil {
+		return nil, err
+	}
+	if os.Getenv("TOOLHIVE_DEV") != "true" {
+		return secure, nil
+	}
+	plain, err := ociplugins.NewRegistry(ociplugins.WithPlainHTTP(true))
+	if err != nil {
+		return nil, err
+	}
+	return &devModePluginRegistryClient{secure: secure, plain: plain}, nil
+}
+
+// devModePluginRegistryClient dispatches each Pull/Push to a plain-HTTP client
+// when the target reference's host is loopback (a local test registry), and to
+// a normal TLS client otherwise. Mirrors devModeOCIRegistryClient.
+type devModePluginRegistryClient struct {
+	secure ociplugins.RegistryClient
+	plain  ociplugins.RegistryClient
+}
+
+func (c *devModePluginRegistryClient) Pull(
+	ctx context.Context, store *ociplugins.Store, ref string,
+) (digest.Digest, error) {
+	return c.clientFor(ref).Pull(ctx, store, ref)
+}
+
+func (c *devModePluginRegistryClient) Push(
+	ctx context.Context, store *ociplugins.Store, manifestDigest digest.Digest, ref string,
+) error {
+	return c.clientFor(ref).Push(ctx, store, manifestDigest, ref)
+}
+
+func (c *devModePluginRegistryClient) clientFor(ref string) ociplugins.RegistryClient {
+	if networking.IsLocalhost(ociRefHost(ref)) {
+		return c.plain
+	}
+	return c.secure
 }
 
 // lazySkillLookup implements skillsvc.SkillLookup by resolving the registry
@@ -759,6 +939,53 @@ func (lazySkillLookup) SearchSkills(query string) ([]regtypes.Skill, error) {
 		return nil, err
 	}
 	return provider.SearchSkills(query)
+}
+
+// lazyPluginLookup implements pluginsvc.PluginLookup by resolving the registry
+// provider on each call, mirroring lazySkillLookup. Registry config changes are
+// picked up without restarting the server.
+type lazyPluginLookup struct{}
+
+func (lazyPluginLookup) SearchPlugins(_ context.Context, query string) ([]pluginsvc.PluginSearchHit, error) {
+	provider, err := registry.GetDefaultProviderWithConfig(config.NewDefaultProvider())
+	if err != nil {
+		return nil, err
+	}
+	found, err := provider.SearchPlugins(query)
+	if err != nil {
+		return nil, err
+	}
+	return pluginHitsFromRegistry(found), nil
+}
+
+// pluginHitsFromRegistry adapts registry plugin search results to the
+// pluginsvc lookup shape. The OCI reference lives in SkillPackage.Identifier
+// on the wire; pluginsvc consumes it as PluginPackage.Reference. Namespace,
+// Version, Digest, and Provenance are carried through so the install flow can
+// disambiguate by namespace, honor an explicit version request, pin to a
+// verified digest, and enforce catalog-declared trust on true first use.
+func pluginHitsFromRegistry(regPlugins []regtypes.Plugin) []pluginsvc.PluginSearchHit {
+	hits := make([]pluginsvc.PluginSearchHit, 0, len(regPlugins))
+	for i := range regPlugins {
+		p := &regPlugins[i]
+		pkgs := make([]pluginsvc.PluginPackage, 0, len(p.Packages))
+		for _, sp := range p.Packages {
+			pkgs = append(pkgs, pluginsvc.PluginPackage{
+				Reference: sp.Identifier,
+				Type:      sp.RegistryType,
+				Digest:    sp.Digest,
+			})
+		}
+		hits = append(hits, pluginsvc.PluginSearchHit{
+			Name:        p.Name,
+			Namespace:   p.Namespace,
+			Version:     p.Version,
+			Description: p.Description,
+			Packages:    pkgs,
+			Provenance:  p.Provenance,
+		})
+	}
+	return hits
 }
 
 // clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.
@@ -819,47 +1046,19 @@ func chiRouteSpanNamer(next http.Handler) http.Handler {
 
 // GenerateNonce generates a random nonce for server instance identification.
 func GenerateNonce() (string, error) {
-	b := make([]byte, nonceBytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate server nonce: %w", err)
-	}
-	return hex.EncodeToString(b), nil
+	return generateRandomToken("server nonce")
 }
 
-// Serve starts the server on the given address and serves the API.
-// It is assumed that the caller sets up appropriate signal handling.
-// If isUnixSocket is true, address is treated as a UNIX socket path.
-// If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
-// Serve is a convenience wrapper that builds and starts the API server.
-// For callers that need to configure OTEL or other builder options not exposed
-// here, use NewServerBuilder and NewServer directly.
-func Serve(
-	ctx context.Context,
-	address string,
-	isUnixSocket bool,
-	debugMode bool,
-	enableDocs bool,
-	oidcConfig *auth.TokenValidatorConfig,
-	middlewares ...func(http.Handler) http.Handler,
-) error {
-	nonce, err := GenerateNonce()
-	if err != nil {
-		return err
+// GenerateKeySigningCapability generates a bearer capability for authorizing
+// requests that ask the API server to open a private signing key.
+func GenerateKeySigningCapability() (string, error) {
+	return generateRandomToken("key-signing capability")
+}
+
+func generateRandomToken(name string) (string, error) {
+	b := make([]byte, randomTokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate %s: %w", name, err)
 	}
-
-	builder := NewServerBuilder().
-		WithAddress(address).
-		WithUnixSocket(isUnixSocket).
-		WithDebugMode(debugMode).
-		WithDocs(enableDocs).
-		WithNonce(nonce).
-		WithOIDCConfig(oidcConfig).
-		WithMiddleware(middlewares...)
-
-	server, err := NewServer(ctx, builder)
-	if err != nil {
-		return err
-	}
-
-	return server.Start(ctx)
+	return hex.EncodeToString(b), nil
 }

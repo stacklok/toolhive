@@ -9,19 +9,23 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
-	"github.com/go-jose/go-jose/v3/jwt"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -42,6 +46,7 @@ type mockOIDCServer struct {
 	privateKey   *rsa.PrivateKey
 	keyID        string
 	tokenHandler func(w http.ResponseWriter, r *http.Request)
+	jwksHandler  func(w http.ResponseWriter, r *http.Request)
 }
 
 func newMockOIDCServer(t *testing.T) *mockOIDCServer {
@@ -129,8 +134,15 @@ func (*mockOIDCServer) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (m *mockOIDCServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
-	// Return JWKS with public key
+func (m *mockOIDCServer) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	if m.jwksHandler != nil {
+		m.jwksHandler(w, r)
+		return
+	}
+	m.writeJWKS(w)
+}
+
+func (m *mockOIDCServer) writeJWKS(w http.ResponseWriter) {
 	jwks := map[string]any{
 		"keys": []map[string]any{
 			{
@@ -153,6 +165,14 @@ func (m *mockOIDCServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 //
 //nolint:unparam // subject parameter kept for test flexibility
 func (m *mockOIDCServer) signIDToken(audience, subject, nonce string, expiry time.Time) string {
+	return m.signIDTokenWithClaims(audience, subject, nonce, expiry, nil)
+}
+
+// signIDTokenWithClaims creates a signed JWT ID token, merging any extra claims
+// over the standard set. Used to test non-standard subject claims (e.g. Entra's "oid").
+func (m *mockOIDCServer) signIDTokenWithClaims(
+	audience, subject, nonce string, expiry time.Time, extra map[string]any,
+) string {
 	signingKey := jose.SigningKey{Algorithm: jose.RS256, Key: m.privateKey}
 	signer, err := jose.NewSigner(signingKey, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", m.keyID))
 	if err != nil {
@@ -169,8 +189,11 @@ func (m *mockOIDCServer) signIDToken(audience, subject, nonce string, expiry tim
 	if nonce != "" {
 		claims["nonce"] = nonce
 	}
+	for k, v := range extra {
+		claims[k] = v
+	}
 
-	token, err := jwt.Signed(signer).Claims(claims).CompactSerialize()
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
 	if err != nil {
 		panic(err)
 	}
@@ -344,12 +367,31 @@ func TestNewOIDCProvider(t *testing.T) {
 			Issuer: mock.issuer,
 		}
 
-		customClient := &http.Client{Timeout: 5 * time.Second}
+		// Built via the builder rather than a bare &http.Client so the pool is
+		// real and the ownership assertions below are meaningful.
+		issuerURL, err := url.Parse(mock.issuer)
+		require.NoError(t, err)
+		customClient, err := newHTTPClientForHost(issuerURL.Host, true, true, "")
+		require.NoError(t, err)
 
 		ctx := context.Background()
 		provider, err := NewOIDCProvider(ctx, config, WithHTTPClient(customClient))
 		require.NoError(t, err)
 		require.NotNil(t, provider)
+
+		// The injected client must be used as-is, not rebuilt — otherwise every
+		// reconstruction still allocates (and discards) a transport.
+		assert.Same(t, customClient, provider.httpClient)
+
+		// OIDCProviderImpl is the type #6479 identifies as leaking and the one
+		// DefaultUpstreamFactory builds, and WithHTTPClient clears the ownership
+		// flag on its own line — so pin that retiring this provider leaves the
+		// caller's shared pool warm. Discovery already populated it.
+		require.True(t, providerRequestReusedConn(t, provider.BaseOAuth2Provider, mock.issuer),
+			"discovery must have left a pooled connection")
+		provider.CloseIdleConnections()
+		assert.True(t, providerRequestReusedConn(t, provider.BaseOAuth2Provider, mock.issuer),
+			"a caller-owned client's pool must survive the provider being retired")
 	})
 
 	t.Run("with force consent screen", func(t *testing.T) {
@@ -432,21 +474,77 @@ func TestNewOIDCProvider(t *testing.T) {
 	})
 }
 
+func TestOIDCConfig_Validate_SubjectClaim(t *testing.T) {
+	t.Parallel()
+
+	base := func(subjectClaim string) *OIDCConfig {
+		return &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    testClientID,
+				RedirectURI: testRedirectURI,
+			},
+			Issuer:       testIssuer,
+			SubjectClaim: subjectClaim,
+		}
+	}
+
+	tests := []struct {
+		name         string
+		subjectClaim string
+		wantErr      bool
+	}{
+		{name: "empty is valid", subjectClaim: "", wantErr: false},
+		{name: "explicit sub is valid", subjectClaim: "sub", wantErr: false},
+		{name: "non-standard claim is valid", subjectClaim: "oid", wantErr: false},
+		{name: "underscore claim is valid", subjectClaim: "user_id", wantErr: false},
+		{name: "leading underscore is valid", subjectClaim: "_oid", wantErr: false},
+		{name: "whitespace-only is rejected", subjectClaim: "   ", wantErr: true},
+		{name: "surrounding whitespace is rejected", subjectClaim: "oid ", wantErr: true},
+		{name: "dotted claim is rejected", subjectClaim: "oid.sub", wantErr: true},
+		{name: "hyphenated claim is rejected", subjectClaim: "oid-id", wantErr: true},
+		{name: "colon-namespaced claim is rejected", subjectClaim: "custom:role", wantErr: true},
+		{name: "leading digit is rejected", subjectClaim: "1oid", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := base(tt.subjectClaim).Validate()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateDiscoveryDocument(t *testing.T) {
 	t.Parallel()
 
 	// Note: issuer mismatch is validated by go-oidc's NewProvider() before
 	// validateDiscoveryDocument is called, so we don't test it here.
 	tests := []struct {
-		name    string
-		modify  func(*oauthproto.OIDCDiscoveryDocument)
-		wantErr string
+		name              string
+		insecureAllowHTTP bool
+		modify            func(*oauthproto.OIDCDiscoveryDocument)
+		wantErr           string
 	}{
-		{"valid document", nil, ""},
-		{"missing authorization endpoint", func(d *oauthproto.OIDCDiscoveryDocument) { d.AuthorizationEndpoint = "" }, "missing authorization_endpoint"},
-		{"missing token endpoint", func(d *oauthproto.OIDCDiscoveryDocument) { d.TokenEndpoint = "" }, "missing token_endpoint"},
-		{"missing jwks_uri", func(d *oauthproto.OIDCDiscoveryDocument) { d.JWKSURI = "" }, "missing jwks_uri"},
-		{"missing response_types_supported", func(d *oauthproto.OIDCDiscoveryDocument) { d.ResponseTypesSupported = nil }, "missing response_types_supported"},
+		{"valid document", false, nil, ""},
+		{"missing authorization endpoint", false, func(d *oauthproto.OIDCDiscoveryDocument) { d.AuthorizationEndpoint = "" }, "missing authorization_endpoint"},
+		{"missing token endpoint", false, func(d *oauthproto.OIDCDiscoveryDocument) { d.TokenEndpoint = "" }, "missing token_endpoint"},
+		{"missing jwks_uri", false, func(d *oauthproto.OIDCDiscoveryDocument) { d.JWKSURI = "" }, "missing jwks_uri"},
+		{"missing response_types_supported", false, func(d *oauthproto.OIDCDiscoveryDocument) { d.ResponseTypesSupported = nil }, "missing response_types_supported"},
+		{"HTTP endpoints rejected without insecure flag", false, func(d *oauthproto.OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = "http://dex.my-ns.svc.cluster.local:5556/auth"
+			d.TokenEndpoint = "http://dex.my-ns.svc.cluster.local:5556/token"
+			d.JWKSURI = "http://dex.my-ns.svc.cluster.local:5556/keys"
+		}, "scheme mismatch"},
+		{"HTTP endpoints allowed with insecure flag", true, func(d *oauthproto.OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = "http://dex.my-ns.svc.cluster.local:5556/auth"
+			d.TokenEndpoint = "http://dex.my-ns.svc.cluster.local:5556/token"
+			d.JWKSURI = "http://dex.my-ns.svc.cluster.local:5556/keys"
+		}, ""},
 	}
 
 	for _, tt := range tests {
@@ -463,7 +561,7 @@ func TestValidateDiscoveryDocument(t *testing.T) {
 			if tt.modify != nil {
 				tt.modify(doc)
 			}
-			err := validateDiscoveryDocument(doc, testIssuer)
+			err := validateDiscoveryDocument(doc, testIssuer, tt.insecureAllowHTTP)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 			} else {
@@ -478,23 +576,27 @@ func TestValidateEndpointOrigin(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		endpoint string
-		issuer   string
-		wantErr  string
+		name              string
+		endpoint          string
+		issuer            string
+		insecureAllowHTTP bool
+		wantErr           string
 	}{
-		{"HTTPS endpoint with same host", "https://example.com/token", "https://example.com", ""},
-		{"HTTPS endpoint with different host", "https://oauth.example.com/token", "https://example.com", ""}, // allowed per OIDC spec
-		{"HTTP endpoint for non-localhost issuer", "http://example.com/token", "https://example.com", "scheme mismatch"},
-		{"localhost allows HTTP", "http://localhost:8080/token", "http://localhost:8080", ""},
-		{"localhost issuer requires localhost endpoint", "http://example.com/token", "http://localhost:8080", "host mismatch"},
-		{"127.0.0.1 treated as localhost", "http://127.0.0.1:8080/token", "http://127.0.0.1:8080", ""},
+		{"HTTPS endpoint with same host", "https://example.com/token", "https://example.com", false, ""},
+		{"HTTPS endpoint with different host", "https://oauth.example.com/token", "https://example.com", false, ""}, // allowed per OIDC spec
+		{"HTTP endpoint for non-localhost issuer", "http://example.com/token", "https://example.com", false, "scheme mismatch"},
+		{"localhost allows HTTP", "http://localhost:8080/token", "http://localhost:8080", false, ""},
+		{"localhost issuer requires localhost endpoint", "http://example.com/token", "http://localhost:8080", false, "host mismatch"},
+		{"127.0.0.1 treated as localhost", "http://127.0.0.1:8080/token", "http://127.0.0.1:8080", false, ""},
+		{"HTTP endpoint allowed with insecure flag", "http://dex.my-ns.svc.cluster.local:5556/token", "http://dex.my-ns.svc.cluster.local:5556", true, ""},
+		{"HTTP endpoint with insecure flag, different host", "http://other.svc.cluster.local/token", "http://dex.my-ns.svc.cluster.local:5556", true, ""},
+		{"HTTPS still valid with insecure flag", "https://example.com/token", "https://example.com", true, ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateEndpointOrigin(tt.endpoint, tt.issuer)
+			err := validateEndpointOrigin(tt.endpoint, tt.issuer, tt.insecureAllowHTTP)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 			} else {
@@ -549,6 +651,54 @@ func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 		assert.NotEmpty(t, result.Tokens.IDToken)
 	})
 
+	t.Run("captures ID token claims for authorization inputs", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// Issue an ID token carrying claims a downstream authorization filter would
+		// key on (email, groups) alongside the standard set.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "user-789", "", time.Now().Add(time.Hour),
+				map[string]any{
+					"email":  "dev@example.com",
+					"groups": []any{"engineering", "admins"},
+				},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+
+		require.NotNil(t, result.Claims, "ID token claims must be captured for authorization inputs")
+		assert.Equal(t, "user-789", result.Claims["sub"], "standard sub claim must be captured")
+		assert.Equal(t, "dev@example.com", result.Claims["email"], "custom email claim must be captured")
+		assert.Equal(t, []any{"engineering", "admins"}, result.Claims["groups"],
+			"multi-valued groups claim must be captured verbatim")
+	})
+
 	t.Run("successful exchange without nonce", func(t *testing.T) {
 		t.Parallel()
 
@@ -582,6 +732,214 @@ func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
 		require.NoError(t, err)
 		assert.Equal(t, "user-123", result.Subject)
+	})
+
+	t.Run("empty SubjectClaim falls back to the sub claim", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// Token carries both sub and oid; with no SubjectClaim configured the
+		// resolved subject must be sub, not oid.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "sub-value", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": "oid-value"},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+			// SubjectClaim intentionally unset.
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "sub-value", result.Subject)
+		assert.Equal(t, mock.issuer, result.VerifiedIssuer)
+		assert.Equal(t, "sub-value", result.VerifiedSubject)
+		assert.Equal(t, "sub", result.VerifiedStableClaim)
+		assert.Equal(t, "sub-value", result.VerifiedStableValue)
+	})
+
+	t.Run("configured SubjectClaim is extracted instead of sub", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// Mimic Entra: the stable per-user id is "oid"; "sub" rotates per app.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "rotating-sub", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": "entra-oid-123"},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "entra-oid-123", result.Subject)
+		// VerifiedSubject stays the raw ID-token sub even when SubjectClaim maps
+		// Subject to another claim; it is what sub_id discloses.
+		assert.Equal(t, mock.issuer, result.VerifiedIssuer)
+		assert.Equal(t, "rotating-sub", result.VerifiedSubject)
+		assert.Equal(t, "oid", result.VerifiedStableClaim)
+		assert.Equal(t, "entra-oid-123", result.VerifiedStableValue)
+	})
+
+	t.Run("configured SubjectClaim missing from token returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// "oid" is configured but the token does not carry it.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Contains(t, err.Error(), "not present in ID token")
+	})
+
+	t.Run("configured SubjectClaim with empty value returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// "oid" is present but empty — must fail loud, not fall back to sub.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "user-123", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": ""},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Contains(t, err.Error(), "is empty")
+	})
+
+	t.Run("configured SubjectClaim with non-string value returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// "oid" is present but numeric — must fail loud, not coerce or fall back.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "user-123", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": 12345},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Contains(t, err.Error(), "is not a string")
 	})
 
 	t.Run("nonce mismatch returns error", func(t *testing.T) {
@@ -1035,6 +1393,91 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 		require.ErrorIs(t, err, ErrSubjectMismatch)
 	})
 
+	t.Run("refresh resolves the configured SubjectClaim, not the raw sub", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// Mimic Entra: the stable per-user id is "oid"; "sub" differs from it.
+		// expectedSubject is the resolved "oid" value stored at initial login,
+		// so the refresh check must resolve the refreshed token's "oid" claim —
+		// comparing the raw "sub" would wrongly trip ErrSubjectMismatch.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "rotating-sub", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": "entra-oid-123"},
+			)
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+				IDToken:      idToken,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "entra-oid-123")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
+	})
+
+	t.Run("refresh with configured SubjectClaim and mismatched value returns ErrSubjectMismatch", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// The resolved "oid" differs from the stored expectedSubject — a genuine
+		// mismatch must still be caught when a custom SubjectClaim is configured.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "rotating-sub", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": "entra-oid-123"},
+			)
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+				IDToken:      idToken,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "different-oid")
+		require.ErrorIs(t, err, ErrSubjectMismatch)
+	})
+
 	t.Run("refresh without ID token skips subject validation", func(t *testing.T) {
 		t.Parallel()
 
@@ -1104,4 +1547,193 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
 	})
+
+	t.Run("transient JWKS failure is retried without a second token exchange", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		var tokenCalls, jwksCalls atomic.Int32
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			tokenCalls.Add(1)
+			writeRefreshIDTokenResponse(w, mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour)))
+		}
+		mock.jwksHandler = func(w http.ResponseWriter, _ *http.Request) {
+			if jwksCalls.Add(1) == 1 {
+				http.Error(w, "temporarily unavailable", http.StatusInternalServerError)
+				return
+			}
+			mock.writeJWKS(w)
+		}
+
+		provider := mustNewOIDCProvider(ctx, t, mock.issuer)
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "user-123")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
+		assert.Equal(t, "new-refresh-token", tokens.RefreshToken)
+		assert.NotEmpty(t, tokens.IDToken)
+		assert.Equal(t, int32(1), tokenCalls.Load(), "token endpoint must not be retried after a successful exchange")
+		assert.GreaterOrEqual(t, jwksCalls.Load(), int32(2), "JWKS fetch should be retried after the first failure")
+	})
+
+	t.Run("persistent JWKS failure drops ID token and keeps rotated refresh token", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		var tokenCalls, jwksCalls atomic.Int32
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			tokenCalls.Add(1)
+			writeRefreshIDTokenResponse(w, mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour)))
+		}
+		mock.jwksHandler = func(w http.ResponseWriter, _ *http.Request) {
+			jwksCalls.Add(1)
+			http.Error(w, "temporarily unavailable", http.StatusInternalServerError)
+		}
+
+		provider := mustNewOIDCProvider(ctx, t, mock.issuer)
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "user-123")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
+		assert.Equal(t, "new-refresh-token", tokens.RefreshToken)
+		assert.Empty(t, tokens.IDToken, "unvalidated ID token must not be returned")
+		assert.Equal(t, int32(1), tokenCalls.Load(), "token endpoint must not be retried")
+		assert.Equal(t, int32(idTokenValidationAttempts), jwksCalls.Load())
+	})
+
+	t.Run("signature failure after successful JWKS fetch is not bypassed", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+
+		var tokenCalls atomic.Int32
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			tokenCalls.Add(1)
+			orig := mock.privateKey
+			mock.privateKey = otherKey
+			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
+			mock.privateKey = orig
+			writeRefreshIDTokenResponse(w, idToken)
+		}
+
+		provider := mustNewOIDCProvider(ctx, t, mock.issuer)
+		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "user-123")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ID token validation failed")
+		assert.NotErrorIs(t, err, ErrSubjectMismatch)
+		assert.Equal(t, int32(1), tokenCalls.Load(), "token endpoint must not be retried")
+	})
+}
+
+func writeRefreshIDTokenResponse(w http.ResponseWriter, idToken string) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(testTokenResponse{
+		AccessToken:  "refreshed-access-token",
+		TokenType:    "Bearer",
+		RefreshToken: "new-refresh-token",
+		ExpiresIn:    3600,
+		IDToken:      idToken,
+	})
+}
+
+func mustNewOIDCProvider(ctx context.Context, t *testing.T, issuer string) *OIDCProviderImpl {
+	t.Helper()
+	provider, err := NewOIDCProvider(ctx, &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     testClientID,
+			ClientSecret: testClientSecret,
+			RedirectURI:  testRedirectURI,
+		},
+		Issuer: issuer,
+	})
+	require.NoError(t, err)
+	return provider
+}
+
+func TestIsTransientIDTokenValidationError(t *testing.T) {
+	t.Parallel()
+
+	timeoutErr := &net.DNSError{Err: "i/o timeout", Name: "idp.example", IsTimeout: true}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "nonce mismatch", err: ErrNonceMismatch, want: false},
+		{name: "nonce missing", err: ErrNonceMissing, want: false},
+		{name: "subject mismatch", err: ErrSubjectMismatch, want: false},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, want: true},
+		{name: "net timeout", err: timeoutErr, want: true},
+		{name: "wrapped go-oidc JWKS fetch", err: fmt.Errorf("failed to verify ID token: %w", errors.New("fetching keys oidc: get keys failed")), want: true},
+		{name: "bad signature", err: errors.New("failed to verify signature"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isTransientIDTokenValidationError(tt.err))
+		})
+	}
+}
+
+// TestNewOIDCProvider_DrainsOwnClientOnFailure pins that a construction that
+// fails *after* discovery does not abandon the client it built. Nothing is
+// returned, so no caller can drain it — this is the retry case #6479 calls
+// pathological ("re-runs discovery on every attempt"), and neither
+// buildUpstreams' drain nor newServer's deferred drain can reach it.
+func TestNewOIDCProvider_DrainsOwnClientOnFailure(t *testing.T) {
+	t.Parallel()
+
+	var openConns atomic.Int32
+	// Discovery succeeds (so a connection is pooled) but the document omits
+	// token_endpoint, so validation fails afterwards.
+	issuer := httptest.NewUnstartedServer(nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer.URL,
+			"authorization_endpoint":                issuer.URL + "/authorize",
+			"jwks_uri":                              issuer.URL + "/jwks",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+	issuer.Config.Handler = mux
+	issuer.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			openConns.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			openConns.Add(-1)
+		case http.StateActive, http.StateIdle:
+		}
+	}
+	issuer.Start()
+	t.Cleanup(issuer.Close)
+
+	_, err := NewOIDCProvider(context.Background(), &OIDCConfig{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:    testClientID,
+			RedirectURI: testRedirectURI,
+			Scopes:      []string{"openid"},
+		},
+		Issuer:            issuer.URL,
+		InsecureAllowHTTP: true,
+		AllowPrivateIPs:   true,
+	})
+	require.Error(t, err, "a discovery document without token_endpoint must be rejected")
+
+	// The issuer observes the close asynchronously.
+	assert.Eventually(t, func() bool { return openConns.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"a failed construction must drain the client it built")
 }

@@ -19,6 +19,8 @@ This document describes ToolHive's logging strategy for both the CLI and server 
 
 6. **No sensitive information in logs** - Never log credentials, tokens, API keys, passwords, or other secrets.
 
+7. **Log volume follows the fault, not the request rate** - A condition fixed by configuration resolved at startup is logged once where the defaults are applied. A line a caller can trigger on every request stays at DEBUG, with a metrics counter where operators need a signal, or has its volume bounded by a negative cache; the exception is a request-shape rejection logged at WARN on purpose as the operator-visible signal. A failure is either logged or wrapped into the returned error, never both.
+
 ## Log Levels
 
 | Level | When to Use | Example |

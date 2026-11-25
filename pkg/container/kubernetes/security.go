@@ -25,12 +25,16 @@ func NewSecurityContextBuilder(platform Platform) *SecurityContextBuilder {
 
 // BuildPodSecurityContext creates a platform-appropriate pod security context
 func (b *SecurityContextBuilder) BuildPodSecurityContext() *corev1.PodSecurityContext {
-	// Start with base security context
+	// Start with base security context. The seccomp profile is set unconditionally
+	// so the pod satisfies the restricted Pod Security Standard on all platforms.
 	podSecurityContext := &corev1.PodSecurityContext{
 		RunAsNonRoot: ptr.To(true),
 		RunAsUser:    ptr.To(int64(1000)),
 		RunAsGroup:   ptr.To(int64(1000)),
 		FSGroup:      ptr.To(int64(1000)),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
 	}
 
 	// Apply platform-specific modifications
@@ -41,11 +45,6 @@ func (b *SecurityContextBuilder) BuildPodSecurityContext() *corev1.PodSecurityCo
 		podSecurityContext.RunAsUser = nil
 		podSecurityContext.RunAsGroup = nil
 		podSecurityContext.FSGroup = nil
-
-		// OpenShift requires explicit seccomp profile
-		podSecurityContext.SeccompProfile = &corev1.SeccompProfile{
-			Type: corev1.SeccompProfileTypeRuntimeDefault,
-		}
 	} else {
 		slog.Info("configuring pod security context for Kubernetes")
 	}
@@ -55,7 +54,9 @@ func (b *SecurityContextBuilder) BuildPodSecurityContext() *corev1.PodSecurityCo
 
 // BuildContainerSecurityContext creates a platform-appropriate container security context
 func (b *SecurityContextBuilder) BuildContainerSecurityContext() *corev1.SecurityContext {
-	// Start with base security context
+	// Start with base security context. The seccomp profile and dropped capabilities
+	// are set unconditionally so the container satisfies the restricted Pod Security
+	// Standard on all platforms.
 	containerSecurityContext := &corev1.SecurityContext{
 		Privileged:               ptr.To(false),
 		RunAsNonRoot:             ptr.To(true),
@@ -63,6 +64,12 @@ func (b *SecurityContextBuilder) BuildContainerSecurityContext() *corev1.Securit
 		RunAsGroup:               ptr.To(int64(1000)),
 		AllowPrivilegeEscalation: ptr.To(false),
 		ReadOnlyRootFilesystem:   ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
 	}
 
 	// Apply platform-specific modifications
@@ -72,16 +79,6 @@ func (b *SecurityContextBuilder) BuildContainerSecurityContext() *corev1.Securit
 		// Setting these to nil allows OpenShift to assign them dynamically
 		containerSecurityContext.RunAsUser = nil
 		containerSecurityContext.RunAsGroup = nil
-
-		// OpenShift requires explicit seccomp profile
-		containerSecurityContext.SeccompProfile = &corev1.SeccompProfile{
-			Type: corev1.SeccompProfileTypeRuntimeDefault,
-		}
-
-		// OpenShift security best practices: drop all capabilities
-		containerSecurityContext.Capabilities = &corev1.Capabilities{
-			Drop: []corev1.Capability{"ALL"},
-		}
 	} else {
 		slog.Info("configuring container security context for Kubernetes")
 	}

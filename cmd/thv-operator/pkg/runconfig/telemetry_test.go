@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -24,7 +24,7 @@ func TestAddMCPTelemetryConfigRefOptions(t *testing.T) {
 
 	tests := []struct {
 		name                string
-		spec                *mcpv1alpha1.MCPTelemetryConfigSpec
+		spec                *mcpv1beta1.MCPTelemetryConfigSpec
 		serviceNameOverride string
 		defaultServiceName  string
 		caBundleFilePath    string
@@ -43,12 +43,12 @@ func TestAddMCPTelemetryConfigRefOptions(t *testing.T) {
 		},
 		{
 			name: "valid spec adds runner option",
-			spec: &mcpv1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+			spec: &mcpv1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "https://otel-collector:4317",
-					Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true, SamplingRate: "0.1"},
-					Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+					Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true, SamplingRate: "0.1"},
+					Metrics:  &mcpv1beta1.OpenTelemetryMetricsConfig{Enabled: true},
 				},
 			},
 			serviceNameOverride: "my-server-service",
@@ -66,11 +66,11 @@ func TestAddMCPTelemetryConfigRefOptions(t *testing.T) {
 		},
 		{
 			name: "CA bundle file path is threaded through to config",
-			spec: &mcpv1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+			spec: &mcpv1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "https://otel-collector:4317",
-					Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+					Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 				},
 			},
 			serviceNameOverride: "my-server",
@@ -105,11 +105,11 @@ func TestAddMCPTelemetryConfigRefOptions(t *testing.T) {
 func TestAddMCPTelemetryConfigRefOptions_NilOptions(t *testing.T) {
 	t.Parallel()
 
-	spec := &mcpv1alpha1.MCPTelemetryConfigSpec{
-		OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+	spec := &mcpv1beta1.MCPTelemetryConfigSpec{
+		OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: "otel-collector:4317",
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 		},
 	}
 

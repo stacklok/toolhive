@@ -8,18 +8,20 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apimwatch "k8s.io/apimachinery/pkg/watch"
@@ -49,6 +51,36 @@ const (
 	defaultNamespace = "default"
 	// serviceFieldManager is the field manager name for server-side apply operations
 	serviceFieldManager = "toolhive-container-manager"
+
+	// KubectlRestartedAtAnnotation is the pod-template annotation written by
+	// `kubectl rollout restart`. Server-side apply must re-assert it or the
+	// operator/runner clobber the bounce (#6344). Exported so operator
+	// controllers share the same key.
+	KubectlRestartedAtAnnotation = "kubectl.kubernetes.io/restartedAt"
+
+	// RunConfigMCPServerGenerationAnnotation carries the MCPServer .metadata.generation that
+	// produced the RunConfig applied to this StatefulSet. Used as a monotonic version stamp
+	// to prevent stale proxyrunner pods (from an old Deployment ReplicaSet) from clobbering
+	// a newer RunConfig's apply. The gate only becomes effective once proxyrunner is upgraded
+	// to a version that reads this annotation; operator-only upgrades leave the race window
+	// in place until proxyrunner is also rolled. Exported because it forms a wire contract
+	// that external readers (operator, diagnostic tooling) may consume.
+	//
+	// The operator also stamps this same annotation on the proxyrunner Deployment's
+	// pod template and projects it into the proxyrunner container as the env var
+	// EnvVarMCPServerGeneration via the downward API. That projection freezes the
+	// generation per pod at creation time, so two coexisting proxyrunner pods cannot
+	// converge on the same generation by re-reading the live-mounted RunConfig
+	// ConfigMap (issue #5360).
+	RunConfigMCPServerGenerationAnnotation = "toolhive.stacklok.dev/mcpserver-generation"
+
+	// EnvVarMCPServerGeneration is the env var name through which the proxyrunner
+	// container receives its frozen-per-pod MCPServer generation. Sourced via the
+	// downward API from the pod-template annotation RunConfigMCPServerGenerationAnnotation,
+	// it overrides the value read from /etc/runconfig/runconfig.json (which would
+	// otherwise live-update across all proxyrunner pods during a helm upgrade and
+	// defeat the apply-gate). See issue #5360.
+	EnvVarMCPServerGeneration = "THV_MCPSERVER_GENERATION"
 )
 
 // RuntimeName is the name identifier for the Kubernetes runtime
@@ -96,11 +128,6 @@ func NewClient(_ context.Context) (*Client, error) {
 	}
 
 	return NewClientWithConfig(clientset, config), nil
-}
-
-// IsAvailable checks if kubernetes is available
-func IsAvailable() bool {
-	return k8s.IsAvailable()
 }
 
 // NewClientWithConfig creates a new container client with a provided config
@@ -227,7 +254,8 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			}),
 		)
 		if err != nil {
-			if statusErr, ok := err.(*errors.StatusError); ok {
+			var statusErr *apierrors.StatusError
+			if errors.As(err, &statusErr) {
 				slog.Error("kubernetes API error",
 					"status", statusErr.ErrStatus.Status,
 					"message", statusErr.ErrStatus.Message,
@@ -348,11 +376,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 
 	attachStdio := options == nil || options.AttachStdio
 
-	// Convert environment variables to Kubernetes format
-	var envVarList []*corev1apply.EnvVarApplyConfiguration
-	for k, v := range envVars {
-		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(v))
-	}
+	envVarList := buildSortedEnvVarList(envVars)
 
 	// Create a pod template spec
 	podTemplateSpec := ensureObjectMetaApplyConfigurationExists(corev1apply.PodTemplateSpec())
@@ -397,22 +421,26 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		return 0, err
 	}
 
-	// Create an apply configuration for the statefulset
-	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
-		WithLabels(containerLabels).
-		WithSpec(buildStatefulSetSpec(containerName, podTemplateSpec, options))
-
-	// Apply the statefulset using server-side apply
-	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
-		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
-			FieldManager: serviceFieldManager,
-			Force:        true,
-		})
+	ourGen := runConfigGeneration(options)
+	existing, err := c.getExistingStatefulSet(ctx, namespace, containerName)
 	if err != nil {
-		return 0, fmt.Errorf("failed to apply statefulset: %w", err)
+		return 0, err
+	}
+	if skipStatefulSetApply(existing, ourGen) {
+		// Intentionally skip ensureBackendServices in the gated path: this pod's RunConfig
+		// is stale, so reconciling services here would clobber port/config fields set by
+		// the newer-generation pod under the same field manager + Force: true — the same
+		// race this gate prevents for the StatefulSet. The newer pod already reconciled
+		// services; if that failed, it returns an error and retries on its own.
+		return 0, nil
 	}
 
-	slog.Debug("applied statefulset", "name", createdStatefulSet.Name)
+	createdStatefulSet, err := c.applyStatefulSet(
+		ctx, namespace, containerName, containerLabels, podTemplateSpec, options, ourGen, existing,
+	)
+	if err != nil {
+		return 0, err
+	}
 
 	err = c.ensureBackendServices(
 		ctx, containerName, namespace, containerLabels, transportType, options, createdStatefulSet)
@@ -433,6 +461,111 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	return 0, nil
+}
+
+// buildSortedEnvVarList converts an env var map to Kubernetes apply configurations
+// with deterministically ordered keys. Go map iteration is randomized, and any
+// ordering shift changes the pod template hash and triggers an unnecessary
+// StatefulSet rollout (#5063).
+func buildSortedEnvVarList(envVars map[string]string) []*corev1apply.EnvVarApplyConfiguration {
+	envKeys := make([]string, 0, len(envVars))
+	for k := range envVars {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	envVarList := make([]*corev1apply.EnvVarApplyConfiguration, 0, len(envKeys))
+	for _, k := range envKeys {
+		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(envVars[k]))
+	}
+	return envVarList
+}
+
+// runConfigGeneration extracts the RunConfig MCPServer generation from options,
+// returning 0 when options is nil (backward-compat / non-operator callers).
+func runConfigGeneration(options *runtime.DeployWorkloadOptions) int64 {
+	if options == nil {
+		return 0
+	}
+	return options.RunConfigMCPServerGeneration
+}
+
+// applyStatefulSet stamps the MCPServer generation annotation when non-zero,
+// builds the StatefulSet apply configuration, and performs the server-side apply.
+func (c *Client) applyStatefulSet(
+	ctx context.Context,
+	namespace, containerName string,
+	containerLabels map[string]string,
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+	options *runtime.DeployWorkloadOptions,
+	ourGen int64,
+	existing *appsv1.StatefulSet,
+) (*appsv1.StatefulSet, error) {
+	if ourGen > 0 {
+		podTemplateSpec = podTemplateSpec.WithAnnotations(map[string]string{
+			RunConfigMCPServerGenerationAnnotation: strconv.FormatInt(ourGen, 10),
+		})
+	}
+	if existing != nil && existing.Spec.Template.Annotations != nil {
+		if restartedAt := existing.Spec.Template.Annotations[KubectlRestartedAtAnnotation]; restartedAt != "" {
+			podTemplateSpec = podTemplateSpec.WithAnnotations(map[string]string{
+				KubectlRestartedAtAnnotation: restartedAt,
+			})
+		}
+	}
+	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
+		WithLabels(containerLabels).
+		WithSpec(buildStatefulSetSpec(containerName, podTemplateSpec, options))
+	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
+		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
+			FieldManager: serviceFieldManager,
+			Force:        true,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply statefulset: %w", err)
+	}
+	slog.Debug("applied statefulset", "name", createdStatefulSet.Name)
+	return createdStatefulSet, nil
+}
+
+func (c *Client) getExistingStatefulSet(ctx context.Context, namespace, name string) (*appsv1.StatefulSet, error) {
+	existing, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get existing statefulset: %w", err)
+	}
+	return existing, nil
+}
+
+// skipStatefulSetApply returns true when the existing StatefulSet is already
+// stamped with a strictly greater MCPServer generation than ours, meaning a newer
+// proxyrunner pod has already reconciled the workload and ours would be a regression.
+// Returns false (apply as normal) when ourGen is zero or negative, when the StatefulSet
+// does not yet exist, when the annotation is absent, or when the annotation is unparsable.
+func skipStatefulSetApply(existing *appsv1.StatefulSet, ourGen int64) bool {
+	if ourGen <= 0 || existing == nil {
+		return false
+	}
+	if existing.Spec.Template.Annotations == nil {
+		return false
+	}
+	theirs := existing.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation]
+	if theirs == "" {
+		return false
+	}
+	theirsGen, parseErr := strconv.ParseInt(theirs, 10, 64)
+	if parseErr != nil {
+		slog.Warn("unparsable mcpserver-generation annotation; proceeding with apply",
+			"sts", existing.Name, "value", theirs, "err", parseErr)
+		return false
+	}
+	if theirsGen > ourGen {
+		slog.Debug("skipping StatefulSet apply; newer MCPServer generation already applied",
+			"sts", existing.Name, "ours", ourGen, "theirs", theirsGen)
+		return true
+	}
+	return false
 }
 
 // buildStatefulSetSpec constructs the StatefulSet spec apply configuration.
@@ -500,7 +633,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 	// Get the statefulset
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return runtime.ContainerInfo{}, fmt.Errorf("%w: statefulset %s not found", runtime.ErrWorkloadNotFound, workloadName)
 		}
 		return runtime.ContainerInfo{}, fmt.Errorf("failed to get statefulset %s: %w", workloadName, err)
@@ -568,7 +701,7 @@ func (c *Client) IsWorkloadRunning(ctx context.Context, workloadName string) (bo
 	// Get the statefulset
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return false, fmt.Errorf("%w: statefulset %s not found", runtime.ErrWorkloadNotFound, workloadName)
 		}
 		return false, fmt.Errorf("failed to get statefulset %s: %w", workloadName, err)
@@ -655,7 +788,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 	deleteOptions := metav1.DeleteOptions{}
 	err := c.client.AppsV1().StatefulSets(namespace).Delete(ctx, workloadName, deleteOptions)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			// If the statefulset doesn't exist, that's fine
 			slog.Info("statefulset not found, nothing to remove", "name", workloadName)
 			return nil
@@ -834,18 +967,18 @@ func configureContainerPorts(
 	return containerConfig, nil
 }
 
-// validatePortNumber checks if a port number is within the valid range
-func validatePortNumber(portNum int) error {
+// portToInt32 validates that a port number is within the valid range and
+// converts it to int32. The bounds check and conversion live in the same
+// function so the conversion is provably safe.
+func portToInt32(portNum int) (int32, error) {
 	if portNum < 0 || portNum > 65535 {
-		return fmt.Errorf("port number %d is out of valid range (0-65535)", portNum)
+		return 0, fmt.Errorf("port number %d is out of valid range (0-65535)", portNum)
 	}
-	return nil
+	return int32(portNum), nil
 }
 
 // createServicePortConfig creates a service port configuration for a given port number
-func createServicePortConfig(portNum int) *corev1apply.ServicePortApplyConfiguration {
-	//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
-	portInt32 := int32(portNum)
+func createServicePortConfig(portInt32 int32) *corev1apply.ServicePortApplyConfiguration {
 	return corev1apply.ServicePort().
 		WithName(fmt.Sprintf("port-%d", portInt32)).
 		WithPort(portInt32).
@@ -864,15 +997,13 @@ func processExposedPorts(
 			return err
 		}
 
-		if err := validatePortNumber(portNum); err != nil {
+		portInt32, err := portToInt32(portNum)
+		if err != nil {
 			return err
 		}
-
-		//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
-		portInt32 := int32(portNum)
 		// Add port if not already in the map
 		if _, exists := portMap[portInt32]; !exists {
-			portMap[portInt32] = createServicePortConfig(portNum)
+			portMap[portInt32] = createServicePortConfig(portInt32)
 		}
 	}
 	return nil
@@ -899,33 +1030,26 @@ func createServicePorts(options *runtime.DeployWorkloadOptions) ([]*corev1apply.
 			return nil, err
 		}
 
-		if err := validatePortNumber(portNum); err != nil {
+		portInt32, err := portToInt32(portNum)
+		if err != nil {
 			return nil, err
 		}
-
-		//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
-		portInt32 := int32(portNum)
 		servicePort := portMap[portInt32]
 		if servicePort == nil {
 			// Create new service port if not in map
-			servicePort = createServicePortConfig(portNum)
+			servicePort = createServicePortConfig(portInt32)
 		}
 
 		// If there are bindings with a host port, use the first one as node port
 		if len(bindings) > 0 && bindings[0].HostPort != "" {
-			hostPort, err := strconv.Atoi(bindings[0].HostPort)
+			hostPort, err := strconv.ParseInt(bindings[0].HostPort, 10, 32)
 			if err == nil && hostPort >= 30000 && hostPort <= 32767 {
 				// NodePort must be in range 30000-32767
-				// Safe to convert to int32 since we've verified the range (30000-32767)
-				// which is well within int32 range (-2,147,483,648 to 2,147,483,647)
-				//nolint:gosec // G109: Safe int->int32 conversion, range is checked above
-				nodePort := int32(hostPort)
-				servicePort = servicePort.WithNodePort(nodePort)
+				servicePort = servicePort.WithNodePort(int32(hostPort))
 			}
 		}
 
-		//nolint:gosec // G115: Safe int->int32 conversion, range is checked above
-		portMap[int32(portNum)] = servicePort
+		portMap[portInt32] = servicePort
 	}
 
 	// Convert map to slice

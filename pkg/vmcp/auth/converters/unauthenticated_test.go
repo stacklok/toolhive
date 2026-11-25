@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -27,19 +27,19 @@ func TestUnauthenticatedConverter_ConvertToStrategy(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		externalAuth  *mcpv1alpha1.MCPExternalAuthConfig
+		externalAuth  *mcpv1beta1.MCPExternalAuthConfig
 		expectedType  string
 		expectedError bool
 	}{
 		{
 			name: "valid unauthenticated config",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-unauthenticated",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 				},
 			},
 			expectedType:  authtypes.StrategyTypeUnauthenticated,
@@ -47,13 +47,13 @@ func TestUnauthenticatedConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "unauthenticated with no extra fields",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-unauthenticated-minimal",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 					// No TokenExchange or HeaderInjection
 				},
 			},
@@ -88,13 +88,13 @@ func TestUnauthenticatedConverter_ResolveSecrets(t *testing.T) {
 	t.Parallel()
 
 	converter := &UnauthenticatedConverter{}
-	externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuth := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-unauthenticated",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 		},
 	}
 
@@ -116,19 +116,19 @@ func TestUnauthenticatedConverter_Integration(t *testing.T) {
 
 	// Test that unauthenticated converter is registered in default registry
 	registry := DefaultRegistry()
-	converter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeUnauthenticated)
+	converter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeUnauthenticated)
 	require.NoError(t, err)
 	require.NotNil(t, converter)
 	assert.IsType(t, &UnauthenticatedConverter{}, converter)
 
 	// Test end-to-end conversion using ConvertToStrategy convenience function
-	externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuth := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-unauthenticated",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 		},
 	}
 

@@ -4,10 +4,114 @@
 package networking
 
 import (
+	"context"
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestAuthorityMatchesAny(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		endpointURL  string
+		operatorURLs []string
+		want         bool
+	}{
+		{
+			name:         "host comparison is case-insensitive",
+			endpointURL:  "https://IdP.Example.COM/token",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         true,
+		},
+		{
+			name:         "different path on the same authority still matches",
+			endpointURL:  "https://idp.example.com/oauth2/v1/token",
+			operatorURLs: []string{"https://idp.example.com/oauth2/v1/authorize"},
+			want:         true,
+		},
+		{
+			name:         "same host on a different port does not match",
+			endpointURL:  "http://127.0.0.1:9999/token",
+			operatorURLs: []string{"http://127.0.0.1:8080"},
+			want:         false,
+		},
+		{
+			name:         "distinct IPv6 addresses do not match",
+			endpointURL:  "https://[::1]:8443/token",
+			operatorURLs: []string{"https://[fd00::1]:8443"},
+			want:         false,
+		},
+		{
+			name:         "second operator entry can match",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{"https://other.example.com", "https://idp.example.com"},
+			want:         true,
+		},
+		{
+			name:         "empty endpoint never matches",
+			endpointURL:  "",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         false,
+		},
+		{
+			name:         "no operator entries never matches",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: nil,
+			want:         false,
+		},
+		{
+			name:         "empty operator entry is not a wildcard",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{""},
+			want:         false,
+		},
+		{
+			name:         "garbage operator entry is not a wildcard",
+			endpointURL:  "https://idp.example.com/token",
+			operatorURLs: []string{"://%%", "not a url at all"},
+			want:         false,
+		},
+		{
+			name:         "endpoint without a scheme or port is undecidable and fails closed",
+			endpointURL:  "idp.example.com",
+			operatorURLs: []string{"https://idp.example.com"},
+			want:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, AuthorityMatchesAny(tt.endpointURL, tt.operatorURLs...))
+		})
+	}
+}
+
+func TestTargetIsPrivate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "private IPv4 literal", url: "https://10.0.0.5/path", want: true},
+		{name: "link-local IMDS literal", url: "http://169.254.169.254/latest", want: true},
+		{name: "loopback IPv4 literal", url: "http://127.0.0.1:8080", want: true},
+		{name: "localhost hostname", url: "http://localhost:9000", want: true},
+		{name: "public IPv4 literal", url: "https://8.8.8.8", want: false},
+		{name: "unparsable", url: "://nope", want: false},
+		{name: "empty host", url: "/just/a/path", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, TargetIsPrivate(context.Background(), tt.url))
+		})
+	}
+}
 
 func TestIsURL(t *testing.T) {
 	t.Parallel()
@@ -244,17 +348,17 @@ func TestIsLocalhost(t *testing.T) {
 		{
 			name:     "case insensitive localhost",
 			input:    "LOCALHOST",
-			expected: false, // Current implementation is case sensitive
+			expected: true, // net/url lowercases hostnames anyway; case-fold is safe
 		},
 		{
 			name:     "case insensitive localhost with port",
 			input:    "LOCALHOST:8080",
-			expected: false, // Current implementation is case sensitive
+			expected: true,
 		},
 		{
 			name:     "mixed case localhost",
 			input:    "LocalHost",
-			expected: false, // Current implementation is case sensitive
+			expected: true,
 		},
 		{
 			name:     "localhost with spaces",
@@ -297,83 +401,225 @@ func TestIsLocalhost(t *testing.T) {
 	}
 }
 
+func TestIsPrivateIP(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ip   string
+		want bool
+	}{
+		{"CGN 100.64.0.1", "100.64.0.1", true},
+		{"CGN 100.127.255.255", "100.127.255.255", true},
+		{"documentation TEST-NET-1", "192.0.2.1", true},
+		{"documentation TEST-NET-2", "198.51.100.1", true},
+		{"documentation TEST-NET-3", "203.0.113.1", true},
+		{"public IPv4", "8.8.8.8", false},
+		{"public IPv6", "2001:db8::1", false},
+
+		// Unspecified / "this host" / reserved ranges (defense-in-depth).
+		{"unspecified IPv4", "0.0.0.0", true},
+		{"unspecified IPv6", "::", true},
+		{`RFC1122 "this host" 0.x`, "0.1.2.3", true},
+		{"Class E reserved", "240.0.0.1", true},
+		{"limited broadcast", "255.255.255.255", true},
+
+		// NAT64 (RFC 6052 / RFC 8215): classified by the embedded IPv4.
+		// IPv4-mapped form is still caught by the link-local check, not NAT64.
+		{"IPv4-mapped link-local", "::ffff:169.254.169.254", true},
+		// Well-known prefix 64:ff9b::/96 embedding a private/link-local IPv4.
+		{"NAT64 well-known -> IMDS link-local", "64:ff9b::a9fe:a9fe", true},
+		{"NAT64 well-known -> loopback", "64:ff9b::7f00:1", true},
+		{"NAT64 well-known -> RFC1918 10.x", "64:ff9b::a00:1", true},
+		{"NAT64 well-known -> RFC1918 192.168.x", "64:ff9b::c0a8:1", true},
+		// Well-known prefix embedding a genuinely public IPv4 must stay allowed.
+		{"NAT64 well-known -> public", "64:ff9b::8.8.8.8", false},
+		// Local-use /96 sub-prefix is decoded the same way.
+		{"NAT64 local-use /96 -> IMDS", "64:ff9b:1::a9fe:a9fe", true},
+		{"NAT64 local-use /96 -> public", "64:ff9b:1::8.8.8.8", false},
+		// Remainder of the local-use /48 uses a non-/96 embedding that cannot be
+		// decoded, so it is blocked wholesale even when the low 32 bits look
+		// public (would otherwise be a false-negative SSRF bypass).
+		{"NAT64 local-use non-/96 blocked", "64:ff9b:1:1::8.8.8.8", true},
+
+		// 6to4 (RFC 3056): classified by the embedded IPv4, decoded from bits 16-47.
+		{"6to4 -> IMDS link-local", "2002:a9fe:a9fe::", true},
+		{"6to4 -> RFC1918 192.168.x", "2002:c0a8:0101::", true},
+		{"6to4 -> loopback", "2002:7f00:0001::", true},
+		// 6to4 embedding a genuinely public IPv4 must stay allowed, proving the
+		// prefix is decoded rather than blocked wholesale.
+		{"6to4 -> public", "2002:0808:0808::", false},
+		// Just outside the 6to4 prefix: no embedded-IPv4 decoding applies.
+		{"just outside 6to4 prefix", "2003::", false},
+
+		// Teredo (RFC 4380): the embedded client IPv4 is obfuscated via bitwise
+		// NOT and cannot be decoded from the address alone, so the whole prefix
+		// is blocked regardless of what the low 32 bits would decode to.
+		{"Teredo simple address", "2001::1", true},
+		{"Teredo address decoding to a public-looking IPv4", "2001:0:4136:e378:8000:63bf:3fff:fdf6", true},
+
+		// IPv4-compatible (RFC 4291) and IPv4-translated (RFC 2765) addresses:
+		// classified by the IPv4 in the low 32 bits.
+		{"IPv4-compatible -> loopback", "::7f00:1", true},
+		{"IPv4-compatible -> link-local", "::a9fe:a9fe", true},
+		{"IPv4-compatible -> RFC1918 10.x", "::a00:1", true},
+		{"IPv4-compatible -> public", "::8.8.8.8", false},
+		{"IPv4-translated -> loopback", "::ffff:0:7f00:1", true},
+		{"IPv4-translated -> link-local", "::ffff:0:a9fe:a9fe", true},
+		{"IPv4-translated -> RFC1918 192.168.x", "::ffff:0:c0a8:1", true},
+		{"IPv4-translated -> public", "::ffff:0:808:808", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ip := net.ParseIP(tt.ip)
+			require.NotNil(t, ip, "failed to parse test IP %s", tt.ip)
+			assert.Equal(t, tt.want, IsPrivateIP(ip))
+		})
+	}
+}
+
 func TestAddressReferencesPrivateIp(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		address     string
-		expectError bool
+		name    string
+		address string
+		wantErr string // substring of the expected error; empty means allowed
 	}{
 		// Public IP addresses (should not error)
 		{
-			name:        "public IP with port",
-			address:     "8.8.8.8:80",
-			expectError: false,
+			name:    "public IP with port",
+			address: "8.8.8.8:80",
 		},
 		{
-			name:        "public IP with different port",
-			address:     "1.1.1.1:443",
-			expectError: false,
+			name:    "public IP with different port",
+			address: "1.1.1.1:443",
 		},
 
 		// Private IP addresses (should error)
 		{
-			name:        "localhost IP with port",
-			address:     "127.0.0.1:8080",
-			expectError: true,
+			name:    "localhost IP with port",
+			address: "127.0.0.1:8080",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "RFC1918 10.x.x.x with port",
-			address:     "10.0.0.1:80",
-			expectError: true,
+			name:    "RFC1918 10.x.x.x with port",
+			address: "10.0.0.1:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "RFC1918 172.16.x.x with port",
-			address:     "172.16.0.1:80",
-			expectError: true,
+			name:    "RFC1918 172.16.x.x with port",
+			address: "172.16.0.1:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "RFC1918 192.168.x.x with port",
-			address:     "192.168.1.1:80",
-			expectError: true,
+			name:    "RFC1918 192.168.x.x with port",
+			address: "192.168.1.1:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "link-local 169.254.x.x with port",
-			address:     "169.254.1.1:80",
-			expectError: true,
+			name:    "link-local 169.254.x.x with port",
+			address: "169.254.1.1:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "IPv6 loopback with port",
-			address:     "[::1]:8080",
-			expectError: true,
+			name:    "IPv6 loopback with port",
+			address: "[::1]:8080",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "IPv6 link-local with port",
-			address:     "[fe80::1]:80",
-			expectError: true,
+			name:    "IPv6 link-local with port",
+			address: "[fe80::1]:80",
+			wantErr: ErrPrivateIpAddress,
 		},
 		{
-			name:        "IPv6 unique local with port",
-			address:     "[fc00::1]:80",
-			expectError: true,
+			name:    "IPv6 unique local with port",
+			address: "[fc00::1]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "NAT64 well-known to IMDS with port",
+			address: "[64:ff9b::a9fe:a9fe]:443",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "NAT64 local-use to IMDS with port",
+			address: "[64:ff9b:1::a9fe:a9fe]:443",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "NAT64 to public IPv4 with port",
+			address: "[64:ff9b::8.8.8.8]:443",
+		},
+		{
+			name:    "unspecified IPv4 with port",
+			address: "0.0.0.0:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "unspecified IPv6 with port",
+			address: "[::]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+
+		// IPv6 zone suffixes must not hide a private address
+		{
+			name:    "zoned IPv6 link-local",
+			address: "[fe80::1%eth0]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv6 loopback",
+			address: "[::1%lo0]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv6 unique local",
+			address: "[fc00::1%eth0]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv4-mapped loopback",
+			address: "[::ffff:127.0.0.1%1]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv4-mapped IMDS",
+			address: "[::ffff:169.254.169.254%eth0]:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned IPv4 loopback as passed by the dialer",
+			address: "127.0.0.1%lo0:80",
+			wantErr: ErrPrivateIpAddress,
+		},
+		{
+			name:    "zoned public IPv6",
+			address: "[2001:4860:4860::8888%eth0]:443",
 		},
 
 		// Invalid addresses (should error due to parsing)
 		{
-			name:        "invalid address format",
-			address:     "invalid-address",
-			expectError: true,
+			name:    "hostname instead of IP literal",
+			address: "example.com:443",
+			wantErr: "not an IP address",
 		},
 		{
-			name:        "missing port",
-			address:     "8.8.8.8",
-			expectError: true,
+			name:    "invalid address format",
+			address: "invalid-address",
+			wantErr: "missing port in address",
 		},
 		{
-			name:        "empty address",
-			address:     "",
-			expectError: true,
+			name:    "missing port",
+			address: "8.8.8.8",
+			wantErr: "missing port in address",
+		},
+		{
+			name:    "empty address",
+			address: "",
+			wantErr: "missing port in address",
 		},
 	}
 
@@ -381,11 +627,11 @@ func TestAddressReferencesPrivateIp(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := AddressReferencesPrivateIp(tt.address)
-			if tt.expectError {
-				assert.Error(t, err, "Expected error for address: %s", tt.address)
-			} else {
-				assert.NoError(t, err, "Expected no error for address: %s", tt.address)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
 			}
+			assert.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }
@@ -486,6 +732,160 @@ func TestValidateEndpointURL(t *testing.T) {
 				assert.Error(t, err, "Expected error for endpoint: %s", tt.endpoint)
 			} else {
 				assert.NoError(t, err, "Expected no error for endpoint: %s", tt.endpoint)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPSURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		url         string
+		expectError bool
+	}{
+		{
+			name:        "valid HTTPS URL",
+			url:         "https://llm.example.com",
+			expectError: false,
+		},
+		{
+			name:        "valid HTTPS URL with path",
+			url:         "https://llm.example.com/api/v1",
+			expectError: false,
+		},
+		{
+			name:        "valid HTTPS URL with port",
+			url:         "https://llm.example.com:8443",
+			expectError: false,
+		},
+		{
+			name:        "HTTP rejected even for localhost",
+			url:         "http://localhost:8080",
+			expectError: true,
+		},
+		{
+			name:        "HTTP rejected for remote host",
+			url:         "http://llm.example.com",
+			expectError: true,
+		},
+		{
+			name:        "missing host",
+			url:         "https://",
+			expectError: true,
+		},
+		{
+			name:        "unsupported scheme",
+			url:         "ftp://llm.example.com",
+			expectError: true,
+		},
+		{
+			name:        "invalid URL format",
+			url:         "not-a-url",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateHTTPSURL(tt.url)
+			if tt.expectError {
+				assert.Error(t, err, "Expected error for URL: %s", tt.url)
+			} else {
+				assert.NoError(t, err, "Expected no error for URL: %s", tt.url)
+			}
+		})
+	}
+}
+
+func TestValidateIssuerURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		url         string
+		expectError bool
+	}{
+		{
+			name:        "valid HTTPS issuer",
+			url:         "https://auth.example.com",
+			expectError: false,
+		},
+		{
+			name:        "valid HTTPS issuer with path",
+			url:         "https://auth.example.com/realms/myrealm",
+			expectError: false,
+		},
+		{
+			name:        "localhost HTTP allowed for development",
+			url:         "http://localhost:8080",
+			expectError: false,
+		},
+		{
+			name:        "127.0.0.1 HTTP allowed for development",
+			url:         "http://127.0.0.1:9000",
+			expectError: false,
+		},
+		{
+			name:        "HTTP rejected for remote host",
+			url:         "http://auth.example.com",
+			expectError: true,
+		},
+		{
+			name:        "missing host",
+			url:         "https://",
+			expectError: true,
+		},
+		{
+			name:        "invalid URL format",
+			url:         "not-a-url",
+			expectError: true,
+		},
+		{
+			name:        "unsupported scheme",
+			url:         "ftp://auth.example.com",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateIssuerURL(tt.url)
+			if tt.expectError {
+				assert.Error(t, err, "Expected error for URL: %s", tt.url)
+			} else {
+				assert.NoError(t, err, "Expected no error for URL: %s", tt.url)
+			}
+		})
+	}
+}
+
+func TestValidateLoopbackAddress(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		addr    string
+		wantErr bool
+	}{
+		{"127.0.0.1:14000", false},
+		{"[::1]:14000", false},
+		{"0.0.0.0:14000", true},
+		{"192.168.1.1:14000", true},
+		{"10.0.0.1:14000", true},
+		{"notanaddr", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateLoopbackAddress(tt.addr)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

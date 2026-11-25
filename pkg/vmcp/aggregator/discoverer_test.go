@@ -1186,6 +1186,7 @@ func TestStaticBackendDiscoverer_EmptyBackendList(t *testing.T) {
 		[]config.StaticBackendConfig{}, // Empty slice, not nil
 		nil,                            // No auth config
 		"test-group",
+		nil, // No headerForward map
 	)
 
 	// This should return empty list without panicking
@@ -1281,6 +1282,7 @@ func TestStaticBackendDiscoverer_MetadataGroupOverride(t *testing.T) {
 				tt.staticBackends,
 				nil, // No auth config needed for this test
 				tt.groupRef,
+				nil, // No headerForward map for this test
 			)
 
 			backends, err := discoverer.Discover(ctx, tt.groupRef)
@@ -1400,6 +1402,7 @@ func TestStaticBackendDiscoverer_EntryBackendFields(t *testing.T) {
 				tt.staticBackends,
 				nil, // No auth config needed for this test
 				tt.groupRef,
+				nil, // No headerForward map for this test
 			)
 
 			backends, err := discoverer.Discover(ctx, tt.groupRef)
@@ -1466,6 +1469,7 @@ func TestBackendDiscoverer_Discover_DeterministicOrdering(t *testing.T) {
 				tc.staticBackends,
 				nil, // No auth config needed for this test
 				"test-group",
+				nil, // No headerForward map for this test
 			)
 
 			backends, err := discoverer.Discover(ctx, "test-group")

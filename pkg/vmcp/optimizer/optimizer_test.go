@@ -7,18 +7,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive-core/redisconn"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 )
 
 func TestGetAndValidateConfig(t *testing.T) {
@@ -51,6 +59,151 @@ func TestGetAndValidateConfig(t *testing.T) {
 			expected: &Config{
 				EmbeddingService: "http://embeddings:8080",
 			},
+		},
+		{
+			name: "explicit tei provider",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://embeddings:8080",
+				EmbeddingProvider: types.EmbeddingProviderTEI,
+			},
+			expected: &Config{
+				EmbeddingService:  "http://embeddings:8080",
+				EmbeddingProvider: types.EmbeddingProviderTEI,
+			},
+		},
+		{
+			name: "openai provider with service and model",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+			},
+			expected: &Config{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+			},
+		},
+		{
+			name: "openai provider with custom headers",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+			},
+			expected: &Config{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]string{"x-cache-key": "toolhive-optimizer"},
+			},
+		},
+		{
+			name: "openai provider with uncommon valid header name",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-key'name`x": "value"},
+			},
+			expected: &Config{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]string{"x-key'name`x": "value"},
+			},
+		},
+		{
+			name: "error: headers with tei provider",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://embeddings:8080",
+				EmbeddingProvider: types.EmbeddingProviderTEI,
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+			},
+			errContains: "optimizer.embeddingHeaders is only supported",
+		},
+		{
+			name: "error: headers with default provider",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService: "http://embeddings:8080",
+				EmbeddingHeaders: map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+			},
+			errContains: "optimizer.embeddingHeaders is only supported",
+		},
+		{
+			name: "error: headers set authorization case-insensitively",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"AUTHORIZATION": "Bearer spoofed"},
+			},
+			errContains: "optimizer.embeddingHeaders must not set \"AUTHORIZATION\"",
+		},
+		{
+			name: "error: headers set content-type",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"Content-Type": "text/plain"},
+			},
+			errContains: "optimizer.embeddingHeaders must not set \"Content-Type\"",
+		},
+		{
+			name: "error: empty header name",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"": "value"},
+			},
+			errContains: "invalid header name",
+		},
+		{
+			name: "error: header name with invalid characters",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x bad": "value"},
+			},
+			errContains: "invalid header name \"x bad\"",
+		},
+		{
+			name: "error: header value with control characters",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "a\r\nb"},
+			},
+			errContains: "invalid HTTP header value",
+		},
+		{
+			name: "error: openai provider without service",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+			},
+			errContains: "optimizer.embeddingService is required",
+		},
+		{
+			name: "error: openai provider without model",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+			},
+			errContains: "optimizer.embeddingModel is required",
+		},
+		{
+			name: "error: unknown provider",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://embeddings:8080",
+				EmbeddingProvider: "cohere",
+			},
+			errContains: "optimizer.embeddingProvider must be",
 		},
 		{
 			name: "all valid values are parsed",
@@ -208,6 +361,14 @@ func TestGetAndValidateConfig(t *testing.T) {
 			require.NotNil(t, result)
 			assert.Equal(t, tt.expected.EmbeddingService, result.EmbeddingService)
 
+			wantProvider := tt.expected.EmbeddingProvider
+			if wantProvider == "" {
+				wantProvider = types.EmbeddingProviderTEI
+			}
+			assert.Equal(t, wantProvider, result.EmbeddingProvider)
+			assert.Equal(t, tt.expected.EmbeddingModel, result.EmbeddingModel)
+			assert.Equal(t, tt.expected.EmbeddingHeaders, result.EmbeddingHeaders)
+
 			if tt.expected.MaxToolsToReturn != nil {
 				require.NotNil(t, result.MaxToolsToReturn)
 				assert.Equal(t, *tt.expected.MaxToolsToReturn, *result.MaxToolsToReturn)
@@ -232,6 +393,39 @@ func TestGetAndValidateConfig(t *testing.T) {
 	}
 }
 
+func TestGetAndValidateConfig_OpenAIAPIKeyFromEnv(t *testing.T) {
+	openAICfg := func() *vmcpconfig.OptimizerConfig {
+		return &vmcpconfig.OptimizerConfig{
+			EmbeddingService:  "http://gateway:8080/v1",
+			EmbeddingProvider: types.EmbeddingProviderOpenAI,
+			EmbeddingModel:    "text-embedding-3-small",
+		}
+	}
+
+	t.Run("key is read from the environment", func(t *testing.T) {
+		t.Setenv(embeddingAPIKeyEnvVar, "sk-test")
+		result, err := GetAndValidateConfig(openAICfg())
+		require.NoError(t, err)
+		assert.Equal(t, "sk-test", result.EmbeddingAPIKey)
+	})
+
+	t.Run("unset key yields a keyless client", func(t *testing.T) {
+		t.Setenv(embeddingAPIKeyEnvVar, "")
+		result, err := GetAndValidateConfig(openAICfg())
+		require.NoError(t, err)
+		assert.Empty(t, result.EmbeddingAPIKey)
+	})
+
+	t.Run("tei provider never reads the key", func(t *testing.T) {
+		t.Setenv(embeddingAPIKeyEnvVar, "sk-test")
+		result, err := GetAndValidateConfig(&vmcpconfig.OptimizerConfig{
+			EmbeddingService: "http://embeddings:8080",
+		})
+		require.NoError(t, err)
+		assert.Empty(t, result.EmbeddingAPIKey)
+	})
+}
+
 // newMockStoreWithSubstringSearch returns a gomock MockToolStore configured with
 // DoAndReturn handlers that accumulate tools via UpsertTools and perform
 // case-insensitive substring matching on Search. Suitable for tests that need
@@ -250,11 +444,11 @@ func newMockStoreWithSubstringSearch(ctrl *gomock.Controller) *mocks.MockToolSto
 	).AnyTimes()
 
 	store.EXPECT().Search(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, query string, allowedTools []string) ([]mcp.Tool, error) {
+		func(_ context.Context, q types.SearchQuery, allowedTools []string) ([]mcp.Tool, error) {
 			if len(allowedTools) == 0 {
 				return nil, nil
 			}
-			searchTerm := strings.ToLower(query)
+			searchTerm := strings.ToLower(q.Description)
 			allowedSet := make(map[string]struct{}, len(allowedTools))
 			for _, name := range allowedTools {
 				allowedSet[name] = struct{}{}
@@ -296,8 +490,8 @@ func TestOptimizer_SearchDelegation(t *testing.T) {
 	}
 
 	store.EXPECT().UpsertTools(gomock.Any(), gomock.Any()).Return(nil)
-	store.EXPECT().Search(gomock.Any(), "query", gomock.Any()).DoAndReturn(
-		func(_ context.Context, _ string, allowedTools []string) ([]mcp.Tool, error) {
+	store.EXPECT().Search(gomock.Any(), types.SearchQuery{Description: "query"}, gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ types.SearchQuery, allowedTools []string) ([]mcp.Tool, error) {
 			require.ElementsMatch(t, []string{"tool_a", "tool_b"}, allowedTools)
 			return []mcp.Tool{
 				{Name: "tool_a", Description: "Tool A"},
@@ -501,6 +695,35 @@ func TestOptimizer_FindTool(t *testing.T) {
 	}
 }
 
+// TestOptimizer_FindToolPassesKeywords is the regression guard for the bug
+// where ToolKeywords was decoded off the wire, logged, and then dropped
+// instead of reaching the store's Search call.
+func TestOptimizer_FindToolPassesKeywords(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	store := mocks.NewMockToolStore(ctrl)
+
+	tools := []server.ServerTool{
+		{Tool: mcp.Tool{Name: "tool_a", Description: "Tool A"}},
+	}
+
+	store.EXPECT().UpsertTools(gomock.Any(), gomock.Any()).Return(nil)
+	store.EXPECT().Search(gomock.Any(), types.SearchQuery{
+		Description: "query",
+		Keywords:    []string{"list", "issues", "github"},
+	}, gomock.Any()).Return(nil, nil)
+
+	opt, err := newToolOptimizer(context.Background(), store, tokencounter.NewJSONByteCounter(), tools)
+	require.NoError(t, err)
+
+	_, err = opt.FindTool(context.Background(), FindToolInput{
+		ToolDescription: "query",
+		ToolKeywords:    []string{"list", "issues", "github"},
+	})
+	require.NoError(t, err)
+}
+
 func TestOptimizerFactoryWithStore(t *testing.T) {
 	t.Parallel()
 
@@ -629,7 +852,7 @@ func TestOptimizer_CallTool(t *testing.T) {
 				Parameters: map[string]any{},
 			},
 			expectedError: true,
-			errorContains: "tool_name is required",
+			errorContains: `call_tool expects {"tool_name"`,
 		},
 	}
 
@@ -660,4 +883,247 @@ func TestOptimizer_CallTool(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveCallToolTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		toolName       string
+		params         map[string]any
+		expectedName   string
+		expectedParams map[string]any
+	}{
+		{
+			name:           "top-level name is returned unchanged",
+			toolName:       "search",
+			params:         map[string]any{"query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "nested name is hoisted and removed from params",
+			params:         map[string]any{"tool_name": "search", "query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "top-level name wins and params are left untouched",
+			toolName:       "search",
+			params:         map[string]any{"tool_name": "other", "query": "weather"},
+			expectedName:   "search",
+			expectedParams: map[string]any{"tool_name": "other", "query": "weather"},
+		},
+		{
+			name:           "nested empty name is not hoisted",
+			params:         map[string]any{"tool_name": ""},
+			expectedName:   "",
+			expectedParams: map[string]any{"tool_name": ""},
+		},
+		{
+			name:           "nested non-string name is not hoisted",
+			params:         map[string]any{"tool_name": 123},
+			expectedName:   "",
+			expectedParams: map[string]any{"tool_name": 123},
+		},
+		{
+			name:           "no name anywhere",
+			params:         map[string]any{"query": "weather"},
+			expectedName:   "",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "nil params",
+			expectedName:   "",
+			expectedParams: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Callers share this map with downstream consumers, so it must survive intact.
+			original := maps.Clone(tc.params)
+
+			gotName, gotParams := resolveCallToolTarget(tc.toolName, tc.params)
+			require.Equal(t, tc.expectedName, gotName)
+			require.Equal(t, tc.expectedParams, gotParams)
+			require.Equal(t, original, tc.params, "input params must not be mutated")
+		})
+	}
+}
+
+// Both call_tool handlers and the authz middleware resolve the target with
+// schema.Translate, so every shape that reaches a tool through that call must
+// resolve to the same name for all three. A reader that indexes the arguments map
+// instead sees a different target for the case-variant keys below.
+func TestCallToolInput_TranslateResolvesTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		args           map[string]any
+		expectedName   string
+		expectedParams map[string]any
+	}{
+		{
+			name:           "top-level name",
+			args:           map[string]any{"tool_name": "search", "parameters": map[string]any{"query": "weather"}},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "nested name is hoisted",
+			args:           map[string]any{"parameters": map[string]any{"tool_name": "search", "query": "weather"}},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			// encoding/json prefers an exact field match but falls back to a
+			// case-insensitive one, so these name a tool just as the lowercase key does.
+			name:           "case-variant top-level key still names the tool",
+			args:           map[string]any{"Tool_Name": "search", "parameters": map[string]any{"query": "weather"}},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			name:           "case-variant parameters key still carries the arguments",
+			args:           map[string]any{"tool_name": "search", "PARAMETERS": map[string]any{"query": "weather"}},
+			expectedName:   "search",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+		{
+			// The nested lookup is a map index, not a struct field match, so it is
+			// exact. Dispatch names no tool here and neither may authorization.
+			name:           "case-variant nested key is not hoisted",
+			args:           map[string]any{"parameters": map[string]any{"Tool_Name": "search"}},
+			expectedName:   "",
+			expectedParams: map[string]any{"Tool_Name": "search"},
+		},
+		{
+			name:           "no name anywhere",
+			args:           map[string]any{"parameters": map[string]any{"query": "weather"}},
+			expectedName:   "",
+			expectedParams: map[string]any{"query": "weather"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := schema.Translate[CallToolInput](tc.args)
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedName, got.ToolName)
+			require.Equal(t, tc.expectedParams, got.Parameters)
+		})
+	}
+}
+
+// TestCallToolArgToolNameMatchesStructTag guards the one place the target is
+// resolved by indexing a map rather than decoding a struct. If the json tag is
+// renamed and the constant is not, a nested name silently stops being hoisted.
+func TestCallToolArgToolNameMatchesStructTag(t *testing.T) {
+	t.Parallel()
+
+	f, ok := reflect.TypeOf(CallToolInput{}).FieldByName("ToolName")
+	require.True(t, ok, "CallToolInput must have a ToolName field")
+	assert.Equal(t, callToolArgToolName, f.Tag.Get("json"))
+}
+
+// TestNewOptimizerFactory_SharedEmbeddings pins the startup side of the shared
+// embedding cache: an unreachable Redis fails loudly instead of silently
+// disabling reuse, and keyword-only search, with nothing to share, never
+// connects.
+func TestNewOptimizerFactory_SharedEmbeddings(t *testing.T) {
+	t.Parallel()
+
+	closed := miniredis.RunT(t)
+	closedAddr := closed.Addr()
+	closed.Close()
+
+	// Nothing listens on port 1, so the TEI client's startup probe fails fast
+	// and falls back to its defaults; no embedding call is made here.
+	const unreachableTEI = "http://127.0.0.1:1"
+
+	for _, tc := range []struct {
+		name             string
+		embeddingService string
+		wantErr          string
+	}{
+		{name: "unreachable redis fails startup", embeddingService: unreachableTEI,
+			wantErr: "failed to create shared embedding cache"},
+		{name: "keyword-only search needs no cache"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			factory, cleanup, err := NewOptimizerFactory(
+				&Config{EmbeddingService: tc.embeddingService},
+				WithSharedEmbeddings(redisconn.Config{Addr: closedAddr}, "thv:vmcp:session:"),
+			)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, factory)
+			require.NoError(t, cleanup(context.Background()))
+		})
+	}
+}
+
+// TestNewOptimizerFactory_SharedEmbeddingsReachTheStore pins that
+// WithSharedEmbeddings reaches the tool store: building an optimizer publishes
+// its tools' vectors to Redis. The stub TEI reports a model id, without which
+// the vectors would be unverified and never published.
+func TestNewOptimizerFactory_SharedEmbeddingsReachTheStore(t *testing.T) {
+	t.Parallel()
+
+	tei := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/info":
+			_ = json.NewEncoder(w).Encode(map[string]any{"model_id": "stub-model"})
+		case "/embed":
+			var req struct {
+				Inputs []string `json:"inputs"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			vectors := make([][]float32, len(req.Inputs))
+			for i := range vectors {
+				vectors[i] = []float32{1, 0, 0, float32(i)}
+			}
+			_ = json.NewEncoder(w).Encode(vectors)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(tei.Close)
+	mr := miniredis.RunT(t)
+
+	factory, cleanup, err := NewOptimizerFactory(
+		&Config{EmbeddingService: tei.URL},
+		WithSharedEmbeddings(redisconn.Config{Addr: mr.Addr()}, "thv:vmcp:session:"),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cleanup(context.Background()) })
+
+	_, err = factory(context.Background(), []server.ServerTool{
+		{Tool: mcp.Tool{Name: "read_file", Description: "Read a file"}},
+		{Tool: mcp.Tool{Name: "send_email", Description: "Send an email"}},
+	})
+	require.NoError(t, err)
+
+	var published []string
+	for _, key := range mr.Keys() {
+		if strings.HasPrefix(key, "thv:vmcp:session:optimizer:embedding:") {
+			published = append(published, key)
+		}
+	}
+	assert.Len(t, published, 2, "each tool's vector is published under the session prefix")
 }

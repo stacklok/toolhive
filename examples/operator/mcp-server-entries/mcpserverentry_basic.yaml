@@ -5,7 +5,7 @@
 # connects directly to the remote URL.
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: remote-tools
@@ -14,7 +14,7 @@ spec:
   description: "Group containing remote MCP server entries"
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: context7

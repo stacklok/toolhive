@@ -24,13 +24,13 @@ Run "thv secret setup" first to configure a secrets provider before using any se
 ### Options
 
 ```
-  -h, --help   help for secret
+  -h, --help[=true|false]   help for secret
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO
@@ -43,4 +43,5 @@ Run "thv secret setup" first to configure a secrets provider before using any se
 * [thv secret reset-keyring](thv_secret_reset-keyring.md)	 - Reset the keyring password
 * [thv secret set](thv_secret_set.md)	 - Set a secret
 * [thv secret setup](thv_secret_setup.md)	 - Set up secrets provider
+* [thv secret upgrade-protection](thv_secret_upgrade-protection.md)	 - Upgrade encrypted secrets protection
 

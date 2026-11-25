@@ -46,7 +46,7 @@ Before providing guidance on OAuth/OIDC details, use WebFetch to verify RFC or s
 - `pkg/auth/token.go`: JWT parsing, validation, claims extraction
 - `pkg/auth/middleware.go`: HTTP authentication middleware
 - `pkg/auth/oauth/`: OAuth 2.0 and OIDC client implementations
-- `pkg/auth/tokenexchange/`: RFC 8693 token exchange
+- `pkg/oauthproto/tokenexchange/`: RFC 8693 token exchange
 - `pkg/auth/discovery/`: OAuth/OIDC discovery, RFC 9728 support
 - `pkg/authserver/`: OAuth2 authorization server (Ory Fosite, PKCE, JWT/JWKS)
 

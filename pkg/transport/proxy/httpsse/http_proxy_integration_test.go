@@ -6,6 +6,7 @@ package httpsse
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,8 +27,7 @@ func TestIntegrationSSEProxyStressTest(t *testing.T) {
 
 	// Create proxy with a random port
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Start the proxy
 	err := proxy.Start(ctx)
@@ -50,11 +50,12 @@ func TestIntegrationSSEProxyStressTest(t *testing.T) {
 		totalErrors         int32
 	)
 
-	// Create a worker that processes messages from the proxy
+	// Fake backend: answer each call with a response echoing its wire ID
 	go func() {
 		for msg := range proxy.GetMessageChannel() {
-			// Echo the message back to clients
-			_ = proxy.ForwardResponseToClients(ctx, msg)
+			if resp := echoResponse(msg); resp != nil {
+				_ = proxy.ForwardResponseToClients(ctx, resp)
+			}
 			atomic.AddInt32(&totalMessages, 1)
 		}
 	}()
@@ -173,8 +174,7 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 
 	// Create and start proxy
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := proxy.Start(ctx)
 	require.NoError(t, err)
@@ -186,11 +186,12 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 
 	proxyURL := fmt.Sprintf("http://%s", proxy.server.Addr)
 
-	// Message processor
+	// Fake backend: answer each call with a response echoing its wire ID
 	go func() {
 		for msg := range proxy.GetMessageChannel() {
-			// Echo messages back
-			_ = proxy.ForwardResponseToClients(ctx, msg)
+			if resp := echoResponse(msg); resp != nil {
+				_ = proxy.ForwardResponseToClients(ctx, resp)
+			}
 		}
 	}()
 
@@ -319,7 +320,7 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 func TestIntegrationLiveSessionsCleanup(t *testing.T) {
 	t.Parallel()
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := proxy.Start(ctx)
 	require.NoError(t, err)
@@ -378,4 +379,60 @@ func extractSessionID(body io.Reader) (string, error) {
 	}
 
 	return string(buf[start:end]), nil
+}
+
+// TestHTTPSSEProxy_StartMountsAuthDiscoveryEndpoint is an integration test that
+// starts a real SSE proxy with an authInfoHandler and verifies the RFC 9728
+// discovery endpoint responds correctly.
+func TestHTTPSSEProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
+	t.Parallel()
+
+	const wantBody = `{"resource":"https://example.com"}`
+
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(wantBody))
+	})
+
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil, WithAuthInfoHandler(sentinel))
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// Poll until the server is ready (Start returns before the goroutine binds).
+	url := fmt.Sprintf("http://%s/.well-known/oauth-protected-resource", proxy.server.Addr)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "https://example.com", body["resource"])
+}
+
+// echoResponse builds the response a backend would return for a call: same
+// wire ID, trivial result. Notifications and responses yield nil.
+func echoResponse(msg jsonrpc2.Message) jsonrpc2.Message {
+	req, ok := msg.(*jsonrpc2.Request)
+	if !ok || !req.ID.IsValid() {
+		return nil
+	}
+	resp, err := jsonrpc2.NewResponse(req.ID, "echo", nil)
+	if err != nil {
+		return nil
+	}
+	return resp
 }

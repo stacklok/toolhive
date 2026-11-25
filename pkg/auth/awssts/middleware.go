@@ -12,7 +12,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/textproto"
 	"net/url"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
@@ -141,7 +143,7 @@ func newAWSStsMiddleware(ctx context.Context, cfg *Config, targetURL *url.URL) (
 func createAWSStsMiddlewareFunc(
 	exchanger *Exchanger,
 	roleMapper *RoleMapper,
-	signer *requestSigner,
+	signer *RequestSigner,
 	sessionNameClaim string,
 	sessionDuration int32,
 	targetURL *url.URL,
@@ -186,7 +188,7 @@ func createAWSStsMiddlewareFunc(
 			}
 
 			// Extract and validate session name from claims
-			sessionName, err := extractSessionName(claims, sessionNameClaim)
+			sessionName, err := ExtractSessionName(claims, sessionNameClaim)
 			if err != nil {
 				slog.Warn("Failed to extract session name", "error", err)
 				http.Error(w, "Missing session name claim", http.StatusUnauthorized)
@@ -227,12 +229,43 @@ func createAWSStsMiddlewareFunc(
 	}
 }
 
+// hopByHopHeaders lists hop-by-hop headers that httputil.ReverseProxy
+// removes before forwarding. This matches the standard library's
+// hopHeaders list in net/http/httputil/reverseproxy.go.
+var hopByHopHeaders = []string{
+	"Connection",
+	"Proxy-Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+// stripHopByHopHeaders removes hop-by-hop headers from a header set,
+// including any header named in the Connection value (RFC 7230 §6.1,
+// RFC 9110 §7.6.1).
+func stripHopByHopHeaders(header http.Header) {
+	for _, f := range header.Values("Connection") {
+		for _, name := range strings.Split(f, ",") {
+			if name = textproto.TrimString(name); name != "" {
+				header.Del(name)
+			}
+		}
+	}
+	for _, h := range hopByHopHeaders {
+		header.Del(h)
+	}
+}
+
 // signRequestForTarget signs the request with SigV4 for the given target host
 // without permanently modifying r.Host or r.URL. When targetURL is non-nil, a
 // clone is used for signing so that only the SigV4 headers are copied back to
 // the original request; the reverse proxy's Director is left to handle host
 // rewriting. When targetURL is nil the request is signed in-place.
-func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Credentials, targetURL *url.URL) error {
+func signRequestForTarget(r *http.Request, signer *RequestSigner, creds *aws.Credentials, targetURL *url.URL) error {
 	if targetURL == nil {
 		return signer.SignRequest(r.Context(), r, creds)
 	}
@@ -254,6 +287,12 @@ func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Cre
 		}
 		_ = r.Body.Close()
 	}
+
+	// Strip hop-by-hop headers from the actual request before cloning.
+	// httputil.ReverseProxy removes these before forwarding; if they
+	// remain on r they can trigger removal of newly-signed headers
+	// (e.g. Connection: X-Amz-Date would delete the SigV4 X-Amz-Date).
+	stripHopByHopHeaders(r.Header)
 
 	// Build a signing-only clone with the target host.
 	signingReq := r.Clone(r.Context())
@@ -301,7 +340,7 @@ func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Cre
 	return nil
 }
 
-// extractSessionName extracts the session name from JWT claims.
+// ExtractSessionName extracts the session name from JWT claims.
 // Returns an error if the configured claim is missing or empty, since a missing
 // claim likely indicates a misconfiguration and would produce untraceable
 // CloudTrail entries.
@@ -310,7 +349,7 @@ func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Cre
 // and returns a clear error if the value doesn't conform.
 //
 // See: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRoleWithWebIdentity.html
-func extractSessionName(claims map[string]interface{}, claimName string) (string, error) {
+func ExtractSessionName(claims map[string]interface{}, claimName string) (string, error) {
 	value, ok := claims[claimName]
 	if !ok {
 		return "", fmt.Errorf("claim %q not found in token", claimName)

@@ -6,7 +6,12 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -616,7 +621,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			t.Parallel()
 
 			var buf bytes.Buffer
-			err := processToolsListResponse(tt.config, tt.inputResponse, &buf)
+			err := processToolsList(t, tt.config, tt.inputResponse, &buf)
 
 			if tt.expectError != nil {
 				assert.ErrorIs(t, err, tt.expectError)
@@ -683,20 +688,27 @@ func TestProcessToolsListResponse(t *testing.T) {
 func TestProcessSSEEvents(t *testing.T) {
 	t.Parallel()
 
+	allowOnly := func(names ...string) *toolMiddlewareConfig {
+		config := &toolMiddlewareConfig{filterTools: map[string]struct{}{}}
+		for _, name := range names {
+			config.filterTools[name] = struct{}{}
+		}
+		return config
+	}
+
 	tests := []struct {
-		name        string
-		config      *toolMiddlewareConfig
-		inputBuffer []byte
-		expected    string
-		expectError bool
+		name             string
+		config           *toolMiddlewareConfig
+		inputBuffer      []byte
+		terminal         bool
+		expected         string
+		expectedConsumed int // defaults to len(inputBuffer)
+		expectError      bool
+		expectKeepBuffer bool
 	}{
 		{
-			name: "SSE with non-tools data - pass through unchanged",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"any_tool": {},
-				},
-			},
+			name:   "SSE with non-tools data - pass through unchanged",
+			config: allowOnly("any_tool"),
 			inputBuffer: []byte(`event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}
 
@@ -705,16 +717,10 @@ data: {"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}
 data: {"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}
 
 `,
-			expectError: false,
 		},
 		{
-			name: "SSE with mixed content - filter tools and pass through other data",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"tool1": {},
-					"tool3": {},
-				},
-			},
+			name:   "SSE with mixed content - filter tools and pass through other data",
+			config: allowOnly("tool1", "tool3"),
 			inputBuffer: []byte(`event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1","description":"First"},{"name":"tool2","description":"Second"},{"name":"tool3","description":"Third"}]}}
 
@@ -723,95 +729,94 @@ data: {"type":"info","message":"Processing complete"}
 
 `),
 			expected: `event: message
-data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"description":"First","name":"tool1"},{"description":"Third","name":"tool3"}]}}
+data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1","description":"First"},{"name":"tool3","description":"Third"}]}}
 
 event: notification
 data: {"type":"info","message":"Processing complete"}
 
 `,
-			expectError: false,
 		},
 		{
-			name: "SSE with CRLF line endings",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"allowed_tool": {},
-				},
-			},
+			name:        "SSE with CRLF line endings",
+			config:      allowOnly("allowed_tool"),
 			inputBuffer: []byte("event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"},{\"name\":\"blocked_tool\",\"description\":\"Blocked\"}]}}\r\n\r\n"),
-			expected:    "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\n\r\n\r\n",
-			expectError: false,
+			expected:    "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"}]}}\r\n\r\n",
 		},
 		{
-			name: "SSE with CR line endings",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"allowed_tool": {},
-				},
-			},
+			name:   "SSE tools list split across data lines is filtered as one payload",
+			config: allowOnly("allowed_tool"),
+			inputBuffer: []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\n" +
+				"data: \"result\":{\"tools\":[{\"name\":\"allowed_tool\"},{\"name\":\"blocked_tool\"}]}}\n\n"),
+			expected: "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\"}]}}\n\n",
+		},
+		{
+			// A bare CR ends a line for WHATWG readers but not for readers that
+			// split at LF only, so the two read different events from the
+			// same bytes; a stream like that which could carry a tools list is
+			// withheld rather than filtered under one reading.
+			name:        "SSE with CR line endings carrying a tools list fails closed",
+			config:      allowOnly("allowed_tool"),
 			inputBuffer: []byte("event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"}]}}\r\r"),
-			expected:    "event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\n\r\r",
-			expectError: false,
-		},
-		{
-			name: "SSE with unsupported line separator - should fail",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"any_tool": {},
-				},
-			},
-			inputBuffer: []byte("event: message\vdata: {\"jsonrpc\":\"2.0\",\"id\":1}\v\v"),
+			terminal:    true,
 			expectError: true,
 		},
 		{
-			name: "SSE with malformed JSON in data - pass through unchanged",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"any_tool": {},
-				},
-			},
+			// Readers that split at LF only never see a line end in a stream
+			// like this, so mid-stream it has no event boundary that both kinds
+			// of reader agree on, and it is written once the response has ended.
+			name:        "SSE with CR line endings and no tools list passes through unchanged",
+			config:      allowOnly("allowed_tool"),
+			inputBuffer: []byte("event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\r\r"),
+			terminal:    true,
+			expected:    "event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\r\r",
+		},
+		{
+			name:   "SSE with truncated JSON in data - error",
+			config: allowOnly("any_tool"),
 			inputBuffer: []byte(`event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}
 
 `),
-			expected: `event: message
-data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}
-
-`,
-			expectError: false,
+			expectError: true,
 		},
 		{
-			name: "SSE with only line separators",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"any_tool": {},
-				},
-			},
+			name:        "SSE with only line separators",
+			config:      allowOnly("any_tool"),
 			inputBuffer: []byte("\n\n"),
-			expected:    "\n",
-			expectError: false,
+			expected:    "\n\n",
 		},
 		{
-			name: "SSE with single line",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"any_tool": {},
-				},
-			},
+			name:             "SSE event without its closing blank line stays buffered mid-stream",
+			config:           allowOnly("any_tool"),
+			inputBuffer:      []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1}\n"),
+			expectKeepBuffer: true,
+		},
+		{
+			name:             "SSE complete events are written and the event in progress stays buffered",
+			config:           allowOnly("any_tool"),
+			inputBuffer:      []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\nevent: message\ndata: {\"jsonrpc\""),
+			expected:         "data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n",
+			expectedConsumed: len("data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n"),
+		},
+		{
+			name:        "SSE with single line at the end of the response",
+			config:      allowOnly("any_tool"),
 			inputBuffer: []byte("event: message\n"),
+			terminal:    true,
 			expected:    "event: message\n",
-			expectError: false,
 		},
 		{
-			name: "SSE with data line without event line",
-			config: &toolMiddlewareConfig{
-				filterTools: map[string]struct{}{
-					"any_tool": {},
-				},
-			},
+			name:        "SSE tools list the response ended without terminating is filtered",
+			config:      allowOnly("allowed_tool"),
+			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\"},{\"name\":\"blocked_tool\"}]}}"),
+			terminal:    true,
+			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\"}]}}",
+		},
+		{
+			name:        "SSE with data line without event line",
+			config:      allowOnly("any_tool"),
 			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n"),
 			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n",
-			expectError: false,
 		},
 	}
 
@@ -820,15 +825,26 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}
 			t.Parallel()
 
 			var buf bytes.Buffer
-			err := processEventStream(tt.config, tt.inputBuffer, &buf)
+			consumed, err := processEventStream(tt.config, tt.inputBuffer, 0, tt.terminal, nil, &buf)
 
+			if tt.expectKeepBuffer {
+				require.ErrorIs(t, err, errKeepBuffering)
+				assert.Zero(t, consumed)
+				return
+			}
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, errKeepBuffering)
 				return
 			}
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, buf.String())
+			expectedConsumed := tt.expectedConsumed
+			if expectedConsumed == 0 {
+				expectedConsumed = len(tt.inputBuffer)
+			}
+			assert.Equal(t, expectedConsumed, consumed)
 		})
 	}
 }
@@ -837,11 +853,14 @@ func TestProcessBuffer(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		config      *toolMiddlewareConfig
-		buffer      []byte
-		mimeType    string
-		expectError bool
+		name              string
+		config            *toolMiddlewareConfig
+		buffer            []byte
+		mimeType          string
+		sniff             bool
+		expectError       bool
+		expectUnsupported bool
+		expectFiltered    bool // asserts allowed_tool survives and blocked_tool is filtered out
 	}{
 		{
 			name: "JSON with tools list",
@@ -850,9 +869,10 @@ func TestProcessBuffer(t *testing.T) {
 					"allowed_tool": {},
 				},
 			},
-			buffer:      []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","description":"Allowed"},{"name":"blocked_tool","description":"Blocked"}]}}`),
-			mimeType:    "application/json",
-			expectError: false,
+			buffer:         []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","description":"Allowed"},{"name":"blocked_tool","description":"Blocked"}]}}`),
+			mimeType:       "application/json",
+			sniff:          true,
+			expectFiltered: true,
 		},
 		{
 			name: "SSE with tools list",
@@ -865,18 +885,79 @@ func TestProcessBuffer(t *testing.T) {
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","description":"Allowed"},{"name":"blocked_tool","description":"Blocked"}]}}
 
 `),
-			mimeType:    "text/event-stream",
-			expectError: false,
+			mimeType:       "text/event-stream",
+			sniff:          true,
+			expectFiltered: true,
 		},
 		{
-			name: "Unsupported mime type",
+			name: "Unsupported mime type on an error response",
 			config: &toolMiddlewareConfig{
 				filterTools: map[string]struct{}{
 					"any_tool": {},
 				},
 			},
-			buffer:      []byte(`some data`),
-			mimeType:    "text/plain",
+			buffer:            []byte(`some data`),
+			mimeType:          "text/plain",
+			sniff:             false,
+			expectError:       true,
+			expectUnsupported: true,
+		},
+		{
+			name: "Unsupported mime type on a success response that isn't a tools list",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			buffer:            []byte(`{"test":"data"}`),
+			mimeType:          "",
+			sniff:             true,
+			expectError:       true,
+			expectUnsupported: true,
+		},
+		{
+			// Regression test for a follow-up to #5809: a backend cannot bypass
+			// the filter by omitting/mislabeling Content-Type on an otherwise
+			// valid, successful tools/list response.
+			name: "Missing Content-Type on a success response cannot smuggle a JSON tools list",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			buffer:         []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","description":"Allowed"},{"name":"blocked_tool","description":"Blocked"}]}}`),
+			mimeType:       "",
+			sniff:          true,
+			expectFiltered: true,
+		},
+		{
+			name: "Missing Content-Type on a success response cannot smuggle an SSE tools list",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			buffer: []byte(`event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","description":"Allowed"},{"name":"blocked_tool","description":"Blocked"}]}}
+
+`),
+			mimeType:       "",
+			sniff:          true,
+			expectFiltered: true,
+		},
+		{
+			// Regression test for a follow-up to #5809: a hard filtering failure
+			// (a tool missing its required name) must fail closed, not fall back
+			// to passing the unfiltered body through.
+			name: "Malformed tools list under a sniffed missing Content-Type fails closed",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			buffer:      []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"description":"no name"}]}}`),
+			mimeType:    "",
+			sniff:       true,
 			expectError: true,
 		},
 		{
@@ -886,9 +967,9 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","descrip
 					"any_tool": {},
 				},
 			},
-			buffer:      []byte{},
-			mimeType:    "application/json",
-			expectError: false,
+			buffer:   []byte{},
+			mimeType: "application/json",
+			sniff:    true,
 		},
 	}
 
@@ -897,12 +978,19 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","descrip
 			t.Parallel()
 
 			var buf bytes.Buffer
-			err := processBuffer(tt.config, tt.buffer, tt.mimeType, &buf)
+			_, err := processBuffer(tt.config, tt.buffer, &jsonBodyScan{}, 0, tt.mimeType, tt.sniff, true, nil, &buf)
 
 			if tt.expectError {
 				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
+				assert.Equal(t, tt.expectUnsupported, errors.Is(err, errUnsupportedMimeType),
+					"errors.Is(err, errUnsupportedMimeType) mismatch")
+				return
+			}
+
+			require.NoError(t, err)
+			if tt.expectFiltered {
+				assert.Contains(t, buf.String(), "allowed_tool")
+				assert.NotContains(t, buf.String(), "blocked_tool")
 			}
 		})
 	}
@@ -1079,6 +1167,30 @@ func TestToolMiddlewareConfig(t *testing.T) {
 	}
 }
 
+// toolsListResponse is the shape these tests build tools/list responses in
+// and decode the filter's output into.
+type toolsListResponse struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      any    `json:"id"`
+	Result  struct {
+		Tools *[]map[string]any `json:"tools"`
+	} `json:"result"`
+}
+
+// processToolsList encodes response as JSON and runs it through the filter's
+// decoding and processing, as the middleware does with a response body.
+func processToolsList(t *testing.T, config *toolMiddlewareConfig, response toolsListResponse, w io.Writer) error {
+	t.Helper()
+
+	body, err := json.Marshal(response)
+	require.NoError(t, err)
+	message, err := decodeToolsListResponse(body)
+	if err != nil {
+		return err
+	}
+	return processToolsListResponse(config, message, w)
+}
+
 // Test helper function to create a tools list response
 func createToolsListResponse(tools []map[string]any) toolsListResponse {
 	return toolsListResponse{
@@ -1110,7 +1222,7 @@ func TestProcessToolsListResponse_JSONEncoding(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := processToolsListResponse(config, inputResponse, &buf)
+	err := processToolsList(t, config, inputResponse, &buf)
 	require.NoError(t, err)
 
 	// Verify the output can be parsed back as valid JSON
@@ -1174,7 +1286,7 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			expectReset: true,
 		},
 		{
-			name:        "no content type - should write buffer directly",
+			name:        "no content type - should stay buffered until the response ends",
 			writeData:   []byte(`{"test":"data"}`),
 			contentType: "",
 			statusCode:  200,
@@ -1183,8 +1295,8 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 					"tool1": {},
 				},
 			},
-			expectWrite: true,
-			expectReset: false, // Buffer is not reset when no content type
+			expectWrite: false,
+			expectReset: false,
 		},
 		{
 			name:        "with status code - should set header and write",
@@ -1216,12 +1328,10 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			rw := &toolFilterWriter{
 				ResponseWriter: mockWriter,
 				buffer:         []byte{},
-				config:         tt.config,
+				config:         withDefaultHeldBounds(tt.config),
 			}
 
-			// Set status code using WriteHeader
 			rw.WriteHeader(tt.statusCode)
-			assert.Equal(t, tt.statusCode, mockWriter.statusCode, "Status code should be set")
 
 			// Write data to the toolFilterWriter (this buffers the data)
 			if len(tt.writeData) > 0 {
@@ -1233,6 +1343,14 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 
 			// Call Flush
 			rw.Flush()
+
+			// The status of an event stream is forwarded at once, and that of
+			// any other body once the filter writes the body.
+			if tt.expectWrite || tt.contentType == "text/event-stream" {
+				assert.Equal(t, tt.statusCode, mockWriter.statusCode, "Status code should be set")
+			} else {
+				assert.Zero(t, mockWriter.statusCode, "Status code should wait for the body")
+			}
 
 			// Verify that Write was called on the underlying ResponseWriter if we expected it
 			if tt.expectWrite {
@@ -1252,12 +1370,222 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 	}
 }
 
-// mockResponseWriter implements http.ResponseWriter for testing
+// TestToolFilterWriter_Flush_NoContentTypeDoesNotDuplicateOnRepeatedFlush is a
+// regression test: the no-content-type branch of Flush() used to skip resetting
+// the buffer, so a second Flush() call (e.g. the post-ServeHTTP drain added for
+// #5797, on top of a downstream flush) would rewrite the same bytes again.
+func TestToolFilterWriter_Flush_NoContentTypeDoesNotDuplicateOnRepeatedFlush(t *testing.T) {
+	t.Parallel()
+
+	mockWriter := &mockResponseWriter{
+		headers: make(http.Header),
+		buffer:  &bytes.Buffer{},
+	}
+
+	rw := &toolFilterWriter{
+		ResponseWriter: mockWriter,
+		buffer:         []byte{},
+		config:         withDefaultHeldBounds(&toolMiddlewareConfig{}),
+	}
+
+	// A non-2xx body without a supported Content-Type is passed through at
+	// the first Flush.
+	rw.WriteHeader(http.StatusInternalServerError)
+	data := []byte(`{"test":"data"}`)
+	written, err := rw.Write(data)
+	require.NoError(t, err)
+	assert.Equal(t, len(data), written)
+
+	rw.Flush()
+	rw.Flush()
+
+	assert.Equal(t, string(data), mockWriter.buffer.String(), "second flush should not rewrite already-flushed bytes")
+}
+
+// TestToolFilterWriter_Flush_IncompleteBodyStaysBufferedAndDoesNotFlush is a
+// regression test for a follow-up to #5809: Flush() must not forward the
+// transport-level flush when the buffered body is incomplete (an SSE event
+// with no trailing separator, or a truncated JSON object). Forwarding it
+// there would flush a partial frame to the wire; the original Flush()
+// implementation returned before reaching the transport flush in this case,
+// but an early refactor of this fix lost that guard.
+func TestToolFilterWriter_Flush_IncompleteBodyStaysBufferedAndDoesNotFlush(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		contentType string
+		writeData   []byte
+	}{
+		{
+			name:        "truncated JSON",
+			contentType: "application/json",
+			writeData:   []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name"`),
+		},
+		{
+			name:        "SSE event with no trailing separator",
+			contentType: "text/event-stream",
+			writeData:   []byte(`data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockWriter := &mockResponseWriter{
+				headers: make(http.Header),
+				buffer:  &bytes.Buffer{},
+			}
+			mockWriter.headers.Set("Content-Type", tt.contentType)
+
+			rw := &toolFilterWriter{
+				ResponseWriter: mockWriter,
+				config:         withDefaultHeldBounds(&toolMiddlewareConfig{}),
+				statusCode:     http.StatusOK,
+			}
+
+			_, err := rw.Write(tt.writeData)
+			require.NoError(t, err)
+
+			rw.Flush()
+
+			assert.Equal(t, 0, mockWriter.writeCount, "incomplete body must not be written to the client yet")
+			assert.Equal(t, 0, mockWriter.flushCount, "an incomplete body must not trigger a transport-level flush")
+			assert.Equal(t, tt.writeData, rw.buffer, "incomplete body must remain buffered for a later Flush")
+		})
+	}
+}
+
+// TestToolFilterWriter_FlushThenFinishDoesNotDuplicate is a regression test
+// for a follow-up to #5809: once an explicit Flush() has fully drained and
+// processed a body, a later terminal finish() call (e.g. because the
+// wrapped ServeHTTP has returned) must be a no-op -- it must not rewrite the
+// body a second time, and must not trigger an extra transport-level flush,
+// since finish() never forwards one by design.
+func TestToolFilterWriter_FlushThenFinishDoesNotDuplicate(t *testing.T) {
+	t.Parallel()
+
+	mockWriter := &mockResponseWriter{
+		headers: make(http.Header),
+		buffer:  &bytes.Buffer{},
+	}
+	mockWriter.headers.Set("Content-Type", "application/json")
+
+	rw := &toolFilterWriter{
+		ResponseWriter: mockWriter,
+		config:         withDefaultHeldBounds(&toolMiddlewareConfig{filterTools: map[string]struct{}{"tool1": {}}}),
+		statusCode:     http.StatusOK,
+	}
+
+	body := `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1","description":"d1"},{"name":"tool2","description":"d2"}]}}`
+	_, err := rw.Write([]byte(body))
+	require.NoError(t, err)
+
+	rw.Flush()
+	require.Equal(t, 1, mockWriter.writeCount, "Flush should have written the filtered body exactly once")
+	require.Equal(t, 1, mockWriter.flushCount, "Flush should have forwarded exactly one transport flush")
+
+	rw.finish()
+
+	assert.Equal(t, 1, mockWriter.writeCount, "finish must not rewrite a body Flush already drained")
+	assert.Equal(t, 1, mockWriter.flushCount, "finish must not forward an additional transport flush")
+	assert.Contains(t, mockWriter.buffer.String(), "tool1")
+	assert.NotContains(t, mockWriter.buffer.String(), "tool2")
+}
+
+// TestToolFilterWriter_WriteHeader verifies that Content-Length is stripped
+// from the underlying ResponseWriter's headers regardless of content type.
+// The middleware re-encodes tool list responses to apply filters/overrides,
+// which changes the body size; without this strip, net/http rejects the
+// rewritten body with "http: wrote more than the declared Content-Length"
+// and the client receives only the headers. Regression guard for #5075.
+// The status reaches the underlying ResponseWriter by the end of the response.
+func TestToolFilterWriter_WriteHeader(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		initialHeaders http.Header
+		statusCode     int
+	}{
+		{
+			name: "application/json with Content-Length is stripped",
+			initialHeaders: http.Header{
+				"Content-Type":   []string{"application/json"},
+				"Content-Length": []string{"123"},
+			},
+			statusCode: http.StatusOK,
+		},
+		{
+			name: "text/event-stream with Content-Length is stripped",
+			initialHeaders: http.Header{
+				"Content-Type":   []string{"text/event-stream"},
+				"Content-Length": []string{"14743"},
+			},
+			statusCode: http.StatusOK,
+		},
+		{
+			name: "no Content-Length leaves headers unchanged",
+			initialHeaders: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+			statusCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockWriter := &mockResponseWriter{
+				headers: tt.initialHeaders.Clone(),
+				buffer:  &bytes.Buffer{},
+			}
+			rw := &toolFilterWriter{ResponseWriter: mockWriter}
+
+			rw.WriteHeader(tt.statusCode)
+			rw.finish()
+
+			assert.Equal(t, tt.statusCode, mockWriter.statusCode, "status code should pass through")
+			assert.Empty(t, mockWriter.headers.Get("Content-Length"), "Content-Length must be stripped")
+			// Other headers must survive — only Content-Length is removed.
+			assert.Equal(t,
+				tt.initialHeaders.Get("Content-Type"),
+				mockWriter.headers.Get("Content-Type"),
+				"Content-Type must be preserved")
+		})
+	}
+}
+
+// withDefaultHeldBounds gives config, built for a toolFilterWriter outside
+// NewListToolsMappingMiddleware, the bounds that constructor sets.
+func withDefaultHeldBounds(config *toolMiddlewareConfig) *toolMiddlewareConfig {
+	config.maxHeldEventBytes = defaultMaxHeldEventBytes
+	config.maxHeldBodyBytes = defaultMaxHeldBodyBytes
+	return config
+}
+
+// TestNewListToolsMappingMiddleware_RejectsNonPositiveHeldBounds verifies that
+// a bound on a held body that is not positive is a configuration error rather
+// than a filter that withholds every body or holds without bound.
+func TestNewListToolsMappingMiddleware_RejectsNonPositiveHeldBounds(t *testing.T) {
+	t.Parallel()
+
+	for _, bounds := range [][2]int{{0, 1}, {1, 0}, {-1, 1}} {
+		_, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"), withHeldBounds(bounds[0], bounds[1]))
+		assert.Error(t, err, "bounds %v", bounds)
+	}
+}
+
+// mockResponseWriter implements http.ResponseWriter (and http.Flusher, so
+// tests can observe whether a transport-level flush was forwarded) for testing.
 type mockResponseWriter struct {
 	headers    http.Header
 	buffer     *bytes.Buffer
 	writeCount int
 	statusCode int
+	flushCount int
 }
 
 func (m *mockResponseWriter) Header() http.Header {
@@ -1271,6 +1599,10 @@ func (m *mockResponseWriter) Write(data []byte) (int, error) {
 
 func (m *mockResponseWriter) WriteHeader(statusCode int) {
 	m.statusCode = statusCode
+}
+
+func (m *mockResponseWriter) Flush() {
+	m.flushCount++
 }
 
 func TestNewToolFilterMiddleware(t *testing.T) {
@@ -1435,6 +1767,741 @@ func TestWithToolsOverride(t *testing.T) {
 				assert.Equal(t, tt.toolOverrideName, config.userToActualOverride[tt.toolOverrideName].OverrideName)
 				assert.Equal(t, tt.toolOverrideDescription, config.userToActualOverride[tt.toolOverrideName].OverrideDescription)
 			}
+		})
+	}
+}
+
+// TestNewListToolsMappingMiddleware_FlushesStrandedBuffer is a regression test for #5797.
+//
+// An inner handler (e.g. authz's response filtering writer) may write the final
+// response body into our buffer during its own post-ServeHTTP flush, i.e. after
+// next.ServeHTTP has already returned to us but without calling our Flush(). If
+// the middleware doesn't explicitly flush its own writer after next.ServeHTTP
+// returns, that body is stranded in the buffer and never reaches the client.
+func TestNewListToolsMappingMiddleware_FlushesStrandedBuffer(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	body := `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+		`{"name":"tool1","description":"desc1"},` +
+		`{"name":"tool2","description":"desc2"}]}}`
+
+	// Mimics an inner buffering middleware (e.g. authz's FlushAndFilter) that
+	// writes the response body directly into the wrapped writer without ever
+	// calling Flush() on it itself.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, writeErr := w.Write([]byte(body))
+		require.NoError(t, writeErr)
+	})
+
+	handler := middleware(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	assert.NotEmpty(t, recorder.Body.String())
+	assert.Contains(t, recorder.Body.String(), "tool1")
+	assert.NotContains(t, recorder.Body.String(), "tool2")
+}
+
+// TestNewListToolsMappingMiddleware_TerminalDrainPassesThroughUnsupportedContentType
+// is a regression test for a follow-up to #5797/#5809: the terminal drain added
+// to flush a stranded buffer must not discard a body it doesn't know how to
+// process. An inner handler that fails with a plain-text error (e.g.
+// http.Error, which sets "text/plain; charset=utf-8") is neither
+// application/json nor text/event-stream, so processBuffer() rejects it with
+// an "unsupported mime type" error. Before this fix, that error path wrote an
+// empty buffer to the client and discarded the original error body.
+func TestNewListToolsMappingMiddleware_TerminalDrainPassesThroughUnsupportedContentType(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{name: "4xx body", statusCode: http.StatusBadRequest},
+		{name: "5xx body", statusCode: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "backend unavailable", tt.statusCode)
+			})
+
+			handler := middleware(inner)
+
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.Equal(t, tt.statusCode, recorder.Code)
+			assert.Contains(t, recorder.Body.String(), "backend unavailable",
+				"the original error body must reach the client unchanged")
+		})
+	}
+}
+
+// TestNewListToolsMappingMiddleware_FailsClosedOnMalformedToolsList is a
+// regression test for a follow-up to #5809: a successful, correctly-labeled
+// tools/list response that fails our own filtering logic (here, a tool
+// missing its required name) must not fall back to passing the raw,
+// unfiltered body through -- that would defeat the tool filter entirely.
+func TestNewListToolsMappingMiddleware_FailsClosedOnMalformedToolsList(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	// "blocked_tool" is missing its required "name" field, so filtering fails.
+	body := `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+		`{"name":"tool1","description":"desc1"},` +
+		`{"description":"missing name"}]}}`
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, writeErr := w.Write([]byte(body))
+		require.NoError(t, writeErr)
+	})
+
+	handler := middleware(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	assert.NotContains(t, recorder.Body.String(), "tool1",
+		"a hard filtering failure must not leak the unfiltered tools list")
+	assert.NotContains(t, recorder.Body.String(), "missing name")
+}
+
+// TestNewListToolsMappingMiddleware_MissingContentTypeCannotSmuggleToolsList
+// is a regression test for a follow-up to #5809: a backend cannot bypass the
+// configured tool filter by returning an otherwise-valid, successful
+// tools/list response without a Content-Type header (or with an unrelated
+// one). Covers both wire formats the filter supports.
+func TestNewListToolsMappingMiddleware_MissingContentTypeCannotSmuggleToolsList(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "JSON tools list with no Content-Type",
+			body: `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}`,
+		},
+		{
+			name: "SSE tools list with no Content-Type",
+			body: "event: message\n" +
+				`data: {"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}` + "\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// No Content-Type set: the backend is either buggy or actively
+				// trying to bypass the filter by not declaring one.
+				w.WriteHeader(http.StatusOK)
+				_, writeErr := w.Write([]byte(tt.body))
+				require.NoError(t, writeErr)
+			})
+
+			handler := middleware(inner)
+
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.Contains(t, recorder.Body.String(), "tool1")
+			assert.NotContains(t, recorder.Body.String(), "tool2",
+				"the excluded tool must not be exposed just because Content-Type was missing")
+		})
+	}
+}
+
+// TestNewListToolsMappingMiddleware_BOMCannotSmuggleToolsList is a regression
+// test for a #5257-class leak: a client strips a leading UTF-8 BOM per the
+// WHATWG decode algorithm before parsing, but the sniffing of a body with a
+// missing/unrecognized Content-Type used to run on the raw bytes. The BOM made
+// the JSON sniff (encoding/json rejects EF BB BF) and the SSE sniff's
+// "data:" prefix match fail, letting the unfiltered tools list pass through.
+func TestNewListToolsMappingMiddleware_BOMCannotSmuggleToolsList(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "BOM-prefixed JSON tools list with no Content-Type",
+			body: "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}`,
+		},
+		{
+			name: "BOM-prefixed SSE tools list with no Content-Type",
+			body: "\xEF\xBB\xBF" + "event: message\n" +
+				`data: {"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}` + "\n\n",
+		},
+		{
+			name: "JSON tools list after two BOMs with no Content-Type",
+			body: strings.Repeat("\xEF\xBB\xBF", 2) + `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}`,
+		},
+		{
+			name: "JSON tools list after three BOMs with no Content-Type",
+			body: strings.Repeat("\xEF\xBB\xBF", 3) + `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}`,
+		},
+		{
+			name: "SSE tools list after two BOMs with no Content-Type",
+			body: strings.Repeat("\xEF\xBB\xBF", 2) + "event: message\n" +
+				`data: {"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}` + "\n\n",
+		},
+		{
+			name: "JSON tools list after a Latin-1 BOM with no Content-Type",
+			body: latin1BOM + `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}`,
+		},
+		{
+			name: "SSE tools list after a Latin-1 BOM with no Content-Type",
+			body: latin1BOM + `data: {"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}` + "\n\n",
+		},
+		{
+			name: "SSE tools list after a BOM and a Latin-1 BOM with no Content-Type",
+			body: "\xEF\xBB\xBF" + latin1BOM + `data: {"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}` + "\n\n",
+		},
+		{
+			name: "JSON tools list after a Latin-1 BOM and a BOM with no Content-Type",
+			body: latin1BOM + "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, writeErr := w.Write([]byte(tt.body))
+				require.NoError(t, writeErr)
+			})
+
+			handler := middleware(inner)
+
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.Contains(t, recorder.Body.String(), "tool1")
+			assert.NotContains(t, recorder.Body.String(), "tool2",
+				"the excluded tool must not be exposed because a leading byte order mark defeated the sniff")
+			assertNoLeadingBOM(t, recorder.Body.String())
+		})
+	}
+}
+
+// latin1BOM is the six bytes a UTF-8 byte order mark becomes when it is decoded
+// as Latin-1 and encoded as UTF-8 again (see latin1UTF8BOM).
+const latin1BOM = "\xC3\xAF\xC2\xBB\xC2\xBF"
+
+// assertNoLeadingBOM asserts that body starts with neither form of the byte
+// order mark, since the filter drops every leading mark it reads past.
+func assertNoLeadingBOM(t *testing.T, body string) {
+	t.Helper()
+	assert.False(t, strings.HasPrefix(body, "\xEF\xBB\xBF") || strings.HasPrefix(body, latin1BOM),
+		"the leading byte order marks must be dropped from the output")
+}
+
+func TestNewListToolsMappingMiddleware_BOMCannotBypassRecognizedContentTypes(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	const bom = "\xEF\xBB\xBF"
+	const list = `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+		`{"name":"tool1","description":"desc1"},` +
+		`{"name":"tool2","description":"desc2"}]}}`
+
+	// The handler writes a row's chunks in order and flushes between them.
+	tests := []struct {
+		name        string
+		contentType string
+		chunks      []string
+	}{
+		{
+			name:        "JSON",
+			contentType: "application/json",
+			chunks:      []string{bom + list},
+		},
+		{
+			name:        "JSON after two BOMs",
+			contentType: "application/json",
+			chunks:      []string{strings.Repeat(bom, 2) + list},
+		},
+		{
+			name:        "JSON after three BOMs",
+			contentType: "application/json",
+			chunks:      []string{strings.Repeat(bom, 3) + list},
+		},
+		{
+			name:        "JSON with a flush after the first of three BOMs",
+			contentType: "application/json",
+			chunks:      []string{bom, strings.Repeat(bom, 2) + list},
+		},
+		{
+			name:        "SSE",
+			contentType: "text/event-stream",
+			chunks:      []string{bom + "data: " + list + "\n\n"},
+		},
+		{
+			name:        "SSE after two BOMs",
+			contentType: "text/event-stream",
+			chunks:      []string{strings.Repeat(bom, 2) + "data: " + list + "\n\n"},
+		},
+		{
+			name:        "SSE after three BOMs",
+			contentType: "text/event-stream",
+			chunks:      []string{strings.Repeat(bom, 3) + "data: " + list + "\n\n"},
+		},
+		{
+			name:        "JSON after a Latin-1 BOM",
+			contentType: "application/json",
+			chunks:      []string{latin1BOM + list},
+		},
+		{
+			name:        "JSON with a flush inside a Latin-1 BOM",
+			contentType: "application/json",
+			chunks:      []string{latin1BOM[:4], latin1BOM[4:] + list},
+		},
+		{
+			name:        "SSE after a Latin-1 BOM",
+			contentType: "text/event-stream",
+			chunks:      []string{latin1BOM + "data: " + list + "\n\n"},
+		},
+		{
+			name:        "SSE after a BOM and a Latin-1 BOM",
+			contentType: "text/event-stream",
+			chunks:      []string{bom + latin1BOM + "data: " + list + "\n\n"},
+		},
+		{
+			name:        "SSE after a Latin-1 BOM and a BOM",
+			contentType: "text/event-stream",
+			chunks:      []string{latin1BOM + bom + "data: " + list + "\n\n"},
+		},
+		{
+			name:        "SSE after a BOM, a Latin-1 BOM, and a BOM",
+			contentType: "text/event-stream",
+			chunks:      []string{bom + latin1BOM + bom + "data: " + list + "\n\n"},
+		},
+		{
+			name:        "SSE with a flush inside a Latin-1 BOM",
+			contentType: "text/event-stream",
+			chunks:      []string{latin1BOM[:4], latin1BOM[4:] + "data: " + list + "\n\n"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				for i, chunk := range tt.chunks {
+					if i > 0 {
+						flusher, ok := w.(http.Flusher)
+						require.True(t, ok)
+						flusher.Flush()
+					}
+					_, writeErr := w.Write([]byte(chunk))
+					require.NoError(t, writeErr)
+				}
+			})
+			handler := middleware(inner)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil))
+
+			out := recorder.Body.String()
+			assert.Contains(t, out, "tool1")
+			assert.NotContains(t, out, "tool2",
+				"the excluded tool must not be exposed because a leading byte order mark defeated filtering")
+			assertNoLeadingBOM(t, out)
+		})
+	}
+}
+
+// TestNewListToolsMappingMiddleware_KeepsBOMsAfterTheBodyStarts verifies that
+// only the byte order marks a body starts with are dropped: once a body byte
+// has been forwarded, a later mark in either form is body content and reaches
+// the client.
+func TestNewListToolsMappingMiddleware_KeepsBOMsAfterTheBodyStarts(t *testing.T) {
+	t.Parallel()
+
+	first := `data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":1,"progress":1}}` + "\n\n"
+	progress := `data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":1,"progress":2}}` + "\n\n"
+
+	tests := []struct {
+		name   string
+		second string
+	}{
+		{name: "UTF-8 BOM", second: "\xEF\xBB\xBF" + progress},
+		{name: "Latin-1 BOM", second: latin1BOM + progress},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+			require.NoError(t, err)
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, writeErr := w.Write([]byte(first))
+				require.NoError(t, writeErr)
+				flusher, ok := w.(http.Flusher)
+				require.True(t, ok)
+				flusher.Flush()
+				_, writeErr = w.Write([]byte(tt.second))
+				require.NoError(t, writeErr)
+			})
+			recorder := httptest.NewRecorder()
+
+			middleware(inner).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil))
+
+			assert.Equal(t, first+tt.second, recorder.Body.String())
+		})
+	}
+}
+
+func TestClientAcceptsJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		accept string
+		want   bool
+	}{
+		{name: "application/json", accept: "application/json", want: true},
+		{name: "application/json with other alternatives", accept: "application/json, text/event-stream", want: true},
+		{name: "text/event-stream only", accept: "text/event-stream", want: false},
+		{name: "wildcard", accept: "*/*", want: true},
+		{name: "application subtype wildcard", accept: "application/*", want: true},
+		{name: "empty header", accept: "", want: true},
+		{name: "application/json with quality parameter", accept: "application/json;q=0.9", want: true},
+		{name: "uppercase media type is case-insensitive", accept: "APPLICATION/JSON", want: true},
+		{name: "application/json-patch+json is not application/json", accept: "application/json-patch+json", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
+
+			assert.Equal(t, tt.want, clientAcceptsJSON(req))
+		})
+	}
+}
+
+// TestNewToolCallMappingMiddleware_FilteredTool covers the HTTP-level
+// behavior of the *toolCallFilter case in NewToolCallMappingMiddleware: a
+// tools/call request for a tool blocked by the filter must be rejected with
+// a JSON-RPC error (never the raw, filter-specific "blocked" reason -- see
+// the NOTE above the *toolCallFilter case) rather than a bare HTTP 400,
+// unless the client can only receive an event stream, in which case the
+// legacy 400 fallback still applies.
+func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		accept        string
+		setAccept     bool
+		id            any
+		expectStatus  int
+		expectJSONRPC bool
+	}{
+		{
+			name:          "Accept: application/json - numeric id",
+			accept:        "application/json",
+			setAccept:     true,
+			id:            1,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			name:          "Accept: application/json - string id",
+			accept:        "application/json",
+			setAccept:     true,
+			id:            "req-42",
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			// Zero is a valid JSON-RPC id and must stay present, not be
+			// mistaken for absent.
+			name:          "Accept: application/json - zero id is still present",
+			accept:        "application/json",
+			setAccept:     true,
+			id:            0,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			name:          "Accept: application/json, text/event-stream",
+			accept:        "application/json, text/event-stream",
+			setAccept:     true,
+			id:            1,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			name:         "Accept: text/event-stream only - falls back to 400",
+			accept:       "text/event-stream",
+			setAccept:    true,
+			id:           1,
+			expectStatus: http.StatusBadRequest,
+		},
+		{
+			name:          "No Accept header - JSON allowed by default",
+			setAccept:     false,
+			id:            1,
+			expectStatus:  http.StatusOK,
+			expectJSONRPC: true,
+		},
+		{
+			// Null IDs are rejected at admission, without echoing the invalid ID.
+			name:          "null id is rejected without echoing it",
+			accept:        "application/json",
+			setAccept:     true,
+			id:            nil,
+			expectStatus:  http.StatusBadRequest,
+			expectJSONRPC: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			middleware, err := NewToolCallMappingMiddleware(WithToolsFilter("allowed_tool"))
+			require.NoError(t, err)
+
+			nextCalled := false
+			next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+			})
+			handler := middleware(next)
+
+			idJSON, err := json.Marshal(tt.id)
+			require.NoError(t, err)
+			body := fmt.Sprintf(
+				`{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"blocked_tool"}}`,
+				idJSON,
+			)
+
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			if tt.setAccept {
+				req.Header.Set("Accept", tt.accept)
+			}
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.False(t, nextCalled, "next handler must not be called for a filtered tool")
+			assert.Equal(t, tt.expectStatus, recorder.Code)
+
+			if !tt.expectJSONRPC {
+				return
+			}
+
+			assert.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+
+			var response map[string]any
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+
+			assert.Equal(t, "2.0", response["jsonrpc"])
+			errObj, ok := response["error"].(map[string]any)
+			require.True(t, ok, "response must carry a JSON-RPC error object")
+			if tt.id == nil {
+				assert.Equal(t, float64(CodeInvalidRequest), errObj["code"])
+				assert.Equal(t, "Invalid Request", errObj["message"])
+			} else {
+				assert.Equal(t, float64(CodeInvalidParams), errObj["code"])
+				assert.Equal(t, "tool not found", errObj["message"])
+			}
+			assert.NotContains(t, errObj["message"], "filter",
+				"a filtered tool must look the same as a nonexistent one")
+
+			// Map decode is the only way to tell an absent "id" key apart
+			// from a present null -- response["id"] reads back as the same
+			// nil interface value either way.
+			_, hasID := response["id"]
+			if tt.id == nil {
+				assert.False(t, hasID, `"id" key must be omitted for a nil request id, not present as null`)
+				return
+			}
+			assert.True(t, hasID, `"id" key must be present`)
+
+			expectedID, err := json.Marshal(tt.id)
+			require.NoError(t, err)
+			actualID, err := json.Marshal(response["id"])
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expectedID), string(actualID))
+		})
+	}
+}
+
+// TestNewToolCallMappingMiddleware_BOMBlockedTool verifies that a leading UTF-8
+// BOM cannot prevent the middleware from blocking an excluded tools/call.
+func TestNewToolCallMappingMiddleware_BOMBlockedTool(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewToolCallMappingMiddleware(WithToolsFilter("allowed_tool"))
+	require.NoError(t, err)
+
+	nextCalled := false
+	handler := middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+	}))
+
+	body := "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"blocked_tool"}}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Accept", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	assert.False(t, nextCalled, "backend must not receive a BOM-prefixed call for an excluded tool")
+	assert.Equal(t, http.StatusOK, recorder.Code)
+}
+
+// TestNewToolCallMappingMiddleware_AllowedToolPassesThrough verifies that a
+// BOM-prefixed tools/call request for an allowed tool is normalized before it
+// reaches the backend.
+func TestNewToolCallMappingMiddleware_AllowedToolPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewToolCallMappingMiddleware(WithToolsFilter("allowed_tool"))
+	require.NoError(t, err)
+
+	nextCalled := false
+	var receivedBody string
+	var receivedContentLength int64
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		bodyBytes, readErr := io.ReadAll(r.Body)
+		require.NoError(t, readErr)
+		receivedBody = string(bodyBytes)
+		receivedContentLength = r.ContentLength
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := middleware(next)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed_tool"}}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("\xEF\xBB\xBF"+body))
+	req.Header.Set("Accept", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	assert.True(t, nextCalled, "next handler must be called for an allowed tool")
+	assert.Equal(t, body, receivedBody)
+	assert.Equal(t, int64(len(body)), receivedContentLength)
+	assert.Equal(t, http.StatusOK, recorder.Code)
+}
+
+// TestNewToolCallMappingMiddleware_BogusRequest verifies that a malformed
+// tools/call request (missing/nil params, or params without a name) is still
+// rejected with a bare HTTP 400 -- unlike a filtered tool, this is a
+// malformed-request case, not a filtering decision, per the current MCP spec.
+func TestNewToolCallMappingMiddleware_BogusRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "params missing name",
+			body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{}}}`,
+		},
+		{
+			name: "nil params",
+			body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			middleware, err := NewToolCallMappingMiddleware(WithToolsFilter("allowed_tool"))
+			require.NoError(t, err)
+
+			nextCalled := false
+			next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+			})
+			handler := middleware(next)
+
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			req.Header.Set("Accept", "application/json")
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.False(t, nextCalled, "next handler must not be called for a malformed request")
+			assert.Equal(t, http.StatusBadRequest, recorder.Code)
 		})
 	}
 }

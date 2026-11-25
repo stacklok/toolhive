@@ -5,20 +5,17 @@ package security
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
-)
-
-var (
-	// Test HMAC secret and salt for consistent test results
-	testSecret    = []byte("test-secret")
-	testTokenSalt = []byte("test-salt-123456") // 16 bytes
 )
 
 // mockSession is a minimal implementation of MultiSession for testing.
@@ -56,204 +53,241 @@ func (*mockSession) GetPrompt(_ context.Context, _ *auth.Identity, _ string, _ m
 
 func (*mockSession) Close() error { return nil }
 
-// TestValidateCaller_EdgeCases tests edge cases in caller validation logic.
-func TestValidateCaller_EdgeCases(t *testing.T) {
+// newDecoratedSession creates a mockSession wrapped with BindSession using the given identity.
+func newDecoratedSession(t *testing.T, identity *auth.Identity) sessiontypes.MultiSession {
+	t.Helper()
+	base := newMockSession("test-session")
+	decorated, err := BindSession(base, identity)
+	require.NoError(t, err)
+	require.NotNil(t, decorated)
+	return decorated
+}
+
+// authedIdentity builds an authenticated identity with the given issuer and subject.
+// token is used as the raw bearer token (may be any non-empty string).
+func authedIdentity(token, iss, sub string) *auth.Identity {
+	return &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Claims: map[string]any{
+				"iss": iss,
+				"sub": sub,
+			},
+		},
+		Token: token,
+	}
+}
+
+// identityWithClaims builds an *auth.Identity whose Claims map is set verbatim
+// from claims. Used in tests that need malformed claim values (missing keys,
+// non-string values, NUL bytes) that authedIdentity cannot express.
+func identityWithClaims(token string, claims map[string]any) *auth.Identity {
+	return &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{Claims: claims},
+		Token:         token,
+	}
+}
+
+// TestBindSession_AcceptsRefreshedTokenWithSameIdentity is the regression test
+// for issue #5306. A caller presenting a new bearer token (refreshed access
+// token) but the same (iss, sub) identity must be accepted because validation
+// is now identity-based, not token-hash-based.
+func TestBindSession_AcceptsRefreshedTokenWithSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	const iss = "https://idp.example"
+	const sub = "user-42"
+
+	// Session created with AT1.
+	creator := authedIdentity("AT1", iss, sub)
+	decorated := newDecoratedSession(t, creator)
+
+	// Subsequent call arrives with AT2 (refreshed token) but same (iss, sub).
+	refreshed := authedIdentity("AT2", iss, sub)
+	_, err := decorated.CallTool(context.Background(), refreshed, "tool", nil, nil)
+	require.NoError(t, err, "refreshed token with same identity must be accepted")
+}
+
+func TestBindSession_RejectsInvalidIdentityAtCreation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		allowAnonymous bool
-		boundTokenHash string
-		caller         *auth.Identity
-		wantErr        error
+		name     string
+		identity *auth.Identity
 	}{
-		{
-			name:           "anonymous session with nil caller",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         nil,
-			wantErr:        nil, // Should succeed
-		},
-		{
-			name:           "anonymous session rejects caller with token",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "token"},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller, // Prevent session upgrade attack
-		},
-		{
-			name:           "bound session with nil caller",
-			allowAnonymous: false,
-			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
-			caller:         nil,
-			wantErr:        sessiontypes.ErrNilCaller,
-		},
-		{
-			name:           "bound session with matching token",
-			allowAnonymous: false,
-			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "correct-token"},
-			wantErr:        nil, // Should succeed
-		},
-		{
-			name:           "bound session with wrong token",
-			allowAnonymous: false,
-			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "wrong-token"},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller,
-		},
-		{
-			name:           "bound session with empty token in identity",
-			allowAnonymous: false,
-			boundTokenHash: hashToken("correct-token", testSecret, testTokenSalt),
-			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""},
-			wantErr:        sessiontypes.ErrUnauthorizedCaller,
-		},
-		{
-			name:           "anonymous session accepts caller with empty token",
-			allowAnonymous: true,
-			boundTokenHash: "",
-			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""},
-			wantErr:        nil, // Empty token is equivalent to no token
-		},
-		{
-			name:           "misconfigured bound session with empty hash rejects empty token",
-			allowAnonymous: false,
-			boundTokenHash: "", // Misconfiguration: bound but no hash
-			caller:         &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""},
-			wantErr:        sessiontypes.ErrSessionOwnerUnknown, // Fail closed
-		},
-		{
-			name:           "misconfigured bound session with empty hash rejects nil caller",
-			allowAnonymous: false,
-			boundTokenHash: "", // Misconfiguration: bound but no hash
-			caller:         nil,
-			wantErr:        sessiontypes.ErrNilCaller, // Nil check happens first
-		},
+		{name: "missing_sub_claim", identity: identityWithClaims("tok", map[string]any{"iss": "https://idp.example"})},
+		{name: "missing_iss_claim", identity: identityWithClaims("tok", map[string]any{"sub": "alice"})},
+		{name: "both_claims_empty", identity: identityWithClaims("tok", map[string]any{})},
+		{name: "non_string_iss", identity: identityWithClaims("tok", map[string]any{"iss": 42, "sub": "alice"})},
+		{name: "non_string_sub", identity: identityWithClaims("tok", map[string]any{"iss": "https://idp.example", "sub": true})},
+		{name: "nul_byte_in_iss", identity: identityWithClaims("tok", map[string]any{"iss": "bad\x00iss", "sub": "alice"})},
+		{name: "nul_byte_in_sub", identity: identityWithClaims("tok", map[string]any{"iss": "https://idp.example", "sub": "bad\x00sub"})},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a base session
-			baseSession := newMockSession("test-session")
+			base := &metadataObservingSession{mockSession: newMockSession("test-session")}
+			decorated, err := BindSession(base, tt.identity)
 
-			// Wrap with decorator that has the test configuration
-			decorator := &hijackPreventionDecorator{
-				MultiSession:   baseSession,
-				allowAnonymous: tt.allowAnonymous,
-				boundTokenHash: tt.boundTokenHash,
-				tokenSalt:      testTokenSalt,
-				hmacSecret:     testSecret,
-			}
-
-			ctx := context.Background()
-
-			// Test all three decorated methods to verify validation is integrated correctly
-			toolResult, errCallTool := decorator.CallTool(ctx, tt.caller, "test-tool", nil, nil)
-			resourceResult, errReadResource := decorator.ReadResource(ctx, tt.caller, "test://uri")
-			promptResult, errGetPrompt := decorator.GetPrompt(ctx, tt.caller, "test-prompt", nil)
-
-			if tt.wantErr != nil {
-				require.ErrorIs(t, errCallTool, tt.wantErr)
-				require.ErrorIs(t, errReadResource, tt.wantErr)
-				require.ErrorIs(t, errGetPrompt, tt.wantErr)
-				assert.Nil(t, toolResult)
-				assert.Nil(t, resourceResult)
-				assert.Nil(t, promptResult)
-			} else {
-				require.NoError(t, errCallTool)
-				require.NoError(t, errReadResource)
-				require.NoError(t, errGetPrompt)
-				assert.NotNil(t, toolResult)
-				assert.NotNil(t, resourceResult)
-				assert.NotNil(t, promptResult)
-			}
+			require.Error(t, err)
+			assert.Nil(t, decorated)
+			assert.False(t, base.setMetadataCalled, "SetMetadata must not be called if binding extraction fails")
 		})
 	}
 }
 
-// TestPreventSessionHijacking_NilSession tests that a nil session is rejected before any method call.
-func TestPreventSessionHijacking_NilSession(t *testing.T) {
+func TestBindSession_RejectsMismatchedCaller(t *testing.T) {
 	t.Parallel()
 
-	decorated, err := PreventSessionHijacking(nil, testSecret, &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"})
+	const boundIss = "https://idp.example"
+	const boundSub = "alice"
+
+	tests := []struct {
+		name   string
+		caller *auth.Identity
+	}{
+		{name: "different_sub", caller: authedIdentity("tok2", boundIss, "bob")},
+		{name: "different_iss", caller: authedIdentity("tok2", "https://idp-b.example", boundSub)},
+		{name: "missing_iss_claim", caller: identityWithClaims("tok2", map[string]any{"sub": boundSub})},
+		{name: "missing_sub_claim", caller: identityWithClaims("tok2", map[string]any{"iss": boundIss})},
+		{name: "both_claims_empty", caller: identityWithClaims("tok2", map[string]any{})},
+		{name: "non_string_iss_claim", caller: identityWithClaims("tok2", map[string]any{"iss": []string{boundIss}, "sub": boundSub})},
+		{name: "non_string_sub_claim", caller: identityWithClaims("tok2", map[string]any{"iss": boundIss, "sub": 12345})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			decorated := newDecoratedSession(t, authedIdentity("tok", boundIss, boundSub))
+			_, err := decorated.CallTool(context.Background(), tt.caller, "tool", nil, nil)
+			require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
+		})
+	}
+}
+
+func TestBindSession_AnonymousSession(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		assertFn func(t *testing.T, decorated sessiontypes.MultiSession)
+	}{
+		{
+			name: "nil_identity_stores_sentinel",
+			assertFn: func(t *testing.T, decorated sessiontypes.MultiSession) {
+				t.Helper()
+				meta := decorated.GetMetadata()
+				assert.Equal(t, binding.UnauthenticatedSentinel, meta[sessiontypes.MetadataKeyIdentityBinding],
+					"anonymous session must store UnauthenticatedSentinel in metadata")
+			},
+		},
+		{
+			name: "rejects_caller_presenting_token",
+			assertFn: func(t *testing.T, decorated sessiontypes.MultiSession) {
+				t.Helper()
+				caller := &auth.Identity{Token: "some-token"}
+				_, err := decorated.CallTool(context.Background(), caller, "tool", nil, nil)
+				require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
+			},
+		},
+		{
+			name: "accepts_nil_caller",
+			assertFn: func(t *testing.T, decorated sessiontypes.MultiSession) {
+				t.Helper()
+				_, err := decorated.CallTool(context.Background(), nil, "tool", nil, nil)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "accepts_caller_with_empty_token",
+			assertFn: func(t *testing.T, decorated sessiontypes.MultiSession) {
+				t.Helper()
+				caller := &auth.Identity{Token: ""}
+				_, err := decorated.CallTool(context.Background(), caller, "tool", nil, nil)
+				require.NoError(t, err)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			base := newMockSession("test-session")
+			decorated, err := BindSession(base, nil)
+			require.NoError(t, err)
+			require.NotNil(t, decorated)
+			tt.assertFn(t, decorated)
+		})
+	}
+}
+
+func TestBindSession_NilSession(t *testing.T) {
+	t.Parallel()
+
+	identity := authedIdentity("tok", "https://idp.example", "alice")
+	decorated, err := BindSession(nil, identity)
 	require.Error(t, err)
 	assert.Nil(t, decorated)
 }
 
-// TestPreventSessionHijacking_BasicFunctionality tests the main entry point.
-func TestPreventSessionHijacking_BasicFunctionality(t *testing.T) {
+func TestBindSession_BoundRejectsNilCaller(t *testing.T) {
 	t.Parallel()
 
-	t.Run("authenticated session", func(t *testing.T) {
-		t.Parallel()
+	decorated := newDecoratedSession(t, authedIdentity("tok", "https://idp.example", "alice"))
 
-		baseSession := newMockSession("test-session")
-		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"}
-
-		decorated, err := PreventSessionHijacking(baseSession, testSecret, identity)
-		require.NoError(t, err)
-		require.NotNil(t, decorated)
-
-		// Verify metadata was set (no cast needed - returns concrete type)
-		metadata := decorated.GetMetadata()
-		assert.NotEmpty(t, metadata[metadataKeyTokenHash])
-		assert.NotEmpty(t, metadata[metadataKeyTokenSalt])
-	})
-
-	t.Run("anonymous session", func(t *testing.T) {
-		t.Parallel()
-
-		baseSession := newMockSession("test-session")
-
-		decorated, err := PreventSessionHijacking(baseSession, testSecret, nil)
-		require.NoError(t, err)
-		require.NotNil(t, decorated)
-
-		// Verify metadata was set (empty for anonymous, no cast needed)
-		metadata := decorated.GetMetadata()
-		assert.Empty(t, metadata[metadataKeyTokenHash])
-		assert.Empty(t, metadata[metadataKeyTokenSalt])
-	})
+	_, err := decorated.CallTool(context.Background(), nil, "tool", nil, nil)
+	require.ErrorIs(t, err, sessiontypes.ErrNilCaller)
 }
 
-// TestRestoreHijackPrevention tests restoration of the hijack-prevention decorator.
-func TestRestoreHijackPrevention(t *testing.T) {
+// TestBindSession_ConcurrentRefreshRace verifies that two goroutines calling
+// CallTool concurrently with different bearer tokens but the same (iss, sub)
+// both succeed. This tests the core fix for issue #5306.
+func TestBindSession_ConcurrentRefreshRace(t *testing.T) {
 	t.Parallel()
 
-	t.Run("anonymous session (empty hash and salt)", func(t *testing.T) {
-		t.Parallel()
+	const iss = "https://idp.example"
+	const sub = "alice"
 
-		base := newMockSession("s1")
-		restored, err := RestoreHijackPrevention(base, "", "", testSecret)
-		require.NoError(t, err)
-		require.NotNil(t, restored)
-	})
+	decorated := newDecoratedSession(t, authedIdentity("AT1", iss, sub))
 
-	t.Run("hash present but salt absent is rejected", func(t *testing.T) {
-		t.Parallel()
+	const goroutines = 20
 
-		base := newMockSession("s2")
-		_, err := RestoreHijackPrevention(base, "somehash", "", testSecret)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "salt is missing")
-	})
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func(i int) {
+			defer wg.Done()
+			// Each goroutine uses a distinct token string but the same identity.
+			caller := authedIdentity("refreshed-token-"+string(rune('A'+i%26)), iss, sub)
+			_, errs[i] = decorated.CallTool(context.Background(), caller, "tool", nil, nil)
+		}(i)
+	}
 
-	t.Run("salt present but hash absent is rejected", func(t *testing.T) {
-		t.Parallel()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent CallTool goroutines")
+	}
 
-		base := newMockSession("s3")
-		_, err := RestoreHijackPrevention(base, "", "deadbeef", testSecret)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "hash is missing")
-	})
+	for i, err := range errs {
+		assert.NoError(t, err, "goroutine %d must succeed with same identity and different token", i)
+	}
+}
 
-	t.Run("nil session is rejected", func(t *testing.T) {
-		t.Parallel()
+// metadataObservingSession wraps mockSession and records whether SetMetadata
+// was ever called. Used in tests that assert SetMetadata is NOT called before
+// a binding is validated.
+type metadataObservingSession struct {
+	*mockSession
+	setMetadataCalled bool
+}
 
-		_, err := RestoreHijackPrevention(nil, "", "", testSecret)
-		require.Error(t, err)
-	})
+func (m *metadataObservingSession) SetMetadata(key, value string) {
+	m.setMetadataCalled = true
+	m.mockSession.SetMetadata(key, value)
 }

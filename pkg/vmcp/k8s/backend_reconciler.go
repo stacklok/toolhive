@@ -16,8 +16,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -55,7 +56,8 @@ const (
 //  3. If groupRef doesn't match → Remove from registry (moved to different group)
 //  4. Convert to vmcp.Backend using discoverer
 //  5. If conversion fails or returns nil (auth failed) → Remove from registry
-//  6. Upsert backend to registry (triggers version increment + cache invalidation)
+//  6. Apply config-level outgoing auth (same semantics as startup discovery)
+//  7. Upsert backend to registry (triggers version increment + cache invalidation)
 type BackendReconciler struct {
 	client.Client
 
@@ -70,14 +72,21 @@ type BackendReconciler struct {
 
 	// Discoverer converts K8s resources to vmcp.Backend (reuses existing code)
 	Discoverer workloads.Discoverer
+
+	// OutgoingAuth is the vMCP config-level outgoing auth configuration. It is
+	// applied to every reconciled backend with the same precedence startup
+	// discovery uses (discovered CR-side auth first, then backends[<name>],
+	// then Default), so a reconcile does not strip auth that only exists in
+	// the config. May be nil: backends then keep only their discovered auth.
+	OutgoingAuth *config.OutgoingAuthConfig
 }
 
 // SetupIndexes registers field indexes required by the reconciler's watch handlers.
 // Must be called before SetupWithManager.
 func (*BackendReconciler) SetupIndexes(ctx context.Context, mgr ctrl.Manager) error {
-	return mgr.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPServerEntry{}, caBundleConfigMapIndex,
+	return mgr.GetFieldIndexer().IndexField(ctx, &mcpv1beta1.MCPServerEntry{}, caBundleConfigMapIndex,
 		func(obj client.Object) []string {
-			entry, ok := obj.(*mcpv1alpha1.MCPServerEntry)
+			entry, ok := obj.(*mcpv1beta1.MCPServerEntry)
 			if !ok {
 				return nil
 			}
@@ -150,7 +159,7 @@ func (r *BackendReconciler) fetchBackendResource(
 	ctxLogger := log.FromContext(ctx)
 
 	// Try to fetch as MCPServer first
-	mcpServer := &mcpv1alpha1.MCPServer{}
+	mcpServer := &mcpv1beta1.MCPServer{}
 	errServer := r.Get(ctx, namespacedName, mcpServer)
 
 	if errServer == nil {
@@ -162,7 +171,7 @@ func (r *BackendReconciler) fetchBackendResource(
 	}
 
 	// Try to fetch as MCPRemoteProxy
-	mcpRemoteProxy := &mcpv1alpha1.MCPRemoteProxy{}
+	mcpRemoteProxy := &mcpv1beta1.MCPRemoteProxy{}
 	errProxy := r.Get(ctx, namespacedName, mcpRemoteProxy)
 
 	if errProxy == nil {
@@ -174,7 +183,7 @@ func (r *BackendReconciler) fetchBackendResource(
 	}
 
 	// Try to fetch as MCPServerEntry
-	mcpServerEntry := &mcpv1alpha1.MCPServerEntry{}
+	mcpServerEntry := &mcpv1beta1.MCPServerEntry{}
 	errEntry := r.Get(ctx, namespacedName, mcpServerEntry)
 
 	if errEntry == nil {
@@ -212,7 +221,7 @@ func (r *BackendReconciler) fetchBackendResource(
 // MapAuthConfigToEntries returns reconcile requests for MCPServerEntries that reference
 // the given ExternalAuthConfig name. Used by the ExternalAuthConfig watch handler.
 func (r *BackendReconciler) MapAuthConfigToEntries(ctx context.Context, authConfigName string) []reconcile.Request {
-	entryList := &mcpv1alpha1.MCPServerEntryList{}
+	entryList := &mcpv1beta1.MCPServerEntryList{}
 	if err := r.List(ctx, entryList, client.InNamespace(r.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPServerEntries for ExternalAuthConfig watch")
 		return nil
@@ -283,6 +292,13 @@ func (r *BackendReconciler) convertAndUpsertBackend(
 		return r.removeBackendFromRegistry(ctx, backendID, "Auth failure or no URL")
 	}
 
+	// Apply config-level outgoing auth with the same precedence startup discovery
+	// uses (discovered CR-side auth first, then backends[<name>], then Default).
+	// The discoverer above only resolves auth from the resource's own references,
+	// so without this step a reconcile would strip auth that exists only in the
+	// vMCP config (outgoingAuth.default / outgoingAuth.backends).
+	r.OutgoingAuth.ApplyToBackend(backend, resourceInfo.Name)
+
 	// Upsert backend to registry (triggers version increment + cache invalidation)
 	if err := r.Registry.Upsert(*backend); err != nil {
 		ctxLogger.Error(err, "Failed to upsert backend to registry", "backendID", backend.ID)
@@ -330,7 +346,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Maps ExternalAuthConfig → MCPServers/MCPRemoteProxies that reference it
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			authConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+			authConfig, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig)
 			if !ok {
 				return nil
 			}
@@ -338,7 +354,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			var requests []reconcile.Request
 
 			// Find MCPServers referencing this ExternalAuthConfig
-			mcpServerList := &mcpv1alpha1.MCPServerList{}
+			mcpServerList := &mcpv1beta1.MCPServerList{}
 			if err := r.List(ctx, mcpServerList, client.InNamespace(r.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPServers for ExternalAuthConfig watch")
 				return nil
@@ -362,7 +378,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 
 			// Find MCPRemoteProxies referencing this ExternalAuthConfig
-			proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+			proxyList := &mcpv1beta1.MCPRemoteProxyList{}
 			if err := r.List(ctx, proxyList, client.InNamespace(r.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for ExternalAuthConfig watch")
 				return nil
@@ -396,7 +412,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Maps MCPServer events → reconcile requests with groupRef filter
 	serverHandler := handler.EnqueueRequestsFromMapFunc(
 		func(_ context.Context, obj client.Object) []reconcile.Request {
-			server, ok := obj.(*mcpv1alpha1.MCPServer)
+			server, ok := obj.(*mcpv1beta1.MCPServer)
 			if !ok {
 				return nil
 			}
@@ -421,7 +437,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Maps MCPRemoteProxy events → reconcile requests with groupRef filter
 	proxyHandler := handler.EnqueueRequestsFromMapFunc(
 		func(_ context.Context, obj client.Object) []reconcile.Request {
-			proxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+			proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
 			if !ok {
 				return nil
 			}
@@ -446,7 +462,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Maps MCPServerEntry events → reconcile requests with groupRef filter
 	entryHandler := handler.EnqueueRequestsFromMapFunc(
 		func(_ context.Context, obj client.Object) []reconcile.Request {
-			entry, ok := obj.(*mcpv1alpha1.MCPServerEntry)
+			entry, ok := obj.(*mcpv1beta1.MCPServerEntry)
 			if !ok {
 				return nil
 			}
@@ -477,7 +493,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 
 			// Use field index to find MCPServerEntries referencing this ConfigMap
-			entryList := &mcpv1alpha1.MCPServerEntryList{}
+			entryList := &mcpv1beta1.MCPServerEntryList{}
 			if err := r.List(ctx, entryList,
 				client.InNamespace(r.Namespace),
 				client.MatchingFields{caBundleConfigMapIndex: configMap.Name},
@@ -506,10 +522,10 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	controllerName := "backend-reconciler-" + r.GroupRef
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
-		Watches(&mcpv1alpha1.MCPServer{}, serverHandler).                         // Watch MCPServer as secondary controller
-		Watches(&mcpv1alpha1.MCPRemoteProxy{}, proxyHandler).                     // Watch MCPRemoteProxy
-		Watches(&mcpv1alpha1.MCPServerEntry{}, entryHandler).                     // Watch MCPServerEntry
-		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler). // Watch auth configs
-		Watches(&corev1.ConfigMap{}, caBundleConfigMapHandler).                   // Watch CA bundle ConfigMaps
+		Watches(&mcpv1beta1.MCPServer{}, serverHandler).                         // Watch MCPServer as secondary controller
+		Watches(&mcpv1beta1.MCPRemoteProxy{}, proxyHandler).                     // Watch MCPRemoteProxy
+		Watches(&mcpv1beta1.MCPServerEntry{}, entryHandler).                     // Watch MCPServerEntry
+		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler). // Watch auth configs
+		Watches(&corev1.ConfigMap{}, caBundleConfigMapHandler).                  // Watch CA bundle ConfigMaps
 		Complete(r)
 }

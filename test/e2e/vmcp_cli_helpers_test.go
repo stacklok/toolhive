@@ -18,6 +18,12 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
+// vmcpEndpointURL returns the MCP endpoint URL for a vMCP serve process
+// listening on the given port.
+func vmcpEndpointURL(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
+}
+
 // allocateVMCPPort returns a free TCP port on 127.0.0.1 for use by thv vmcp serve.
 func allocateVMCPPort() int {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -31,7 +37,7 @@ func allocateVMCPPort() int {
 // prevent the test suite from hanging. Safe to call on a nil cmd or on a cmd
 // whose process has already exited.
 func stopVMCPProcess(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		return
 	}
 	_ = cmd.Process.Signal(syscall.SIGINT)
@@ -66,6 +72,7 @@ func launchYardstickOnPort(config *e2e.TestConfig, groupName, backendName string
 		"--name", backendName,
 		"--group", groupName,
 		"--transport", "streamable-http",
+		"--isolate-network=false",
 		"--target-port", portStr,
 		"--env", "TRANSPORT=streamable-http",
 		"--", "-port", portStr, "-transport", "streamable-http",

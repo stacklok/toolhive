@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -188,6 +189,108 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			wantErr: true,
 			errMsg:  "issuer is required",
 		},
+		{
+			name: "valid OIDC auth with absolute caBundlePath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:       "https://example.com",
+					Audience:     "vmcp",
+					CABundlePath: "/config/certs/example-ca/ca.crt",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "OIDC rejects relative caBundlePath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:       "https://example.com",
+					Audience:     "vmcp",
+					CABundlePath: "certs/ca.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "caBundlePath must be an absolute path",
+		},
+		{
+			name: "OIDC rejects caBundlePath with path traversal",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:       "https://example.com",
+					Audience:     "vmcp",
+					CABundlePath: "/config/certs/../../etc/passwd",
+				},
+			},
+			wantErr: true,
+			errMsg:  "caBundlePath contains invalid path characters",
+		},
+		{
+			name: "OIDC rejects caBundlePath with null byte",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:       "https://example.com",
+					Audience:     "vmcp",
+					CABundlePath: "/config/certs/ca\x00.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "caBundlePath contains invalid path characters",
+		},
+		{
+			name: "valid OIDC auth with absolute jwksAuthTokenPath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "OIDC rejects relative jwksAuthTokenPath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "token",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath must be an absolute path",
+		},
+		{
+			name: "OIDC rejects jwksAuthTokenPath with path traversal",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/../../etc/passwd",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath contains invalid path characters",
+		},
+		{
+			name: "OIDC rejects jwksAuthTokenPath with null byte",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/tok\x00en",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath contains invalid path characters",
+		},
 	}
 
 	for _, tt := range tests {
@@ -206,6 +309,49 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 					t.Errorf("validateIncomingAuth() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
 			}
+		})
+	}
+}
+
+func TestValidateOIDCFilePaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		oidc   *OIDCConfig
+		errMsg string
+	}{
+		{name: "nil config", oidc: nil},
+		{name: "no paths set", oidc: &OIDCConfig{}},
+		{
+			name: "absolute paths",
+			oidc: &OIDCConfig{
+				CABundlePath:      "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+		},
+		{
+			name:   "relative caBundlePath",
+			oidc:   &OIDCConfig{CABundlePath: "ca.crt"},
+			errMsg: "incomingAuth.oidc.caBundlePath must be an absolute path",
+		},
+		{
+			name:   "relative jwksAuthTokenPath",
+			oidc:   &OIDCConfig{JWKSAuthTokenPath: "token"},
+			errMsg: "incomingAuth.oidc.jwksAuthTokenPath must be an absolute path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateOIDCFilePaths(tt.oidc)
+			if tt.errMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errMsg)
 		})
 	}
 }
@@ -327,6 +473,125 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			},
 			wantErr: false, // V-02 handles provider name resolution
 		},
+		{
+			name: "valid xaa backend",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:    "https://idp.example.com/token",
+							TargetTokenURL: "https://target.example.com/token",
+							TargetAudience: "https://target.example.com",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "xaa nil config",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA:  nil,
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa requires XAA configuration",
+		},
+		{
+			name: "xaa missing idpTokenUrl",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							TargetTokenURL: "https://target.example.com/token",
+							TargetAudience: "https://target.example.com",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa requires idpTokenUrl field",
+		},
+		{
+			name: "xaa missing targetTokenUrl",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:    "https://idp.example.com/token",
+							TargetAudience: "https://target.example.com",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa requires targetTokenUrl field",
+		},
+		{
+			name: "xaa missing targetAudience",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:    "https://idp.example.com/token",
+							TargetTokenURL: "https://target.example.com/token",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa requires targetAudience field",
+		},
+		{
+			name: "xaa unsupported subjectTokenType",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:      "https://idp.example.com/token",
+							TargetTokenURL:   "https://target.example.com/token",
+							TargetAudience:   "https://target.example.com",
+							SubjectTokenType: "urn:ietf:params:oauth:token-type:access_token",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa: unsupported subjectTokenType",
+		},
+		{
+			name: "xaa valid subjectTokenType id_token",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:      "https://idp.example.com/token",
+							TargetTokenURL:   "https://target.example.com/token",
+							TargetAudience:   "https://target.example.com",
+							SubjectTokenType: "urn:ietf:params:oauth:token-type:id_token",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -422,6 +687,89 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 			wantErr: true,
 			errMsg:  "tool overrides are required",
 		},
+		{
+			// Omitted defaultToolVisibility keeps pre-existing configs valid.
+			name: "unset defaultToolVisibility is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "defaultToolVisibility deny is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultToolVisibility:    DefaultToolVisibilityDeny,
+			},
+			wantErr: false,
+		},
+		{
+			name: "defaultToolVisibility allow is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultToolVisibility:    DefaultToolVisibilityAllow,
+			},
+			wantErr: false,
+		},
+		{
+			// The CLI path has no admission webhook, so a typo must be rejected here
+			// rather than silently falling back to advertise-everything.
+			name: "defaultToolVisibility rejects an unknown value",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultToolVisibility:    "denied",
+			},
+			wantErr: true,
+			errMsg:  "defaultToolVisibility must be one of",
+		},
+		{
+			// An unlisted priority backend can win a conflict and then be withheld,
+			// hiding the tool from every backend that offered it.
+			name: "deny with priority rejects an unlisted priorityOrder entry",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools:                 []*WorkloadToolConfig{{Workload: "github"}},
+				DefaultToolVisibility: DefaultToolVisibilityDeny,
+			},
+			wantErr: true,
+			errMsg:  `priorityOrder entry "jira" has no tools entry`,
+		},
+		{
+			name: "deny with priority accepts a fully listed priorityOrder",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools: []*WorkloadToolConfig{
+					{Workload: "github"},
+					{Workload: "jira"},
+				},
+				DefaultToolVisibility: DefaultToolVisibilityDeny,
+			},
+			wantErr: false,
+		},
+		{
+			// Under allow the unlisted winner is still advertised, so the
+			// combination is harmless and must stay valid.
+			name: "allow with priority permits an unlisted priorityOrder entry",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools:                 []*WorkloadToolConfig{{Workload: "github"}},
+				DefaultToolVisibility: DefaultToolVisibilityAllow,
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -470,6 +818,28 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 							Type: "tool",
 							Tool: "github.merge_pr",
 						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid composite tool with annotations",
+			tools: []CompositeToolConfig{
+				{
+					Name:        "report_workflow",
+					Description: "Read-only report workflow",
+					Timeout:     Duration(30 * time.Minute),
+					Steps: []WorkflowStepConfig{
+						{
+							ID:   "fetch",
+							Type: "tool",
+							Tool: "github.get_pr",
+						},
+					},
+					Annotations: &ToolAnnotationsOverride{
+						Title:        ptrTo("Report Workflow"),
+						ReadOnlyHint: ptrTo(true),
 					},
 				},
 			},
@@ -978,6 +1348,131 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 			errMsg:  "at least one upstream",
 		},
 		{
+			name: "zero upstreams with SPIFFE client association",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{ClientID: "spiffe-client"}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical token exchange and no delegate clients",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one upstream",
+		},
+		{
+			name: "zero upstreams with legacy and canonical delegate clients",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:          "http://localhost:9090",
+				DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "legacy-client"}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "canonical-client"}},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "inbound grants are invalid",
+		},
+		{
+			name: "zero upstreams with delegate client",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				DelegateClients:  []authserver.DelegateClientRunConfig{{ClientID: "delegate-client"}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical delegate client",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "delegate-client"}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical JWT bearer policy",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					Name:      "idp",
+					IssuerURL: "https://issuer.example.com",
+				}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
+						IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+							IssuerRef: "idp", MaxAssertionAge: "5m",
+						}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with JWT bearer trusted issuer",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{},
+				}},
+			},
+			wantErr: false,
+		},
+		{
 			name: "v07_audience_not_in_allowed",
 			cfg: &Config{
 				IncomingAuth: &IncomingAuthConfig{
@@ -1164,6 +1659,102 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("ValidateAuthServerIntegration() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
+			}
+		})
+	}
+}
+
+func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
+	t.Parallel()
+
+	// validBaseConfig returns a minimally-valid Config so that only
+	// passthroughHeaders validation is under test.
+	validBaseConfig := func(headers []string) *Config {
+		return &Config{
+			Name:  "test-vmcp",
+			Group: "test-group",
+			IncomingAuth: &IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			OutgoingAuth: &OutgoingAuthConfig{
+				Source: "inline",
+			},
+			Aggregation: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PrefixFormat: "{workload}_",
+				},
+			},
+			PassthroughHeaders: headers,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		headers []string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			// nil and []string{} both produce zero iterations in range — same code path.
+			name:    "nil slice is valid",
+			headers: nil,
+			wantErr: false,
+		},
+		{
+			name:    "valid header names",
+			headers: []string{"x-env", "x-litellm-api-key"},
+			wantErr: false,
+		},
+		{
+			// Restricted-header check uses middleware.RestrictedHeaders[canonical]; one
+			// case covers the branch. Canonicalization (e.g. "x-forwarded-for" → canonical)
+			// is verified by TestCaptureForwardedHeadersMiddleware.
+			name:    "X-Forwarded-For is restricted",
+			headers: []string{"X-Forwarded-For"},
+			wantErr: true,
+			errMsg:  "X-Forwarded-For",
+		},
+		{
+			// Documented contract (virtualmcpserver-api.md): Authorization is
+			// rejected at startup. Forwarding caller-supplied credentials
+			// verbatim to every backend is a credential-leak footgun.
+			name:    "Authorization is restricted",
+			headers: []string{"authorization"},
+			wantErr: true,
+			errMsg:  "Authorization",
+		},
+		{
+			name:    "Cookie is restricted",
+			headers: []string{"Cookie"},
+			wantErr: true,
+			errMsg:  "Cookie",
+		},
+		{
+			name:    "empty string header name is rejected",
+			headers: []string{""},
+			wantErr: true,
+			errMsg:  "passthroughHeaders",
+		},
+		{
+			name:    "header name with CRLF injection is rejected",
+			headers: []string{"X-My-Header\r\nX-Injected: evil"},
+			wantErr: true,
+			errMsg:  "passthroughHeaders",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := NewValidator()
+			err := v.Validate(validBaseConfig(tt.headers))
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

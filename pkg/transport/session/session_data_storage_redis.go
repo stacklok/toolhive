@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 // RedisSessionDataStorage implements DataStorage backed by Redis/Valkey.
@@ -27,23 +29,33 @@ type RedisSessionDataStorage struct {
 	ttl       time.Duration
 }
 
-// NewRedisSessionDataStorage constructs a RedisSessionDataStorage.
-// cfg provides connection parameters; ttl is the sliding-window expiry applied
-// on every Create/Update and Load. The caller must call Close when done.
-func NewRedisSessionDataStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*RedisSessionDataStorage, error) {
-	if err := validateRedisConfig(&cfg); err != nil {
-		return nil, fmt.Errorf("invalid redis configuration: %w", err)
+// NewRedisSessionDataStorage constructs a RedisSessionDataStorage. Connection-mode
+// topology, timeouts, TLS, and credentials are configured through cfg; keyPrefix
+// is the per-tenant key prefix (e.g. "thv:vmcp:session:") and must end with ':'
+// to avoid key collisions. ttl is the sliding-window expiry applied on every
+// Create/Update and Load. The caller must call Close when done.
+//
+// Connection-mode validation, timeout defaults, client construction (standalone,
+// cluster, or sentinel), TLS plumbing, and connectivity verification are
+// delegated to the shared toolhive-core redis package.
+// A connection without verified TLS is allowed but logged at WARN.
+func NewRedisSessionDataStorage(
+	ctx context.Context,
+	cfg redisconn.Config,
+	keyPrefix string,
+	ttl time.Duration,
+) (*RedisSessionDataStorage, error) {
+	if err := validateSessionInvariants(keyPrefix, ttl); err != nil {
+		return nil, err
 	}
-	if ttl <= 0 {
-		return nil, fmt.Errorf("ttl must be a positive duration")
-	}
-	client, err := buildRedisClient(ctx, &cfg)
+	warnInsecureRedisTransport(&cfg)
+	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &RedisSessionDataStorage{
 		client:    client,
-		keyPrefix: cfg.KeyPrefix,
+		keyPrefix: keyPrefix,
 		ttl:       ttl,
 	}, nil
 }
@@ -59,6 +71,26 @@ func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[stri
 		return nil, fmt.Errorf("cannot load session data with empty ID")
 	}
 	data, err := s.client.GetEx(ctx, s.key(id), s.ttl).Bytes()
+	return decodeRedisSessionData(data, err)
+}
+
+// LoadMetadata retrieves metadata from Redis with a plain GET, leaving the
+// key's TTL unchanged. Returns ErrSessionNotFound if the key does not exist.
+func (s *RedisSessionDataStorage) LoadMetadata(ctx context.Context, id string) (map[string]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session data with empty ID")
+	}
+	data, err := s.client.Get(ctx, s.key(id)).Bytes()
+	return decodeRedisSessionData(data, err)
+}
+
+// ErrUndecodableSessionData reports a value under the session key prefix that
+// is not session metadata. Other features keep keys under the same prefix, so
+// an ID naming one of them reads a value of another kind.
+var ErrUndecodableSessionData = errors.New("failed to deserialize session metadata")
+
+// decodeRedisSessionData maps a Redis read result to session metadata.
+func decodeRedisSessionData(data []byte, err error) (map[string]string, error) {
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, ErrSessionNotFound
@@ -67,7 +99,7 @@ func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[stri
 	}
 	var metadata map[string]string
 	if err := json.Unmarshal(data, &metadata); err != nil {
-		return nil, fmt.Errorf("failed to deserialize session metadata: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrUndecodableSessionData, err)
 	}
 	return metadata, nil
 }

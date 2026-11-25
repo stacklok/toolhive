@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/test/e2e"
+	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 const (
@@ -46,7 +47,7 @@ var _ = Describe("Proxy Stdio E2E", Label("proxy", "stdio", "e2e"), Serial, func
 
 	JustBeforeEach(func() {
 		// Build args after mcpServerName is set
-		args := []string{"run", "--name", workloadName, "--transport", transportType.String()}
+		args := []string{"run", "--name", workloadName, "--transport", transportType.String(), "--isolate-network=false"}
 
 		if transportType == types.TransportTypeStdio {
 			Expect(proxyMode).ToNot(BeEmpty())
@@ -183,7 +184,7 @@ var _ = Describe("Proxy Stdio E2E", Label("proxy", "stdio", "e2e"), Serial, func
 		BeforeEach(func() {
 			transportType = types.TransportTypeStdio
 			proxyMode = "sse"
-			mcpServerName = "time"
+			mcpServerName = images.TimeMCPServerImage
 		})
 		It("should proxy MCP requests successfully", func() {
 			By("Getting time server URL")
@@ -234,7 +235,7 @@ var _ = Describe("Proxy Stdio E2E", Label("proxy", "stdio", "e2e"), Serial, func
 		BeforeEach(func() {
 			transportType = types.TransportTypeStdio
 			proxyMode = "streamable-http"
-			mcpServerName = "time"
+			mcpServerName = images.TimeMCPServerImage
 		})
 		It("should proxy MCP requests successfully", func() {
 			By("Getting time server URL")

@@ -5,6 +5,7 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -27,7 +29,7 @@ func setupTestClient(t *testing.T, objs ...client.Object) client.Client {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -52,17 +54,17 @@ func TestDiscoverAuth_TokenExchange(t *testing.T) {
 	}
 
 	// Create MCPExternalAuthConfig with token exchange
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-token-exchange",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://auth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-client-secret",
 					Key:  "client-secret",
 				},
@@ -74,21 +76,21 @@ func TestDiscoverAuth_TokenExchange(t *testing.T) {
 	}
 
 	// Create MCPServer that references the auth config
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
 			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-token-exchange",
 			},
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -136,16 +138,16 @@ func TestDiscoverAuth_HeaderInjection(t *testing.T) {
 	}
 
 	// Create MCPExternalAuthConfig with header injection
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-header-injection",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-			HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+			HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 				HeaderName: "X-API-Key",
-				ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "api-key-secret",
 					Key:  "api-key",
 				},
@@ -154,21 +156,21 @@ func TestDiscoverAuth_HeaderInjection(t *testing.T) {
 	}
 
 	// Create MCPServer that references the auth config
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
 			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-header-injection",
 			},
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -203,18 +205,18 @@ func TestDiscoverAuth_NoAuthConfig(t *testing.T) {
 	namespace := testNamespace
 
 	// Create MCPServer without auth config reference
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
 			ProxyPort: 8080,
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -241,21 +243,21 @@ func TestDiscoverAuth_AuthConfigNotFound(t *testing.T) {
 	namespace := testNamespace
 
 	// Create MCPServer that references non-existent auth config
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
 			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "non-existent-auth-config",
 			},
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -281,17 +283,17 @@ func TestDiscoverAuth_SecretNotFound(t *testing.T) {
 	namespace := testNamespace
 
 	// Create MCPExternalAuthConfig with token exchange but secret doesn't exist
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-token-exchange",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://auth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "non-existent-secret",
 					Key:  "client-secret",
 				},
@@ -300,21 +302,21 @@ func TestDiscoverAuth_SecretNotFound(t *testing.T) {
 	}
 
 	// Create MCPServer that references the auth config
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
 			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-token-exchange",
 			},
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -339,18 +341,18 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 
 	namespace := testNamespace
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
 			ProxyPort: 8080,
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -370,7 +372,7 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
 	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
 	assert.Equal(t, "mcp_server", backend.Metadata["workload_type"])
-	assert.Equal(t, string(mcpv1alpha1.MCPServerPhaseReady), backend.Metadata["workload_status"])
+	assert.Equal(t, string(mcpv1beta1.MCPServerPhaseReady), backend.Metadata["workload_status"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
 
@@ -379,19 +381,19 @@ func TestMCPServerToBackend_StdioTransport(t *testing.T) {
 
 	namespace := testNamespace
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyMode: "sse", // Explicit proxy mode
 			ProxyPort: 8080,
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -413,7 +415,7 @@ func TestMCPServerToBackend_WithAnnotations(t *testing.T) {
 
 	namespace := testNamespace
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: namespace,
@@ -422,13 +424,13 @@ func TestMCPServerToBackend_WithAnnotations(t *testing.T) {
 				"kubectl.kubernetes.io/foo": "should-be-filtered",
 			},
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
 			ProxyPort: 8080,
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://localhost:8080",
 		},
 	}
@@ -453,39 +455,39 @@ func TestListWorkloadsInGroup(t *testing.T) {
 	namespace := testNamespace
 
 	// Create multiple MCPServers in different groups
-	server1 := &mcpv1alpha1.MCPServer{
+	server1 := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server1",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
-	server2 := &mcpv1alpha1.MCPServer{
+	server2 := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server2",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
-	server3 := &mcpv1alpha1.MCPServer{
+	server3 := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server3",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-b"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-b"},
 		},
 	}
 
@@ -517,35 +519,21 @@ func TestListWorkloadsInGroup_MCPRemoteProxies(t *testing.T) {
 	namespace := testNamespace
 
 	// Create multiple MCPRemoteProxies in different groups
-	proxy1 := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy1",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
-		},
-	}
-
-	proxy2 := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy2",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
-		},
-	}
-
-	proxy3 := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy3",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-b"},
-		},
-	}
+	proxy1 := v1beta1test.NewMCPRemoteProxy("proxy1", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
+	proxy2 := v1beta1test.NewMCPRemoteProxy("proxy2", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
+	proxy3 := v1beta1test.NewMCPRemoteProxy("proxy3", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-b"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
 
 	k8sClient := setupTestClient(t, proxy1, proxy2, proxy3)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -575,50 +563,41 @@ func TestListWorkloadsInGroup_MixedWorkloads(t *testing.T) {
 	namespace := testNamespace
 
 	// Create MCPServers
-	server1 := &mcpv1alpha1.MCPServer{
+	server1 := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server1",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
-	server2 := &mcpv1alpha1.MCPServer{
+	server2 := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server2",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-b"}, // Different group
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-b"}, // Different group
 		},
 	}
 
 	// Create MCPRemoteProxies
-	proxy1 := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy1",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
-		},
-	}
-
-	proxy2 := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy2",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
-		},
-	}
+	proxy1 := v1beta1test.NewMCPRemoteProxy("proxy1", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
+	proxy2 := v1beta1test.NewMCPRemoteProxy("proxy2", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
 
 	k8sClient := setupTestClient(t, server1, server2, proxy1, proxy2)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -659,18 +638,18 @@ func TestMCPServerToBackend_EmptyStatusURL(t *testing.T) {
 
 	// MCPServer is Running with transport and port, but Status.URL is empty
 	// (the controller hasn't reconciled the Service yet).
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pending-server",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
 			ProxyPort: 8080,
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+		Status: mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			// URL intentionally empty — not yet assigned by the operator
 		},
 	}
@@ -697,20 +676,15 @@ func TestMCPRemoteProxyToBackend_EmptyStatusURL(t *testing.T) {
 	namespace := testNamespace
 
 	// MCPRemoteProxy is Ready with transport, but Status.URL is empty.
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pending-proxy",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-		},
-		Status: mcpv1alpha1.MCPRemoteProxyStatus{
-			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+	proxy := v1beta1test.NewMCPRemoteProxy("pending-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			// URL intentionally empty — not yet assigned by the operator
-		},
-	}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -731,20 +705,15 @@ func TestMCPRemoteProxyToBackend_BasicFields(t *testing.T) {
 
 	namespace := testNamespace
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-		},
-		Status: mcpv1alpha1.MCPRemoteProxyStatus{
-			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			URL:   "http://proxy-service:8080",
-		},
-	}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
@@ -761,7 +730,7 @@ func TestMCPRemoteProxyToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
 	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
 	assert.Equal(t, "remote_proxy", backend.Metadata["workload_type"])
-	assert.Equal(t, string(mcpv1alpha1.MCPRemoteProxyPhaseReady), backend.Metadata["workload_status"])
+	assert.Equal(t, string(mcpv1beta1.MCPRemoteProxyPhaseReady), backend.Metadata["workload_status"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
 
@@ -770,24 +739,21 @@ func TestMCPRemoteProxyToBackend_WithAnnotations(t *testing.T) {
 
 	namespace := testNamespace
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: namespace,
-			Annotations: map[string]string{
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
+			URL:   "http://proxy-service:8080",
+		}),
+		v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+			p.Annotations = map[string]string{
 				"custom-annotation":         "custom-value",
 				"kubectl.kubernetes.io/foo": "should-be-filtered",
-			},
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-		},
-		Status: mcpv1alpha1.MCPRemoteProxyStatus{
-			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
-			URL:   "http://proxy-service:8080",
-		},
-	}
+			}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
@@ -808,27 +774,27 @@ func TestMCPRemoteProxyToBackend_HealthStatusMapping(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		phase          mcpv1alpha1.MCPRemoteProxyPhase
+		phase          mcpv1beta1.MCPRemoteProxyPhase
 		expectedHealth vmcp.BackendHealthStatus
 	}{
 		{
 			name:           "Ready phase maps to Healthy",
-			phase:          mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			phase:          mcpv1beta1.MCPRemoteProxyPhaseReady,
 			expectedHealth: vmcp.BackendHealthy,
 		},
 		{
 			name:           "Failed phase maps to Unhealthy",
-			phase:          mcpv1alpha1.MCPRemoteProxyPhaseFailed,
+			phase:          mcpv1beta1.MCPRemoteProxyPhaseFailed,
 			expectedHealth: vmcp.BackendUnhealthy,
 		},
 		{
 			name:           "Pending phase maps to Unknown",
-			phase:          mcpv1alpha1.MCPRemoteProxyPhasePending,
+			phase:          mcpv1beta1.MCPRemoteProxyPhasePending,
 			expectedHealth: vmcp.BackendUnknown,
 		},
 		{
 			name:           "Terminating phase maps to Unhealthy",
-			phase:          mcpv1alpha1.MCPRemoteProxyPhaseTerminating,
+			phase:          mcpv1beta1.MCPRemoteProxyPhaseTerminating,
 			expectedHealth: vmcp.BackendUnhealthy,
 		},
 	}
@@ -839,20 +805,15 @@ func TestMCPRemoteProxyToBackend_HealthStatusMapping(t *testing.T) {
 
 			namespace := testNamespace
 
-			proxy := &mcpv1alpha1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					RemoteURL: "https://remote-mcp.example.com",
-					Transport: "streamable-http",
-				},
-				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+				v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+				v1beta1test.WithRemoteProxyPort(0),
+				v1beta1test.WithRemoteProxyTransport("streamable-http"),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					Phase: tt.phase,
 					URL:   "http://proxy-service:8080",
-				},
-			}
+				}),
+			)
 
 			k8sClient := setupTestClient(t, proxy)
 			discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
@@ -871,20 +832,15 @@ func TestGetWorkloadAsVMCPBackend_MCPRemoteProxy(t *testing.T) {
 
 	namespace := testNamespace
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-		},
-		Status: mcpv1alpha1.MCPRemoteProxyStatus{
-			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			URL:   "http://proxy-service:8080",
-		},
-	}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -919,17 +875,17 @@ func TestDiscoverAuth_MCPRemoteProxy_TokenExchange(t *testing.T) {
 	}
 
 	// Create MCPExternalAuthConfig with token exchange
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-token-exchange",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://auth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-client-secret",
 					Key:  "client-secret",
 				},
@@ -941,23 +897,16 @@ func TestDiscoverAuth_MCPRemoteProxy_TokenExchange(t *testing.T) {
 	}
 
 	// Create MCPRemoteProxy that references the auth config
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "test-token-exchange",
-			},
-		},
-		Status: mcpv1alpha1.MCPRemoteProxyStatus{
-			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef("test-token-exchange"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			URL:   "http://proxy-service:8080",
-		},
-	}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, secret, authConfig, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -987,39 +936,39 @@ func TestListWorkloadsInGroup_MCPServerEntries(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry1 := &mcpv1alpha1.MCPServerEntry{
+	entry1 := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "entry1",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp1.example.com",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
-	entry2 := &mcpv1alpha1.MCPServerEntry{
+	entry2 := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "entry2",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp2.example.com",
 			Transport: "sse",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
-	entry3 := &mcpv1alpha1.MCPServerEntry{
+	entry3 := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "entry3",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp3.example.com",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-b"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-b"},
 		},
 	}
 
@@ -1049,37 +998,33 @@ func TestListWorkloadsInGroup_AllWorkloadTypes(t *testing.T) {
 
 	namespace := testNamespace
 
-	server := &mcpv1alpha1.MCPServer{
+	server := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server1",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy1",
-			Namespace: namespace,
-		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy1", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "entry1",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -1100,18 +1045,18 @@ func TestGetWorkloadAsVMCPBackend_MCPServerEntry(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-entry",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/v1",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1152,18 +1097,18 @@ func TestMCPServerEntryToBackend_BasicFields(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-entry",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/v1",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1182,7 +1127,7 @@ func TestMCPServerEntryToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
 	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
 	assert.Equal(t, "server_entry", backend.Metadata["workload_type"])
-	assert.Equal(t, string(mcpv1alpha1.MCPServerEntryPhaseValid), backend.Metadata["workload_status"])
+	assert.Equal(t, string(mcpv1beta1.MCPServerEntryPhaseValid), backend.Metadata["workload_status"])
 	assert.Equal(t, "https://mcp.example.com/v1", backend.Metadata["remote_url"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
@@ -1192,18 +1137,18 @@ func TestMCPServerEntryToBackend_SSETransport(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "sse-entry",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/sse",
 			Transport: "sse",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1221,7 +1166,7 @@ func TestMCPServerEntryToBackend_WithAnnotations(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "annotated-entry",
 			Namespace: namespace,
@@ -1230,13 +1175,13 @@ func TestMCPServerEntryToBackend_WithAnnotations(t *testing.T) {
 				"kubectl.kubernetes.io/foo": "should-be-filtered",
 			},
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/v1",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1255,18 +1200,18 @@ func TestMCPServerEntryToBackend_EmptyRemoteURL(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "empty-url-entry",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1290,27 +1235,27 @@ func TestGetWorkloadAsVMCPBackend_MCPServerEntry_NonValidPhaseSkipped(t *testing
 
 	tests := []struct {
 		name  string
-		phase mcpv1alpha1.MCPServerEntryPhase
+		phase mcpv1beta1.MCPServerEntryPhase
 	}{
-		{name: "Pending phase is skipped", phase: mcpv1alpha1.MCPServerEntryPhasePending},
-		{name: "Failed phase is skipped", phase: mcpv1alpha1.MCPServerEntryPhaseFailed},
+		{name: "Pending phase is skipped", phase: mcpv1beta1.MCPServerEntryPhasePending},
+		{name: "Failed phase is skipped", phase: mcpv1beta1.MCPServerEntryPhaseFailed},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			entry := &mcpv1alpha1.MCPServerEntry{
+			entry := &mcpv1beta1.MCPServerEntry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "phase-test-entry",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerEntrySpec{
+				Spec: mcpv1beta1.MCPServerEntrySpec{
 					RemoteURL: "https://mcp.example.com/v1",
 					Transport: "streamable-http",
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 				},
-				Status: mcpv1alpha1.MCPServerEntryStatus{
+				Status: mcpv1beta1.MCPServerEntryStatus{
 					Phase: tt.phase,
 				},
 			}
@@ -1334,27 +1279,27 @@ func TestMCPServerEntryPhaseToHealth(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		phase          mcpv1alpha1.MCPServerEntryPhase
+		phase          mcpv1beta1.MCPServerEntryPhase
 		expectedHealth vmcp.BackendHealthStatus
 	}{
 		{
 			name:           "Valid phase maps to Healthy",
-			phase:          mcpv1alpha1.MCPServerEntryPhaseValid,
+			phase:          mcpv1beta1.MCPServerEntryPhaseValid,
 			expectedHealth: vmcp.BackendHealthy,
 		},
 		{
 			name:           "Failed phase maps to Unhealthy",
-			phase:          mcpv1alpha1.MCPServerEntryPhaseFailed,
+			phase:          mcpv1beta1.MCPServerEntryPhaseFailed,
 			expectedHealth: vmcp.BackendUnhealthy,
 		},
 		{
 			name:           "Pending phase maps to Unknown",
-			phase:          mcpv1alpha1.MCPServerEntryPhasePending,
+			phase:          mcpv1beta1.MCPServerEntryPhasePending,
 			expectedHealth: vmcp.BackendUnknown,
 		},
 		{
 			name:           "Unknown phase maps to Unknown",
-			phase:          mcpv1alpha1.MCPServerEntryPhase("SomeUnknownPhase"),
+			phase:          mcpv1beta1.MCPServerEntryPhase("SomeUnknownPhase"),
 			expectedHealth: vmcp.BackendUnknown,
 		},
 	}
@@ -1372,22 +1317,22 @@ func TestMCPServerEntryToBackend_HealthStatusMapping(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		phase          mcpv1alpha1.MCPServerEntryPhase
+		phase          mcpv1beta1.MCPServerEntryPhase
 		expectedHealth vmcp.BackendHealthStatus
 	}{
 		{
 			name:           "Valid phase maps to Healthy",
-			phase:          mcpv1alpha1.MCPServerEntryPhaseValid,
+			phase:          mcpv1beta1.MCPServerEntryPhaseValid,
 			expectedHealth: vmcp.BackendHealthy,
 		},
 		{
 			name:           "Failed phase maps to Unhealthy",
-			phase:          mcpv1alpha1.MCPServerEntryPhaseFailed,
+			phase:          mcpv1beta1.MCPServerEntryPhaseFailed,
 			expectedHealth: vmcp.BackendUnhealthy,
 		},
 		{
 			name:           "Pending phase maps to Unknown",
-			phase:          mcpv1alpha1.MCPServerEntryPhasePending,
+			phase:          mcpv1beta1.MCPServerEntryPhasePending,
 			expectedHealth: vmcp.BackendUnknown,
 		},
 	}
@@ -1398,17 +1343,17 @@ func TestMCPServerEntryToBackend_HealthStatusMapping(t *testing.T) {
 
 			namespace := testNamespace
 
-			entry := &mcpv1alpha1.MCPServerEntry{
+			entry := &mcpv1beta1.MCPServerEntry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-entry",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerEntrySpec{
+				Spec: mcpv1beta1.MCPServerEntrySpec{
 					RemoteURL: "https://mcp.example.com",
 					Transport: "streamable-http",
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 				},
-				Status: mcpv1alpha1.MCPServerEntryStatus{
+				Status: mcpv1beta1.MCPServerEntryStatus{
 					Phase: tt.phase,
 				},
 			}
@@ -1429,18 +1374,18 @@ func TestDiscoverAuth_MCPServerEntry_NoAuthConfig(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "no-auth-entry",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1462,21 +1407,21 @@ func TestDiscoverAuth_MCPServerEntry_AuthConfigNotFound(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "auth-missing-entry",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "non-existent-auth-config",
 			},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1509,17 +1454,17 @@ func TestDiscoverAuth_MCPServerEntry_TokenExchange(t *testing.T) {
 		},
 	}
 
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "entry-token-exchange",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://auth.example.com/token",
 				ClientID: "entry-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "entry-client-secret",
 					Key:  "client-secret",
 				},
@@ -1530,21 +1475,21 @@ func TestDiscoverAuth_MCPServerEntry_TokenExchange(t *testing.T) {
 		},
 	}
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "auth-entry",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "group-a"},
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "entry-token-exchange",
 			},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1571,18 +1516,18 @@ func TestMCPServerEntryToBackend_SetsBackendTypeEntry(t *testing.T) {
 
 	namespace := testNamespace
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "typed-entry",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/mcp",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1611,16 +1556,16 @@ func TestMCPServerEntryToBackend_WithCABundle(t *testing.T) {
 		},
 	}
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "entry-with-ca",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://internal-mcp.corp:8443/mcp",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			CABundleRef: &mcpv1alpha1.CABundleSource{
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			CABundleRef: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: "test-ca-bundle",
@@ -1629,8 +1574,8 @@ func TestMCPServerEntryToBackend_WithCABundle(t *testing.T) {
 				},
 			},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1650,16 +1595,16 @@ func TestMCPServerEntryToBackend_CABundleMissing_ReturnsNil(t *testing.T) {
 	namespace := testNamespace
 
 	// No ConfigMap created — simulates missing CA bundle
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "entry-missing-ca",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://internal-mcp.corp:8443/mcp",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			CABundleRef: &mcpv1alpha1.CABundleSource{
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			CABundleRef: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: "nonexistent-ca-bundle",
@@ -1668,8 +1613,8 @@ func TestMCPServerEntryToBackend_CABundleMissing_ReturnsNil(t *testing.T) {
 				},
 			},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1698,16 +1643,16 @@ func TestMCPServerEntryToBackend_WithCABundleDefaultKey(t *testing.T) {
 		},
 	}
 
-	entry := &mcpv1alpha1.MCPServerEntry{
+	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "entry-default-key",
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://internal-mcp.corp:8443/mcp",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			CABundleRef: &mcpv1alpha1.CABundleSource{
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			CABundleRef: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: "default-key-ca",
@@ -1716,8 +1661,8 @@ func TestMCPServerEntryToBackend_WithCABundleDefaultKey(t *testing.T) {
 				},
 			},
 		},
-		Status: mcpv1alpha1.MCPServerEntryStatus{
-			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
+		Status: mcpv1beta1.MCPServerEntryStatus{
+			Phase: mcpv1beta1.MCPServerEntryPhaseValid,
 		},
 	}
 
@@ -1735,21 +1680,21 @@ func TestFetchCABundleData(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		ref      *mcpv1alpha1.CABundleSource
+		ref      *mcpv1beta1.CABundleSource
 		objs     []client.Object
 		wantData []byte
 		wantErr  string
 	}{
 		{
 			name: "nil ConfigMapRef returns error",
-			ref: &mcpv1alpha1.CABundleSource{
+			ref: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: nil,
 			},
 			wantErr: "configMapRef is nil",
 		},
 		{
 			name: "ConfigMap not found returns error",
-			ref: &mcpv1alpha1.CABundleSource{
+			ref: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "missing-cm"},
 				},
@@ -1758,7 +1703,7 @@ func TestFetchCABundleData(t *testing.T) {
 		},
 		{
 			name: "key missing from ConfigMap returns error",
-			ref: &mcpv1alpha1.CABundleSource{
+			ref: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "test-ca"},
 					Key:                  "nonexistent.pem",
@@ -1774,7 +1719,7 @@ func TestFetchCABundleData(t *testing.T) {
 		},
 		{
 			name: "default key ca.crt used when key is empty",
-			ref: &mcpv1alpha1.CABundleSource{
+			ref: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "test-ca"},
 					Key:                  "",
@@ -1790,7 +1735,7 @@ func TestFetchCABundleData(t *testing.T) {
 		},
 		{
 			name: "explicit key used",
-			ref: &mcpv1alpha1.CABundleSource{
+			ref: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "test-ca"},
 					Key:                  "custom.pem",
@@ -1828,4 +1773,176 @@ func TestFetchCABundleData(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHeaderForwardFromEntry covers the dynamic-mode projection of
+// MCPServerEntry.spec.headerForward into the runtime *vmcp.HeaderForwardConfig.
+// The shape MUST match what the operator emits in the static-mode JSON
+// manifest env var so both code paths feed equivalent data into the round
+// tripper.
+func TestHeaderForwardFromEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		entry *mcpv1beta1.MCPServerEntry
+		want  *vmcp.HeaderForwardConfig
+	}{
+		{
+			name:  "nil entry yields nil",
+			entry: nil,
+			want:  nil,
+		},
+		{
+			name: "entry without headerForward yields nil",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: testNamespace},
+				Spec:       mcpv1beta1.MCPServerEntrySpec{RemoteURL: "https://x"},
+			},
+			want: nil,
+		},
+		{
+			name: "plaintext only — header names preserved verbatim",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "github-copilot", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddPlaintextHeaders: map[string]string{
+							"X-MCP-Toolsets": "projects,issues",
+							"X-Trace-Id":     "kind-test",
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-MCP-Toolsets": "projects,issues",
+					"X-Trace-Id":     "kind-test",
+				},
+			},
+		},
+		{
+			name: "secret only — values become identifiers",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "stripe", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{
+								HeaderName: "X-API-Key",
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+									Name: "stripe-key",
+									Key:  "token",
+								},
+							},
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"X-API-Key": "HEADER_FORWARD_X_API_KEY_STRIPE",
+				},
+			},
+		},
+		{
+			name: "mixed plaintext + secret",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "alpha", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddPlaintextHeaders: map[string]string{"X-Trace": "alpha-trace"},
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{
+								HeaderName: "X-Token",
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+									Name: "alpha-secret",
+									Key:  "tok",
+								},
+							},
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Trace": "alpha-trace"},
+				AddHeadersFromSecret: map[string]string{
+					"X-Token": "HEADER_FORWARD_X_TOKEN_ALPHA",
+				},
+			},
+		},
+		{
+			name: "secret ref with nil ValueSecretRef is skipped — empty config returns nil",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "ghost", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{HeaderName: "X-Stray", ValueSecretRef: nil},
+						},
+					},
+				},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := headerForwardFromEntry(tt.entry)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestHeaderForwardParity_StaticVsDynamic pins that the dynamic-mode
+// projection produces a runtime-equivalent shape to what the operator's
+// static-mode JSON manifest serializes. If either path drifts, the round
+// tripper sees a different Backend.HeaderForward depending on mode —
+// which is exactly the bug pattern PR #5239 fixes for static mode and
+// this finding (F2) extends to dynamic mode.
+//
+// The test compares the JSON serialization of the dynamic-mode result
+// to a hand-written manifest that mirrors what
+// virtualmcpserver_deployment.go::buildHeaderForwardManifestForEntry
+// would emit for the same entry. The two are required to be byte-equal
+// after json.Marshal (which sorts map keys).
+func TestHeaderForwardParity_StaticVsDynamic(t *testing.T) {
+	t.Parallel()
+
+	entry := &mcpv1beta1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-copilot-fake", Namespace: testNamespace},
+		Spec: mcpv1beta1.MCPServerEntrySpec{
+			RemoteURL: "https://api.example/mcp",
+			Transport: "streamable-http",
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+			HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-MCP-Toolsets": "projects,issues,pull_requests",
+					"X-Trace-Id":     "kind-test",
+				},
+				AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+					{
+						HeaderName: "X-Api-Key",
+						ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "test-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	dynamic := headerForwardFromEntry(entry)
+	require.NotNil(t, dynamic)
+
+	dynamicJSON, err := json.Marshal(dynamic)
+	require.NoError(t, err)
+
+	const wantStaticManifestJSON = `{"addPlaintextHeaders":{"X-MCP-Toolsets":"projects,issues,pull_requests","X-Trace-Id":"kind-test"},"addHeadersFromSecret":{"X-Api-Key":"HEADER_FORWARD_X_API_KEY_GITHUB_COPILOT_FAKE"}}`
+
+	assert.JSONEq(t, wantStaticManifestJSON, string(dynamicJSON),
+		"dynamic-mode HeaderForward must marshal to the same shape as the static-mode operator manifest")
 }

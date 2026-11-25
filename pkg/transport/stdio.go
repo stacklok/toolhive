@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"strings"
@@ -20,7 +21,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/exp/jsonrpc2"
 	"golang.org/x/oauth2"
 
@@ -63,6 +64,15 @@ type StdioTransport struct {
 	prometheusHandler http.Handler
 	trustProxyHeaders bool
 	sessionStorage    session.Storage
+	sessionTTL        time.Duration
+	readTimeout       time.Duration
+	authInfoHandler   http.Handler
+	prefixHandlers    map[string]http.Handler
+
+	// strictProtocolValidation controls whether the streamable HTTP proxy
+	// rejects an unknown/unsupported MCP-Protocol-Version header with 400.
+	// See streamable.WithStrictProtocolValidation.
+	strictProtocolValidation bool
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -135,11 +145,41 @@ func (t *StdioTransport) SetProxyMode(mode types.ProxyMode) {
 	t.proxyMode = mode
 }
 
+// SetStrictProtocolValidation configures whether the streamable HTTP proxy
+// rejects requests carrying an unknown/unsupported MCP-Protocol-Version
+// header with HTTP 400. Default false preserves the version-agnostic
+// behavior of accepting any header value.
+func (t *StdioTransport) SetStrictProtocolValidation(strict bool) {
+	t.strictProtocolValidation = strict
+}
+
 // SetSessionStorage configures a custom session storage backend.
 // When set, the underlying proxy will use this storage instead of the default
 // in-memory store, enabling session sharing across replicas (e.g. Redis-backed).
 func (t *StdioTransport) SetSessionStorage(storage session.Storage) {
 	t.sessionStorage = storage
+}
+
+// SetSessionTTL configures the inactivity timeout for sessions managed by the
+// underlying proxy. Zero is valid and means "use the proxy's default".
+func (t *StdioTransport) SetSessionTTL(ttl time.Duration) {
+	t.sessionTTL = ttl
+}
+
+// SetReadTimeout configures http.Server.ReadTimeout on the underlying proxy.
+// Zero is valid and means "use the proxy's default".
+func (t *StdioTransport) SetReadTimeout(d time.Duration) {
+	t.readTimeout = d
+}
+
+// SetAuthInfoHandler sets the RFC 9728 OAuth protected resource discovery handler.
+func (t *StdioTransport) SetAuthInfoHandler(h http.Handler) {
+	t.authInfoHandler = h
+}
+
+// SetPrefixHandlers sets additional HTTP handlers mounted outside the middleware chain.
+func (t *StdioTransport) SetPrefixHandlers(m map[string]http.Handler) {
+	t.prefixHandlers = maps.Clone(m)
 }
 
 // Mode returns the transport mode.
@@ -191,28 +231,15 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// Create and start the correct proxy with middlewares
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
-		var streamableOpts []streamable.Option
-		if t.sessionStorage != nil {
-			streamableOpts = append(streamableOpts, streamable.WithSessionStorage(t.sessionStorage))
-		}
-		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.prometheusHandler, t.middlewares, streamableOpts...)
+		t.httpProxy = streamable.NewHTTPProxy(
+			t.host, t.proxyPort, t.prometheusHandler, t.middlewares, t.streamableProxyOptions()...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
 		slog.Debug("streamable HTTP proxy started, processing messages")
 	case types.ProxyModeSSE:
-		var sseOpts []httpsse.Option
-		if t.sessionStorage != nil {
-			sseOpts = append(sseOpts, httpsse.WithSessionStorage(t.sessionStorage))
-		}
 		t.httpProxy = httpsse.NewHTTPSSEProxy(
-			t.host,
-			t.proxyPort,
-			t.trustProxyHeaders,
-			t.prometheusHandler,
-			t.middlewares,
-			sseOpts...,
-		)
+			t.host, t.proxyPort, t.trustProxyHeaders, t.prometheusHandler, t.middlewares, t.sseProxyOptions()...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
@@ -241,6 +268,46 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	go t.handleContainerExit(ctx) //nolint:gosec // G118 - background goroutine manages container lifecycle, outlives request
 
 	return nil
+}
+
+// streamableProxyOptions assembles the options for the streamable HTTP proxy
+// from the transport's configured settings. Zero-valued timeouts/TTL are omitted
+// so the proxy keeps its own defaults.
+func (t *StdioTransport) streamableProxyOptions() []streamable.Option {
+	var opts []streamable.Option
+	if t.sessionTTL > 0 {
+		opts = append(opts, streamable.WithSessionTTL(t.sessionTTL))
+	}
+	if t.readTimeout > 0 {
+		opts = append(opts, streamable.WithReadTimeout(t.readTimeout))
+	}
+	if t.sessionStorage != nil {
+		opts = append(opts, streamable.WithSessionStorage(t.sessionStorage))
+	}
+	return append(opts,
+		streamable.WithAuthInfoHandler(t.authInfoHandler),
+		streamable.WithPrefixHandlers(t.prefixHandlers),
+		streamable.WithStrictProtocolValidation(t.strictProtocolValidation),
+	)
+}
+
+// sseProxyOptions assembles the options for the SSE proxy from the transport's
+// configured settings. Zero-valued TTL is omitted so the proxy keeps its default.
+func (t *StdioTransport) sseProxyOptions() []httpsse.Option {
+	var opts []httpsse.Option
+	if t.sessionTTL > 0 {
+		opts = append(opts, httpsse.WithSessionTTL(t.sessionTTL))
+	}
+	if t.readTimeout > 0 {
+		opts = append(opts, httpsse.WithReadTimeout(t.readTimeout))
+	}
+	if t.sessionStorage != nil {
+		opts = append(opts, httpsse.WithSessionStorage(t.sessionStorage))
+	}
+	return append(opts,
+		httpsse.WithAuthInfoHandler(t.authInfoHandler),
+		httpsse.WithPrefixHandlers(t.prefixHandlers),
+	)
 }
 
 // Stop gracefully shuts down the transport and the container.
@@ -644,7 +711,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 		if t.proxyMode == types.ProxyModeStreamableHTTP {
 			slog.Error("error forwarding to streamable-http client", "error", err)
 		} else {
-			slog.Error("error forwarding to SSE clients", "error", err)
+			slog.Error("error dispatching backend message to SSE proxy", "error", err)
 		}
 	}
 }

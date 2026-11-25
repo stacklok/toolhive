@@ -77,7 +77,7 @@ ENV UV_TOOL_DIR=/opt/uv-tools \
 RUN package="{{.MCPPackage}}"; \
     # Replace @ with == for uv tool install (Python uses == for version pinning)
     package_spec=$(echo "$package" | sed 's/@/==/'); \
-    uv tool install "$package_spec" && \
+    uv tool install {{range .RuntimeConfig.BuildWith}}--with '{{.}}' {{end}}"$package_spec" && \
     # List installed executables for debugging
     ls -la /opt/uv-tools/bin/
 {{end}}
@@ -85,6 +85,11 @@ RUN package="{{.MCPPackage}}"; \
 # Final stage - runtime image with pre-installed packages
 FROM {{.RuntimeConfig.BuilderImage}}
 
+{{if .RuntimeConfig.RuntimeEnv}}
+# Custom runtime environment variables
+{{range $key, $value := .RuntimeConfig.RuntimeEnv}}ENV {{$key}}="{{$value}}"
+{{end}}
+{{end}}
 {{if .CACertContent}}
 # Add custom CA certificate for runtime
 COPY ca-cert.crt /tmp/custom-ca.crt

@@ -1,0 +1,2823 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package v1beta1
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+)
+
+// makeStringOfLen returns a string of exactly n ASCII bytes.
+func makeStringOfLen(n int) string {
+	return strings.Repeat("a", n)
+}
+
+// makeMultibyteStringOfRunes returns a string of exactly n runes, each 3 bytes
+// ("あ"), so its byte length is 3n. Useful for boundary-length tests that must
+// distinguish rune counts from byte counts.
+func makeMultibyteStringOfRunes(n int) string {
+	return strings.Repeat("あ", n)
+}
+
+// makeURLOfLen returns an https URL whose total length is exactly n.
+// The host is padded with 'a' characters; useful for boundary-length tests
+// against +kubebuilder:validation:Pattern URL regexes that require a host.
+func makeURLOfLen(n int) string {
+	const prefix = "https://"
+	if n <= len(prefix) {
+		// Caller asked for something below the minimum URL shape. Fall back to
+		// a plain string of length n so callers see the length they asked for.
+		return strings.Repeat("a", n)
+	}
+	return prefix + strings.Repeat("a", n-len(prefix))
+}
+
+func TestMCPExternalAuthConfig_Validate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		config    *MCPExternalAuthConfig
+		expectErr bool
+		errMsg    string
+	}{
+		{
+			name: "valid unauthenticated type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-unauth",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeUnauthenticated,
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid tokenExchange type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:          ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid headerInjection type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-header",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:            ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &HeaderInjectionConfig{HeaderName: "Authorization"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid bearerToken type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-bearer",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:        ExternalAuthTypeBearerToken,
+					BearerToken: &BearerTokenConfig{},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid embeddedAuthServer with single OIDC provider",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-embedded-oidc",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid embeddedAuthServer with single OAuth2 provider",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-embedded-oauth2",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "custom-oauth",
+								Type: UpstreamProviderTypeOAuth2,
+								OAuth2Config: &OAuth2UpstreamConfig{
+									AuthorizationEndpoint: "https://oauth.example.com/authorize",
+									TokenEndpoint:         "https://oauth.example.com/token",
+									ClientID:              "client-id",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "embeddedAuthServer with multiple providers - valid at CRD level",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-embedded-multi",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "id1"},
+							},
+							{
+								Name:       "google",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://accounts.google.com", ClientID: "id2"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid embeddedAuthServer with no providers",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-embedded-empty",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:            "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "at least one upstream provider or inbound grant family is required",
+		},
+		{
+			name: "invalid OIDC provider without oidcConfig",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-oidc-missing-config",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{Name: "github", Type: UpstreamProviderTypeOIDC},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig must be set when type is 'oidc'",
+		},
+		{
+			name: "invalid OAuth2 provider without oauth2Config",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-oauth2-missing-config",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{Name: "custom", Type: UpstreamProviderTypeOAuth2},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oauth2Config must be set when type is 'oauth2'",
+		},
+		{
+			name: "valid upstreamInject type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: &UpstreamInjectSpec{ProviderName: "github"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid upstreamInject with nil spec",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject-nil",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "upstreamInject configuration must be set if and only if type is 'upstreamInject'",
+		},
+		{
+			name: "invalid upstreamInject with empty providerName",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject-empty",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: &UpstreamInjectSpec{ProviderName: ""},
+				},
+			},
+			expectErr: true,
+			errMsg:    "upstreamInject requires a non-empty providerName",
+		},
+		{
+			name: "valid obo type with fully populated OBOConfig",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-full",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO: &OBOConfig{
+						TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
+						ClientID:        "app-client-id",
+						ClientSecretRef: &SecretKeyRef{Name: "entra-client", Key: "clientSecret"},
+						Audience:        "api://backend",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid xaa type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-xaa",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeXAA,
+					XAA: &XAASpec{
+						IDPTokenURL:    "https://idp.example.com/token",
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+						TargetResource: "https://mcp.example.com",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			// Go Validate() intentionally does NOT check OBOConfig fields: the
+			// required-field, pattern, and "at least one of audience or scopes"
+			// rules are enforced by the kubebuilder markers + CEL at admission,
+			// and the registered OBO handler validates semantics at reconcile.
+			// So a minimal obo block passes the Go method even though the
+			// apiserver would reject it (covered by the envtest CEL suite).
+			name: "obo type with minimal OBOConfig passes Go Validate (field checks deferred)",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO:  &OBOConfig{},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid obo type with nil obo config",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-missing",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO:  nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			name: "invalid obo config set on non-obo type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-on-tokenexchange",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:          ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+					OBO:           &OBOConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			// Also intentional shape-parity coverage for the unauthenticated
+			// guard's OBO != nil disjunct, even though the OBO biconditional
+			// above intercepts first for this input.
+			name: "invalid obo config on unauthenticated type (obo biconditional intercepts first)",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-on-unauth",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeUnauthenticated,
+					OBO:  &OBOConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			name: "invalid xaa with nil spec",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-xaa-nil",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeXAA,
+					XAA:  nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "xaa configuration must be set if and only if type is 'xaa'",
+		},
+		{
+			name: "invalid xaa config set on non-xaa type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-xaa-on-tokenexchange",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:          ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+					XAA: &XAASpec{
+						IDPTokenURL:    "https://idp.example.com/token",
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+						TargetResource: "https://mcp.example.com",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "xaa configuration must be set if and only if type is 'xaa'",
+		},
+		{
+			name: "invalid OIDC provider with oauth2Config instead",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-oidc-wrong-config",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "github",
+								Type: UpstreamProviderTypeOIDC,
+								OAuth2Config: &OAuth2UpstreamConfig{
+									AuthorizationEndpoint: "https://github.com/authorize",
+									TokenEndpoint:         "https://github.com/token",
+									ClientID:              "client-id",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://github.com/userinfo"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig must be set when type is 'oidc'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.config.Validate()
+			if tt.expectErr {
+				require.Error(t, err, "expected validation to fail")
+				assert.Contains(t, err.Error(), tt.errMsg, "error message should match")
+			} else {
+				assert.NoError(t, err, "expected validation to pass")
+			}
+		})
+	}
+}
+
+func TestEmbeddedAuthServerConfig_EffectiveGrants(t *testing.T) {
+	t.Parallel()
+
+	jwtPolicy := JWTBearerGrantConfig{
+		MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+		SubjectBindings: []JWTBearerSubjectBinding{{
+			Subject: "workload", AllowedResources: []string{"https://mcp.example.com"},
+		}},
+	}
+	t.Run("nil canonical config keeps legacy default", func(t *testing.T) {
+		t.Parallel()
+		grants, err := (&EmbeddedAuthServerConfig{}).EffectiveGrants()
+		require.NoError(t, err)
+		assert.True(t, grants.tokenExchange)
+		assert.False(t, grants.jwtBearer)
+	})
+	t.Run("empty canonical config disables implicit token exchange", func(t *testing.T) {
+		t.Parallel()
+		grants, err := (&EmbeddedAuthServerConfig{InboundGrants: &InboundGrantsConfig{}}).EffectiveGrants()
+		require.NoError(t, err)
+		assert.False(t, grants.tokenExchange)
+		assert.False(t, grants.jwtBearer)
+	})
+	t.Run("canonical policies overlay copied issuers and clients", func(t *testing.T) {
+		t.Parallel()
+		cfg := &EmbeddedAuthServerConfig{
+			TrustedIssuers: []TrustedIssuerConfig{{Name: "external", IssuerURL: "https://issuer.example.com"}},
+			InboundGrants: &InboundGrantsConfig{
+				TokenExchange: &TokenExchangeInboundGrantConfig{
+					DelegateClients: []DelegateClientConfig{{
+						ClientID: "canonical", ClientSecretRef: &SecretKeyRef{Name: "secret", Key: "key"},
+						Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+					}},
+					IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience", ActorClaim: "azp",
+						AllowedActors: []string{"actor"}, AllowedDelegateClients: []string{"canonical"},
+					}},
+				},
+				JWTBearer: &JWTBearerInboundGrantConfig{IssuerPolicies: []JWTBearerIssuerPolicyConfig{{
+					IssuerRef: "external", JWTBearerGrantConfig: jwtPolicy,
+				}}},
+			},
+		}
+		grants, err := cfg.EffectiveGrants()
+		require.NoError(t, err)
+		assert.True(t, grants.tokenExchange)
+		assert.True(t, grants.jwtBearer)
+		clients := grants.delegateClients
+		require.Len(t, clients, 1)
+		assert.Equal(t, "canonical", clients[0].ClientID)
+		issuers := grants.trustedIssuers
+		require.Len(t, issuers, 1)
+		assert.Equal(t, "audience", issuers[0].ExpectedAudience)
+		require.NotNil(t, issuers[0].JWTBearerGrant)
+
+		clients[0].Scopes[0] = "changed"
+		clients[0].ClientSecretRef.Name = "changed"
+		issuers[0].AllowedActors[0] = "changed"
+		issuers[0].JWTBearerGrant.SubjectBindings[0].AllowedResources[0] = "https://changed.example.com"
+		assert.Equal(t, "openid", cfg.InboundGrants.TokenExchange.DelegateClients[0].Scopes[0])
+		assert.Equal(t, "secret", cfg.InboundGrants.TokenExchange.DelegateClients[0].ClientSecretRef.Name)
+		assert.Equal(t, "actor", cfg.InboundGrants.TokenExchange.IssuerPolicies[0].AllowedActors[0])
+		assert.Equal(t, "https://mcp.example.com",
+			cfg.InboundGrants.JWTBearer.IssuerPolicies[0].SubjectBindings[0].AllowedResources[0])
+	})
+	t.Run("legacy token exchange and canonical JWT bearer can coexist", func(t *testing.T) {
+		t.Parallel()
+		cfg := &EmbeddedAuthServerConfig{
+			TrustedIssuers: []TrustedIssuerConfig{{
+				Name: "external", IssuerURL: "https://issuer.example.com", ExpectedAudience: "audience",
+				AllowedDelegateClients: []string{"legacy"},
+			}},
+			InboundGrants: &InboundGrantsConfig{JWTBearer: &JWTBearerInboundGrantConfig{
+				IssuerPolicies: []JWTBearerIssuerPolicyConfig{{IssuerRef: "external", JWTBearerGrantConfig: jwtPolicy}},
+			}},
+		}
+		grants, err := cfg.EffectiveGrants()
+		require.NoError(t, err)
+		assert.True(t, grants.tokenExchange)
+		assert.True(t, grants.jwtBearer)
+	})
+
+	conflicts := []struct {
+		name string
+		cfg  EmbeddedAuthServerConfig
+		want string
+	}{
+		{
+			name: "canonical and legacy token exchange",
+			cfg: EmbeddedAuthServerConfig{
+				DelegateClients: []DelegateClientConfig{{ClientID: "legacy"}},
+				InboundGrants:   &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{}},
+			},
+			want: "tokenExchange conflicts",
+		},
+		{
+			name: "canonical and legacy JWT bearer",
+			cfg: EmbeddedAuthServerConfig{
+				TrustedIssuers: []TrustedIssuerConfig{{
+					Name: "external", IssuerURL: "https://issuer.example.com", JWTBearerGrant: &jwtPolicy,
+				}},
+				InboundGrants: &InboundGrantsConfig{JWTBearer: &JWTBearerInboundGrantConfig{}},
+			},
+			want: "jwtBearer conflicts",
+		},
+		{
+			name: "unknown issuer reference",
+			cfg: EmbeddedAuthServerConfig{
+				InboundGrants: &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{IssuerRef: "missing"}},
+				}},
+			},
+			want: "unknown or unnamed trusted issuer",
+		},
+		{
+			name: "duplicate issuer reference",
+			cfg: EmbeddedAuthServerConfig{
+				TrustedIssuers: []TrustedIssuerConfig{{Name: "external", IssuerURL: "https://issuer.example.com"}},
+				InboundGrants: &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{IssuerRef: "external"}, {IssuerRef: "external"}},
+				}},
+			},
+			want: "duplicates issuer policy",
+		},
+		{
+			name: "duplicate issuer name",
+			cfg: EmbeddedAuthServerConfig{TrustedIssuers: []TrustedIssuerConfig{
+				{Name: "external", IssuerURL: "https://one.example.com"},
+				{Name: "external", IssuerURL: "https://two.example.com"},
+			}},
+			want: "name duplicates",
+		},
+		{
+			name: "duplicate issuer URL",
+			cfg: EmbeddedAuthServerConfig{TrustedIssuers: []TrustedIssuerConfig{
+				{Name: "one", IssuerURL: "https://issuer.example.com"},
+				{Name: "two", IssuerURL: "https://issuer.example.com"},
+			}},
+			want: "issuerUrl duplicates",
+		},
+	}
+	for _, tt := range conflicts {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := tt.cfg.EffectiveGrants()
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		config    *MCPExternalAuthConfig
+		expectErr bool
+		errMsg    string
+	}{
+		{
+			name: "single OIDC provider - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "single OAuth2 provider - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "custom",
+								Type: UpstreamProviderTypeOAuth2,
+								OAuth2Config: &OAuth2UpstreamConfig{
+									AuthorizationEndpoint: "https://oauth.example.com/authorize",
+									TokenEndpoint:         "https://oauth.example.com/token",
+									ClientID:              "client-id",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "multiple providers - valid at CRD level",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "id1"},
+							},
+							{
+								Name:       "google",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://accounts.google.com", ClientID: "id2"},
+							},
+							{
+								Name: "custom",
+								Type: UpstreamProviderTypeOAuth2,
+								OAuth2Config: &OAuth2UpstreamConfig{
+									AuthorizationEndpoint: "https://oauth.example.com/authorize",
+									TokenEndpoint:         "https://oauth.example.com/token",
+									ClientID:              "id3",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "empty providers array - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:            "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "at least one upstream provider or inbound grant family is required",
+		},
+		{
+			name: "nil embedded auth server config",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type:               ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: nil,
+				},
+			},
+			expectErr: false, // validateEmbeddedAuthServer returns nil if config is nil
+		},
+		{
+			name: "confidential clients combined with insecure HTTP - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://auth.example.com",
+						InsecureAllowHTTP:                   true,
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "confidential clients (allow_confidential_client_registration, delegate clients or JWT-SVID SPIFFE associations that grant client_credentials) cannot be combined with insecure_allow_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer without opt-in - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer and opt-in - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "http://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						InsecureAllowConfidentialOverLoopbackHTTP: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "confidential clients with https issuer unaffected by loopback opt-in default",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://localhost:8080",
+						AllowConfidentialClientRegistration: true,
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "forceConfidentialRedirectUris without allowConfidentialClientRegistration - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                        "https://auth.example.com",
+						ForceConfidentialRedirectURIs: []string{"https://app.example.com/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "requires allow_confidential_client_registration",
+		},
+		{
+			name: "forceConfidentialRedirectUris with loopback entry - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://auth.example.com",
+						AllowConfidentialClientRegistration: true,
+						ForceConfidentialRedirectURIs:       []string{"https://localhost/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "must not be a loopback redirect URI",
+		},
+		{
+			name: "forceConfidentialRedirectUris with valid https entry and flag on - valid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:                              "https://auth.example.com",
+						AllowConfidentialClientRegistration: true,
+						ForceConfidentialRedirectURIs:       []string{"https://app.example.com/cb"},
+						UpstreamProviders: []UpstreamProviderConfig{{
+							Name:       "github",
+							Type:       UpstreamProviderTypeOIDC,
+							OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+						}},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "trusted issuer matching embedded auth issuer is invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{{
+							Name:       "github",
+							Type:       UpstreamProviderTypeOIDC,
+							OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+						}},
+						TrustedIssuers: []TrustedIssuerConfig{{
+							IssuerURL:              "https://auth.example.com",
+							ExpectedAudience:       "toolhive-authserver",
+							AllowedDelegateClients: []string{"delegate-client"},
+						}},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "must not equal the authorization server's own issuer",
+		},
+		{
+			// buildTrustedIssuerConfigs must carry actorMatcher through, or a
+			// malformed CEL expression passes admission and only surfaces when
+			// the auth server fails to start.
+			name: "trusted issuer with malformed actorMatcher - invalid",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{
+									IssuerURL: "https://okta.example.com",
+									ClientID:  "client",
+								},
+							},
+						},
+						TrustedIssuers: []TrustedIssuerConfig{
+							{
+								IssuerURL:              "https://external.example.com",
+								ExpectedAudience:       "aud",
+								ActorMatcher:           "this is not ( valid CEL",
+								AllowedDelegateClients: []string{"*"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "actor_matcher",
+		},
+		{
+			// validateEmbeddedAuthServer deliberately runs no Go-level
+			// permission-shaped SPIFFE pre-check (resources/scopes) at this
+			// layer — same precedent as DelegateClients: a meaningful
+			// resources/scopes check needs AllowedAudiences/ScopesSupported,
+			// which only exist once derived at reconcile time. (It does run
+			// the admission-time-safe principal-overlap check below; the
+			// bundle-URL check is unreachable here until a bundle_endpoint
+			// loader exists, see TestValidateSPIFFEBundleEndpointURLs.) A resources
+			// entry and a non-default scope must therefore pass here even
+			// though they'd need revalidating once those derived values are
+			// known (see
+			// TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValuesExist
+			// in controllerutil for the reconcile-time revalidation this
+			// relies on). CEL (spiffe_cel_test.go) covers structural
+			// correctness (trust-domain refs, method subsets, etc.) at
+			// admission.
+			name: "spiffe client with resources and custom scope - valid at this layer",
+			config: &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						TLSListener: &TLSListenerConfig{
+							CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+							PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+						},
+						UpstreamProviders: []UpstreamProviderConfig{{
+							Name:       "github",
+							Type:       UpstreamProviderTypeOIDC,
+							OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+						}},
+						SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+							Name: "example", TrustDomain: "example.org",
+							Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+							BundleSource: SPIFFEBundleSourceConfig{
+								Type: SPIFFEBundleSourceTypeFile,
+								File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+							},
+						}},
+						InboundGrants: &InboundGrantsConfig{
+							SPIFFEClientAuth: []SPIFFEClientConfig{{
+								TrustDomainRef:   "example",
+								PrincipalPattern: "spiffe://example.org/ns/default/agent",
+								ClientID:         "spiffe-client",
+								Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+								// Not in allowed_audiences and not a default
+								// scope — would be rejected if the removed
+								// admission-time pre-check fabricated a nil
+								// allowlist/default-scopes set instead of
+								// deferring to reconcile time.
+								Resources:  []string{"https://backend.example.com"},
+								Audiences:  []string{"https://mcp.example.com"},
+								Scopes:     []string{"custom:scope"},
+								GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+							}},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			// The unsupported-type check runs before the endpoint URL check, so a
+			// bad bundle_endpoint URL is reported as the unsupported type.
+			name:      "spiffe bundle_endpoint source is rejected as unsupported by this build",
+			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("http://bundle.example.com"),
+			expectErr: true,
+			errMsg:    `spiffeTrustDomains[0].bundleSource: type "bundle_endpoint" is not supported by this build`,
+		},
+		{
+			name:      "spiffe x509 client with an http issuer is rejected",
+			config:    mustEmbeddedAuthServerConfigWithSPIFFEX509Client("http://auth.example.com", ""),
+			expectErr: true,
+			errMsg:    "SPIFFE X.509 authentication requires an https issuer",
+		},
+		{
+			name:      "spiffe client_id equal to a delegate client_id is rejected",
+			config:    mustEmbeddedAuthServerConfigWithSPIFFEX509Client("https://auth.example.com", "spiffe-client"),
+			expectErr: true,
+			errMsg:    `client_id "spiffe-client" is configured both as a SPIFFE client association and as a delegate client`,
+		},
+		{
+			name:      "spiffe file bundle source is valid",
+			config:    mustEmbeddedAuthServerConfigWithFileBundleSource("spire-bundle", "bundle.json"),
+			expectErr: false,
+		},
+		{
+			name: "spiffe principal patterns reject an identical duplicate pair",
+			config: mustEmbeddedAuthServerConfigWithPrincipalPatterns(
+				"spiffe://example.org/ns/default/agent", "spiffe://example.org/ns/default/agent",
+			),
+			expectErr: true,
+			errMsg:    "overlaps",
+		},
+		{
+			name: "spiffe principal patterns reject a wildcard overlapping a concrete principal",
+			config: mustEmbeddedAuthServerConfigWithPrincipalPatterns(
+				"spiffe://example.org/agent/*", "spiffe://example.org/agent/one",
+			),
+			expectErr: true,
+			errMsg:    "overlaps",
+		},
+		{
+			name: "spiffe principal patterns reject two overlapping wildcards",
+			config: mustEmbeddedAuthServerConfigWithPrincipalPatterns(
+				"spiffe://example.org/agent/*", "spiffe://example.org/agent/one/*",
+			),
+			expectErr: true,
+			errMsg:    "overlaps",
+		},
+		{
+			name: "spiffe principal patterns accept a genuinely non-overlapping pair",
+			config: mustEmbeddedAuthServerConfigWithPrincipalPatterns(
+				"spiffe://example.org/agent/*", "spiffe://example.org/other/*",
+			),
+			expectErr: false,
+		},
+		{
+			// Regression case: when only the SECOND entry in a pair is
+			// malformed, the error must name index 1, not index 0 — a
+			// pairwise loop that always blames the first entry in the pair
+			// it happens to be comparing would get this wrong.
+			name: "spiffe principal patterns blame the correct index when the second entry is malformed",
+			config: mustEmbeddedAuthServerConfigWithPrincipalPatterns(
+				"spiffe://example.org/agent/one", "spiffe://example.org/agent~2",
+			),
+			expectErr: true,
+			errMsg:    "spiffeClientAuth[1].principalPattern",
+		},
+		{
+			name:      "spiffe resource indicator rejects an empty-host authority",
+			config:    mustEmbeddedAuthServerConfigWithResource("https://:443/resource"),
+			expectErr: true,
+			errMsg:    "must be an absolute HTTP(S) URI",
+		},
+		{
+			name:      "spiffe resource indicator rejects userinfo",
+			config:    mustEmbeddedAuthServerConfigWithResource("https://user@mcp.example.com/resource"),
+			expectErr: true,
+			errMsg:    "must be an absolute HTTP(S) URI",
+		},
+		{
+			name:      "spiffe resource indicator rejects a fragment",
+			config:    mustEmbeddedAuthServerConfigWithResource("https://mcp.example.com/resource#fragment"),
+			expectErr: true,
+			errMsg:    "must be an absolute HTTP(S) URI",
+		},
+		{
+			name: "spiffe association without resources is rejected",
+			config: func() *MCPExternalAuthConfig {
+				c := mustEmbeddedAuthServerConfigWithResource("https://mcp.example.com/resource")
+				c.Spec.EmbeddedAuthServer.InboundGrants.SPIFFEClientAuth[0].Resources = nil
+				return c
+			}(),
+			expectErr: true,
+			errMsg:    "spiffeClientAuth[0].resources is required",
+		},
+		{
+			name:      "spiffe resource indicator accepts a well-formed URI",
+			config:    mustEmbeddedAuthServerConfigWithResource("https://mcp.example.com/resource"),
+			expectErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.config.validateEmbeddedAuthServer()
+			if tt.expectErr {
+				require.Error(t, err, "expected validation to fail")
+				assert.Contains(t, err.Error(), tt.errMsg, "error message should match")
+			} else {
+				assert.NoError(t, err, "expected validation to pass")
+			}
+		})
+	}
+}
+
+func TestMCPExternalAuthConfig_ValidateCanonicalTrustedIssuers(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(issuerURL string) *MCPExternalAuthConfig {
+		return &MCPExternalAuthConfig{Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer:         "https://auth.example.com",
+				TrustedIssuers: []TrustedIssuerConfig{{Name: "external", IssuerURL: issuerURL}},
+				InboundGrants: &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+					}},
+				}},
+			},
+		}}
+	}
+
+	require.NoError(t, newConfig("https://issuer.example.com").validateEmbeddedAuthServer())
+	err := newConfig("https://auth.example.com").validateEmbeddedAuthServer()
+	require.ErrorContains(t, err, "must not equal the authorization server's own issuer")
+}
+
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_TrustedIssuerEndpoints(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(canonical bool, issuerURL, jwksURL string, allowPrivateIPs bool) EmbeddedAuthServerConfig {
+		config := EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			TrustedIssuers: []TrustedIssuerConfig{{
+				Name: "external", IssuerURL: issuerURL, JWKSURL: jwksURL, AllowPrivateIPs: allowPrivateIPs,
+			}},
+		}
+		if canonical {
+			config.InboundGrants = &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+				IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{
+					IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+				}},
+			}}
+			return config
+		}
+		config.TrustedIssuers[0].ExpectedAudience = "audience"
+		config.TrustedIssuers[0].AllowedDelegateClients = []string{"delegate"}
+		return config
+	}
+
+	tests := []struct {
+		name            string
+		canonical       bool
+		issuerURL       string
+		jwksURL         string
+		allowPrivateIPs bool
+		wantErr         string
+	}{
+		{name: "legacy HTTPS endpoints accepted", issuerURL: "https://issuer.example.com", jwksURL: "https://issuer.example.com/keys"},
+		{name: "canonical HTTPS endpoints accepted", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "https://issuer.example.com/keys"},
+		{name: "legacy issuer endpoint failure identifies entry", issuerURL: "http://issuer.example.com", wantErr: "scheme must be https"},
+		{name: "canonical issuer endpoint failure identifies entry", canonical: true, issuerURL: "http://issuer.example.com", wantErr: "scheme must be https"},
+		{name: "legacy issuer empty hostname with port rejected", issuerURL: "https://:443", wantErr: "host is required"},
+		{name: "canonical issuer empty hostname with port rejected", canonical: true, issuerURL: "https://:443", wantErr: "host is required"},
+		{name: "legacy JWKS endpoint failure identifies entry", issuerURL: "https://issuer.example.com", jwksURL: "ftp://issuer.example.com/keys", wantErr: "jwks_url:"},
+		{name: "canonical JWKS endpoint failure identifies entry", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "ftp://issuer.example.com/keys", wantErr: "jwks_url:"},
+		{name: "legacy JWKS empty hostname with port rejected", issuerURL: "https://issuer.example.com", jwksURL: "https://:443/keys", wantErr: "jwks_url: host is required"},
+		{name: "canonical JWKS empty hostname with port rejected", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "https://:443/keys", wantErr: "jwks_url: host is required"},
+		{name: "legacy private IP JWKS rejected without opt in", issuerURL: "https://issuer.example.com", jwksURL: "https://10.0.0.5/keys", wantErr: "jwks_url:"},
+		{name: "canonical private IP JWKS rejected without opt in", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "https://10.0.0.5/keys", wantErr: "jwks_url:"},
+		{name: "legacy private IP JWKS accepted with opt in", issuerURL: "https://issuer.example.com", jwksURL: "https://10.0.0.5/keys", allowPrivateIPs: true},
+		{name: "canonical private IP JWKS accepted with opt in", canonical: true, issuerURL: "https://issuer.example.com", jwksURL: "https://10.0.0.5/keys", allowPrivateIPs: true},
+		{name: "private IP opt in requires explicit JWKS URL", canonical: true, issuerURL: "https://issuer.example.com", allowPrivateIPs: true, wantErr: "allow_private_ips requires jwks_url"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := newConfig(tt.canonical, tt.issuerURL, tt.jwksURL, tt.allowPrivateIPs)
+			err := config.ValidateInboundGrants()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_JWTBearerAssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	const selfIssuer = "https://auth.example.com"
+	grant := func(types []JWTBearerAssertionType, audiences []string) JWTBearerGrantConfig {
+		return JWTBearerGrantConfig{
+			MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+			SubjectBindings: []JWTBearerSubjectBinding{{
+				Subject: "workload", AllowedResources: []string{"https://mcp.example.com"},
+			}},
+			AcceptedAssertionTypes: types,
+			AcceptedAudiences:      audiences,
+		}
+	}
+	newConfig := func(canonical bool, g JWTBearerGrantConfig) EmbeddedAuthServerConfig {
+		issuer := TrustedIssuerConfig{Name: "external", IssuerURL: "https://issuer.example.com"}
+		config := EmbeddedAuthServerConfig{Issuer: selfIssuer}
+		if canonical {
+			config.TrustedIssuers = []TrustedIssuerConfig{issuer}
+			config.InboundGrants = &InboundGrantsConfig{JWTBearer: &JWTBearerInboundGrantConfig{
+				IssuerPolicies: []JWTBearerIssuerPolicyConfig{{IssuerRef: "external", JWTBearerGrantConfig: g}},
+			}}
+			return config
+		}
+		issuer.JWTBearerGrant = &g
+		config.TrustedIssuers = []TrustedIssuerConfig{issuer}
+		return config
+	}
+
+	idJAG := []JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG}
+	tests := []struct {
+		name      string
+		types     []JWTBearerAssertionType
+		audiences []string
+		wantErr   string
+	}{
+		{name: "id_jag without issuer audience rejected", types: idJAG, audiences: []string{"https://other.example.com"},
+			wantErr: "must include the authorization server issuer"},
+		{name: "id_jag with no audiences accepted, the issuer is the default", types: idJAG},
+		{name: "id_jag with issuer audience accepted", types: idJAG, audiences: []string{selfIssuer}},
+		{name: "unsupported assertion type rejected", types: []JWTBearerAssertionType{"bogus"},
+			wantErr: "unsupported value"},
+		{name: "unset assertion types keep prior behavior", audiences: []string{"https://other.example.com"}},
+	}
+
+	for _, tt := range tests {
+		for _, canonical := range []bool{false, true} {
+			shape := map[bool]string{false: "legacy", true: "canonical"}[canonical]
+			t.Run(shape+" "+tt.name, func(t *testing.T) {
+				t.Parallel()
+				config := newConfig(canonical, grant(tt.types, tt.audiences))
+				err := config.ValidateInboundGrants()
+				if tt.wantErr == "" {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorContains(t, err, tt.wantErr)
+			})
+		}
+	}
+}
+
+func TestBuildJWTBearerGrantPolicy_AssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		types []JWTBearerAssertionType
+		want  []tokenexchange.JWTBearerAssertionType
+	}{
+		{name: "nil stays nil"},
+		{name: "empty stays empty non-nil", types: []JWTBearerAssertionType{}, want: []tokenexchange.JWTBearerAssertionType{}},
+		{name: "values converted", types: []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer, JWTBearerAssertionTypeIDJAG},
+			want: []tokenexchange.JWTBearerAssertionType{
+				tokenexchange.JWTBearerAssertionTypeJWTBearer, tokenexchange.JWTBearerAssertionTypeIDJAG}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			policy := BuildJWTBearerGrantPolicy(&JWTBearerGrantConfig{AcceptedAssertionTypes: tt.types})
+			require.NotNil(t, policy)
+			assert.Equal(t, tt.want, policy.AcceptedAssertionTypes)
+			assert.Empty(t, policy.MaxAssertionAge, "nil maxAssertionAge must not panic")
+		})
+	}
+}
+
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_DuplicateCredentialIssuerRedaction(t *testing.T) {
+	t.Parallel()
+
+	const credentialIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+	newConfig := func(canonical bool) EmbeddedAuthServerConfig {
+		config := EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			TrustedIssuers: []TrustedIssuerConfig{
+				{Name: "external", IssuerURL: credentialIssuerURL},
+				{Name: "duplicate", IssuerURL: credentialIssuerURL},
+			},
+		}
+		if canonical {
+			config.InboundGrants = &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+				IssuerPolicies: []TokenExchangeIssuerPolicyConfig{{
+					IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+				}},
+			}}
+		}
+		return config
+	}
+
+	for _, canonical := range []bool{false, true} {
+		name := "legacy"
+		if canonical {
+			name = "canonical"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			config := newConfig(canonical)
+			err := config.ValidateInboundGrants()
+			require.ErrorContains(t, err, "duplicates")
+			assert.NotContains(t, err.Error(), credentialIssuerURL)
+			assert.NotContains(t, err.Error(), "sentinel-user")
+			assert.NotContains(t, err.Error(), "sentinel-password")
+		})
+	}
+}
+
+// mustEmbeddedAuthServerConfigWithBundleEndpoint builds a minimal valid
+// MCPExternalAuthConfig with a single spiffeTrustDomains entry whose
+// bundleSource is a bundle_endpoint with the given URL (always using the
+// https_web profile), for exercising validateSPIFFEBundleEndpoints in
+// isolation.
+func mustEmbeddedAuthServerConfigWithBundleEndpoint(url string) *MCPExternalAuthConfig {
+	return &MCPExternalAuthConfig{
+		Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []UpstreamProviderConfig{{
+					Name:       "github",
+					Type:       UpstreamProviderTypeOIDC,
+					OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				}},
+				SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: SPIFFEBundleSourceConfig{
+						Type: SPIFFEBundleSourceTypeEndpoint,
+						Endpoint: &SPIFFEBundleEndpointSourceConfig{
+							URL: url, Profile: SPIFFEBundleEndpointProfileHTTPSWeb,
+						},
+					},
+				}},
+			},
+		},
+	}
+}
+
+// mustEmbeddedAuthServerConfigWithSPIFFEX509Client builds an MCPExternalAuthConfig
+// with a listener and one X.509 SPIFFE client named "spiffe-client", and, when
+// delegateClientID is not empty, a legacy delegate client with that ID.
+func mustEmbeddedAuthServerConfigWithSPIFFEX509Client(issuer, delegateClientID string) *MCPExternalAuthConfig {
+	config := mustEmbeddedAuthServerConfigWithFileBundleSource("spire-bundle", "bundle.json")
+	auth := config.Spec.EmbeddedAuthServer
+	auth.Issuer = issuer
+	auth.TLSListener = &TLSListenerConfig{
+		CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+		PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+	}
+	auth.InboundGrants = &InboundGrantsConfig{SPIFFEClientAuth: []SPIFFEClientConfig{{
+		TrustDomainRef:   "example",
+		PrincipalPattern: "spiffe://example.org/ns/default/agent",
+		ClientID:         "spiffe-client",
+		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		Audiences:        []string{"https://mcp.example.com"},
+		Resources:        []string{"https://mcp.example.com"},
+		Scopes:           []string{"openid"},
+	}}}
+	if delegateClientID != "" {
+		auth.DelegateClients = []DelegateClientConfig{{ClientID: delegateClientID}}
+	}
+	return config
+}
+
+// mustEmbeddedAuthServerConfigWithFileBundleSource builds a minimal valid
+// MCPExternalAuthConfig with a single spiffeTrustDomains entry whose
+// bundleSource is a file source referencing the given ConfigMap name and key.
+func mustEmbeddedAuthServerConfigWithFileBundleSource(configMapName, configMapKey string) *MCPExternalAuthConfig {
+	return &MCPExternalAuthConfig{
+		Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []UpstreamProviderConfig{{
+					Name:       "github",
+					Type:       UpstreamProviderTypeOIDC,
+					OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				}},
+				SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: SPIFFEBundleSourceConfig{
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{
+							ConfigMapName: configMapName,
+							ConfigMapKey:  configMapKey,
+						},
+					},
+				}},
+			},
+		},
+	}
+}
+
+// mustEmbeddedAuthServerConfigWithPrincipalPatterns builds a minimal valid
+// MCPExternalAuthConfig with two spiffeClientAuth entries using the given
+// principal patterns, for exercising validateSPIFFEPrincipalPatternOverlap
+// in isolation.
+func mustEmbeddedAuthServerConfigWithPrincipalPatterns(first, second string) *MCPExternalAuthConfig {
+	return &MCPExternalAuthConfig{
+		Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TLSListener: &TLSListenerConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				UpstreamProviders: []UpstreamProviderConfig{{
+					Name:       "github",
+					Type:       UpstreamProviderTypeOIDC,
+					OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				}},
+				SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: SPIFFEBundleSourceConfig{
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+					},
+				}},
+				InboundGrants: &InboundGrantsConfig{
+					SPIFFEClientAuth: []SPIFFEClientConfig{
+						{
+							TrustDomainRef: "example", PrincipalPattern: first, ClientID: "spiffe-client-1",
+							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+							Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+						},
+						{
+							TrustDomainRef: "example", PrincipalPattern: second, ClientID: "spiffe-client-2",
+							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+							Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// mustEmbeddedAuthServerConfigWithResource builds a minimal valid
+// MCPExternalAuthConfig with a single spiffeClientAuth entry carrying the
+// given resource indicator, for exercising validateSPIFFEResourceShapes in
+// isolation.
+func mustEmbeddedAuthServerConfigWithResource(resource string) *MCPExternalAuthConfig {
+	return &MCPExternalAuthConfig{
+		Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TLSListener: &TLSListenerConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				UpstreamProviders: []UpstreamProviderConfig{{
+					Name:       "github",
+					Type:       UpstreamProviderTypeOIDC,
+					OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				}},
+				SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: SPIFFEBundleSourceConfig{
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+					},
+				}},
+				InboundGrants: &InboundGrantsConfig{
+					SPIFFEClientAuth: []SPIFFEClientConfig{{
+						TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+						ClientID:  "spiffe-client",
+						Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+						Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+						Resources:  []string{resource},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					}},
+				},
+			},
+		},
+	}
+}
+
+func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	jwtGrant := &JWTBearerGrantConfig{
+		MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+		SubjectBindings: []JWTBearerSubjectBinding{{
+			Subject:          "service-account",
+			AllowedResources: []string{"https://mcp.example.com"},
+		}},
+	}
+	tests := []struct {
+		name      string
+		config    EmbeddedAuthServerConfig
+		wantError string
+	}{
+		{
+			name: "delegate client permits token-only operation",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				DelegateClients: []DelegateClientConfig{{
+					ClientID:        "delegate-client",
+					ClientSecretRef: &SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer permits token-only operation",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TrustedIssuers: []TrustedIssuerConfig{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: jwtGrant,
+				}},
+			},
+		},
+		{
+			name: "SPIFFE client associations permit token-only operation",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TLSListener: &TLSListenerConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: SPIFFEBundleSourceConfig{
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+					},
+				}},
+				InboundGrants: &InboundGrantsConfig{
+					SPIFFEClientAuth: []SPIFFEClientConfig{{
+						TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+						ClientID:  "spiffe-client",
+						Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+						Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					}},
+				},
+			},
+		},
+		{
+			name:      "no token-only alternative is rejected",
+			config:    EmbeddedAuthServerConfig{Issuer: "https://auth.example.com"},
+			wantError: "at least one upstream provider or inbound grant family is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := (&MCPExternalAuthConfig{Spec: MCPExternalAuthConfigSpec{
+				Type:               ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &tt.config,
+			}}).Validate()
+			if tt.wantError != "" {
+				require.ErrorContains(t, err, tt.wantError)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestValidateSPIFFEBundleEndpointURLs exercises the bundle_endpoint URL checks
+// directly. validateEmbeddedAuthServer reports the unsupported bundle-source
+// type first, so these cases never reach the URL check through it.
+func TestValidateSPIFFEBundleEndpointURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		url     string
+		wantErr string
+	}{
+		{name: "valid https URL passes", url: "https://bundle.example.com"},
+		{name: "non-https scheme rejected", url: "http://bundle.example.com", wantErr: "must be an absolute HTTPS URL"},
+		{name: "userinfo rejected", url: "https://user:pass@bundle.example.com", wantErr: "must not contain credentials"},
+		{name: "query string rejected", url: "https://bundle.example.com?x=1", wantErr: "must not contain credentials"},
+		{name: "fragment rejected", url: "https://bundle.example.com/bundle#frag", wantErr: "must not contain credentials"},
+		{name: "IP-literal host rejected", url: "https://192.0.2.1", wantErr: "must not contain credentials"},
+		{name: "localhost host rejected", url: "https://localhost", wantErr: "must not contain credentials"},
+		{name: "127.0.0.1 loopback host rejected", url: "https://127.0.0.1", wantErr: "must not contain credentials"},
+		{name: "[::1] loopback host rejected", url: "https://[::1]", wantErr: "must not contain credentials"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			domains := mustEmbeddedAuthServerConfigWithBundleEndpoint(tt.url).Spec.EmbeddedAuthServer.SPIFFETrustDomains
+			err := validateSPIFFEBundleEndpoints(domains)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		provider  UpstreamProviderConfig
+		expectErr bool
+		errMsg    string
+	}{
+		{
+			name: "valid OIDC provider",
+			provider: UpstreamProviderConfig{
+				Name:       "github",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid OAuth2 provider",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OIDC provider missing oidcConfig",
+			provider: UpstreamProviderConfig{
+				Name: "github",
+				Type: UpstreamProviderTypeOIDC,
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig must be set when type is 'oidc'",
+		},
+		{
+			name: "OAuth2 provider missing oauth2Config",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOAuth2,
+			},
+			expectErr: true,
+			errMsg:    "oauth2Config must be set when type is 'oauth2'",
+		},
+		{
+			name: "OIDC provider with oauth2Config instead",
+			provider: UpstreamProviderConfig{
+				Name: "github",
+				Type: UpstreamProviderTypeOIDC,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://github.com/authorize",
+					TokenEndpoint:         "https://github.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://github.com/userinfo"},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig must be set when type is 'oidc'",
+		},
+		{
+			name: "OAuth2 provider with oidcConfig instead",
+			provider: UpstreamProviderConfig{
+				Name:       "custom",
+				Type:       UpstreamProviderTypeOAuth2,
+				OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://oauth.example.com", ClientID: "client-id"},
+			},
+			expectErr: true,
+			// Pin the suffix that uniquely identifies the unified discriminator
+			// message — distinguishes it from the per-config substring used in
+			// the "missing oidcConfig" / "missing oauth2Config" cases above.
+			errMsg: "(and the other must not be set)",
+		},
+		{
+			name: "OIDC provider with valid additionalAuthorizationParams",
+			provider: UpstreamProviderConfig{
+				Name: "google",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://accounts.google.com",
+					ClientID:  "client-id",
+					AdditionalAuthorizationParams: map[string]string{
+						"access_type": "offline",
+						"prompt":      "consent",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OIDC provider with reserved param client_id",
+			provider: UpstreamProviderConfig{
+				Name: "google",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://accounts.google.com",
+					ClientID:  "client-id",
+					AdditionalAuthorizationParams: map[string]string{
+						"client_id": "override-attempt",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved parameter \"client_id\" is managed by the framework",
+		},
+		{
+			name: "OAuth2 provider with reserved param response_type",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+					AdditionalAuthorizationParams: map[string]string{
+						"response_type": "token",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved parameter \"response_type\" is managed by the framework",
+		},
+		{
+			name: "OAuth2 provider with valid additionalAuthorizationParams",
+			provider: UpstreamProviderConfig{
+				Name: "github",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+					TokenEndpoint:         "https://github.com/login/oauth/access_token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://api.github.com/user"},
+					AdditionalAuthorizationParams: map[string]string{
+						"allow_signup": "false",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OIDC provider with valid additionalTokenParams",
+			provider: UpstreamProviderConfig{
+				Name: "nominal",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					ClientID:  "client-id",
+					AdditionalTokenParams: map[string]string{
+						"resource": "https://api.example.com/mcp",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with valid additionalTokenParams",
+			provider: UpstreamProviderConfig{
+				Name: "nominal",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+					AdditionalTokenParams: map[string]string{
+						"resource": "https://api.example.com/mcp",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with reserved token param grant_type",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+					AdditionalTokenParams: map[string]string{
+						"grant_type": "password",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved token parameter \"grant_type\" is managed by the framework",
+		},
+		{
+			name: "OIDC provider with reserved token param refresh_token",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					ClientID:  "client-id",
+					AdditionalTokenParams: map[string]string{
+						"refresh_token": "override-attempt",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved token parameter \"refresh_token\" is managed by the framework",
+		},
+		{
+			name: "OAuth2 provider with valid DCRConfig (discoveryUrl only)",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-discovery",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with valid DCRConfig (registrationEndpoint only)",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-endpoint",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					Scopes:                []string{"openid"},
+					DCRConfig: &DCRUpstreamConfig{
+						RegistrationEndpoint: "https://idp.example.com/register",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig and non-empty ClientID",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-with-clientid",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					ClientID:              "pre-provisioned-id",
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "exactly one of clientId or dcrConfig must be set",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig specifying both endpoints",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-both-endpoints",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL:         "https://idp.example.com/.well-known/openid-configuration",
+						RegistrationEndpoint: "https://idp.example.com/register",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "exactly one of discoveryUrl or registrationEndpoint must be set",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig specifying neither endpoint",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-neither-endpoint",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig:             &DCRUpstreamConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "exactly one of discoveryUrl or registrationEndpoint must be set",
+		},
+		{
+			name: "OAuth2 provider with neither ClientID nor DCRConfig",
+			provider: UpstreamProviderConfig{
+				Name: "oauth2-missing-auth",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+				},
+			},
+			expectErr: true,
+			// Pin the scoped prefix so a rename of the oauth2Config label surfaces as a test failure.
+			errMsg: "oauth2Config: exactly one of clientId or dcrConfig must be set",
+		},
+		{
+			// Regression guard for DCR leakage on OIDC-typed providers:
+			// conversion only maps DCRConfig in the OAuth2 branch, so a stray
+			// OAuth2Config/DCRConfig payload on an OIDC-typed provider must be
+			// rejected at validate time rather than silently dropped. Set
+			// OIDCConfig so the OIDC half of the discriminator passes; the
+			// stray OAuth2Config is what trips the rule.
+			name: "OIDC provider with stray OAuth2Config carrying DCRConfig is rejected",
+			provider: UpstreamProviderConfig{
+				Name:       "mismatched-oidc",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://oidc.example.com", ClientID: "client-id"},
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+					},
+				},
+			},
+			expectErr: true,
+			// The unified discriminator message is the same regardless of
+			// which side trips it; pin the OAuth2-specific phrasing to
+			// document that this case is exercising the OAuth2-leakage path.
+			errMsg: "oauth2Config must be set when type is 'oauth2'",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig and ClientSecretRef is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-with-client-secret",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					ClientSecretRef:       &SecretKeyRef{Name: "stray", Key: "client-secret"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "clientSecretRef must not be set when dcrConfig is set",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig discoveryUrl at MaxLength is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-url-at-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: makeURLOfLen(MaxDCRURLLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig discoveryUrl over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-url-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: makeURLOfLen(MaxDCRURLLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.discoveryUrl: length",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig softwareStatement over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-software-statement-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL:      "https://idp.example.com/.well-known/openid-configuration",
+						SoftwareStatement: makeStringOfLen(MaxSoftwareStatementLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.softwareStatement: length",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName at MaxLength is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-at-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.clientName: must be at most 256 characters",
+		},
+		{
+			name: "OIDC provider with DCRConfig clientName at MaxLength is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "oidc-dcr-client-name-at-cap",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OIDC provider with DCRConfig clientName over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "oidc-dcr-client-name-over-cap",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig.dcrConfig.clientName: must be at most 256 characters",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName of 256 multibyte runes is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-multibyte-at-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeMultibyteStringOfRunes(MaxDCRClientNameLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName of 257 multibyte runes is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-multibyte-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeMultibyteStringOfRunes(MaxDCRClientNameLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.clientName: must be at most 256 characters",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig whitespace-only clientName is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-whitespace-only",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   "   ",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.clientName: must not have leading or trailing whitespace",
+		},
+		{
+			name: "OIDC provider with DCRConfig whitespace-only clientName is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "oidc-dcr-client-name-whitespace-only",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   "   ",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig.dcrConfig.clientName: must not have leading or trailing whitespace",
+		},
+		{
+			name: "OAuth2 provider with identityFromToken empty subjectPath rejected",
+			provider: UpstreamProviderConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://myaccount.snowflakecomputing.com/oauth/authorize",
+					TokenEndpoint:         "https://myaccount.snowflakecomputing.com/oauth/token-request",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://myaccount.snowflakecomputing.com/api/v2/users/me"},
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: ""},
+				},
+			},
+			expectErr: true,
+			errMsg:    "identityFromToken.subjectPath must not be empty when identityFromToken is set",
+		},
+		{
+			name: "OAuth2 provider with identityFromToken non-empty subjectPath accepted",
+			provider: UpstreamProviderConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://myaccount.snowflakecomputing.com/oauth/authorize",
+					TokenEndpoint:         "https://myaccount.snowflakecomputing.com/oauth/token-request",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://myaccount.snowflakecomputing.com/api/v2/users/me"},
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "username"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with identityFromToken and userInfo both set — accepted",
+			provider: UpstreamProviderConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://myaccount.snowflakecomputing.com/oauth/authorize",
+					TokenEndpoint:         "https://myaccount.snowflakecomputing.com/oauth/token-request",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://myaccount.snowflakecomputing.com/api/v2/users/me"},
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "username", NamePath: "display_name"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with identityFromToken and tokenResponseMapping both set — accepted",
+			provider: UpstreamProviderConfig{
+				Name: "slack",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://slack.com/oauth/v2/authorize",
+					TokenEndpoint:         "https://slack.com/api/oauth.v2.access",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://slack.com/api/users.info"},
+					TokenResponseMapping:  &TokenResponseMapping{AccessTokenPath: "authed_user.access_token"},
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "authed_user.id"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			// UserInfo is +optional, and validateUpstreamProvider permits nil
+			// UserInfo so identity can be resolved solely via IdentityFromToken
+			// — the Snowflake / Slack shape where the userinfo endpoint is
+			// absent or unusable.
+			name: "OAuth2 provider with identityFromToken and nil userInfo — accepted at runtime",
+			provider: UpstreamProviderConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://myaccount.snowflakecomputing.com/oauth/authorize",
+					TokenEndpoint:         "https://myaccount.snowflakecomputing.com/oauth/token-request",
+					ClientID:              "client-id",
+					UserInfo:              nil,
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "username"},
+				},
+			},
+			expectErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := &MCPExternalAuthConfig{
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer:            "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{tt.provider},
+					},
+				},
+			}
+
+			err := config.validateUpstreamProvider(0, &tt.provider)
+			if tt.expectErr {
+				require.Error(t, err, "expected validation to fail")
+				assert.Contains(t, err.Error(), tt.errMsg, "error message should match")
+			} else {
+				assert.NoError(t, err, "expected validation to pass")
+			}
+		})
+	}
+}
+
+func TestDelegateClientConfig_JSON(t *testing.T) {
+	t.Parallel()
+
+	config := EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		DelegateClients: []DelegateClientConfig{{
+			ClientID:        "delegate-client",
+			ClientSecretRef: &SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+			Scopes:          []string{"openid"},
+			Audiences:       []string{"https://api.example.com"},
+		}},
+	}
+
+	encoded, err := json.Marshal(config)
+	require.NoError(t, err)
+
+	var serialized map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(encoded, &serialized))
+	require.Contains(t, serialized, "delegateClients")
+	require.JSONEq(t, `[
+		{
+			"clientId": "delegate-client",
+			"clientSecretRef": {"name": "delegate-secret", "key": "client-secret"},
+			"scopes": ["openid"],
+			"audiences": ["https://api.example.com"]
+		}
+	]`, string(serialized["delegateClients"]))
+	assert.NotContains(t, string(encoded), `"clientSecret":`)
+	assert.NotContains(t, string(encoded), `"redirectUris":`)
+	assert.NotContains(t, string(encoded), `"grantTypes":`)
+
+	deepCopy := config.DeepCopy()
+	require.NotNil(t, deepCopy)
+	deepCopy.DelegateClients[0].ClientSecretRef.Name = "changed-secret"
+	deepCopy.DelegateClients[0].Scopes[0] = "profile"
+	deepCopy.DelegateClients[0].Audiences[0] = "https://changed.example.com"
+	assert.Equal(t, "delegate-secret", config.DelegateClients[0].ClientSecretRef.Name)
+	assert.Equal(t, "openid", config.DelegateClients[0].Scopes[0])
+	assert.Equal(t, "https://api.example.com", config.DelegateClients[0].Audiences[0])
+
+	var existing EmbeddedAuthServerConfig
+	err = json.Unmarshal([]byte(`{"issuer":"https://auth.example.com","upstreamProviders":[]}`), &existing)
+	require.NoError(t, err)
+	assert.Nil(t, existing.DelegateClients)
+	assert.False(t, existing.AllowConfidentialClientRegistration)
+	assert.False(t, existing.AllowPrivateKeyJWTRegistration)
+}
+
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransport(t *testing.T) {
+	t.Parallel()
+
+	delegateClients := []DelegateClientConfig{{
+		ClientID:        "delegate-client",
+		ClientSecretRef: &SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+		Scopes:          []string{"openid"},
+		Audiences:       []string{"https://api.example.com"},
+	}}
+	spiffeConfig := func(method SPIFFEAuthenticationMethod, mutate func(*EmbeddedAuthServerConfig)) EmbeddedAuthServerConfig {
+		config := EmbeddedAuthServerConfig{
+			Issuer: "http://localhost:8080",
+			SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+				Name: "example", TrustDomain: "example.org",
+				Methods: []SPIFFEAuthenticationMethod{method},
+				BundleSource: SPIFFEBundleSourceConfig{
+					Type: SPIFFEBundleSourceTypeFile,
+					File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+				},
+			}},
+			InboundGrants: &InboundGrantsConfig{
+				SPIFFEClientAuth: []SPIFFEClientConfig{{
+					TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+					ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
+					Resources: []string{"https://mcp.example.com"},
+					Scopes:    []string{"openid"}, GrantTypes: []string{"client_credentials"},
+				}},
+			},
+		}
+		mutate(&config)
+		return config
+	}
+	splitSPIFFEMethodAndGrant := func(c *EmbeddedAuthServerConfig) {
+		c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT, SPIFFEAuthenticationMethodX509}
+		first := &c.InboundGrants.SPIFFEClientAuth[0]
+		first.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+		second := *first
+		second.PrincipalPattern = "spiffe://example.org/ns/default/other"
+		second.ClientID = "spiffe-client-x509"
+		second.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}
+		second.GrantTypes = []string{"client_credentials"}
+		c.InboundGrants.SPIFFEClientAuth = append(c.InboundGrants.SPIFFEClientAuth, second)
+	}
+	tests := []struct {
+		name      string
+		config    EmbeddedAuthServerConfig
+		expectErr bool
+	}{
+		{
+			name: "SPIFFE JWT client_credentials association rejects insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+			}),
+			expectErr: true,
+		},
+		{
+			name:      "SPIFFE JWT client_credentials association rejects HTTP loopback without explicit opt in",
+			config:    spiffeConfig(SPIFFEAuthenticationMethodJWT, func(*EmbeddedAuthServerConfig) {}),
+			expectErr: true,
+		},
+		{
+			name: "SPIFFE JWT client_credentials association allows HTTP loopback with explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowConfidentialOverLoopbackHTTP = true
+			}),
+		},
+		{
+			name: "SPIFFE JWT token-exchange-only association is admitted with insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+			}),
+		},
+		{
+			name: "SPIFFE JWT token-exchange-only association is admitted on HTTP loopback without explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+			}),
+		},
+		{
+			name: "SPIFFE JWT token exchange plus X.509 client_credentials on separate associations is admitted with insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.Issuer = "https://auth.example.com"
+				splitSPIFFEMethodAndGrant(c)
+			}),
+		},
+		{
+			name: "SPIFFE X.509 client_credentials association is unaffected by insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodX509, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.Issuer = "https://auth.example.com"
+			}),
+		},
+		{
+			name: "delegate clients remain independent of confidential DCR",
+			config: EmbeddedAuthServerConfig{
+				Issuer:          "https://auth.example.com",
+				DelegateClients: delegateClients,
+			},
+		},
+		{
+			name: "delegate clients reject insecure HTTP",
+			config: EmbeddedAuthServerConfig{
+				Issuer:            "http://auth.example.com",
+				InsecureAllowHTTP: true,
+				DelegateClients:   delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients reject HTTP loopback without explicit opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer:          "http://127.0.0.1:8080",
+				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients reject HTTP non-loopback without explicit opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer:          "http://auth.example.com",
+				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "canonical delegate clients reject HTTP non-loopback without explicit opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "http://auth.example.com",
+				InboundGrants: &InboundGrantsConfig{
+					TokenExchange: &TokenExchangeInboundGrantConfig{
+						DelegateClients: delegateClients,
+					},
+				},
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients reject HTTP non-loopback with loopback opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "http://auth.example.com",
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+				DelegateClients: delegateClients,
+			},
+			expectErr: true,
+		},
+		{
+			name: "delegate clients allow HTTPS with loopback opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+				DelegateClients: delegateClients,
+			},
+		},
+		{
+			name: "private-key JWT registration passes with insecure HTTP (no secret to protect)",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "http://auth.example.com",
+				InsecureAllowHTTP:              true,
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		{
+			name: "private-key JWT registration does not enable confidential registration",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "https://auth.example.com",
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		{
+			name: "private-key JWT registration passes with plain-HTTP loopback issuer (no secret to protect)",
+			config: EmbeddedAuthServerConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.config.ValidateInboundGrants()
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestMCPExternalAuthConfig_DelegateClientsRejectUnsafeHTTP(t *testing.T) {
+	t.Parallel()
+
+	config := &MCPExternalAuthConfig{
+		Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer:            "http://auth.example.com",
+				InsecureAllowHTTP: true,
+				DelegateClients: []DelegateClientConfig{{
+					ClientID:        "delegate-client",
+					ClientSecretRef: &SecretKeyRef{Name: "delegate-secret", Key: "client-secret"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://api.example.com"},
+				}},
+				UpstreamProviders: []UpstreamProviderConfig{{
+					Name:       "github",
+					Type:       UpstreamProviderTypeOIDC,
+					OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				}},
+			},
+		},
+	}
+
+	err := config.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "insecure_allow_http")
+}
+
+func TestEmbeddedAuthServerConfig_SyntheticIdentityUpstreams(t *testing.T) {
+	t.Parallel()
+
+	oidc := &UpstreamProviderConfig{
+		Name:       "okta",
+		Type:       UpstreamProviderTypeOIDC,
+		OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://okta.example.com", ClientID: "id"},
+	}
+	oauth2WithUserInfo := UpstreamProviderConfig{
+		Name: "with-userinfo",
+		Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp/authorize",
+			TokenEndpoint:         "https://idp/token",
+			ClientID:              "client",
+			UserInfo:              &UserInfoConfig{EndpointURL: "https://idp/userinfo"},
+		},
+	}
+	oauth2NoUserInfo := UpstreamProviderConfig{
+		Name: "no-userinfo",
+		Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp/authorize",
+			TokenEndpoint:         "https://idp/token",
+			ClientID:              "client",
+		},
+	}
+	oauth2NoUserInfo2 := UpstreamProviderConfig{
+		Name: "another-no-userinfo",
+		Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp/authorize",
+			TokenEndpoint:         "https://idp/token",
+			ClientID:              "client",
+		},
+	}
+	oauth2IdentityFromTokenOnly := UpstreamProviderConfig{
+		Name: "snowflake",
+		Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp/authorize",
+			TokenEndpoint:         "https://idp/token",
+			ClientID:              "client",
+			IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "username"},
+		},
+	}
+
+	tests := []struct {
+		name string
+		cfg  *EmbeddedAuthServerConfig
+		want []string
+	}{
+		{
+			name: "nil config returns nil",
+			cfg:  nil,
+			want: nil,
+		},
+		{
+			name: "empty upstreams returns nil",
+			cfg:  &EmbeddedAuthServerConfig{},
+			want: nil,
+		},
+		{
+			name: "OIDC-only is not synthesis-mode",
+			cfg:  &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{*oidc}},
+			want: nil,
+		},
+		{
+			name: "OAuth2 with userInfo is not synthesis-mode",
+			cfg:  &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{oauth2WithUserInfo}},
+			want: nil,
+		},
+		{
+			name: "single OAuth2 without userInfo is synthesis-mode",
+			cfg:  &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{oauth2NoUserInfo}},
+			want: []string{"no-userinfo"},
+		},
+		{
+			name: "multiple OAuth2 without userInfo returned in sorted order",
+			cfg: &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{
+				oauth2NoUserInfo, oauth2NoUserInfo2,
+			}},
+			want: []string{"another-no-userinfo", "no-userinfo"},
+		},
+		{
+			name: "mixed: only OAuth2-without-userInfo are returned",
+			cfg: &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{
+				*oidc, oauth2WithUserInfo, oauth2NoUserInfo,
+			}},
+			want: []string{"no-userinfo"},
+		},
+		{
+			name: "OAuth2 with identityFromToken (no userInfo) is not synthesis-mode",
+			cfg:  &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{oauth2IdentityFromTokenOnly}},
+			want: nil,
+		},
+		{
+			name: "mixed: identityFromToken upstream excluded; synthesis-mode upstream included",
+			cfg: &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{
+				oauth2IdentityFromTokenOnly, oauth2NoUserInfo,
+			}},
+			want: []string{"no-userinfo"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.cfg.SyntheticIdentityUpstreams())
+		})
+	}
+}
+
+func TestEmbeddedAuthServerConfig_ValidateTLSListener(t *testing.T) {
+	t.Parallel()
+
+	const (
+		errListenerRequired = "tlsListener is required when SPIFFE X.509 client authentication is configured"
+		errSecretRefs       = "tlsListener.certificateSecretRef and tlsListener.privateKeySecretRef are required"
+		errCertRef          = "tlsListener.certificateSecretRef.name and tlsListener.certificateSecretRef.key are required"
+		errKeyRef           = "tlsListener.privateKeySecretRef.name and tlsListener.privateKeySecretRef.key are required"
+	)
+	listener := &TLSListenerConfig{
+		CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+		PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+	}
+	grants := func(method SPIFFEAuthenticationMethod) *InboundGrantsConfig {
+		return &InboundGrantsConfig{SPIFFEClientAuth: []SPIFFEClientConfig{{
+			TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+			ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
+			GrantTypes: []string{"client_credentials"},
+		}}}
+	}
+	trustDomains := []SPIFFETrustDomainConfig{{
+		Name: "example", TrustDomain: "example.org",
+		Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		BundleSource: SPIFFEBundleSourceConfig{
+			Type: SPIFFEBundleSourceTypeFile,
+			File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+		},
+	}}
+
+	tests := []struct {
+		name        string
+		cfg         EmbeddedAuthServerConfig
+		wantErr     string
+		viaValidate bool
+	}{
+		{
+			name:        "x509 association without listener",
+			cfg:         EmbeddedAuthServerConfig{InboundGrants: grants(SPIFFEAuthenticationMethodX509)},
+			wantErr:     errListenerRequired,
+			viaValidate: true,
+		},
+		{
+			name: "listener without certificate reference",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				PrivateKeySecretRef: listener.PrivateKeySecretRef,
+			}},
+			wantErr: errSecretRefs,
+		},
+		{
+			name: "listener without private key reference",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: listener.CertificateSecretRef,
+			}},
+			wantErr: errSecretRefs,
+		},
+		{
+			name:    "listener without any reference",
+			cfg:     EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{}},
+			wantErr: errSecretRefs,
+		},
+		{
+			name: "certificate reference with empty name",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: &SecretKeyRef{Key: "certificate"},
+				PrivateKeySecretRef:  listener.PrivateKeySecretRef,
+			}},
+			wantErr: errCertRef,
+		},
+		{
+			name: "certificate reference with empty key",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: &SecretKeyRef{Name: "listener-tls"},
+				PrivateKeySecretRef:  listener.PrivateKeySecretRef,
+			}},
+			wantErr: errCertRef,
+		},
+		{
+			name: "private key reference with empty name",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: listener.CertificateSecretRef,
+				PrivateKeySecretRef:  &SecretKeyRef{Key: "private-key"},
+			}},
+			wantErr: errKeyRef,
+		},
+		{
+			name: "private key reference with empty key",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: listener.CertificateSecretRef,
+				PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls"},
+			}},
+			wantErr: errKeyRef,
+		},
+		{
+			name: "incomplete listener is rejected before the x509 rule",
+			cfg: EmbeddedAuthServerConfig{
+				InboundGrants: grants(SPIFFEAuthenticationMethodX509),
+				TLSListener:   &TLSListenerConfig{CertificateSecretRef: listener.CertificateSecretRef},
+			},
+			wantErr: errSecretRefs,
+		},
+		{
+			name:        "complete listener",
+			cfg:         EmbeddedAuthServerConfig{TLSListener: listener},
+			viaValidate: true,
+		},
+		{
+			name: "x509 association with listener",
+			cfg:  EmbeddedAuthServerConfig{InboundGrants: grants(SPIFFEAuthenticationMethodX509), TLSListener: listener},
+		},
+		{
+			name: "jwt-only association without listener",
+			cfg:  EmbeddedAuthServerConfig{InboundGrants: grants(SPIFFEAuthenticationMethodJWT)},
+		},
+		{
+			name: "x509 only in trust domains without listener",
+			cfg: EmbeddedAuthServerConfig{
+				SPIFFETrustDomains: trustDomains,
+				InboundGrants:      grants(SPIFFEAuthenticationMethodJWT),
+			},
+		},
+		{
+			name: "nil inbound grants without listener",
+			cfg:  EmbeddedAuthServerConfig{SPIFFETrustDomains: trustDomains},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.cfg.ValidateTLSListener()
+			if tt.wantErr != "" {
+				require.EqualError(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+
+			if !tt.viaValidate {
+				return
+			}
+
+			// Validate() must surface the same rejection.
+			cfg := tt.cfg
+			cfg.Issuer = "https://auth.example.com"
+			cfg.UpstreamProviders = []UpstreamProviderConfig{{
+				Name:       "github",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+			}}
+			validateErr := (&MCPExternalAuthConfig{Spec: MCPExternalAuthConfigSpec{
+				Type:               ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &cfg,
+			}}).Validate()
+			if tt.wantErr != "" {
+				require.ErrorContains(t, validateErr, tt.wantErr)
+			} else {
+				require.NoError(t, validateErr)
+			}
+		})
+	}
+}

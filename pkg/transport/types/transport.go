@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"golang.org/x/exp/jsonrpc2"
 	"golang.org/x/oauth2"
@@ -194,7 +195,9 @@ type Proxy interface {
 	// SendMessageToDestination sends a message to the destination.
 	SendMessageToDestination(msg jsonrpc2.Message) error
 
-	// ForwardResponseToClients forwards a response from the destination to clients.
+	// ForwardResponseToClients delivers a message from the destination to the
+	// client session(s) it belongs to. Implementations must never deliver a
+	// message to a session that did not originate it.
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 }
 
@@ -248,6 +251,12 @@ type Config struct {
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool
 
+	// StrictProtocolValidation enables strict MCP-Protocol-Version validation
+	// on the streamable HTTP proxy: a present-but-unsupported header value is
+	// rejected with HTTP 400. Default false accepts any version string. Only
+	// consulted for the stdio/streamable-HTTP proxy path (see factory.go).
+	StrictProtocolValidation bool
+
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
 
@@ -272,10 +281,26 @@ type Config struct {
 	//	}
 	PrefixHandlers map[string]http.Handler
 
+	// StripConsentCookie prevents the embedded auth server's remembered-consent
+	// cookie family (__Host-thv_consent_*), not all auth server browser cookies,
+	// from reaching the MCP backend. Only set when the embedded AS is mounted.
+	StripConsentCookie bool
+
 	// SessionStorage overrides the default in-memory session store when set.
 	// Used for Redis-backed session sharing across replicas.
 	// When nil, transports use their default in-memory LocalStorage.
 	SessionStorage session.Storage
+
+	// SessionTTL is the inactivity timeout for sessions managed by this proxy.
+	// Sessions idle for longer than this duration are cleaned up by the session
+	// manager's background worker. Zero uses session.DefaultSessionTTL.
+	SessionTTL time.Duration
+
+	// ReadTimeout bounds reading the entire request (headers + body) on the proxy
+	// http.Server. Zero uses the proxy package default; negative values are
+	// rejected. Applies to all HTTP transports; it never affects SSE responses,
+	// which stream on the response side.
+	ReadTimeout time.Duration
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

@@ -84,7 +84,7 @@ func printJSONSearchResults(servers []types.ServerMetadata) error {
 func printTextSearchResults(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS"); err != nil {
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS"); err != nil {
 		slog.Warn(fmt.Sprintf("Failed to write output: %v", err))
 		return
 	}

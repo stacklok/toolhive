@@ -152,6 +152,61 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 	})
 }
 
+// TestDefaultAggregator_AggregateCapabilities_Partial verifies (#6829) that
+// AggregateCapabilities reports, via Metadata.Partial, whether the backend sweep
+// was incomplete — a still-healthy backend that failed its live capability query
+// is omitted from the result, and a caller must be able to tell that apart from
+// a complete (even tool-less) sweep before replacing an established view.
+func TestDefaultAggregator_AggregateCapabilities_Partial(t *testing.T) {
+	t.Parallel()
+
+	newAgg := func(t *testing.T, failBackend2 bool) Aggregator {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		caps1 := newTestCapabilityList(withTools(newTestTool("tool1", "backend1")))
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+				if target.WorkloadID == "backend1" {
+					return caps1, nil
+				}
+				if failBackend2 {
+					return nil, errors.New("connection timeout")
+				}
+				return newTestCapabilityList(withTools(newTestTool("tool2", "backend2"))), nil
+			}).Times(2)
+		return NewDefaultAggregator(mockClient, NewPrefixConflictResolver("{workload}_"), nil, nil)
+	}
+
+	backends := []vmcp.Backend{
+		newTestBackend("backend1"),
+		newTestBackend("backend2", withBackendURL("http://localhost:8081")),
+	}
+
+	t.Run("complete sweep is not partial", func(t *testing.T) {
+		t.Parallel()
+		agg := newAgg(t, false)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+		require.NoError(t, err)
+		require.NotNil(t, result.Metadata)
+		assert.False(t, result.Metadata.Partial)
+		assert.Empty(t, result.Metadata.FailedBackends)
+	})
+
+	t.Run("partial sweep is reported", func(t *testing.T) {
+		t.Parallel()
+		agg := newAgg(t, true)
+		result, err := agg.AggregateCapabilities(context.Background(), backends)
+		require.NoError(t, err)
+		require.NotNil(t, result.Metadata)
+		assert.True(t, result.Metadata.Partial,
+			"a sweep where a healthy backend fails its query must be reported partial")
+		assert.Equal(t, 2, result.Metadata.BackendCount)
+		assert.Equal(t, []string{"backend2"}, result.Metadata.FailedBackends,
+			"FailedBackends must name the backend whose query failed")
+	})
+}
+
 func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 	t.Parallel()
 

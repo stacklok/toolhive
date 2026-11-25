@@ -197,31 +197,69 @@ func (*stubSessionManager) EvictStaleSessions(context.Context) int              
 
 var _ SessionManager = (*stubSessionManager)(nil)
 
-// TestResyncSessionTools_ReplacesRatherThanMerges verifies (#5748) that
-// resyncSessionTools REPLACES the session's tool store with the freshly
-// core-derived set — unlike setSessionToolsDirect's registration-time MERGE —
-// so a tool the backend removed (and the core therefore no longer advertises)
-// disappears rather than lingering.
-func TestResyncSessionTools_ReplacesRatherThanMerges(t *testing.T) {
+// TestResyncSessionTools_ReconcilesPerBackend verifies (#5748, #6829) the resync
+// outcomes: a COMPLETE sweep REPLACES the store (so a backend-removed tool
+// disappears), while a PARTIAL sweep reconciles PER BACKEND — it replaces the tools
+// of backends that answered (so their removals propagate) and keeps the previous
+// tools of backends that failed.
+func TestResyncSessionTools_ReconcilesPerBackend(t *testing.T) {
 	t.Parallel()
 
-	fc := &fakeCore{tools: []vmcp.Tool{{Name: "kept"}, {Name: "added"}}}
-	srv := &Server{core: fc}
+	tests := []struct {
+		name           string
+		failedBackends []string
+		prevBackends   map[string]string // existing tool name -> backend ID
+		wantTools      []string
+	}{
+		{
+			name:           "complete sweep replaces",
+			failedBackends: nil,
+			prevBackends:   map[string]string{"kept": "A", "removed": "A"},
+			wantTools:      []string{"kept", "added"},
+		},
+		{
+			name:           "partial sweep keeps failed backend's tools and drops healthy removals",
+			failedBackends: []string{"B"},
+			prevBackends:   map[string]string{"kept": "A", "removed": "A", "btool": "B"},
+			wantTools:      []string{"kept", "added", "btool"},
+		},
+	}
 
-	sess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
-		"kept":    {Tool: mcp.Tool{Name: "kept"}},
-		"removed": {Tool: mcp.Tool{Name: "removed"}}, // must disappear after resync
-	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	err := srv.resyncSessionTools(context.Background(), sess, "sess-1", nil)
-	require.NoError(t, err)
+			fc := &fakeCore{
+				tools: []vmcp.Tool{
+					{Name: "kept", BackendID: "A"},
+					{Name: "added", BackendID: "A"},
+				},
+				toolsFailedBackends: tc.failedBackends,
+			}
+			srv := &Server{
+				core:            fc,
+				backendRegistry: vmcp.NewImmutableRegistry([]vmcp.Backend{{ID: "A", Name: "a"}, {ID: "B", Name: "b"}}),
+				sessionToolBackends: map[string]map[string]string{
+					"sess-1": tc.prevBackends,
+				},
+			}
 
-	got := sess.GetSessionTools()
-	assert.Len(t, got, 2)
-	assert.Contains(t, got, "kept")
-	assert.Contains(t, got, "added")
-	assert.NotContains(t, got, "removed", "resync must REPLACE the tool store, dropping a no-longer-advertised tool")
-	assert.Equal(t, 1, sess.setSessionToolsCalls)
+			existing := make(map[string]server.ServerTool, len(tc.prevBackends))
+			for name := range tc.prevBackends {
+				existing[name] = server.ServerTool{Tool: mcp.Tool{Name: name}}
+			}
+			sess := &fakeToolsSession{id: "sess-1", tools: existing}
+
+			err := srv.resyncSessionTools(context.Background(), sess, "sess-1", nil)
+			require.NoError(t, err)
+
+			got := sess.GetSessionTools()
+			require.Len(t, got, len(tc.wantTools))
+			for _, name := range tc.wantTools {
+				assert.Contains(t, got, name)
+			}
+		})
+	}
 }
 
 // TestResyncSessionTools_SessionWithoutToolSupport verifies resyncSessionTools
@@ -368,6 +406,72 @@ func TestResyncSessionPrompts_ReplacesRatherThanMerges(t *testing.T) {
 	assert.Contains(t, got, "kept")
 	assert.Contains(t, got, "added")
 	assert.NotContains(t, got, "removed", "resync must REPLACE the prompt store, dropping a no-longer-advertised prompt")
+	assert.Equal(t, 1, sess.setSessionPromptsCalls)
+}
+
+// TestResyncSessionResources_MergesOnPartialSweep verifies (#6829) that a partial
+// resources sweep MERGES rather than replaces: a recovered backend's additions
+// appear, and a still-healthy-but-failing backend's resources/templates are not
+// dropped.
+func TestResyncSessionResources_MergesOnPartialSweep(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		resources:               []vmcp.Resource{{Name: "kept", URI: "kept"}, {Name: "added", URI: "added"}},
+		resourceTemplates:       []vmcp.ResourceTemplate{{Name: "kept-tmpl", URITemplate: "kept-tmpl"}, {Name: "added-tmpl", URITemplate: "added-tmpl"}},
+		resourcesFailedBackends: []string{"backend-1"},
+	}
+	srv := &Server{core: fc}
+
+	sess := &fakeCapsSession{
+		id: "sess-1",
+		resources: map[string]server.ServerResource{
+			"kept":    {Resource: mcp.Resource{Name: "kept", URI: "kept"}},
+			"removed": {Resource: mcp.Resource{Name: "removed", URI: "removed"}},
+		},
+		resourceTemplates: map[string]server.ServerResourceTemplate{
+			"kept-tmpl":    {Template: mcp.ResourceTemplate{Name: "kept-tmpl", URITemplate: "kept-tmpl"}},
+			"removed-tmpl": {Template: mcp.ResourceTemplate{Name: "removed-tmpl", URITemplate: "removed-tmpl"}},
+		},
+	}
+
+	err := srv.resyncSessionResources(context.Background(), sess, "sess-1", nil)
+	require.NoError(t, err)
+
+	gotResources := sess.GetSessionResources()
+	assert.Contains(t, gotResources, "removed", "partial sweep must not drop a still-healthy backend's resources")
+	assert.Contains(t, gotResources, "added", "partial sweep must admit a recovered backend's additions")
+	assert.Equal(t, 1, sess.setSessionResourcesCalls)
+
+	gotTemplates := sess.GetSessionResourceTemplates()
+	assert.Contains(t, gotTemplates, "removed-tmpl", "partial sweep must not drop a still-healthy backend's templates")
+	assert.Contains(t, gotTemplates, "added-tmpl", "partial sweep must admit a recovered backend's templates")
+	assert.Equal(t, 1, sess.setSessionResourceTemplatesCalls)
+}
+
+// TestResyncSessionPrompts_MergesOnPartialSweep verifies (#6829) that a partial
+// prompts sweep MERGES rather than replaces: a recovered backend's additions
+// appear, and a still-healthy-but-failing backend's prompts are not dropped.
+func TestResyncSessionPrompts_MergesOnPartialSweep(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		prompts:               []vmcp.Prompt{{Name: "kept"}, {Name: "added"}},
+		promptsFailedBackends: []string{"backend-1"},
+	}
+	srv := &Server{core: fc}
+
+	sess := &fakeCapsSession{id: "sess-1", prompts: map[string]server.ServerPrompt{
+		"kept":    {Prompt: mcp.Prompt{Name: "kept"}},
+		"removed": {Prompt: mcp.Prompt{Name: "removed"}},
+	}}
+
+	err := srv.resyncSessionPrompts(context.Background(), sess, "sess-1", nil)
+	require.NoError(t, err)
+
+	got := sess.GetSessionPrompts()
+	assert.Contains(t, got, "removed", "partial sweep must not drop a still-healthy backend's prompts")
+	assert.Contains(t, got, "added", "partial sweep must admit a recovered backend's additions")
 	assert.Equal(t, 1, sess.setSessionPromptsCalls)
 }
 

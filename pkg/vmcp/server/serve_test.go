@@ -55,6 +55,17 @@ func (*stubVMCP) ReadResource(context.Context, *auth.Identity, string) (*vmcp.Re
 	return nil, nil
 }
 func (*stubVMCP) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Prompt, error) { return nil, nil }
+func (*stubVMCP) ListToolsWithPartial(context.Context, *auth.Identity) ([]vmcp.Tool, []string, error) {
+	return nil, nil, nil
+}
+func (*stubVMCP) ListResourcesWithPartial(
+	context.Context, *auth.Identity,
+) ([]vmcp.Resource, []vmcp.ResourceTemplate, []string, error) {
+	return nil, nil, nil, nil
+}
+func (*stubVMCP) ListPromptsWithPartial(context.Context, *auth.Identity) ([]vmcp.Prompt, []string, error) {
+	return nil, nil, nil
+}
 func (*stubVMCP) GetPrompt(
 	context.Context, *auth.Identity, string, map[string]any,
 ) (*vmcp.PromptGetResult, error) {

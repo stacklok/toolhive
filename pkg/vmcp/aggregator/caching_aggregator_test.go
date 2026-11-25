@@ -734,3 +734,34 @@ func (f *fakeClock) Advance(d time.Duration) {
 	defer f.mu.Unlock()
 	f.now = f.now.Add(d)
 }
+
+// TestCachingAggregator_PartialViewShortTTL verifies (#6829) that a partial
+// aggregation is memoized with a short fixed TTL rather than the full one: a
+// re-read within the short window hits the cache, but once the short window
+// elapses (well inside the full TTL) the next call re-sweeps. Without this, a
+// briefly-failed backend's tools would stay absent for the whole full TTL.
+func TestCachingAggregator_PartialViewShortTTL(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	mock := mocks.NewMockAggregator(ctrl)
+	partial := &aggregator.AggregatedCapabilities{Metadata: &aggregator.AggregationMetadata{Partial: true}}
+	mock.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(partial, nil).Times(2)
+
+	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
+	c := aggregator.NewCachingAggregatorWithClockForTest(mock, time.Hour, clock.Now)
+	ctx := ctxWithSubject("alice")
+
+	_, err := c.AggregateCapabilities(ctx, testBackends)
+	require.NoError(t, err)
+
+	// Immediately re-read: a cache hit (no second sweep) even for a partial view.
+	_, err = c.AggregateCapabilities(ctx, testBackends)
+	require.NoError(t, err)
+
+	// After the short partial TTL elapses — but well within the 1h full TTL — the
+	// partial view expires and the next call re-sweeps (the mock's Times(2) is the
+	// re-sweep assertion).
+	clock.Advance(6 * time.Second)
+	_, err = c.AggregateCapabilities(ctx, testBackends)
+	require.NoError(t, err)
+}

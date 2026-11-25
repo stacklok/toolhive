@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
@@ -229,6 +230,7 @@ func (s *Server) runListChangedResync(
 		switch {
 		case errors.Is(err, transportsession.ErrSessionNotFound):
 			s.healthResync.remove(sessionID)
+			s.removeSessionToolBackends(sessionID)
 			slog.Debug("skipping list_changed resync for terminated session", "session_id", sessionID, "kind", kind)
 		case baseCtx.Err() != nil:
 			slog.Debug("skipping list_changed resync: server stopping", "session_id", sessionID, "kind", kind)
@@ -274,24 +276,36 @@ func (s *Server) runListChangedResync(
 	}
 }
 
-// resyncSessionTools re-derives sessionID's advertised tool set (via
-// serveSessionTools — the core, cache now cold, plus optimizer meta-tools when
-// enabled) and REPLACES the SDK session's tool store with it, so a tool the
-// backend removed (and the core therefore no longer advertises) disappears
-// rather than lingering (unlike setSessionToolsDirect's registration-time
-// MERGE, which only adds). The go-sdk server then auto-emits
-// notifications/tools/list_changed to the downstream client, since serve.go
-// enables WithToolCapabilities(true).
+// resyncSessionTools re-derives sessionID's advertised tool set from a SINGLE core
+// aggregation (core.ListToolsWithPartial — the core, cache now cold, plus optimizer
+// meta-tools when enabled). On a complete sweep it REPLACES the SDK session's tool
+// store, so a tool the backend removed disappears rather than lingering. On a PARTIAL
+// sweep (#6829) — a still-healthy backend that failed its live capability query
+// mid-sweep is silently omitted from the re-derived set — it reconciles PER BACKEND
+// (reconcileSessionToolsPerBackend): the tools of every backend that answered are
+// replaced (additions AND removals propagate), while the previous tools of every
+// backend that failed are kept, so a transient failure does not drop a backend's
+// tools and a permanently-failing principal still sees removals from healthy
+// backends. The partial bit and the tools come from the SAME aggregation, so a
+// purge/TTL/last-writer-wins between two separate reads cannot make us check a
+// complete sweep and then install a partial one.
 //
-// ctx must already carry the resyncing principal's identity and forwarded
-// headers (runListChangedResync builds it) so serveSessionTools ->
-// core.ListTools enumerates backends with the correct credentials and cache key.
+// Optimizer mode is the exception: the session store holds only the
+// find_tool/call_tool meta-tools (whose definitions are independent of the backend
+// set) and the real tools live in the optimizer index, which is rebuilt from the FULL
+// tool set — there is no per-backend merge for it. A partial sweep therefore leaves
+// the index alone (only a complete sweep rebuilds it), matching the health-fan-out
+// gate in resyncSessionsOnBackendHealthChange.
+//
+// ctx must already carry the resyncing principal's identity and forwarded headers
+// (runListChangedResync builds it) so core.ListToolsWithPartial enumerates backends
+// with the correct credentials and cache key.
 func (s *Server) resyncSessionTools(
 	ctx context.Context, session server.ClientSession, sessionID string, identity *auth.Identity,
 ) error {
-	tools, err := s.serveSessionTools(ctx, sessionID, identity)
+	domainTools, failedBackends, err := s.core.ListToolsWithPartial(ctx, identity)
 	if err != nil {
-		return fmt.Errorf("resync session tools: core ListTools for session %s: %w", sessionID, err)
+		return fmt.Errorf("resync session tools: core ListToolsWithPartial for session %s: %w", sessionID, err)
 	}
 
 	sessionWithTools, ok := session.(server.SessionWithTools)
@@ -299,116 +313,252 @@ func (s *Server) resyncSessionTools(
 		return fmt.Errorf("resync session tools: session %s does not support per-session tools", sessionID)
 	}
 
-	toolMap := make(map[string]server.ServerTool, len(tools))
-	for _, tool := range tools {
+	if s.optimizerFactory != nil {
+		if len(failedBackends) > 0 {
+			slog.Debug("skipping session optimizer rebuild after partial backend sweep",
+				"session_id", sessionID)
+			return nil
+		}
+		sdkTools, err := s.adaptCoreTools(ctx, sessionID, domainTools)
+		if err != nil {
+			return err
+		}
+		sdkTools, err = s.optimizerSessionTools(ctx, sessionID, sdkTools)
+		if err != nil {
+			return fmt.Errorf("resync session tools: build session optimizer for session %s: %w", sessionID, err)
+		}
+		toolMap := make(map[string]server.ServerTool, len(sdkTools))
+		for _, tool := range sdkTools {
+			toolMap[tool.Tool.Name] = tool
+		}
+		sessionWithTools.SetSessionTools(toolMap)
+		slog.Debug("resynced session optimizer tools after backend list_changed",
+			"session_id", sessionID, "tool_count", len(sdkTools))
+		return nil
+	}
+
+	sdkTools, err := s.adaptCoreTools(ctx, sessionID, domainTools)
+	if err != nil {
+		return err
+	}
+
+	if len(failedBackends) > 0 {
+		return s.reconcileSessionToolsPerBackend(session, sessionID, domainTools, sdkTools, failedBackends)
+	}
+
+	toolMap := make(map[string]server.ServerTool, len(sdkTools))
+	for _, tool := range sdkTools {
 		toolMap[tool.Tool.Name] = tool
 	}
 	sessionWithTools.SetSessionTools(toolMap)
+	s.recordSessionToolBackends(sessionID, toolBackends(domainTools))
 
 	slog.Debug("resynced session tools after backend list_changed",
-		"session_id", sessionID, "tool_count", len(tools))
+		"session_id", sessionID, "tool_count", len(sdkTools))
 	return nil
 }
 
-// resyncSessionResources re-derives sessionID's advertised resources AND
-// resource templates (via coreSessionResources/coreSessionResourceTemplates —
-// the core, cache now cold) and REPLACES the SDK session's resource and
-// resource-template stores with them, mirroring resyncSessionTools. Both are
-// re-derived together because MCP 2025-11-25 has no separate wire method for
-// resource-template changes: notifications/resources/list_changed covers both.
+// reconcileSessionToolsPerBackend applies a partial tools sweep per backend: the
+// session's store ends up with the freshly-aggregated tools of every backend that
+// answered (so additions AND removals propagate for healthy backends) plus the
+// previous tools of every backend that failed (so a transient failure does not drop
+// a backend's tools, and a permanently-failing principal still sees removals from
+// healthy backends). The backend owning each tool is tracked by sessionToolBackends,
+// written on registration and every resync.
+func (s *Server) reconcileSessionToolsPerBackend(
+	session server.ClientSession, sessionID string,
+	domainTools []vmcp.Tool, sdkTools []server.ServerTool, failedBackends []string,
+) error {
+	sessionWithTools, ok := session.(server.SessionWithTools)
+	if !ok {
+		return fmt.Errorf("resync session tools: session %s does not support per-session tools", sessionID)
+	}
+
+	failed := make(map[string]struct{}, len(failedBackends))
+	for _, id := range failedBackends {
+		failed[id] = struct{}{}
+	}
+
+	freshBackend := toolBackends(domainTools)
+	prevBackend := s.sessionToolBackendsFor(sessionID)
+	existing := sessionWithTools.GetSessionTools()
+
+	result := make(map[string]server.ServerTool, len(existing)+len(sdkTools))
+	backendByName := make(map[string]string, len(existing)+len(sdkTools))
+
+	// Backends that answered: their fresh tools replace whatever was there before.
+	for _, tool := range sdkTools {
+		result[tool.Tool.Name] = tool
+		backendByName[tool.Tool.Name] = freshBackend[tool.Tool.Name]
+	}
+	// Backends that failed: keep their previous tools.
+	for name, tool := range existing {
+		if _, isFailed := failed[prevBackend[name]]; isFailed {
+			result[name] = tool
+			backendByName[name] = prevBackend[name]
+		}
+	}
+
+	sessionWithTools.SetSessionTools(result)
+	s.recordSessionToolBackends(sessionID, backendByName)
+
+	slog.Debug("resynced session tools per backend after partial backend sweep",
+		"session_id", sessionID, "tool_count", len(result), "failed_backends", len(failedBackends))
+	return nil
+}
+
+// toolBackends returns a tool-name → backend-ID map for the given domain tools.
+func toolBackends(domainTools []vmcp.Tool) map[string]string {
+	m := make(map[string]string, len(domainTools))
+	for _, t := range domainTools {
+		m[t.Name] = t.BackendID
+	}
+	return m
+}
+
+// recordSessionToolBackends stores, for sessionID, the backend owning each advertised
+// tool name, for per-backend reconcile on a later partial sweep.
+func (s *Server) recordSessionToolBackends(sessionID string, m map[string]string) {
+	s.sessionToolBackendsMu.Lock()
+	defer s.sessionToolBackendsMu.Unlock()
+	if s.sessionToolBackends == nil {
+		s.sessionToolBackends = make(map[string]map[string]string)
+	}
+	s.sessionToolBackends[sessionID] = m
+}
+
+// sessionToolBackendsFor returns the backend owning each advertised tool name for
+// sessionID, or nil when none has been recorded yet.
+func (s *Server) sessionToolBackendsFor(sessionID string) map[string]string {
+	s.sessionToolBackendsMu.Lock()
+	defer s.sessionToolBackendsMu.Unlock()
+	return s.sessionToolBackends[sessionID]
+}
+
+// removeSessionToolBackends drops the tracked backend map for a terminated session.
+func (s *Server) removeSessionToolBackends(sessionID string) {
+	s.sessionToolBackendsMu.Lock()
+	defer s.sessionToolBackendsMu.Unlock()
+	delete(s.sessionToolBackends, sessionID)
+}
+
+// resyncSessionResources re-derives sessionID's advertised resources AND resource
+// templates from a SINGLE core aggregation (core.ListResourcesWithPartial) and, on a
+// complete sweep, REPLACES the SDK session's resource and resource-template stores with
+// them, mirroring resyncSessionTools. Both are re-derived together because MCP
+// 2025-11-25 has no separate wire method for resource-template changes:
+// notifications/resources/list_changed covers both. A partial sweep MERGES instead
+// (see resyncSessionTools).
 //
-// ctx must already carry the resyncing principal's identity and forwarded
-// headers (runListChangedResync builds it) so the coreSession* helpers ->
-// core.ListResources/ListResourceTemplates enumerate backends with the
-// correct credentials and cache key.
+// ctx must already carry the resyncing principal's identity and forwarded headers
+// (runListChangedResync builds it) so core.ListResourcesWithPartial enumerates
+// backends with the correct credentials and cache key.
 //
-// Add-only removal limitation: unlike resyncSessionTools, replacing the
-// overlay here propagates ADDITIONS but not REMOVALS. toolhive-core's
-// mcpcompat per-session sync for resources/resource templates
-// (syncSessionResources/syncSessionResourceTemplates) is add-only — unlike
-// syncSessionTools, which also calls RemoveTools — so a backend-removed
-// resource/template stays registered on the session's go-sdk server (listed
-// until re-initialize) even though this overlay no longer contains it. The
-// overlay itself IS replaced (not merged) here, so when toolhive-core gains
-// removal reconciliation (tracked follow-up: stacklok/toolhive-core#184),
-// removals start propagating with no change needed in this function.
-// Advertising listChanged:true stays honest — notifications ARE emitted on
-// change (except that a pure removal which EMPTIES the overlay issues no Add*
-// and therefore triggers no downstream list_changed, since go-sdk notifies
-// only via Add*/RemoveTools); listChanged promises notification, not list
-// minimization — but until that follow-up lands, a refetch after a pure
-// removal returns a stale superset.
+// Add-only removal limitation: unlike resyncSessionTools, replacing the overlay here
+// propagates ADDITIONS but not REMOVALS. toolhive-core's mcpcompat per-session sync for
+// resources/resource templates (syncSessionResources/syncSessionResourceTemplates) is
+// add-only — unlike syncSessionTools, which also calls RemoveTools — so a
+// backend-removed resource/template stays registered on the session's go-sdk server
+// (listed until re-initialize) even though this overlay no longer contains it. The
+// overlay itself IS replaced (not merged) here on a complete sweep, so when
+// toolhive-core gains removal reconciliation (tracked follow-up:
+// stacklok/toolhive-core#184), removals start propagating with no change needed in this
+// function. Advertising listChanged:true stays honest — notifications ARE emitted on
+// change (except that a pure removal which EMPTIES the overlay issues no Add* and
+// therefore triggers no downstream list_changed, since go-sdk notifies only via
+// Add*/RemoveTools); listChanged promises notification, not list minimization — but
+// until that follow-up lands, a refetch after a pure removal returns a stale superset.
 func (s *Server) resyncSessionResources(
 	ctx context.Context, session server.ClientSession, sessionID string, identity *auth.Identity,
 ) error {
-	resources, err := s.coreSessionResources(ctx, sessionID, identity)
+	domainResources, domainTemplates, failedBackends, err := s.core.ListResourcesWithPartial(ctx, identity)
 	if err != nil {
-		return fmt.Errorf("resync session resources: core ListResources for session %s: %w", sessionID, err)
+		return fmt.Errorf("resync session resources: core ListResourcesWithPartial for session %s: %w", sessionID, err)
 	}
+
 	sessionWithResources, ok := session.(server.SessionWithResources)
 	if !ok {
 		return fmt.Errorf("resync session resources: session %s does not support per-session resources", sessionID)
 	}
-	resourceMap := make(map[string]server.ServerResource, len(resources))
-	for _, res := range resources {
-		resourceMap[res.Resource.URI] = res
-	}
-	sessionWithResources.SetSessionResources(resourceMap)
 
-	templates, err := s.coreSessionResourceTemplates(ctx, sessionID, identity)
-	if err != nil {
-		return fmt.Errorf("resync session resource templates: core ListResourceTemplates for session %s: %w", sessionID, err)
+	resources := s.adaptCoreResources(ctx, sessionID, domainResources)
+	if len(failedBackends) > 0 {
+		// Merge on a partial sweep (see resyncSessionTools): keep the failed
+		// backend's resources listed, defer removals.
+		if err := setSessionResourcesDirect(session, resources); err != nil {
+			return err
+		}
+	} else {
+		resourceMap := make(map[string]server.ServerResource, len(resources))
+		for _, res := range resources {
+			resourceMap[res.Resource.URI] = res
+		}
+		sessionWithResources.SetSessionResources(resourceMap)
 	}
+
 	sessionWithTemplates, ok := session.(server.SessionWithResourceTemplates)
 	if !ok {
 		return fmt.Errorf(
 			"resync session resource templates: session %s does not support per-session resource templates", sessionID)
 	}
-	templateMap := make(map[string]server.ServerResourceTemplate, len(templates))
-	for _, tmpl := range templates {
-		templateMap[tmpl.Template.URITemplate] = tmpl
+
+	templates := s.adaptCoreResourceTemplates(ctx, sessionID, domainTemplates)
+	if len(failedBackends) > 0 {
+		if err := setSessionResourceTemplatesDirect(session, templates); err != nil {
+			return err
+		}
+	} else {
+		templateMap := make(map[string]server.ServerResourceTemplate, len(templates))
+		for _, tmpl := range templates {
+			templateMap[tmpl.Template.URITemplate] = tmpl
+		}
+		sessionWithTemplates.SetSessionResourceTemplates(templateMap)
 	}
-	sessionWithTemplates.SetSessionResourceTemplates(templateMap)
 
 	slog.Debug("resynced session resources after backend list_changed",
 		"session_id", sessionID, "resource_count", len(resources), "resource_template_count", len(templates))
 	return nil
 }
 
-// resyncSessionPrompts re-derives sessionID's advertised prompt set (via
-// coreSessionPrompts — the core, cache now cold) and REPLACES the SDK
-// session's prompt store with it, mirroring resyncSessionTools.
+// resyncSessionPrompts re-derives sessionID's advertised prompt set from a SINGLE core
+// aggregation (core.ListPromptsWithPartial) and, on a complete sweep, REPLACES the SDK
+// session's prompt store with it, mirroring resyncSessionTools. A partial sweep MERGES
+// instead (see resyncSessionTools).
 //
-// ctx must already carry the resyncing principal's identity and forwarded
-// headers (runListChangedResync builds it) so coreSessionPrompts ->
-// core.ListPrompts enumerates backends with the correct credentials and cache
-// key.
+// ctx must already carry the resyncing principal's identity and forwarded headers
+// (runListChangedResync builds it) so core.ListPromptsWithPartial enumerates backends
+// with the correct credentials and cache key.
 //
-// Add-only removal limitation: as with resyncSessionResources, replacing the
-// overlay here propagates ADDITIONS but not REMOVALS. toolhive-core's
-// mcpcompat per-session sync for prompts (syncSessionPrompts) is add-only, so
-// a backend-removed prompt stays registered on the session's go-sdk server
-// (listed until re-initialize) even though this overlay no longer contains
-// it. The overlay itself IS replaced (not merged) here, so when toolhive-core
-// gains removal reconciliation (tracked follow-up: stacklok/toolhive-core#184),
-// removals start propagating with no change needed in this function.
-// Advertising listChanged:true stays honest — notifications ARE emitted on
-// change (except that a pure removal which EMPTIES the overlay issues no Add*
-// and therefore triggers no downstream list_changed, since go-sdk notifies
-// only via Add*/RemoveTools); listChanged promises notification, not list
-// minimization — but until that follow-up lands, a refetch after a pure
-// removal returns a stale superset.
+// Add-only removal limitation: as with resyncSessionResources, replacing the overlay
+// here propagates ADDITIONS but not REMOVALS. toolhive-core's mcpcompat per-session
+// sync for prompts (syncSessionPrompts) is add-only, so a backend-removed prompt stays
+// registered on the session's go-sdk server (listed until re-initialize) even though
+// this overlay no longer contains it. The overlay itself IS replaced (not merged) here
+// on a complete sweep, so when toolhive-core gains removal reconciliation (tracked
+// follow-up: stacklok/toolhive-core#184), removals start propagating with no change
+// needed in this function. Advertising listChanged:true stays honest — notifications
+// ARE emitted on change (except that a pure removal which EMPTIES the overlay issues
+// no Add* and therefore triggers no downstream list_changed, since go-sdk notifies only
+// via Add*/RemoveTools); listChanged promises notification, not list minimization — but
+// until that follow-up lands, a refetch after a pure removal returns a stale superset.
 func (s *Server) resyncSessionPrompts(
 	ctx context.Context, session server.ClientSession, sessionID string, identity *auth.Identity,
 ) error {
-	prompts, err := s.coreSessionPrompts(ctx, sessionID, identity)
+	domainPrompts, failedBackends, err := s.core.ListPromptsWithPartial(ctx, identity)
 	if err != nil {
-		return fmt.Errorf("resync session prompts: core ListPrompts for session %s: %w", sessionID, err)
+		return fmt.Errorf("resync session prompts: core ListPromptsWithPartial for session %s: %w", sessionID, err)
 	}
 
 	sessionWithPrompts, ok := session.(server.SessionWithPrompts)
 	if !ok {
 		return fmt.Errorf("resync session prompts: session %s does not support per-session prompts", sessionID)
+	}
+
+	prompts := s.adaptCorePrompts(ctx, sessionID, domainPrompts)
+	if len(failedBackends) > 0 {
+		// Merge on a partial sweep (see resyncSessionTools): keep the failed
+		// backend's prompts listed, defer removals.
+		return setSessionPromptsDirect(session, prompts)
 	}
 
 	promptMap := make(map[string]server.ServerPrompt, len(prompts))

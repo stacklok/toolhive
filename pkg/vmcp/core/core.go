@@ -42,6 +42,15 @@ type DiscoverCapabilities struct {
 	HasResources         bool
 	HasResourceTemplates bool
 	HasPrompts           bool
+
+	// Partial reports whether the underlying capability sweep was incomplete: at
+	// least one eligible backend failed its live capability query, so its
+	// capabilities are absent from the aggregated view these presence flags
+	// summarize. Unlike the Has* flags — which reflect admission filtering —
+	// Partial is a property of the AGGREGATION itself. A partial view is safe for
+	// discovery, but must not replace an established view (see
+	// server.resyncSessionTools).
+	Partial bool
 }
 
 // AdmittedBackendCapabilities is one backend's part of an identity's view: the
@@ -337,6 +346,37 @@ type VMCP interface {
 	// established, applied to presence flags instead of a backend list. See
 	// ListTools for the nil/anonymous identity semantics.
 	Discover(ctx context.Context, identity *auth.Identity) (DiscoverCapabilities, error)
+
+	// ListToolsWithPartial returns the tools advertised to identity and the IDs of
+	// the backends whose capability query failed, both derived from a SINGLE
+	// aggregated view. It exists so a caller that needs both (e.g. a session-tools
+	// resync that reconciles per backend on a partial sweep) reads one aggregation
+	// instead of pairing ListTools with Discover — two separate reads that may
+	// diverge when a purge/TTL/last-writer-wins lands between them.
+	//
+	// failedBackends is empty for a complete sweep; for a partial sweep it names
+	// the backends whose capabilities are absent from the returned tools. Unlike
+	// Discover — which runs all four admission filters to derive presence flags —
+	// this runs only the tool filter, so an error filtering resources, resource
+	// templates, or prompts cannot abort a tools-only caller.
+	ListToolsWithPartial(ctx context.Context, identity *auth.Identity) (tools []vmcp.Tool, failedBackends []string, err error)
+
+	// ListResourcesWithPartial returns the resources and resource templates
+	// advertised to identity, and the IDs of the backends whose capability query
+	// failed, all derived from a SINGLE aggregated view. Resources and templates
+	// are returned together because one MCP list_changed notification covers both
+	// (there is no separate template-change wire method), and a caller that
+	// resyncs them must apply one partial decision to both. See
+	// ListToolsWithPartial for the failedBackends semantics.
+	ListResourcesWithPartial(
+		ctx context.Context, identity *auth.Identity,
+	) (resources []vmcp.Resource, templates []vmcp.ResourceTemplate, failedBackends []string, err error)
+
+	// ListPromptsWithPartial returns the prompts advertised to identity, and the
+	// IDs of the backends whose capability query failed, both derived from a
+	// SINGLE aggregated view. See ListToolsWithPartial for the failedBackends
+	// semantics.
+	ListPromptsWithPartial(ctx context.Context, identity *auth.Identity) (prompts []vmcp.Prompt, failedBackends []string, err error)
 
 	// BackendHealth returns the backend health reporter the core owns, or nil when health
 	// monitoring is disabled. The core builds, starts, and (via Close) stops the monitor and

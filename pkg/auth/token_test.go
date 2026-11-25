@@ -2649,6 +2649,29 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		require.Equal(t, map[string]string{"github": "gh-id-tok"}, captured.UpstreamIDTokens)
 	})
 
+	t.Run("nil credentials from a provider-filtered load serve the request without upstream tokens", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
+			Return(map[string]upstreamtoken.UpstreamCredential(nil), map[string]error(nil), nil)
+		v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+		var captured *Identity
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured, _ = IdentityFromContext(r.Context())
+		}))
+
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Nil(t, captured.UpstreamTokens)
+		require.Nil(t, captured.UpstreamIDTokens)
+	})
+
 	t.Run("all access tokens with no ID tokens yields non-nil empty UpstreamIDTokens", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

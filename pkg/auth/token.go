@@ -1714,8 +1714,10 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			}
 			// Project the per-provider credential bundle onto the two
 			// consumer-facing Identity fields. creds is nil without a tsid claim,
-			// and also when a non-interactive load on a bound validator tolerated
-			// ErrNoCanonicalUser; then both fields stay nil.
+			// when a non-interactive load on a bound validator tolerated
+			// ErrNoCanonicalUser, or when the reader's provider filter removed
+			// every row; then the request is served with no upstream tokens and
+			// both fields stay nil.
 			if creds != nil {
 				accessTokens := make(map[string]string, len(creds))
 				idTokens := make(map[string]string, len(creds))

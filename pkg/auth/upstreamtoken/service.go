@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +78,10 @@ type InProcessService struct {
 	// userKeyed is set when storage is, or decorates, the user-keyed layer.
 	userKeyed bool
 
+	// providers, when non-empty, limits GetAllUpstreamCredentials to these
+	// provider names.
+	providers map[string]struct{}
+
 	// mu guards idTokenSuppressions and lastSuppressionSweep.
 	mu sync.Mutex
 	// idTokenSuppressions records rows for which an ID-token-triggered refresh
@@ -102,19 +107,53 @@ var (
 	_ UserKeyedReader      = (*InProcessService)(nil)
 )
 
+// InProcessServiceOption configures an InProcessService.
+type InProcessServiceOption func(*InProcessService)
+
+// WithProviders limits GetAllUpstreamCredentials to the named providers: a row
+// for any other provider is skipped before any refresh, so it is refreshed by
+// nobody and appears in neither the credentials nor the failed map. An empty
+// set (the default) loads every provider; blank names are ignored, so a set of
+// only blank names is empty.
+//
+// Nothing builds a service with it yet: it is not wired into thv vmcp serve
+// or the runner.
+//
+// Only the bulk read is filtered. GetValidTokens and GetValidTokensForUser name
+// their provider explicitly, so they read it whatever the set holds.
+func WithProviders(names ...string) InProcessServiceOption {
+	return func(s *InProcessService) {
+		s.providers = nil
+		for _, n := range names {
+			if strings.TrimSpace(n) == "" {
+				continue
+			}
+			if s.providers == nil {
+				s.providers = make(map[string]struct{}, len(names))
+			}
+			s.providers[n] = struct{}{}
+		}
+	}
+}
+
 // NewInProcessService creates a new InProcessService.
 // The refresher may be nil if upstream token refresh is not configured;
 // expired tokens will return ErrNoRefreshToken in that case.
 func NewInProcessService(
 	stor storage.UpstreamTokenStorage,
 	refresher storage.UpstreamTokenRefresher,
+	opts ...InProcessServiceOption,
 ) *InProcessService {
-	return &InProcessService{
+	s := &InProcessService{
 		storage:             stor,
 		refresher:           refresher,
 		userKeyed:           storage.IsUserKeyed(stor),
 		idTokenSuppressions: make(map[string]idTokenSuppression),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // UserKeyed reports whether the service reads storage keyed by user: the
@@ -257,6 +296,10 @@ func (s *InProcessService) GetValidTokensForUser(
 // Identity.UpstreamIDTokens for both consumers.
 //
 // Returns an empty map and nil failed map (not error) for unknown sessions.
+// When WithProviders is set and it filters out every stored row, it returns a
+// nil credentials map and nil failed map instead: the session holds rows, just
+// none this service was asked to load, so the validator must not read the
+// empty result as a session with no usable upstream token.
 func (s *InProcessService) GetAllUpstreamCredentials(
 	ctx context.Context, sessionID string,
 ) (map[string]UpstreamCredential, map[string]error, error) {
@@ -279,10 +322,16 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 	}
 	// TODO(auth): Refresh providers in parallel using errgroup to avoid
 	// worst-case latency of N refreshes when multiple providers need refresh.
+	skipped := 0
 	for providerName, tokens := range allTokens {
 		if tokens == nil {
 			continue
 		}
+		if !s.providerAllowed(providerName) {
+			skipped++
+			continue
+		}
+
 		cred, credErr := s.credentialFor(ctx, sessionID, providerName, tokens)
 		if credErr != nil {
 			fail(providerName, credErr)
@@ -303,7 +352,20 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 	// still does not filter what it returns: an ID token the
 	// provider declined to rotate is passed through expired.
 	// See Identity.UpstreamIDTokens for both.
+	if skipped > 0 && len(result) == 0 && failed == nil {
+		return nil, nil, nil
+	}
 	return result, failed, nil
+}
+
+// providerAllowed reports whether the service was asked to load the provider.
+// Without WithProviders every provider is allowed.
+func (s *InProcessService) providerAllowed(providerName string) bool {
+	if s.providers == nil {
+		return true
+	}
+	_, ok := s.providers[providerName]
+	return ok
 }
 
 // credentialFor returns the usable credential for one stored row, refreshing it

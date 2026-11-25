@@ -1136,6 +1136,12 @@ memory backend needs nothing, because it is cleared on restart.
   A token that never expires gets no storage lifetime. The exception is a user
   with a synthesized subject (an OAuth2 upstream with no identity lookup): that
   subject changes on every login, so its rows keep the session lifetime bound.
+- **Provider filter.** `upstreamtoken.WithProviders(...)` limits the bulk read
+  to the named providers; other rows are skipped before any refresh. A filter
+  that removes every stored row loads nothing, which the validator does not
+  read as a missing credential. The option exists but is not wired into
+  `thv vmcp serve` or the runner yet, because it would change which requests
+  get a 401 on existing deployments.
 - **Reader.** `InProcessService.GetValidTokensForUser(ctx, userID, provider)`
   returns a valid credential for one user and provider, refreshing an expired
   row. It checks the owner itself, so it is safe over storage that is not

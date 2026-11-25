@@ -169,6 +169,15 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 	assert.Equal(t, 11*time.Second, srv.config.StatusReportingInterval)
 }
 
+func TestServeRefusesInvalidCallBinding(t *testing.T) {
+	t.Parallel()
+	cfg := testMinimalServeConfig()
+	cfg.CallBinding = callbinding.Config{MaxCallDuration: -time.Second}
+	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Nil(t, srv)
+}
+
 func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 	t.Parallel()
 

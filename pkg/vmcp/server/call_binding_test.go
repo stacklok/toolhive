@@ -722,6 +722,14 @@ func TestCallBinding_OpenCallMessages(t *testing.T) {
 	requireRefused(t, s.send(t, http.MethodPost, token, otherSession, elicitationReply, nil),
 		callbinding.ReasonNoOpenCall, nil)
 
+	// A cancellation without a usable request ID belongs to no call, and
+	// does not end the open one.
+	for _, params := range []string{`{}`, `{"requestId":null}`, `{"requestId":true}`,
+		`{"requestId":1.5}`, `{"requestId":{}}`} {
+		body := `{"jsonrpc":"2.0","method":"notifications/cancelled","params":` + params + `}`
+		requireRefused(t, s.send(t, http.MethodPost, token, session, body, nil), callbinding.ReasonNoOpenCall, nil)
+	}
+
 	// A response and a cancellation on the call's session pass the check;
 	// the transport answers them. The cancellation goes last, since it ends
 	// the call.
@@ -946,6 +954,8 @@ type spyRecord struct {
 	expiries  []time.Time
 	failStart bool
 	failRead  bool
+	failEnd   bool
+	ends      int
 }
 
 func (r *spyRecord) Start(ctx context.Context, key string, call callbinding.Call, expiresAt time.Time) (bool, error) {
@@ -967,6 +977,23 @@ func (r *spyRecord) Lookup(ctx context.Context, key string) (callbinding.Call, b
 		return callbinding.Call{}, false, errors.New("record unavailable")
 	}
 	return r.Record.Lookup(ctx, key)
+}
+
+func (r *spyRecord) End(ctx context.Context, key string) error {
+	r.mu.Lock()
+	r.ends++
+	fail := r.failEnd
+	r.mu.Unlock()
+	if fail {
+		return errors.New("record unavailable")
+	}
+	return r.Record.End(ctx, key)
+}
+
+func (r *spyRecord) endCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ends
 }
 
 func (r *spyRecord) set(failStart, failRead bool) {
@@ -1039,6 +1066,21 @@ func TestCallBinding_RecordFailureKeepsToken(t *testing.T) {
 
 	record.set(false, false)
 	requireCallRan(t, s.send(t, http.MethodPost, token, session, toolCallBody(3, cbTool, "{}"), nil))
+}
+
+// TestCallBinding_RecordEndFailureKeepsTokenUsed checks that a record that
+// cannot mark a call as ended neither fails the call nor frees its token.
+func TestCallBinding_RecordEndFailureKeepsTokenUsed(t *testing.T) {
+	t.Parallel()
+	record := &spyRecord{Record: callbinding.NewMemoryRecord(), failEnd: true}
+	s := newCallBindingTestServer(t, cbServerOptions{binding: callbinding.Config{Record: record}})
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	requireCallRan(t, s.send(t, http.MethodPost, token, session, toolCallBody(2, cbTool, "{}"), nil))
+	assert.Equal(t, 1, record.endCount())
+	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(3, cbTool, "{}"), nil),
+		callbinding.ReasonTokenReused, 3)
 }
 
 // TestCallBinding_CodeModeIsNotBindable routes through the real code mode

@@ -212,7 +212,9 @@ func buildDiscoveryHTTPClient(client *http.Client) *http.Client {
 // discovery document URL (for example a multi-tenant IdP that does not
 // advertise the tenant-aware path at {issuer}/.well-known/...). The same
 // RFC 8414 §3.3 issuer-equality check is enforced: the returned metadata's
-// issuer field must exactly match the caller-supplied expectedIssuer.
+// issuer field must match the caller-supplied expectedIssuer byte for byte,
+// except that an origin-only issuer may differ by a trailing "/" (see
+// issuersEqual).
 //
 // If client is nil, the same bounded default client used by
 // FetchAuthorizationServerMetadata is constructed. A 10 s per-call timeout
@@ -338,7 +340,7 @@ func issuersEqual(expected, got string) bool {
 		return false
 	}
 	originOnly := func(u *url.URL) bool {
-		return (u.Path == "" || u.Path == "/") &&
+		return u.Host != "" && (u.Path == "" || u.Path == "/") &&
 			u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.User == nil && u.Opaque == ""
 	}
 	return originOnly(e) && originOnly(g) && e.Scheme == g.Scheme && e.Host == g.Host

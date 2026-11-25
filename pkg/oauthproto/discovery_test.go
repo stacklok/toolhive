@@ -754,7 +754,8 @@ func TestIssuersEqual(t *testing.T) {
 		{name: "empty query marker on got", expected: "https://host.example.com", got: "https://host.example.com/?", want: false},
 		{name: "fragment on got", expected: "https://host.example.com", got: "https://host.example.com/#frag", want: false},
 		{name: "userinfo on got", expected: "https://host.example.com", got: "https://user@host.example.com/", want: false},
-		{name: "unparsable got", expected: "https://host.example.com", got: "https://host.example.com/%zz", want: false},
+		{name: "no host", expected: "", got: "/", want: false},
+		{name: "unparsable issuers differing only by slash", expected: "https://host.example.com:abc", got: "https://host.example.com:abc/", want: false},
 	}
 
 	for _, tt := range tests {

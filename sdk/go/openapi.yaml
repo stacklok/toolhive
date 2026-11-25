@@ -274,7 +274,10 @@ components:
                         token_endpoint_auth_methods_supported, and scopes_supported from the
                         response. Per RFC 8414 §3.3, the document's "issuer" field must
                         exactly match the upstream issuer configured on the parent
-                        run-config.
+                        run-config, except that an origin-only issuer may differ by a
+                        trailing "/" (for example https://idp.example.com and
+                        https://idp.example.com/ are treated as equal). Scheme, host, port
+                        and any path must still match exactly.
 
                         Use this field when the upstream publishes discovery metadata at a
                         path that differs from the issuer-derived well-known paths — for

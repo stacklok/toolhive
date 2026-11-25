@@ -25,10 +25,15 @@ const (
 	// call per evicted refresh token.
 	rejectedRefreshesMaxEntries = 10_000
 
-	// rejectedRefreshesTTL is how long a rejection is remembered. It is short
-	// because some IdPs answer invalid_grant for account or policy state that
-	// an administrator can fix without the user signing in again.
-	rejectedRefreshesTTL = 10 * time.Minute
+	// rejectedRefreshesTTL is how long a rejection is remembered. It is a
+	// constant because nothing has asked to tune it. Some IdPs answer
+	// invalid_grant for account or policy state that an administrator can fix
+	// without the user signing in again, and this bounds how long bearer
+	// requests from a client that never sends a refresh grant keep failing
+	// afterwards. A compliant client recovers sooner through the refresh grant
+	// guard, which skips the memory. One IdP call per row every 5 minutes
+	// still absorbs a retry storm.
+	rejectedRefreshesTTL = 5 * time.Minute
 )
 
 // skipRememberedRejectionsKey is the context key withoutRememberedRejections

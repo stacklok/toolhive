@@ -538,7 +538,7 @@ map.
 #### Remembered rejections
 
 Each auth server process remembers the refresh tokens its IdP rejected with a
-definitive `invalid_grant` for 10 minutes (at most 10,000 entries). While an
+definitive `invalid_grant` for 5 minutes (at most 10,000 entries). While an
 entry exists, the refresher answers a refresh of that token without calling
 the IdP, except when the [refresh grant guard](#upstream-refresh-guard) is
 asking: it always calls the IdP, and still adds a fresh rejection to the
@@ -582,11 +582,11 @@ Trade-offs:
   disabled account, a lockout, a Conditional Access block or missing consent
   on Microsoft Entra. This can clear without a new sign-in. After an
   administrator fixes it, bearer requests on the same replica can keep failing
-  for up to 10 minutes, where before they recovered on the next request. The
+  for up to 5 minutes, where before they recovered on the next request. The
   client's next refresh grant asks the IdP again (see
   [Upstream refresh guard](#upstream-refresh-guard)), so a client that answers
   the 401 with a refresh grant recovers as soon as the IdP accepts. Only a
-  client that never sends a refresh grant waits out the 10 minutes.
+  client that never sends a refresh grant waits out the 5 minutes.
 - Losing an entry (eviction, restart, another replica) costs one more IdP
   call, which remembers the rejection again.
 - Each bearer request in this state still logs three WARN lines for the failed

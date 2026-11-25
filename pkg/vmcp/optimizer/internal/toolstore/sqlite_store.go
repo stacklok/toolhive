@@ -986,7 +986,10 @@ func (s sqliteToolStore) searchSemantic(
 		// Filter by semantic distance threshold.
 		// This is meaningful only for cosine distance (semantic search).
 		// FTS5 ranks are normalized BM25 scores, not true distance measures.
-		if dist > s.semanticDistanceThreshold {
+		// A vector with NaN or Inf components, which only a replaced shared
+		// value can carry, gives a NaN distance. NaN compares false against
+		// the threshold and would break the sort below, so it is skipped.
+		if math.IsNaN(dist) || dist > s.semanticDistanceThreshold {
 			continue
 		}
 

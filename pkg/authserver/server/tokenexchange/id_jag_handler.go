@@ -6,10 +6,12 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/x/errorsx"
@@ -78,6 +80,12 @@ type IDJAGHandler struct {
 	// explicitGrantClients holds the IDs of clients that must list the
 	// jwt-bearer grant in their registered grant types.
 	explicitGrantClients map[string]struct{}
+
+	// clientLifespans holds the access-token lifespan of the clients that set
+	// their own, keyed by client ID. A client without an entry gets the server
+	// lifespan. Only IDJAGIssuanceFactory sets it; it is read-only after
+	// construction.
+	clientLifespans map[string]time.Duration
 
 	// issuer supplies this authorization server's issuer identifier, the same
 	// value the server's own token validator uses (fosite.Config
@@ -573,10 +581,10 @@ func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims
 // issuer has subject_mode resolve: the factory then returns an error if it is
 // nil. The resolver alone decides which upstream_subject issuers and claims
 // resolve, reporting the others with subject.ErrNotConfigured. It applies
-// WithAuthorizationDetailsRegistry: the registry's types registered for the
+// WithAuthorizationDetailsRegistry (the registry's types registered for the
 // jwt-bearer grant are the ones an ID-JAG's authorization_details claim may
-// carry. See JWTBearerIssuanceFactory for the shared validator's ownership
-// contract.
+// carry) and WithClientAccessTokenLifespans, and refuses any other option. See
+// JWTBearerIssuanceFactory for the shared validator's ownership contract.
 func IDJAGIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
 	resolver subject.Resolver, options ...FactoryOption,
@@ -585,6 +593,9 @@ func IDJAGIssuanceFactory(
 		return nil, errors.New("a subject resolver is required when a trusted issuer has subject_mode resolve")
 	}
 	resolved := resolveFactoryOptions(options)
+	if err := checkClientAccessTokenLifespans(resolved.clientAccessTokenLifespans); err != nil {
+		return nil, err
+	}
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(deps issuanceDeps) (any, error) {
 			h, err := newIDJAGIssuanceHandler(deps, explicitGrantClientIDs, nil)
@@ -592,9 +603,26 @@ func IDJAGIssuanceFactory(
 				return nil, err
 			}
 			h.resolver = resolver
+			h.clientLifespans = resolved.clientAccessTokenLifespans
 			h.detailsRegistry = resolved.authorizationDetailsRegistry
 			return h, nil
 		})
+}
+
+// checkClientAccessTokenLifespans refuses an empty client ID and a lifespan
+// outside [server.MinClientAccessTokenLifespan, server.MaxAccessTokenLifespan],
+// so a zero never means unlimited and a token is never dead on arrival.
+func checkClientAccessTokenLifespans(lifespans map[string]time.Duration) error {
+	for id, lifespan := range lifespans {
+		if id == "" {
+			return errors.New("client access token lifespans must not contain an empty client ID")
+		}
+		if lifespan < server.MinClientAccessTokenLifespan || lifespan > server.MaxAccessTokenLifespan {
+			return fmt.Errorf("client %q: access token lifespan must be at least %v and at most %v, got %v",
+				id, server.MinClientAccessTokenLifespan, server.MaxAccessTokenLifespan, lifespan)
+		}
+	}
+	return nil
 }
 
 var _ fosite.TokenEndpointHandler = (*IDJAGHandler)(nil)

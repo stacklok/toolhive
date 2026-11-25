@@ -689,6 +689,7 @@ optional; a client that sets none of them is the same client as before.
 | `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg`. When that field is omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve; RSA keys without `alg` use `RS256`; keys that disagree are rejected and the field must be set. When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
 | `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)). |
 | `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
+| `access_token_lifespan` | A Go duration string, for example `30s`. The lifetime of the access tokens the client gets by redeeming an ID-JAG. Omitted: the server's `access_token_lifespan` applies. When set it must be at least `2s` and at most `24h`; smaller (including zero and negative) and larger values are refused when the configuration is loaded, so a bad value fails at startup and a zero never means unlimited. The floor exists because `exp` is signed in whole seconds, rounded down, so a sub-second lifespan could issue a token that is already expired after its single-use ID-JAG is consumed. `expires_in` is rounded down, so it is usually one second less than a whole-second lifespan. A client that sets it must be able to redeem ID-JAGs: startup fails when no trusted issuer accepts ID-JAG assertions (an enabled JWT-bearer grant whose issuers accept only plain assertions is not enough), or when the client sets `grant_types` without the JWT-bearer grant. Other grants ignore it. It is a `RunConfig` field only; the operator CRDs have no matching field. See [Lifetime of a redeemed token](#lifetime-of-a-redeemed-token). |
 
 A delegate's `audiences` limit what it may request. List the narrowest
 audience the client needs: with the default path-prefix strategy, an audience
@@ -1627,11 +1628,11 @@ copies `act` as is. It carries the no-upstream-session claim and the
 delegated-access marker (see "Delegated-access marker"). It has no `tsid` and
 no refresh token is issued. Its granted audience is the resource.
 
-The token's lifetime is the shortest of: the server's access-token lifespan (or
-the client's, once per-client lifespans exist), the ID-JAG's remaining
-validity, and five minutes for a marked token. The five-minute cap is applied
-last, so it wins over a longer client lifespan. An expired ID-JAG is refused
-first.
+The token's lifetime is the shortest of: the client's `access_token_lifespan`
+(the server's access-token lifespan when the client sets none), the ID-JAG's
+remaining validity, and five minutes for a marked token. The five-minute cap is
+applied last, so it wins over a longer client lifespan. An expired ID-JAG is
+refused first. See [Lifetime of a redeemed token](#lifetime-of-a-redeemed-token).
 
 ### Redemption refusal reasons
 
@@ -1718,6 +1719,46 @@ types. On the ID-JAG grant that refusal is now `access_denied` with
 parameter or the resource came from the ID-JAG's `resource` claim. Draft -06
 section 4.4.1 requires `access_denied` when none of the requested resources is
 acceptable.
+
+### Lifetime of a redeemed token
+
+A JWT-bearer or ID-JAG access token lives for the shortest of:
+
+1. the redeeming client's `access_token_lifespan` (see
+   [Configured client metadata](#configured-client-metadata)), or the server's
+   `access_token_lifespan` when the client sets none;
+2. the time left on the assertion when it is redeemed: the assertion's own
+   lifetime minus however long the client took to redeem it;
+3. for a token that carries the delegated-access marker, five minutes (see
+   [Delegated-access marker](#delegated-access-marker)). This cap is applied
+   last.
+
+The token's `exp` and the response's `expires_in` use that one value. It is
+computed once, from a single clock reading, as the earliest of now plus the
+lifespan, the assertion's own `exp`, and (for a marked token) now plus the cap,
+so a token never outlives its assertion. The
+per-client lifespan applies to ID-JAG redemption only, where the client is
+authenticated. A plain JWT-bearer assertion has no client and uses the server
+lifespan. Other grants are not affected. A client lifespan may be longer than
+the server lifespan; it replaces it, it is not capped by it.
+
+The client lifespan is an upper bound, not a guarantee. A longer lifespan is
+shortened silently, with no error, when the ID-JAG has less time left. AS-2
+cannot see AS-1's settings, so it does not compare the two. On a ToolHive AS-1
+an ID-JAG lives as long as its target's `lifetime`: 60 seconds when the target
+sets none, at most 300 seconds, and also capped by the actor credential's and
+the grant's expiry. Examples, for a redemption 2 seconds after issuance:
+
+| ID-JAG target lifetime at AS-1 | Client `access_token_lifespan` at AS-2 | Issued token lives |
+|---|---|---|
+| 60 s (default) | 30 s | 30 s |
+| 60 s (default) | 2 min | about 58 s |
+| 300 s (maximum) | 2 min | 2 min |
+| 300 s (maximum) | 5 min | about 298 s |
+
+To get the lifespan you configure, set the AS-1 target's ID-JAG lifetime to at
+least that lifespan plus the expected delay before redemption. With a ToolHive
+AS-1, a client lifespan above 300 seconds is never reached.
 
 ### Bound ID-JAG assertions
 
@@ -1848,7 +1889,8 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   the shared `MultiIssuerTokenValidator`, `NoUpstreamSessionClaimKey` stamping
   (an ID-JAG conveys no upstream vendor session at this server),
   consume-before-issue, and the issued token's lifetime being capped by the
-  assertion's remaining validity.
+  assertion's remaining validity (see "Lifetime of a redeemed token"; only the
+  ID-JAG handler applies a client's own lifespan).
 - **The `resource` claim.** Draft §4.4.1 restricts the access token to the
   resources in the `resource` claim, so the handler checks it. A claim that is
   not a non-empty string or a non-empty array of distinct non-empty strings
@@ -2194,6 +2236,31 @@ resource servers is tracked in
 [#6895](https://github.com/stacklok/toolhive/issues/6895). Refresh tokens issued
 through token exchange use their own entry type and registry; see
 [Refresh tokens through token exchange](#refresh-tokens-through-token-exchange).
+
+**MCP call type.** `pkg/mcp/toolcalldetails` defines
+`https://toolhive.dev/mcp_tool_call`, which is meant to narrow an access token
+to one MCP call: a tool call (`server`, `tool`, `arguments_sha256`,
+`operation_id`) or a list call (`server`, `method`). `server` is the ID of the
+vMCP backend the call is routed to; `tool` is the request's `params.name`
+exactly as sent, including any backend prefix; for a list call, the vMCP
+answers with that backend's items only. `arguments_sha256` is the lowercase hex
+SHA-256 of the RFC 8785 serialization of `params.arguments`, or of `{}` when
+the arguments are absent or `null`. Nothing registers it by default; an embedder
+adds it with `toolcalldetails.Register` to the types passed to
+`authorizationdetails.New`. It is registered for token exchange and JWT-bearer.
+On token exchange its hook refuses any request whose `requested_token_type` is
+not the ID-JAG type, with `invalid_request` and `id_jag_required`. Requests for
+an ID-JAG still refuse the parameter, so ToolHive does not yet sign the entry
+into an ID-JAG it issues. On ID-JAG redemption, an entry signed by a trusted
+issuer goes through the same hook and, once granted, is in the issued access
+token; see [On ID-JAG redemption](#on-id-jag-redemption). The hook
+accepts exactly one entry of its type, with no other members, and grants it
+unchanged; it does not see entries of other registered types. Otherwise it
+refuses with `invalid_authorization_details` and one of
+`single_entry_required`, `malformed_entry`, `invalid_arguments_hash` or
+`invalid_method`. The authorization server checks only the entry's shape; the
+receiver of the token enforces the call, using `toolcalldetails.ParseEntry` for
+the same shape check.
 
 ## Refresh tokens through token exchange
 

@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
@@ -59,20 +60,24 @@ func TestWithCodeModeTelemetry(t *testing.T) {
 
 // TestIntegration_CodeModeTelemetry runs a script through the real HTTP chain
 // and checks the code mode metrics on /metrics, including the PromQL traffic
-// split documented in docs/operator/virtualmcpserver-observability.md.
+// split documented in docs/operator/virtualmcpserver-observability.md, with
+// and without the optimizer.
 //
 //nolint:paralleltest // telemetry.NewProvider sets global OTel providers
 func TestIntegration_CodeModeTelemetry(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		codeMode    *codemode.Config
+		optimizer   *optimizer.Config
 		wantEnabled string
 	}{
 		{name: "code mode enabled", codeMode: &codemode.Config{}, wantEnabled: "1"},
 		{name: "code mode disabled", codeMode: nil, wantEnabled: "0"},
+		{name: "code mode behind the optimizer", codeMode: &codemode.Config{}, optimizer: &optimizer.Config{},
+			wantEnabled: "1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			metrics := runCodeModeServer(t, tc.codeMode)
+			metrics := runCodeModeServer(t, tc.codeMode, tc.optimizer)
 
 			assert.Equal(t, tc.wantEnabled,
 				metricValue(t, metrics, "toolhive_vmcp_code_mode_enabled", `server="code-mode-vmcp"`))
@@ -81,24 +86,41 @@ func TestIntegration_CodeModeTelemetry(t *testing.T) {
 				return
 			}
 
-			// The script's inner call does not pass the HTTP middleware, so the
-			// request counter sees execute_tool_script only: that is the split.
-			assert.Equal(t, "1", metricValue(t, metrics, "toolhive_mcp_tool_calls_total",
-				`tool="execute_tool_script"`, `server="code-mode-vmcp"`))
-			assert.NotContains(t, metrics, `tool="search-svc_search"`)
-
 			assert.Equal(t, "1", metricValue(t, metrics, "toolhive_vmcp_script_executions_total", `status="success"`))
 			assert.Equal(t, "1", metricValue(t, metrics, "toolhive_vmcp_script_duration_seconds_count", `status="success"`))
 			assert.Equal(t, "2", metricValue(t, metrics, "toolhive_vmcp_script_tool_calls_sum", `status="success"`))
 			assert.Equal(t, "2", metricValue(t, metrics, "toolhive_vmcp_script_parallel_tasks_total", `status="success"`))
+
+			if tc.optimizer == nil {
+				// The script's inner call does not pass the HTTP middleware, so the
+				// request counter sees execute_tool_script only: that is the split.
+				assert.Equal(t, "1", metricValue(t, metrics, "toolhive_mcp_tool_calls_total",
+					`tool="execute_tool_script"`, `server="code-mode-vmcp"`))
+				assert.NotContains(t, metrics, `tool="search-svc_search"`)
+				assert.NotContains(t, metrics, "toolhive_vmcp_optimizer_call_tool_requests")
+				return
+			}
+
+			// Behind the optimizer the request counter sees only call_tool, so
+			// the split comes from the optimizer's call_tool counter, which
+			// labels each call with its target. The script's inner calls run
+			// below the optimizer and do not reach it.
+			assert.Equal(t, "2", metricValue(t, metrics, "toolhive_mcp_tool_calls_total",
+				`tool="call_tool"`, `server="code-mode-vmcp"`))
+			assert.NotContains(t, metrics, `tool="execute_tool_script"`)
+			assert.Equal(t, "1", metricValue(t, metrics, "toolhive_vmcp_optimizer_call_tool_requests_total",
+				`tool_name="execute_tool_script"`))
+			assert.Equal(t, "1", metricValue(t, metrics, "toolhive_vmcp_optimizer_call_tool_requests_total",
+				`tool_name="search-svc_search"`))
 		})
 	}
 }
 
 // runCodeModeServer starts a vMCP server with one backend tool, opens a
 // session, runs one execute_tool_script call when code mode is on, and
-// returns the scraped /metrics body.
-func runCodeModeServer(t *testing.T, codeMode *codemode.Config) string {
+// returns the scraped /metrics body. With optCfg set, the optimizer is on and
+// the script runs through call_tool, followed by one regular call_tool call.
+func runCodeModeServer(t *testing.T, codeMode *codemode.Config, optCfg *optimizer.Config) string {
 	t.Helper()
 	ctx := context.Background()
 
@@ -139,7 +161,8 @@ func runCodeModeServer(t *testing.T, codeMode *codemode.Config) string {
 		SessionFactory:    newBackendAwareTestFactory(tools, routing),
 		Aggregator: aggregator.NewDefaultAggregator(
 			backendClient, aggregator.NewPrefixConflictResolver("{workload}_"), nil, nil),
-		CodeModeConfig: codeMode,
+		CodeModeConfig:  codeMode,
+		OptimizerConfig: optCfg,
 	}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -173,24 +196,27 @@ func runCodeModeServer(t *testing.T, codeMode *codemode.Config) string {
 
 	if codeMode != nil {
 		// Let the session hooks register the tools before calling one.
+		advertised := "execute_tool_script"
+		if optCfg != nil {
+			advertised = "call_tool"
+		}
 		require.Eventually(t, func() bool {
 			r := postJSON(t, baseURL, sessionID, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 			body, _ := io.ReadAll(r.Body)
-			return strings.Contains(string(body), "execute_tool_script")
+			return strings.Contains(string(body), advertised)
 		}, 5*time.Second, 50*time.Millisecond)
 
-		r := postJSON(t, baseURL, sessionID, map[string]any{
-			"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-			"params": map[string]any{
-				"name": "execute_tool_script",
-				"arguments": map[string]any{
-					"script": `return parallel([lambda: search_svc_search(query="a"), lambda: search_svc_search(query="b")])`,
-				},
-			},
-		})
-		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
-		require.NotContains(t, string(body), `"isError":true`, string(body))
+		scriptArgs := map[string]any{
+			"script": `return parallel([lambda: search_svc_search(query="a"), lambda: search_svc_search(query="b")])`,
+		}
+		if optCfg == nil {
+			callTool(t, baseURL, sessionID, 3, "execute_tool_script", scriptArgs)
+		} else {
+			callTool(t, baseURL, sessionID, 3, "call_tool",
+				map[string]any{"tool_name": "execute_tool_script", "parameters": scriptArgs})
+			callTool(t, baseURL, sessionID, 4, "call_tool",
+				map[string]any{"tool_name": "search-svc_search", "parameters": map[string]any{"query": "c"}})
+		}
 	}
 
 	metricsResp, err := http.Get(metricsURL(t, srv))
@@ -200,6 +226,19 @@ func runCodeModeServer(t *testing.T, codeMode *codemode.Config) string {
 	body, err := io.ReadAll(metricsResp.Body)
 	require.NoError(t, err)
 	return string(body)
+}
+
+// callTool sends one tools/call and requires a result that is not an error.
+func callTool(t *testing.T, baseURL, sessionID string, id int, name string, args map[string]any) {
+	t.Helper()
+	r := postJSON(t, baseURL, sessionID, map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "tools/call",
+		"params": map[string]any{"name": name, "arguments": args},
+	})
+	body, err := io.ReadAll(r.Body)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), `"isError":true`, string(body))
+	require.NotContains(t, string(body), `"error":`, string(body))
 }
 
 // postJSON posts body as a JSON-RPC request and requires a 200 response.

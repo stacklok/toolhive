@@ -164,12 +164,27 @@ Total number of callables started by `parallel()`, summed over every
 
 #### Code mode vs. regular tool calls
 
-The vMCP request metrics already label each `tools/call` with the tool name, so
-no separate counter is needed to split code mode from regular calls:
-`toolhive_mcp_tool_calls` (attribute `tool`) counts `execute_tool_script` as
-one call. A script's inner tool calls do not pass the request middleware, so
-they are counted only by `toolhive_vmcp_script_tool_calls` and, per backend,
-by `toolhive_vmcp_backend_requests`.
+No separate counter is needed to split code mode from regular calls. Which
+series holds the split depends on whether the optimizer is on:
+
+| Optimizer | Series | Script calls | Regular calls |
+|-----------|--------|--------------|---------------|
+| Off | `toolhive_mcp_tool_calls` (attribute `tool`) | `tool="execute_tool_script"` | every other `tool` |
+| On | `toolhive_vmcp_optimizer_call_tool_requests` (attribute `tool_name`, the tool `call_tool` was asked to run) | `tool_name="execute_tool_script"` | every other `tool_name` |
+
+With the optimizer on, clients see only `find_tool` and `call_tool`, so
+`toolhive_mcp_tool_calls` labels every call `tool="call_tool"` and never shows
+`execute_tool_script`. The optimizer counter has no `server` attribute; to
+split by vMCP server, group by a scrape target label such as `instance`. One
+vMCP process runs either with or without the optimizer, never both, so each
+server reports through one of the two series. The queries below combine them
+with `or` and work for either mode and for a fleet that mixes both.
+
+A script's inner tool calls do not pass the request middleware or the
+optimizer, so they are counted only by `toolhive_vmcp_script_tool_calls` and,
+per backend, by `toolhive_vmcp_backend_requests`.
+`toolhive_vmcp_script_executions` counts scripts in both modes, so it is a
+simpler script count when you do not need the regular side.
 
 The `status` label of `toolhive_mcp_tool_calls` is the HTTP outcome. A script
 that fails still answers with HTTP 200 and `isError: true`, so use
@@ -178,14 +193,34 @@ that fails still answers with HTTP 200 and `isError: true`, so use
 #### Example PromQL
 
 ```promql
-# Share of tool calls that are code mode scripts (last 5 minutes)
-sum(rate(toolhive_mcp_tool_calls_total{tool="execute_tool_script"}[5m]))
-/
-sum(rate(toolhive_mcp_tool_calls_total[5m]))
+# Code mode script call rate, with or without the optimizer
+sum(
+  rate(toolhive_mcp_tool_calls_total{tool="execute_tool_script"}[5m])
+  or rate(toolhive_vmcp_optimizer_call_tool_requests_total{tool_name="execute_tool_script"}[5m])
+)
 
-# Code mode call rate vs. regular call rate
-sum(rate(toolhive_mcp_tool_calls_total{tool="execute_tool_script"}[5m]))
-sum(rate(toolhive_mcp_tool_calls_total{tool!="execute_tool_script"}[5m]))
+# Regular tool call rate, with or without the optimizer (excludes find_tool and call_tool)
+sum(
+  rate(toolhive_mcp_tool_calls_total{tool!~"execute_tool_script|find_tool|call_tool"}[5m])
+  or rate(toolhive_vmcp_optimizer_call_tool_requests_total{tool_name!="execute_tool_script"}[5m])
+)
+
+# Share of tool calls that are code mode scripts
+sum(
+  rate(toolhive_mcp_tool_calls_total{tool="execute_tool_script"}[5m])
+  or rate(toolhive_vmcp_optimizer_call_tool_requests_total{tool_name="execute_tool_script"}[5m])
+)
+/
+sum(
+  rate(toolhive_mcp_tool_calls_total{tool!~"find_tool|call_tool"}[5m])
+  or rate(toolhive_vmcp_optimizer_call_tool_requests_total[5m])
+)
+
+# Script call rate per vMCP server (replace sum with sum by (instance) in any query above)
+sum by (instance) (
+  rate(toolhive_mcp_tool_calls_total{tool="execute_tool_script"}[5m])
+  or rate(toolhive_vmcp_optimizer_call_tool_requests_total{tool_name="execute_tool_script"}[5m])
+)
 
 # vMCP servers with code mode enabled, and the share of all servers
 sum(toolhive_vmcp_code_mode_enabled)

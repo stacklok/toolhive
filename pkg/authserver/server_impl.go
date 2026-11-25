@@ -437,6 +437,22 @@ func explicitGrantClientIDs(clients []DelegateClient) []string {
 	return ids
 }
 
+// delegateAccessTokenLifespans maps each delegate client that sets its own
+// access-token lifespan to that lifespan. It is nil when none does.
+func delegateAccessTokenLifespans(clients []DelegateClient) map[string]time.Duration {
+	var lifespans map[string]time.Duration
+	for _, c := range clients {
+		if c.AccessTokenLifespan == 0 {
+			continue
+		}
+		if lifespans == nil {
+			lifespans = make(map[string]time.Duration)
+		}
+		lifespans[c.ClientID] = c.AccessTokenLifespan
+	}
+	return lifespans
+}
+
 // idJAGExplicitGrantClientIDs lists the clients whose registered grant_types
 // the ID-JAG handler enforces: delegate clients that set grant_types
 // explicitly, and every configured SPIFFE association client. SPIFFE
@@ -999,6 +1015,7 @@ func buildJWTBearerFactoriesForConfig(
 		return nil, err
 	}
 	return buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg), resolver,
+		tokenexchange.WithClientAccessTokenLifespans(delegateAccessTokenLifespans(cfg.DelegateClients)),
 		tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry))
 }
 

@@ -1951,6 +1951,9 @@ type Config struct {
 	// credential is dead; use the seam for checks of your own. When deciding
 	// from upstream.ErrGrantRejected, note its doc: under a cross-replica
 	// refresh race it can occasionally be reported for a live credential.
+	// The shared refresher remembers a rejection for up to 5 minutes, so a
+	// handler that decides on ErrGrantRejected may see a remembered one
+	// without an IdP call. Only the built-in guard skips that memory.
 	//
 	// The seam only validates. PopulateTokenEndpointResponse and
 	// CanSkipClientAuth are never called, so client authentication still

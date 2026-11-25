@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/adrg/xdg"
@@ -24,10 +25,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
@@ -523,6 +527,48 @@ func TestBuildFullRunConfig_ProxyReadTimeout(t *testing.T) {
 // TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil verifies that when no
 // OpenTelemetry config is set, the RunConfig's TelemetryConfig remains nil —
 // the API path does not invent an endpoint.
+// TestBuildFullRunConfig_KeepsPersistedInstructions verifies that an edit
+// through the API, which cannot set instructions yet, keeps the ones the
+// workload was created with, along with their middleware.
+func TestBuildFullRunConfig_KeepsPersistedInstructions(t *testing.T) {
+	t.Parallel()
+
+	persistedInstructions := &instructions.Config{Mode: instructions.ModePrepend, Value: "policy"}
+	tests := []struct {
+		name      string
+		persisted *runner.RunConfig
+		want      *instructions.Config
+	}{
+		{name: "create has none", persisted: nil, want: nil},
+		{name: "edit keeps the persisted instructions", persisted: &runner.RunConfig{Instructions: persistedInstructions}, want: persistedInstructions},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			service := &WorkloadService{
+				groupManager:   mockGroupManager,
+				configProvider: config.NewDefaultProvider(),
+			}
+			req := &createRequest{
+				Name:          "testserver",
+				updateRequest: updateRequest{URL: "https://mcp.example.com/mcp"},
+			}
+
+			runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, tt.persisted)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, runConfig.Instructions)
+			hasMiddleware := slices.ContainsFunc(runConfig.MiddlewareConfigs, func(mw types.MiddlewareConfig) bool {
+				return mw.Type == mcp.InstructionsMiddlewareType
+			})
+			assert.Equal(t, tt.want != nil, hasMiddleware)
+		})
+	}
+}
+
 func TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil(t *testing.T) {
 	t.Parallel()
 

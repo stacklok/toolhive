@@ -172,10 +172,10 @@ type UpstreamTokens struct {
 	UpstreamSubject string
 
 	// ClientID is the OAuth client that initiated the authorization.
-	// Tokens should only be accessible to the same client that obtained them.
-	// Under UserKeyedUpstreamStorage every client of a user shares one row per
-	// provider, ClientID records the client that last wrote it, and reads do not
-	// check it.
+	// With session-keyed storage, tokens should only be accessible to the
+	// same client that obtained them. Under UserKeyedUpstreamStorage every
+	// client of a user shares one row per provider; ClientID records the
+	// client that last wrote it, and reads do not check it.
 	ClientID string
 }
 

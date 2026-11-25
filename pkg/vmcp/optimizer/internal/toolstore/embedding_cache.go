@@ -19,7 +19,9 @@ import (
 // embedding cache key (see embeddingCacheKey). A key names the embedded text
 // and the backend identity, so its vector is valid wherever it was computed.
 type EmbeddingCache interface {
-	// GetEmbeddings returns the stored vectors among keys; absent keys are omitted.
+	// GetEmbeddings returns the stored vectors among keys; absent keys are
+	// omitted. A value longer than maxSharedEmbeddingBytes may be returned
+	// truncated, one byte past the cap.
 	GetEmbeddings(ctx context.Context, keys []string) (map[string][]byte, error)
 	// PutEmbeddings stores each vector under its key.
 	PutEmbeddings(ctx context.Context, entries map[string][]byte) error
@@ -30,6 +32,12 @@ type EmbeddingCache interface {
 // sharedEmbeddingTTL only reclaims space from tools and models no replica
 // serves any more: a vector never goes stale under its key.
 const sharedEmbeddingTTL = 7 * 24 * time.Hour
+
+// maxSharedEmbeddingBytes caps what a lookup reads of one shared value: 16,384
+// float32 dimensions, four times the widest common embedding model. A longer
+// value is not a vector this store wrote, and a lookup reads one byte past the
+// cap, however large the value is, so the store can reject it.
+const maxSharedEmbeddingBytes = 64 << 10
 
 type redisEmbeddingCache struct {
 	client    redis.UniversalClient
@@ -45,20 +53,23 @@ func NewRedisEmbeddingCache(ctx context.Context, cfg redisconn.Config, keyPrefix
 	}
 	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
-		return nil, fmt.Errorf("embedding cache: %w", err)
+		return nil, err
 	}
 	return redisEmbeddingCache{client: client, keyPrefix: keyPrefix + "optimizer:embedding:"}, nil
 }
 
-// GetEmbeddings pipelines GETs rather than sending one MGET, which a Redis
-// Cluster rejects when the keys hash to different slots.
+// GetEmbeddings pipelines one GETRANGE per key rather than sending one MGET,
+// which a Redis Cluster rejects when the keys hash to different slots.
+// GETRANGE reads at most maxSharedEmbeddingBytes+1 bytes of a value, so a
+// planted oversized value costs no more than that to reject. It reads an
+// absent key as empty, so empty values are omitted like absent ones.
 func (c redisEmbeddingCache) GetEmbeddings(ctx context.Context, keys []string) (map[string][]byte, error) {
 	cmds := make([]*redis.StringCmd, len(keys))
-	// Pipelined reports the first failed command, which is redis.Nil for an
-	// absent key, so each command is checked below instead.
+	// Pipelined reports the first failed command, so each command is checked
+	// below instead.
 	_, _ = c.client.Pipelined(ctx, func(p redis.Pipeliner) error {
 		for i, key := range keys {
-			cmds[i] = p.Get(ctx, c.keyPrefix+key)
+			cmds[i] = p.GetRange(ctx, c.keyPrefix+key, 0, maxSharedEmbeddingBytes)
 		}
 		return nil
 	})
@@ -66,10 +77,9 @@ func (c redisEmbeddingCache) GetEmbeddings(ctx context.Context, keys []string) (
 	for i, cmd := range cmds {
 		blob, err := cmd.Bytes()
 		switch {
-		case errors.Is(err, redis.Nil):
 		case err != nil:
 			return nil, fmt.Errorf("shared embedding lookup failed: %w", err)
-		default:
+		case len(blob) > 0:
 			found[keys[i]] = blob
 		}
 	}

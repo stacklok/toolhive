@@ -73,6 +73,14 @@ func TestRedisEmbeddingCache_RoundTrip(t *testing.T) {
 	assert.Equal(t, sharedEmbeddingTTL, mr.TTL(testSharedPrefix+"optimizer:embedding:a"),
 		"every vector carries the shared TTL")
 
+	require.NoError(t, cache.PutEmbeddings(ctx, map[string][]byte{
+		"empty": {}, "huge": make([]byte, maxSharedEmbeddingBytes+100),
+	}))
+	got, err = cache.GetEmbeddings(ctx, []string{"empty", "huge"})
+	require.NoError(t, err)
+	assert.NotContains(t, got, "empty", "an empty value reads like an absent one")
+	assert.Len(t, got["huge"], maxSharedEmbeddingBytes+1, "a lookup reads one byte past the cap and no more")
+
 	require.NoError(t, cache.Close())
 	require.NoError(t, cache.Close(), "closing twice is not an error")
 }
@@ -158,6 +166,7 @@ func TestSQLiteToolStore_SharedEmbeddings_IgnoresUnusableValues(t *testing.T) {
 		{name: "empty", blob: []byte{}},
 		{name: "not whole float32s", blob: []byte{1, 2, 3}},
 		{name: "wrong width", blob: make([]byte, 8), knowWidth: true},
+		{name: "longer than the cap", blob: make([]byte, maxSharedEmbeddingBytes+4)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

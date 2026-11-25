@@ -534,7 +534,7 @@ func (s sqliteToolStore) addSharedEmbeddings(ctx context.Context, keys []string,
 	}
 	added := 0
 	for key, blob := range shared {
-		if s.usableEmbedding(blob) {
+		if len(blob) <= maxSharedEmbeddingBytes && s.usableEmbedding(blob) {
 			found[key] = blob
 			added++
 		}

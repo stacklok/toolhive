@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
@@ -23,7 +24,10 @@ import (
 // execute through a per-call composer bound to the freshly aggregated routing
 // table; all other names route to a single backend via a session router built
 // from the same table. Returns vmcp.ErrNotFound for an unadvertised name and
-// vmcp.ErrAuthorizationFailed when admission denies identity the call.
+// vmcp.ErrAuthorizationFailed when admission denies identity the call, or when
+// identity's access token is bound to one call (pkg/vmcp/callbinding) and the
+// name dispatches to a composite tool or to a backend other than the one the
+// token names.
 //
 // "Unadvertised" here means the AGGREGATION view that ListTools filters — NOT
 // the routing table, which intentionally holds more (see the advertised-view
@@ -96,6 +100,9 @@ func (c *coreVMCP) CallTool(
 	// executed. A name that collides with a backend tool is NOT in the set and falls
 	// through to backend routing, matching the legacy decorator.
 	if def, ok := composites[name]; ok {
+		if err := checkCallBinding(ctx, identity, name, nil); err != nil {
+			return nil, err
+		}
 		engine := c.composerFactory(agg.RoutingTable, agg.Tools)
 		return executeComposite(ctx, identity, engine, def, argsCopy)
 	}
@@ -109,6 +116,9 @@ func (c *coreVMCP) CallTool(
 			return nil, fmt.Errorf("%w: tool %q", vmcp.ErrNotFound, name)
 		}
 		return nil, fmt.Errorf("routing tool %q: %w", name, err)
+	}
+	if err := checkCallBinding(ctx, identity, name, target); err != nil {
+		return nil, err
 	}
 	// SEP-2243 Mcp-Param-* mirroring: a backend MAY designate tool parameters,
 	// via x-mcp-header in its inputSchema, whose values it also expects as HTTP
@@ -127,6 +137,40 @@ func (c *coreVMCP) CallTool(
 	}
 	result.BackendID = target.WorkloadID
 	return result, nil
+}
+
+// checkCallBinding holds a call made with a call-bound access token (see
+// pkg/vmcp/callbinding) to the backend its entry names, on the routing table
+// this call dispatches with. target is nil for a composite tool, which a
+// call-bound token may not run. The server's call-binding middleware checked
+// the route before admitting the call, on an earlier aggregation; a backend
+// that dropped out of the view in between could move the name to another
+// backend or to a composite it shadowed. Like the admission decision above,
+// the check is repeated here on the view the call is dispatched from, and
+// fails closed with ErrAuthorizationFailed, as it does for a list-call entry or
+// an unusable claim. A token without an entry passes.
+func checkCallBinding(ctx context.Context, identity *auth.Identity, name string, target *vmcp.BackendTarget) error {
+	if identity == nil {
+		return nil
+	}
+	token, reason := callbinding.FromClaims(identity.Claims, nil)
+	switch {
+	case reason != "":
+		return fmt.Errorf("%w: tool %q: call-bound token refused (%s)", vmcp.ErrAuthorizationFailed, name, reason)
+	case token == nil:
+		return nil
+	case token.Entry.IsList():
+		return fmt.Errorf("%w: tool %q: a list-call token cannot call a tool", vmcp.ErrAuthorizationFailed, name)
+	case target == nil:
+		slog.WarnContext(ctx, "call binding: refused a call-bound call that dispatches to a composite tool",
+			"tool", name, "server", token.Entry.Server)
+		return fmt.Errorf("%w: tool %q: call-bound token cannot run a composite tool", vmcp.ErrAuthorizationFailed, name)
+	case target.WorkloadID != token.Entry.Server:
+		slog.WarnContext(ctx, "call binding: refused a call-bound call routed to another backend",
+			"tool", name, "server", token.Entry.Server, "target", target.WorkloadID)
+		return fmt.Errorf("%w: tool %q: call-bound token names another backend", vmcp.ErrAuthorizationFailed, name)
+	}
+	return nil
 }
 
 // ReadResource reads the resource at uri from its backend. Returns

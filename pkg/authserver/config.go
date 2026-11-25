@@ -2141,8 +2141,9 @@ type Config struct {
 	// code exchange or ID-token validation on the leg's callback, and a failure to
 	// build the leg's authorization URL. The skipped leg gets no stored token and is
 	// not prompted again in the same walk; tokens stored by earlier legs are kept.
-	// Each skipped leg is logged once at WARN with the provider name and failure
-	// class.
+	// Each skipped leg is logged once at WARN ("skipping failed upstream chain
+	// leg") with the provider name and failure class; an IdP error is also logged
+	// by the existing "upstream IDP returned error" WARN.
 	//
 	// These stay fatal whatever this says: every failure on the first (identity)
 	// leg; a missing, unknown, expired or replayed state; a failed browser-binding

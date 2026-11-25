@@ -176,8 +176,8 @@ more upstream providers:
 - By default any failed leg ends the authorization. With the opt-in
   `Config.NonFatalSecondaryLegs`, a failed leg after the first (the user
   cancels consent, the IdP errors, the code exchange fails, or the leg's
-  authorization URL cannot be built) is skipped, logged once at WARN, and the
-  authorization code is issued without it. First-leg failures and
+  authorization URL cannot be built) is skipped, logged at WARN with the
+  provider and failure class, and the authorization code is issued without it. First-leg failures and
   browser-binding or state failures always stay fatal.
 
 ### Keys and tokens

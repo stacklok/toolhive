@@ -630,36 +630,30 @@ func (h *Handler) computeChain(ctx context.Context, principal FilterPrincipal) (
 // to computeChain (and thus the filter) only on the first leg, where it reflects
 // the identity provider. Subsequent legs reuse the stored chain and ignore it.
 //
-// Either way, pending.SkippedUpstreams is validated against the chain the pending
-// carried (see validateSkipped). A first-leg pending carries no chain, so one
-// that already names a skipped leg is rejected.
+// Before either, pending.SkippedUpstreams is validated against the chain the
+// pending carried (see validateSkipped). A first-leg pending carries no chain, so
+// one that already names a skipped leg is rejected before the filter runs.
 func (h *Handler) resolveChain(
 	ctx context.Context,
 	pending *storage.PendingAuthorization,
 	principal FilterPrincipal,
 ) ([]string, error) {
-	chain, err := func() ([]string, error) {
-		if pending.ResolvedUserID == "" {
-			// True first leg — compute with this (the first) leg's request context.
-			return h.computeChain(ctx, principal)
-		}
-		if len(pending.ChainUpstreams) == 0 {
-			return nil, fmt.Errorf("subsequent chain leg is missing its computed upstream chain (stale pending authorization)")
-		}
-		if err := h.validateChain(pending.ChainUpstreams); err != nil {
-			return nil, fmt.Errorf("stored upstream chain is invalid: %w", err)
-		}
-		return pending.ChainUpstreams, nil
-	}()
-	if err != nil {
-		return nil, err
-	}
-	// Validate against the chain the pending carried, not the one just resolved:
-	// a first leg carries none, so any skipped leg there is outside it.
+	// Validate against the chain the pending carried, not the one about to be
+	// resolved: a first leg carries none, so any skipped leg there is outside it.
 	if err := validateSkipped(pending.ChainUpstreams, pending.SkippedUpstreams); err != nil {
 		return nil, fmt.Errorf("stored skipped upstreams are invalid: %w", err)
 	}
-	return chain, nil
+	if pending.ResolvedUserID == "" {
+		// True first leg — compute with this (the first) leg's request context.
+		return h.computeChain(ctx, principal)
+	}
+	if len(pending.ChainUpstreams) == 0 {
+		return nil, fmt.Errorf("subsequent chain leg is missing its computed upstream chain (stale pending authorization)")
+	}
+	if err := h.validateChain(pending.ChainUpstreams); err != nil {
+		return nil, fmt.Errorf("stored upstream chain is invalid: %w", err)
+	}
+	return pending.ChainUpstreams, nil
 }
 
 // validateSkipped rejects a skipped-leg set loaded from storage that the chain

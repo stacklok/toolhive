@@ -230,10 +230,11 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		if h.canSkipCallbackLeg(pending) {
 			// The detail may echo the upstream's response, so it stays at DEBUG; the
-			// skip itself is the operator-visible WARN.
+			// skip itself is the operator-visible WARN, and its failure class says
+			// whether the token request or the identity check failed.
 			slog.Debug("skippable chain leg failed to exchange code or resolve identity",
 				"provider", pending.UpstreamProviderName, "error", err)
-			h.skipFailedCallbackLeg(ctx, w, req, ar, pending, legFailureCodeExchange)
+			h.skipFailedCallbackLeg(ctx, w, req, ar, pending, exchangeFailureClass(err))
 			return
 		}
 		slog.Error("failed to exchange code or resolve identity",
@@ -743,9 +744,13 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 }
 
 // handleUpstreamError handles error responses from the upstream IDP.
-// It attempts to redirect the error to the client if possible, otherwise
-// falls back to completing a pending device-flow login as denied (see
-// tryDenyDeviceLoginOnUpstreamError), otherwise shows an error page.
+// When the pending belongs to a non-first chain leg that canSkipCallbackLeg
+// allows skipping (NonFatalSecondaryLegs), it records the leg as skipped and
+// continues the walk (skipFailedCallbackLeg), which redirects to the next
+// upstream or issues the authorization code. Otherwise it attempts to redirect
+// the error to the client if possible, otherwise falls back to completing a
+// pending device-flow login as denied (see tryDenyDeviceLoginOnUpstreamError),
+// otherwise shows an error page.
 func (h *Handler) handleUpstreamError(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -1102,11 +1107,23 @@ func (h *Handler) redirectToNextLeg(
 const (
 	// legFailureIdPError is an error the upstream IdP returned in place of a code.
 	legFailureIdPError = "idp_error"
-	// legFailureCodeExchange is a failed code exchange or ID-token validation.
+	// legFailureCodeExchange is a failed token request at the leg's callback.
 	legFailureCodeExchange = "code_exchange"
+	// legFailureIdentityResolution is a token response whose identity could not
+	// be resolved or validated (for example an ID-token nonce or signature failure).
+	legFailureIdentityResolution = "identity_resolution"
 	// legFailureAuthorizationURL is a failure to build the leg's authorization URL.
 	legFailureAuthorizationURL = "authorization_url"
 )
+
+// exchangeFailureClass names the failure class of an ExchangeCodeForIdentity
+// error, telling a failed token request apart from a failed identity check.
+func exchangeFailureClass(err error) string {
+	if errors.Is(err, upstream.ErrIdentityResolutionFailed) {
+		return legFailureIdentityResolution
+	}
+	return legFailureCodeExchange
+}
 
 // canSkipLeg reports whether a failure of provider may be skipped in the walk
 // pending belongs to: NonFatalSecondaryLegs is set, the authorization is a chain
@@ -1147,8 +1164,10 @@ func (h *Handler) skipFailedCallbackLeg(
 	})
 }
 
-// logSkippedLeg is the one WARN line for a skipped leg. It names the provider and
-// the failure class only: never a token, code, or user value.
+// logSkippedLeg is the WARN line recording a skipped leg, logged once per leg. It
+// names the provider and the failure class only: never a token, code, or user
+// value. An IdP-error skip is also preceded by handleUpstreamError's existing
+// "upstream IDP returned error" WARN, which runs before the pending is loaded.
 func logSkippedLeg(provider, failureClass string) {
 	slog.Warn("skipping failed upstream chain leg", //nolint:gosec // G706 - provider name from server-side chain state
 		"provider", provider,

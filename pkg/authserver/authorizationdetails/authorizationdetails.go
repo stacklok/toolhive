@@ -45,17 +45,29 @@ type Type struct {
 	// (urn:ietf:params:oauth:grant-type:jwt-bearer) opts the type into ID-JAG
 	// redemption only: the server processes the authorization_details claim
 	// of an ID-JAG and refuses a plain RFC 7523 assertion that carries one.
+	//
+	// Listing the token-exchange grant type
+	// (urn:ietf:params:oauth:grant-type:token-exchange) covers two uses there:
+	// a token exchange for an access token, which only echoes the granted
+	// entries, and a token exchange for an ID-JAG, which signs the entries the
+	// hook keeps into the ID-JAG, under Pending.GrantSubset's rules. The hook
+	// tells them apart by Request.Exchange.RequestedTokenType; a type whose
+	// entries must not be signed into an ID-JAG refuses when it is
+	// urn:ietf:params:oauth:token-type:id-jag.
 	GrantTypes []string
 
 	// Grant decides what to grant for all of this type's entries in a request.
-	// It is called at most once per request, after the other checks passed,
-	// with every entry of the type in request order. What it may return
+	// It is called after the other checks passed, with every entry of the type
+	// in request order: once per request, except on a token exchange for an
+	// ID-JAG, which decides in both of the token endpoint's handler phases and
+	// so calls it twice. What it may return
 	// depends on how the server asks: see Pending.Grant (token exchange) and
 	// Pending.GrantSubset (a token exchange that mints an ID-JAG, and ID-JAG
 	// redemption).
 	//
 	// Grant is decide-only: it may read state but must not commit it, because
-	// token issuance can still fail after it returns. On ID-JAG redemption the
+	// token issuance can still fail after it returns, and it may be called
+	// again for the same request. On ID-JAG redemption the
 	// ID-JAG is consumed only after the hooks ran, so a hook can run again for
 	// the same ID-JAG when a redemption of it is later refused as a replay.
 	// Returning Error rejects the request with that code and reason; any other

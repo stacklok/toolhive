@@ -20,26 +20,22 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// refuseDetailsRepeated is the logged reason of an ID-JAG request whose
-// authorization_details parameter is repeated. The client gets invalid_request
-// with the shared "must not be repeated" description, as on token exchange.
-const refuseDetailsRepeated = "authorization_details_repeated"
-
 // parseIDJAGDetails reads the authorization_details parameter of a request for
 // an ID-JAG and runs the registry's shape checks. It returns a nil Pending when
 // the parameter is absent or is one empty value. It reads nothing from the
 // store, so decideIDJAG calls it before the grant is read.
 //
-// A value that is not a JSON array of objects gets malformed_entry, whether or
-// not a registry is set; "[]" is left to grantIDJAGDetails, which refuses it
-// as empty_grant. An ID-JAG carries the entries it is minted with,
-// so a type this server has no hook for is refused, never ignored: with no
-// registry, or with a type not registered for token exchange, the request
-// gets unknown_type. A value that breaks the registry's generic rules gets
-// malformed_entry. Both are
-// invalid_authorization_details with the reason as the whole description, the
-// codes ID-JAG redemption uses for the same causes. A repeated parameter,
-// empty values included, is invalid_request.
+// The registry's generic rules (one JSON array of objects, each with a string
+// "type", within 64 KiB, no repeated member names) apply with or without a
+// registry: without one the value is parsed by a registry that knows no type.
+// A value that breaks them gets malformed_entry. An ID-JAG carries the entries
+// it is minted with, so a type this server has no hook for is refused, never
+// ignored: with no registry, or with a type not registered for token exchange,
+// the request gets unknown_type. Both are invalid_authorization_details with
+// the reason as the whole description, the codes ID-JAG redemption uses for
+// the same causes. "[]" is left to grantIDJAGDetails, which refuses it as
+// empty_grant. A repeated parameter, empty values included, is
+// invalid_request.
 func (h *RefreshTokenHandler) parseIDJAGDetails(
 	ctx context.Context, form url.Values, log *slog.Logger,
 ) (*authorizationdetails.Pending, error) {
@@ -47,28 +43,22 @@ func (h *RefreshTokenHandler) parseIDJAGDetails(
 	switch {
 	case err != nil:
 		// readDetailsParam's only error is errRepeatedDetailsParam.
-		return nil, refuse(ctx, log, refuseDetailsRepeated, errorsx.WithStack(repeatedAuthorizationDetailsError()))
+		return nil, refuse(ctx, log, rejectRepeated, errorsx.WithStack(repeatedAuthorizationDetailsError()))
 	case !present:
 		return nil, nil
 	}
-	entries, ok := arrayOfObjects(raw)
-	if !ok {
-		return nil, refuse(ctx, log, reasonDetailsMalformedEntry, idJAGDetailsRefusal(reasonDetailsMalformedEntry))
+	registry := h.detailsRegistry
+	if registry == nil {
+		registry = noDetailsTypes
 	}
-	err = authorizationdetails.ErrUnknownType
-	var pending *authorizationdetails.Pending
-	switch {
-	case h.detailsRegistry != nil:
-		pending, err = h.detailsRegistry.Parse(raw, oauthproto.GrantTypeTokenExchange)
-	case len(entries) == 0:
-		// "[]" names no type, so it goes on to be refused as empty_grant
-		// whether or not a registry is set.
-		pending, err = emptyDetails()
-	}
+	pending, err := registry.Parse(raw, oauthproto.GrantTypeTokenExchange)
 	switch {
 	case errors.Is(err, authorizationdetails.ErrUnknownType):
+		// Parse accepted the shape, so the value is a bounded array of objects.
 		// The types tell the operator which registration is missing; the
 		// entries themselves are never logged.
+		var entries []json.RawMessage
+		_ = json.Unmarshal([]byte(raw), &entries)
 		return nil, refuse(ctx, log.With("types", entryTypes(entries)), reasonDetailsUnknownType,
 			idJAGDetailsRefusal(reasonDetailsUnknownType))
 	case err != nil:
@@ -77,19 +67,26 @@ func (h *RefreshTokenHandler) parseIDJAGDetails(
 	return pending, nil
 }
 
+// noDetailsTypes is the registry used when the embedder gave none: it knows no
+// type, so it applies the generic shape rules and answers ErrUnknownType for
+// any entry. New never fails for an empty map.
+var noDetailsTypes, _ = authorizationdetails.New(nil)
+
 // grantIDJAGDetails asks the registered hooks which of the requested entries
 // the ID-JAG carries. It returns the kept entries as a JSON array with the
 // bytes the client sent, or nil when pending is nil.
 //
 // The hooks may only keep or drop whole entries (Pending.GrantSubset), as on
 // ID-JAG redemption, so the entries AS-2 receives are the ones the client
-// asked for, byte for byte. A type whose hook keeps none of its entries is
+// asked for: mintIDJAG signs them in encoding/json form, which compacts them
+// and escapes <, > and &, and keeps every digit of a number. A type whose hook keeps none of its entries is
 // dropped; when no entry is left at all, the request is refused with
 // empty_grant, because an ID-JAG without the claim would yield an
 // unrestricted token. "[]" is refused the same way. A hook's
 // authorizationdetails.Error passes through with its code and reason; any
-// other hook failure, or a hook that changes or adds an entry, is a
-// server_error whose cause is never logged or sent.
+// other hook error, a *fosite.RFC6749Error included, or a hook that changes or
+// adds an entry, is a server_error whose cause is never logged or sent, as on
+// the other two hook paths.
 //
 // The hook Request describes the grant behind the presented refresh token,
 // which is opaque; Subject.Expiry is the earliest bound the grant mints
@@ -133,8 +130,15 @@ func grantIDJAGDetails(
 		Exchange: exchange,
 	})
 	if err != nil {
-		reason, clientErr := exchangeGrantDetailsError(err)
-		return nil, refuse(ctx, d.log, reason, clientErr)
+		// Logged with the reasons and fields the other two hook paths use
+		// (grantFailure); a failed hook's error text is never logged or sent.
+		var typed authorizationdetails.Error
+		if errors.As(err, &typed) {
+			return nil, refuse(ctx, d.log.With("code", string(typed.Code), "hook_reason", typed.Reason),
+				rejectHookRejected, errorsx.WithStack(exactReason(string(typed.Code), typed.Reason)))
+		}
+		return nil, refuse(ctx, d.log, rejectHookFailed, errorsx.WithStack(fosite.ErrServerError.WithDescription(
+			"The authorization_details could not be processed.")))
 	}
 	if subset.Entries == nil {
 		// The dropped types are registered names, never free-form request text.
@@ -142,30 +146,6 @@ func grantIDJAGDetails(
 			idJAGDetailsRefusal(reasonDetailsEmptyGrant))
 	}
 	return subset.Entries, nil
-}
-
-// arrayOfObjects splits raw into its entries. It reports false unless raw is
-// one JSON array holding only objects; the empty array is accepted.
-func arrayOfObjects(raw string) ([]json.RawMessage, bool) {
-	var entries []json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil || entries == nil {
-		return nil, false
-	}
-	for _, entry := range entries {
-		if entry[0] != '{' {
-			return nil, false
-		}
-	}
-	return entries, true
-}
-
-// emptyDetails is the parsed form of "[]", which needs no registered type.
-func emptyDetails() (*authorizationdetails.Pending, error) {
-	registry, err := authorizationdetails.New(nil)
-	if err != nil {
-		return nil, err
-	}
-	return registry.Parse("[]", oauthproto.GrantTypeTokenExchange)
 }
 
 // earliest returns the earliest non-zero time, or the zero time for none.

@@ -241,6 +241,15 @@ func TestIDJAGDetailsRefusals(t *testing.T) {
 			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
 		{name: "an array holding a non-object, no registry", noRegistry: true, values: []string{`[1]`},
 			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
+		{name: "null", values: []string{"null"},
+			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
+		{name: "null, no registry", noRegistry: true, values: []string{"null"},
+			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
+		{name: "an entry without a type, no registry", noRegistry: true, values: []string{`[{"note":"x"}]`},
+			code: "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
+		{name: "a value over 64 KiB, no registry", noRegistry: true,
+			values: []string{`[{"type":"` + testCallType + `","note":"` + strings.Repeat("x", 64*1024) + `"}]`},
+			code:   "invalid_authorization_details", desc: reasonDetailsMalformedEntry},
 		{name: "the empty array, no registry", noRegistry: true, values: []string{"[]"}, storeRead: true,
 			code: "invalid_authorization_details", desc: reasonDetailsEmptyGrant},
 		{name: "an object, not an array", values: []string{testCallEntry},
@@ -257,6 +266,9 @@ func TestIDJAGDetailsRefusals(t *testing.T) {
 			code:     "invalid_authorization_details", desc: "note_required"},
 		{name: "a hook fails", values: []string{one}, storeRead: true,
 			registry: newMintDetailsRegistry(t, failingHook, keepAllHook),
+			code:     "server_error", desc: detailsProcessingFailed},
+		{name: "a hook returns a fosite error", values: []string{one}, storeRead: true,
+			registry: newMintDetailsRegistry(t, fositeErrorHook, keepAllHook),
 			code:     "server_error", desc: detailsProcessingFailed},
 		{name: "a hook changes an entry", values: []string{one}, storeRead: true,
 			registry: newMintDetailsRegistry(t, grantingHook(testOtherCallEntry), keepAllHook),
@@ -314,22 +326,59 @@ func TestIDJAGDetailsCheckOrder(t *testing.T) {
 	assert.Zero(t, calls.Load(), "no hook runs for a grant that is refused")
 }
 
-// TestIDJAGDetailsRefusalLogs proves an unknown_type refusal names the entry
-// types but never an entry's value.
+// fositeErrorHook fails with a fosite error, which must not reach the client.
+func fositeErrorHook(context.Context, authorizationdetails.Request) (authorizationdetails.Result, error) {
+	return authorizationdetails.Result{}, fosite.ErrInvalidRequest.WithHint("private hook hint")
+}
+
+// TestIDJAGDetailsRefusalLogs proves each refusal logs one fixed reason with
+// its fields, and never an entry's value or a failed hook's error text.
 //
 //nolint:paralleltest // captureLogs swaps the process-wide default logger.
 func TestIDJAGDetailsRefusalLogs(t *testing.T) {
-	logs := captureLogs(t)
-	h, _ := detailsIDJAGHandler(t, nil)
-	req := idJAGRequest("x.ok")
-	req.Form.Set("authorization_details", `[{"type":"https://example.com/unknown","secret":"entry-value"}]`)
+	refusingHook := func(context.Context, authorizationdetails.Request) (authorizationdetails.Result, error) {
+		return authorizationdetails.Result{}, authorizationdetails.Error{
+			Code: authorizationdetails.CodeInvalidAuthorizationDetails, Reason: "note_required",
+		}
+	}
+	secretEntry := `{"type":"` + testCallType + `","note":"entry-value"}`
+	for _, tc := range []struct {
+		name     string
+		registry *authorizationdetails.Registry
+		details  string
+		want     []string
+	}{
+		{name: "unknown_type names the types", details: `[{"type":"https://example.com/unknown","note":"entry-value"}]`,
+			want: []string{"reason=unknown_type", "https://example.com/unknown"}},
+		{name: "empty_grant names the dropped types", details: `[` + secretEntry + `]`,
+			registry: newMintDetailsRegistry(t, grantingHook(), keepAllHook),
+			want:     []string{"reason=empty_grant", testCallType}},
+		{name: "a hook refusal names its code and reason", details: `[` + secretEntry + `]`,
+			registry: newMintDetailsRegistry(t, refusingHook, keepAllHook),
+			want:     []string{"reason=hook_rejected", "code=invalid_authorization_details", "hook_reason=note_required"}},
+		{name: "a hook that changes an entry", details: `[` + secretEntry + `]`,
+			registry: newMintDetailsRegistry(t, grantingHook(testOtherCallEntry), keepAllHook),
+			want:     []string{"reason=hook_failed"}},
+		{name: "a hook that fails with a fosite error", details: `[` + secretEntry + `]`,
+			registry: newMintDetailsRegistry(t, fositeErrorHook, keepAllHook),
+			want:     []string{"reason=hook_failed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLogs(t)
+			h, _ := detailsIDJAGHandler(t, tc.registry)
+			req := idJAGRequest("x.ok")
+			req.Form.Set("authorization_details", tc.details)
 
-	requireOAuthError(t, h.HandleTokenEndpointRequest(t.Context(), req),
-		"invalid_authorization_details", reasonDetailsUnknownType)
-	text := logs.String()
-	assert.Contains(t, text, "reason=unknown_type")
-	assert.Contains(t, text, "https://example.com/unknown")
-	assert.NotContains(t, text, "entry-value")
+			require.Error(t, h.HandleTokenEndpointRequest(t.Context(), req))
+			text := logs.String()
+			for _, want := range tc.want {
+				assert.Contains(t, text, want)
+			}
+			for _, secret := range []string{"entry-value", "private hook hint"} {
+				assert.NotContains(t, text, secret)
+			}
+		})
+	}
 }
 
 // TestRefreshTokenFactoryIDJAGDetailsRegistry proves the option reaches the

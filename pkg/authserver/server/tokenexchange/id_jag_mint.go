@@ -122,8 +122,8 @@ type idJAGMint struct {
 	// NotAfter caps exp; zero values are ignored.
 	NotAfter []time.Time
 	// AuthorizationDetails is the JSON array of granted entries, nil for none,
-	// as the client sent them (see grantIDJAGDetails). mintIDJAG signs it as
-	// the authorization_details claim.
+	// with the bytes the client sent (see grantIDJAGDetails). mintIDJAG signs
+	// its encoding/json form as the authorization_details claim.
 	AuthorizationDetails json.RawMessage
 }
 
@@ -505,13 +505,8 @@ func idJAGSubjectClaimSet(subjectClaims map[string]json.RawMessage) (map[string]
 // idJAGExpiry is exp in whole seconds: the floor of the earliest of now plus
 // lifetime and every non-zero cap.
 func idJAGExpiry(now time.Time, lifetime time.Duration, notAfter []time.Time) int64 {
-	expiresAt := now.Add(lifetime)
-	for _, limit := range notAfter {
-		if !limit.IsZero() && limit.Before(expiresAt) {
-			expiresAt = limit
-		}
-	}
-	return expiresAt.Unix()
+	// A fresh slice, so the caller's NotAfter is never written to.
+	return earliest(append([]time.Time{now.Add(lifetime)}, notAfter...)).Unix()
 }
 
 // hintMintFailed is the client-visible hint when an ID-JAG could not be minted.

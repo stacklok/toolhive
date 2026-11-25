@@ -2075,7 +2075,12 @@ case-sensitive `type` names to a `Type`, which lists the grant types it applies
 to (`GrantTypes`) and a `Grant` hook. A type applies to ID-JAG redemption when
 it lists `urn:ietf:params:oauth:grant-type:jwt-bearer`; that grant type means
 ID-JAG redemption only, because the plain RFC 7523 grant refuses an assertion
-that carries the claim. Nothing is advertised in discovery.
+that carries the claim. A type that lists
+`urn:ietf:params:oauth:grant-type:token-exchange` applies both to a token
+exchange for an access token, which only echoes the entries, and to one for an
+ID-JAG, which signs them into the ID-JAG. The hook tells the two apart by
+`Exchange.RequestedTokenType`, and a type whose entries must not be signed
+refuses the ID-JAG type. Nothing is advertised in discovery.
 
 A value must follow RFC 9396 section 2: one JSON array of objects, each with a
 non-empty string `type` registered for the grant type. On top of that, ToolHive
@@ -2152,12 +2157,12 @@ and 4.4.1; see [On ID-JAG redemption](#on-id-jag-redemption)). The steps:
 1. **The parameter's shape**, after the request parameters and the target and
    before the grant is read. An absent parameter or a single empty value mints
    an ID-JAG with no claim. A repeated parameter, empty values included, is
-   refused with `invalid_request`. A value that is not a JSON array of objects,
-   or that breaks the generic shape rules above, is
-   `invalid_authorization_details` and `malformed_entry`, with or without a
-   registry. With no registry, or a type not registered for the token-exchange
-   grant, the request is refused with `unknown_type`: an ID-JAG carries what it
-   is minted with, so a type without a hook is refused, never ignored.
+   refused with `invalid_request`. A value that breaks the generic shape rules
+   above is `invalid_authorization_details` and `malformed_entry`, with or
+   without a registry (without one, a registry that knows no type parses it).
+   With no registry, or a type not registered for the token-exchange grant,
+   the request is refused with `unknown_type`: an ID-JAG carries what it is
+   minted with, so a type without a hook is refused, never ignored.
 2. **The hooks**, after every grant and subject-claim check and before the
    actor validator, so a refused entry never reaches the validator. The hook
    `Request` describes the grant behind the opaque refresh token:
@@ -2186,7 +2191,8 @@ returns the same bytes in its `authorization_details` member (draft section
 ID-JAG's claim, both responses and the access token's claim are byte for byte
 the same.
 
-**Errors.** Every refusal is a 400 sent in both handler phases; none mints.
+**Errors.** A refusal is sent in the first handler phase that reaches it, and
+nothing is minted.
 
 | Cause | Response |
 | --- | --- |
@@ -2195,12 +2201,13 @@ the same.
 | A value that breaks the generic shape rules | `invalid_authorization_details`, `malformed_entry` |
 | A hook refuses with an `authorizationdetails.Error` | its code, its reason as `error_description` |
 | `[]`, or the hooks together keep none of the entries | `invalid_authorization_details`, `empty_grant` |
-| A hook fails, returns invalid output, or changes or adds an entry | 500 `server_error`, "The authorization_details could not be processed." |
+| A hook fails (any error but an `authorizationdetails.Error`, a fosite error included), returns invalid output, or changes or adds an entry | 500 `server_error`, "The authorization_details could not be processed." |
 
-Each refusal is logged as `Exchange grant refused` at WARN with the reason:
-`authorization_details_repeated`, `unknown_type` (with the entry `types`, as on
-redemption), `malformed_entry`, `empty_grant` (with the dropped `types`), the
-hook's own reason, or `internal_error`. An entry's value is never logged.
+Each refusal is logged as `Exchange grant refused` at WARN with a fixed reason:
+`repeated`, `unknown_type` (with the entry `types`, as on redemption),
+`malformed_entry`, `empty_grant` (with the dropped `types`), `hook_rejected`
+(with `code` and `hook_reason`) or `hook_failed`. The text of a failed hook's
+error and an entry's value are never logged.
 
 **Release order.** An AS-2 that predates claim processing ignores the claim and
 issues an access token the entry does not restrict. Send entries only to an

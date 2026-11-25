@@ -293,7 +293,10 @@ type factoryOptions struct {
 // It shares vectors only: each replica still builds its own index from its own
 // sessions, and replicas that miss the same vectors at the same moment both
 // embed them. Only vectors embedded under a verified model identity are
-// published, and a Redis failure after startup costs reuse, never a session.
+// published. A build reads Redis at most once, before it waits for its turn to
+// embed, and writes at most once, after it commits. A slow Redis therefore
+// delays only that build, by the Redis timeouts on those calls, and a Redis
+// failure after startup costs reuse but never fails a session.
 // Anyone who can write the keyspace can replace vectors and so change find_tool
 // ranking, so the instance needs the access control the session data needs.
 func WithSharedEmbeddings(redisCfg redisconn.Config, keyPrefix string) FactoryOption {

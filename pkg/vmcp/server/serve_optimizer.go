@@ -92,12 +92,14 @@ func (s *Server) optimizerSessionTools(
 	ctx context.Context, sessionID string, coreTools []server.ServerTool,
 ) ([]server.ServerTool, error) {
 	// This runs once per registration AND once per cross-pod lazyInjectSessionTools
-	// rehydration; each build re-upserts coreTools into the shared store (and, when
-	// embeddings are configured, an embedding round-trip per tool). Rows do not
+	// rehydration; each build re-upserts coreTools into the shared store. With
+	// embeddings configured, a build embeds only the tools whose text or embedding
+	// model changed (#5847) and reuses the stored vectors for the rest, including,
+	// with Redis session storage, vectors other replicas computed. Rows do not
 	// accumulate — the store upserts by tool-name PK (INSERT OR REPLACE) — so this is
-	// repeated work, not a leak. Acceptable while the Serve path is test-only;
-	// skipping the re-upsert on rehydration is a deferred optimization (tracked for
-	// #5445), not done now to avoid premature optimization without measured evidence.
+	// repeated work, not a leak. Skipping the re-upsert on rehydration is a deferred
+	// optimization (tracked for #5445), not done now to avoid premature optimization
+	// without measured evidence.
 	opt, err := s.optimizerFactory(ctx, coreTools)
 	if err != nil {
 		return nil, fmt.Errorf("build session optimizer: %w", err)

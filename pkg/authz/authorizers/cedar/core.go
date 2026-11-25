@@ -694,9 +694,12 @@ func (a *Authorizer) IsAuthorized(
 // but it does supply one the access token leaves out, and that has three
 // consequences:
 //
-//   - Default group selection takes the first of defaultGroupClaimNames that
-//     yields groups, so filling one default name could hide another the access
-//     token asserted. defaultGroupClaimsToWithhold prevents that.
+//   - Group and role claims are filled as a unit (groupClaimsToWithhold): if
+//     the access token asserts any claim group extraction reads, the id_token
+//     fills none of them. Per-claim filling would let one decision combine the
+//     access token's `groups` with the id_token's `roles`, and a filled default
+//     name could win the first-match default loop over the one the access
+//     token asserted.
 //   - When a per-audience filter matches none of the user's groups, providers
 //     typically omit the claim rather than emit an empty list, and the
 //     id_token's list is then filled in. Fill-only therefore does not preserve
@@ -708,10 +711,11 @@ func (a *Authorizer) IsAuthorized(
 //     ID, `roles` lists the user's role assignments on the app the token was
 //     minted for: the resource API in the access token, ToolHive's auth-server
 //     client in the id_token. Entra omits `roles` when the user has no
-//     assignment on the resource, so the id_token's roles — the CLIENT app's —
-//     are filled in, also when the access token carries `groups`. When the
-//     resource API and the auth-server client are different registrations, use
-//     one registration for both, or assign no roles on the client app.
+//     assignment on the resource, so when the access token carries no group or
+//     role claim at all, the id_token's roles — the CLIENT app's — are filled
+//     in. When the resource API and the auth-server client are different
+//     registrations, use one registration for both, or assign no roles on the
+//     client app.
 //
 // A claim absent from both tokens stays absent, so `has`-guarded policies still
 // fail closed.
@@ -841,7 +845,7 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 	}
 
 	merged, filled := mergeIDTokenClaims(upstreamClaims, idTokenClaims,
-		a.defaultGroupClaimsToWithhold(upstreamClaims))
+		a.groupClaimsToWithhold(upstreamClaims))
 	if len(filled) > 0 {
 		// DEBUG because filling from the id_token is the designed path, and
 		// nearly every OIDC id_token carries profile claims the access token omits.
@@ -861,42 +865,57 @@ func (a *Authorizer) supplementFromIDToken(identity *auth.Identity, upstreamClai
 	return merged
 }
 
-// defaultGroupClaimsToWithhold returns the defaultGroupClaimNames entries the
-// id_token must not fill for this access token.
+// groupClaimsToWithhold returns the claim names the id_token must not fill for
+// this access token: every claim group extraction reads, or none of them.
 //
-// Fill-only precedence is per claim, but default group extraction is not: it
-// takes the first of defaultGroupClaimNames that yields groups. If the access
-// token asserts `roles` and the id_token alone asserts `groups`, filling `groups`
-// would make the id_token's list win that first-match loop, and the access
-// token's own roles would never be read. So the names ordered before the access
-// token's selected default (the first that holds a recognized array, the same
-// test extractGroups applies) are not filled, and default selection still lands
-// on what the access token asserted. Names ordered after it can never win the
-// loop, so they may be filled. A null or scalar default claim is skipped by
-// extraction, so it is not a selected default either.
+// Group and role claims come from one token as a unit. When the access token
+// asserts any claim group extraction would use (GroupClaimName, RoleClaimName or
+// one of defaultGroupClaimNames, holding a recognized array — the same test
+// extractGroups applies), none of them is filled from the id_token. Filling
+// them per claim would let one decision combine the resource API's answer with
+// ToolHive's client registration's: the access token's `groups` with the
+// id_token's `roles`, or, with GroupClaimName set, the id_token's list replacing
+// the access token's `roles` as the group set. It would also let a filled default
+// name win the first-match default loop and hide the claim the access token
+// asserted. When the access token asserts none of them, the id_token supplies
+// them all, which is the #6049 case.
 //
-// Only GroupClaimName is exempt: it takes priority over the defaults, so the
-// operator asked for that claim by name and the id_token may supply it — the
-// #6049 case. RoleClaimName is not exempt, because it is read in addition to the
-// default loop rather than instead of it; a default-named RoleClaimName ordered
-// before the selected default would win that loop if filled. With no selected
-// default in the access token there is nothing to displace, and every default
-// name may be filled. A withheld name is also absent as a claim_<name> attribute.
-func (a *Authorizer) defaultGroupClaimsToWithhold(accessTokenClaims jwt.MapClaims) []string {
-	selected := slices.IndexFunc(defaultGroupClaimNames, func(name string) bool {
-		v, ok := accessTokenClaims[name]
-		if !ok || v == nil {
+// A null or scalar value is skipped by extraction, so it does not count as an
+// assertion. For a dot-separated name such as "realm_access.roles", the
+// top-level container is withheld too, since that is the key a fill would
+// supply. A withheld name is also absent as a claim_<name> attribute.
+func (a *Authorizer) groupClaimsToWithhold(accessTokenClaims jwt.MapClaims) []string {
+	names := a.groupClaimNames()
+	asserted := slices.ContainsFunc(names, func(name string) bool {
+		v := resolveNestedClaim(accessTokenClaims, name)
+		if v == nil {
 			return false
 		}
 		groups, recognized := authclaims.DecodeStringArrayLenient(v)
 		return recognized && groups != nil
 	})
-	if selected <= 0 {
+	if !asserted {
 		return nil
 	}
-	return slices.DeleteFunc(slices.Clone(defaultGroupClaimNames[:selected]), func(name string) bool {
-		return name == a.groupClaimName
-	})
+	withheld := slices.Clone(names)
+	for _, name := range names {
+		if head, _, nested := strings.Cut(name, "."); nested {
+			withheld = append(withheld, head)
+		}
+	}
+	return withheld
+}
+
+// groupClaimNames returns every claim name group extraction reads: the
+// configured GroupClaimName and RoleClaimName, then defaultGroupClaimNames.
+func (a *Authorizer) groupClaimNames() []string {
+	names := make([]string, 0, len(defaultGroupClaimNames)+2)
+	for _, name := range []string{a.groupClaimName, a.roleClaimName} {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return append(names, defaultGroupClaimNames...)
 }
 
 // idTokenClaimsNeverSupplemented names the claims that are never read out of the
@@ -969,7 +988,7 @@ var idTokenClaimsNeverSupplemented = map[string]struct{}{
 // claim plus, for each id_token claim that the access token does not carry and that
 // is in neither idTokenClaimsNeverSupplemented nor withheld, the id_token's value.
 // It also returns the sorted list of names actually supplied by the id_token, for
-// logging. withheld carries per-request exclusions (defaultGroupClaimsToWithhold).
+// logging. withheld carries per-request exclusions (groupClaimsToWithhold).
 //
 // Precedence is fill-only: an access-token claim is never overwritten or extended,
 // so a claim the access token does assert can neither be shadowed nor unioned with

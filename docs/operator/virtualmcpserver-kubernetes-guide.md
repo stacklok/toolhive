@@ -708,15 +708,14 @@ configure the upstream to assert it in the access token.
 
 Fill-only has three consequences worth knowing:
 
-* **Default group selection stays with the access token.** Without
-  `groupClaimName`, ToolHive uses the first of `groups`, `roles` and
-  `cognito:groups` that holds a list. When the access token carries a list under
-  one of them, the `id_token` does not fill the names ordered before it, so an
-  `id_token`-only `groups` cannot hide the access token's `roles`; a null or
-  non-list value does not count. A claim you name in `groupClaimName` is still
-  filled from the `id_token`. A `roleClaimName` that is one of those three names
-  and ordered before the access token's list is not. A name that is not filled is
-  also absent as a `claim_<name>` attribute.
+* **Group and role claims come from one token.** If the access token carries a
+  list under any claim ToolHive reads groups from (`groupClaimName`,
+  `roleClaimName`, or one of the defaults `groups`, `roles` and
+  `cognito:groups`), the `id_token` fills none of them; a null or non-list value
+  does not count. So one decision never combines the access token's `groups`
+  with the `id_token`'s `roles`, and an `id_token`-only `groups` cannot hide the
+  access token's `roles`. A name that is not filled is also absent as a
+  `claim_<name>` attribute.
 * **An empty per-audience filter is not preserved.** When a group filter matches
   none of the user's groups, providers typically omit the claim from the access
   token rather than emit an empty list, and the `id_token`'s list is then filled
@@ -727,10 +726,10 @@ Fill-only has three consequences worth knowing:
   `roles` lists the user's role assignments on the app the token was issued for:
   the resource API in the access token, ToolHive's auth-server client in the
   `id_token`. Entra omits `roles` when the user has no assignment on the
-  resource, so the `id_token`'s roles, which are the *client* app's, are filled
-  in, also when the access token carries `groups`. If the resource API and the
-  auth-server client are separate registrations, use one registration for both,
-  or assign no roles on the client app.
+  resource, so when the access token then carries no group or role claim at
+  all, the `id_token`'s roles, which are the *client* app's, are filled in. If
+  the resource API and the auth-server client are separate registrations, use
+  one registration for both, or assign no roles on the client app.
 
 > **Warning**: group revocation latency is session-scoped for `id_token`-sourced
 > claims.

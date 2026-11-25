@@ -596,21 +596,30 @@ func mentionsToolsValue(v any, depth int) bool {
 			}
 		}
 	case string:
-		// Plain text that merely mentions tools (such as "Found 3 tools") names no member,
-		// so only a JSON-encoded tools key in the text counts, checked below.
-		trimmed := strings.TrimSpace(t)
-		// A JSON string literal can itself hold JSON, so unwrap it and look again.
-		if depth < maxToolsSniffDepth && strings.HasPrefix(trimmed, `"`) {
-			var unwrapped string
-			if json.Unmarshal([]byte(trimmed), &unwrapped) == nil {
-				return mentionsToolsValue(unwrapped, depth+1)
-			}
+		return mentionsToolsString(t, depth)
+	}
+	return false
+}
+
+// mentionsToolsString reports whether a string holds JSON that names a tools member.
+// Plain text that merely mentions tools (such as "Found 3 tools") names no member,
+// so only JSON inside the text counts.
+func mentionsToolsString(s string, depth int) bool {
+	if depth >= maxToolsSniffDepth {
+		return false
+	}
+	trimmed := strings.TrimSpace(s)
+	// A JSON string literal can itself hold JSON, so unwrap it and look again.
+	if strings.HasPrefix(trimmed, `"`) {
+		var unwrapped string
+		if json.Unmarshal([]byte(trimmed), &unwrapped) == nil {
+			return mentionsToolsValue(unwrapped, depth+1)
 		}
-		if depth < maxToolsSniffDepth && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
-			var inner any
-			if json.Unmarshal([]byte(trimmed), &inner) == nil {
-				return mentionsToolsValue(inner, depth+1)
-			}
+	}
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		var inner any
+		if json.Unmarshal([]byte(trimmed), &inner) == nil {
+			return mentionsToolsValue(inner, depth+1)
 		}
 	}
 	return false

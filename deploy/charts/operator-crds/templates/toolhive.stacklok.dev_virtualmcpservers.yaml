@@ -3654,9 +3654,8 @@ spec:
                     description: |-
                       Instructions sets the instructions clients receive in the result of a
                       successful initialize or server/discover request: vMCP combines it with
-                      any instructions it produces, as mode says. When using the Kubernetes
-                      operator, VirtualMCPServer.spec.instructions takes precedence over this
-                      field.
+                      any instructions it produces, as mode says. A VirtualMCPServer sets
+                      either spec.instructions or this field, not both.
                     properties:
                       mode:
                         default: append
@@ -3672,9 +3671,13 @@ spec:
                         - prepend
                         type: string
                       value:
-                        description: Value is the text that mode combines with the
-                          server's instructions.
+                        description: |-
+                          Value is the text that mode combines with the server's instructions.
+                          Leading and trailing white space is dropped, and a value that is only
+                          white space is rejected.
+                        maxLength: 65536
                         minLength: 1
+                        pattern: \S
                         type: string
                     required:
                     - value
@@ -5149,7 +5152,7 @@ spec:
                   initialize or server/discover request: the Virtual MCP server combines it with
                   any instructions it produces, as mode says. Clients commonly add server
                   instructions to the model's context, so this adds policy or usage guidance
-                  without changing the server. Takes precedence over config.instructions.
+                  without changing the server. Set this or config.instructions, not both.
                 properties:
                   mode:
                     default: append
@@ -5165,9 +5168,13 @@ spec:
                     - prepend
                     type: string
                   value:
-                    description: Value is the text that mode combines with the server's
-                      instructions.
+                    description: |-
+                      Value is the text that mode combines with the server's instructions.
+                      Leading and trailing white space is dropped, and a value that is only
+                      white space is rejected.
+                    maxLength: 65536
                     minLength: 1
+                    pattern: \S
                     type: string
                 required:
                 - value
@@ -5435,6 +5442,8 @@ spec:
               rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
                 && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
                 == ''openai'')'
+            - message: set instructions or config.instructions, not both
+              rule: '!(has(self.instructions) && has(self.config) && has(self.config.instructions))'
             - message: authServerUpstreamFilter requires authServerConfig to be set
               rule: '!has(self.authServerUpstreamFilter) || has(self.authServerConfig)'
             - message: authServerUpstreamFilter requires at least two configured upstream
@@ -9401,9 +9410,8 @@ spec:
                     description: |-
                       Instructions sets the instructions clients receive in the result of a
                       successful initialize or server/discover request: vMCP combines it with
-                      any instructions it produces, as mode says. When using the Kubernetes
-                      operator, VirtualMCPServer.spec.instructions takes precedence over this
-                      field.
+                      any instructions it produces, as mode says. A VirtualMCPServer sets
+                      either spec.instructions or this field, not both.
                     properties:
                       mode:
                         default: append
@@ -9419,9 +9427,13 @@ spec:
                         - prepend
                         type: string
                       value:
-                        description: Value is the text that mode combines with the
-                          server's instructions.
+                        description: |-
+                          Value is the text that mode combines with the server's instructions.
+                          Leading and trailing white space is dropped, and a value that is only
+                          white space is rejected.
+                        maxLength: 65536
                         minLength: 1
+                        pattern: \S
                         type: string
                     required:
                     - value
@@ -10896,7 +10908,7 @@ spec:
                   initialize or server/discover request: the Virtual MCP server combines it with
                   any instructions it produces, as mode says. Clients commonly add server
                   instructions to the model's context, so this adds policy or usage guidance
-                  without changing the server. Takes precedence over config.instructions.
+                  without changing the server. Set this or config.instructions, not both.
                 properties:
                   mode:
                     default: append
@@ -10912,9 +10924,13 @@ spec:
                     - prepend
                     type: string
                   value:
-                    description: Value is the text that mode combines with the server's
-                      instructions.
+                    description: |-
+                      Value is the text that mode combines with the server's instructions.
+                      Leading and trailing white space is dropped, and a value that is only
+                      white space is rejected.
+                    maxLength: 65536
                     minLength: 1
+                    pattern: \S
                     type: string
                 required:
                 - value
@@ -11182,6 +11198,8 @@ spec:
               rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
                 && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
                 == ''openai'')'
+            - message: set instructions or config.instructions, not both
+              rule: '!(has(self.instructions) && has(self.config) && has(self.config.instructions))'
             - message: authServerUpstreamFilter requires authServerConfig to be set
               rule: '!has(self.authServerUpstreamFilter) || has(self.authServerConfig)'
             - message: authServerUpstreamFilter requires at least two configured upstream

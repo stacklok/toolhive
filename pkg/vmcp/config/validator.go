@@ -115,6 +115,13 @@ func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 		return fmt.Errorf("group reference is required")
 	}
 
+	// Checked here so that validate rejects what serve would refuse at startup
+	if cfg.Instructions != nil {
+		if err := cfg.Instructions.Validate(); err != nil {
+			return fmt.Errorf("instructions: %w", err)
+		}
+	}
+
 	return nil
 }
 

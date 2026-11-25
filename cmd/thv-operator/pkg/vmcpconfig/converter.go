@@ -131,7 +131,8 @@ func (c *Converter) Convert(
 		config.PassthroughHeaders = vmcp.Spec.PassthroughHeaders
 	}
 
-	// Promoted top-level field takes precedence over spec.config.instructions.
+	// Promoted top-level field. Admission rejects setting it together with
+	// spec.config.instructions, which otherwise passes through as is.
 	config.Instructions = cmp.Or(vmcp.Spec.Instructions.DeepCopy(), config.Instructions)
 
 	// Override name with the CR name (authoritative source)

@@ -211,9 +211,8 @@ type Config struct {
 
 	// Instructions sets the instructions clients receive in the result of a
 	// successful initialize or server/discover request: vMCP combines it with
-	// any instructions it produces, as mode says. When using the Kubernetes
-	// operator, VirtualMCPServer.spec.instructions takes precedence over this
-	// field.
+	// any instructions it produces, as mode says. A VirtualMCPServer sets
+	// either spec.instructions or this field, not both.
 	// +optional
 	Instructions *instructions.Config `json:"instructions,omitempty" yaml:"instructions,omitempty"`
 }

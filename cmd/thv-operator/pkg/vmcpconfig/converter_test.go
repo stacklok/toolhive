@@ -2402,8 +2402,8 @@ func TestConverter_PassthroughHeaders(t *testing.T) {
 }
 
 // TestConverter_Instructions verifies that spec.instructions reaches the vMCP
-// config, takes precedence over spec.config.instructions, and that a value set
-// only in spec.config.instructions is preserved.
+// config and that a value set only in spec.config.instructions is preserved.
+// Admission rejects setting both.
 func TestConverter_Instructions(t *testing.T) {
 	t.Parallel()
 
@@ -2416,7 +2416,6 @@ func TestConverter_Instructions(t *testing.T) {
 		want     *instructions.Config
 	}{
 		{name: "top-level only", topLevel: topLevel, want: topLevel},
-		{name: "top-level wins over config when both set", topLevel: topLevel, config: configLevel, want: topLevel},
 		{name: "config-level only is preserved", config: configLevel, want: configLevel},
 		{name: "neither set produces nil"},
 	}

@@ -313,9 +313,13 @@ spec:
                     - prepend
                     type: string
                   value:
-                    description: Value is the text that mode combines with the server's
-                      instructions.
+                    description: |-
+                      Value is the text that mode combines with the server's instructions.
+                      Leading and trailing white space is dropped, and a value that is only
+                      white space is rejected.
+                    maxLength: 65536
                     minLength: 1
+                    pattern: \S
                     type: string
                 required:
                 - value
@@ -2334,9 +2338,13 @@ spec:
                     - prepend
                     type: string
                   value:
-                    description: Value is the text that mode combines with the server's
-                      instructions.
+                    description: |-
+                      Value is the text that mode combines with the server's instructions.
+                      Leading and trailing white space is dropped, and a value that is only
+                      white space is rejected.
+                    maxLength: 65536
                     minLength: 1
+                    pattern: \S
                     type: string
                 required:
                 - value

@@ -4,6 +4,7 @@
 package instructions
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,7 +31,9 @@ func TestConfigApply(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := &Config{Mode: tt.mode, Value: "policy"}
+			// The value as a file or a YAML block holds it: white space
+			// around it is dropped.
+			cfg := &Config{Mode: tt.mode, Value: "\n  policy\n"}
 			assert.Equal(t, tt.want, cfg.Apply(tt.server))
 		})
 	}
@@ -51,6 +54,9 @@ func TestConfigValidate(t *testing.T) {
 		{name: "nil", cfg: nil, wantErr: "required"},
 		{name: "unknown mode", cfg: &Config{Mode: "Append", Value: "policy"}, wantErr: `invalid instructions mode "Append"`},
 		{name: "empty value", cfg: &Config{Mode: ModeAppend}, wantErr: "must not be empty"},
+		{name: "white space only", cfg: &Config{Value: " \n\t"}, wantErr: "only white space"},
+		{name: "longest value", cfg: &Config{Value: strings.Repeat("é", MaxValueLength)}},
+		{name: "value too long", cfg: &Config{Value: strings.Repeat("a", MaxValueLength+1)}, wantErr: "more than the 65536 allowed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

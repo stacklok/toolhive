@@ -10,7 +10,11 @@
 // +versionName=instructions
 package instructions
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+)
 
 // Mode says how the configured value combines with the instructions the
 // server returns.
@@ -31,6 +35,12 @@ const (
 // separator joins the configured value and the server's instructions.
 const separator = "\n\n"
 
+// MaxValueLength is the most characters a value may hold. The RunConfig
+// ConfigMap holds the value twice, in the typed field and in the middleware
+// parameters, and JSON encodes a character in at most six bytes, so both
+// copies stay well under the 1 MiB a ConfigMap may hold.
+const MaxValueLength = 65536
+
 // Config sets the instructions an MCP endpoint returns to clients in the
 // result of a successful initialize or server/discover request. Clients
 // commonly add server instructions to the model's context, so this is where
@@ -49,8 +59,12 @@ type Config struct {
 	Mode Mode `json:"mode,omitempty" yaml:"mode,omitempty"`
 
 	// Value is the text that mode combines with the server's instructions.
+	// Leading and trailing white space is dropped, and a value that is only
+	// white space is rejected.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=65536
+	// +kubebuilder:validation:Pattern=`\S`
 	Value string `json:"value" yaml:"value"`
 }
 
@@ -66,26 +80,32 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid instructions mode %q: must be one of %q, %q or %q",
 			c.Mode, ModeReplace, ModeAppend, ModePrepend)
 	}
-	if c.Value == "" {
-		return fmt.Errorf("instructions value must not be empty")
+	if strings.TrimSpace(c.Value) == "" {
+		return fmt.Errorf("instructions value must not be empty or only white space")
+	}
+	if n := utf8.RuneCountInString(c.Value); n > MaxValueLength {
+		return fmt.Errorf("instructions value has %d characters, more than the %d allowed", n, MaxValueLength)
 	}
 	return nil
 }
 
 // Apply returns the instructions a client receives when the server returns
-// server, which is empty when the server returns none.
+// server, which is empty when the server returns none. The value is used
+// without its leading and trailing white space, so a file that ends in a
+// newline or a YAML block adds no blank line.
 func (c *Config) Apply(server string) string {
+	value := strings.TrimSpace(c.Value)
 	if server == "" {
-		return c.Value
+		return value
 	}
 	switch c.Mode {
 	case ModeReplace:
-		return c.Value
+		return value
 	case ModePrepend:
-		return c.Value + separator + server
+		return value + separator + server
 	case ModeAppend:
-		return server + separator + c.Value
+		return server + separator + value
 	}
 	// An empty Mode means ModeAppend.
-	return server + separator + c.Value
+	return server + separator + value
 }

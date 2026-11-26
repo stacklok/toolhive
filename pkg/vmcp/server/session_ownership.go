@@ -33,7 +33,8 @@ import (
 // classifyingHandler before this middleware and never reach it.
 //
 // The caller is compared with sessionbinding.Validate, the check shared with the
-// other proxy families: the same issuer and subject (a refreshed token
+// other proxy families: the full binding, which is the issuer and subject, plus
+// the route, client_id and actor for a delegated session (a refreshed token
 // included), or, for a session created with no identity at all, no identity.
 // A non-nil identity without valid issuer and subject claims never matches,
 // including on a session bound to the unauthenticated sentinel.

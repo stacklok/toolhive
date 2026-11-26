@@ -598,7 +598,8 @@ func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOpt
 // admission route (Identity.AdmissionRoute) to tokens validated for this
 // embedded authorization server. A bound validator assigns a route only to
 // tokens verified with the in-process key provider (WithKeyProvider), so one
-// bound without WithKeyProvider never assigns a route. This runtime-only value
+// bound without WithKeyProvider never assigns a route, and its Middleware
+// rejects every token carrying the delegated-access marker. This runtime-only value
 // is deliberately separate from TokenValidatorConfig, which is user
 // configuration.
 func WithEmbeddedAuthServerIssuer(issuer string) TokenValidatorOption {
@@ -617,7 +618,8 @@ func WithEmbeddedAuthServerIssuer(issuer string) TokenValidatorOption {
 //
 // Together with WithEmbeddedAuthServerIssuer, this is what lets the validator
 // assign an admission route: a token verified only through the HTTP JWKS
-// fallback gets no route.
+// fallback gets no route, and on a bound validator Middleware rejects it with
+// 401 if it carries the delegated-access marker.
 func WithKeyProvider(provider keys.PublicKeyProvider) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.keyProvider = provider
@@ -1522,7 +1524,8 @@ func sessionlessProof(identity *Identity, claims jwt.MapClaims) bool {
 // "aud" only when one is set, so without it a token minted for another resource
 // on the same authorization server would be admitted. Every token that is neither
 // interactive nor delegated, including one carrying both a tsid and the
-// delegated-access marker, is left unspecified.
+// delegated-access marker, is left unspecified; Middleware then rejects such a
+// marked token on a bound validator.
 func (v *TokenValidator) classifyRoute(identity *Identity, claims jwt.MapClaims, provenance tokenProvenance) AdmissionRoute {
 	if provenance != provenanceSignedEmbeddedKey || !v.boundToEmbeddedIssuer() {
 		return AdmissionRouteUnspecified
@@ -1586,6 +1589,17 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		}
 
 		identity.AdmissionRoute = v.classifyRoute(identity, claims, provenance)
+
+		// A marked token must not fall back to ordinary admission when the
+		// validator is bound to the embedded issuer.
+		if _, marked := claims[claimnames.DelegatedAccessKey]; marked &&
+			v.boundToEmbeddedIssuer() && identity.AdmissionRoute != AdmissionRouteDelegated {
+			slog.WarnContext(r.Context(), "delegated-access marker present without delegated admission",
+				"reason", undelegatedMarkerReason(provenance, v.audience, claims))
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, "Invalid token"))
+			writeOAuthError(w, OAuthErrInvalidToken, "Invalid token")
+			return
+		}
 
 		// Enrich Identity with upstream provider tokens when an embedded auth
 		// server is active (reader configured via WithUpstreamTokenReader). The
@@ -1731,4 +1745,21 @@ func NewAuthInfoHandler(issuer, resourceURL string, scopes []string) http.Handle
 			return
 		}
 	})
+}
+
+// undelegatedMarkerReason names why a marked token on a validator bound to the
+// embedded issuer was not admitted as delegated, mirroring the checks in
+// classifyRoute. It returns "unclassified" for a cause it does not know, so a
+// new classifyRoute condition cannot be misreported as an existing one.
+func undelegatedMarkerReason(provenance tokenProvenance, audience string, claims jwt.MapClaims) string {
+	switch {
+	case provenance != provenanceSignedEmbeddedKey:
+		return "not_verified_with_in_process_key"
+	case strings.TrimSpace(audience) == "":
+		return "no_audience"
+	case hasUsableTSID(claims):
+		return "token_session_present"
+	default:
+		return "unclassified"
+	}
 }

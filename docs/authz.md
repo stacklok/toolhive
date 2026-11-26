@@ -77,7 +77,7 @@ is empty or contains a space or control character. For `completion/complete` the
 is a JSON-RPC error, not an HTTP 403.
 
 One ordering differs from the direct `thv run` proxies, where authorization runs
-first: vMCP checks session ownership before the authorization gate. A request that
+first: Legacy vMCP checks session ownership before the authorization gate. A request that
 carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
 **HTTP 404** before any Cedar 403. A denied call on the caller's own session still gets
 403. Two checks run before session ownership: the loopback `Host` guard, and call
@@ -119,6 +119,18 @@ the token's `exp` and the end of the call's request: an elicitation answer or
 cancellation sent after `exp` gets 401, even while the call is still open, and a fresh
 token does not help because it has no call of its own. See
 [Call-bound access tokens](arch/10-virtual-mcp-architecture.md#call-bound-access-tokens).
+
+For Legacy vMCP and stateful proxy requests, a delegated session is bound to the
+issuer and user, the delegated route, the OAuth client (`client_id`), and the
+immediate actor when present. Interactive and delegated tokens cannot reuse each
+other's sessions, even for the same user, when the validator identifies the
+delegated route. A token on that route with a missing or invalid `client_id`, a
+malformed or incomplete `act`, or an explicit `act: null` cannot open or reuse a session.
+On Legacy vMCP, a request that tries to reuse a session without a matching
+binding gets the same plain-text 404 `Session terminated` as an unknown session.
+See [vMCP session ownership](arch/10-virtual-mcp-architecture.md#session-ownership)
+and [proxy session ownership](arch/03-transport-architecture.md#session-ownership)
+for the binding rules and upgrade requirements.
 
 See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.

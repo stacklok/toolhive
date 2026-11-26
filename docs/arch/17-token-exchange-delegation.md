@@ -3407,7 +3407,7 @@ identity.
 | --- | --- |
 | `interactive` | The token came from an interactive login. It carries a non-empty token session ID (`tsid`), no delegated-access marker, and no proof of a session-less mint: no well-formed `act` chain and no `no_upstream_session` claim set to `true`. |
 | `delegated` | The token carries the delegated-access marker (any value) and has no usable `tsid`: the claim is absent, empty or not a string. |
-| (empty) | Every other token. This is the zero value, `AdmissionRouteUnspecified`. |
+| (empty) | An admitted token that fits neither route. This is the zero value, `AdmissionRouteUnspecified`. |
 
 The validator classifies a route only when all of these hold:
 
@@ -3426,19 +3426,42 @@ The validator classifies a route only when all of these hold:
 but claims from an introspection response never do, because they are the
 introspection endpoint's word, not a signature this validator checked.
 
-A token validated without an audience gets no route, whether it is interactive
-or delegated. It is still served exactly as before, including loading its upstream
-tokens.
-
-A token that fits neither route gets no route. This
-includes a token that carries both a `tsid` and the delegated-access marker:
-the authorization server never issues one, and it is neither interactive nor
-delegated, so it is treated like any other unclassified token.
+An unmarked token that fits neither route is still served as before, including
+loading its upstream tokens when applicable. For a validator bound to the
+embedded issuer, a marked token that cannot be classified as `delegated` is
+rejected instead. This includes a token with a usable `tsid`, validation without
+an audience, and validation through introspection or HTTP JWKS fallback rather
+than the in-process keys. The middleware returns HTTP 401 `invalid_token` before
+loading any upstream credentials.
 
 Consumers that grant anything must compare for one exact value, such as
 `delegated`. They must never test for a non-empty route or against the empty
-value, because new values may be added and an empty route is also what every
-unbound or introspected token gets.
+value, because new values may be added and `AdmissionRouteUnspecified` also
+covers tokens accepted by an unbound validator or through introspection.
+
+`pkg/auth/sessionbinding` consumes `AdmissionRouteDelegated` to isolate delegated
+MCP sessions from interactive sessions. This isolation requires a validator bound
+to the embedded authorization server, a configured `Audience`, and successful
+verification with the in-process signing keys supplied via `WithKeyProvider`.
+An unbound validator still leaves the route unspecified even if the token
+carries the delegated-access marker. An admitted token on that path retains the
+ordinary two-field session binding.
+
+Only delegated session bindings include the client and, if present, the actor.
+Other sessionless grants (RFC 8693 token exchange and unmarked JWT-bearer) keep
+the two-field binding. Self-issued RFC 8693 token exchanges are not marked
+delegated, so they keep the two-field binding: they can reuse the user's
+interactive session and share a binding across clients. Actor binding covers
+only the immediate actor (`act.iss`, `act.sub`); nested `act.act` is
+informational per RFC 8693 §4.1 and does not contribute to the binding. A
+malformed nested `act` prevents a delegated token from opening or reusing a
+session. Past the default maximum delegation depth, hops are counted but not
+inspected: a non-string `iss` or `sub` there does not prevent binding, but a
+nested `act` that is not an object prevents it at any depth. An explicit
+top-level `act: null` on a delegated token is refused, like a malformed `act`;
+a nested `act: null` just ends the chain. Without an actor, the binding isolates agents
+only if each uses its own `client_id`. See
+[vMCP Session Ownership](10-virtual-mcp-architecture.md#session-ownership).
 
 ## Implementation
 

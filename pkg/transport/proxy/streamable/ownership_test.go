@@ -198,3 +198,111 @@ func TestSessionOwnershipHTTP(t *testing.T) {
 	_, exists := proxy.sessionManager.Get(sid)
 	require.False(t, exists)
 }
+
+const (
+	delegatedListBody = `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	initializedBody   = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+)
+
+func delegatedProxyIdentity(clientID, actorIssuer string) *auth.Identity {
+	return &auth.Identity{
+		AdmissionRoute: auth.AdmissionRouteDelegated,
+		Token:          "original",
+		PrincipalInfo: auth.PrincipalInfo{Claims: map[string]any{
+			"iss": "issuer", "sub": "owner", "client_id": clientID,
+			"act": map[string]any{"iss": actorIssuer, "sub": "actor-subject"},
+			"jti": "original", "exp": int64(2_000_000_000),
+			"authorization_details": []any{map[string]any{"type": "mcp", "actions": []any{"list"}}},
+		}},
+	}
+}
+
+func TestDelegatedSessionOwnershipHTTP(t *testing.T) {
+	t.Parallel()
+
+	owner := delegatedProxyIdentity("client", "actor-issuer")
+	otherClient := delegatedProxyIdentity("other-client", "actor-issuer")
+	otherActorIssuer := delegatedProxyIdentity("client", "other-issuer")
+	interactive := &auth.Identity{
+		AdmissionRoute: auth.AdmissionRouteInteractive,
+		Token:          "interactive",
+		PrincipalInfo:  auth.PrincipalInfo{Claims: map[string]any{"iss": "issuer", "sub": "owner"}},
+	}
+	tests := []struct {
+		name, method, body string
+		owner, caller      *auth.Identity
+		rpcID              any
+	}{
+		{"other client lists tools", http.MethodPost, delegatedListBody, owner, otherClient, 1},
+		{"other actor issuer", http.MethodPost, delegatedListBody, owner, otherActorIssuer, 1},
+		{"interactive caller", http.MethodPost, delegatedListBody, owner, interactive, 1},
+		{"delegated caller", http.MethodPost, delegatedListBody, interactive, owner, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proxy, sid := newOwnedProxySession(t, tc.owner)
+			stream := proxy.serverStreams.register(sid)
+			t.Cleanup(func() { proxy.serverStreams.deregister(sid, stream) })
+
+			resp := sendOwnedProxyRequest(t, proxy, sid, tc.method, tc.body, tc.caller)
+			require.Equal(t, http.StatusNotFound, resp.Code)
+			require.Equal(t, "application/json", resp.Header().Get("Content-Type"))
+			require.JSONEq(t, string(session.NotFoundBody(tc.rpcID)), resp.Body.String())
+			require.Empty(t, proxy.messageCh, "a rejected request must not be forwarded")
+			require.Equal(t, 1, proxy.serverStreams.streamCount())
+			select {
+			case <-stream.stop:
+				t.Fatal("a rejected request closed the owner's stream")
+			default:
+			}
+			_, exists := proxy.sessionManager.Get(sid)
+			require.True(t, exists, "the owner's session must survive")
+		})
+	}
+}
+
+func TestDelegatedSessionOwnershipRenewedToken(t *testing.T) {
+	t.Parallel()
+
+	owner := delegatedProxyIdentity("client", "actor-issuer")
+	proxy, sid := newOwnedProxySession(t, owner)
+	renewed := delegatedProxyIdentity("client", "actor-issuer")
+	renewed.Token = "renewed"
+	renewed.Claims["jti"] = "renewed"
+	renewed.Claims["exp"] = int64(2_000_003_600)
+	renewed.Claims["authorization_details"] = []any{map[string]any{"type": "mcp", "actions": []any{"list", "call"}}}
+
+	post := sendOwnedProxyRequest(t, proxy, sid, http.MethodPost, initializedBody, renewed)
+	require.Equal(t, http.StatusAccepted, post.Code)
+	require.Len(t, proxy.messageCh, 1, "the renewed token's notification must be forwarded")
+	del := sendOwnedProxyRequest(t, proxy, sid, http.MethodDelete, "", renewed)
+	require.Equal(t, http.StatusNoContent, del.Code)
+	_, err := proxy.sessionManager.LookupOwner(t.Context(), sid)
+	require.ErrorIs(t, err, session.ErrSessionNotFound)
+}
+
+func newOwnedProxySession(t *testing.T, owner *auth.Identity) (*HTTPProxy, string) {
+	t.Helper()
+	proxy := NewHTTPProxy("127.0.0.1", 0, nil, nil)
+	t.Cleanup(func() { require.NoError(t, proxy.Stop(context.Background())) })
+	sid := uuid.NewString()
+	ctx := auth.WithIdentity(t.Context(), owner)
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, StreamableHTTPEndpoint, nil)
+	require.NoError(t, proxy.ensureSession(req, sid))
+	return proxy, sid
+}
+
+func sendOwnedProxyRequest(
+	t *testing.T, proxy *HTTPProxy, sid, method, body string, caller *auth.Identity,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(auth.WithIdentity(t.Context(), caller), 2*time.Second)
+	t.Cleanup(cancel)
+	req := httptest.NewRequestWithContext(ctx, method, StreamableHTTPEndpoint, strings.NewReader(body))
+	req.Header.Set("Mcp-Session-Id", sid)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	proxy.handleStreamableRequest(rec, req)
+	return rec
+}

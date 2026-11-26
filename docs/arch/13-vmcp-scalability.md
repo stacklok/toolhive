@@ -110,18 +110,25 @@ answered 404 if not.
 
 Each vMCP session carries an identity binding stored in session metadata under the
 key `vmcp.identity.binding`. The canonical format is defined in
-`pkg/vmcp/session/binding/binding.go`: a NUL-separated `iss + "\x00" + sub` for
-authenticated sessions, and the literal string `"unauthenticated"` for sessions
-without an auth identity.
+`pkg/auth/sessionbinding`. Authenticated bindings use NUL-separated fields:
+
+- **Standard (2 fields):** `iss + "\x00" + sub` for interactive and unspecified routes.
+- **Delegated (4 or 6 fields):** `iss`, `sub`, `delegated`, `client_id`, followed
+  by `act.iss` and `act.sub` when the current actor is present.
+
+Sessions without an auth identity use the literal string `"unauthenticated"`.
 
 Every replica checks the stored binding against the authenticated caller on each
-request that carries `Mcp-Session-Id`, reading it from the shared store before the
-session is rehydrated locally, so a session is usable only by its owner on any
-replica. See *Session Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
+Legacy request that carries `Mcp-Session-Id`, reading it from the shared store
+before the session is rehydrated locally. See
+[Session Ownership](10-virtual-mcp-architecture.md#session-ownership) for the
+matching rules and rolling-upgrade constraints.
 
 The binding is stored as **plaintext** in the session store (Redis/Valkey). It is
-not a credential — it identifies but does not authenticate a principal — but it is
-personally-identifying information (a combination of issuer URL and user subject).
+not a credential — it identifies but does not authenticate a principal — but it
+contains personally identifying information (the issuer URL and user subject).
+Delegated bindings also store `client_id` and, when present, `act.iss` and
+`act.sub` in plaintext; the actor subject may be a SPIFFE ID.
 
 Operators are responsible for access-controlling the Redis/Valkey instance
 equivalently to any other identity store. Concretely: enable Redis ACLs (Redis 6+)

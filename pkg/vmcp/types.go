@@ -546,14 +546,14 @@ type ToolCallResult struct {
 	// This is the array of content items returned by the backend.
 	Content []Content
 
-	// StructuredContent is structured output (preferred for composite tools and workflows).
-	// If the backend MCP server provides StructuredContent, it is used directly.
-	// Otherwise, this is populated by converting the Content array to a map:
-	//   - First text item: key="text"
-	//   - Additional text items: key="text_1", "text_2", etc.
-	//   - Image items: key="image_0", "image_1", etc.
-	// This allows templates to access fields via {{.steps.stepID.output.text}}.
-	// Note: No JSON parsing is performed - backends must provide structured data explicitly.
+	// StructuredContent is structured output, or nil when there is none. For a
+	// backend tool call it is the object the backend sent; it is nil when the
+	// backend sent none or sent a value that is not an object. vMCP never
+	// synthesizes it from Content, because this result is also returned to clients
+	// on pass-through calls. Composite workflows that need a map for templates
+	// build one from Content themselves (conversion.ContentArrayToMap). Results
+	// vMCP produces itself (composite tool output, coded errors, optimizer
+	// find_tool) set their own.
 	StructuredContent map[string]any
 
 	// IsError indicates if the tool call failed.

@@ -123,7 +123,7 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 				Meta: conversion.ToMCPMeta(result.Meta),
 			},
 			Content:           mcpContent,
-			StructuredContent: result.StructuredContent,
+			StructuredContent: conversion.ToMCPStructuredContent(result.StructuredContent),
 			IsError:           result.IsError,
 		}
 

@@ -158,6 +158,7 @@ type fakeCore struct {
 	completeValues  []string     // returned by Complete when completeErr is nil
 
 	callErr           error          // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
+	callStructured    map[string]any // when set, CallTool returns it as StructuredContent on success
 	readErr           error          // when set, ReadResource returns it
 	readMeta          map[string]any // when set, ReadResource sets it as result.Meta on success
 	promptErr         error          // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
@@ -251,7 +252,10 @@ func (f *fakeCore) CallTool(
 	if f.callErr != nil {
 		return nil, f.callErr
 	}
-	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}}}, nil
+	return &vmcp.ToolCallResult{
+		Content:           []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}},
+		StructuredContent: f.callStructured,
+	}, nil
 }
 
 // enableCallIdentityRecording turns on per-call identity recording (see
@@ -1412,6 +1416,46 @@ func TestServeCoreToolHandler(t *testing.T) {
 				want = 1
 			}
 			assert.Equal(t, want, fc.callToolCalls.Load())
+		})
+	}
+}
+
+// TestServeCoreToolHandlerStructuredContentOnTheWire pins the Legacy tools/call
+// wire result: structuredContent is present exactly when the core result carries
+// one. A nil map must omit the member, not encode it as "structuredContent": null
+// (the mcp-go result field is `any`, so a typed nil map would be a non-nil value).
+func TestServeCoreToolHandlerStructuredContentOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		structured map[string]any
+		wantMember bool
+	}{
+		{name: "no structuredContent omits the member", structured: nil, wantMember: false},
+		{name: "structuredContent object is forwarded", structured: map[string]any{"k": "v"}, wantMember: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}, callStructured: tc.structured}
+			srv, sessionID, _ := registerServeSession(t, fc)
+
+			req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+			res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
+			require.NoError(t, err)
+			require.NotNil(t, res)
+
+			body, err := json.Marshal(res)
+			require.NoError(t, err)
+			var wire map[string]any
+			require.NoError(t, json.Unmarshal(body, &wire))
+
+			got, present := wire["structuredContent"]
+			assert.Equal(t, tc.wantMember, present, "wire result: %s", body)
+			if tc.wantMember {
+				assert.Equal(t, map[string]any{"k": "v"}, got)
+			}
 		})
 	}
 }

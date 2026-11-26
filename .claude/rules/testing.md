@@ -57,7 +57,7 @@ task -d cmd/thv-operator kind-destroy          # when done
 
 **Cluster variants:**
 - `kind-setup` — plain cluster, no port mappings (general use)
-- `kind-setup-e2e` — cluster with NodePort mappings required by Ginkgo E2E tests
+- `kind-setup-e2e` — cluster with NodePort mappings required by Ginkgo E2E tests and the `OwnerReferencesPermissionEnforcement` admission plugin CI enables (use it for Chainsaw too, to match CI)
 
 **Chainsaw (operator unit-level E2E):**
 ```

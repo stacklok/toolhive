@@ -82,6 +82,29 @@ func NewUserKeyedUpstreamStorage(inner Storage) (*UserKeyedUpstreamStorage, erro
 // Unwrap returns the wrapped storage.
 func (s *UserKeyedUpstreamStorage) Unwrap() Storage { return s.Storage }
 
+// IsUserKeyed reports whether stor is a UserKeyedUpstreamStorage or reaches one
+// by following Unwrap() Storage or Unwrap() UpstreamTokenStorage.
+func IsUserKeyed(stor UpstreamTokenStorage) bool {
+	for stor != nil {
+		if _, ok := stor.(*UserKeyedUpstreamStorage); ok {
+			return true
+		}
+		switch u := stor.(type) {
+		case interface{ Unwrap() Storage }:
+			inner := u.Unwrap()
+			if inner == nil {
+				return false
+			}
+			stor = inner
+		case interface{ Unwrap() UpstreamTokenStorage }:
+			stor = u.Unwrap()
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 // ConsumeAssertionJWT delegates to the wrapped storage, failing closed when it
 // does not provide replay consumption rather than skipping a layer via Unwrap.
 func (s *UserKeyedUpstreamStorage) ConsumeAssertionJWT(

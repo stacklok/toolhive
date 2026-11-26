@@ -84,6 +84,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
    - Configuration and security model
    - Upstream subject identifiers (RFC 9493 `sub_id`) in access tokens
    - Access token type (`typ`: `JWT` or `at+jwt`) in JWT access tokens
+   - User-keyed upstream token storage (embedder option) and the refresh guard under it
 
 10. **[Skills System](12-skills-system.md)**
     - Agent Skills lifecycle (discover, build, publish, install)

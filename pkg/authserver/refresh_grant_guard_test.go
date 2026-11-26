@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -53,6 +56,41 @@ func guardTestRequest(tsid string, grantTypes ...string) *fosite.AccessRequest {
 	return req
 }
 
+// guardCase is one row of the field-off guard table.
+type guardCase struct {
+	name string
+	tsid string
+	rows map[string]*storage.UpstreamTokens
+	// refreshErr, when refreshes is non-zero, is what the refresher returns;
+	// nil means the refresh succeeds.
+	refreshErr error
+	refreshes  int
+	// onRefresh, when set, is stored as the row before the refresher
+	// returns, as a replica winning a refresh race would write it.
+	onRefresh *storage.UpstreamTokens
+	// winnerAfter, when set, is stored as the row 50ms after the refresher
+	// returns, while the guard waits out recheckDelay.
+	winnerAfter *storage.UpstreamTokens
+	// deleteOnRefresh deletes the row after the refresher runs.
+	deleteOnRefresh bool
+	// unconfigured names a row's provider that is not configured.
+	unconfigured string
+	// cancelDuringRecheck cancels the request 50ms after the refresher
+	// returns, while the guard waits out recheckDelay.
+	cancelDuringRecheck bool
+	// cancelled runs the request on an already cancelled context.
+	cancelled bool
+	// hang makes the refresher block until the test ends, so only the
+	// guard's check timeout can end the wait.
+	hang         bool
+	recheckDelay time.Duration
+	wantRefuse   bool
+	wantRevoke   bool
+	// wantDropped expects every upstream row of the session deleted, and a
+	// replay of the refresh token refused without another refresh.
+	wantDropped bool
+}
+
 func TestUpstreamRefreshGuard(t *testing.T) {
 	t.Parallel()
 
@@ -60,39 +98,7 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	rejected := fmt.Errorf("upstream token refresh failed: %w", upstream.ErrGrantRejected)
 
-	tests := []struct {
-		name string
-		tsid string
-		rows map[string]*storage.UpstreamTokens
-		// refreshErr, when refreshes is non-zero, is what the refresher returns;
-		// nil means the refresh succeeds.
-		refreshErr error
-		refreshes  int
-		// onRefresh, when set, is stored as the row before the refresher
-		// returns, as a replica winning a refresh race would write it.
-		onRefresh *storage.UpstreamTokens
-		// winnerAfter, when set, is stored as the row 50ms after the refresher
-		// returns, while the guard waits out recheckDelay.
-		winnerAfter *storage.UpstreamTokens
-		// deleteOnRefresh deletes the row after the refresher runs.
-		deleteOnRefresh bool
-		// unconfigured names a row's provider that is not configured.
-		unconfigured string
-		// cancelDuringRecheck cancels the request 50ms after the refresher
-		// returns, while the guard waits out recheckDelay.
-		cancelDuringRecheck bool
-		// cancelled runs the request on an already cancelled context.
-		cancelled bool
-		// hang makes the refresher block until the test ends, so only the
-		// guard's check timeout can end the wait.
-		hang         bool
-		recheckDelay time.Duration
-		wantRefuse   bool
-		wantRevoke   bool
-		// wantDropped expects every upstream row of the session deleted, and a
-		// replay of the refresh token refused without another refresh.
-		wantDropped bool
-	}{
+	tests := []guardCase{
 		{
 			name: "session-less grant is not checked",
 			tsid: "",
@@ -266,105 +272,186 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 		},
 	}
 
+	// The guard runs with the field off over a storage that keys rows by the
+	// canonical user in the context, as the enterprise gateway's does. It must
+	// never put a ToolHive user in a context it hands to storage.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ctx := context.Background()
-
-			stor := storage.NewMemoryStorage()
-			t.Cleanup(func() { _ = stor.Close() })
-			var configured []string
-			for name, row := range tt.rows {
-				row.ProviderID = name
-				require.NoError(t, stor.StoreUpstreamTokens(ctx, guardTestTSID, name, row))
-				if name != tt.unconfigured {
-					configured = append(configured, name)
-				}
-			}
-			// The grant's own tokens, which a revoking refusal must revoke.
-			req := guardTestRequest(tt.tsid, "refresh_token")
-			require.NoError(t, stor.CreateRefreshTokenSession(ctx, "rt-sig", "at-sig", req))
-			require.NoError(t, stor.CreateAccessTokenSession(ctx, "at-sig", req))
-
-			reqCtx, cancelReq := context.WithCancel(ctx)
-			t.Cleanup(cancelReq)
-			// Registered after the storage cleanup, so it runs first and a hung
-			// refresher returns before the storage closes.
-			release := make(chan struct{})
-			t.Cleanup(func() { close(release) })
-
-			refresher := mocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
-			refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).Times(tt.refreshes).DoAndReturn(
-				func(_ context.Context, sessionID string, expired *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
-					if tt.hang {
-						<-release
-					}
-					if tt.deleteOnRefresh {
-						require.NoError(t, stor.DeleteUpstreamTokensForProvider(ctx, sessionID, expired.ProviderID))
-					}
-					if tt.onRefresh != nil {
-						winner := *tt.onRefresh
-						winner.ProviderID = expired.ProviderID
-						require.NoError(t, stor.StoreUpstreamTokens(ctx, sessionID, expired.ProviderID, &winner))
-					}
-					if tt.winnerAfter != nil {
-						winner := *tt.winnerAfter
-						winner.ProviderID = expired.ProviderID
-						time.AfterFunc(50*time.Millisecond, func() {
-							assert.NoError(t, stor.StoreUpstreamTokens(ctx, sessionID, expired.ProviderID, &winner))
-						})
-					}
-					if tt.cancelDuringRecheck {
-						time.AfterFunc(50*time.Millisecond, cancelReq)
-					}
-					if tt.refreshErr != nil {
-						return nil, tt.refreshErr
-					}
-					refreshed := *expired
-					refreshed.ExpiresAt = future
-					return &refreshed, nil
-				})
-			guard, err := newUpstreamRefreshGuard(stor, refresher, configured)
-			require.NoError(t, err)
-			guard.recheckDelay = tt.recheckDelay
-			if tt.hang {
-				guard.checkTimeout = 50 * time.Millisecond
-			}
-
-			if tt.cancelled {
-				cancelReq()
-			}
-			err = guard.HandleTokenEndpointRequest(reqCtx, req)
-
-			_, refreshErr := stor.GetRefreshTokenSession(ctx, "rt-sig", nil)
-			_, accessErr := stor.GetAccessTokenSession(ctx, "at-sig", nil)
-			if tt.wantRefuse {
-				require.ErrorIs(t, err, fosite.ErrInvalidGrant)
-				var rfcErr *fosite.RFC6749Error
-				require.ErrorAs(t, err, &rfcErr)
-				assert.Equal(t, http.StatusBadRequest, rfcErr.CodeField)
-			} else {
-				require.NoError(t, err)
-			}
-			rows, rowsErr := stor.GetAllUpstreamTokens(ctx, guardTestTSID)
-			require.NoError(t, rowsErr)
-			if tt.wantDropped {
-				assert.Empty(t, rows, "a confirmed rejection must drop every upstream row of the session")
-				// The refresher mock allows no further call, so a replay that
-				// reached the IdP again fails the test.
-				require.ErrorIs(t, guard.HandleTokenEndpointRequest(ctx, req), fosite.ErrInvalidGrant)
-			} else if len(tt.rows) > 0 && !tt.deleteOnRefresh {
-				assert.NotEmpty(t, rows, "only a confirmed rejection drops the upstream rows")
-			}
-			if tt.wantRevoke {
-				assert.Error(t, refreshErr, "refused refresh token must be revoked")
-				assert.Error(t, accessErr, "the refused grant's access token must be revoked")
-				return
-			}
-			assert.NoError(t, refreshErr, "the refresh token must not be revoked")
-			assert.NoError(t, accessErr, "the access token must not be revoked")
+			runGuardCase(t, tt)
 		})
 	}
+}
+
+// canonicalUserRecordingStorage records the canonical user of every context
+// that reaches its upstream-token methods and keys rows by that user when
+// there is one, as the enterprise gateway's storage does. Without a user in
+// the context it keys by session, like the plain store.
+type canonicalUserRecordingStorage struct {
+	*storage.MemoryStorage
+	mu    sync.Mutex
+	users []string
+}
+
+func (s *canonicalUserRecordingStorage) key(ctx context.Context, sessionID string) string {
+	user, _ := serveridentity.CanonicalUserFromContext(ctx)
+	s.mu.Lock()
+	s.users = append(s.users, user)
+	s.mu.Unlock()
+	if user != "" {
+		return "user:" + user
+	}
+	return sessionID
+}
+
+func (s *canonicalUserRecordingStorage) recordedUsers() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.DeleteFunc(slices.Clone(s.users), func(u string) bool { return u == "" })
+}
+
+func (s *canonicalUserRecordingStorage) StoreUpstreamTokens(
+	ctx context.Context, sessionID, provider string, tokens *storage.UpstreamTokens,
+) error {
+	return s.MemoryStorage.StoreUpstreamTokens(ctx, s.key(ctx, sessionID), provider, tokens)
+}
+
+func (s *canonicalUserRecordingStorage) CompareAndSwapUpstreamTokens(
+	ctx context.Context, sessionID, provider, expectedRefreshToken string, tokens *storage.UpstreamTokens,
+) error {
+	return s.MemoryStorage.CompareAndSwapUpstreamTokens(ctx, s.key(ctx, sessionID), provider, expectedRefreshToken, tokens)
+}
+
+func (s *canonicalUserRecordingStorage) GetUpstreamTokens(
+	ctx context.Context, sessionID, provider string,
+) (*storage.UpstreamTokens, error) {
+	return s.MemoryStorage.GetUpstreamTokens(ctx, s.key(ctx, sessionID), provider)
+}
+
+func (s *canonicalUserRecordingStorage) GetAllUpstreamTokens(
+	ctx context.Context, sessionID string,
+) (map[string]*storage.UpstreamTokens, error) {
+	return s.MemoryStorage.GetAllUpstreamTokens(ctx, s.key(ctx, sessionID))
+}
+
+func (s *canonicalUserRecordingStorage) DeleteUpstreamTokens(ctx context.Context, sessionID string) error {
+	return s.MemoryStorage.DeleteUpstreamTokens(ctx, s.key(ctx, sessionID))
+}
+
+func (s *canonicalUserRecordingStorage) DeleteUpstreamTokensForProvider(
+	ctx context.Context, sessionID, provider string,
+) error {
+	return s.MemoryStorage.DeleteUpstreamTokensForProvider(ctx, s.key(ctx, sessionID), provider)
+}
+
+func (s *canonicalUserRecordingStorage) ResolveUpstreamTokenRowID(
+	ctx context.Context, sessionID, provider string,
+) (storage.UpstreamTokenRowID, error) {
+	return s.MemoryStorage.ResolveUpstreamTokenRowID(ctx, s.key(ctx, sessionID), provider)
+}
+
+func runGuardCase(t *testing.T, tt guardCase) {
+	t.Helper()
+	future := time.Now().Add(time.Hour)
+	ctx := context.Background()
+
+	memory := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = memory.Close() })
+	recorder := &canonicalUserRecordingStorage{MemoryStorage: memory}
+	var stor storage.Storage = recorder
+	var configured []string
+	for name, row := range tt.rows {
+		// A copy: the table's rows are shared by the cases running in parallel.
+		stored := *row
+		stored.ProviderID = name
+		require.NoError(t, stor.StoreUpstreamTokens(ctx, guardTestTSID, name, &stored))
+		if name != tt.unconfigured {
+			configured = append(configured, name)
+		}
+	}
+	// The grant's own tokens, which a revoking refusal must revoke.
+	req := guardTestRequest(tt.tsid, "refresh_token")
+	require.NoError(t, stor.CreateRefreshTokenSession(ctx, "rt-sig", "at-sig", req))
+	require.NoError(t, stor.CreateAccessTokenSession(ctx, "at-sig", req))
+
+	reqCtx, cancelReq := context.WithCancel(ctx)
+	t.Cleanup(cancelReq)
+	// Registered after the storage cleanup, so it runs first and a hung
+	// refresher returns before the storage closes.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	refresher := mocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
+	refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).Times(tt.refreshes).DoAndReturn(
+		func(_ context.Context, sessionID string, expired *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+			if tt.hang {
+				<-release
+			}
+			if tt.deleteOnRefresh {
+				require.NoError(t, stor.DeleteUpstreamTokensForProvider(ctx, sessionID, expired.ProviderID))
+			}
+			if tt.onRefresh != nil {
+				winner := *tt.onRefresh
+				winner.ProviderID = expired.ProviderID
+				require.NoError(t, stor.StoreUpstreamTokens(ctx, sessionID, expired.ProviderID, &winner))
+			}
+			if tt.winnerAfter != nil {
+				winner := *tt.winnerAfter
+				winner.ProviderID = expired.ProviderID
+				time.AfterFunc(50*time.Millisecond, func() {
+					assert.NoError(t, stor.StoreUpstreamTokens(ctx, sessionID, expired.ProviderID, &winner))
+				})
+			}
+			if tt.cancelDuringRecheck {
+				time.AfterFunc(50*time.Millisecond, cancelReq)
+			}
+			if tt.refreshErr != nil {
+				return nil, tt.refreshErr
+			}
+			refreshed := *expired
+			refreshed.ExpiresAt = future
+			return &refreshed, nil
+		})
+	guard, err := newUpstreamRefreshGuard(stor, refresher, configured)
+	require.NoError(t, err)
+	guard.recheckDelay = tt.recheckDelay
+	if tt.hang {
+		guard.checkTimeout = 50 * time.Millisecond
+	}
+
+	if tt.cancelled {
+		cancelReq()
+	}
+	err = guard.HandleTokenEndpointRequest(reqCtx, req)
+
+	_, refreshErr := stor.GetRefreshTokenSession(ctx, "rt-sig", nil)
+	_, accessErr := stor.GetAccessTokenSession(ctx, "at-sig", nil)
+	if tt.wantRefuse {
+		require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+		var rfcErr *fosite.RFC6749Error
+		require.ErrorAs(t, err, &rfcErr)
+		assert.Equal(t, http.StatusBadRequest, rfcErr.CodeField)
+	} else {
+		require.NoError(t, err)
+	}
+	rows, rowsErr := stor.GetAllUpstreamTokens(ctx, guardTestTSID)
+	require.NoError(t, rowsErr)
+	if tt.wantDropped {
+		assert.Empty(t, rows, "a confirmed rejection must drop every upstream row of the session")
+		// The refresher mock allows no further call, so a replay that
+		// reached the IdP again fails the test.
+		require.ErrorIs(t, guard.HandleTokenEndpointRequest(ctx, req), fosite.ErrInvalidGrant)
+	} else if len(tt.rows) > 0 && !tt.deleteOnRefresh {
+		assert.NotEmpty(t, rows, "only a confirmed rejection drops the upstream rows")
+	}
+	assert.Empty(t, recorder.recordedUsers(), "the guard must not put a ToolHive user in a storage context")
+	if tt.wantRevoke {
+		assert.Error(t, refreshErr, "refused refresh token must be revoked")
+		assert.Error(t, accessErr, "the refused grant's access token must be revoked")
+		return
+	}
+	assert.NoError(t, refreshErr, "the refresh token must not be revoked")
+	assert.NoError(t, accessErr, "the access token must not be revoked")
 }
 
 func TestUpstreamRefreshGuard_Gates(t *testing.T) {
@@ -407,16 +494,24 @@ func TestRefreshGrantValidatorChain(t *testing.T) {
 
 	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = stor.Close() })
+	userKeyedStor, err := storage.NewUserKeyedUpstreamStorage(stor)
+	require.NoError(t, err)
 	refresher := mocks.NewMockUpstreamTokenRefresher(gomock.NewController(t))
 	upstreams := []handlers.NamedUpstream{{Name: "first"}, {Name: "second"}}
 
 	tests := []struct {
-		name      string
-		disabled  bool
-		refresher storage.UpstreamTokenRefresher
-		wantGuard bool
+		name          string
+		disabled      bool
+		userKeyed     bool
+		refresher     storage.UpstreamTokenRefresher
+		wantGuard     bool
+		wantUserKeyed bool
 	}{
 		{name: "guard runs before the embedder handlers", refresher: refresher, wantGuard: true},
+		{
+			name: "user-keyed guard checks the first upstream", userKeyed: true, refresher: refresher,
+			wantGuard: true, wantUserKeyed: true,
+		},
 		{name: "disabled guard leaves only the embedder handlers", disabled: true, refresher: refresher},
 		{name: "no refresher (no upstreams) leaves only the embedder handlers"},
 	}
@@ -430,8 +525,12 @@ func TestRefreshGrantValidatorChain(t *testing.T) {
 			embedders := make([]fosite.TokenEndpointHandler, 2, 4)
 			embedders[0], embedders[1] = first, second
 			cfg := Config{RefreshGrantHandlers: embedders, DisableUpstreamRefreshGuard: tt.disabled}
+			var chainStor storage.Storage = stor
+			if tt.userKeyed {
+				chainStor = userKeyedStor
+			}
 
-			chain, err := refreshGrantValidatorChain(cfg, stor, tt.refresher, upstreams)
+			chain, err := refreshGrantValidatorChain(cfg, chainStor, tt.refresher, upstreams)
 			require.NoError(t, err)
 
 			assert.Len(t, cfg.RefreshGrantHandlers, 2)
@@ -444,6 +543,12 @@ func TestRefreshGrantValidatorChain(t *testing.T) {
 			guard, ok := chain[0].(*upstreamRefreshGuard)
 			require.True(t, ok, "the guard must run first")
 			assert.Equal(t, map[string]struct{}{"first": {}, "second": {}}, guard.providers)
+			if tt.wantUserKeyed {
+				require.NotNil(t, guard.userKeyed)
+				assert.Equal(t, "first", guard.userKeyed.identityProvider)
+			} else {
+				assert.Nil(t, guard.userKeyed, "the guard over plain storage has no user-keyed check")
+			}
 			assert.Same(t, first, chain[1])
 			assert.Same(t, second, chain[2])
 		})

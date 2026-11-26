@@ -65,6 +65,50 @@ type embeddedAuthServerOptions struct {
 	listenerHost                 string
 	authorizationDetailsRegistry *authorizationdetails.Registry
 	actorTokenValidators         map[string]tokenexchange.ActorValidatorRegistration
+	userKeyedUpstreamStorage     bool
+}
+
+// WithUserKeyedUpstreamStorage stores upstream tokens keyed by the canonical
+// user instead of by session, so one user's logins from several clients share
+// one set of upstream tokens. It applies only to NewEmbeddedAuthServerWithStorage;
+// NewEmbeddedAuthServer builds its own storage and refuses the option. It is not
+// part of RunConfig. The server refuses it when RunConfig sets upstream_filter,
+// because the read side does not apply the filter per user yet.
+//
+// The bearer validator loads upstream tokens for a user only when it is bound
+// to the embedded issuer (auth.WithEmbeddedAuthServerIssuer equal to its
+// issuer), verifies tokens with the in-process key provider
+// (auth.WithKeyProvider), and has an audience configured. auth.NewTokenValidator
+// refuses to start without all three when its upstream token reader reports
+// user-keyed storage (upstreamtoken.UserKeyedReader): an InProcessService over
+// IDPTokenStorage() does, and a reader that wraps another must forward it.
+// Behind a reader that does not report it, a validator bound to the embedded
+// issuer that lacks the key provider or an audience loads no upstream tokens
+// and serves the request without them, and a validator not bound to the
+// embedded issuer fails the load with a 503.
+//
+// The server refuses storage that already contains the in-tree user-keyed layer.
+// Do not use it over another decorator that keys rows by user: the server cannot
+// detect it, rows would be keyed twice and deletes would find nothing. The server wraps the storage it is given,
+// so an InProcessService built over the raw storage handle, rather than over
+// IDPTokenStorage(), bypasses the wrapper and reads session-keyed rows.
+//
+// Neither the refresher nor the refresh guard deletes a user's row: when the
+// refresher cannot save a rotated refresh token it only clears the dead refresh
+// token from the row. A row for a token that never expires has no storage lifetime and stays
+// until the embedder deletes it. The embedder must offer disconnect and user deletion. To disconnect
+// a provider, call DeleteUpstreamTokensForProvider on IDPTokenStorage() with
+// the user set on the context (WithCanonicalUser in pkg/authserver/identity);
+// the session ID argument is ignored. To remove a user and their rows, call
+// DeleteUser on IDPTokenStorage(), which is the user-keyed layer and implements
+// storage.UserStorage (assert to that interface). Only the layer removes the
+// user's row index on Redis; DeleteUser on the storage handle passed in, which
+// sits below the layer, removes the rows but leaves that index behind.
+//
+// Before enabling it, go through "Adopting user-keyed storage in an embedder"
+// in docs/arch/11-auth-server-storage.md.
+func WithUserKeyedUpstreamStorage() EmbeddedAuthServerOption {
+	return func(options *embeddedAuthServerOptions) { options.userKeyedUpstreamStorage = true }
 }
 
 // WithAuthorizationDetailsRegistry configures the embedded authorization server
@@ -200,6 +244,12 @@ func NewEmbeddedAuthServer(
 		return nil, fmt.Errorf("config is required")
 	}
 	options := resolveEmbeddedAuthServerOptions(opts)
+	if options.userKeyedUpstreamStorage {
+		return nil, fmt.Errorf(
+			"the runner-built storage does not support user-keyed upstream storage: " +
+				"use NewEmbeddedAuthServerWithStorage with WithUserKeyedUpstreamStorage " +
+				"(the server wraps the storage itself; do not pass storage that is already user-keyed)")
+	}
 	if err := validateConsentPolicyForRunConfig(cfg, options); err != nil {
 		return nil, fmt.Errorf("invalid consent policy: %w", err)
 	}
@@ -515,6 +565,7 @@ func newEmbeddedAuthServerWithStorage(
 		SPIFFETrust:                  spiffeTrust,
 		DeviceFlowEnabled:            cfg.DeviceFlowEnabled,
 		UpstreamFilter:               upstreamFilter,
+		UserKeyedUpstreamStorage:     options.userKeyedUpstreamStorage,
 	}
 
 	listenerKeyPair, err := loadTLSListenerKeyPair(cfg)
@@ -658,13 +709,17 @@ func (e *EmbeddedAuthServer) CloseIdleConnections() {
 // IDPTokenStorage returns storage for upstream IDP tokens.
 // Returns nil if no upstream IDP is configured.
 // This is used by the upstream swap middleware to exchange ToolHive JWTs
-// for upstream IDP tokens.
+// for upstream IDP tokens. With WithUserKeyedUpstreamStorage it returns the
+// user-keyed layer, and every call needs the canonical user on the context
+// (identity.WithCanonicalUser).
 func (e *EmbeddedAuthServer) IDPTokenStorage() storage.UpstreamTokenStorage {
 	return e.server.IDPTokenStorage()
 }
 
 // UpstreamTokenRefresher returns a refresher that can refresh expired upstream
-// tokens using the upstream provider's refresh token grant.
+// tokens using the upstream provider's refresh token grant. With
+// WithUserKeyedUpstreamStorage it works over the user-keyed layer, and every
+// call needs the canonical user on the context (identity.WithCanonicalUser).
 func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 	return e.server.UpstreamTokenRefresher()
 }

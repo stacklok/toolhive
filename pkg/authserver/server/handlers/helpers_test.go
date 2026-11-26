@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -125,6 +126,21 @@ type testStorageState struct {
 	storeUpstreamCtx     []context.Context
 	deleteUpstreamCtx    []context.Context
 	deleteForProviderCtx []context.Context
+	// afterGetUpstream, when set, runs after every GetUpstreamTokens read so a
+	// test can change the row between a read and the write that follows it.
+	afterGetUpstream func()
+	// afterGetUpstreamCalls maps a 1-based GetUpstreamTokens call number to a
+	// function that runs after that call, like afterGetUpstream.
+	afterGetUpstreamCalls map[int]func()
+	// afterCASCalls maps a 1-based CompareAndSwapUpstreamTokens call number to a
+	// function that runs after that call, so a test can change the row between
+	// a lost swap and the re-read that follows it.
+	afterCASCalls map[int]func()
+	casCalls      int
+	// getUpstreamErrs maps a 1-based GetUpstreamTokens call number to the error
+	// that call returns (ErrExpired still returns the stored row).
+	getUpstreamErrs  map[int]error
+	getUpstreamCalls int
 }
 
 // baseTestSetupOption configures optional behavior overrides for baseTestSetup.
@@ -142,6 +158,14 @@ type baseTestSetupConfig struct {
 	getClientErr               error            // if non-nil, GetClient returns this after getClientErrAfter successful calls
 	getProviderIdentityErr     error            // if non-nil, GetProviderIdentity returns this error
 	getClientErrAfter          int              // number of GetClient calls that succeed before getClientErr kicks in
+	userKeyedUpstreamMocks     bool             // wire GetUpstreamTokens and CompareAndSwapUpstreamTokens
+}
+
+// withUserKeyedUpstreamMocks wires the single-row upstream token read and
+// compare-and-swap expectations, which the carry-forward on user-keyed storage
+// uses. Opt-in so a test can declare its own without being shadowed.
+func withUserKeyedUpstreamMocks() baseTestSetupOption {
+	return func(c *baseTestSetupConfig) { c.userKeyedUpstreamMocks = true }
 }
 
 func withDeletePendingError(err error) baseTestSetupOption {
@@ -482,6 +506,49 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			storState.idpTokenCount++
 			return nil
 		}).AnyTimes()
+
+	if setupCfg.userKeyedUpstreamMocks {
+		stor.EXPECT().GetUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, sessionID, providerName string) (*storage.UpstreamTokens, error) {
+				storState.getUpstreamCalls++
+				injected := storState.getUpstreamErrs[storState.getUpstreamCalls]
+				row, ok := storState.upstreamTokens[sessionID+":"+providerName]
+				if afterRead := storState.afterGetUpstream; afterRead != nil {
+					defer afterRead()
+				}
+				if afterRead := storState.afterGetUpstreamCalls[storState.getUpstreamCalls]; afterRead != nil {
+					defer afterRead()
+				}
+				if injected != nil && (!errors.Is(injected, storage.ErrExpired) || !ok) {
+					return nil, injected
+				}
+				if !ok {
+					return nil, storage.ErrNotFound
+				}
+				cp := *row
+				return &cp, injected
+			}).AnyTimes()
+
+		// Same contract as the real backends: write only when the stored refresh
+		// token equals expected ("" also matches an absent row).
+		stor.EXPECT().CompareAndSwapUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, sessionID, providerName, expected string, tokens *storage.UpstreamTokens) error {
+				storState.casCalls++
+				if afterCAS := storState.afterCASCalls[storState.casCalls]; afterCAS != nil {
+					defer afterCAS()
+				}
+				key := sessionID + ":" + providerName
+				current := ""
+				if row, ok := storState.upstreamTokens[key]; ok {
+					current = row.RefreshToken
+				}
+				if current != expected {
+					return storage.ErrConcurrentRefresh
+				}
+				storState.upstreamTokens[key] = tokens
+				return nil
+			}).AnyTimes()
+	}
 
 	stor.EXPECT().DeleteUpstreamTokens(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, sessionID string) error {

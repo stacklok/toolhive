@@ -4493,3 +4493,99 @@ func testSPIFFEAssociation(clientID, principal string) authserver.SPIFFEClientAu
 		GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
 	}
 }
+
+// storageChain lists a storage and everything below it, outermost first.
+func storageChain(stor storage.UpstreamTokenStorage) []any {
+	var chain []any
+	for current := any(stor); current != nil; {
+		chain = append(chain, current)
+		unwrapper, ok := current.(interface{ Unwrap() storage.Storage })
+		if !ok {
+			break
+		}
+		current = unwrapper.Unwrap()
+	}
+	return chain
+}
+
+func countUserKeyed(chain []any) int {
+	count := 0
+	for _, layer := range chain {
+		if _, ok := layer.(*storage.UserKeyedUpstreamStorage); ok {
+			count++
+		}
+	}
+	return count
+}
+
+func TestWithUserKeyedUpstreamStorage(t *testing.T) {
+	t.Parallel()
+
+	newTracker := func() *closeTrackingDCRStorage {
+		base := storage.NewMemoryStorage()
+		return &closeTrackingDCRStorage{
+			closeTrackingStorage: &closeTrackingStorage{Storage: base},
+			DCRCredentialStore:   base,
+		}
+	}
+
+	t.Run("borrowed storage through the exported constructor", func(t *testing.T) {
+		t.Parallel()
+		tracker := newTracker()
+		e, err := NewEmbeddedAuthServerWithStorage(t.Context(),
+			minimalRunnerConsentConfig("https://keyed-borrowed.example.com"), tracker, WithUserKeyedUpstreamStorage())
+		require.NoError(t, err)
+		chain := storageChain(e.IDPTokenStorage())
+		assert.IsType(t, &storage.UserKeyedUpstreamStorage{}, chain[0])
+		assert.Equal(t, 1, countUserKeyed(chain))
+		trackerLayers := 0
+		for _, layer := range chain {
+			if layer == any(tracker) {
+				trackerLayers++
+			}
+		}
+		assert.Equal(t, 1, trackerLayers, "Unwrap reaches the supplied storage once")
+		require.NoError(t, e.Close())
+		assert.Zero(t, tracker.closeCount.Load(), "borrowed storage is never closed")
+		require.NoError(t, tracker.Storage.Close())
+	})
+
+	t.Run("no layer without the option", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name             string
+			suppliedByCaller bool
+		}{
+			{name: "on caller-supplied storage", suppliedByCaller: true},
+			{name: "on runner-built storage"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				var (
+					e   *EmbeddedAuthServer
+					err error
+				)
+				if tt.suppliedByCaller {
+					tracker := newTracker()
+					e, err = NewEmbeddedAuthServerWithStorage(t.Context(),
+						minimalRunnerConsentConfig("https://keyed-off.example.com"), tracker)
+					t.Cleanup(func() { _ = tracker.Storage.Close() })
+				} else {
+					e, err = NewEmbeddedAuthServer(t.Context(), minimalRunnerConsentConfig("https://keyed-runner.example.com"))
+				}
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = e.Close() })
+				assert.Zero(t, countUserKeyed(storageChain(e.IDPTokenStorage())))
+			})
+		}
+	})
+
+	t.Run("runner-built storage refuses the option", func(t *testing.T) {
+		t.Parallel()
+		e, err := NewEmbeddedAuthServer(t.Context(),
+			minimalRunnerConsentConfig("https://keyed-refused.example.com"), WithUserKeyedUpstreamStorage())
+		require.Nil(t, e)
+		require.ErrorContains(t, err, "does not support user-keyed upstream storage")
+	})
+}

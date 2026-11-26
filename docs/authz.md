@@ -599,7 +599,7 @@ Other limits:
 - A non-2xx response passes through unchanged.
 - A body larger than 16 MiB ends the stream with one error.
 - A filtered stream with a `Content-Encoding` other than `identity` gets `502 Bad Gateway`. The filter removes `Accept-Encoding` from every GET so the backend sends an identity body.
-- A frame with no readable id is dropped, because an error without an id ends the client's session.
+- A frame that fails closed but has no readable id is dropped, because an error without an id ends the client's session. Frames that carry no result, such as notifications, pass through.
 - Every GET behind authz is wrapped, including non-MCP GETs on the transparent proxy. A filtered 2xx GET response carries `Cache-Control: private, no-store`.
 - A request to upgrade the connection (Hijack) is refused on a filtered GET.
 

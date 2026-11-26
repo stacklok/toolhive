@@ -95,7 +95,8 @@ start a `tools/call`. Before that list call, a `tools/call` or another list meth
 **HTTP 403** `method_mismatch`, and a list request that carries a `cursor` gets 403
 `invalid_params`. A backend the caller is not admitted to anything of, including one
 that does not exist, gets 403 `server_not_found`; one the caller can see but that is
-not served now for its health status gets **HTTP 503**. None of these uses up the
+not served now, for its health status or because listing that kind of item failed for
+now, gets **HTTP 503**. None of these uses up the
 token. Before its `exp`, such a token may also send, to the MCP endpoint:
 
 - the handshake (`initialize`, `notifications/initialized`), the Modern

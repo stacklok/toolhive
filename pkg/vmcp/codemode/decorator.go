@@ -196,6 +196,27 @@ func (d *decorator) LookupTool(ctx context.Context, identity *auth.Identity, nam
 	return &t, nil
 }
 
+// LookupBackendCapabilities defers to inner, refusing with ErrReservedToolName a
+// backend that advertises execute_tool_script, as ListTools refuses it: that tool
+// would be listed under a name the decorator resolves to its virtual definition.
+// It checks only this backend's tools, which are all it returns, so it does not
+// aggregate the whole tool set again.
+func (d *decorator) LookupBackendCapabilities(
+	ctx context.Context, identity *auth.Identity, backendID string,
+) (*core.BackendCapabilities, error) {
+	caps, err := d.VMCP.LookupBackendCapabilities(ctx, identity, backendID)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range caps.Tools {
+		if t.Name == script.ExecuteToolScriptName {
+			return nil, fmt.Errorf("%w: %q advertised by backend %q",
+				ErrReservedToolName, script.ExecuteToolScriptName, t.BackendID)
+		}
+	}
+	return caps, nil
+}
+
 // CallTool intercepts execute_tool_script and runs the submitted script; every other
 // name is forwarded to inner unchanged. Script-level failures (missing/invalid args,
 // step-limit, tool timeout, runtime errors) are returned as an IsError result rather

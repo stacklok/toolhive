@@ -1562,11 +1562,12 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   whether a backend the caller cannot see exists. A backend in the caller's view that
   the core's lists leave out for its health status (unhealthy, unknown or
   unauthenticated, even while it still answers) gets 503; a degraded one stays in the
-  lists and is listed. The check and the items come from separate aggregations, so a
-  backend that drops out of the view between the two is answered with an empty list
-  and the token is used. A list call that carries a cursor is refused with
-  `invalid_params`. A `tools/call` or another list method is refused with
-  `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
+  lists and is listed. A backend whose list of the method's items failed transiently
+  (a Modern backend's optional list, which the lists report as empty) also gets 503.
+  The check and the items come from one aggregation
+  (`core.LookupBackendCapabilities`), so they cannot disagree. A list call that
+  carries a cursor is refused with `invalid_params`. A `tools/call` or another list
+  method is refused with `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
   a tool-call entry: it uses up the token. It is recorded only once its answer is
   ready, and ended at once: of concurrent duplicates, each runs the handler, but only
   the first to record is answered, and the others get `token_reused`.

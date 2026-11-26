@@ -30,6 +30,23 @@ type fakeCore struct {
 	checkTool func(ctx context.Context, id *auth.Identity, name string, args map[string]any) error
 }
 
+// LookupBackendCapabilities answers with the listed tools of backendID.
+func (f *fakeCore) LookupBackendCapabilities(
+	ctx context.Context, id *auth.Identity, backendID string,
+) (*core.BackendCapabilities, error) {
+	tools, err := f.listTools(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	caps := &core.BackendCapabilities{}
+	for _, t := range tools {
+		if t.BackendID == backendID {
+			caps.Tools = append(caps.Tools, t)
+		}
+	}
+	return caps, nil
+}
+
 func (f *fakeCore) CheckToolCall(ctx context.Context, id *auth.Identity, name string, args map[string]any) error {
 	return f.checkTool(ctx, id, name, args)
 }
@@ -445,6 +462,23 @@ func TestLookupTool_ReservedNameCollisionFails(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrReservedToolName)
 	assert.Contains(t, err.Error(), collidingBackendID)
+}
+
+// TestLookupBackendCapabilities_ReservedNameCollisionFails verifies the backend
+// that shadows the reserved name is refused, as ListTools refuses it, and that
+// another backend's capabilities are still returned: they hold no shadowed tool.
+func TestLookupBackendCapabilities_ReservedNameCollisionFails(t *testing.T) {
+	t.Parallel()
+	d := NewDecorator(collidingBackend(), nil)
+
+	_, err := d.LookupBackendCapabilities(t.Context(), nil, collidingBackendID)
+	require.ErrorIs(t, err, ErrReservedToolName)
+	assert.Contains(t, err.Error(), collidingBackendID)
+
+	caps, err := d.LookupBackendCapabilities(t.Context(), nil, "b1")
+	require.NoError(t, err)
+	require.Len(t, caps.Tools, 1)
+	assert.Equal(t, "echo", caps.Tools[0].Name, "no virtual tool is added: it has no backend")
 }
 
 // TestCallTool_ScriptExecutionFailsOnCollision verifies a script execution fails loud as

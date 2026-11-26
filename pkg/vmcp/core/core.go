@@ -43,6 +43,21 @@ type DiscoverCapabilities struct {
 	HasPrompts           bool
 }
 
+// BackendCapabilities is one backend's part of an identity's view: the items of
+// that backend the identity is admitted to, from one aggregation (see
+// [VMCP.LookupBackendCapabilities]).
+type BackendCapabilities struct {
+	Tools             []vmcp.Tool
+	Resources         []vmcp.Resource
+	ResourceTemplates []vmcp.ResourceTemplate
+	Prompts           []vmcp.Prompt
+
+	// UnavailableLists names the list methods (such as "prompts/list") whose
+	// listing failed transiently on the backend: the items of that kind are
+	// unknown, and the matching slice is empty.
+	UnavailableLists []string
+}
+
 // VMCP is the core Virtual MCP domain object.
 //
 // Contract:
@@ -222,6 +237,34 @@ type VMCP interface {
 	// LookupTool/LookupResource/LookupPrompt — a lookup never resolves what the
 	// corresponding authorized list would not show.
 	LookupBackend(ctx context.Context, identity *auth.Identity, backendID string) (*vmcp.Backend, error)
+
+	// LookupBackendCapabilities returns the items identity is admitted to on one
+	// backend, and which of the backend's lists failed transiently, from a
+	// SINGLE aggregation, so whether the backend is in identity's view and what
+	// it offers there cannot disagree. The items are those ListTools,
+	// ListResources, ListResourceTemplates and ListPrompts would return with
+	// this BackendID from the same aggregation, in the same order; composite
+	// tools have no backend and are never included. Only this backend's items
+	// are run through admission.
+	//
+	// The backend is in identity's view when identity is admitted to at least
+	// one of its tools, resources, resource templates or prompts. It returns:
+	//   - an error wrapping vmcp.ErrNotFound when the backend is unknown or
+	//     out of group, offers identity nothing (every item is denied, or it has
+	//     none), or contributes nothing (its discovery fails). These are not
+	//     told apart, so the error does not reveal whether a backend identity
+	//     cannot see exists;
+	//   - an error wrapping vmcp.ErrBackendUnavailable when the backend is in
+	//     identity's view but the lists leave it out for its health status
+	//     (health.ShouldAdvertise is false: unhealthy, unknown, unauthenticated);
+	//   - any other error when the view cannot be built now.
+	//
+	// A backend the lists include is aggregated with every other backend they
+	// include, so conflict resolution matches the lists. A backend they leave
+	// out for its health is aggregated alone, to decide its visibility only.
+	LookupBackendCapabilities(
+		ctx context.Context, identity *auth.Identity, backendID string,
+	) (*BackendCapabilities, error)
 
 	// Discover returns identity's capability-presence flags -- whether it is
 	// admitted to at least one tool, resource, resource template, and prompt --

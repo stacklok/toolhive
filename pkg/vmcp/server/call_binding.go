@@ -26,7 +26,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 // callBindingLeeway is the clock skew allowed on a call-bound token's exp. It
@@ -162,110 +161,69 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 	return tool.BackendID, nil
 }
 
-// callBindingListItems answers a list-call token from one admission-filtered
-// core list: the items whose BackendID is server, rendered as a Modern list
-// renders them, which is how Legacy sessions advertise them too. Attributing
-// each item by its own BackendID, from the one view, means another backend's
-// item that shares a name or URI is never answered. A composite tool, code
-// mode's execute_tool_script and, with the optimizer enabled, the find_tool
-// and call_tool meta-tools have no BackendID, so they are never listed: with
-// the optimizer, no tool is.
+// callBindingListItems answers a list-call token from one aggregation: the
+// core's view of server (core.LookupBackendCapabilities), which decides whether
+// server is in identity's view and gives the items identity is admitted to there,
+// rendered as a Modern list renders them, which is how Legacy sessions advertise
+// them too. Each item carries its own BackendID from that one view, so another
+// backend's item that shares a name or URI is never answered, and the server
+// cannot drop out of the view between the check and the items. A composite
+// tool, code mode's execute_tool_script and, with the optimizer enabled, the
+// find_tool and call_tool meta-tools have no BackendID, so they are never
+// listed: with the optimizer, no tool is.
 //
-// The server must be a backend in identity's view (see callBindingListServer).
+// It returns errListServerNotFound, which the caller answers with 403
+// server_not_found, when server is unknown, hidden from identity by
+// authorization, offers identity nothing, or contributes nothing to the view
+// (its discovery fails), as checkToolCall answers tool_not_found: AS-1 signs
+// any server name, so the answer must not tell whether a backend the caller
+// cannot see exists. It returns another error, which the caller answers with
+// 503, when server is in identity's view but the core's lists leave it out for
+// its health status (health.ShouldAdvertise admits healthy, degraded and
+// unmonitored backends), when the method's list failed transiently on server,
+// so its items are unknown, or when the view cannot be built now.
 func (s *Server) callBindingListItems(
 	ctx context.Context, identity *auth.Identity, method, server string,
 ) ([]json.RawMessage, error) {
-	if err := s.callBindingListServer(ctx, identity, server); err != nil {
+	if !toolcalldetails.IsListMethod(method) {
+		return nil, fmt.Errorf("call binding: %q is not a list method", method)
+	}
+	caps, err := s.core.LookupBackendCapabilities(ctx, identity, server)
+	if errors.Is(err, vmcp.ErrNotFound) {
+		return nil, errListServerNotFound
+	}
+	if err != nil {
 		return nil, err
+	}
+	if slices.Contains(caps.UnavailableLists, method) {
+		return nil, fmt.Errorf("call binding: the list call's server could not list %s now", method)
 	}
 	switch method {
 	case "tools/list":
 		if s.optimizerFactory != nil {
 			return []json.RawMessage{}, nil
 		}
-		tools, err := s.core.ListTools(ctx, identity)
-		return renderServerItems(tools, err, server, func(t vmcp.Tool) (string, any, error) {
-			wire, err := modernToolFromDomain(t)
-			return t.BackendID, wire, err
-		})
+		return renderListItems(caps.Tools, modernToolFromDomain)
 	case "prompts/list":
-		prompts, err := s.core.ListPrompts(ctx, identity)
-		return renderServerItems(prompts, err, server, func(p vmcp.Prompt) (string, any, error) {
-			return p.BackendID, modernPromptFromDomain(p), nil
+		return renderListItems(caps.Prompts, func(p vmcp.Prompt) (any, error) {
+			return modernPromptFromDomain(p), nil
 		})
 	case "resources/list":
-		resources, err := s.core.ListResources(ctx, identity)
-		return renderServerItems(resources, err, server, func(r vmcp.Resource) (string, any, error) {
-			return r.BackendID, modernResourceFromDomain(r), nil
+		return renderListItems(caps.Resources, func(r vmcp.Resource) (any, error) {
+			return modernResourceFromDomain(r), nil
 		})
-	case "resources/templates/list":
-		templates, err := s.core.ListResourceTemplates(ctx, identity)
-		return renderServerItems(templates, err, server, func(t vmcp.ResourceTemplate) (string, any, error) {
-			return t.BackendID, modernResourceTemplateFromDomain(t), nil
+	default: // resources/templates/list
+		return renderListItems(caps.ResourceTemplates, func(t vmcp.ResourceTemplate) (any, error) {
+			return modernResourceTemplateFromDomain(t), nil
 		})
-	default:
-		return nil, fmt.Errorf("call binding: %q is not a list method", method)
 	}
 }
 
-// callBindingListServer checks that server is a backend in identity's view
-// that its lists can include now. It returns errListServerNotFound, which the
-// caller answers with 403 server_not_found, when server is unknown, hidden
-// from identity by authorization, offers identity nothing, or contributes
-// nothing to the view (its discovery fails), as checkToolCall answers
-// tool_not_found: AS-1 signs any server name, so the answer must not tell
-// whether a backend the caller cannot see exists. A backend's resource
-// templates count, which LookupBackend does not count. It returns another
-// error, which the caller answers with 503, for a backend in identity's view
-// that the core's lists leave out for its health status: health.ShouldAdvertise
-// admits healthy, degraded and unmonitored backends, read from the health
-// monitor and else from the registry, as the lists do.
-//
-// The check and the items come from separate aggregations; a backend that
-// drops out of the view between the two is answered with an empty list.
-func (s *Server) callBindingListServer(ctx context.Context, identity *auth.Identity, server string) error {
-	backend, err := s.core.LookupBackend(ctx, identity, server)
-	switch {
-	case errors.Is(err, vmcp.ErrNotFound):
-		templates, err := s.core.ListResourceTemplates(ctx, identity)
-		if err != nil {
-			return err
-		}
-		if slices.ContainsFunc(templates, func(t vmcp.ResourceTemplate) bool { return t.BackendID == server }) {
-			// Only templates: they come from the lists, so the backend is in them.
-			return nil
-		}
-		return errListServerNotFound
-	case err != nil:
-		return err
-	}
-	status := backend.HealthStatus
-	if monitor := s.core.BackendHealth(); monitor != nil {
-		if monitored, ok := monitor.QueryBackendStatus(server); ok {
-			status = monitored
-		}
-	}
-	if !health.ShouldAdvertise(status) {
-		return fmt.Errorf("call binding: the list call's server is %s", status)
-	}
-	return nil
-}
-
-// renderServerItems renders the items whose backend is server, or returns err
-// when listing them failed. render returns an item's backend and its wire
-// form.
-func renderServerItems[T any](
-	items []T, err error, server string, render func(T) (backend string, wire any, err error),
-) ([]json.RawMessage, error) {
-	if err != nil {
-		return nil, err
-	}
-	rendered := []json.RawMessage{}
+// renderListItems renders items in their wire form, as list result items.
+func renderListItems[T, W any](items []T, render func(T) (W, error)) ([]json.RawMessage, error) {
+	rendered := make([]json.RawMessage, 0, len(items))
 	for _, item := range items {
-		backend, wire, err := render(item)
-		if backend != server {
-			continue
-		}
+		wire, err := render(item)
 		if err != nil {
 			return nil, err
 		}

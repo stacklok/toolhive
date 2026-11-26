@@ -824,4 +824,10 @@ type CapabilityList struct {
 
 	// SupportsSampling indicates if the backend supports MCP sampling.
 	SupportsSampling bool
+
+	// UnavailableLists names the list methods (such as "prompts/list") whose
+	// listing failed transiently and was reported as an empty list rather than
+	// failing the backend. An empty list for a method named here means its
+	// items are unknown, not that the backend has none.
+	UnavailableLists []string
 }

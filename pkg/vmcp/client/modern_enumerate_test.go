@@ -391,6 +391,8 @@ func TestModernEnumerate_TransientResourceTemplatesDegrades(t *testing.T) {
 	assert.NotEmpty(t, list.Tools, "tools/list must still succeed")
 	assert.NotEmpty(t, list.Resources, "resources/list must still succeed")
 	assert.Empty(t, list.ResourceTemplates, "transient templates/list must degrade to an empty list")
+	assert.Equal(t, []string{"resources/templates/list"}, list.UnavailableLists,
+		"only the transient list is reported unavailable: its items are unknown, not absent")
 	assert.NotEmpty(t, list.Prompts, "prompts/list must still succeed")
 }
 
@@ -430,6 +432,8 @@ func TestModernEnumerate_TransientResourcesDegrades(t *testing.T) {
 	require.NoError(t, err, "a transient resources/list must not fail enumeration")
 	assert.NotEmpty(t, list.Tools, "tools/list must still succeed")
 	assert.Empty(t, list.Resources, "transient resources/list must degrade to an empty list")
+	assert.Equal(t, []string{"resources/list"}, list.UnavailableLists,
+		"only the transient list is reported unavailable: its items are unknown, not absent")
 	assert.NotEmpty(t, list.ResourceTemplates, "resources/templates/list must still succeed")
 	assert.NotEmpty(t, list.Prompts, "prompts/list must still succeed")
 }
@@ -472,6 +476,8 @@ func TestModernEnumerate_TransientPromptsDegrades(t *testing.T) {
 	assert.NotEmpty(t, list.Resources, "resources/list must still succeed")
 	assert.NotEmpty(t, list.ResourceTemplates, "resources/templates/list must still succeed")
 	assert.Empty(t, list.Prompts, "transient prompts/list must degrade to an empty list")
+	assert.Equal(t, []string{"prompts/list"}, list.UnavailableLists,
+		"only the transient list is reported unavailable: its items are unknown, not absent")
 }
 
 // TestModernEnumerate_TransientToolsFatal is the inverse protection for issue
@@ -503,4 +509,42 @@ func TestModernEnumerate_TransientToolsFatal(t *testing.T) {
 	require.Error(t, err, "a transient tools/list must still fail enumeration")
 	require.True(t, errors.Is(err, vmcp.ErrBackendUnavailable),
 		"a transient tools/list must surface as ErrBackendUnavailable, not degrade")
+}
+
+// TestModernEnumerate_MethodNotFoundIsNotUnavailable verifies that an optional
+// list a backend does not implement (-32601) degrades to an empty list without
+// being reported unavailable: the backend has none of those items, so the
+// empty list is the answer, unlike after a transient failure.
+func TestModernEnumerate_MethodNotFoundIsNotUnavailable(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := modernReq(t, r)
+		switch r.Header.Get("Mcp-Method") {
+		case "tools/list":
+			writeModernResult(t, w, id, map[string]any{
+				"tools": []any{map[string]any{"name": "t1", "inputSchema": map[string]any{"type": "object"}}},
+			})
+		case "resources/list", "resources/templates/list", "prompts/list":
+			out, err := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"error": map[string]any{"code": -32601, "message": "method not found"},
+			})
+			require.NoError(t, err)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(out)
+		default:
+			t.Fatalf("unexpected method %q", r.Header.Get("Mcp-Method"))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
+
+	list, err := h.modernEnumerate(context.Background(), target, modernCapsAll())
+	require.NoError(t, err)
+	assert.NotEmpty(t, list.Tools)
+	assert.Empty(t, list.Prompts)
+	assert.Empty(t, list.UnavailableLists, "a list the backend does not implement is not unavailable")
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -596,6 +597,93 @@ func (c *coreVMCP) LookupBackend(
 		}
 	}
 	return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
+}
+
+// LookupBackendCapabilities implements VMCP.LookupBackendCapabilities. It takes
+// the registry once and decides from that one snapshot whether the lists include
+// backendID, then aggregates once: the backends the lists include when they
+// include it, or backendID alone when its health leaves it out.
+func (c *coreVMCP) LookupBackendCapabilities(
+	ctx context.Context, identity *auth.Identity, backendID string,
+) (*BackendCapabilities, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
+	notFound := fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
+	all := c.backendRegistry.List(ctx)
+	i := slices.IndexFunc(all, func(b vmcp.Backend) bool { return b.ID == backendID })
+	if backendID == "" || i < 0 {
+		return nil, notFound
+	}
+	backends := filterHealthyBackends(all, c.health)
+	listed := slices.ContainsFunc(backends, func(b vmcp.Backend) bool { return b.ID == backendID })
+	if !listed {
+		backends = []vmcp.Backend{all[i]}
+	}
+
+	agg, err := c.aggregateBackends(ctx, backends)
+	if errors.Is(err, aggregator.ErrNoBackendCapabilities) {
+		// Every backend aggregated failed discovery, this one included.
+		return nil, notFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	caps, err := c.admittedBackendCapabilities(ctx, identity, agg, backendID)
+	if err != nil {
+		return nil, err
+	}
+	if len(caps.Tools) == 0 && len(caps.Resources) == 0 &&
+		len(caps.ResourceTemplates) == 0 && len(caps.Prompts) == 0 {
+		return nil, notFound
+	}
+	if !listed {
+		return nil, fmt.Errorf("%w: backend %q is left out of the lists for its health status",
+			vmcp.ErrBackendUnavailable, backendID)
+	}
+	caps.UnavailableLists = slices.Clone(agg.UnavailableLists[backendID])
+	return caps, nil
+}
+
+// admittedBackendCapabilities runs admission over backendID's items in agg only,
+// with the same filters the List* methods apply. Composite tools are not in
+// agg.Tools: they have no backend.
+func (c *coreVMCP) admittedBackendCapabilities(
+	ctx context.Context, identity *auth.Identity, agg *aggregator.AggregatedCapabilities, backendID string,
+) (*BackendCapabilities, error) {
+	tools, err := c.admission.FilterTools(ctx, identity, ofBackend(agg.Tools, backendID,
+		func(t vmcp.Tool) string { return t.BackendID }))
+	if err != nil {
+		return nil, err
+	}
+	resources, err := c.admission.FilterResources(ctx, identity, ofBackend(agg.Resources, backendID,
+		func(r vmcp.Resource) string { return r.BackendID }))
+	if err != nil {
+		return nil, err
+	}
+	templates, err := c.filterResourceTemplates(ctx, identity, ofBackend(agg.ResourceTemplates, backendID,
+		func(t vmcp.ResourceTemplate) string { return t.BackendID }))
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := c.admission.FilterPrompts(ctx, identity, ofBackend(agg.Prompts, backendID,
+		func(p vmcp.Prompt) string { return p.BackendID }))
+	if err != nil {
+		return nil, err
+	}
+	return &BackendCapabilities{
+		Tools: tools, Resources: resources, ResourceTemplates: templates, Prompts: prompts,
+	}, nil
+}
+
+// ofBackend returns a new slice of the items whose backend is backendID, in order.
+func ofBackend[T any](items []T, backendID string, backend func(T) string) []T {
+	out := make([]T, 0)
+	for _, item := range items {
+		if backend(item) == backendID {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // InvalidateCapabilityCache implements VMCP.InvalidateCapabilityCache. It

@@ -4,8 +4,10 @@
 package authserver
 
 import (
+	"cmp"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -117,12 +119,56 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 			closeUpstreamIdleConnections(upstreams)
 			return nil, fmt.Errorf("upstream factory returned a nil provider for upstream %q", upCfg.Name)
 		}
+		issuer, subjectClaim := upstreamIdentityBinding(upCfg)
 		upstreams = append(upstreams, handlers.NamedUpstream{
 			Name: upCfg.Name, DisplayName: upCfg.DisplayName, Provider: provider,
+			Issuer: issuer, SubjectClaim: subjectClaim,
 		})
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
 	return upstreams, nil
+}
+
+// upstreamIdentityBinding returns the (issuer, subjectClaim) stamped onto
+// provider-identity rows for upCfg. Every valid upstream gets a non-empty pair
+// so stamped rows are always distinct from legacy unstamped rows:
+//   - OIDC: the exact configured Issuer URL and SubjectClaim (default "sub"),
+//     matching Config.signInUpstream and the validated ID token.
+//   - Plain OAuth 2.0: a mode-prefixed endpoint URL ("oauth2:token:<url>",
+//     "oauth2:userinfo:<url>", or "oauth2:synthetic:<url>") paired with the
+//     subject extraction rule ("token:<path>", "userinfo:<json-fields>", or
+//     "synthetic"). The mode prefix keeps plain OAuth 2.0 rows disjoint from
+//     OIDC issuers (http:// / https://) and detects cross-provider or
+//     mode-change repoints on the same upstream name. Synthesis mode sets
+//     Identity.Synthetic=true and bypasses UserResolver, so it never writes
+//     provider-identity rows; populating a distinct pair keeps the mapping
+//     total across all valid configs.
+//
+// Returns ("", "") for unpopulated test-stub configs.
+func upstreamIdentityBinding(upCfg *UpstreamConfig) (issuer, subjectClaim string) {
+	if upCfg == nil {
+		return "", ""
+	}
+	switch {
+	case upCfg.OIDCConfig != nil && upCfg.OIDCConfig.Issuer != "":
+		return upCfg.OIDCConfig.Issuer, cmp.Or(upCfg.OIDCConfig.SubjectClaim, upstream.DefaultSubjectClaim)
+	case upCfg.OAuth2Config != nil:
+		oa := upCfg.OAuth2Config
+		switch {
+		case oa.IdentityFromToken != nil && oa.TokenEndpoint != "" && oa.IdentityFromToken.SubjectPath != "":
+			return "oauth2:token:" + oa.TokenEndpoint, "token:" + oa.IdentityFromToken.SubjectPath
+		case oa.UserInfo != nil && oa.UserInfo.EndpointURL != "":
+			fields := oa.UserInfo.FieldMapping.GetSubjectFields()
+			encoded, err := json.Marshal(fields)
+			if err != nil {
+				return "", ""
+			}
+			return "oauth2:userinfo:" + oa.UserInfo.EndpointURL, "userinfo:" + string(encoded)
+		case oa.TokenEndpoint != "":
+			return "oauth2:synthetic:" + oa.TokenEndpoint, "synthetic"
+		}
+	}
+	return "", ""
 }
 
 // isNilProvider reports whether an OAuth2Provider is unusable — either a nil

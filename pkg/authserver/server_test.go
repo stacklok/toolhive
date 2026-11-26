@@ -1626,3 +1626,102 @@ func TestStaticSPIFFEClientServedByRegistryIsSecretlessAndNonPublic(t *testing.T
 	assert.False(t, served.IsPublic())
 	assert.Nil(t, served.GetHashedSecret())
 }
+
+func TestUpstreamIdentityBinding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cfg        UpstreamConfig
+		wantIssuer string
+		wantClaim  string
+	}{
+		{
+			name: "OIDC with default subject claim",
+			cfg: UpstreamConfig{
+				Name:       "oidc-default",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &upstream.OIDCConfig{Issuer: "https://idp.example.com"},
+			},
+			wantIssuer: "https://idp.example.com",
+			wantClaim:  "sub",
+		},
+		{
+			name: "OIDC with custom subject claim",
+			cfg: UpstreamConfig{
+				Name:       "entra",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &upstream.OIDCConfig{Issuer: "https://login.microsoftonline.com/tid/v2.0", SubjectClaim: "oid"},
+			},
+			wantIssuer: "https://login.microsoftonline.com/tid/v2.0",
+			wantClaim:  "oid",
+		},
+		{
+			name: "OAuth2 with IdentityFromToken",
+			cfg: UpstreamConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					TokenEndpoint:     "https://acct.snowflakecomputing.com/oauth/token-request",
+					IdentityFromToken: &upstream.IdentityFromTokenConfig{SubjectPath: "username"},
+				},
+			},
+			wantIssuer: "oauth2:token:https://acct.snowflakecomputing.com/oauth/token-request",
+			wantClaim:  "token:username",
+		},
+		{
+			name: "OAuth2 with UserInfo default subject fields",
+			cfg: UpstreamConfig{
+				Name: "generic",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					TokenEndpoint: "https://oauth.example.com/token",
+					UserInfo:      &upstream.UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+				},
+			},
+			wantIssuer: "oauth2:userinfo:https://oauth.example.com/userinfo",
+			wantClaim:  `userinfo:["sub"]`,
+		},
+		{
+			name: "OAuth2 with UserInfo custom subject fields",
+			cfg: UpstreamConfig{
+				Name: "github",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					TokenEndpoint: "https://github.com/login/oauth/access_token",
+					UserInfo: &upstream.UserInfoConfig{
+						EndpointURL:  "https://api.github.com/user",
+						FieldMapping: &upstream.UserInfoFieldMapping{SubjectFields: []string{"id", "login"}},
+					},
+				},
+			},
+			wantIssuer: "oauth2:userinfo:https://api.github.com/user",
+			wantClaim:  `userinfo:["id","login"]`,
+		},
+		{
+			name: "OAuth2 synthesis mode",
+			cfg: UpstreamConfig{
+				Name: "opaque",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					TokenEndpoint: "https://opaque.example.com/token",
+				},
+			},
+			wantIssuer: "oauth2:synthetic:https://opaque.example.com/token",
+			wantClaim:  "synthetic",
+		},
+		{
+			name: "unpopulated test stub config",
+			cfg:  UpstreamConfig{Name: "stub"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotIssuer, gotClaim := upstreamIdentityBinding(&tt.cfg)
+			assert.Equal(t, tt.wantIssuer, gotIssuer)
+			assert.Equal(t, tt.wantClaim, gotClaim)
+		})
+	}
+}

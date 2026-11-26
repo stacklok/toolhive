@@ -374,7 +374,8 @@ func (h *Handler) rememberedIdentityRejected(ctx context.Context, w http.Respons
 		}
 		identity, lookupErr := h.storage.GetProviderIdentity(ctx, providerID, providerSubject)
 		if !result.Synthetic && providerSubject == pending.ExpectedProviderSubject &&
-			lookupErr == nil && identity != nil && identity.UserID == pending.ExpectedUserID {
+			lookupErr == nil && identity != nil && identity.UserID == pending.ExpectedUserID &&
+			h.userResolver.matchesIdentityBinding(providerID, identity) {
 			// The remembered identity was verified without changing user or token storage.
 		} else if lookupErr != nil && !isNotFoundOrExpired(lookupErr) {
 			slog.Error("failed to verify remembered identity", "error", lookupErr)

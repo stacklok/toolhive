@@ -866,3 +866,84 @@ func TestDeviceVerificationConfirmHandler_UpstreamAccountConflict(t *testing.T) 
 		}
 	}
 }
+
+func TestDeviceVerification_IdentityBinding(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cases := []struct {
+		name          string
+		initialIssuer string
+		initialClaim  string
+		nextIssuer    string
+		nextClaim     string
+		wantSameUser  bool
+	}{
+		{
+			name:          "matching binding reuses user",
+			initialIssuer: "https://idp.example.com", initialClaim: "sub",
+			nextIssuer: "https://idp.example.com", nextClaim: "sub",
+			wantSameUser: true,
+		},
+		{
+			name:          "unstamped row matches and gets stamped",
+			initialIssuer: "", initialClaim: "",
+			nextIssuer: "https://idp.example.com", nextClaim: "sub",
+			wantSameUser: true,
+		},
+		{
+			name:          "issuer change creates new user",
+			initialIssuer: "https://old-idp.example.com", initialClaim: "sub",
+			nextIssuer: "https://new-idp.example.com", nextClaim: "sub",
+			wantSameUser: false,
+		},
+		{
+			name:          "claim change creates new user",
+			initialIssuer: "https://idp.example.com", initialClaim: "sub",
+			nextIssuer: "https://idp.example.com", nextClaim: "oid",
+			wantSameUser: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h, up := setupDeviceVerificationHandler(t)
+
+			// Seed initial user and identity row.
+			now := time.Now()
+			require.NoError(t, h.storage.CreateUser(ctx, &storage.User{ID: "initial-user", CreatedAt: now, UpdatedAt: now}))
+			require.NoError(t, h.storage.CreateProviderIdentity(ctx, &storage.ProviderIdentity{
+				UserID: "initial-user", ProviderID: "test-upstream", ProviderSubject: "upstream-subject-1",
+				Issuer: tc.initialIssuer, SubjectClaim: tc.initialClaim,
+				LinkedAt: now, LastUsedAt: now,
+			}))
+
+			h.userResolver = NewUserResolver(h.storage,
+				WithCreateOnlyFor("test-upstream"),
+				WithIdentityBinding("test-upstream", tc.nextIssuer, tc.nextClaim),
+			)
+
+			_, userCode := issueDeviceCode(t, h)
+			submitRec, state := submitDeviceUserCode(t, h, up, userCode)
+			cookie := bindingCookieFrom(t, submitRec, state)
+
+			rec := httptest.NewRecorder()
+			h.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+state, cookie))
+			require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+			row, err := h.storage.GetProviderIdentity(ctx, "test-upstream", "upstream-subject-1")
+			require.NoError(t, err)
+			assert.Equal(t, tc.nextIssuer, row.Issuer)
+			assert.Equal(t, tc.nextClaim, row.SubjectClaim)
+			if tc.wantSameUser {
+				assert.Equal(t, "initial-user", row.UserID)
+			} else {
+				assert.NotEqual(t, "initial-user", row.UserID)
+				oldUser, getErr := h.storage.GetUser(ctx, "initial-user")
+				require.NoError(t, getErr)
+				assert.Equal(t, "initial-user", oldUser.ID)
+			}
+		})
+	}
+}

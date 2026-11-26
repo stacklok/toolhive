@@ -323,10 +323,16 @@ func TestRememberedSecondAuthorizationSkipsConsent(t *testing.T) {
 
 func TestRememberedIdentityMismatchRevokesOriginatingSession(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"subject switch", "account relink", "synthetic"} {
+	for _, scenario := range []string{"subject switch", "account relink", "synthetic", "issuer mismatch", "claim mismatch"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			h, state, upstream, s, cookie := setupRememberedHandler(t)
+			if scenario == "issuer mismatch" || scenario == "claim mismatch" {
+				h.userResolver = NewUserResolver(h.storage,
+					WithCreateOnlyFor("test-upstream"),
+					WithIdentityBinding("test-upstream", "https://new-idp.example.com", "oid"),
+				)
+			}
 			ctx := context.Background()
 			require.NoError(t, s.StoreConsentSession(ctx, consentDigest("another-session"), &storage.ConsentSession{
 				UserID: "user", ProviderID: "test-upstream", ProviderSubject: "user-123", ExpiresAt: time.Now().Add(time.Hour),
@@ -343,6 +349,16 @@ func TestRememberedIdentityMismatchRevokesOriginatingSession(t *testing.T) {
 				state.providerIdentities["test-upstream:user-123"] = &storage.ProviderIdentity{UserID: "other-user"}
 			case "synthetic":
 				upstream.exchangeResult.Synthetic = true
+			case "issuer mismatch":
+				state.providerIdentities["test-upstream:user-123"] = &storage.ProviderIdentity{
+					UserID: "user", ProviderID: "test-upstream", ProviderSubject: "user-123",
+					Issuer: "https://old-idp.example.com", SubjectClaim: "oid",
+				}
+			case "claim mismatch":
+				state.providerIdentities["test-upstream:user-123"] = &storage.ProviderIdentity{
+					UserID: "user", ProviderID: "test-upstream", ProviderSubject: "user-123",
+					Issuer: "https://new-idp.example.com", SubjectClaim: "sub",
+				}
 			}
 			callbackCookie := bindingCookieFromSecure(t, w, upstream.capturedState)
 			req := newCallbackRequest("code=upstream-code&state="+upstream.capturedState, callbackCookie,
@@ -357,6 +373,40 @@ func TestRememberedIdentityMismatchRevokesOriginatingSession(t *testing.T) {
 			require.ErrorIs(t, err, storage.ErrNotFound)
 			_, err = s.GetConsentSession(ctx, consentDigest("another-session"))
 			require.NoError(t, err)
+		})
+	}
+}
+
+func TestRememberedIdentityAllowsMatchingAndUnstampedBinding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		issuer string
+		claim  string
+	}{
+		{name: "matching binding", issuer: "https://idp.example.com", claim: "oid"},
+		{name: "legacy unstamped row", issuer: "", claim: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h, state, upstream, _, cookie := setupRememberedHandler(t)
+			h.userResolver = NewUserResolver(h.storage,
+				WithCreateOnlyFor("test-upstream"),
+				WithIdentityBinding("test-upstream", "https://idp.example.com", "oid"),
+			)
+			state.users["user"] = &storage.User{ID: "user"}
+			state.providerIdentities["test-upstream:user-123"] = &storage.ProviderIdentity{
+				UserID: "user", ProviderID: "test-upstream", ProviderSubject: "user-123",
+				Issuer: tc.issuer, SubjectClaim: tc.claim,
+			}
+			w := httptest.NewRecorder()
+			h.AuthorizeHandler(w, rememberedAuthorizeRequest(cookie, "openid", "https://api.example.com", testAuthRedirectURI))
+			require.Equal(t, http.StatusSeeOther, w.Code, w.Body.String())
+
+			completed := httptest.NewRecorder()
+			h.CallbackHandler(completed, newCallbackRequest("code=upstream-code&state="+upstream.capturedState,
+				bindingCookieFromSecure(t, w, upstream.capturedState)))
+			require.Contains(t, completed.Header().Get("Location"), "code=")
 		})
 	}
 }

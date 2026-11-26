@@ -162,11 +162,13 @@ type Identity struct {
 	//
 	// State semantics:
 	//   - nil            — no upstream credentials were loaded for this identity.
-	//                      Either the incoming JWT carried no tsid claim, or the
-	//                      Identity came from a constructor that has no upstream
-	//                      session at all: local.go, anonymous.go, or middleware
-	//                      validating a JWT from an IdP other than the embedded
-	//                      auth server (see the PlatformUserID note above).
+	//                      Either the incoming JWT carried no tsid claim, the
+	//                      token was accepted after it expired (see
+	//                      AdmittedAfterExpiry), or the Identity came from a
+	//                      constructor that has no upstream session at all:
+	//                      local.go, anonymous.go, or middleware validating a JWT
+	//                      from an IdP other than the embedded auth server (see
+	//                      the PlatformUserID note above).
 	//   - empty map      — never produced by TokenValidator, which answers 401
 	//                      when a tsid session holds no usable access token;
 	//                      a consumer that meets one denies it like a session
@@ -193,8 +195,9 @@ type Identity struct {
 	// OIDC login.
 	//
 	// State semantics:
-	//   - nil            — no tsid claim was present on the incoming JWT
-	//                      (middleware did not attempt to load credentials).
+	//   - nil            — no tsid claim was present on the incoming JWT, or the
+	//                      token was accepted after it expired (middleware did
+	//                      not attempt to load credentials).
 	//   - empty map      — tsid claim was valid but no providers had an
 	//                      ID token stored for the session.
 	//   - populated map  — keys are upstream provider names; values are the

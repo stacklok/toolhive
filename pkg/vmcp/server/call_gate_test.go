@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -172,36 +171,6 @@ func TestAuthzCallGate(t *testing.T) {
 			if tt.wantArgs != nil {
 				assert.Equal(t, tt.wantArgs, tt.core.gotArgs)
 			}
-		})
-	}
-}
-
-// TestAuthzCallGateRefusesAdmittedAfterExpiry checks the backstop: an identity
-// whose token was accepted after it expired is denied every gated method,
-// without asking the core, and is admitted for any other.
-func TestAuthzCallGateRefusesAdmittedAfterExpiry(t *testing.T) {
-	t.Parallel()
-	identity := &auth.Identity{AdmittedAfterExpiry: time.Now().Add(-time.Minute)}
-	for method, message := range map[string]string{
-		"tools/call":     vmcp.DenyMessageToolCall,
-		"resources/read": vmcp.DenyMessageResourceRead,
-		"prompts/get":    vmcp.DenyMessagePromptGet,
-		"tools/list":     "",
-	} {
-		t.Run(method, func(t *testing.T) {
-			t.Parallel()
-			ctx := context.WithValue(auth.WithIdentity(t.Context(), identity),
-				mcpparser.MCPRequestContextKey, &mcpparser.ParsedMCPRequest{Method: method, ResourceID: "x"})
-			fc := &gateFakeCore{}
-			denial := (&Server{core: fc}).authzCallGate()(ctx, nil)
-			if message == "" {
-				assert.Nil(t, denial)
-				return
-			}
-			require.NotNil(t, denial)
-			assert.Equal(t, mcpparser.JSONRPCCodeDenied, denial.Code)
-			assert.Equal(t, message, denial.Message)
-			assert.Empty(t, fc.gotMethod, "the core must not be asked")
 		})
 	}
 }

@@ -282,11 +282,9 @@ func assertAllFieldsPopulated(t *testing.T, v any, typeName string, skip map[str
 	}
 }
 
-// testCallBinding is a call binding that lists one client.
+// testCallBinding is a call binding that lists one client. New refuses only a
+// negative MaxCallDuration or an empty client ID, so it cannot fail here.
 func testCallBinding() *callbinding.Binding {
-	binding, err := callbinding.New(callbinding.Config{Clients: []string{"c"}})
-	if err != nil {
-		panic(err)
-	}
+	binding, _ := callbinding.New(callbinding.Config{Clients: []string{"c"}})
 	return binding
 }

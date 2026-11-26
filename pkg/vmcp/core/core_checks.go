@@ -81,6 +81,9 @@ func (c *coreVMCP) authorizeToolCall(
 	args map[string]any,
 	tool *vmcp.Tool,
 ) error {
+	if err := refusedAfterExpiry(identity, "tool", name); err != nil {
+		return err
+	}
 	advertised := tool != nil
 	if tool == nil {
 		tool = &vmcp.Tool{Name: name}
@@ -102,6 +105,9 @@ func (c *coreVMCP) authorizeToolCall(
 // authorizer error fails closed, classified as ErrAuthorizationFailed (see
 // authorizeToolCall). Shared by ReadResource and CheckResourceRead.
 func (c *coreVMCP) authorizeResourceRead(ctx context.Context, identity *auth.Identity, uri string) error {
+	if err := refusedAfterExpiry(identity, "resource", ""); err != nil {
+		return err
+	}
 	allowed, err := c.admission.AllowResourceRead(ctx, identity, &vmcp.Resource{URI: uri})
 	return resourceReadDecisionError(uri, allowed, err)
 }
@@ -110,6 +116,9 @@ func (c *coreVMCP) authorizeResourceRead(ctx context.Context, identity *auth.Ide
 // resource template: the string is a template, not a concrete URI, so admission
 // applies its template check instead of the canonical-form check.
 func (c *coreVMCP) authorizeResourceTemplateRead(ctx context.Context, identity *auth.Identity, tmpl string) error {
+	if err := refusedAfterExpiry(identity, "resource template", ""); err != nil {
+		return err
+	}
 	allowed, err := c.admission.AllowResourceTemplateRead(ctx, identity, &vmcp.ResourceTemplate{URITemplate: tmpl})
 	return resourceReadDecisionError(tmpl, allowed, err)
 }
@@ -139,10 +148,31 @@ func resourceReadDecisionError(uri string, allowed bool, err error) error {
 // error fails closed, classified as ErrAuthorizationFailed (see authorizeToolCall).
 // Shared by GetPrompt and CheckPromptGet.
 func (c *coreVMCP) authorizePromptGet(ctx context.Context, identity *auth.Identity, name string) error {
+	if err := refusedAfterExpiry(identity, "prompt", name); err != nil {
+		return err
+	}
 	if allowed, err := c.admission.AllowPromptGet(ctx, identity, &vmcp.Prompt{Name: name}); err != nil {
 		return fmt.Errorf("%w: prompt %q: %w", vmcp.ErrAuthorizationFailed, name, err)
 	} else if !allowed {
 		return fmt.Errorf("%w: prompt %q", vmcp.ErrAuthorizationFailed, name)
 	}
 	return nil
+}
+
+// refusedAfterExpiry refuses, with an error wrapping ErrAuthorizationFailed,
+// an identity whose access token the validator accepted after it expired
+// (auth.WithExpiredTokenAdmission): such a token may only send the messages of
+// a call already running, never start a call, read or get. The server's
+// call-binding middleware refuses these requests first; every admission
+// decision repeats the refusal, so the pre-dispatch gates of both revisions and
+// dispatch hold it too. name is the capability's name, or "" when it must not
+// be echoed.
+func refusedAfterExpiry(identity *auth.Identity, kind, name string) error {
+	if identity == nil || identity.AdmittedAfterExpiry.IsZero() {
+		return nil
+	}
+	if name == "" {
+		return fmt.Errorf("%w: %s: the access token has expired", vmcp.ErrAuthorizationFailed, kind)
+	}
+	return fmt.Errorf("%w: %s %q: the access token has expired", vmcp.ErrAuthorizationFailed, kind, name)
 }

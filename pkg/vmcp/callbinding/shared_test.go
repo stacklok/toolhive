@@ -54,11 +54,13 @@ func TestReturnedCalls(t *testing.T) {
 	assert.Len(t, calls.expires, 1, "an add drops expired entries")
 }
 
-// failingLookupRecord fails every Lookup.
+// failingLookupRecord fails every Lookup, with an open call, so a caller that
+// ignored the error would admit it.
 type failingLookupRecord struct{ Record }
 
 func (failingLookupRecord) Lookup(context.Context, string) (Call, bool, error) {
-	return Call{}, false, errors.New("record unavailable")
+	return Call{SessionID: "session-1", RequestID: "7", Started: time.Unix(1_800_000_000, 0)}, true,
+		errors.New("record unavailable")
 }
 
 func TestAdmitExpiredToken(t *testing.T) {
@@ -150,7 +152,7 @@ func TestAdmitExpiredToken(t *testing.T) {
 				}
 			}
 			if tc.returned {
-				b.MarkReturned(key, started.Add(24*time.Hour), started)
+				b.returned.add(key, started.Add(24*time.Hour), started)
 			}
 			assert.Equal(t, tc.want, b.AdmitExpiredToken(tc.r, expired(tc.claims), tc.now))
 		})
@@ -163,4 +165,66 @@ func TestAdmitExpiredTokenZeroBinding(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	r.Header.Set("Mcp-Session-Id", "session-1")
 	assert.False(t, b.AdmitExpiredToken(r, auth.ExpiredToken{Claims: testClaims([]any{testEntry()})}, time.Now()))
+}
+
+// TestEndCallDefersToDispatch checks that a call whose request returns while
+// its dispatch runs stays open until the last dispatch is done, and that a
+// dispatch that begins after the call ended does not reopen it.
+func TestEndCallDefersToDispatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Now()
+	token := &Token{Key: "https://as.example.com\x00jti-1", JTI: "jti-1"}
+	newOpenCall := func(t *testing.T) *Binding {
+		t.Helper()
+		b, err := New(Config{})
+		require.NoError(t, err)
+		ok, err := b.Record().Start(ctx, token.Key, Call{SessionID: "s", RequestID: "7", Started: now}, now.Add(time.Hour))
+		require.NoError(t, err)
+		require.True(t, ok)
+		return b
+	}
+	isOpen := func(t *testing.T, b *Binding) bool {
+		t.Helper()
+		_, open, err := b.OpenCall(ctx, token.Key, now)
+		require.NoError(t, err)
+		return open
+	}
+
+	t.Run("no dispatch: the request's return ends the call", func(t *testing.T) {
+		t.Parallel()
+		b := newOpenCall(t)
+		b.EndCall(ctx, token, now.Add(time.Hour))
+		assert.False(t, isOpen(t, b))
+	})
+	t.Run("the last of two dispatches ends the call", func(t *testing.T) {
+		t.Parallel()
+		b := newOpenCall(t)
+		first, second := b.BeginDispatch(token), b.BeginDispatch(token)
+		b.EndCall(ctx, token, now.Add(time.Hour))
+		assert.True(t, isOpen(t, b), "a dispatch still runs")
+		first()
+		first() // idempotent
+		assert.True(t, isOpen(t, b), "the second dispatch still runs")
+		second()
+		assert.False(t, isOpen(t, b))
+		assert.Empty(t, b.dispatches.calls, "no entry outlives its dispatches")
+	})
+	t.Run("a dispatch done before the request returns leaves the end to it", func(t *testing.T) {
+		t.Parallel()
+		b := newOpenCall(t)
+		b.BeginDispatch(token)()
+		assert.True(t, isOpen(t, b))
+		b.EndCall(ctx, token, now.Add(time.Hour))
+		assert.False(t, isOpen(t, b))
+	})
+	t.Run("a dispatch after the call ended does not reopen it", func(t *testing.T) {
+		t.Parallel()
+		b := newOpenCall(t)
+		b.EndCall(ctx, token, now.Add(time.Hour))
+		done := b.BeginDispatch(token)
+		assert.False(t, isOpen(t, b))
+		done()
+		assert.False(t, isOpen(t, b))
+	})
 }

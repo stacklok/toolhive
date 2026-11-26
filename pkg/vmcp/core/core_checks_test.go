@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -315,4 +316,32 @@ func TestCheckPromptGet_AntiDrift(t *testing.T) {
 				"CheckPromptGet and GetPrompt must agree (check=%v get=%v)", checkErr, getErr)
 		})
 	}
+}
+
+// TestChecksRefuseAdmittedAfterExpiry checks that every admission decision
+// refuses an identity whose token was accepted after it expired, even where
+// the authorizer allows everything, so the pre-dispatch gates of both
+// revisions and dispatch refuse it. The same identity, unmarked, is allowed.
+func TestChecksRefuseAdmittedAfterExpiry(t *testing.T) {
+	t.Parallel()
+	_, m := baseConfig(t)
+	allowAll := &mockAuthorizer{results: map[string]mockResult{
+		"echo": {authorized: true}, "res://ok": {authorized: true}, "review": {authorized: true},
+	}}
+	c := checkCore(m, newCedarAdmission(allowAll))
+	expectAggregationAnyTimes(m, &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{backendTool("echo")}, RoutingTable: &vmcp.RoutingTable{},
+	})
+
+	valid := cedarIdentity()
+	require.NoError(t, c.CheckToolCall(t.Context(), valid, "echo", nil))
+	require.NoError(t, c.CheckResourceRead(t.Context(), valid, "res://ok"))
+	require.NoError(t, c.CheckPromptGet(t.Context(), valid, "review"))
+
+	admitted := cedarIdentity()
+	admitted.AdmittedAfterExpiry = time.Now().Add(-time.Minute)
+	assert.ErrorIs(t, c.CheckToolCall(t.Context(), admitted, "echo", nil), vmcp.ErrAuthorizationFailed)
+	assert.ErrorIs(t, c.CheckResourceRead(t.Context(), admitted, "res://ok"), vmcp.ErrAuthorizationFailed)
+	assert.ErrorIs(t, c.CheckPromptGet(t.Context(), admitted, "review"), vmcp.ErrAuthorizationFailed)
+	assert.ErrorIs(t, c.authorizeResourceTemplateRead(t.Context(), admitted, "res://{x}"), vmcp.ErrAuthorizationFailed)
 }

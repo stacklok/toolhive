@@ -5,6 +5,7 @@ package callbinding
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -42,9 +43,16 @@ type Binding struct {
 	// returned holds the calls whose request has returned on this replica but
 	// that the record could not mark as ended.
 	returned returnedCalls
+	// dispatches holds the calls whose dispatch is running on this replica.
+	dispatches dispatches
 	// validatorWired reports that TokenValidatorOption has been called.
 	validatorWired atomic.Bool
 }
+
+// endTimeout bounds marking a call as ended in the record. The request context
+// may already be cancelled when the call ends, so the record gets a context of
+// its own, as the session manager gives its storage.
+const endTimeout = 5 * time.Second
 
 // New validates cfg and returns the Binding it describes. It returns an error
 // wrapping vmcp.ErrInvalidConfig for a negative MaxCallDuration or an empty
@@ -98,16 +106,68 @@ func (b *Binding) RecordShared() bool { return b.recordShared }
 // Challenge is the realm, resource metadata and scope of the 401 challenge.
 func (b *Binding) Challenge() auth.BearerChallenge { return b.challenge }
 
-// CallOpen reports whether call, recorded under key, still has its request
-// open at now and is younger than the maximum call duration.
-func (b *Binding) CallOpen(key string, call Call, now time.Time) bool {
-	return !call.Ended && !b.returned.has(key, now) && now.Before(call.Started.Add(b.maxCallDuration))
+// OpenCall returns the call recorded under key and reports whether it is open
+// at now: recorded, not ended, and younger than the maximum call duration. A
+// call is open while its request is, or, on Legacy, while its dispatch still
+// runs on this replica (see BeginDispatch).
+func (b *Binding) OpenCall(ctx context.Context, key string, now time.Time) (Call, bool, error) {
+	call, found, err := b.record.Lookup(ctx, key)
+	if err != nil || !found {
+		return call, false, err
+	}
+	open := !call.Ended && !b.returned.has(key, now) && now.Before(call.Started.Add(b.maxCallDuration))
+	return call, open, nil
 }
 
-// MarkReturned remembers that the call recorded under key has returned on this
-// replica, when the record could not mark it as ended, until expiry.
-func (b *Binding) MarkReturned(key string, expiry, now time.Time) {
-	b.returned.add(key, expiry, now)
+// OnCallSession reports whether r names call's session. A call without a
+// session (Modern) has none, so no request names it.
+func OnCallSession(r *http.Request, call Call) bool {
+	sessionID, err := sessionbinding.RequestID(r, "")
+	return err == nil && call.SessionID != "" && sessionID == call.SessionID
+}
+
+// EndCall ends the call token started, once the request that started it has
+// returned, until expiry: the record's expiry of the token. When a dispatch of
+// the call still runs on this replica, as on Legacy after the client closes
+// the call's POST, the call stays open and the last dispatch ends it. When the
+// record cannot mark the call as ended, this replica remembers it, so it
+// refuses the call's messages from then on.
+func (b *Binding) EndCall(ctx context.Context, token *Token, expiry time.Time) {
+	if b.dispatches.deferEnd(token.Key, expiry) {
+		return
+	}
+	b.endInRecord(ctx, token, expiry)
+}
+
+// BeginDispatch marks a dispatch of the call token started as running on this
+// replica, and returns the function that marks it done. Legacy dispatch calls
+// it: closing a Legacy call's POST returns its request but does not stop its
+// dispatch, which a later cancellation must still reach. A dispatch that
+// begins after the call has ended does not reopen it.
+func (b *Binding) BeginDispatch(token *Token) (done func()) {
+	b.dispatches.begin(token.Key)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if expiry, end := b.dispatches.finish(token.Key); end {
+				b.endInRecord(context.Background(), token, expiry)
+			}
+		})
+	}
+}
+
+// endInRecord marks the call token started as ended in the record, with a
+// deadline of its own: a stalled store must not hold the caller, and with it
+// Shutdown.
+func (b *Binding) endInRecord(ctx context.Context, token *Token, expiry time.Time) {
+	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endTimeout)
+	defer cancel()
+	if err := b.record.End(endCtx, token.Key); err != nil {
+		b.returned.add(token.Key, expiry, time.Now())
+		slog.WarnContext(ctx, "call binding: could not mark a call as ended; "+
+			"this replica refuses its messages, other replicas follow the record",
+			"jti", token.JTI, "error", err)
+	}
 }
 
 // TokenValidatorOption returns the token-validator option that accepts, after
@@ -129,7 +189,7 @@ func (b *Binding) ValidatorWired() bool { return b.validatorWired.Load() }
 // hold:
 //   - the token carries an mcp_tool_call entry;
 //   - its key has a call in the record, the call is open at now (see
-//     CallOpen), and the call has a session (a Modern call has none);
+//     OpenCall), and the call has a session (a Modern call has none);
 //   - r names that session;
 //   - r is a POST, a GET or a DELETE.
 //
@@ -167,7 +227,7 @@ func (b *Binding) AdmitExpiredToken(r *http.Request, expired auth.ExpiredToken, 
 	default:
 		return refused(ReasonMethodNotAllowed)
 	}
-	call, found, err := b.record.Lookup(ctx, token.Key)
+	call, open, err := b.OpenCall(ctx, token.Key, now)
 	switch {
 	case err != nil:
 		// DEBUG, as every refusal here: a caller with an expired token sets
@@ -176,13 +236,71 @@ func (b *Binding) AdmitExpiredToken(r *http.Request, expired auth.ExpiredToken, 
 		slog.DebugContext(ctx, "call binding: an expired token was not admitted: the record failed",
 			"jti", token.JTI, "error", err)
 		return false
-	case !found || !b.CallOpen(token.Key, call, now):
+	case !open:
 		return refused(ReasonNoOpenCall)
-	}
-	sessionID, err := sessionbinding.RequestID(r, "")
-	if err != nil || call.SessionID == "" || sessionID != call.SessionID {
+	case !OnCallSession(r, call):
 		return refused(ReasonSessionMismatch)
 	}
+	return true
+}
+
+// dispatches is the set of calls, keyed by token key, whose dispatch is
+// running on this replica, with whether their request has returned meanwhile.
+// An entry lasts while a dispatch runs.
+type dispatches struct {
+	mu    sync.Mutex
+	calls map[string]*dispatchState
+}
+
+type dispatchState struct {
+	running         int
+	requestReturned bool
+	expiry          time.Time
+}
+
+func (d *dispatches) begin(key string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.calls == nil {
+		d.calls = make(map[string]*dispatchState)
+	}
+	state, ok := d.calls[key]
+	if !ok {
+		state = &dispatchState{}
+		d.calls[key] = state
+	}
+	state.running++
+}
+
+// finish marks one dispatch of key done. When it was the last, it reports
+// whether the call's request has returned, so the call must be ended now,
+// with the record's expiry.
+func (d *dispatches) finish(key string) (time.Time, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	state, ok := d.calls[key]
+	if !ok {
+		return time.Time{}, false
+	}
+	state.running--
+	if state.running > 0 {
+		return time.Time{}, false
+	}
+	delete(d.calls, key)
+	return state.expiry, state.requestReturned
+}
+
+// deferEnd reports whether a dispatch of key is running, and if so records
+// that the call's request has returned, so the last dispatch ends the call.
+func (d *dispatches) deferEnd(key string, expiry time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	state, ok := d.calls[key]
+	if !ok || state.running == 0 {
+		return false
+	}
+	state.requestReturned = true
+	state.expiry = expiry
 	return true
 }
 

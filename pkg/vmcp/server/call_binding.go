@@ -42,11 +42,6 @@ const callBindingLeeway = 0 * time.Second
 // forget a key while this replica still accepts the token.
 const callBindingRetentionMargin = time.Minute
 
-// callBindingEndTimeout bounds marking a call as ended in the record. The
-// request context may already be cancelled when the call returns, so the
-// record gets a context of its own, as the session manager gives its storage.
-const callBindingEndTimeout = 5 * time.Second
-
 // Methods a call-bound token may send without starting a call: the Legacy
 // handshake's notification, the Modern capability probe and ping. initialize
 // is allowed only until the token starts its call (serveInitialize); tools/list
@@ -97,7 +92,6 @@ type callBinding struct {
 	// binding is the configuration, record and returned calls this check
 	// shares with the token validator (see callbinding.Binding).
 	binding   *callbinding.Binding
-	record    callbinding.Record
 	route     callBindingRoute
 	listItems callBindingListItems
 	now       func() time.Time
@@ -121,7 +115,6 @@ func newCallBinding(
 	}
 	return &callBinding{
 		binding:   binding,
-		record:    binding.Record(),
 		route:     route,
 		listItems: listItems,
 		now:       time.Now,
@@ -285,7 +278,8 @@ func renderServerItems[T any](
 //     started its call, are limited to that call's session; neither uses up
 //     the token;
 //   - one tools/call that matches its entry, which uses up the token;
-//   - on the Legacy session of that call, while the call's request is open: a
+//   - on the Legacy session of that call, while the call is open (its request
+//     is open, or its dispatch still runs on this replica): a
 //     notifications/cancelled for the call's ID, and a JSON-RPC response
 //     (such as an elicitation reply).
 //
@@ -324,23 +318,28 @@ func (s *Server) callBindingMiddleware(next http.Handler) http.Handler {
 		}
 		parsed := mcpparser.GetParsedMCPRequest(r.Context())
 		cb.warnIfNoClient(identity.Claims)
+		admitted := !identity.AdmittedAfterExpiry.IsZero()
 		token, reason := cb.binding.Token(identity.Claims)
+		if token == nil && reason == "" && admitted {
+			// Only a call-bound token's call has messages after exp.
+			reason = callbinding.ReasonTokenExpired
+		}
 		if reason != "" {
 			cb.refuse(w, r, parsed, &callbinding.Token{ClientID: callbinding.ClientID(identity.Claims)}, reason)
 			return
 		}
 		if token == nil {
-			if !identity.AdmittedAfterExpiry.IsZero() {
-				// Only a call-bound token's call has messages after exp.
-				cb.refuse(w, r, parsed, &callbinding.Token{ClientID: callbinding.ClientID(identity.Claims)},
-					callbinding.ReasonTokenExpired)
-				return
-			}
 			next.ServeHTTP(w, r)
 			return
 		}
 		if r.URL.Path != endpointPath {
-			cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
+			// After exp, everything but the call's own messages is refused as
+			// the token validator refuses an expired token.
+			reason = callbinding.ReasonMethodNotAllowed
+			if admitted {
+				reason = callbinding.ReasonTokenExpired
+			}
+			cb.refuse(w, r, parsed, token, reason)
 			return
 		}
 		cb.serveBound(w, r, next, identity, token, parsed)
@@ -367,12 +366,10 @@ func (cb *callBinding) serveBound(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	if !identity.AdmittedAfterExpiry.IsZero() {
+	// A token the validator accepted after it expired, or one that expired
+	// between the validator and here, may send only its open call's messages.
+	if !identity.AdmittedAfterExpiry.IsZero() || !cb.now().Before(token.ExpiresAt.Add(callBindingLeeway)) {
 		cb.serveAfterExpiry(w, r, next, token, parsed)
-		return
-	}
-	if !cb.now().Before(token.ExpiresAt.Add(callBindingLeeway)) {
-		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
 		return
 	}
 	switch r.Method {
@@ -411,13 +408,12 @@ func (cb *callBinding) serveAfterExpiry(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	call, found, err := cb.record.Lookup(r.Context(), token.Key)
+	call, open, err := cb.binding.OpenCall(r.Context(), token.Key, cb.now())
 	if err != nil {
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return
 	}
-	if !found || !cb.callOpen(token.Key, call) || !belongsToCall(r, call, "") ||
-		!isCallMessageAfterExpiry(r, token, parsed, call) {
+	if !open || !belongsToCall(r, call, "") || !isCallMessageAfterExpiry(r, token, parsed, call) {
 		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenExpired)
 		return
 	}
@@ -498,7 +494,7 @@ func (cb *callBinding) servePost(
 func (cb *callBinding) refusedAsReused(
 	w http.ResponseWriter, r *http.Request, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) bool {
-	_, started, err := cb.record.Lookup(r.Context(), token.Key)
+	_, started, err := cb.binding.Record().Lookup(r.Context(), token.Key)
 	switch {
 	case err != nil:
 		cb.unavailable(w, r, parsed, token, "record", err)
@@ -557,7 +553,7 @@ func (cb *callBinding) serveListCall(
 	if !ok {
 		return
 	}
-	cb.endCall(r.Context(), token, expiry)
+	cb.binding.EndCall(r.Context(), token, expiry)
 	slog.DebugContext(r.Context(), "call binding: answered a call-bound list call",
 		"jti", token.JTI, "client_id", token.ClientID, "server", token.Entry.Server, "method", token.Entry.Method)
 	copyHeader(w.Header(), buffered.header)
@@ -746,7 +742,7 @@ func (cb *callBinding) serveInitialize(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	_, started, err := cb.record.Lookup(r.Context(), token.Key)
+	_, started, err := cb.binding.Record().Lookup(r.Context(), token.Key)
 	switch {
 	case err != nil:
 		cb.unavailable(w, r, parsed, token, "record", err)
@@ -764,7 +760,7 @@ func (cb *callBinding) serveSessionRequest(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	call, started, err := cb.record.Lookup(r.Context(), token.Key)
+	call, started, err := cb.binding.Record().Lookup(r.Context(), token.Key)
 	if err != nil {
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return
@@ -811,16 +807,30 @@ func (cb *callBinding) serveToolCall(
 	if !ok {
 		return
 	}
-	defer cb.endCall(ctx, token, expiry)
+	defer cb.binding.EndCall(ctx, token, expiry)
 	cb.warnIfValidatorUnwired(ctx)
 	slog.DebugContext(ctx, "call binding: admitted a call-bound tools/call",
 		"jti", token.JTI, "client_id", token.ClientID,
 		"operation_id", token.Entry.OperationID, "server", token.Entry.Server, "tool", token.Entry.Tool)
-	// The call is open while its request is: on Modern, and on Legacy while
-	// the client stays connected, that is the whole call. Once the request
-	// returns, the call has ended, and no message is admitted for it, before
-	// or after exp.
+	// The call is open while its request is. On Modern that is the whole
+	// call. On Legacy, closing the POST returns the request but not the
+	// dispatch, so the call stays open while its dispatch runs on this replica
+	// (callBinding.dispatching), and a later cancellation still reaches it.
 	next.ServeHTTP(w, r)
+}
+
+// dispatching marks a Legacy tools/call dispatch for identity's call-bound
+// token as running, and returns the function that marks it done; see
+// callbinding.Binding.BeginDispatch. It does nothing for any other identity.
+func (cb *callBinding) dispatching(identity *auth.Identity) (done func()) {
+	if cb == nil || identity == nil {
+		return func() {}
+	}
+	token, reason := cb.binding.Token(identity.Claims)
+	if reason != "" || token == nil || token.Entry.IsList() {
+		return func() {}
+	}
+	return cb.binding.BeginDispatch(token)
 }
 
 // warnIfValidatorUnwired logs once when a call-bound tool call starts and the
@@ -849,7 +859,7 @@ func (cb *callBinding) startCall(
 	now := cb.now()
 	expiry := cb.recordExpiry(token, now)
 	call := callbinding.Call{SessionID: callSessionID(r, parsed), RequestID: requestID, Started: now}
-	started, err := cb.record.Start(r.Context(), token.Key, call, expiry)
+	started, err := cb.binding.Record().Start(r.Context(), token.Key, call, expiry)
 	if err != nil {
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return time.Time{}, false
@@ -918,22 +928,6 @@ func callSessionID(r *http.Request, parsed *mcpparser.ParsedMCPRequest) string {
 	return sessionID
 }
 
-// endCall marks the call the token started as ended once its request has
-// returned. The request context may already be cancelled, so the record gets
-// a context of its own with a deadline: a stalled store must not hold the
-// handler, and with it Shutdown. When the record cannot mark the call, this
-// replica remembers it, so it refuses the call's messages from then on.
-func (cb *callBinding) endCall(ctx context.Context, token *callbinding.Token, expiry time.Time) {
-	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callBindingEndTimeout)
-	defer cancel()
-	if err := cb.record.End(endCtx, token.Key); err != nil {
-		cb.binding.MarkReturned(token.Key, expiry, cb.now())
-		slog.WarnContext(ctx, "call binding: could not mark a call as ended; "+
-			"this replica refuses its messages, other replicas follow the record",
-			"jti", token.JTI, "error", err)
-	}
-}
-
 // recordExpiry is how long the record keeps a token started at now: until the
 // token can no longer be accepted, or until the call has run for the maximum
 // call duration, whichever is later, plus callBindingRetentionMargin.
@@ -946,7 +940,8 @@ func (cb *callBinding) recordExpiry(token *callbinding.Token, now time.Time) tim
 }
 
 // serveCallMessage admits a message that belongs to the call the token
-// started, on that call's session, while the call's request is open and
+// started, on that call's session, while the call is open (see
+// callbinding.Binding.OpenCall) and
 // younger than the maximum call duration: a notifications/cancelled for the
 // call's ID (requestID non-empty), or a JSON-RPC response (requestID empty).
 //
@@ -960,32 +955,24 @@ func (cb *callBinding) serveCallMessage(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest, requestID string,
 ) {
-	call, found, err := cb.record.Lookup(r.Context(), token.Key)
+	call, open, err := cb.binding.OpenCall(r.Context(), token.Key, cb.now())
 	if err != nil {
 		cb.unavailable(w, r, parsed, token, "record", err)
 		return
 	}
 	// A list call asks the client nothing, so no response belongs to it.
 	listResponse := requestID == "" && token.Entry.IsList()
-	if listResponse || !found || !cb.callOpen(token.Key, call) || !belongsToCall(r, call, requestID) {
+	if listResponse || !open || !belongsToCall(r, call, requestID) {
 		cb.refuse(w, r, parsed, token, callbinding.ReasonNoOpenCall)
 		return
 	}
 	next.ServeHTTP(w, r)
 }
 
-// callOpen reports whether the call recorded under key still has its request
-// open and is younger than the maximum call duration.
-func (cb *callBinding) callOpen(key string, call callbinding.Call) bool {
-	return cb.binding.CallOpen(key, call, cb.now())
-}
-
 // belongsToCall reports whether a message sent as r is on call's session and,
 // for a cancellation (requestID non-empty), names call's request.
 func belongsToCall(r *http.Request, call callbinding.Call, requestID string) bool {
-	sessionID, err := sessionbinding.RequestID(r, "")
-	return err == nil && call.SessionID != "" && sessionID == call.SessionID &&
-		(requestID == "" || requestID == call.RequestID)
+	return callbinding.OnCallSession(r, call) && (requestID == "" || requestID == call.RequestID)
 }
 
 // refuse answers a refused request and marks it so the audit middleware

@@ -105,7 +105,8 @@ token. Before its `exp`, such a token may also send, to the MCP endpoint:
   up the token;
 - GET and DELETE on sessions its principal owns, and once the token has started its
   call, only on that call's session;
-- on the Legacy session of its tool call, while the call's request is open: a
+- on the Legacy session of its tool call, while the call is open (its request is
+  open, or its dispatch still runs, as after the client closes the call's POST): a
   `notifications/cancelled` for the call and any JSON-RPC response, such as an
   elicitation answer.
 

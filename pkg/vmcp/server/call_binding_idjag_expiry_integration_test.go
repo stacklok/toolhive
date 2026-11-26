@@ -182,8 +182,20 @@ func TestCallBindingIDJAG_ElicitationAfterExpiry(t *testing.T) {
 		}
 	}
 
+	// Any response on the call's session is admitted, so one the server is
+	// not waiting for must be harmless: go-sdk drops it, and the question
+	// stays pending for its own answer.
+	stray := `{"jsonrpc":"2.0","id":"not-asked","result":{"action":"decline"}}`
+	status, body, _ := c.post(t, token, session, stray, nil)
+	require.Equal(t, http.StatusAccepted, status, "a response nobody asked for, after exp: %s", body)
+	select {
+	case result := <-done:
+		require.FailNow(t, "the call ended on a response nobody asked for", "%v", result)
+	case <-time.After(500 * time.Millisecond):
+	}
+
 	reply := `{"jsonrpc":"2.0","id":` + string(question.ID) + `,"result":{"action":"accept","content":{}}}`
-	status, body, _ := c.post(t, token, session, reply, nil)
+	status, body, _ = c.post(t, token, session, reply, nil)
 	require.Equal(t, http.StatusAccepted, status, "the elicitation reply after exp: %s", body)
 
 	result := chainAwait(t, done, "the call did not return")

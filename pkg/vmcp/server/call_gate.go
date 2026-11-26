@@ -62,18 +62,6 @@ func (s *Server) authzCallGate() server.CallGate {
 		var err error
 		var message string
 		switch parsed.Method {
-		case "tools/call", "resources/read", "prompts/get":
-			// A token accepted after it expired may send only the messages of a
-			// call already running (callBindingMiddleware), never a new call.
-			// The call-binding middleware refuses these first; this is the
-			// backstop.
-			if identity != nil && !identity.AdmittedAfterExpiry.IsZero() {
-				slog.WarnContext(ctx, "vmcp authz gate: refused a call from a token accepted after it expired",
-					"method", parsed.Method)
-				return &server.Denial{Code: mcpparser.JSONRPCCodeDenied, Message: gateDenyMessage(parsed.Method)}
-			}
-		}
-		switch parsed.Method {
 		case "tools/call":
 			err = s.core.CheckToolCall(ctx, identity, parsed.ResourceID, parsed.Arguments)
 			message = vmcp.DenyMessageToolCall
@@ -125,17 +113,5 @@ func (s *Server) authzCallGate() server.CallGate {
 
 		// HTTPStatus left zero ⇒ the shim writes HTTP 403 (see server.Denial).
 		return &server.Denial{Code: mcpparser.JSONRPCCodeDenied, Message: message}
-	}
-}
-
-// gateDenyMessage is the denial message the gate gives for a gated method.
-func gateDenyMessage(method string) string {
-	switch method {
-	case "resources/read":
-		return vmcp.DenyMessageResourceRead
-	case "prompts/get":
-		return vmcp.DenyMessagePromptGet
-	default:
-		return vmcp.DenyMessageToolCall
 	}
 }

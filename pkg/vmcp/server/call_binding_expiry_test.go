@@ -5,7 +5,7 @@ package server
 
 import (
 	"context"
-	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -109,7 +109,7 @@ func TestCallBinding_AfterExpiry(t *testing.T) {
 	// Once the call has ended, nothing is accepted.
 	key := cbIssuer + "\x00jti-1"
 	require.Eventually(t, func() bool {
-		call, found, err := s.srv.callBinding.record.Lookup(context.Background(), key)
+		call, found, err := s.srv.callBinding.binding.Record().Lookup(context.Background(), key)
 		return err == nil && found && call.Ended
 	}, 10*time.Second, 10*time.Millisecond)
 	requireValidatorRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil))
@@ -137,6 +137,30 @@ func TestCallBinding_AfterExpiryCancellationStopsCall(t *testing.T) {
 	assert.Zero(t, s.fc.callToolCalls.Load(), "the cancelled call must not complete")
 }
 
+// TestCallBinding_AfterExpiryCancelAfterDroppedPost checks that a Legacy
+// client that closes the call's POST and then cancels after exp, as a go-sdk
+// client does, still reaches the call: the call stays open while its dispatch
+// runs.
+func TestCallBinding_AfterExpiryCancelAfterDroppedPost(t *testing.T) {
+	t.Parallel()
+	s, bc, clock := cbExpiryServer(t)
+	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+	session := s.session(t, token)
+
+	ctx, cancelPost := context.WithCancel(t.Context())
+	done := s.postAsync(ctx, token, session, toolCallBody(7, cbTool, "{}"))
+	bc.waitStarted(t)
+	cancelPost()
+	awaitStatus(t, done)
+	clock.Advance(time.Hour + time.Second)
+
+	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
+	require.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
+	requireCallEnded(t, s.srv.callBinding.binding.Record(), true)
+	assert.Zero(t, s.fc.callToolCalls.Load(), "the cancelled call must not complete")
+	requireValidatorRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil))
+}
+
 // TestCallBinding_AfterExpiryDelete checks that a DELETE on the open call's
 // session is accepted after exp. Terminating a session waits for its open
 // requests, so the DELETE completes once the call returns.
@@ -150,23 +174,7 @@ func TestCallBinding_AfterExpiryDelete(t *testing.T) {
 	bc.waitStarted(t)
 	clock.Advance(time.Hour + time.Second)
 
-	// Off the test goroutine, so no require.
-	deleted := make(chan int, 1)
-	go func() {
-		status := 0
-		defer func() { deleted <- status }()
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, s.url+"/mcp", nil)
-		if err != nil {
-			return
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Mcp-Session-Id", session)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			status = resp.StatusCode
-		}
-	}()
+	deleted := s.sendAsync(t.Context(), http.MethodDelete, token, session, "", nil)
 	// A refused DELETE is answered at once. One that passed the checks waits
 	// for the session's open call, so it is still waiting until the call
 	// returns.
@@ -231,27 +239,7 @@ func TestCallBinding_AfterExpiryModernCall(t *testing.T) {
 	s, bc, clock := cbExpiryServer(t)
 	token := s.tokens.add("bound", claimsFor(cbClient, "jti-1", []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
 
-	done := make(chan int, 1)
-	go func() {
-		status := 0
-		defer func() { done <- status }()
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.url+"/mcp",
-			strings.NewReader(cbModernCall(7, `{}`)))
-		if err != nil {
-			return
-		}
-		for k, v := range cbModernHeaders() {
-			req.Header[k] = v
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		req.Header.Set("Authorization", "Bearer "+token)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			status = resp.StatusCode
-		}
-	}()
+	done := s.sendAsync(t.Context(), http.MethodPost, token, "", cbModernCall(7, `{}`), cbModernHeaders())
 	bc.waitStarted(t)
 	clock.Advance(time.Hour + time.Second)
 
@@ -288,13 +276,33 @@ func TestCallBinding_AdmittedIdentityNeverStartsACall(t *testing.T) {
 	assert.Zero(t, s.fc.callToolCalls.Load())
 }
 
-// TestCallBinding_ValidatorWiring checks that the binding reports whether its
-// validator option was taken, which decides the unwired warning.
-func TestCallBinding_ValidatorWiring(t *testing.T) {
-	t.Parallel()
-	binding, err := callbinding.New(callbinding.Config{})
-	require.NoError(t, err)
-	assert.False(t, binding.ValidatorWired())
-	_ = binding.TokenValidatorOption()
-	assert.True(t, binding.ValidatorWired())
+// TestCallBinding_UnwiredValidatorWarnsOnce checks that the vMCP warns once
+// when call-bound tool calls start and the token validator was never given the
+// binding's option, and stays silent once it was.
+// Not parallel: it swaps the process-global slog default.
+//
+//nolint:paralleltest // slog.SetDefault mutates process-global state
+func TestCallBinding_UnwiredValidatorWarnsOnce(t *testing.T) {
+	var buf logSyncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	const warning = "the token validator was not given the call binding's TokenValidatorOption"
+
+	runTwoCalls := func(t *testing.T, wire bool) {
+		t.Helper()
+		s := newCallBindingTestServer(t, cbServerOptions{})
+		if wire {
+			_ = s.srv.callBinding.binding.TokenValidatorOption()
+		}
+		for _, jti := range []string{"jti-1", "jti-2"} {
+			token := s.tokens.add(jti, claimsFor(cbClient, jti, []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}))
+			requireCallRan(t, s.send(t, http.MethodPost, token, s.session(t, token), toolCallBody(2, cbTool, "{}"), nil))
+		}
+	}
+
+	runTwoCalls(t, true)
+	assert.NotContains(t, buf.String(), warning, "a wired validator gives no warning")
+	runTwoCalls(t, false)
+	assert.Equal(t, 1, strings.Count(buf.String(), warning), "logged once: %s", buf.String())
 }

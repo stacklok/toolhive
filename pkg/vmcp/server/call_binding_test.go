@@ -737,18 +737,36 @@ func TestCallBinding_ModernToolCall(t *testing.T) {
 // postAsync sends a POST off the test goroutine and reports its status, or
 // 0 when the request failed. It must not use require.
 func (s *cbTestServer) postAsync(ctx context.Context, token, sessionID, body string) <-chan int {
+	return s.sendAsync(ctx, http.MethodPost, token, sessionID, body, nil)
+}
+
+// sendAsync sends a request off the test goroutine and reports its status, or
+// 0 when the request failed. An empty sessionID sends no Mcp-Session-Id, and
+// an empty body sends none. It must not use require.
+func (s *cbTestServer) sendAsync(
+	ctx context.Context, method, token, sessionID, body string, extra http.Header,
+) <-chan int {
 	done := make(chan int, 1)
 	go func() {
 		status := 0
 		defer func() { done <- status }()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/mcp", strings.NewReader(body))
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, s.url+"/mcp", reader)
 		if err != nil {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Mcp-Session-Id", sessionID)
+		if sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", sessionID)
+		}
+		for k, v := range extra {
+			req.Header[k] = v
+		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return
@@ -836,9 +854,10 @@ func TestCallBinding_OpenCallMessages(t *testing.T) {
 }
 
 // TestCallBinding_CancelAfterDroppedPost checks that a Legacy client that
-// closes the call's POST before it sends notifications/cancelled gets
-// no_open_call: closing the POST ends the call's request, and with it the
-// call, so there is nothing left to cancel.
+// closes the call's POST before it sends notifications/cancelled, as go-sdk
+// clients do, can still cancel the call: closing the POST does not stop a
+// Legacy dispatch, so the call stays open while its dispatch runs, and the
+// cancellation reaches it. The call ends when its dispatch returns.
 func TestCallBinding_CancelAfterDroppedPost(t *testing.T) {
 	t.Parallel()
 	bc := newBlockingCore()
@@ -860,14 +879,29 @@ func TestCallBinding_CancelAfterDroppedPost(t *testing.T) {
 	bc.waitStarted(t)
 	cancelPost()
 	awaitStatus(t, done)
+	requireCallEnded(t, record, false)
 
-	key := cbIssuer + "\x00jti-1"
-	require.Eventually(t, func() bool {
-		call, found, err := record.Lookup(context.Background(), key)
-		return err == nil && found && call.Ended
-	}, 10*time.Second, 10*time.Millisecond, "the dropped POST must end the call's request")
-
+	cancel := s.send(t, http.MethodPost, token, session, cancelBody("7"), nil)
+	require.Equal(t, http.StatusAccepted, cancel.status, "body: %s", cancel.body)
+	requireCallEnded(t, record, true)
+	assert.Zero(t, s.fc.callToolCalls.Load(), "the cancelled call must not complete")
 	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("7"), nil), callbinding.ReasonNoOpenCall, nil)
+}
+
+// requireCallEnded checks whether the call of the token with jti-1 has ended
+// in record: it waits for the end when ended is true, and checks it stays open
+// for a moment when ended is false.
+func requireCallEnded(t *testing.T, record callbinding.Record, ended bool) {
+	t.Helper()
+	isEnded := func() bool {
+		call, found, err := record.Lookup(context.Background(), cbIssuer+"\x00jti-1")
+		return err == nil && found && call.Ended
+	}
+	if ended {
+		require.Eventually(t, isEnded, 10*time.Second, 10*time.Millisecond, "the call must end")
+		return
+	}
+	require.Never(t, isEnded, 300*time.Millisecond, 10*time.Millisecond, "the call must stay open")
 }
 
 // TestCallBinding_ResponseAfterMaxCallDuration checks that a response is
@@ -1024,8 +1058,7 @@ func TestNewCallBindingDefaults(t *testing.T) {
 	t.Parallel()
 	cb := newCallBinding(nil, nil, nil)
 	assert.Equal(t, callbinding.DefaultMaxCallDuration, cb.binding.MaxCallDuration())
-	assert.NotNil(t, cb.record)
-	assert.Same(t, cb.binding.Record(), cb.record)
+	assert.NotNil(t, cb.binding.Record())
 }
 
 // spyRecord records the expiry of each Start and can fail on demand.

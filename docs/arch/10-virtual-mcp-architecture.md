@@ -1574,7 +1574,7 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   token's principal owns. Once the token has started its call, they are limited to
   that call's session (`session_mismatch`); a Modern call has none. Neither uses up
   the token.
-- On the Legacy session of its tool call, while the call's request is open and
+- On the Legacy session of its tool call, while the call is open and
   younger than the maximum call duration: a `notifications/cancelled` for the call's
   JSON-RPC ID, and any JSON-RPC response (for example an in-band elicitation reply).
   A list call is never open, so it admits neither (`no_open_call`). The vMCP
@@ -1583,9 +1583,13 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   `Mcp-Session-Id` it sends, so it admits neither: a Modern client cancels by closing
   the request. These messages are accepted after the token's `exp` too (see **After
   `exp`** below); a fresh token gets `no_open_call`, as it has no call of its own. A
-  Legacy client that closes the call's POST before it sends the cancellation (go-sdk
-  does) gets `no_open_call`: closing the POST ends the call's request, and with it
-  the call.
+  call is open while its request is, and on Legacy also while its dispatch still
+  runs on the replica: go-sdk keeps a Legacy call running after the client closes
+  its POST, and a go-sdk client closes the POST before it sends the cancellation,
+  so the request returning does not end the call. The dispatch marks itself running
+  (`Binding.BeginDispatch`), the request's return defers to it (`Binding.EndCall`),
+  and the last dispatch ends the call in the record. A dispatch that starts after
+  the call has ended does not reopen it.
 
 Everything else is refused, including list methods a tool-call entry does not allow.
 Single use means
@@ -1594,8 +1598,8 @@ one token, one call: a retried `tools/call`, such as the retry after a URL elici
 `token_reused`. The client needs a fresh call-bound token for the retry.
 
 **After `exp`.** The token's `exp` limits only when a call can start. A tool call that
-outlives its token keeps its own messages, while the call's request is open and
-younger than the maximum call duration, on the call's session: a
+outlives its token keeps its own messages, while the call is open and younger than
+the maximum call duration, on the call's session: a
 `notifications/cancelled` for the call's ID, a JSON-RPC response such as an
 elicitation answer, and a GET or DELETE. The GET lets a client whose stream dropped
 receive the call's messages again: the vMCP sends a backend's elicitation on the
@@ -1625,8 +1629,9 @@ only the call's own messages, and refuses the rest with 401 `token_expired`;
 audit event of an admitted request carries `metadata.extra.admitted_after_expiry` and
 the entry's `operation_id`. Without the option every request after `exp` gets the
 validator's 401, and the vMCP warns once when a call-bound tool call starts; the
-`vmcp` command wires it. The record is per replica, so a message sent to another
-replica after `exp` gets 401, which does not widen the single-use gap.
+`vmcp` command wires it. With the default in-memory record, a message sent to
+another replica after `exp` gets 401, so the window does not widen the single-use
+gap; with a shared `Record`, another replica admits it, as it does before `exp`.
 
 **Single use.** The `jti` (keyed with the issuer) is recorded when the call starts, in
 a `callbinding.Record`, and stays recorded until `exp` or until the call has run for

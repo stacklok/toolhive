@@ -540,7 +540,7 @@ func standInList(ctx context.Context) (*http.Request, *mcpparser.ParsedMCPReques
 // recorded reports whether the token's call is in cb's record.
 func recorded(t *testing.T, cb *callBinding, token *callbinding.Token) bool {
 	t.Helper()
-	_, found, err := cb.record.Lookup(context.Background(), token.Key)
+	_, found, err := cb.binding.Record().Lookup(context.Background(), token.Key)
 	require.NoError(t, err)
 	return found
 }

@@ -630,20 +630,18 @@ func (h *Handler) computeChain(ctx context.Context, principal FilterPrincipal) (
 // to computeChain (and thus the filter) only on the first leg, where it reflects
 // the identity provider. Subsequent legs reuse the stored chain and ignore it.
 //
-// Before either, pending.SkippedUpstreams is validated against the chain the
-// pending carried (see validateSkipped). A first-leg pending carries no chain, so
-// one that already names a skipped leg is rejected before the filter runs.
+// A first leg carries neither a chain nor skipped legs, so a pending that names
+// either is stale or tampered and is rejected. A subsequent leg's skipped set is
+// validated against the chain it carries (see validateSkipped).
 func (h *Handler) resolveChain(
 	ctx context.Context,
 	pending *storage.PendingAuthorization,
 	principal FilterPrincipal,
 ) ([]string, error) {
-	// Validate against the chain the pending carried, not the one about to be
-	// resolved: a first leg carries none, so any skipped leg there is outside it.
-	if err := validateSkipped(pending.ChainUpstreams, pending.SkippedUpstreams); err != nil {
-		return nil, fmt.Errorf("stored skipped upstreams are invalid: %w", err)
-	}
 	if pending.ResolvedUserID == "" {
+		if len(pending.ChainUpstreams) > 0 || len(pending.SkippedUpstreams) > 0 {
+			return nil, fmt.Errorf("first chain leg carries a chain or skipped upstreams (stale or tampered pending authorization)")
+		}
 		// True first leg — compute with this (the first) leg's request context.
 		return h.computeChain(ctx, principal)
 	}
@@ -653,13 +651,16 @@ func (h *Handler) resolveChain(
 	if err := h.validateChain(pending.ChainUpstreams); err != nil {
 		return nil, fmt.Errorf("stored upstream chain is invalid: %w", err)
 	}
+	if err := validateSkipped(pending.ChainUpstreams, pending.SkippedUpstreams); err != nil {
+		return nil, fmt.Errorf("stored skipped upstreams are invalid: %w", err)
+	}
 	return pending.ChainUpstreams, nil
 }
 
 // validateSkipped rejects a skipped-leg set loaded from storage that the chain
 // does not admit: every entry must be a member of chain other than its first
 // (identity) upstream, with no duplicates. A pending that breaks this is stale or
-// tampered; honouring it could skip the identity leg or a leg the walk never tried.
+// tampered; honouring it could skip the identity leg.
 func validateSkipped(chain, skipped []string) error {
 	if len(skipped) == 0 {
 		return nil

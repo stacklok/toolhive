@@ -193,7 +193,8 @@ func TestCallback_NonFatalSecondaryLeg_IdPErrorSkipsTheLeg(t *testing.T) {
 	handler.CallbackHandler(rec, newCallbackRequest("code=leg1-code&state=leg1", cookie))
 	require.Equal(t, http.StatusFound, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Header().Get("Location"), "https://provider-2.example.com/authorize")
-	leg2State, _ := pendingFor(t, storState, "provider-2")
+	leg2State, leg2 := pendingFor(t, storState, "provider-2")
+	readsBeforeSkip := len(storState.getAllUpstreamCtx)
 
 	// The IdP answers provider-2's leg with access_denied: the browser goes to provider-3.
 	rec2 := httptest.NewRecorder()
@@ -204,6 +205,7 @@ func TestCallback_NonFatalSecondaryLeg_IdPErrorSkipsTheLeg(t *testing.T) {
 	require.Contains(t, rec2.Header().Get("Location"), "https://provider-3.example.com/authorize")
 	leg3State, leg3 := pendingFor(t, storState, "provider-3")
 	assert.Equal(t, []string{"provider-2"}, leg3.SkippedUpstreams)
+	assertCallbackContextUsers(t, storState.getAllUpstreamCtx[readsBeforeSkip:], leg2.ResolvedUserID)
 
 	// Leg 3 completes: the client receives an authorization code.
 	rec3 := httptest.NewRecorder()
@@ -264,6 +266,7 @@ func TestCallback_NonFatalSecondaryLeg_ExchangeFailureCompletesTheChain(t *testi
 			assert.Equal(t, "provider-1-seeded", storState.upstreamTokens[sessionID+":provider-1"].AccessToken)
 			assert.Equal(t, "provider-2-seeded", storState.upstreamTokens[sessionID+":provider-2"].AccessToken)
 			assert.Empty(t, storState.pendingAuths)
+			assertCallbackContextUsers(t, storState.getAllUpstreamCtx, "resolved-user")
 			assert.Equal(t, []map[string]any{skipRecord("provider-3", tt.wantFailure)}, skipRecords(records()))
 		})
 	}
@@ -524,21 +527,98 @@ func TestCallback_NonFatalSecondaryLeg_UnskippableFailuresStayFatal(t *testing.T
 	}
 }
 
+// TestCallback_NonFatalSecondaryLeg_RejectedPendingLogsNoSkip is not parallel
+// because it swaps the process-wide slog default to assert the log lines.
+//
+//nolint:paralleltest // mutates the process-global slog default
+func TestCallback_NonFatalSecondaryLeg_RejectedPendingLogsNoSkip(t *testing.T) {
+	tests := []struct {
+		name    string
+		pending *storage.PendingAuthorization
+	}{
+		{name: "skips the first upstream", pending: laterLegPending("s", "provider-2", "provider-1")},
+		{
+			name: "stale later leg with no chain",
+			pending: func() *storage.PendingAuthorization {
+				p := laterLegPending("s", "provider-2")
+				p.ChainUpstreams = nil
+				return p
+			}(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			records := captureWarnings(t)
+			handler, storState, _ := threeLegSetup(t, true)
+			seedToken(storState, "s", "provider-1")
+			cookie := bindPending(t, storState, "leg", tt.pending)
+
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, newCallbackRequest("error=access_denied&state=leg", cookie))
+
+			requireClientError(t, rec, "server_error")
+			assert.Empty(t, skipRecords(records()), "a rejected pending is not logged as a skipped leg")
+		})
+	}
+}
+
+// A handler with no upstreams has no secondary legs: an IdP error for a bound
+// later-leg pending is an ordinary failure, not a skip.
+func TestCallback_NonFatalSecondaryLeg_NoUpstreamsIsNotSkippable(t *testing.T) {
+	t.Parallel()
+
+	provider, oauth2Config, stor, storState := baseTestSetup(t)
+	oauth2Config.NonFatalSecondaryLegs = true
+	handler, err := NewHandler(provider, oauth2Config, stor, nil)
+	require.NoError(t, err)
+	cookie := bindPending(t, storState, "leg", laterLegPending("s", "provider-2"))
+
+	var rec *httptest.ResponseRecorder
+	require.NotPanics(t, func() {
+		rec = httptest.NewRecorder()
+		handler.CallbackHandler(rec, newCallbackRequest("error=access_denied&state=leg", cookie))
+	})
+	requireClientError(t, rec, "access_denied")
+}
+
 func TestResolveChain_RejectsInvalidSkippedUpstreams(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		resolved bool // false: a first-leg pending, whose chain is computed now
+		chain    []string
 		skipped  []string
-		wantErr  bool
+		wantErr  string
 	}{
 		{name: "valid skipped leg", resolved: true, skipped: []string{"provider-2"}},
 		{name: "no skipped legs", resolved: true},
-		{name: "names the first upstream", resolved: true, skipped: []string{"provider-1"}, wantErr: true},
-		{name: "names an upstream outside the chain", resolved: true, skipped: []string{"provider-9"}, wantErr: true},
-		{name: "duplicates a skipped leg", resolved: true, skipped: []string{"provider-2", "provider-2"}, wantErr: true},
-		{name: "first-leg pending with a skipped leg", skipped: []string{"provider-2"}, wantErr: true},
+		{
+			name: "names the first upstream", resolved: true, skipped: []string{"provider-1"},
+			wantErr: "stored skipped upstreams are invalid",
+		},
+		{
+			name: "names an upstream outside the chain", resolved: true, skipped: []string{"provider-9"},
+			wantErr: "stored skipped upstreams are invalid",
+		},
+		{
+			name: "duplicates a skipped leg", resolved: true, skipped: []string{"provider-2", "provider-2"},
+			wantErr: "stored skipped upstreams are invalid",
+		},
+		{
+			name:  "first-leg pending with a made-up chain and skipped leg",
+			chain: threeUpstreamChain, skipped: []string{"provider-2"},
+			wantErr: "first chain leg carries a chain or skipped upstreams",
+		},
+		{
+			name:    "first-leg pending with only a chain",
+			chain:   threeUpstreamChain,
+			wantErr: "first chain leg carries a chain or skipped upstreams",
+		},
+		{
+			name: "first-leg pending with only a skipped leg", skipped: []string{"provider-2"},
+			wantErr: "first chain leg carries a chain or skipped upstreams",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -548,15 +628,16 @@ func TestResolveChain_RejectsInvalidSkippedUpstreams(t *testing.T) {
 			filter := &stubUpstreamFilter{keep: threeUpstreamChain[1:]}
 			handler := newChainTestHandler(t, threeUpstreamChain, WithUpstreamFilter(filter))
 			pending := firstLegPending("s")
+			pending.ChainUpstreams = tt.chain
 			pending.SkippedUpstreams = tt.skipped
 			if tt.resolved {
 				pending = laterLegPending("s", "provider-3", tt.skipped...)
 			}
 
 			chain, err := handler.resolveChain(context.Background(), pending, filterPrincipal{})
-			if tt.wantErr {
-				require.ErrorContains(t, err, "stored skipped upstreams are invalid")
-				assert.Zero(t, filter.calls, "an invalid skipped set is rejected before the filter runs")
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Zero(t, filter.calls, "an invalid pending is rejected before the filter runs")
 				return
 			}
 			require.NoError(t, err)

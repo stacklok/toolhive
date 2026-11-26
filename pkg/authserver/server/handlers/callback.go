@@ -355,7 +355,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		claims:          result.Claims,
 	}
 
-	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal)
+	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal, nil)
 }
 
 // rememberedIdentityRejected checks that a remembered approval still resolves to
@@ -867,6 +867,10 @@ func (h *Handler) cleanupUpstreamTokens(ctx context.Context, sessionID string, p
 // the chain. Called after StoreUpstreamTokens succeeds for each leg, and, under
 // NonFatalSecondaryLegs, after a non-first leg fails and is skipped (see
 // skipFailedCallbackLeg). Legs in pending.SkippedUpstreams count as done.
+//
+// skip is non-nil only when the caller has just added a failed leg to
+// pending.SkippedUpstreams; the skip is logged once the chain has validated, so a
+// pending that is rejected leaves no skip record behind.
 func (h *Handler) continueChainOrComplete(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -875,6 +879,7 @@ func (h *Handler) continueChainOrComplete(
 	pending *storage.PendingAuthorization,
 	sessionID string,
 	principal FilterPrincipal,
+	skip *skippedLeg,
 ) {
 	// subject is the canonical ToolHive user ID used for chain state, token keying,
 	// and the cross-leg identity check. Note this is principal.GetCanonicalUserID(), NOT
@@ -916,6 +921,9 @@ func (h *Handler) continueChainOrComplete(
 		// this is the issue's most-reachable trigger. Fail authorization without deleting.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to determine authorization chain"))
 		return
+	}
+	if skip != nil {
+		logSkippedLeg(skip.provider, skip.failureClass)
 	}
 
 	// Walk to the next missing leg. A leg whose authorization URL cannot be built is
@@ -977,12 +985,13 @@ func (h *Handler) completeChain(
 		return
 	}
 
-	// All upstreams satisfied — issue authorization code
+	// Every leg is satisfied or skipped — issue authorization code
 	if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
 		slog.Error("failed to create authorization response", "error", err)
-		// Preserve upstream tokens: the chain is complete and identity-verified, so the
-		// credentials are valid. Only the downstream response write failed (client
-		// lookup / redirect parse / code generation), which does not invalidate them —
+		// Preserve upstream tokens: every leg is satisfied or skipped and the chain is
+		// identity-verified, so the stored credentials are valid. Only the downstream
+		// response write failed (client lookup / redirect parse / code generation),
+		// which does not invalidate them —
 		// matching the SingleLeg branch, which preserves tokens for this same class.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
 	}
@@ -1069,6 +1078,8 @@ func (h *Handler) redirectToNextLeg(
 	}
 	nextUpstream, ok := h.upstreamByName(next.provider)
 	if !ok {
+		// Stays fatal on purpose: the chain names a provider that is not configured,
+		// a chain/config inconsistency rather than a failure of the leg itself.
 		slog.Error("next upstream provider not found", "provider", next.provider)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
 		// Preserve upstream tokens: a next-provider configuration error does not invalidate
@@ -1130,7 +1141,8 @@ func exchangeFailureClass(err error) string {
 // walk rather than a SingleLeg one, and provider is not the first (identity)
 // upstream. Checks that tie a callback to its browser run before any caller asks.
 func (h *Handler) canSkipLeg(pending *storage.PendingAuthorization, provider string) bool {
-	return h.config.NonFatalSecondaryLegs && !pending.SingleLeg && provider != h.upstreams[0].Name
+	return h.config.NonFatalSecondaryLegs && !pending.SingleLeg &&
+		len(h.upstreams) > 1 && provider != h.upstreams[0].Name
 }
 
 // canSkipCallbackLeg reports whether a failure on the callback for pending's own
@@ -1152,7 +1164,6 @@ func (h *Handler) skipFailedCallbackLeg(
 	pending *storage.PendingAuthorization,
 	failureClass string,
 ) {
-	logSkippedLeg(pending.UpstreamProviderName, failureClass)
 	next := *pending
 	next.SkippedUpstreams = append(slices.Clone(pending.SkippedUpstreams), pending.UpstreamProviderName)
 	// Mirror CallbackHandler: chain-state storage reads resolve the user from context.
@@ -1161,7 +1172,14 @@ func (h *Handler) skipFailedCallbackLeg(
 		canonicalUserID: pending.ResolvedUserID,
 		name:            pending.ResolvedUserName,
 		email:           pending.ResolvedUserEmail,
-	})
+	}, &skippedLeg{provider: pending.UpstreamProviderName, failureClass: failureClass})
+}
+
+// skippedLeg names a leg skipped by skipFailedCallbackLeg and why, for the WARN
+// continueChainOrComplete logs once the chain has validated.
+type skippedLeg struct {
+	provider     string
+	failureClass string
 }
 
 // logSkippedLeg is the WARN line recording a skipped leg, logged once per leg. It

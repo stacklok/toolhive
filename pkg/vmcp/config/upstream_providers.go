@@ -5,6 +5,7 @@ package config
 
 import (
 	"slices"
+	"strings"
 
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -21,24 +22,27 @@ import (
 //
 // Nothing calls it yet: it is not wired into thv vmcp serve or the runner.
 //
-// filter is false when the caller must load every provider: the outgoing auth
-// source is "discovered" (backends carry their own strategies that cfg does
-// not list), or no provider name was found.
+// filter is false when the caller must load every provider: outgoing auth has
+// no Default strategy or its source is "discovered", or no provider name was
+// found. Without a Default, a backend with no entry of its own keeps the
+// strategy it discovered, which cfg does not list.
 func UpstreamProvidersForTokenLoad(cfg *Config) (names []string, filter bool) {
 	if cfg == nil {
 		return nil, false
 	}
-	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == "discovered" {
+	out := cfg.OutgoingAuth
+	if out == nil || out.Default == nil || out.Source == "discovered" {
 		return nil, false
 	}
 
 	seen := map[string]struct{}{}
 	add := func(name string) {
-		if name != "" {
+		if name = strings.TrimSpace(name); name != "" {
 			seen[name] = struct{}{}
 		}
 	}
-	for _, strategy := range collectAllBackendStrategies(cfg) {
+	add(strategyProviderName(out.Default))
+	for _, strategy := range out.Backends {
 		add(strategyProviderName(strategy))
 	}
 	if cfg.IncomingAuth != nil && cfg.IncomingAuth.Authz != nil {

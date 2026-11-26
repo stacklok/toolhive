@@ -39,10 +39,12 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 		{name: "no strategies, no cedar", cfg: &Config{OutgoingAuth: &OutgoingAuthConfig{Source: "inline"}}},
 		{
 			name: "every strategy type, sorted",
-			cfg: &Config{OutgoingAuth: &OutgoingAuthConfig{Source: "inline", Backends: map[string]*authtypes.BackendAuthStrategy{
-				"a": xaa, "b": te, "c": sts, "d": obo, "e": inject,
-				"f": {Type: authtypes.StrategyTypeUnauthenticated},
-			}}},
+			cfg: &Config{OutgoingAuth: &OutgoingAuthConfig{
+				Source: "inline", Default: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUnauthenticated},
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"a": xaa, "b": te, "c": sts, "d": obo, "e": inject,
+					"f": {Type: authtypes.StrategyTypeUnauthenticated},
+				}}},
 			wantNames: []string{"inject", "obo", "sts", "te", "xaa"}, wantFilter: true,
 		},
 		{
@@ -51,9 +53,38 @@ func TestUpstreamProvidersForTokenLoad(t *testing.T) {
 			wantNames: []string{"te"}, wantFilter: true,
 		},
 		{
-			name:      "cedar primary only",
-			cfg:       &Config{IncomingAuth: authz("cedar")},
+			name: "cedar primary with no outgoing auth loads everything",
+			cfg:  &Config{IncomingAuth: authz("cedar")},
+		},
+		{
+			name: "cedar primary and default naming nothing",
+			cfg: &Config{IncomingAuth: authz("cedar"),
+				OutgoingAuth: &OutgoingAuthConfig{Default: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUnauthenticated}}},
 			wantNames: []string{"cedar"}, wantFilter: true,
+		},
+		{
+			name: "inline without default loads everything: a discovered backend keeps its own strategy",
+			cfg: &Config{IncomingAuth: authz("A"),
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline", Backends: map[string]*authtypes.BackendAuthStrategy{
+					"b": {Type: authtypes.StrategyTypeUpstreamInject, UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: "B"}}}}},
+		},
+		{
+			name: "backend named like the default key does not hide the default",
+			cfg: &Config{OutgoingAuth: &OutgoingAuthConfig{Default: te, Backends: map[string]*authtypes.BackendAuthStrategy{
+				defaultStrategyKey: {Type: authtypes.StrategyTypeUpstreamInject,
+					UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: "other"}}}}},
+			wantNames: []string{"other", "te"}, wantFilter: true,
+		},
+		{
+			name: "whitespace-only names contribute nothing",
+			cfg: &Config{IncomingAuth: authz(" "),
+				OutgoingAuth: &OutgoingAuthConfig{Default: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUnauthenticated}}},
+		},
+		{
+			name: "padded name is trimmed",
+			cfg: &Config{OutgoingAuth: &OutgoingAuthConfig{Default: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange, TokenExchange: &authtypes.TokenExchangeConfig{SubjectProviderName: " te "}}}},
+			wantNames: []string{"te"}, wantFilter: true,
 		},
 		{
 			name: "duplicates across default, backends and cedar collapse",

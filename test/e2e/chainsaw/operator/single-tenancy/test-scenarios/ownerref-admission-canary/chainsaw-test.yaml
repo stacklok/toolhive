@@ -1,0 +1,201 @@
+# SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Canary: fails if the kind cluster is not running the
+# OwnerReferencesPermissionEnforcement admission plugin.
+#
+# test/e2e/thv-operator/kind-config.yaml turns the plugin on so that missing
+# <owner>/finalizers RBAC fails here as it does on OpenShift (#6835, #7334).
+# Nothing else checks the plugin is on. If the workflow drops `config:` or the
+# kubeadm patch changes, every other scenario still passes and the guard is
+# gone. This scenario does not need the operator.
+
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ownerref-admission-canary
+spec:
+  description: |
+    Verifies the cluster enforces OwnerReferencesPermissionEnforcement:
+    blockOwnerDeletion is rejected without update on the owner's finalizers,
+    and accepted once that permission is granted.
+  timeouts:
+    apply: 30s
+    assert: 30s
+    cleanup: 30s
+    exec: 60s
+  template: true
+  bindings:
+    - name: sa
+      value: ownerref-canary
+  steps:
+  - name: setup-identity-and-owner
+    description: |
+      Create a ServiceAccount that can create and delete ConfigMaps but cannot
+      update statefulsets/finalizers, and a StatefulSet to act as the owner.
+      The plugin also requires delete on the object being created, so the
+      Role grants it to keep the finalizers check the only thing that fails.
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ($sa)
+    - apply:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ownerref-canary-configmaps
+          rules:
+          - apiGroups: [""]
+            resources: ["configmaps"]
+            verbs: ["create", "get", "delete"]
+    - apply:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ownerref-canary-configmaps
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: ownerref-canary-configmaps
+          subjects:
+          - kind: ServiceAccount
+            name: ($sa)
+            namespace: ($namespace)
+    - apply:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ownerref-canary-owner
+          spec:
+            replicas: 0
+            selector:
+              matchLabels:
+                app: ownerref-canary-owner
+            template:
+              metadata:
+                labels:
+                  app: ownerref-canary-owner
+              spec:
+                containers:
+                - name: pause
+                  image: registry.k8s.io/pause:3.10
+    - script:
+        env:
+          - name: SA
+            value: ($sa)
+        content: |
+          # Wait for the RoleBinding to reach the RBAC authorizer, so a
+          # rejection below cannot come from plain "cannot create configmaps".
+          for i in $(seq 1 30); do
+            if kubectl auth can-i create configmaps -n "$NAMESPACE" \
+                --as="system:serviceaccount:$NAMESPACE:$SA" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "ServiceAccount $SA never got create on configmaps"
+          exit 1
+
+  - name: reject-without-finalizers-rbac
+    description: |
+      As the ServiceAccount, create a ConfigMap owned by the StatefulSet with
+      blockOwnerDeletion: true. The plugin must reject it. If the create
+      succeeds, the plugin is off and this step fails.
+    try:
+    - script:
+        env:
+          - name: SA
+            value: ($sa)
+        content: |
+          set -e
+          OWNER_UID=$(kubectl get statefulset ownerref-canary-owner -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')
+          kubectl create -n "$NAMESPACE" --as="system:serviceaccount:$NAMESPACE:$SA" -f - <<EOF
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ownerref-canary-rejected
+            ownerReferences:
+            - apiVersion: apps/v1
+              kind: StatefulSet
+              name: ownerref-canary-owner
+              uid: $OWNER_UID
+              blockOwnerDeletion: true
+          EOF
+        check:
+          ($error != null): true
+          (contains($stderr, 'cannot set blockOwnerDeletion')): true
+
+  - name: accept-with-finalizers-rbac
+    description: |
+      Positive control: grant update on statefulsets/finalizers and retry. The
+      create must now succeed, which shows the rejection above came from the
+      finalizers check and not from some other RBAC or impersonation problem.
+    try:
+    - apply:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ownerref-canary-finalizers
+          rules:
+          - apiGroups: ["apps"]
+            resources: ["statefulsets/finalizers"]
+            verbs: ["update"]
+    - apply:
+        resource:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ownerref-canary-finalizers
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: ownerref-canary-finalizers
+          subjects:
+          - kind: ServiceAccount
+            name: ($sa)
+            namespace: ($namespace)
+    - script:
+        env:
+          - name: SA
+            value: ($sa)
+        content: |
+          set -e
+          AS="system:serviceaccount:$NAMESPACE:$SA"
+          for i in $(seq 1 30); do
+            if kubectl auth can-i update statefulsets/finalizers.apps -n "$NAMESPACE" \
+                --as="$AS" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          OWNER_UID=$(kubectl get statefulset ownerref-canary-owner -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')
+          kubectl create -n "$NAMESPACE" --as="$AS" -f - <<EOF
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ownerref-canary-accepted
+            ownerReferences:
+            - apiVersion: apps/v1
+              kind: StatefulSet
+              name: ownerref-canary-owner
+              uid: $OWNER_UID
+              blockOwnerDeletion: true
+          EOF
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ownerref-canary-accepted
+            ownerReferences:
+            - apiVersion: apps/v1
+              kind: StatefulSet
+              name: ownerref-canary-owner
+              blockOwnerDeletion: true

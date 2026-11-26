@@ -441,8 +441,7 @@ func (r *UserResolver) replaceMismatchedIdentity(
 		return r.resolveLinkFailure(ctx, user, existing.ProviderID, existing.ProviderSubject, binding, true, err)
 	}
 
-	slog.Debug("replaced mismatched provider identity with new user",
-		"user_id", user.ID,
+	slog.Warn("replaced mismatched provider identity with new user",
 		"provider_id", existing.ProviderID,
 		"issuer", binding.issuer,
 		"subject_claim", binding.subjectClaim,

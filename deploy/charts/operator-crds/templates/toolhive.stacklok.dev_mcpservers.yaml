@@ -321,8 +321,8 @@ spec:
                   value:
                     description: |-
                       Value is the text that mode combines with the server's instructions.
-                      Leading and trailing white space is dropped, and a value that is only
-                      white space is rejected.
+                      Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+                      dropped, and a value that is only such white space is rejected.
                     maxLength: 65536
                     minLength: 1
                     pattern: \S
@@ -2352,8 +2352,8 @@ spec:
                   value:
                     description: |-
                       Value is the text that mode combines with the server's instructions.
-                      Leading and trailing white space is dropped, and a value that is only
-                      white space is rejected.
+                      Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+                      dropped, and a value that is only such white space is rejected.
                     maxLength: 65536
                     minLength: 1
                     pattern: \S

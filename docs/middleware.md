@@ -908,7 +908,7 @@ The middleware rewrites the result of a successful `initialize` request and of a
 - `append` (the default): the server's instructions, a blank line, then the value.
 - `prepend`: the value, a blank line, then the server's instructions.
 
-When the server returns no instructions, every mode returns the value alone. The value is used without leading and trailing white space, and is at most 65536 characters.
+When the server returns no instructions, every mode returns the value alone. The value is used without leading and trailing ASCII white space (tab, LF, FF, CR and space), the same white space the CRD's `\S` pattern recognises, and is at most 65536 characters. Other white space, such as a no-break space, is kept as text.
 
 The instructions are guidance for the model, not a sanitiser. `replace` removes the server's own instructions, but the server still reaches the model through its tool descriptions and tool results.
 

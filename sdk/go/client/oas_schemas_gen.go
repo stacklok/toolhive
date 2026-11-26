@@ -6037,8 +6037,8 @@ type InstructionsConfig struct {
 	// +optional.
 	Mode OptString `json:"mode"`
 	// Value is the text that mode combines with the server's instructions.
-	// Leading and trailing white space is dropped, and a value that is only
-	// white space is rejected.
+	// Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+	// dropped, and a value that is only such white space is rejected.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=65536

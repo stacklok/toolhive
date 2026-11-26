@@ -39,6 +39,13 @@ func TestConfigApply(t *testing.T) {
 	}
 }
 
+func TestConfigApplyTrimsASCIIWhiteSpaceOnly(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{Mode: ModeReplace, Value: "\t\u00a0policy\u00a0\r\n"}
+	assert.Equal(t, "\u00a0policy\u00a0", cfg.Apply("server"))
+}
+
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 
@@ -54,7 +61,10 @@ func TestConfigValidate(t *testing.T) {
 		{name: "nil", cfg: nil, wantErr: "required"},
 		{name: "unknown mode", cfg: &Config{Mode: "Append", Value: "policy"}, wantErr: `invalid instructions mode "Append"`},
 		{name: "empty value", cfg: &Config{Mode: ModeAppend}, wantErr: "must not be empty"},
-		{name: "white space only", cfg: &Config{Value: " \n\t"}, wantErr: "only white space"},
+		{name: "white space only", cfg: &Config{Value: " \n\t\f\r"}, wantErr: "only white space"},
+		// The CRD's \S pattern, checked with RE2, treats only ASCII as white
+		// space, so Validate does too.
+		{name: "no-break spaces only", cfg: &Config{Value: "\u00a0\u00a0"}},
 		{name: "longest value", cfg: &Config{Value: strings.Repeat("é", MaxValueLength)}},
 		{name: "value too long", cfg: &Config{Value: strings.Repeat("a", MaxValueLength+1)}, wantErr: "more than the 65536 allowed"},
 	}

@@ -2962,7 +2962,7 @@
                         "type": "string"
                     },
                     "value": {
-                        "description": "Value is the text that mode combines with the server's instructions.\nLeading and trailing white space is dropped, and a value that is only\nwhite space is rejected.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1\n+kubebuilder:validation:MaxLength=65536\n+kubebuilder:validation:Pattern=`\\S`",
+                        "description": "Value is the text that mode combines with the server's instructions.\nLeading and trailing ASCII white space (tab, LF, FF, CR, space) is\ndropped, and a value that is only such white space is rejected.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1\n+kubebuilder:validation:MaxLength=65536\n+kubebuilder:validation:Pattern=`\\S`",
                         "type": "string"
                     }
                 },

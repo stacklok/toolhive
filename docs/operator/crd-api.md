@@ -944,7 +944,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `mode` _[mcp.instructions.Mode](#mcpinstructionsmode)_ | Mode says how value combines with the instructions the server returns.<br />replace returns value alone. append returns the server's instructions,<br />a blank line, and value. prepend returns value, a blank line, and the<br />server's instructions. When the server returns no instructions, every<br />mode returns value alone. | append | Enum: [replace append prepend] <br />Optional: \{\} <br /> |
-| `value` _string_ | Value is the text that mode combines with the server's instructions.<br />Leading and trailing white space is dropped, and a value that is only<br />white space is rejected. |  | MaxLength: 65536 <br />MinLength: 1 <br />Pattern: `\S` <br />Required: \{\} <br /> |
+| `value` _string_ | Value is the text that mode combines with the server's instructions.<br />Leading and trailing ASCII white space (tab, LF, FF, CR, space) is<br />dropped, and a value that is only such white space is rejected. |  | MaxLength: 65536 <br />MinLength: 1 <br />Pattern: `\S` <br />Required: \{\} <br /> |
 
 
 

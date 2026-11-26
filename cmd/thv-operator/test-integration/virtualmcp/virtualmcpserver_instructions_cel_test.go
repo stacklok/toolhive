@@ -58,6 +58,13 @@ var _ = Describe("CEL and schema validation for VirtualMCPServer instructions",
 			Expect(err.Error()).To(ContainSubstring("spec.instructions.value"))
 		})
 
+		It("accepts a value of only no-break spaces, as Validate does", func() {
+			cfg := &instructions.Config{Value: "\u00a0\u00a0"}
+			Expect(cfg.Validate()).To(Succeed())
+			Expect(k8sClient.Create(ctx, newVirtualMCPServerWithInstructions(
+				"vmcp-instructions-nbsp", cfg, nil))).To(Succeed())
+		})
+
 		It("rejects a value longer than the bound", func() {
 			err := k8sClient.Create(ctx, newVirtualMCPServerWithInstructions(
 				"vmcp-instructions-long",

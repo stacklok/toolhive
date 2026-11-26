@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
@@ -27,20 +28,19 @@ func WithUserCredentialReader(reader upstreamtoken.UserCredentialReader) Option 
 }
 
 type upstreamCredentials struct {
-	reader upstreamtoken.UserCredentialReader
+	reader              upstreamtoken.UserCredentialReader
+	missingReaderWarned atomic.Bool
 }
 
-func newUpstreamCredentials(opts ...Option) upstreamCredentials {
-	var c upstreamCredentials
+func (c *upstreamCredentials) apply(opts ...Option) {
 	for _, opt := range opts {
 		if opt != nil {
-			opt(&c)
+			opt(c)
 		}
 	}
-	return c
 }
 
-func (c upstreamCredentials) accessToken(ctx context.Context, identity *auth.Identity, provider string) (string, error) {
+func (c *upstreamCredentials) accessToken(ctx context.Context, identity *auth.Identity, provider string) (string, error) {
 	if identity == nil {
 		return "", errors.New("no identity for upstream token lookup")
 	}
@@ -66,7 +66,7 @@ func (c upstreamCredentials) accessToken(ctx context.Context, identity *auth.Ide
 	return token, nil
 }
 
-func (c upstreamCredentials) readDelegatedCredential(
+func (c *upstreamCredentials) readDelegatedCredential(
 	ctx context.Context, identity *auth.Identity, provider string,
 ) (*upstreamtoken.UpstreamCredential, error) {
 	switch {
@@ -76,7 +76,12 @@ func (c upstreamCredentials) readDelegatedCredential(
 		slog.DebugContext(ctx, "delegated credential provider is empty")
 		return nil, authtypes.ErrDelegatedCredentialUnavailable
 	case c.reader == nil:
-		slog.DebugContext(ctx, "delegated credential reader is not configured", "provider", provider)
+		if c.missingReaderWarned.CompareAndSwap(false, true) {
+			slog.WarnContext(ctx, "delegated credential reader is not configured; failing closed on delegated requests",
+				"provider", provider)
+		} else {
+			slog.DebugContext(ctx, "delegated credential reader is not configured", "provider", provider)
+		}
 		return nil, authtypes.ErrDelegatedCredentialUnavailable
 	case identity.PlatformUserID == "":
 		slog.ErrorContext(ctx, "delegated identity missing platform user ID", "provider", provider)

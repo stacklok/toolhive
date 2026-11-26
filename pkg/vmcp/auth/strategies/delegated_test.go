@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestUpstreamCredentialsDelegatedGuards(t *testing.T) {
 		{name: "empty provider", userID: "user", wantLog: "provider is empty", wantLevel: "DEBUG"},
 		{
 			name: "nil reader", userID: "user", provider: "github", noReader: true,
-			wantLog: "reader is not configured", wantLevel: "DEBUG",
+			wantLog: "reader is not configured", wantLevel: "WARN",
 		},
 		{
 			name: "empty platform user ID", provider: "github",
@@ -71,6 +72,13 @@ func TestUpstreamCredentialsDelegatedGuards(t *testing.T) {
 			require.Same(t, authtypes.ErrDelegatedCredentialUnavailable, err)
 			require.Contains(t, logs.String(), `"level":"`+tt.wantLevel+`"`)
 			require.Contains(t, logs.String(), tt.wantLog)
+			if tt.noReader {
+				token, err = creds.accessToken(t.Context(), identity, tt.provider)
+				require.Empty(t, token)
+				require.Same(t, authtypes.ErrDelegatedCredentialUnavailable, err)
+				require.Equal(t, 1, strings.Count(logs.String(), `"level":"WARN"`))
+				require.Contains(t, logs.String(), `"level":"DEBUG"`)
+			}
 		})
 	}
 }

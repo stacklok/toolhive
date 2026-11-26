@@ -26,7 +26,9 @@ type UpstreamInjectStrategy struct {
 // NewUpstreamInjectStrategy creates an UpstreamInjectStrategy. Delegated
 // authentication fails closed unless a reader is configured.
 func NewUpstreamInjectStrategy(opts ...Option) *UpstreamInjectStrategy {
-	return &UpstreamInjectStrategy{creds: newUpstreamCredentials(opts...)}
+	s := &UpstreamInjectStrategy{}
+	s.creds.apply(opts...)
+	return s
 }
 
 // Name returns the strategy identifier.

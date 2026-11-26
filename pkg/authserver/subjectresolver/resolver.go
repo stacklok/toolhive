@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/subject"
@@ -46,8 +48,9 @@ type Provider struct {
 
 // Resolver resolves a subject.Ref to a local user ID.
 type Resolver struct {
-	providers map[string]Provider
-	store     IdentityStore
+	providers         map[string]Provider
+	store             IdentityStore
+	unstampedWarnOnce sync.Once
 }
 
 var _ subject.Resolver = (*Resolver)(nil)
@@ -86,12 +89,16 @@ func New(providers map[string]Provider, store IdentityStore) (*Resolver, error) 
 
 // Resolve returns the local user ID for ref. A claim that is not the
 // provider's subject claim is refused here by design, so a value from another
-// claim is never looked up as a stored subject.
+// claim is never looked up as a stored subject. A stored row stamped with a
+// different issuer or subject claim is also refused with subject.ErrUnknown
+// (read-only, no write). Pre-upgrade unstamped rows are accepted without
+// writing and logged once per resolver.
 //
 // It returns subject.ErrNotConfigured when the issuer has no provider or the
 // claim is not the provider's subject claim, subject.ErrUnknown when no
-// provider identity matches or the identity points at a user that no longer
-// exists, and subject.ErrUnavailable when the store cannot answer.
+// provider identity matches, the stored row's issuer or subject claim differs,
+// or the identity points at a user that no longer exists, and
+// subject.ErrUnavailable when the store cannot answer.
 func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error) {
 	p, ok := r.providers[ref.Issuer]
 	if !ok || ref.Claim != p.SubjectClaim {
@@ -107,6 +114,10 @@ func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error)
 	if identity == nil || identity.UserID == "" {
 		return "", subject.ErrUnknown
 	}
+	unstamped := identity.IsUnstamped()
+	if !identity.MatchesBinding(ref.Issuer, ref.Claim) && !unstamped {
+		return "", subject.ErrUnknown
+	}
 	user, err := r.store.GetUser(ctx, identity.UserID)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
@@ -116,6 +127,17 @@ func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error)
 	}
 	if user == nil || user.ID == "" {
 		return "", subject.ErrUnknown
+	}
+	if unstamped {
+		r.unstampedWarnOnce.Do(func() {
+			slog.Warn(
+				"resolved legacy unstamped provider identity without issuer and subject claim; "+
+					"row will be stamped on the user's next interactive sign-in",
+				"provider_id", p.Name,
+				"issuer", ref.Issuer,
+				"subject_claim", ref.Claim,
+			)
+		})
 	}
 	return user.ID, nil
 }

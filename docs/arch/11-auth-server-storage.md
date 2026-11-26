@@ -273,13 +273,9 @@ The server owns the credential-free canonical-user context contract in `pkg/auth
 ToolHive bridges its host API to this contract: `auth.PlatformUserContextKey` aliases the server key, `auth.WithPlatformUser` and `auth.PlatformUserFromContext` wrap the server helpers, and `auth.CanonicalUserFromContext` checks the explicit key first, then falls back to the host `Identity.PlatformUserID`, typically attached on authenticated request paths. Context lookup alone is not proof of authentication. A direct explicit value, including an empty string, takes precedence. Host storage decorators that require this identity fallback must use the host getter or provide an explicit adapter; using the server getter alone on an identity-only host context will not resolve a user.
 
 The device flow sets the canonical user to the resolved user of the confirmed
-device code before it stores upstream tokens, with the option on or off. The
-refresher refuses a re-read row owned by another user whenever the context
-carries a non-empty canonical user, again with the option on or off. This covers
-the row it re-reads before redeeming, the winner it reads after losing a
-concurrent refresh, and the row it re-reads when the IdP rejected a token that
-another process had already rotated (that last case does not use the foreign row
-and goes on as a rejection). A context with no canonical user is not checked.
+device code before it stores upstream tokens, with the option on or off. With
+the option on, the refresher reads only through the user-keyed layer, which
+refuses a row owned by another user with `ErrInvalidBinding`.
 
 On the token validator's upstream load path for tokens of the embedded issuer, the explicit key is always set and the identity fallback is not used; see [Validator rule for embedded-issuer tokens](#validator-rule-for-embedded-issuer-tokens).
 
@@ -720,8 +716,10 @@ to sign in again. Any other outcome is uncertain and grants the refresh, since
 the bearer validator answers those with 503 or a retryable 401 anyway:
 
 - a transient upstream failure (network, 5xx, 429);
-- a storage error, unless the refresher deleted the row because it could not
-  save a rotated refresh token (that is the deleted-row refusal above);
+- a storage error, unless the refresher removed the connection because it could
+  not save a rotated refresh token (it deletes the row, or with user-keyed
+  storage clears its refresh token; either way the error wraps
+  `storage.ErrNotFound`, the refusal above);
 - the request being cancelled; or
 - the check running past its 10-second budget. A refresh still in flight then
   completes in the background and stores its result.
@@ -1054,12 +1052,20 @@ Two warnings:
 
 Turning it on ignores existing session-keyed rows, so users connect again once.
 Turning it off later does the same in reverse. Revoking a token does not remove
-the shared row. The refresher removes the user's row when it cannot store a
-rotated refresh token. It re-reads the row first: it keeps the row when the
-re-read finds a different refresh token (a sign-in replaced it), and deletes it
-otherwise, including when the re-read fails. A small window between the re-read
-and the delete remains. When the row is removed, every client of the user
-connects again.
+the shared row. The refresher never deletes the user's row. When it cannot store
+a rotated refresh token it clears the dead refresh token from the row with a
+compare-and-swap against the token it redeemed, and keeps the row. If a sign-in
+stored a different token in the meantime the swap fails and that row is left
+alone. A small window remains: a sign-in that carried the same dead token
+forward before the swap loses it, and its fresh access token is replaced by the
+expired one, so the user signs in once more. With the option off the refresher
+deletes the row, as before. When the delete or the clear succeeds, its error
+wraps `storage.ErrNotFound`, so the per-user reader and the guard treat the
+connection as needing authorization; a lost swap or a storage error returns a
+plain error. That holds when the access token is expired. When only the ID token
+is expired, the per-user reader re-reads the kept row and serves the stored
+credential until its access token expires; the empty refresh token then leads to
+authorize-again.
 
 ### Behaviour
 
@@ -1328,12 +1334,13 @@ each item before turning the option on.
    and a zero `SessionExpiresAt` (users with a synthesized subject excepted).
    Code that treats `SessionExpiresAt` as the end of a connection, or compares
    rows by their expiry fields, must handle zero.
-9. **Disconnect and user deletion.** The server deletes a user's row on its own
-   in one case only: the refresher drops a row when it cannot save a rotated
-   refresh token. It re-reads the row first: it keeps the row when the re-read
-   finds a different refresh token (a sign-in replaced it), and deletes it
-   otherwise, including when the re-read fails. A small window between the
-   re-read and the delete remains. Otherwise the embedder offers disconnect
+9. **Disconnect and user deletion.** Neither the refresher nor the refresh
+   guard deletes a user's row. When the refresher cannot save a rotated refresh
+   token it only clears the dead refresh token from the row by compare-and-swap,
+   and the user connects again. The one remaining server-side delete is the
+   callback's teardown after a confirmed identity mismatch in a multi-upstream
+   chain, which the user-keyed layer makes unreachable in practice because it
+   refuses a row owned by another user on read. The embedder offers disconnect
    (`DeleteUpstreamTokensForProvider` on `IDPTokenStorage()`, with the user on
    the context) and user deletion
    (`DeleteUser` on `IDPTokenStorage()`, asserted to `storage.UserStorage`).

@@ -187,7 +187,7 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 // credential is returned and the failure is logged at WARN, because the
 // caller never sees it. Needs-authorization follows once the access token
 // expires. The refresher still logs on its own paths, so a rare refresher
-// failure (a lost refresh race, or a row it could not delete) shows up both
+// failure (a lost refresh race, or a row it could not delete or clear) shows up both
 // in its own line and in this WARN.
 //
 // For a failed refresh of an expired access token it adds no WARN of its own:
@@ -443,7 +443,10 @@ func (s *InProcessService) shouldRefreshForIDToken(
 // persisted, leaving the old one dead. Serving the stored copy would then hand
 // out a credential that no longer exists, so the row is re-read and, if it is
 // gone, the refresh error is returned wrapped together with the read's
-// storage.ErrNotFound.
+// storage.ErrNotFound. With user-keyed storage the refresher clears the dead
+// refresh token and keeps the row, so the re-read finds it and the stored
+// credential is served until its access token expires; the empty refresh token
+// then leads to authorize-again.
 //
 // A non-empty expectedUserID is the per-user path. The owner check inside
 // refreshOrFail returns ErrInvalidBinding, and a binding error from the
@@ -630,8 +633,8 @@ func classifyUserReadError(err error) error {
 
 // classifyUserRefreshError maps a refresh failure to the per-user read's
 // errors. Only a failure that more retries cannot fix needs authorization: a
-// row gone (including one the refresher deleted after it could not save a
-// rotated refresh token, which carries storage.ErrNotFound), an expired row
+// row gone (including one the refresher deleted, or cleared of its refresh token,
+// after it could not save a rotated refresh token, which carries storage.ErrNotFound), an expired row
 // with nothing to refresh it with, or a refresh the provider rejected with
 // invalid_grant. A 5xx, a timeout or a lost refresh race is returned as it
 // came.

@@ -93,10 +93,10 @@ type embeddedAuthServerOptions struct {
 // so an InProcessService built over the raw storage handle, rather than over
 // IDPTokenStorage(), bypasses the wrapper and reads session-keyed rows.
 //
-// The server deletes a user's row on its own only when the refresher cannot
-// save a rotated refresh token and a re-read shows no sign-in replaced it; a
-// row for a token that never expires otherwise has no storage lifetime and
-// stays until the embedder deletes it. The embedder must offer disconnect and user deletion. To disconnect
+// Neither the refresher nor the refresh guard deletes a user's row: when the
+// refresher cannot save a rotated refresh token it only clears the dead refresh
+// token from the row. A row for a token that never expires has no storage lifetime and stays
+// until the embedder deletes it. The embedder must offer disconnect and user deletion. To disconnect
 // a provider, call DeleteUpstreamTokensForProvider on IDPTokenStorage() with
 // the user set on the context (WithCanonicalUser in pkg/authserver/identity);
 // the session ID argument is ignored. To remove a user and their rows, call

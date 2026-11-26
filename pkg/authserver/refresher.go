@@ -202,8 +202,8 @@ func (r *upstreamTokenRefresher) redeem(
 
 // refreshFromAuthoritativeRow runs inside the singleflight leader. It re-reads
 // the row and either returns the row another caller already refreshed or
-// refreshes the re-read row. Either way the re-read row must belong to the
-// context's canonical user, if there is one (see checkRowOwner).
+// refreshes the re-read row. With user-keyed storage the re-read goes through
+// the wrapper, which refuses a row owned by another user (ErrInvalidBinding).
 func (r *upstreamTokenRefresher) refreshFromAuthoritativeRow(
 	ctx context.Context, sessionID string, rowID storage.UpstreamTokenRowID, expired *storage.UpstreamTokens,
 ) (any, error) {
@@ -219,9 +219,6 @@ func (r *upstreamTokenRefresher) refreshFromAuthoritativeRow(
 				"upstream token row missing on re-read for provider %q", expired.ProviderID,
 			)
 		}
-		if err := checkRowOwner(ctx, authoritative); err != nil {
-			return nil, err
-		}
 		if !authoritative.IsExpired(time.Now()) && rowChanged(expired, authoritative) {
 			return authoritative, nil
 		}
@@ -230,26 +227,7 @@ func (r *upstreamTokenRefresher) refreshFromAuthoritativeRow(
 	if !errors.Is(readErr, storage.ErrExpired) || authoritative == nil {
 		return nil, readErr
 	}
-	if err := checkRowOwner(ctx, authoritative); err != nil {
-		return nil, err
-	}
 	return r.redeem(ctx, sessionID, rowID, authoritative)
-}
-
-// checkRowOwner refuses a re-read row that belongs to someone other than the
-// context's canonical user, before its refresh token is redeemed or the row is
-// returned. withCanonicalUser only compares the context user with the row the
-// caller passed in; the row re-read here can differ from it. The user-keyed
-// storage layer already refuses a foreign row on read, but storage that is not
-// user-keyed (for example under the per-user credential reader) does not. A
-// context with no canonical user, or an empty one, is not checked, so callers
-// that never set one behave as before.
-func checkRowOwner(ctx context.Context, row *storage.UpstreamTokens) error {
-	ctxUser, ok := identity.CanonicalUserFromContext(ctx)
-	if !ok || ctxUser == "" || row.UserID == ctxUser {
-		return nil
-	}
-	return fmt.Errorf("re-read upstream token row belongs to a different user: %w", storage.ErrInvalidBinding)
 }
 
 // withCanonicalUser makes the user-keyed storage layer address the row's owner.
@@ -408,33 +386,21 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 
 // cleanupAfterRotatedPersistFailure runs when the IdP rotated the refresh token
 // but the rotation could not be persisted, and returns the error for the
-// caller.
+// caller. The old refresh token is now dead in storage and would trigger
+// reuse-detection lockout on the next refresh attempt.
+//
+// Residual window: if the process crashes here, the dead old RT stays in
+// storage. ErrNotFound on the next refresh attempt forces re-auth, which
+// is the backstop. Store-intent-before-redeem is out of scope for this fix.
 func (r *upstreamTokenRefresher) cleanupAfterRotatedPersistFailure(
 	ctx context.Context, sessionID string, expired *storage.UpstreamTokens, err error,
 ) error {
-	// The IdP rotated the refresh token: the new RT was redeemed but could
-	// not be persisted. The old RT is now dead in storage and will trigger
-	// reuse-detection lockout on the next refresh attempt.
-	//
-	// Residual window: if the process crashes here, the dead old RT stays in
-	// storage. ErrNotFound on the next refresh attempt forces re-auth, which
-	// is the backstop. Store-intent-before-redeem is out of scope for this fix.
-	if r.replacedByNewerToken(ctx, sessionID, expired) {
-		// A sign-in stored a new refresh token after this call redeemed the
-		// old one; that row is live, so it is kept and this is a plain
-		// persist failure, not a removed connection.
-		slog.Warn("failed to persist rotated upstream refresh token; a newer token is stored and kept",
-			"provider_id", expired.ProviderID,
-			"error", err,
-		)
-		return fmt.Errorf(
-			"failed to persist rotated upstream refresh token for provider %q: %w",
-			expired.ProviderID, err,
-		)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamDeleteTimeout)
+	defer cancel()
+	if r.userKeyed {
+		return r.clearDeadRefreshToken(cleanupCtx, sessionID, expired, err)
 	}
-	deleteCtx, deleteCancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamDeleteTimeout)
-	defer deleteCancel()
-	if delErr := r.storage.DeleteUpstreamTokensForProvider(deleteCtx, sessionID, expired.ProviderID); delErr != nil {
+	if delErr := r.storage.DeleteUpstreamTokensForProvider(cleanupCtx, sessionID, expired.ProviderID); delErr != nil {
 		slog.Error("failed to delete stale upstream token row after rotation persist failure",
 			"provider_id", expired.ProviderID,
 			"error", delErr,
@@ -455,19 +421,53 @@ func (r *upstreamTokenRefresher) cleanupAfterRotatedPersistFailure(
 	)
 }
 
-// replacedByNewerToken reports whether the stored row now holds a refresh token
-// other than the one expired redeemed. A failed read, a missing row or an
-// unchanged token report false, so the caller deletes the dead row as before.
-func (r *upstreamTokenRefresher) replacedByNewerToken(
-	ctx context.Context, sessionID string, expired *storage.UpstreamTokens,
-) bool {
-	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamConflictReadTimeout)
-	defer cancel()
-	stored, err := r.storage.GetUpstreamTokens(readCtx, sessionID, expired.ProviderID)
-	if stored == nil || (err != nil && !errors.Is(err, storage.ErrExpired)) {
-		return false
+// clearDeadRefreshToken is the user-keyed form of the cleanup. The row is
+// shared by all of the user's clients, so it is never deleted: the dead
+// refresh token is cleared by compare-and-swap against the value this call
+// redeemed. If a sign-in or another refresh stored a different token in the
+// meantime the swap fails and that row is kept.
+//
+// Accepted race: a sign-in that carried the same dead refresh token forward
+// between the redemption and this swap loses that token (it is dead anyway),
+// and its fresh access token is replaced by the expired one; the user signs in
+// once more. The upstream refresh guard documents the same shape.
+func (r *upstreamTokenRefresher) clearDeadRefreshToken(
+	ctx context.Context, sessionID string, expired *storage.UpstreamTokens, err error,
+) error {
+	cleared := *expired
+	cleared.RefreshToken = ""
+	casErr := r.storage.CompareAndSwapUpstreamTokens(
+		ctx, sessionID, expired.ProviderID, expired.RefreshToken, &cleared)
+	switch {
+	case casErr == nil:
+		// The row still exists but no longer holds a usable refresh token. The
+		// error still matches storage.ErrNotFound so the per-user reader and
+		// the refresh guard classify it as "authorize again", as they do for a
+		// deleted row. That holds when the access token is expired. When only
+		// the ID token is expired, the caller re-reads the kept row and serves
+		// its stored credential until the access token expires; the empty
+		// refresh token then leads to authorize-again.
+		return fmt.Errorf(
+			"failed to persist rotated upstream refresh token for provider %q; refresh token cleared: %w: %w",
+			expired.ProviderID, storage.ErrNotFound, err,
+		)
+	case errors.Is(casErr, storage.ErrConcurrentRefresh):
+		slog.Warn("failed to persist rotated upstream refresh token; a newer token is stored and kept",
+			"provider_id", expired.ProviderID,
+			"error", err,
+		)
+	default:
+		slog.Error("failed to clear dead upstream refresh token after rotation persist failure",
+			"provider_id", expired.ProviderID,
+			"error", casErr,
+		)
+		// Log session_id at DEBUG only; it is credential-adjacent.
+		slog.Debug("dead upstream refresh token clear failure session", "session_id", sessionID)
 	}
-	return stored.RefreshToken != "" && stored.RefreshToken != expired.RefreshToken
+	return fmt.Errorf(
+		"failed to persist rotated upstream refresh token for provider %q: %w",
+		expired.ProviderID, err,
+	)
 }
 
 // resolveConcurrentRefreshConflict is reached after CompareAndSwapUpstreamTokens
@@ -503,11 +503,6 @@ func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
 	defer cancel()
 
 	winner, err := r.storage.GetUpstreamTokens(readCtx, sessionID, providerID)
-	if err == nil && winner != nil {
-		if ownerErr := checkRowOwner(ctx, winner); ownerErr != nil {
-			return nil, ownerErr
-		}
-	}
 	if err == nil && winner != nil && !winner.IsExpired(time.Now()) {
 		slog.Debug("lost concurrent upstream token refresh race; using winning replica's tokens",
 			"session_id", sessionID,
@@ -580,9 +575,6 @@ func (r *upstreamTokenRefresher) rotatedElsewhere(
 		return nil
 	}
 	if stored == nil || stored.RefreshToken == expired.RefreshToken || stored.IsExpired(time.Now()) {
-		return nil
-	}
-	if checkRowOwner(ctx, stored) != nil {
 		return nil
 	}
 	slog.Debug("upstream rejected a refresh token another process already rotated; using the stored row",

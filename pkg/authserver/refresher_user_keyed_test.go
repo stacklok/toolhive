@@ -5,7 +5,6 @@ package authserver
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,7 +17,6 @@ import (
 	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	upstreammocks "github.com/stacklok/toolhive/pkg/authserver/upstream/mocks"
 )
@@ -229,139 +227,25 @@ func TestUpstreamTokenRefresher_UserKeyed_TwoSessionsOneUpstreamRefresh(t *testi
 	assert.Equal(t, int64(1), calls.Load(), "two sessions of one user must redeem the upstream refresh token once")
 }
 
-// TestUpstreamTokenRefresher_ReReadRowOwner pins the owner check on the row the
-// refresher re-reads before redeeming it. Storage that is not user-keyed can
-// hand back a row of another user on the re-read even though the caller's row
-// passed the owner check, so the check runs again on the re-read row whenever
-// the context carries a canonical user.
-func TestUpstreamTokenRefresher_ReReadRowOwner(t *testing.T) {
+// TestUpstreamTokenRefresher_ForeignRowThroughWrapper pins that a row owned by
+// another user, found under the context user's key, is refused by the wrapper
+// on the refresher's re-read before any provider call.
+func TestUpstreamTokenRefresher_ForeignRowThroughWrapper(t *testing.T) {
 	t.Parallel()
 
-	foreignExpired := userKeyedExpiredRow("user-b", "rt-b")
-	foreignLive := userKeyedExpiredRow("user-b", "rt-b")
-	foreignLive.AccessToken = "live-b"
-	foreignLive.ExpiresAt = time.Now().Add(time.Hour)
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+	wrapper, err := storage.NewUserKeyedUpstreamStorage(base)
+	require.NoError(t, err)
+	foreign := userKeyedExpiredRow("user-b", "rt-b")
+	require.NoError(t, base.StoreUpstreamTokens(context.Background(), "user:user-a", "github", foreign))
 
-	tests := []struct {
-		name    string
-		ctxUser string // "" leaves the context without a canonical user
-		reRead  *storage.UpstreamTokens
-		readErr error
-		wantErr error
-	}{
-		{
-			name: "expired foreign row is refused before redeem", ctxUser: "user-a",
-			reRead: foreignExpired, readErr: storage.ErrExpired, wantErr: storage.ErrInvalidBinding,
-		},
-		{
-			name: "live foreign row is refused, not returned", ctxUser: "user-a",
-			reRead: foreignLive, wantErr: storage.ErrInvalidBinding,
-		},
-		{
-			name:   "no canonical user keeps today's behaviour",
-			reRead: foreignExpired, readErr: storage.ErrExpired,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctrl := gomock.NewController(t)
-			store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
-			provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+	// No expectations: any provider call fails the test.
+	provider := upstreammocks.NewMockOAuth2Provider(gomock.NewController(t))
+	refresher := newUpstreamTokenRefresher(
+		[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, wrapper, time.Hour)
 
-			store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").
-				Return(storage.UpstreamTokenRowID("row"), nil)
-			store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(tt.reRead, tt.readErr)
-			if tt.wantErr == nil {
-				provider.EXPECT().RefreshTokens(gomock.Any(), "rt-b", "upstream-user-b").
-					Return(&upstream.Tokens{AccessToken: "fresh", ExpiresAt: time.Now().Add(time.Hour)}, nil)
-				store.EXPECT().CompareAndSwapUpstreamTokens(gomock.Any(), "session", "github", "rt-b", gomock.Any()).
-					Return(nil)
-			}
-			// With wantErr set, the provider and every write are left without
-			// expectations, so any call fails the test.
-
-			ctx := context.Background()
-			if tt.ctxUser != "" {
-				ctx = serveridentity.WithCanonicalUser(ctx, tt.ctxUser)
-			}
-			// Field off: the storage is not user-keyed, so only the re-read
-			// check stands between the caller and the foreign row.
-			refresher := newUpstreamTokenRefresher(
-				[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, store, time.Hour)
-			result, err := refresher.RefreshAndStore(ctx, "session", userKeyedExpiredRow("user-a", "rt-a"))
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-				assert.Nil(t, result)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, "fresh", result.AccessToken)
-		})
-	}
-}
-
-// TestUpstreamTokenRefresher_ConflictWinnerOwner covers the re-reads after a
-// lost compare-and-swap and after an invalid_grant: a row of another user is
-// neither returned as the winner nor taken for a successor.
-func TestUpstreamTokenRefresher_ConflictWinnerOwner(t *testing.T) {
-	t.Parallel()
-
-	foreignLive := userKeyedExpiredRow("user-b", "rt-b")
-	foreignLive.AccessToken = "live-b"
-	foreignLive.ExpiresAt = time.Now().Add(time.Hour)
-
-	tests := []struct {
-		name       string
-		providerFn func(p *upstreammocks.MockOAuth2Provider)
-		setupStore func(s *storagemocks.MockUpstreamTokenStorage)
-		wantErr    error
-	}{
-		{
-			name: "foreign winner of a lost compare-and-swap is refused",
-			providerFn: func(p *upstreammocks.MockOAuth2Provider) {
-				p.EXPECT().RefreshTokens(gomock.Any(), "rt-a", gomock.Any()).
-					Return(&upstream.Tokens{AccessToken: "fresh", RefreshToken: "rotated", ExpiresAt: time.Now().Add(time.Hour)}, nil)
-			},
-			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
-				s.EXPECT().CompareAndSwapUpstreamTokens(gomock.Any(), "session", "github", "rt-a", gomock.Any()).
-					Return(storage.ErrConcurrentRefresh)
-			},
-			wantErr: storage.ErrInvalidBinding,
-		},
-		{
-			name: "foreign row is not a successor of a rejected refresh token",
-			providerFn: func(p *upstreammocks.MockOAuth2Provider) {
-				p.EXPECT().RefreshTokens(gomock.Any(), "rt-a", gomock.Any()).
-					Return(nil, fmt.Errorf("rejected: %w", upstream.ErrGrantRejected))
-			},
-			setupStore: func(*storagemocks.MockUpstreamTokenStorage) {},
-			wantErr:    upstream.ErrGrantRejected,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctrl := gomock.NewController(t)
-			store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
-			provider := upstreammocks.NewMockOAuth2Provider(ctrl)
-
-			store.EXPECT().ResolveUpstreamTokenRowID(gomock.Any(), "session", "github").
-				Return(storage.UpstreamTokenRowID("row"), nil)
-			gomock.InOrder(
-				store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").
-					Return(userKeyedExpiredRow("user-a", "rt-a"), storage.ErrExpired),
-				store.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(foreignLive, nil),
-			)
-			tt.providerFn(provider)
-			tt.setupStore(store)
-
-			refresher := newUpstreamTokenRefresher(
-				[]handlers.NamedUpstream{{Name: "github", Provider: provider}}, store, time.Hour)
-			ctx := serveridentity.WithCanonicalUser(context.Background(), "user-a")
-			result, err := refresher.RefreshAndStore(ctx, "session", userKeyedExpiredRow("user-a", "rt-a"))
-			require.ErrorIs(t, err, tt.wantErr)
-			assert.Nil(t, result)
-		})
-	}
+	result, err := refresher.RefreshAndStore(context.Background(), "session", userKeyedExpiredRow("user-a", "rt-a"))
+	require.ErrorIs(t, err, storage.ErrInvalidBinding)
+	assert.Nil(t, result)
 }

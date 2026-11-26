@@ -93,8 +93,9 @@ func captureWarns(t *testing.T) *warnRecorder {
 // foreignFromReadStorage sits below the wrapper and answers every read from
 // the foreignFrom-th on with a row owned by someone else, as a row replaced
 // between the guard's read and the refresher's re-read would look. With
-// failStores set, every compare-and-swap fails with a storage error, as when the
-// refresher cannot save a refreshed row.
+// failStores set, every compare-and-swap that stores a refresh token fails with
+// a storage error, as when the refresher cannot save a refreshed row; the swap
+// that clears a dead refresh token still goes through.
 type foreignFromReadStorage struct {
 	storage.Storage
 	mu          sync.Mutex
@@ -115,7 +116,7 @@ func (s *foreignFromReadStorage) runAfterNextRead(f func()) {
 func (s *foreignFromReadStorage) CompareAndSwapUpstreamTokens(
 	ctx context.Context, sessionID, provider, expectedRefreshToken string, tokens *storage.UpstreamTokens,
 ) error {
-	if s.failStores {
+	if s.failStores && tokens.RefreshToken != "" {
 		return errors.New("storage unavailable")
 	}
 	return s.Storage.CompareAndSwapUpstreamTokens(ctx, sessionID, provider, expectedRefreshToken, tokens)
@@ -279,16 +280,17 @@ func TestUserKeyedUpstreamRefreshGuard(t *testing.T) {
 			wantRefuse: true, wantRevoke: true, refresherDeletes: true,
 		},
 		{
-			// The refresher deletes a row whose rotated refresh token it could
-			// not save; its error wraps storage.ErrNotFound, so the reader
-			// reports that the user needs to authorize again.
-			name:   "row the refresher deleted after failing to save a rotated refresh token is refused and revoked",
+			// The refresher clears the dead refresh token of a row whose rotated
+			// refresh token it could not save, and keeps the row; its error
+			// wraps storage.ErrNotFound, so the reader reports that the user
+			// needs to authorize again.
+			name:   "row whose rotated refresh token could not be saved is cleared, refused and revoked",
 			idpRow: guardTestRow(past, "rt"),
 			idpRefresh: func(*testing.T, *userKeyedGuardEnv, string) (*upstream.Tokens, error) {
 				return &upstream.Tokens{AccessToken: "fresh", RefreshToken: "rotated-rt", ExpiresAt: future}, nil
 			},
 			failStores: true,
-			wantRefuse: true, wantRevoke: true, refresherDeletes: true,
+			wantRefuse: true, wantRevoke: true, wantStoredRT: ptr(""),
 		},
 		{
 			name:   "refresh that leaves no access token is refused and revoked",

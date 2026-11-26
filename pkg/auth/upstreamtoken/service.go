@@ -74,6 +74,8 @@ const (
 type InProcessService struct {
 	storage   storage.UpstreamTokenStorage
 	refresher storage.UpstreamTokenRefresher
+	// userKeyed is set when storage is, or decorates, the user-keyed layer.
+	userKeyed bool
 
 	// mu guards idTokenSuppressions and lastSuppressionSweep.
 	mu sync.Mutex
@@ -97,6 +99,7 @@ var (
 	_ Service              = (*InProcessService)(nil)
 	_ TokenReader          = (*InProcessService)(nil)
 	_ UserCredentialReader = (*InProcessService)(nil)
+	_ UserKeyedReader      = (*InProcessService)(nil)
 )
 
 // NewInProcessService creates a new InProcessService.
@@ -109,8 +112,16 @@ func NewInProcessService(
 	return &InProcessService{
 		storage:             stor,
 		refresher:           refresher,
+		userKeyed:           isUserKeyed(stor),
 		idTokenSuppressions: make(map[string]idTokenSuppression),
 	}
+}
+
+// UserKeyed reports whether the service reads storage keyed by user: the
+// user-keyed layer itself, or a decorator above it that exposes
+// Unwrap() storage.Storage or Unwrap() storage.UpstreamTokenStorage.
+func (s *InProcessService) UserKeyed() bool {
+	return s.userKeyed
 }
 
 // GetValidTokens returns a valid upstream credential for a session and provider.
@@ -148,14 +159,6 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 	}
 
 	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
-}
-
-// userRowKey is the session-ID argument the per-user read passes to storage and
-// the refresher. User-keyed storage ignores it. It is unique per user, so the
-// ID-token suppression map never shares an entry between users when the row ID
-// cannot be resolved and suppressionKeyFor falls back to it.
-func userRowKey(userID string) string {
-	return "user:" + userID
 }
 
 // GetValidTokensForUser returns a valid upstream credential for one user and
@@ -231,19 +234,6 @@ func (s *InProcessService) GetValidTokensForUser(
 		return usableUserCredential(cred, classifyUserRefreshError(refreshErr))
 	}
 	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
-}
-
-// usableUserCredential applies the per-user read's empty access token rule to
-// a refreshed credential, the same classification as for a stored row that
-// holds no access token.
-func usableUserCredential(cred *UpstreamCredential, err error) (*UpstreamCredential, error) {
-	if err != nil {
-		return nil, err
-	}
-	if cred.AccessToken == "" {
-		return nil, needsAuthorization(ErrSessionNotFound)
-	}
-	return cred, nil
 }
 
 // GetAllUpstreamCredentials returns access tokens and ID tokens for all upstream
@@ -605,6 +595,27 @@ func needsAuthorization(causes ...error) error {
 	return err
 }
 
+// userRowKey is the session-ID argument the per-user read passes to storage and
+// the refresher. User-keyed storage ignores it. It is unique per user, so the
+// ID-token suppression map never shares an entry between users when the row ID
+// cannot be resolved and suppressionKeyFor falls back to it.
+func userRowKey(userID string) string {
+	return "user:" + userID
+}
+
+// usableUserCredential applies the per-user read's empty access token rule to
+// a refreshed credential, the same classification as for a stored row that
+// holds no access token.
+func usableUserCredential(cred *UpstreamCredential, err error) (*UpstreamCredential, error) {
+	if err != nil {
+		return nil, err
+	}
+	if cred.AccessToken == "" {
+		return nil, needsAuthorization(ErrSessionNotFound)
+	}
+	return cred, nil
+}
+
 // classifyUserReadError maps a storage read failure to the per-user read's
 // errors.
 func classifyUserReadError(err error) error {
@@ -636,4 +647,10 @@ func classifyUserRefreshError(err error) error {
 		return needsAuthorization(err)
 	}
 	return err
+}
+
+// isUserKeyed reports whether stor is the user-keyed layer or reaches it
+// through Unwrap() storage.Storage or Unwrap() storage.UpstreamTokenStorage.
+func isUserKeyed(stor storage.UpstreamTokenStorage) bool {
+	return storage.IsUserKeyed(stor)
 }

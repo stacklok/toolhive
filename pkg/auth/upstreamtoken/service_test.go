@@ -1112,3 +1112,47 @@ func allowRowIDResolution(s *storagemocks.MockUpstreamTokenStorage) {
 			return storage.UpstreamTokenRowID(sessionID + "/" + providerName), nil
 		})
 }
+
+// unwrappingStorage is a decorator above the user-keyed layer that exposes
+// Unwrap, as an embedder's own decorator might.
+type unwrappingStorage struct{ storage.Storage }
+
+func (s unwrappingStorage) Unwrap() storage.Storage { return s.Storage }
+
+// upstreamUnwrappingStorage is a decorator over the user-keyed layer's
+// UpstreamTokenStorage view that exposes Unwrap() storage.UpstreamTokenStorage.
+type upstreamUnwrappingStorage struct{ storage.UpstreamTokenStorage }
+
+func (s upstreamUnwrappingStorage) Unwrap() storage.UpstreamTokenStorage {
+	return s.UpstreamTokenStorage
+}
+
+func TestInProcessService_UserKeyed(t *testing.T) {
+	t.Parallel()
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+	wrapper, err := storage.NewUserKeyedUpstreamStorage(base)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		stor storage.UpstreamTokenStorage
+		want bool
+	}{
+		{name: "the user-keyed layer", stor: wrapper, want: true},
+		{name: "a decorator above the user-keyed layer", stor: unwrappingStorage{wrapper}, want: true},
+		{name: "an UpstreamTokenStorage decorator above the user-keyed layer",
+			stor: upstreamUnwrappingStorage{wrapper}, want: true},
+		{name: "an UpstreamTokenStorage decorator above session-keyed storage",
+			stor: upstreamUnwrappingStorage{base}, want: false},
+		{name: "session-keyed storage", stor: base, want: false},
+		{name: "a decorator above session-keyed storage", stor: unwrappingStorage{base}, want: false},
+		{name: "no storage", stor: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, NewInProcessService(tt.stor, nil).UserKeyed())
+		})
+	}
+}

@@ -47,6 +47,19 @@ type UpstreamCredential struct {
 	IDToken     string
 }
 
+// UserKeyedReader is implemented by a TokenReader that reads upstream tokens
+// from storage keyed by user (the user-keyed layer of the embedded
+// authorization server). auth.NewTokenValidator uses it to refuse, at startup, a
+// validator that could not load such tokens for an interactive session.
+//
+// A TokenReader that wraps another must implement it and forward the wrapped
+// reader's answer; otherwise the validator cannot see the user-keyed storage
+// behind it, and a misconfiguration only shows up at request time.
+type UserKeyedReader interface {
+	// UserKeyed reports whether the reader's storage is keyed by user.
+	UserKeyed() bool
+}
+
 // TokenReader retrieves upstream provider credentials for a session.
 // This narrow interface decouples the auth middleware from storage internals.
 type TokenReader interface {

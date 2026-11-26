@@ -1017,10 +1017,6 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 		return nil, errors.New("decoded tools do not match the raw tools list")
 	}
 
-	// Populate annotation cache from tools/list response so that
-	// subsequent tools/call requests can look up annotations.
-	rfw.annotationCache.SetFromToolsList(listResult.Tools)
-
 	// When the optimizer is enabled, its meta-tools (find_tool, call_tool) appear
 	// in tools/list instead of real backend tools. These meta-tools won't match
 	// any operator-written Cedar policy (which references real tool names), so
@@ -1040,6 +1036,13 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 			regularIndexes = append(regularIndexes, i)
 		}
 	}
+
+	// Populate annotation cache from the non-pass-through tools so that
+	// subsequent tools/call requests can look up annotations. Pass-through
+	// meta-tools are never authorized through the cache, and caching their hints
+	// would apply them to a backend tool that shares the meta-tool's name when
+	// call_tool authorizes that inner tool_name.
+	rfw.annotationCache.SetFromToolsList(regular)
 
 	// authorizedToolIndexes checks each tool against the caller's Cedar policies
 	// (injecting annotations into context for when-clause evaluation) and returns

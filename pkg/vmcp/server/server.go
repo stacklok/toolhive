@@ -318,6 +318,10 @@ type Server struct {
 	// always sets it.
 	callBinding *callBinding
 
+	// openRequests tracks the Legacy requests running on each session, so the
+	// owner's DELETE can cancel them (open_requests.go).
+	openRequests openRequests
+
 	// optimizerFactory builds a per-session optimizer over the core's advertised
 	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
 	// session registration advertises find_tool/

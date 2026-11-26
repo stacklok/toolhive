@@ -391,7 +391,7 @@ When upgrading to the release that adds upstream subject identifiers (`sub_id` a
 When upgrading to the release that binds provider-identity rows to `issuer` and `subject_claim`:
 
 - Both JSON members use `omitempty`, so pre-upgrade rows without them still decode and older replicas ignore them (including across `UpdateProviderIdentityLastUsed` Lua updates, which preserve unknown JSON members).
-- Pre-upgrade unstamped rows match on first use and are stamped atomically in place (logging once per resolver at `WARN` without user or subject PII). Finish rolling out the upgraded binary before changing any upstream's `issuer` or `subject_claim`.
+- Pre-upgrade unstamped rows match on first use and are stamped atomically in place at an interactive sign-in (logging once per process at `WARN` without user or subject PII). Finish rolling out the upgraded binary, and let users sign in, before changing any upstream's `issuer` or `subject_claim`. See [Migrating Identity Providers or Subject Claims](#migrating-identity-providers-or-subject-claims).
 
 The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, and provider-identity linking and compare-and-swap touch `{prefix}user:{user_id}`, `{prefix}provider:...`, and `{prefix}user:providers:{user_id}` (both old and new user sets on replacement) in one Lua script. On Redis Cluster the key prefix must therefore contain a `{...}` hash tag; a prefix without one fails every DCR registration and every first login or binding replacement with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
@@ -421,19 +421,22 @@ Secondary index cleanup is best-effort: stale entries may remain temporarily but
 
 ## Migrating Identity Providers or Subject Claims
 
-Provider-identity rows record the upstream `issuer` and `subject_claim` (or mode-prefixed endpoint URL and extraction rule for plain OAuth 2.0 upstreams) that created them. If you change an upstream's identity provider (`issuer`) or `subject_claim` while keeping the same upstream name and Redis store:
+Provider-identity rows record the upstream `issuer` and `subject_claim` that created them. For plain OAuth 2.0 upstreams the stamped issuer is `oauth2:<mode>:sha256:<hex>`, a hash of the lower-cased host of the identity endpoint, and the stamped claim is the subject extraction rule. No endpoint address is stored. If you change an upstream's identity provider (`issuer`) or `subject_claim` while keeping the same upstream name and Redis store:
 
-- **Users receive new local accounts:** A row created under the old issuer or claim does not match sign-in or ID-JAG subject resolution. The user's next sign-in creates a new local account and replaces the `(provider, subject)` link; the previous account stays untouched in Redis.
-- **Downstream connections must be re-established:** Upstream tokens and connections stored under the previous local account are not moved to the new account.
-- **Remembered consent and active sessions:** Browsers holding a remembered consent cookie see one `access_denied` that revokes the stale cookie; signing in again shows the consent page normally. Existing ToolHive tokens keep the old account ID until they expire, while refreshes against the repointed upstream fail.
-- **ID-JAG resolution:** Assertions for the new issuer/claim return `subject_unknown` until each user signs in interactively once under the new configuration.
+- **Stamped rows give new local accounts.** Rows are stamped only at an interactive sign-in, and stamping never finishes by itself; the auth server offers no way to see progress. A row nobody has used since the upgrade is still unstamped, and the new configuration takes it over: both sign-in and ID-JAG resolution return the old account. New local accounts and `subject_unknown` therefore apply only to rows that were stamped under the old configuration. For those rows the user's next sign-in creates a new local account and replaces the `(provider, subject)` link, and the previous account stays untouched in Redis.
+- **Downstream connections must be re-established.** Upstream tokens and connections stored under the previous local account are not moved to the new account.
+- **Existing tokens keep the old account.** Access and refresh tokens already issued keep the old account. Refresh grants keep working until the upstream rejects the refresh, which may never happen after a claim-only change, and a stored upstream refresh token can also be sent to the new identity provider. Revoke existing sessions before repointing an upstream. See the issue "Refresh tokens are sent to a repointed upstream's new IdP" (#7333).
+- **Remembered consent.** A browser with a remembered consent session receives one `access_denied`. The server deletes the remembered consent session, so the next attempt shows the consent screen.
+- **ID-JAG resolution.** Once delegated access is turned on (`subject_mode: resolve` is refused earlier, before the resolver runs, until then), assertions for the new issuer or claim return `subject_unknown` until each user signs in once under the new configuration. A row that is still unstamped is accepted read-only. That is logged once per process.
+- **In-flight flows.** A device confirmation or browser authorization that starts before a cutover and finishes after it completes for the user it resolved when it started.
 
 **Recommended cutover steps:**
 
-1. Upgrade all auth-server replicas first so existing unstamped rows are stamped on sign-in before changing `issuer` or `subject_claim`.
-2. Verify the exact `iss` string (including any trailing slash) and `subject_claim` on a token from the target IdP. Switching between an omitted `subject_claim` and explicit `"sub"` is a no-op; switching between two different claims (for example `"sub"` to `"oid"`) re-keys users even if the claim values are identical.
-3. Cut over cleanly rather than running old-config and new-config replicas side by side against the same Redis prefix (mixed configurations serving concurrent traffic will repeatedly replace the same `(provider, subject)` row and create extra accounts).
-4. If you want old and new accounts completely isolated without replacing rows in place, give the new upstream a distinct name or deploy with a new Redis `keyPrefix`.
+1. Upgrade all auth-server replicas first and let users sign in, so existing rows are stamped before you change `issuer` or `subject_claim`.
+2. Verify the exact `iss` string (including any trailing slash) and `subject_claim` on a token from the target IdP. Switching between an omitted `subject_claim` and explicit `"sub"` is a no-op; switching between two different claims (for example `"sub"` to `"oid"`) re-keys users even if the claim values are identical. For a plain OAuth 2.0 upstream, these edits re-key users: the host of the identity endpoint, the mode, `subject_path`, and the `subject_fields` list or its order (including adding a fallback field). A change to the path, query string or trailing slash of an endpoint does not.
+3. Revoke existing sessions before repointing the upstream.
+4. Cut over cleanly rather than running old-config and new-config replicas side by side against the same Redis prefix. Mixed configurations serving concurrent traffic repeatedly replace the same `(provider, subject)` row and create extra accounts.
+5. Renaming the upstream does not isolate old accounts. At every startup the legacy-data migration copies rows stored under the old protocol-name keys (`oidc`, `oauth2`) to each upstream's current name, unstamped, so a new name can still inherit old accounts. If you need hard isolation, use a fresh Redis store. A new `keyPrefix` also isolates, but only with a hand-written RunConfig; operator-managed workloads cannot set it.
 
 ## Troubleshooting
 

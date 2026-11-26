@@ -1520,12 +1520,23 @@ configuration. Today it knows one pair: the first upstream's issuer and
 `subject_claim` (default `sub`). The resolver refuses any other `iss` or `claim`
 with `subject.ErrNotConfigured`, and the handler does not check the pair itself.
 When a row is found under the first upstream's name and `value`, the resolver
-also checks that the row's stored `Issuer` and `SubjectClaim` equal the
-requested `iss` and `claim`. A row created under a different issuer or subject
-claim (or a half-stamped row) is refused with `subject.ErrUnknown`
-(`subject_unknown`) without writing to storage. Pre-upgrade unstamped rows (both
-fields empty) are accepted read-only and logged once per resolver at `WARN`
-until an interactive sign-in stamps them.
+checks the row's stored `Issuer` and `SubjectClaim` against the binding that
+sign-in stamps on that upstream's rows. That binding is the first upstream's
+issuer and subject claim, and it can differ from the `iss` and `claim` of the
+ID-JAG being resolved (for example a token from an Okta custom authorization
+server that carries the subject in `uid`). A row created under a different
+issuer or subject claim (or a half-stamped row) is refused with
+`subject.ErrUnknown` (`subject_unknown`) without writing to storage. A row that
+carries neither (written before binding existed) is accepted read-only and
+logged once per process at `WARN`; sign-in stamps it when the storage supports
+compare-and-swap. A row nobody has used since the upgrade therefore resolves to
+the old account under the new configuration; see [Migrating identity providers
+or subject claims](11-auth-server-storage.md#migrating-identity-providers-or-subject-claims).
+
+The resolver and the token endpoint are separate. A trusted issuer with
+`subject_mode: resolve` is refused by the closed gate before the resolver runs,
+until delegated access is turned on, so a user signing in does not by itself
+make such a redemption succeed.
 
 At startup the server logs a WARN once if the subject claim is `sub` and the
 first upstream's issuer looks like an Okta custom authorization server, because

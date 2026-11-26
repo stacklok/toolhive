@@ -74,13 +74,15 @@ const (
 type InProcessService struct {
 	storage   storage.UpstreamTokenStorage
 	refresher storage.UpstreamTokenRefresher
+	// userKeyed is set when storage is, or decorates, the user-keyed layer.
+	userKeyed bool
 
 	// mu guards idTokenSuppressions and lastSuppressionSweep.
 	mu sync.Mutex
 	// idTokenSuppressions records rows for which an ID-token-triggered refresh
 	// should not be attempted again until the access token next expires,
 	// because a previous refresh left the ID token expired (the provider
-	// omitted id_token, or the refresh failed). Keyed by suppressionKey.
+	// omitted id_token, or the refresh failed). Keyed by suppressionKeyFor.
 	idTokenSuppressions  map[string]idTokenSuppression
 	lastSuppressionSweep time.Time
 }
@@ -97,6 +99,7 @@ var (
 	_ Service              = (*InProcessService)(nil)
 	_ TokenReader          = (*InProcessService)(nil)
 	_ UserCredentialReader = (*InProcessService)(nil)
+	_ UserKeyedReader      = (*InProcessService)(nil)
 )
 
 // NewInProcessService creates a new InProcessService.
@@ -109,8 +112,16 @@ func NewInProcessService(
 	return &InProcessService{
 		storage:             stor,
 		refresher:           refresher,
+		userKeyed:           storage.IsUserKeyed(stor),
 		idTokenSuppressions: make(map[string]idTokenSuppression),
 	}
+}
+
+// UserKeyed reports whether the service reads storage keyed by user: the
+// user-keyed layer itself, or a decorator above it that exposes
+// Unwrap() storage.Storage or Unwrap() storage.UpstreamTokenStorage.
+func (s *InProcessService) UserKeyed() bool {
+	return s.userKeyed
 }
 
 // GetValidTokens returns a valid upstream credential for a session and provider.
@@ -143,18 +154,11 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 		return s.refreshOrFail(ctx, sessionID, providerName, tokens, true, "")
 	}
 
-	if s.shouldRefreshForIDToken(sessionID, providerName, tokens) {
+	if s.shouldRefreshForIDToken(ctx, sessionID, providerName, tokens) {
 		return s.refreshForIDToken(ctx, sessionID, providerName, tokens, true, "")
 	}
 
 	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
-}
-
-// userRowKey is the session-ID argument the per-user read passes to storage and
-// the refresher. User-keyed storage ignores it; it only has to be unique per
-// user so the ID-token suppression map never shares an entry between users.
-func userRowKey(userID string) string {
-	return "user:" + userID
 }
 
 // GetValidTokensForUser returns a valid upstream credential for one user and
@@ -182,8 +186,10 @@ func userRowKey(userID string) string {
 // live, a failed refresh, including invalid_grant, is not an error: the stored
 // credential is returned and the failure is logged at WARN, because the
 // caller never sees it. Needs-authorization follows once the access token
-// expires. The refresher still logs on its own paths, so a rare refresher
-// failure (a lost refresh race, or a row it could not delete) shows up both
+// expires. The exception is a refresh after which the refresher removed the
+// row, or cleared its refresh token, because it could not save a rotated
+// refresh token: that needs authorization at once. The refresher still logs on its own paths, so a rare refresher
+// failure (a lost refresh race, or a row it could not delete or clear) shows up both
 // in its own line and in this WARN.
 //
 // For a failed refresh of an expired access token it adds no WARN of its own:
@@ -225,24 +231,11 @@ func (s *InProcessService) GetValidTokensForUser(
 	case expired:
 		cred, refreshErr := s.refreshOrFail(ctx, rowKey, providerName, tokens, false, userID)
 		return usableUserCredential(cred, classifyUserRefreshError(refreshErr))
-	case s.shouldRefreshForIDToken(rowKey, providerName, tokens):
+	case s.shouldRefreshForIDToken(ctx, rowKey, providerName, tokens):
 		cred, refreshErr := s.refreshForIDToken(ctx, rowKey, providerName, tokens, false, userID)
 		return usableUserCredential(cred, classifyUserRefreshError(refreshErr))
 	}
 	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
-}
-
-// usableUserCredential applies the per-user read's empty access token rule to
-// a refreshed credential, the same classification as for a stored row that
-// holds no access token.
-func usableUserCredential(cred *UpstreamCredential, err error) (*UpstreamCredential, error) {
-	if err != nil {
-		return nil, err
-	}
-	if cred.AccessToken == "" {
-		return nil, needsAuthorization(ErrSessionNotFound)
-	}
-	return cred, nil
 }
 
 // GetAllUpstreamCredentials returns access tokens and ID tokens for all upstream
@@ -256,7 +249,9 @@ func usableUserCredential(cred *UpstreamCredential, err error) (*UpstreamCredent
 // independently validated for freshness and may be empty if the upstream login
 // never yielded one. An expired ID token also triggers a refresh (see
 // InProcessService); a failed ID-token-triggered refresh does not put the
-// provider in the failed map, since its access token is still valid. Callers
+// provider in the failed map, since its access token is still valid, unless the
+// refresher removed the row or cleared its refresh token because it could not
+// save a rotated refresh token. Callers
 // that PRESENT it as a credential must expect expiry to be rejected; callers
 // that only READ ITS CLAIMS are unaffected by expiry. See
 // Identity.UpstreamIDTokens for both consumers.
@@ -319,10 +314,10 @@ func (s *InProcessService) credentialFor(
 ) (UpstreamCredential, error) {
 	// If token is not expired, use it directly.
 	if tokens.ExpiresAt.IsZero() || !tokens.IsExpired(time.Now()) {
-		if s.shouldRefreshForIDToken(sessionID, providerName, tokens) {
+		if s.shouldRefreshForIDToken(ctx, sessionID, providerName, tokens) {
 			cred, idErr := s.refreshForIDToken(ctx, sessionID, providerName, tokens, true, "")
 			if idErr != nil {
-				slog.WarnContext(ctx, "upstream token row removed by failed refresh; provider will require re-authentication",
+				slog.WarnContext(ctx, "upstream credential unusable after a failed refresh; provider will require re-authentication",
 					"session_id", sessionID,
 					"provider", providerName,
 					"error", idErr,
@@ -416,7 +411,8 @@ func (s *InProcessService) refreshOrFail(
 	// Suppress the trigger for this exact ID token until the new access token
 	// expires, when the access-token trigger refreshes anyway.
 	if idTokenExpired(idToken, time.Now()) {
-		s.suppressIDTokenRefresh(sessionID, providerName, idToken, refreshed.ExpiresAt, refreshed.SessionExpiresAt)
+		s.suppressIDTokenRefresh(s.suppressionKeyFor(ctx, sessionID, providerName),
+			idToken, refreshed.ExpiresAt, refreshed.SessionExpiresAt)
 	}
 
 	return &UpstreamCredential{AccessToken: refreshed.AccessToken, IDToken: idToken}, nil
@@ -426,7 +422,7 @@ func (s *InProcessService) refreshOrFail(
 // row whose access token is still valid: a refresh token exists, the stored ID token is expired, and the trigger is not
 // suppressed for that ID token.
 func (s *InProcessService) shouldRefreshForIDToken(
-	sessionID, providerName string, tokens *storage.UpstreamTokens,
+	ctx context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens,
 ) bool {
 	if tokens.RefreshToken == "" {
 		return false
@@ -435,7 +431,7 @@ func (s *InProcessService) shouldRefreshForIDToken(
 	if !idTokenExpired(tokens.IDToken, now) {
 		return false
 	}
-	return !s.idTokenRefreshSuppressed(sessionID, providerName, tokens.IDToken, now)
+	return !s.idTokenRefreshSuppressed(s.suppressionKeyFor(ctx, sessionID, providerName), tokens.IDToken, now)
 }
 
 // refreshForIDToken refreshes a row whose access token is still valid but whose
@@ -451,7 +447,10 @@ func (s *InProcessService) shouldRefreshForIDToken(
 // persisted, leaving the old one dead. Serving the stored copy would then hand
 // out a credential that no longer exists, so the row is re-read and, if it is
 // gone, the refresh error is returned wrapped together with the read's
-// storage.ErrNotFound.
+// storage.ErrNotFound. With user-keyed storage the refresher keeps the row,
+// clears its refresh token and expires its access token instead; that error
+// wraps storage.ErrNotFound as well and is returned before the re-read, so the
+// stored credential is not served.
 //
 // A non-empty expectedUserID is the per-user path. The owner check inside
 // refreshOrFail returns ErrInvalidBinding, and a binding error from the
@@ -467,6 +466,9 @@ func (s *InProcessService) refreshForIDToken(
 		return refreshed, nil
 	}
 	if expectedUserID != "" && (errors.Is(err, ErrInvalidBinding) || errors.Is(err, storage.ErrInvalidBinding)) {
+		return nil, err
+	}
+	if s.userKeyed && errors.Is(err, storage.ErrNotFound) {
 		return nil, err
 	}
 	// With warnOnFailure, refreshOrFail has already logged the failure at WARN.
@@ -498,18 +500,19 @@ func (s *InProcessService) refreshForIDToken(
 	if !tokens.ExpiresAt.IsZero() && tokens.ExpiresAt.Before(until) {
 		until = tokens.ExpiresAt
 	}
-	s.suppressIDTokenRefresh(sessionID, providerName, tokens.IDToken, until, time.Time{})
+	s.suppressIDTokenRefresh(s.suppressionKeyFor(ctx, sessionID, providerName), tokens.IDToken, until, time.Time{})
 	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
 }
 
 // suppressIDTokenRefresh records that the ID-token trigger must not fire for
-// idToken on this row until the access token expires. When the access token
+// idToken on the row identified by key (see suppressionKeyFor) until the access
+// token expires. When the access token
 // asserts no expiry, the session expiry (or defaultIDTokenSuppression) bounds
 // the entry instead. Expired entries are swept at most once per
 // idTokenSuppressionSweepInterval, which keeps the map bounded by the rows
 // suppressed within roughly the last interval plus those still live.
 func (s *InProcessService) suppressIDTokenRefresh(
-	sessionID, providerName, idToken string, accessExpiresAt, sessionExpiresAt time.Time,
+	key, idToken string, accessExpiresAt, sessionExpiresAt time.Time,
 ) {
 	now := time.Now()
 	until := accessExpiresAt
@@ -530,13 +533,13 @@ func (s *InProcessService) suppressIDTokenRefresh(
 		}
 		s.lastSuppressionSweep = now
 	}
-	s.idTokenSuppressions[suppressionKey(sessionID, providerName)] = idTokenSuppression{idToken: idToken, until: until}
+	s.idTokenSuppressions[key] = idTokenSuppression{idToken: idToken, until: until}
 }
 
 // idTokenRefreshSuppressed reports whether the ID-token trigger is suppressed
-// for idToken on this row at now. An entry found expired is dropped.
-func (s *InProcessService) idTokenRefreshSuppressed(sessionID, providerName, idToken string, now time.Time) bool {
-	key := suppressionKey(sessionID, providerName)
+// for idToken on the row identified by key at now. An entry found expired is
+// dropped.
+func (s *InProcessService) idTokenRefreshSuppressed(key, idToken string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sup, ok := s.idTokenSuppressions[key]
@@ -550,8 +553,26 @@ func (s *InProcessService) idTokenRefreshSuppressed(sessionID, providerName, idT
 	return sup.idToken == idToken
 }
 
+// suppressionKeyFor returns the suppression map key for a provider's row in a
+// session: the storage row ID when it resolves, so every path that reads one
+// row shares one entry. Under user-keyed storage the per-user read (session
+// ID "user:"+userID) and the session-level reads (the tsid) address the same
+// row, and keying by session ID would let a switch between them miss the
+// suppression and refresh again. When no row ID resolves (for example, no
+// canonical user on ctx under user-keyed storage), it falls back to
+// suppressionKey. The two key shapes cannot collide: a row ID key starts with
+// "row" and a NUL, a fallback key with "session" and a NUL.
+func (s *InProcessService) suppressionKeyFor(ctx context.Context, sessionID, providerName string) string {
+	rowID, err := s.storage.ResolveUpstreamTokenRowID(ctx, sessionID, providerName)
+	if err != nil || rowID == "" {
+		return suppressionKey(sessionID, providerName)
+	}
+	return "row\x00" + string(rowID)
+}
+
+// suppressionKey is the fallback suppression map key, by session and provider.
 func suppressionKey(sessionID, providerName string) string {
-	return sessionID + "\x00" + providerName
+	return "session\x00" + sessionID + "\x00" + providerName
 }
 
 // idTokenExpired reports whether idToken carries an `exp` claim that has
@@ -584,6 +605,27 @@ func needsAuthorization(causes ...error) error {
 	return err
 }
 
+// userRowKey is the session-ID argument the per-user read passes to storage and
+// the refresher. User-keyed storage ignores it. It is unique per user, so the
+// ID-token suppression map never shares an entry between users when the row ID
+// cannot be resolved and suppressionKeyFor falls back to it.
+func userRowKey(userID string) string {
+	return "user:" + userID
+}
+
+// usableUserCredential applies the per-user read's empty access token rule to
+// a refreshed credential, the same classification as for a stored row that
+// holds no access token.
+func usableUserCredential(cred *UpstreamCredential, err error) (*UpstreamCredential, error) {
+	if err != nil {
+		return nil, err
+	}
+	if cred.AccessToken == "" {
+		return nil, needsAuthorization(ErrSessionNotFound)
+	}
+	return cred, nil
+}
+
 // classifyUserReadError maps a storage read failure to the per-user read's
 // errors.
 func classifyUserReadError(err error) error {
@@ -598,8 +640,8 @@ func classifyUserReadError(err error) error {
 
 // classifyUserRefreshError maps a refresh failure to the per-user read's
 // errors. Only a failure that more retries cannot fix needs authorization: a
-// row gone (including one the refresher deleted after it could not save a
-// rotated refresh token, which carries storage.ErrNotFound), an expired row
+// row gone (including one the refresher deleted, or cleared of its refresh token,
+// after it could not save a rotated refresh token, which carries storage.ErrNotFound), an expired row
 // with nothing to refresh it with, or a refresh the provider rejected with
 // invalid_grant. A 5xx, a timeout or a lost refresh race is returned as it
 // came.

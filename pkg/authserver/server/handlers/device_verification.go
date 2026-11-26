@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -390,7 +391,7 @@ func (h *Handler) DeviceVerificationConfirmHandler(w http.ResponseWriter, req *h
 
 	sessionID := rand.Text()
 	if err := h.persistDeviceSessionTokens(ctx, confirmation, sessionID); err != nil {
-		slog.Error("device verification: failed to store upstream tokens", "error", err)
+		logStoreFailure("device verification: failed to store upstream tokens", err)
 		renderError(w, http.StatusInternalServerError, "Something went wrong. Please try again.")
 		return
 	}
@@ -427,16 +428,18 @@ func (h *Handler) persistDeviceSessionTokens(
 	if confirmation.UpstreamTokens == nil {
 		return errors.New("pending device confirmation has no upstream tokens")
 	}
+	// Storage that keys rows by user reads the canonical user from the
+	// context, as the browser callback does; no bearer exists yet, so only the
+	// storage key is set, not a ToolHive identity.
+	ctx = serveridentity.WithCanonicalUser(ctx, confirmation.ResolvedUserID)
 	storageTokens := *confirmation.UpstreamTokens
 	storageTokens.UserID = confirmation.ResolvedUserID
 	storageTokens.SessionExpiresAt = time.Now().Add(h.config.RefreshTokenLifespan)
 
-	h.maybeCarryForwardRefreshToken(
-		ctx, &storageTokens, confirmation.ResolvedUserID, storageTokens.UpstreamSubject,
+	return h.storeWithCarryForward(
+		ctx, sessionID, &storageTokens, confirmation.ResolvedUserID, storageTokens.UpstreamSubject,
 		storageTokens.ProviderID, confirmation.Synthetic,
 	)
-
-	return h.storage.StoreUpstreamTokens(ctx, sessionID, storageTokens.ProviderID, &storageTokens)
 }
 
 // rejectUnresolvableDeviceClient looks up the device request's client in the

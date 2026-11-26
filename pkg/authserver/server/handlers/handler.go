@@ -70,6 +70,10 @@ type Handler struct {
 	// expired upstream leg during chain evaluation instead of re-prompting. Nil
 	// when no refresher is configured; an expired leg is then treated as missing.
 	refresher storage.UpstreamTokenRefresher
+	// userKeyedUpstreamStorage is set when h.storage keys upstream rows by the
+	// canonical user, so one row is shared by all of a user's clients. It
+	// changes how a login preserves a prior refresh token (storeWithCarryForward).
+	userKeyedUpstreamStorage bool
 	// filter, when set, narrows the authorization chain to a subset of the
 	// configured upstreams once the first leg resolves. Nil when no filter is
 	// configured; the chain then walks all configured upstreams as before.
@@ -183,6 +187,17 @@ type Option func(*Handler)
 func WithUpstreamRefresher(r storage.UpstreamTokenRefresher) Option {
 	return func(h *Handler) {
 		h.refresher = r
+	}
+}
+
+// WithUserKeyedUpstreamStorage tells the handler its storage keys upstream
+// token rows by the canonical user (storage.UserKeyedUpstreamStorage), so a
+// login that gets no refresh token reads the shared row through the storage
+// and writes with compare-and-swap rather than copying from the newest
+// session-keyed row. When unset, behavior is unchanged.
+func WithUserKeyedUpstreamStorage() Option {
+	return func(h *Handler) {
+		h.userKeyedUpstreamStorage = true
 	}
 }
 

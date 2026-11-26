@@ -303,8 +303,9 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// consistency, DeleteUpstreamTokensForProvider on cleanup — can resolve the user
 	// from context. The authserver-owned helper does not create a ToolHive identity:
 	// no bearer has been issued, so there is no authenticated identity to assert —
-	// only the canonical user for storage keying. (StoreUpstreamTokens does not need
-	// this; it keys off tokens.UserID below.)
+	// only the canonical user for storage keying. (Without user-keyed storage
+	// StoreUpstreamTokens keys off tokens.UserID below; with it, the storage
+	// wrapper requires this context value for writes too.)
 	ctx = serveridentity.WithCanonicalUser(ctx, subject)
 
 	// Convert IDP tokens to storage tokens with binding fields.
@@ -326,12 +327,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim
 	}
 
-	h.maybeCarryForwardRefreshToken(ctx, storageTokens, subject, providerSubject, providerID, result.Synthetic)
-
-	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {
-		slog.Error("failed to store upstream tokens",
-			"error", err,
-		)
+	if err := h.storeWithCarryForward(
+		ctx, sessionID, storageTokens, subject, providerSubject, providerID, result.Synthetic,
+	); err != nil {
+		logStoreFailure("failed to store upstream tokens", err)
 		// Do NOT clean up upstream tokens here: the store for this attempt just failed, so
 		// this attempt wrote nothing. Under a (gateway, user)-keyed storage decorator the
 		// only row at this provider is a credential from an earlier successful
@@ -440,7 +439,7 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 		// row's upstream subject to match. Synthetic providers mint a fresh rotating
 		// subject every flow, so that equality can never hold and there is no stable
 		// subject to link by — skip the guard and rely on the prior RT alone.
-		if synthetic || prior.UpstreamSubject == providerSubject {
+		if priorMatches(prior, providerSubject, synthetic) {
 			storageTokens.RefreshToken = prior.RefreshToken
 			slog.Debug("preserved upstream refresh token from prior row",
 				"user_id", subject, "provider_id", providerID, "synthetic", synthetic,
@@ -455,6 +454,176 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 			"error", err, "user_id", subject, "provider_id", providerID,
 		)
 	}
+}
+
+// errUpstreamAccountConflict marks a sign-in that lost a concurrent write to a
+// login of a different upstream account of the same user.
+var errUpstreamAccountConflict = errors.New("a concurrent login stored a different upstream account")
+
+// logStoreFailure logs a failed upstream token write at ERROR, except an
+// account conflict, which storeWithCarryForward already logged at WARN.
+func logStoreFailure(msg string, err error) {
+	if !errors.Is(err, errUpstreamAccountConflict) {
+		slog.Error(msg, "error", err)
+	}
+}
+
+// priorMatches reports whether prior may donate its refresh token: the
+// upstream subject must match unless the provider is synthetic (see
+// maybeCarryForwardRefreshToken).
+func priorMatches(prior *storage.UpstreamTokens, providerSubject string, synthetic bool) bool {
+	return synthetic || prior.UpstreamSubject == providerSubject
+}
+
+// storeWithCarryForward writes storageTokens for the login, first preserving a
+// prior refresh token when the IdP returned none. With user-keyed storage it
+// never modifies storageTokens; without it, the carried token is written into
+// storageTokens in place (maybeCarryForwardRefreshToken).
+//
+// With user-keyed storage the row is shared by every client of the user, so
+// the prior row is read through the storage wrapper (the canonical user in ctx
+// selects only that user's row; a pre-existing session-keyed row is never
+// consulted) and every write that could replace a refresh token is a
+// compare-and-swap on the token that was read: the carried token for a prior
+// row of the same upstream account, the prior token itself for a row of a
+// different account (which the login replaces), and "" when there is nothing
+// to carry.
+//
+// Every lost compare-and-swap re-reads the winning row and compares its
+// upstream account with the login's (synthetic providers always match). A
+// winner of the same account is merged: the login's access token, ID token and
+// expiry are written with the winner's refresh token in one more
+// compare-and-swap, and if that also loses the winner is kept and the login
+// succeeds. A winner of a different account (a concurrent login of the same
+// user connected another upstream account) is kept, but the login fails with
+// errUpstreamAccountConflict, logged once at WARN, so it does not report
+// success while requests use the other account; a retry then replaces the
+// row. A winner that cannot be read also fails the login, since the stored
+// account is unknown. If the row vanished, the login's tokens are the only
+// ones and are written over the empty slot (the write is retried once).
+//
+// A prior row that cannot be read (a storage error) is treated like a prior
+// row without a refresh token. Without user-keyed storage the behavior is
+// unchanged: latest row for the user, unconditional store.
+func (h *Handler) storeWithCarryForward(
+	ctx context.Context,
+	sessionID string,
+	storageTokens *storage.UpstreamTokens,
+	subject, providerSubject, providerID string,
+	synthetic bool,
+) error {
+	if !h.userKeyedUpstreamStorage {
+		h.maybeCarryForwardRefreshToken(ctx, storageTokens, subject, providerSubject, providerID, synthetic)
+		return h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens)
+	}
+	if storageTokens.RefreshToken != "" {
+		return h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens)
+	}
+
+	prior, err := h.storage.GetUpstreamTokens(ctx, sessionID, providerID)
+	switch {
+	case err == nil || errors.Is(err, storage.ErrExpired):
+		// An expired access token does not make the refresh token useless.
+	case errors.Is(err, storage.ErrNotFound):
+		return h.storeOverRowWithoutRefreshToken(
+			ctx, sessionID, storageTokens, subject, providerSubject, providerID, synthetic,
+		)
+	case errors.Is(err, storage.ErrInvalidBinding):
+		// Practically unreachable: the wrapper writes the row with the user in ctx.
+		slog.Error("replacing upstream token row owned by another user", "provider_id", providerID)
+		return h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens)
+	default:
+		slog.Warn("failed to look up prior upstream tokens for RT preservation",
+			"error", err, "user_id", subject, "provider_id", providerID,
+		)
+		return h.storeOverRowWithoutRefreshToken(
+			ctx, sessionID, storageTokens, subject, providerSubject, providerID, synthetic,
+		)
+	}
+	if prior == nil || prior.RefreshToken == "" {
+		return h.storeOverRowWithoutRefreshToken(
+			ctx, sessionID, storageTokens, subject, providerSubject, providerID, synthetic,
+		)
+	}
+
+	tokens := storageTokens
+	if priorMatches(prior, providerSubject, synthetic) {
+		carried := *storageTokens
+		carried.RefreshToken = prior.RefreshToken
+		tokens = &carried
+	}
+	err = h.storage.CompareAndSwapUpstreamTokens(ctx, sessionID, providerID, prior.RefreshToken, tokens)
+	if !errors.Is(err, storage.ErrConcurrentRefresh) {
+		return err
+	}
+	// The row moved past the token we read.
+	winner, getErr := h.storage.GetUpstreamTokens(ctx, sessionID, providerID)
+	if errors.Is(getErr, storage.ErrNotFound) {
+		return h.storeOverRowWithoutRefreshToken(
+			ctx, sessionID, storageTokens, subject, providerSubject, providerID, synthetic,
+		)
+	}
+	return h.resolveLostWrite(ctx, sessionID, storageTokens, winner, getErr, subject, providerSubject, providerID, synthetic)
+}
+
+// storeOverRowWithoutRefreshToken writes tokens, which carry no refresh token,
+// only where the stored row has none (absent, or empty refresh token), so a
+// refresh token another client holds is never wiped. When the swap loses and
+// the row is gone by the re-read, the swap is retried once; otherwise the
+// result follows resolveLostWrite.
+func (h *Handler) storeOverRowWithoutRefreshToken(
+	ctx context.Context, sessionID string, tokens *storage.UpstreamTokens,
+	subject, providerSubject, providerID string, synthetic bool,
+) error {
+	err := h.storage.CompareAndSwapUpstreamTokens(ctx, sessionID, providerID, "", tokens)
+	if !errors.Is(err, storage.ErrConcurrentRefresh) {
+		return err
+	}
+	winner, getErr := h.storage.GetUpstreamTokens(ctx, sessionID, providerID)
+	if errors.Is(getErr, storage.ErrNotFound) {
+		err = h.storage.CompareAndSwapUpstreamTokens(ctx, sessionID, providerID, "", tokens)
+		if !errors.Is(err, storage.ErrConcurrentRefresh) {
+			return err
+		}
+		winner, getErr = h.storage.GetUpstreamTokens(ctx, sessionID, providerID)
+	}
+	return h.resolveLostWrite(ctx, sessionID, tokens, winner, getErr, subject, providerSubject, providerID, synthetic)
+}
+
+// resolveLostWrite decides a sign-in that lost a compare-and-swap, given the
+// re-read of the winning row. A winner that cannot be read (including a
+// missing row) fails the login. A winner of a different account is kept and
+// the login fails with errUpstreamAccountConflict. A winner of the same
+// account is kept, with the login's access token, ID token and expiry merged
+// in by one compare-and-swap on the winner's refresh token; if that swap
+// loses too, the newer winner stays and the login succeeds.
+func (h *Handler) resolveLostWrite(
+	ctx context.Context, sessionID string, tokens, winner *storage.UpstreamTokens, getErr error,
+	subject, providerSubject, providerID string, synthetic bool,
+) error {
+	if getErr != nil && !errors.Is(getErr, storage.ErrExpired) {
+		return fmt.Errorf("re-reading upstream tokens after a lost write: %w", getErr)
+	}
+	if winner == nil {
+		return errors.New("re-reading upstream tokens after a lost write: no row returned")
+	}
+	if !priorMatches(winner, providerSubject, synthetic) {
+		slog.Warn("kept upstream row of a different account over a login that lost a concurrent write",
+			"provider_id", providerID,
+		)
+		slog.Debug("login lost to a different upstream account", "user_id", subject, "provider_id", providerID)
+		return fmt.Errorf("%w for provider %q", errUpstreamAccountConflict, providerID)
+	}
+	merged := *tokens
+	merged.RefreshToken = winner.RefreshToken
+	err := h.storage.CompareAndSwapUpstreamTokens(ctx, sessionID, providerID, winner.RefreshToken, &merged)
+	if err != nil && !errors.Is(err, storage.ErrConcurrentRefresh) {
+		return err
+	}
+	slog.Debug("merged login tokens into concurrently written upstream row",
+		"user_id", subject, "provider_id", providerID, "merged", err == nil,
+	)
+	return nil
 }
 
 // callbackClient resolves the client for /oauth/callback, the consent step

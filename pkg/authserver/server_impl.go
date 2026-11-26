@@ -334,7 +334,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	}
 
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		buildHandlerOptions(refresherIface, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs)...)
+		buildHandlerOptions(refresherIface, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs,
+			cfg.UserKeyedUpstreamStorage)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -1120,8 +1121,12 @@ func buildHandlerOptions(
 	filter upstreamfilter.UpstreamFilter,
 	registrationRateLimit *RegistrationRateLimitRunConfig,
 	consentExemptClientIDs []string,
+	userKeyedUpstreamStorage bool,
 ) []handlers.Option {
 	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
+	if userKeyedUpstreamStorage {
+		opts = append(opts, handlers.WithUserKeyedUpstreamStorage())
+	}
 	if filter != nil {
 		opts = append(opts, handlers.WithUpstreamFilter(filter))
 	}

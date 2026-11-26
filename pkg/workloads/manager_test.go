@@ -2618,32 +2618,39 @@ func TestDefaultManager_orphanProxyPortCleanup(t *testing.T) {
 		assert.Zero(t, freedCalls, "port-cleanup fallback must not run when the proxy was stopped by PID")
 	})
 
-	t.Run("remote stop of unhealthy workload marks it stopped", func(t *testing.T) {
-		t.Parallel()
+	for _, status := range []runtime.WorkloadStatus{
+		runtime.WorkloadStatusStarting,
+		runtime.WorkloadStatusUnhealthy,
+		runtime.WorkloadStatusAuthRetrying,
+		runtime.WorkloadStatusUnauthenticated,
+	} {
+		t.Run(fmt.Sprintf("remote stop of %s workload marks it stopped", status), func(t *testing.T) {
+			t.Parallel()
 
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-		sm := statusMocks.NewMockStatusManager(ctrl)
+			sm := statusMocks.NewMockStatusManager(ctrl)
 
-		// An unhealthy remote workload still has a running proxy, so stopping it
-		// must go through the same transitions as a running one.
-		sm.EXPECT().GetWorkload(gomock.Any(), workloadName).Return(core.Workload{
-			Name:   workloadName,
-			Status: runtime.WorkloadStatusUnhealthy,
-		}, nil)
-		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopping, "").Return(nil)
-		pid := startKillableProcess(t)
-		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(pid, nil)
-		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
-		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopped, "").Return(nil)
+			// The proxy still runs in this status, so stopping the workload must go
+			// through the same transitions as stopping a running one.
+			sm.EXPECT().GetWorkload(gomock.Any(), workloadName).Return(core.Workload{
+				Name:   workloadName,
+				Status: status,
+			}, nil)
+			sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopping, "").Return(nil)
+			pid := startKillableProcess(t)
+			sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(pid, nil)
+			sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+			sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopped, "").Return(nil)
 
-		manager := &DefaultManager{statuses: sm}
-		err := manager.stopRemoteWorkload(
-			context.Background(), workloadName, &runner.RunConfig{BaseName: workloadName, Port: 54321},
-		)
-		require.NoError(t, err)
-	})
+			manager := &DefaultManager{statuses: sm}
+			err := manager.stopRemoteWorkload(
+				context.Background(), workloadName, &runner.RunConfig{BaseName: workloadName, Port: 54321},
+			)
+			require.NoError(t, err)
+		})
+	}
 
 	t.Run("remote delete does not free port on normal shutdown", func(t *testing.T) {
 		t.Parallel()
@@ -2673,4 +2680,32 @@ func TestDefaultManager_orphanProxyPortCleanup(t *testing.T) {
 
 		assert.Zero(t, freedCalls, "port-cleanup fallback must not run when the proxy was stopped by PID")
 	})
+}
+
+func TestRemoteProxyActive(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status runtime.WorkloadStatus
+		want   bool
+	}{
+		{runtime.WorkloadStatusStarting, true},
+		{runtime.WorkloadStatusRunning, true},
+		{runtime.WorkloadStatusUnhealthy, true},
+		{runtime.WorkloadStatusAuthRetrying, true},
+		{runtime.WorkloadStatusUnauthenticated, true},
+		{runtime.WorkloadStatusStopping, false},
+		{runtime.WorkloadStatusStopped, false},
+		{runtime.WorkloadStatusRemoving, false},
+		{runtime.WorkloadStatusError, false},
+		{runtime.WorkloadStatusPolicyStopped, false},
+		{runtime.WorkloadStatusUnknown, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, remoteProxyActive(tt.status))
+		})
+	}
 }

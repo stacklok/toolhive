@@ -4,6 +4,7 @@
 package server
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -45,8 +46,9 @@ const callBindingEndTimeout = 5 * time.Second
 
 // Methods a call-bound token may send without starting a call: the Legacy
 // handshake's notification, the Modern capability probe and ping. initialize
-// is allowed only until the token starts its call (serveInitialize), and
-// tools/list only with a tool-call entry (servePost).
+// is allowed only until the token starts its call (serveInitialize); tools/list
+// with a tool-call entry, and the entry's list method with a list-call entry
+// (servePost).
 var callBindingPassMethods = []string{
 	"notifications/initialized", "ping", methodServerDiscover,
 }
@@ -70,15 +72,25 @@ var callBindingTokenReasons = []string{
 // for identity, or to "" when the tool has no single backend.
 type callBindingRoute func(ctx context.Context, identity *auth.Identity, name string) (string, error)
 
+// callBindingListItems returns the keys (see callbinding.FilterListResult) of
+// the items that the list method lists for identity from the backend named
+// server.
+type callBindingListItems func(
+	ctx context.Context, identity *auth.Identity, method, server string,
+) (map[string]struct{}, error)
+
 // callBinding enforces access tokens that carry an RFC 9396
 // authorization_details entry of type https://toolhive.dev/mcp_tool_call (see
-// pkg/mcp/toolcalldetails). Such a token may start one tools/call, the one its
-// entry names, and only once.
+// pkg/mcp/toolcalldetails). A token with a tool-call entry may start one
+// tools/call, the one its entry names, and only once. A token with a list-call
+// entry may send the list method its entry names, answered with only its
+// server's items.
 type callBinding struct {
 	required        map[string]struct{}
 	maxCallDuration time.Duration
 	record          callbinding.Record
 	route           callBindingRoute
+	listItems       callBindingListItems
 	challenge       auth.BearerChallenge
 	now             func() time.Time
 
@@ -91,7 +103,9 @@ type callBinding struct {
 }
 
 // newCallBinding validates cfg and builds the enforcement it describes.
-func newCallBinding(cfg callbinding.Config, route callBindingRoute) (*callBinding, error) {
+func newCallBinding(
+	cfg callbinding.Config, route callBindingRoute, listItems callBindingListItems,
+) (*callBinding, error) {
 	if cfg.MaxCallDuration < 0 {
 		return nil, fmt.Errorf("%w: CallBinding.MaxCallDuration must not be negative", vmcp.ErrInvalidConfig)
 	}
@@ -113,6 +127,7 @@ func newCallBinding(cfg callbinding.Config, route callBindingRoute) (*callBindin
 		maxCallDuration: cmp.Or(cfg.MaxCallDuration, callbinding.DefaultMaxCallDuration),
 		record:          record,
 		route:           route,
+		listItems:       listItems,
 		challenge:       challenge,
 		now:             time.Now,
 	}, nil
@@ -138,6 +153,55 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 	return tool.BackendID, nil
 }
 
+// callBindingListItems lists, for a list-call token, the keys of the items
+// method lists from server for identity, from the same admission-filtered core
+// lists that dispatch serves. Only items whose BackendID is server count, so
+// a composite tool, code mode's execute_tool_script and, with the optimizer
+// enabled, the find_tool and call_tool meta-tools are never listed: with the
+// optimizer, no tool counts at all.
+func (s *Server) callBindingListItems(
+	ctx context.Context, identity *auth.Identity, method, server string,
+) (map[string]struct{}, error) {
+	switch method {
+	case "tools/list":
+		if s.optimizerFactory != nil {
+			return map[string]struct{}{}, nil
+		}
+		tools, err := s.core.ListTools(ctx, identity)
+		return serverKeys(tools, err, server, func(t vmcp.Tool) (string, string) { return t.BackendID, t.Name })
+	case "prompts/list":
+		prompts, err := s.core.ListPrompts(ctx, identity)
+		return serverKeys(prompts, err, server, func(p vmcp.Prompt) (string, string) { return p.BackendID, p.Name })
+	case "resources/list":
+		resources, err := s.core.ListResources(ctx, identity)
+		return serverKeys(resources, err, server, func(r vmcp.Resource) (string, string) { return r.BackendID, r.URI })
+	case "resources/templates/list":
+		templates, err := s.core.ListResourceTemplates(ctx, identity)
+		return serverKeys(templates, err, server, func(t vmcp.ResourceTemplate) (string, string) {
+			return t.BackendID, t.URITemplate
+		})
+	default:
+		return nil, fmt.Errorf("call binding: %q is not a list method", method)
+	}
+}
+
+// serverKeys returns the keys of the items whose backend is server, or err
+// when listing them failed. keyOf returns an item's backend and key.
+func serverKeys[T any](
+	items []T, err error, server string, keyOf func(T) (backend, key string),
+) (map[string]struct{}, error) {
+	if err != nil {
+		return nil, err
+	}
+	keys := map[string]struct{}{}
+	for _, item := range items {
+		if backend, key := keyOf(item); backend == server {
+			keys[key] = struct{}{}
+		}
+	}
+	return keys, nil
+}
+
 // callBindingMiddleware enforces call-bound access tokens. It runs after
 // authentication and parsing and before classification, so it covers Legacy
 // and Modern requests alike, and before session ownership, the authorization
@@ -147,8 +211,8 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 // the ownership 404.
 //
 // A token without an mcp_tool_call entry passes unchanged, unless its client
-// is listed in CallBinding.Clients. A call-bound token may send, to the MCP
-// endpoint only:
+// is listed in CallBinding.Clients. A token with a tool-call entry may send, to
+// the MCP endpoint only:
 //   - the handshake (initialize, notifications/initialized), the Modern
 //     server/discover probe, and ping; initialize only until the token has
 //     started its call;
@@ -163,6 +227,11 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 //     notifications/cancelled for the call's ID, and a JSON-RPC response
 //     (such as an elicitation reply).
 //
+// A token with a list-call entry may send the handshake, server/discover, ping,
+// GET and DELETE as above, and the list method its entry names, any number of
+// times, each answered with only the items of the entry's server (see
+// serveListCall). It starts no call, so it is never used up.
+//
 // Everything else is refused (see refuse), and everything after the token's
 // exp with 401. A later refusal, such as the session-ownership 404 or a Cedar
 // 403, still uses up the token: the client asks for a new token rather than
@@ -172,7 +241,7 @@ func (s *Server) callBindingMiddleware(next http.Handler) http.Handler {
 	cb := s.callBinding
 	if cb == nil {
 		// Serve always sets it; a zero Config cannot fail validation.
-		cb, _ = newCallBinding(callbinding.Config{}, s.callBindingRoute)
+		cb, _ = newCallBinding(callbinding.Config{}, s.callBindingRoute, s.callBindingListItems)
 	}
 	endpointPath := cmp.Or(s.config.EndpointPath, defaultEndpointPath)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,7 +321,7 @@ func (cb *callBinding) servePost(
 	case slices.Contains(callBindingPassMethods, parsed.Method):
 		next.ServeHTTP(w, r)
 	case token.Entry.IsList():
-		cb.refuse(w, r, parsed, token, callbinding.ReasonListCallUnsupported)
+		cb.serveListCall(w, r, next, identity, token, parsed)
 	case parsed.Method == "tools/list":
 		// Read-only and filtered by the usual admission. MCP clients list
 		// tools around a call, for example to read a tool's output schema.
@@ -270,6 +339,85 @@ func (cb *callBinding) servePost(
 		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
 	}
 }
+
+// serveListCall handles a request, other than the handshake, server/discover
+// and ping, sent with a list-call token. It admits only the entry's list
+// method and answers it with only the items of the entry's server: a list
+// request names no server, so the server binding is applied to the answer.
+// A tools/call or another list method is refused with method_mismatch, and
+// any other request with method_not_allowed.
+//
+// The list is served by the usual handler, after every later check, and then
+// filtered. A list call starts no call and does not use up the token, so a
+// client may follow nextCursor with the same token.
+func (cb *callBinding) serveListCall(
+	w http.ResponseWriter, r *http.Request, next http.Handler,
+	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
+) {
+	if parsed.Method != token.Entry.Method {
+		reason := callbinding.ReasonMethodNotAllowed
+		if parsed.Method == "tools/call" || callbinding.IsListMethod(parsed.Method) {
+			reason = callbinding.ReasonMethodMismatch
+		}
+		cb.refuse(w, r, parsed, token, reason)
+		return
+	}
+	keep, err := cb.listItems(r.Context(), identity, parsed.Method, token.Entry.Server)
+	if err != nil {
+		cb.unavailable(w, r, parsed, token, "list", err)
+		return
+	}
+	buffered := &listResponseBuffer{header: w.Header(), status: http.StatusOK}
+	next.ServeHTTP(buffered, r)
+
+	body := buffered.body.Bytes()
+	if buffered.status == http.StatusOK {
+		filtered, err := callbinding.FilterListResult(parsed.Method, body, keep)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "call binding: could not limit a list result to the token's server",
+				"jti", token.JTI, "mcp_method", parsed.Method, "error", err)
+			w.Header().Del("Content-Length")
+			writeCallBindingError(w, parsed, http.StatusInternalServerError, mcpparser.CodeInternalError,
+				"Internal error: the list could not be limited to the access token's server")
+			return
+		}
+		body = filtered
+	}
+	slog.DebugContext(r.Context(), "call binding: answered a call-bound list call",
+		"jti", token.JTI, "client_id", token.ClientID, "server", token.Entry.Server, "method", token.Entry.Method)
+	w.Header().Del("Content-Length")
+	w.WriteHeader(buffered.status)
+	//nolint:gosec // G705: a JSON-RPC response, not rendered as HTML
+	_, _ = w.Write(body)
+}
+
+// listResponseBuffer holds the response to a list call until serveListCall has
+// filtered it. Headers go to the real writer's header map; the status and
+// body are held. Flush is a no-op, and it has no Unwrap, so nothing reaches the
+// real writer before the filter runs.
+type listResponseBuffer struct {
+	header      http.Header
+	status      int
+	wroteHeader bool
+	body        bytes.Buffer
+}
+
+func (b *listResponseBuffer) Header() http.Header { return b.header }
+
+func (b *listResponseBuffer) WriteHeader(status int) {
+	if !b.wroteHeader {
+		b.status = status
+		b.wroteHeader = true
+	}
+}
+
+func (b *listResponseBuffer) Write(p []byte) (int, error) {
+	b.wroteHeader = true
+	return b.body.Write(p)
+}
+
+// Flush does nothing: the response is sent once it has been filtered.
+func (*listResponseBuffer) Flush() {}
 
 // serveInitialize admits initialize until the token has started its call: a
 // spent token has no call left to open a session for.
@@ -504,8 +652,8 @@ func (cb *callBinding) refuse(
 	}
 	slog.WarnContext(r.Context(), "call binding: refused a request",
 		"reason", reason, "http_method", r.Method, "mcp_method", mcpMethod,
-		"jti", token.JTI, "client_id", token.ClientID,
-		"operation_id", token.Entry.OperationID, "server", token.Entry.Server, "tool", token.Entry.Tool)
+		"jti", token.JTI, "client_id", token.ClientID, "operation_id", token.Entry.OperationID,
+		"server", token.Entry.Server, "tool", token.Entry.Tool, "method", token.Entry.Method)
 
 	if slices.Contains(callBindingTokenReasons, reason) {
 		cb.challenge.WriteInvalidToken(w, "the access token is not accepted ("+reason+")")

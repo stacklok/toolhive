@@ -240,12 +240,16 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	var srv *Server
 
 	// Validate call binding before anything that needs releasing is built. Its
-	// route closes over the late-assigned srv like the completion handler
-	// below, and runs only at request time.
+	// route and list lookups close over the late-assigned srv like the
+	// completion handler below, and run only at request time.
 	callBinding, err := newCallBinding(cfg.CallBinding, func(
 		ctx context.Context, identity *auth.Identity, name string,
 	) (string, error) {
 		return srv.callBindingRoute(ctx, identity, name)
+	}, func(
+		ctx context.Context, identity *auth.Identity, method, server string,
+	) (map[string]struct{}, error) {
+		return srv.callBindingListItems(ctx, identity, method, server)
 	})
 	if err != nil {
 		return nil, err

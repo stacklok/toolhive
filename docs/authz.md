@@ -88,13 +88,16 @@ Call binding is not a Cedar policy and runs whether or not Cedar is configured. 
 access token that carries an `authorization_details` entry of type
 `https://toolhive.dev/mcp_tool_call` may start only the one `tools/call` its entry
 names, once. A retried call, such as the retry after a URL elicitation, is a second
-call and needs a fresh token. Before its `exp`, such a token may also send, to the
-MCP endpoint:
+call and needs a fresh token. An entry that names a list call (a backend and a list
+method) instead lets the token send that list method, as often as needed, answered
+with only that backend's items; it cannot start a `tools/call`. Before its `exp`, such
+a token may also send, to the MCP endpoint:
 
 - the handshake (`initialize`, `notifications/initialized`), the Modern
   `server/discover` probe and `ping`; `initialize` only until the token has started
   its call;
-- `tools/list`, filtered by Cedar as usual; it does not use up the token;
+- `tools/list`, with a tool-call entry, filtered by Cedar as usual; it does not use
+  up the token;
 - GET and DELETE on sessions its principal owns, and once the token has started its
   call, only on that call's session;
 - on the Legacy session of its call, while the call's request is open: a

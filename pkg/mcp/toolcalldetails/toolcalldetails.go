@@ -19,9 +19,8 @@
 // prefix strategy that includes the backend prefix, as in the example. A
 // tool call matches only when params.name equals tool and the vMCP routes it
 // to the backend named by server. For a list call, server names the one
-// backend whose items the call may list. The vMCP does not accept list calls
-// yet, so a token exchange for an ID-JAG refuses a list call with
-// ReasonListCallUnsupported rather than sign a token nothing would accept.
+// backend whose items the call may list: a list request names no server, so
+// the vMCP answers it with only that backend's items.
 //
 // arguments_sha256 is the lowercase hex SHA-256 of the RFC 8785 (JSON
 // Canonicalization Scheme) serialization of params.arguments, or of {} when
@@ -88,10 +87,6 @@ const (
 	ReasonInvalidArgs = "invalid_arguments_hash"
 	// ReasonInvalidMethod: method is not one of the list methods.
 	ReasonInvalidMethod = "invalid_method"
-	// ReasonListCallUnsupported: a list-call entry was sent on a token exchange
-	// for an ID-JAG. The vMCP refuses list calls with the same reason, so the
-	// entry is refused before it is signed into a token nothing accepts.
-	ReasonListCallUnsupported = "list_call_unsupported"
 	// ReasonIDJAGRequired: the entry was sent on a token exchange whose
 	// requested_token_type is not the ID-JAG type, or on a request that is
 	// neither token exchange nor ID-JAG redemption.
@@ -205,8 +200,7 @@ var (
 )
 
 // grant checks that exactly one well-formed entry was sent and returns it
-// unchanged, except that a token exchange for an ID-JAG refuses a list call.
-// The result is never used to pick a resource, scope or audience.
+// unchanged. The result is never used to pick a resource, scope or audience.
 func grant(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
 	// Only minting an ID-JAG signs the granted entries into the token it
 	// issues; any other token exchange only echoes them. Accepting the entry
@@ -223,14 +217,8 @@ func grant(_ context.Context, req authorizationdetails.Request) (authorizationde
 	if len(req.Entries) != 1 {
 		return authorizationdetails.Result{}, invalid(ReasonSingleEntry)
 	}
-	entry, err := ParseEntry(req.Entries[0])
-	if err != nil {
+	if _, err := ParseEntry(req.Entries[0]); err != nil {
 		return authorizationdetails.Result{}, err
-	}
-	// Redemption is left as it is: an ID-JAG signed elsewhere with a list
-	// call yields a token the vMCP refuses, which fails closed.
-	if entry.IsList() && idJAGExchange {
-		return authorizationdetails.Result{}, invalid(ReasonListCallUnsupported)
 	}
 	return authorizationdetails.Result{Entries: req.Entries}, nil
 }

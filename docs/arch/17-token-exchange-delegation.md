@@ -2379,9 +2379,8 @@ through token exchange use their own entry type and registry; see
 to one MCP call: a tool call (`server`, `tool`, `arguments_sha256`,
 `operation_id`) or a list call (`server`, `method`). `server` is the ID of the
 vMCP backend the call is routed to; `tool` is the request's `params.name`
-exactly as sent, including any backend prefix; a list call is meant to be
-answered with that backend's items only, which the vMCP does not implement
-yet. `arguments_sha256` is the lowercase hex
+exactly as sent, including any backend prefix; a list call is answered with
+that backend's items only. `arguments_sha256` is the lowercase hex
 SHA-256 of the RFC 8785 serialization of `params.arguments`, or of `{}` when
 the arguments are absent or `null`. Nothing registers it by default; an embedder
 adds it with `toolcalldetails.Register` to the types passed to
@@ -2400,12 +2399,9 @@ accepts exactly one entry of its type, with no other members, and grants it
 unchanged; it does not see entries of other registered types. Otherwise it
 refuses with `invalid_authorization_details` and one of
 `single_entry_required`, `malformed_entry`, `invalid_arguments_hash` or
-`invalid_method`. On a request for an ID-JAG it also refuses a list-call entry,
-with `list_call_unsupported`, so no ID-JAG carries an entry the vMCP would
-refuse. The authorization server checks only the entry's shape; the receiver
-of the token enforces the call, using `toolcalldetails.ParseEntry` for the same
-shape check. The vMCP enforces a tool-call entry and refuses a list-call entry
-for now; see
+`invalid_method`. The authorization server checks only the entry's shape; the
+receiver of the token enforces the call, using `toolcalldetails.ParseEntry` for
+the same shape check. The vMCP enforces both kinds of entry; see
 [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
 ## Refresh tokens through token exchange

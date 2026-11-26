@@ -45,6 +45,13 @@ const (
 	cbTool      = "github_read"
 	cbOtherTool = "other_read"
 	cbComposite = "composite_flow"
+
+	cbPrompt        = "github_review"
+	cbOtherPrompt   = "other_review"
+	cbResource      = "file:///github/readme"
+	cbOtherResource = "file:///other/readme"
+	cbTemplate      = "file:///github/{path}"
+	cbOtherTemplate = "file:///other/{path}"
 )
 
 // cbTokens is the token registry of one test server: a bearer token string
@@ -200,11 +207,25 @@ func newCallBindingTestServer(t *testing.T, opts cbServerOptions) *cbTestServer 
 	if opts.auditFile != "" {
 		cfg.AuditConfig = &audit.Config{LogFile: opts.auditFile}
 	}
-	fc := &fakeCore{tools: []vmcp.Tool{
-		{Name: cbTool, Description: "bound", BackendID: cbServer},
-		{Name: cbOtherTool, Description: "other backend", BackendID: "other"},
-		{Name: cbComposite, Description: "composite, no backend"},
-	}}
+	fc := &fakeCore{
+		tools: []vmcp.Tool{
+			{Name: cbTool, Description: "bound", BackendID: cbServer},
+			{Name: cbOtherTool, Description: "other backend", BackendID: "other"},
+			{Name: cbComposite, Description: "composite, no backend"},
+		},
+		prompts: []vmcp.Prompt{
+			{Name: cbPrompt, BackendID: cbServer},
+			{Name: cbOtherPrompt, BackendID: "other"},
+		},
+		resources: []vmcp.Resource{
+			{URI: cbResource, Name: "bound", BackendID: cbServer},
+			{URI: cbOtherResource, Name: "other", BackendID: "other"},
+		},
+		resourceTemplates: []vmcp.ResourceTemplate{
+			{URITemplate: cbTemplate, Name: "bound", BackendID: cbServer},
+			{URITemplate: cbOtherTemplate, Name: "other", BackendID: "other"},
+		},
+	}
 	var v core.VMCP = fc
 	if opts.wrap != nil {
 		v = opts.wrap(fc)
@@ -560,7 +581,7 @@ func TestCallBinding_TokenRules(t *testing.T) {
 		{name: "malformed entry", claims: claimsFor("other", "j", []any{malformed}),
 			initReason: callbinding.ReasonMalformedEntry, callReason: callbinding.ReasonMalformedEntry},
 		{name: "list-call entry cannot start a tools/call", claims: claimsFor("other", "j", []any{listEntry}),
-			callReason: callbinding.ReasonListCallUnsupported},
+			callReason: callbinding.ReasonMethodMismatch},
 		{name: "expired token", claims: expired,
 			initReason: callbinding.ReasonTokenExpired, callReason: callbinding.ReasonTokenExpired},
 	}
@@ -965,12 +986,12 @@ func TestCallBinding_OptimizerToolsAreNotBindable(t *testing.T) {
 
 func TestNewCallBindingValidates(t *testing.T) {
 	t.Parallel()
-	_, err := newCallBinding(callbinding.Config{MaxCallDuration: -time.Second}, nil)
+	_, err := newCallBinding(callbinding.Config{MaxCallDuration: -time.Second}, nil, nil)
 	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
-	_, err = newCallBinding(callbinding.Config{Clients: []string{"a", ""}}, nil)
+	_, err = newCallBinding(callbinding.Config{Clients: []string{"a", ""}}, nil, nil)
 	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 
-	cb, err := newCallBinding(callbinding.Config{}, nil)
+	cb, err := newCallBinding(callbinding.Config{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, callbinding.DefaultMaxCallDuration, cb.maxCallDuration)
 	assert.NotNil(t, cb.record)
@@ -1315,12 +1336,6 @@ func TestCallBinding_ToolsList(t *testing.T) {
 	requireRefused(t, s.send(t, http.MethodPost, token, session, toolCallBody(4, cbTool, "{}"), nil),
 		callbinding.ReasonTokenReused, 4)
 	assert.Equal(t, int32(1), s.fc.callToolCalls.Load())
-
-	// A list-call token is refused, tools/list included.
-	listToken := s.tokens.add("list", claimsFor(cbClient, "jti-2",
-		[]any{map[string]any{"type": toolcalldetails.Type, "server": cbServer, "method": "tools/list"}}))
-	requireRefused(t, s.send(t, http.MethodPost, listToken, s.session(t, listToken), list, nil),
-		callbinding.ReasonListCallUnsupported, 2)
 }
 
 // TestCallBinding_ModernCallWithSessionHeader checks that a Modern tools/call

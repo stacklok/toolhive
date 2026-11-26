@@ -64,12 +64,10 @@ func TestRegister_Validation(t *testing.T) {
 			req:       idJAG,
 		},
 		{
-			// The vMCP does not accept list calls yet, so none is signed.
 			name:      "list call on ID-JAG token exchange",
 			value:     "[" + listCall + "]",
 			grantType: oauthproto.GrantTypeTokenExchange,
 			req:       idJAG,
-			reason:    ReasonListCallUnsupported,
 		},
 		{
 			name:      "token exchange for an access token",
@@ -200,10 +198,10 @@ func TestRegister_GrantTypes(t *testing.T) {
 }
 
 // TestRegister_IDJAGPath proves the registration covers both sides of an
-// ID-JAG through the registry, as the authorization server calls it: AS-1
-// parses the parameter with ParseIDJAGIssuance and keeps the tool call through
-// GrantSubset, and AS-2 parses the signed claim for the JWT-bearer grant and
-// keeps it the same way. A list call is refused on the AS-1 side.
+// ID-JAG through the registry, as the authorization server calls it, for a
+// tool call and a list call alike: AS-1 parses the parameter with
+// ParseIDJAGIssuance and keeps the entry through GrantSubset, and AS-2 parses
+// the signed claim for the JWT-bearer grant and keeps it the same way.
 func TestRegister_IDJAGPath(t *testing.T) {
 	t.Parallel()
 	registry := newRegistry(t)
@@ -212,25 +210,19 @@ func TestRegister_IDJAGPath(t *testing.T) {
 	}
 	redemption := authorizationdetails.Request{Redemption: &authorizationdetails.RedemptionContext{}}
 
-	pending, err := registry.ParseIDJAGIssuance("[" + toolCall + "]")
-	require.NoError(t, err)
-	minted, err := pending.GrantSubset(context.Background(), exchange)
-	require.NoError(t, err)
-	assert.Equal(t, "["+toolCall+"]", string(minted.Entries))
+	for _, entry := range []string{toolCall, listCall} {
+		pending, err := registry.ParseIDJAGIssuance("[" + entry + "]")
+		require.NoError(t, err)
+		minted, err := pending.GrantSubset(context.Background(), exchange)
+		require.NoError(t, err)
+		assert.Equal(t, "["+entry+"]", string(minted.Entries))
 
-	pending, err = registry.Parse(string(minted.Entries), oauthproto.GrantTypeJWTBearer)
-	require.NoError(t, err)
-	redeemed, err := pending.GrantSubset(context.Background(), redemption)
-	require.NoError(t, err)
-	assert.Equal(t, minted.Entries, redeemed.Entries)
-
-	pending, err = registry.ParseIDJAGIssuance("[" + listCall + "]")
-	require.NoError(t, err)
-	_, err = pending.GrantSubset(context.Background(), exchange)
-	var refusal authorizationdetails.Error
-	require.ErrorAs(t, err, &refusal)
-	assert.Equal(t, authorizationdetails.CodeInvalidAuthorizationDetails, refusal.Code)
-	assert.Equal(t, ReasonListCallUnsupported, refusal.Reason)
+		pending, err = registry.Parse(string(minted.Entries), oauthproto.GrantTypeJWTBearer)
+		require.NoError(t, err)
+		redeemed, err := pending.GrantSubset(context.Background(), redemption)
+		require.NoError(t, err)
+		assert.Equal(t, minted.Entries, redeemed.Entries)
+	}
 }
 
 func TestParseEntry(t *testing.T) {

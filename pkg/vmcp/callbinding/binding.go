@@ -77,12 +77,12 @@ const (
 	// jti or iss is missing, empty or holds a NUL, or exp is missing or not a
 	// positive time.
 	ReasonClaimsRequired = "claims_required"
-	// ReasonListCallUnsupported: the entry names a list call, which the vMCP
-	// does not accept yet.
-	ReasonListCallUnsupported = "list_call_unsupported"
 	// ReasonMethodNotAllowed: the request is not one a call-bound token may
 	// send, or it is not sent to the MCP endpoint.
 	ReasonMethodNotAllowed = "method_not_allowed"
+	// ReasonMethodMismatch: the entry names a list call, and the request is a
+	// tools/call or a list call with another method.
+	ReasonMethodMismatch = "method_mismatch"
 	// ReasonToolMismatch: params.name is not the entry's tool.
 	ReasonToolMismatch = "tool_mismatch"
 	// ReasonToolNotFound: the vMCP does not route params.name for this

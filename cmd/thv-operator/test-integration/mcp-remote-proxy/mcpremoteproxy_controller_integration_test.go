@@ -429,8 +429,11 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-				Expect(condition.Reason).To(Equal(mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid))
+				// headerInjection is accepted on a proxy so that a VirtualMCPServer can
+				// discover it there; the proxy itself does not apply it, and says so.
+				Expect(condition.Reason).To(Equal(mcpv1beta1.ConditionReasonAppliedByVirtualMCPServer))
 				Expect(condition.Message).To(ContainSubstring("test-auth-config"))
+				Expect(condition.Message).To(ContainSubstring("only when a VirtualMCPServer discovers this backend"))
 
 				By("cleaning up the auth config")
 				Expect(k8sClient.Delete(testCtx, authConfig)).To(Succeed())

@@ -61,8 +61,9 @@ const (
 type ExternalAuthType string
 
 // MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
-// MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
-// MCPServer resources in the same namespace.
+// MCPExternalAuthConfig resources are namespace-scoped and may be referenced by
+// MCPServer, MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer resources in
+// the same namespace. Each consumer supports only a subset of authentication types.
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'tokenExchange' ? has(self.tokenExchange) : !has(self.tokenExchange)",message="tokenExchange configuration must be set if and only if type is 'tokenExchange'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'headerInjection' ? has(self.headerInjection) : !has(self.headerInjection)",message="headerInjection configuration must be set if and only if type is 'headerInjection'"
@@ -77,6 +78,23 @@ type ExternalAuthType string
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure.
+	// Consumer support is as follows:
+	//   - tokenExchange and unauthenticated: MCPServer, MCPRemoteProxy,
+	//     MCPServerEntry, and VirtualMCPServer outgoing authentication.
+	//   - headerInjection, upstreamInject, and xaa: MCPServerEntry and
+	//     VirtualMCPServer outgoing authentication. An MCPServer or
+	//     MCPRemoteProxy may reference them too, but does not apply them
+	//     itself: they take effect when a VirtualMCPServer discovers that
+	//     backend.
+	//   - bearerToken: MCPRemoteProxy.
+	//   - embeddedAuthServer: MCPServer and MCPRemoteProxy.
+	//   - awsSts: MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer outgoing
+	//     authentication.
+	//   - obo: all four consumers. An MCPServer or MCPRemoteProxy that
+	//     references an obo config must also set oidcConfigRef.
+	//
+	// Unsupported consumer/type combinations are reported on the consuming
+	// resource with Reason: UnsupportedAuthType.
 	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo;xaa
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
@@ -2780,9 +2798,10 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
-// MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
-// MCPServer resources within the same namespace. Cross-namespace references
-// are not supported for security and isolation reasons.
+// MCPExternalAuthConfig resources are namespace-scoped and may be referenced by
+// MCPServer, MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer resources in
+// the same namespace. Cross-namespace references are not supported for security
+// and isolation reasons. Each consumer supports only a subset of authentication types.
 type MCPExternalAuthConfig struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`

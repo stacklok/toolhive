@@ -464,7 +464,11 @@ spec:
   # No pods deployed, VirtualMCPServer connects directly
 ```
 
-MCPServerEntry supports the same auth mechanisms as other backends via `externalAuthConfigRef`, and can use `caBundleRef` for internal CA certificates. See the [examples](../../examples/operator/mcp-server-entries/) for complete configurations.
+MCPServerEntry supports `tokenExchange`, `headerInjection`, `unauthenticated`,
+`awsSts`, `upstreamInject`, `obo`, and `xaa` via
+`externalAuthConfigRef`, and can use `caBundleRef` for internal CA certificates.
+See the [examples](../../examples/operator/mcp-server-entries/) for complete
+configurations.
 
 ## Troubleshooting
 
@@ -932,13 +936,34 @@ All resources must be in the same namespace. Move resources if needed.
 
 When using `outgoingAuth.source: discovered`:
 
+Inspect the backend resource that vMCP discovered:
+
 ```bash
-kubectl get mcpserver <backend-name> -o yaml | grep externalAuthConfigRef
+kubectl get mcpserver <backend-name> -o yaml
+kubectl get mcpremoteproxy <backend-name> -o yaml
+kubectl get mcpserverentry <backend-name> -o yaml
 ```
+
+If the referenced auth type is not supported by that consumer, its validation
+condition reports `Reason: UnsupportedAuthType`, and the VirtualMCPServer
+reports a condition for the affected backend as well.
+
+An MCPServer or MCPRemoteProxy that references a `headerInjection`,
+`upstreamInject`, or `xaa` config reports `ExternalAuthConfigValidated: True`
+with `Reason: AppliedByVirtualMCPServer`. That is expected for a backend of a
+VirtualMCPServer: the backend's own proxy does not apply these types, the
+VirtualMCPServer does when it calls the backend. Without a VirtualMCPServer
+that discovers the backend, the config has no effect.
+
+If an entry declared in `spec.outgoingAuth` (`default` or `backends`) has an
+unsupported type, the VirtualMCPServer keeps serving the configuration it
+published before and reports `Phase: Failed`, with `Ready` set to `False` and
+`Reason: UnsupportedAuthType`.
 
 **Solution**: Either:
 - Create MCPExternalAuthConfig if backend requires auth
 - Remove `externalAuthConfigRef` from backend if no auth required
+- Select an auth type supported by that backend resource
 - Use `outgoingAuth.source: inline` and configure explicitly
 
 ### Tool Conflict Issues

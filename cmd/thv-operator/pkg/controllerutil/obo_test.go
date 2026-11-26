@@ -20,6 +20,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -251,6 +252,7 @@ func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
 			var opts []runner.RunConfigBuilderOption
 			require.NoError(t, AddExternalAuthConfigOptions(
 				t.Context(), oboClient(t, authCfg), oboTestNamespace, "server",
+				externalauthsupport.ConsumerMCPServer,
 				&mcpv1beta1.ExternalAuthConfigRef{Name: authCfg.Name},
 				&oidc.OIDCConfig{Issuer: "https://issuer.example.com"}, &opts,
 			))
@@ -367,6 +369,7 @@ func TestAddExternalAuthConfigOptions_OBOErrors(t *testing.T) {
 			var opts []runner.RunConfigBuilderOption
 			err := AddExternalAuthConfigOptions(
 				t.Context(), tt.client(t, authCfg), oboTestNamespace, "server",
+				externalauthsupport.ConsumerMCPServer,
 				&mcpv1beta1.ExternalAuthConfigRef{Name: authCfg.Name}, tt.oidcConfig, &opts,
 			)
 			require.Error(t, err)

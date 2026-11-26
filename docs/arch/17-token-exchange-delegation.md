@@ -1511,17 +1511,21 @@ no bindings. The other ID-JAG checks run unchanged.
 
 The first upstream must be OIDC because the first upstream is the only sign-in
 leg that writes the provider-identity rows a subject is resolved against, and
-only an OIDC upstream records the issuer URL and subject claim those rows are
-keyed by. An OAuth2 first upstream also writes rows, but they carry no issuer
-URL or subject claim. A later OIDC upstream does not count, and a token-only
-server (no upstreams) is refused. The ID-JAG's `upstream_subject` claim is
-resolved by a resolver built from this server's configuration. Today it knows
-one pair: the first upstream's issuer and `subject_claim` (default `sub`). The
-resolver refuses any other `iss` or `claim` with `subject.ErrNotConfigured`, and
-the handler does not check the pair itself. The stored
-provider-identity rows are keyed only by the upstream name and the subject
-value, so the issuer and claim are not read from the rows. The `value` is looked
-up under the first upstream's name.
+only an OIDC upstream records the OIDC issuer URL and subject claim those rows
+are bound to. An OAuth2 first upstream also writes rows, bound to its endpoint
+URL and extraction rule rather than an OIDC issuer. A later OIDC upstream does
+not count, and a token-only server (no upstreams) is refused. The ID-JAG's
+`upstream_subject` claim is resolved by a resolver built from this server's
+configuration. Today it knows one pair: the first upstream's issuer and
+`subject_claim` (default `sub`). The resolver refuses any other `iss` or `claim`
+with `subject.ErrNotConfigured`, and the handler does not check the pair itself.
+When a row is found under the first upstream's name and `value`, the resolver
+also checks that the row's stored `Issuer` and `SubjectClaim` equal the
+requested `iss` and `claim`. A row created under a different issuer or subject
+claim (or a half-stamped row) is refused with `subject.ErrUnknown`
+(`subject_unknown`) without writing to storage. Pre-upgrade unstamped rows (both
+fields empty) are accepted read-only and logged once per resolver at `WARN`
+until an interactive sign-in stamps them.
 
 At startup the server logs a WARN once if the subject claim is `sub` and the
 first upstream's issuer looks like an Okta custom authorization server, because
@@ -1581,7 +1585,7 @@ provisioned.
 | The ID-JAG has no `resource` claim | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion must carry a 'resource' claim.` | `resource_claim_missing` |
 | `upstream_subject` missing, not an object, or `iss`, `claim` or `value` missing or not a non-empty string | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion has a missing or malformed upstream_subject claim.` | `upstream_subject_invalid` |
 | The resolver does not resolve this `iss` and `claim` (today: `iss` is not the first upstream's issuer, or `claim` is not its subject claim) | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion upstream_subject does not name this server's sign-in identity provider and subject claim.` | `upstream_subject_foreign` |
-| No local user, more than one, or an empty user ID | 400 `access_denied`, `subject_unknown` | `subject_unknown` |
+| No local user, more than one, an empty user ID, or a row created under another issuer or subject claim | 400 `access_denied`, `subject_unknown` | `subject_unknown` |
 | The resolver failed, or no resolver is configured | 500 `server_error`, generic text ("The subject could not be resolved.") | `subject_resolver_unavailable` |
 
 The ID-JAG is not consumed in any of these cases. The Debug line names the

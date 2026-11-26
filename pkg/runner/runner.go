@@ -1040,10 +1040,15 @@ func (r *Runner) persistRefreshToken(
 	*r.Config.RemoteAuthConfig = updatedRemoteAuthConfig
 
 	// The new reference is durable. Remove the previous generation so restarts
-	// do not leave orphaned OAUTH_REFRESH_TOKEN_* secrets behind (#3886). This
-	// is best effort: the provider may be read-only, and the new token must not
-	// fail to persist merely because stale cleanup failed.
-	if previousSecretName != "" && previousSecretName != secretName {
+	// do not leave orphaned OAUTH_REFRESH_TOKEN_* secrets behind (#3886). Only
+	// delete a name this workload actually created: a config exported from
+	// another workload can carry that workload's CachedRefreshTokenRef, and a
+	// plain prefix check would let us delete its live secret. This is best
+	// effort: the provider may be read-only, and the new token must not fail to
+	// persist merely because stale cleanup failed.
+	if previousSecretName != "" &&
+		previousSecretName != secretName &&
+		authsecrets.IsWorkloadOwnedSecretName(r.Config.Name, "OAUTH_REFRESH_TOKEN_", previousSecretName) {
 		if err := secretManager.DeleteSecret(ctx, previousSecretName); err != nil {
 			slog.Warn("Failed to delete previous OAuth refresh token secret",
 				"secret_name", previousSecretName, "error", err)

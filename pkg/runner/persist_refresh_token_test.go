@@ -19,6 +19,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/state"
@@ -451,7 +452,7 @@ func TestRunner_PersistRefreshTokenDeletesPreviousSecret(t *testing.T) {
 
 	const (
 		workloadName   = "refresh-token-cleanup"
-		previousSecret = "OAUTH_REFRESH_TOKEN_previous-generation"
+		previousSecret = "OAUTH_REFRESH_TOKEN_refresh-token-cleanup_1730000000000000000_ab12cd34"
 	)
 
 	gomock.InOrder(
@@ -473,4 +474,87 @@ func TestRunner_PersistRefreshTokenDeletesPreviousSecret(t *testing.T) {
 	assert.NotEqual(t, previousSecret, runConfig.RemoteAuthConfig.CachedRefreshTokenRef)
 	persisted, _ := loadPersistedRunConfig(t, runConfig.BaseName)
 	assert.Equal(t, runConfig.RemoteAuthConfig.CachedRefreshTokenRef, persisted.RemoteAuthConfig.CachedRefreshTokenRef)
+}
+
+// TestRunner_PersistRefreshTokenSkipsForeignSecret is a regression test for the
+// ownership check on the previous refresh token reference. A config exported
+// from workload A and rerun as workload B (thv run --from-config) carries A's
+// CachedRefreshTokenRef; B must not delete A's live secret. A plain prefix check
+// is not enough because "OAUTH_REFRESH_TOKEN_foo_1" belongs to "foo_1", not "foo".
+//
+//nolint:paralleltest // Uses process-wide runtime and XDG settings.
+func TestRunner_PersistRefreshTokenSkipsForeignSecret(t *testing.T) {
+	setupPersistenceState(t)
+	ctx := context.Background()
+	ctrl := gomock.NewController(t)
+	secretManager := secretsmocks.NewMockProvider(ctrl)
+
+	const (
+		workloadName  = "workload-b"
+		foreignSecret = "OAUTH_REFRESH_TOKEN_workload-a_1730000000000000000_ab12cd34"
+	)
+
+	gomock.InOrder(
+		secretManager.EXPECT().GetSecret(gomock.Any(), "OAUTH_REFRESH_TOKEN_"+workloadName).Return("", assert.AnError),
+		secretManager.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true}),
+		secretManager.EXPECT().SetSecret(ctx, gomock.Any(), "refresh-token-envelope").Return(nil),
+		// Deliberately no DeleteSecret expectation: an unexpected call fails the test.
+	)
+
+	remoteAuthConfig := &remote.Config{CachedRefreshTokenRef: foreignSecret}
+	runConfig := NewRunConfig()
+	runConfig.Name, runConfig.BaseName = workloadName, workloadName
+	runConfig.RemoteAuthConfig = remoteAuthConfig
+	require.NoError(t, runConfig.SaveState(ctx))
+
+	runner := &Runner{Config: runConfig}
+	require.NoError(t, runner.persistRefreshToken(ctx, secretManager, "refresh-token-envelope", time.Now().Add(time.Hour)))
+
+	persisted, _ := loadPersistedRunConfig(t, runConfig.BaseName)
+	assert.Equal(t, runConfig.RemoteAuthConfig.CachedRefreshTokenRef, persisted.RemoteAuthConfig.CachedRefreshTokenRef)
+}
+
+// TestIsWorkloadOwnedSecretName pins the ownership predicate to exactly the two
+// name shapes GenerateUniqueSecretNameWithPrefix can emit, including the
+// "foo" vs "foo_1" collision that a plain prefix check would get wrong.
+func TestIsWorkloadOwnedSecretName(t *testing.T) {
+	t.Parallel()
+
+	const prefix = "OAUTH_REFRESH_TOKEN_"
+	tests := []struct {
+		name     string
+		workload string
+		secret   string
+		want     bool
+	}{
+		{"exact base", "foo", prefix + "foo", true},
+		{"unique suffix", "foo", prefix + "foo_1730000000000000000_ab12cd34", true},
+		{"single digit timestamp", "foo", prefix + "foo_1_ab12cd34", true},
+		{"empty workload never owns empty base", "", prefix, false},
+		{"empty workload never owns base", "", prefix + "foo", false},
+		{"foreign workload base", "foo", prefix + "bar", false},
+		{"foreign workload suffix", "foo", prefix + "bar_1730000000000000000_ab12cd34", false},
+		{"plain prefix collision foo_1", "foo", prefix + "foo_1", false},
+		{"plain prefix collision foo_1 with suffix", "foo", prefix + "foo_1_1730000000000000000_ab12cd34", false},
+		{"plain prefix collision foobar", "foo", prefix + "foobar", false},
+		{"uppercase hex suffix", "foo", prefix + "foo_1730000000000000000_AB12CD34", false},
+		{"non hex suffix", "foo", prefix + "foo_1730000000000000000_ab12cd3g", false},
+		{"short hex suffix", "foo", prefix + "foo_123_abc", false},
+		{"long hex suffix", "foo", prefix + "foo_123_abcdef123", false},
+		{"empty timestamp", "foo", prefix + "foo__ab12cd34", false},
+		{"non numeric timestamp", "foo", prefix + "foo_12a_ab12cd34", false},
+		{"trailing junk", "foo", prefix + "foo_123_ab12cd34_extra", false},
+		{"wrong prefix", "foo", "BEARER_TOKEN_foo", false},
+		{"regex metacharacters in workload", "svc.v1", prefix + "svc.v1", true},
+		{"metacharacter is not a wildcard", "svc.v1", prefix + "svcXv1", false},
+		{"suffix-like workload owns its base", "foo_123", prefix + "foo_123", true},
+		{"suffix-like workload owns its unique name", "foo_123", prefix + "foo_123_456_ab12cd34", true},
+		{"suffix-like workload not owned by shorter name", "foo", prefix + "foo_123_456_ab12cd34", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, authsecrets.IsWorkloadOwnedSecretName(tc.workload, prefix, tc.secret))
+		})
+	}
 }

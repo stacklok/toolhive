@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/stacklok/toolhive-core/env"
@@ -163,6 +164,26 @@ func GenerateUniqueSecretNameWithPrefix(workloadName, prefix string, secretManag
 	}
 	uniqueName := fmt.Sprintf("%s_%d_%x", baseName, timestamp, randomSuffix)
 	return uniqueName, nil
+}
+
+// IsWorkloadOwnedSecretName reports whether name is a secret name that
+// GenerateUniqueSecretNameWithPrefix could have produced for workloadName with
+// the given prefix: either the exact base "<prefix><workloadName>" or the
+// collision-resistant "<prefix><workloadName>_<digits>_<8 lowercase hex>" form.
+//
+// The anchor after the workload name is what makes this safe: a plain HasPrefix
+// would treat "OAUTH_REFRESH_TOKEN_foo_1" (owned by workload "foo_1") as owned
+// by "foo" and could delete another workload's live secret. An empty workload
+// name never proves ownership.
+func IsWorkloadOwnedSecretName(workloadName, prefix, name string) bool {
+	if workloadName == "" {
+		return false
+	}
+
+	base := regexp.QuoteMeta(prefix + workloadName)
+	// QuoteMeta escapes the variable part, so this pattern is always valid.
+	ownedName := regexp.MustCompile(`^` + base + `(?:_[0-9]+_[0-9a-f]{8})?$`)
+	return ownedName.MatchString(name)
 }
 
 // StoreSecretInManagerWithProvider stores a secret using the provided secret manager

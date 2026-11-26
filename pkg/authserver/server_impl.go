@@ -194,9 +194,9 @@ func upstreamIdentityBinding(upCfg *UpstreamConfig) (issuer, subjectClaim string
 }
 
 // oidcIdentityBinding is the binding an OIDC upstream stamps: its issuer and
-// subject claim, which defaults to "sub". It is the one place that default is
-// applied, shared by the stamping, the resolver and the run-config validation,
-// whose issuer field has a different name (IssuerURL).
+// subject claim, which defaults to "sub". Stamping, the subject resolver and
+// the run-config validation (whose issuer field is IssuerURL) all derive the
+// binding here, so they cannot disagree on the default.
 func oidcIdentityBinding(issuer, subjectClaim string) (string, string) {
 	return issuer, cmp.Or(subjectClaim, upstream.DefaultSubjectClaim)
 }

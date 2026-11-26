@@ -64,8 +64,8 @@ var _ subject.Resolver = (*Resolver)(nil)
 // stamped with the sign-in issuer and claim, so an additional issuer entry,
 // when that work lands, must compare rows against the sign-in binding.
 // It returns an error if the store is nil, no providers are given, an entry has
-// an empty issuer, name or subject claim, or
-// subject.ValidateBindingClaim refuses an entry's claim (the error wraps subject.ErrInvalidBindingClaim).
+// an empty issuer, name or subject claim, or subject.ValidateBindingClaim
+// refuses an entry's claim (the error wraps subject.ErrInvalidBindingClaim).
 // The warning ValidateBindingClaim can return, for sub on an Okta custom
 // authorization server, is ignored here; callers who want it call
 // ValidateBindingClaim themselves.

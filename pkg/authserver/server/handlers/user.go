@@ -24,8 +24,9 @@ var ErrUpstreamCannotCreateUsers = errors.New("upstream is not allowed to create
 // ErrIdentityBindingMismatch is returned by ResolveUser when the identity link
 // was created under a different issuer or subject claim than the upstream's
 // current ones and the resolver may not replace it: the storage has no
-// ProviderIdentitySwapper, or the upstream is not the one allowed to create
-// users.
+// ProviderIdentitySwapper, the upstream is not the one allowed to create
+// users, or a concurrent sign-in bound the link to another issuer or subject
+// claim while this one was settling a lost link write.
 var ErrIdentityBindingMismatch = errors.New("identity link was created under a different issuer or subject claim")
 
 // ErrRememberedIdentityMismatch is returned by ResolveExpectedUser when the
@@ -460,12 +461,13 @@ func (r *UserResolver) replaceMismatchedIdentity(
 // If the link points at our own candidate, the write committed and the candidate
 // is the owner: it must not be rolled back, whatever error came back. If the link
 // points at another user whose binding matches ours (or is unstamped), a
-// concurrent login won and we adopt its user (adoptLinkedUser re-reads the row
-// once if stamping it loses a race). If the link still belongs to a mismatching
-// issuer or subject claim, we never adopt it. In both of those cases, and when
-// the link is gone, we roll back our candidate only when linkErr proves our write
-// did not commit (ErrAlreadyExists or ErrProviderIdentityChanged), and return an
-// error. A failed read deletes nothing and returns the error: a write whose
+// concurrent login won: we roll back our candidate and adopt its user
+// (adoptLinkedUser re-reads the row once if stamping it loses a race). If the
+// link still belongs to a mismatching issuer or subject claim we never adopt
+// it, and if the link is gone there is nothing to adopt. In those two cases we
+// roll back our candidate only when linkErr proves our write did not commit
+// (ErrAlreadyExists or ErrProviderIdentityChanged), and return an error. A
+// failed read deletes nothing and returns the error: a write whose
 // reply timed out can still commit after the read. An unlinked candidate row is
 // harmless; deleting the owner is not.
 func (r *UserResolver) resolveLinkFailure(

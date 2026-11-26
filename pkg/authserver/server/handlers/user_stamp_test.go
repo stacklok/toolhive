@@ -215,12 +215,11 @@ func TestResolveExpectedUser(t *testing.T) {
 	tests := []struct {
 		name string
 		// row is the stored link; nil means no link.
-		row         *storage.ProviderIdentity
-		wantErr     error
-		wantStamped bool
+		row     *storage.ProviderIdentity
+		wantErr error
 	}{
 		{name: "matching binding", row: stampedRow("owner", stampIssuer)},
-		{name: "unstamped row with the right owner is stamped", row: unstampedRow("owner"), wantStamped: true},
+		{name: "unstamped row with the right owner is stamped", row: unstampedRow("owner")},
 		{name: "wrong owner", row: stampedRow("someone-else", stampIssuer), wantErr: ErrRememberedIdentityMismatch},
 		{name: "wrong owner on an unstamped row", row: unstampedRow("someone-else"), wantErr: ErrRememberedIdentityMismatch},
 		{name: "mismatching binding", row: stampedRow("owner", otherIssuer), wantErr: ErrRememberedIdentityMismatch},
@@ -264,7 +263,6 @@ func TestResolveExpectedUser(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, stampIssuer, after.Issuer)
 			assert.Equal(t, stampClaim, after.SubjectClaim)
-			assert.Equal(t, tt.wantStamped, tt.row.IsUnstamped())
 		})
 	}
 }

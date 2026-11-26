@@ -389,10 +389,25 @@ func TestInstructionsMiddleware_EventStream(t *testing.T) {
 			want:     "data: " + notification + "\n\n" + withheldEventFor(jsonrpc2.Int64ID(1)),
 		},
 		{
-			name:     "POST stream with a line separator is withheld",
+			name:     "POST result with a line separator inside a string is rewritten",
 			request:  initializeRequest,
 			response: "data: " + strings.Replace(initializeWithInstructions, "server text", "server\u2028text", 1) + "\n\n",
-			want:     withheldEventFor(jsonrpc2.Int64ID(1)),
+			want:     "data: " + rewrittenInitialize("server\u2028text\n\npolicy") + "\n\n",
+		},
+		{
+			name:    "POST result with a line separator does not end the search",
+			request: initializeRequest,
+			response: "data: " + strings.Replace(initializeWithInstructions, "server text", "server\u2028text", 1) + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: "data: " + rewrittenInitialize("server\u2028text\n\npolicy") + "\n\n" +
+				"data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
+		},
+		{
+			name:    "POST event with a line separator outside its data that may carry the result is withheld",
+			request: initializeRequest,
+			response: ": note\u2028data: x\ndata: " + initializeWithInstructions + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: withheldEventFor(jsonrpc2.Int64ID(1)) + "data: " + initializeWithInstructions + "\n\n",
 		},
 		{
 			name:     "compressed POST stream is withheld",
@@ -509,10 +524,28 @@ func TestInstructionsMiddleware_EventStream(t *testing.T) {
 			want:     "data: {\"jsonrpc\":\"2.0\",\"id\":NaN}\n\n" + "data: " + duplicateResult[:20] + "\n\n",
 		},
 		{
-			name:     "GET stream with a bare CR that carries a result ends",
-			request:  "",
-			response: "event: endpoint\rdata: /messages\r\r" + "data: " + initializeWithInstructions + "\n\n",
-			want:     "",
+			name:    "GET event with a bare CR outside its data that may carry a result is dropped alone",
+			request: "",
+			response: "event: endpoint\rdata: /messages\r\r" + "data: " + initializeWithInstructions + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: "data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
+		},
+		{
+			name:    "GET event with a line separator outside its data that may carry a result is withheld alone",
+			request: "",
+			response: ": note\u2028data: x\ndata: " + initializeWithInstructions + "\n\n" +
+				"data: " + notification + "\n\n",
+			want: withheldEventFor(jsonrpc2.Int64ID(1)) + "data: " + notification + "\n\n",
+		},
+		{
+			name:    "GET tool result with a line separator does not change how later events are read",
+			request: "",
+			response: "data: " + `{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"one` + "\u2028" + `two"}]}}` + "\n\n" +
+				"data: " + `{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"about serverInfo"}]}}` + "\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
+			want: "data: " + `{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"one` + "\u2028" + `two"}]}}` + "\n\n" +
+				"data: " + `{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"about serverInfo"}]}}` + "\n\n" +
+				"data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
 		},
 		{
 			name:    "GET stream with a bare CR and no result is forwarded as it arrives",
@@ -523,11 +556,13 @@ func TestInstructionsMiddleware_EventStream(t *testing.T) {
 				"data: " + notification + "\n\n",
 		},
 		{
-			name:     "GET stream forwarded as it arrives ends once it names a result member",
-			request:  "",
-			response: "event: message\rdata: " + notification + "\r\r" + "|data: {\"result\":{\"server|Info\":{}}}\n\n",
+			name:    "GET event with a bare CR forwarded as it arrives is cut short once it names a result member",
+			request: "",
+			response: "event: message\rdata: " + notification + "\r\r" + "|data: {\"result\":{\"server|Info\":{}}}\n\n" +
+				"data: " + initializeWithInstructions + "\n\n",
 			// The name is found across the writes, before the event can end.
-			want: "event: message\rdata: " + notification + "\r\r" + "data: {\"result\":{\"server",
+			want: "event: message\rdata: " + notification + "\r\r" + "data: {\"result\":{\"server" + "\n\n" +
+				"data: " + rewrittenInitialize("server text\n\npolicy") + "\n\n",
 		},
 		{
 			name:    "POST stream that starts with a byte order mark reads the first event's type as clients do",
@@ -619,11 +654,12 @@ func TestInstructionsMiddleware_Bound(t *testing.T) {
 			response: "data: " + largeToolResult[:250] + "|" + largeToolResult[250:300] + "|" + largeToolResult[300:] + "\n|\n" +
 				"data: " + smallResult + "\n\n",
 			want: "data: " + largeToolResult + "\n\n" + "data: " + smallRewritten + "\n\n"},
-		{name: "oversized GET event forwarded in part that then names a result member ends the stream",
+		{name: "oversized GET event forwarded in part that then names a result member is cut short and withheld alone",
 			request: "", contentType: "text/event-stream",
 			response: "data: " + largeToolResult[:250] + "|" + `","serverInfo":{}}}` + "\n\n" +
 				"data: " + smallResult + "\n\n",
-			want: "data: " + largeToolResult[:250]},
+			want: "data: " + largeToolResult[:250] + "\n\n" + withheldEventFor(jsonrpc2.Int64ID(2)) +
+				"data: " + smallRewritten + "\n\n"},
 		{name: "line split clients read differently while an event is skipped ends a GET stream",
 			request: "", contentType: "text/event-stream",
 			response: "data: " + initializeWithInstructions + "|\r\rdata: {}\n\n",
@@ -967,7 +1003,8 @@ func TestInstructionsMiddleware_TransportScope(t *testing.T) {
 func TestInstructionsMiddleware_EndsWithheldStreams(t *testing.T) {
 	t.Parallel()
 
-	cr := "event: endpoint\rdata: /messages\r\r" + "data: " + initializeWithInstructions + "\n\n"
+	// cr is a stream whose server ends lines with a bare CR only.
+	cr := "event: endpoint\rdata: /messages\r\r" + "event: message\rdata: " + initializeWithInstructions + "\r\r"
 	tests := []struct {
 		name        string
 		legacySSE   bool

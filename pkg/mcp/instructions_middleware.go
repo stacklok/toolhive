@@ -40,11 +40,11 @@ const defaultMaxInstructionsHeldBytes = 1 << 20
 // defaultMaxHeldEventBytes). An event over it is withheld alone.
 const defaultMaxInstructionsStreamEventBytes = defaultMaxHeldEventBytes
 
-// rawStreamTailBytes is how much of what a stream that is no longer read
-// event by event has carried is kept, so that a member name split across
-// writes is still found (see mayNameResultMember). It is longer than the
-// longest such name written with a JSON escape for every character.
-const rawStreamTailBytes = 128
+// forwardTailBytes is how much of an event the writer forwards before it has
+// ended is kept, so that a member name split across writes is still found
+// (see mayNameResultMember). It is longer than the longest such name written
+// with a JSON escape for every character.
+const forwardTailBytes = 128
 
 // errInstructionsWithheld is what Write returns once a response is withheld
 // whose wrapped handler may go on writing, such as an event stream, so that
@@ -137,16 +137,18 @@ func CreateInstructionsMiddleware(config *types.MiddlewareConfig, runner types.M
 // 2xx answer to a POST that is neither JSON nor an event stream or that never
 // carries the result, a body or an event larger than the bound on what the
 // middleware holds (on a stream a GET opened, only an event that may name a
-// result member: any other is forwarded as it arrives), an event stream whose
-// lines clients split differently,
-// and a result that does not decode as one unambiguous JSON-RPC message. A
-// whole body is answered with the error under HTTP 500, with its own
-// Content-Length. On an event stream the error takes the place of the event.
-// An event whose request cannot be named, or whose type some clients skip, is
+// result member: any other is forwarded as it arrives), an event with a line
+// that clients split differently and that may name a result member, and a
+// result that does not decode as one unambiguous JSON-RPC message. A whole
+// body is answered with the error under HTTP 500, with its own
+// Content-Length. On an event stream the error takes the place of the event,
+// which is decided alone, since every client agrees where an event ends. An
+// event whose request cannot be named, or whose type some clients skip, is
 // dropped instead, since those clients would read an error in its place as
-// the answer. A stream that cannot be read further, and a GET answered with
-// the error, end: Write returns errInstructionsWithheld so that the wrapped
-// handler stops.
+// the answer. A stream whose server ends lines with a bare CR, which leaves
+// no event end every client agrees on, and a GET answered with the error,
+// end: Write returns errInstructionsWithheld so that the wrapped handler
+// stops.
 func NewInstructionsMiddleware(params InstructionsMiddlewareParams) (types.MiddlewareFunction, error) {
 	return newInstructionsMiddleware(params, defaultMaxInstructionsHeldBytes, defaultMaxInstructionsStreamEventBytes)
 }
@@ -320,21 +322,24 @@ type instructionsWriter struct {
 	// started is set once the byte order marks an event stream starts with
 	// have been dropped (see startEventStream).
 	started bool
-	// skipping is set while the writer drops the rest of an event over the
-	// bound on a stream a GET opened, and forwarding while it forwards the
+	// answered is set once a message event carried the response the target
+	// names, rewritten, withheld or an error, even one that ends no search,
+	// so the answer to a POST is not withheld for lack of it (see finish).
+	answered bool
+	// skipping is set while the writer drops the rest of an event it cannot
+	// hold on a stream a GET opened, and forwarding while it forwards the
 	// rest of one that names no result member, up to the blank line that
-	// ends it (see releaseOversized). skipLine holds the start of the line
-	// the bytes read so far end in (see lineStart).
+	// ends it (see releaseHeld). skipLine holds the start of the line the
+	// bytes read so far end in (see lineStart).
 	skipping   bool
 	forwarding bool
 	skipLine   []byte
-	// raw is set once a stream a GET opened has a line that clients split
-	// differently, so it can no longer be read event by event. Its bytes are
-	// then forwarded as they arrive while their member names are checked
-	// (see mayNameResultMember), and rawTail holds the last of them, as it
-	// does for an oversized event the writer forwards.
-	raw     bool
-	rawTail []byte
+	// forwardTail holds the last bytes of the event the writer forwards, and
+	// forwardID and forwardMessage name the request its start answers and
+	// whether clients dispatch it as a message (see forwardRest).
+	forwardTail    []byte
+	forwardID      jsonrpc2.ID
+	forwardMessage bool
 }
 
 // WriteHeader decides how the body is read from the final status and the
@@ -453,7 +458,7 @@ func (rw *instructionsWriter) finish() {
 	case rw.mode == instructionsEventStream && len(rw.buffer) > 0:
 		err = rw.readEvents(true)
 	}
-	if err == nil && !rw.done && !rw.discard && rw.mode != instructionsPassThrough {
+	if err == nil && !rw.done && !rw.answered && !rw.discard && rw.mode != instructionsPassThrough {
 		if rw.target.stream() {
 			// A stream a GET opened, or the empty body of a GET the
 			// middleware could not have read.
@@ -518,28 +523,20 @@ func (rw *instructionsWriter) answerJSON() error {
 }
 
 // readEvents reads the complete events of the stream the writer holds, all
-// of what it holds when terminal is set, writes them with the instructions
-// of the result an event carries set, and keeps the rest.
+// of what it holds when terminal is set, writes them as readEvent returns
+// them, and keeps the rest.
 //
-// A line that ends in a bare CR, or in one of lineSeparators, is split into
-// lines, and so into events, differently by different clients. The events
-// that end before such a line are read as usual, and unless they carry the
-// result the target names, the rest of the stream is withheld.
+// A server that ends lines with a bare CR never completes an event for this
+// writer, which ends lines at LF, while clients that also end a line at CR
+// may read whole events in what it holds. Unless the result the target names
+// has been found, the rest of the stream is then withheld rather than held
+// until the bound.
 func (rw *instructionsWriter) readEvents(terminal bool) error {
 	if !rw.startEventStream(terminal) {
 		return nil
 	}
-	// A CR at the end of what is held may start a CRLF that has not arrived.
-	held := rw.buffer
-	if !terminal {
-		held = bytes.TrimSuffix(held, sseCR)
-	}
-	split := lineSplitIndex(held)
 	end := len(rw.buffer)
-	switch {
-	case split >= 0:
-		end = completeSSEEvents(rw.buffer[:split], 0)
-	case !terminal:
+	if !terminal {
 		end = completeSSEEvents(rw.buffer, rw.scanned)
 	}
 	if end > 0 {
@@ -547,7 +544,8 @@ func (rw *instructionsWriter) readEvents(terminal bool) error {
 			return err
 		}
 	}
-	if split >= 0 && !rw.done {
+	// A CR at the end of what is held may start a CRLF that has not arrived.
+	if !rw.done && hasBareCR(bytes.TrimSuffix(rw.buffer, sseCR)) {
 		rw.warn("the event stream has a line ending that clients split differently")
 		return rw.withholdRest()
 	}
@@ -596,17 +594,30 @@ func (rw *instructionsWriter) rewriteEvents(stream []byte) []byte {
 // request the writer can name or is in an event some clients skip (see
 // dispatchedAsMessage). An error event in place of a skipped event would be
 // read by those clients as the answer to their request.
+//
+// Every client agrees where an event ends (see completeSSEEvents), so an
+// event with a line that clients split differently is decided alone (see
+// readSplitEvent), and the events after it are read as usual. Even inside a
+// data value, where the split does no harm to this reading, such a line
+// keeps the event from ending the search on the stream that answers a POST,
+// since clients that split it there cannot decode its data.
 func (rw *instructionsWriter) readEvent(event []sseLine, end ...sseLine) []byte {
 	lines := slices.Concat(event, end)
 	if rw.done || len(event) == 0 {
 		return encodeSSELines(lines)
 	}
+	message := dispatchedAsMessage(event)
+	if !readAlikeByClients(event) {
+		return rw.readSplitEvent(event, lines, message)
+	}
 	data := bytes.Join(sseEventData(event), sseLF)
 	if len(bytes.TrimSpace(data)) == 0 {
 		return encodeSSELines(lines)
 	}
-	message := dispatchedAsMessage(event)
-	rewritten, action, id := rw.readEventMessage(event, data, message)
+	rewritten, action, id := rw.readEventMessage(event, data, message && !hasLineSplit(event))
+	if message && !rw.target.stream() && id.IsValid() && id == rw.target.id {
+		rw.answered = true
+	}
 	switch action {
 	case messageRewrite:
 		return encodeSSELines(slices.Concat(replaceSSEData(event, rewritten), end))
@@ -620,17 +631,40 @@ func (rw *instructionsWriter) readEvent(event []sseLine, end ...sseLine) []byte 
 	return encodeSSELines(lines)
 }
 
+// readSplitEvent decides on event, which some clients split into lines, and
+// so into fields, other than this writer does (see readAlikeByClients), so it
+// cannot be rewritten for all of them. An event whose bytes name no result
+// member passes (see mayNameResultMember). Any other is withheld: in the
+// response to a POST in place of the result the request asked for, and on a
+// stream a GET opened with the id its data names, if any.
+func (rw *instructionsWriter) readSplitEvent(event, lines []sseLine, message bool) []byte {
+	if !mayNameResultMember(encodeSSELines(event)) {
+		return encodeSSELines(lines)
+	}
+	rw.warn("an event that may carry the result has a line that clients split differently")
+	id := rw.target.id
+	if rw.target.stream() {
+		id = heldDataID(bytes.Join(sseEventData(event), sseLF))
+	} else if message {
+		rw.done = true
+	}
+	if !id.IsValid() || !message {
+		return nil
+	}
+	return sseErrorEvent(withheldResponse(id))
+}
+
 // readEventMessage decides on data, the data of event, as readMessage does
 // for the response to a POST and readStreamMessage for a stream a GET opened.
 // On such a stream, data whose bytes name no result member passes undecoded,
 // whatever its size (see mayNameResultMember), and an event over the bound
 // that may name one is withheld unread with the id the start of its data
-// names, if any (see releaseOversized for one that arrives in many writes).
+// names, if any (see releaseHeld for one that arrives in many writes).
 func (rw *instructionsWriter) readEventMessage(
-	event []sseLine, data []byte, message bool,
+	event []sseLine, data []byte, ends bool,
 ) ([]byte, messageAction, jsonrpc2.ID) {
 	if !rw.target.stream() {
-		return rw.readMessage(data, message)
+		return rw.readMessage(data, ends)
 	}
 	if !mayNameResultMember(data) {
 		return nil, messagePass, jsonrpc2.ID{}
@@ -727,16 +761,11 @@ func (rw *instructionsWriter) readUndecodable(data []byte, ends bool) ([]byte, m
 
 // writeStream reads data, the next bytes of a stream a GET opened, which is
 // read for as long as it lasts. Complete events are written as readEvent
-// returns them, and an event that has not ended is held up to the bound on an
-// event, past which the rest of it is forwarded or skipped as it arrives (see
-// releaseOversized).
-// A line that clients split differently stops the reading of events: the
-// stream is forwarded as it arrives from then on, unless what it carries
-// names a member of the result, which ends the stream (see enterRaw).
+// returns them, and an event that has not ended is held, until it ends or it
+// can no longer be held (see releaseHeld): past the bound on an event, or
+// once it holds a bare CR, which some clients read as a line end where this
+// writer does not, so they may already read whole events in it.
 func (rw *instructionsWriter) writeStream(data []byte) error {
-	if rw.raw {
-		return rw.writeRaw(data)
-	}
 	switch {
 	case rw.skipping:
 		if data = rw.skip(data); rw.discard || len(data) == 0 {
@@ -753,18 +782,15 @@ func (rw *instructionsWriter) writeStream(data []byte) error {
 	if !rw.startEventStream(false) {
 		return nil
 	}
-	// A CR at the end of what is held may start a CRLF that has not arrived.
-	if split := lineSplitIndex(bytes.TrimSuffix(rw.buffer, sseCR)); split >= 0 {
-		return rw.enterRaw(split)
-	}
 	if end := completeSSEEvents(rw.buffer, rw.scanned); end > 0 {
 		if err := rw.writeEvents(end); err != nil {
 			return err
 		}
 	}
 	rw.scanned = len(rw.buffer)
-	if len(rw.buffer) > rw.config.maxStreamEventBytes {
-		return rw.releaseOversized()
+	// A CR at the end of what is held may start a CRLF that has not arrived.
+	if bareCR := hasBareCR(bytes.TrimSuffix(rw.buffer, sseCR)); bareCR || len(rw.buffer) > rw.config.maxStreamEventBytes {
+		return rw.releaseHeld(bareCR)
 	}
 	return nil
 }
@@ -772,78 +798,47 @@ func (rw *instructionsWriter) writeStream(data []byte) error {
 // finishStream reads what is held of a stream a GET opened once the wrapped
 // handler has returned, its last event as it stands.
 func (rw *instructionsWriter) finishStream() error {
-	if rw.raw || rw.skipping || rw.forwarding || len(rw.buffer) == 0 {
+	if rw.skipping || rw.forwarding || len(rw.buffer) == 0 {
 		return nil
 	}
 	rw.startEventStream(true)
-	if split := lineSplitIndex(rw.buffer); split >= 0 {
-		return rw.enterRaw(split)
-	}
 	return rw.writeEvents(len(rw.buffer))
 }
 
-// enterRaw stops reading a stream a GET opened event by event, once what the
-// writer holds has a line, at split, that clients split differently. The
-// events that end before it are read as usual. The rest is forwarded as it
-// is, and the stream from then on as it arrives (see writeRaw), unless it
-// names a member of the result: no reading of it can then be rewritten, and
-// the stream ends.
-func (rw *instructionsWriter) enterRaw(split int) error {
-	if end := completeSSEEvents(rw.buffer[:split], 0); end > 0 {
-		if err := rw.writeEvents(end); err != nil {
-			return err
-		}
-	}
-	held := rw.buffer
-	rw.buffer = nil
-	if mayNameResultMember(held) {
-		rw.warn("the event stream has a line ending that clients split differently")
-		return rw.withholdRest()
-	}
-	rw.raw = true
-	rw.rawTail = rawStreamTail(held)
-	_, err := rw.ResponseWriter.Write(held)
-	return err
-}
-
-// writeRaw forwards data, the next bytes of a stream that is no longer read
-// event by event, unless they name a member of the result together with the
-// bytes before them, which ends the stream.
-func (rw *instructionsWriter) writeRaw(data []byte) error {
-	window := slices.Concat(rw.rawTail, data)
-	if mayNameResultMember(window) {
-		rw.warn("the event stream has a line ending that clients split differently")
-		return rw.withholdRest()
-	}
-	rw.rawTail = rawStreamTail(window)
-	_, err := rw.ResponseWriter.Write(data)
-	return err
-}
-
-// releaseOversized lets go of the event the writer holds, which is over the
-// bound on an event. An event whose bytes so far name no result member cannot
-// yet be a result whose instructions the middleware sets: it is forwarded,
-// and the rest of it as it arrives, while its bytes are still checked (see
-// forwardRest), so that a large tool result reaches the client intact. Any
-// other event is withheld and the rest of it skipped (see skip): an error
-// event takes its place when its start names the request it answers and
-// clients dispatch it as a message, and it is dropped otherwise. The stream
-// goes on after it, as the tool filter's does.
-func (rw *instructionsWriter) releaseOversized() error {
+// releaseHeld lets go of the event the writer holds, which it can hold no
+// longer (see writeStream). An event whose bytes so far name no result member
+// cannot yet be a result whose instructions the middleware sets: it is
+// forwarded, and the rest of it as it arrives, while its bytes are still
+// checked (see forwardRest), so that a large tool result reaches the client
+// intact and the events of a server that ends lines with a bare CR reach it
+// without delay. An oversized event that may name one is withheld and the
+// rest of it skipped (see skip), as the tool filter does: an error event takes
+// its place when its start names the request it answers and clients dispatch
+// it as a message, and it is dropped otherwise. The stream goes on after it. A
+// held event with a bare CR that may name one ends the stream instead: clients
+// that end lines at CR may read whole events in it, and nothing in it tells
+// where the event ends for this writer.
+func (rw *instructionsWriter) releaseHeld(bareCR bool) error {
 	held := rw.buffer
 	rw.skipLine = lineStart(held[bytes.LastIndexByte(held, '\n')+1:])
 	rw.buffer = nil
 	rw.scanned = 0
+	id := heldEventID(held)
+	message := dispatchedAsMessage(splitSSELines(held))
 	if !mayNameResultMember(held) {
 		rw.forwarding = true
-		rw.rawTail = rawStreamTail(held)
+		rw.forwardTail = forwardTailOf(held)
+		rw.forwardID = id
+		rw.forwardMessage = message
 		_, err := rw.ResponseWriter.Write(held)
 		return err
 	}
+	if bareCR {
+		rw.warn("the event stream has a line ending that clients split differently")
+		return rw.withholdRest()
+	}
 	rw.warn("an event that may carry the result is larger than the middleware reads",
 		"max_event_bytes", rw.config.maxStreamEventBytes)
-	id := heldEventID(held)
-	message := dispatchedAsMessage(splitSSELines(held))
 	rw.skipping = true
 	if !id.IsValid() || !message {
 		return nil
@@ -853,38 +848,62 @@ func (rw *instructionsWriter) releaseOversized() error {
 	return err
 }
 
-// forwardRest forwards data, the next bytes of an oversized event that named
-// no result member so far (see releaseOversized), up to the blank line that
-// ends it, and returns the bytes after that line, which start the next event.
-// Bytes that name a result member together with those before them end the
-// stream, since the start of the event has already reached the client and it
-// can no longer be withheld alone.
+// forwardRest forwards data, the next bytes of an event that named no result
+// member so far (see releaseHeld), up to the blank line that ends it, and
+// returns the bytes after that line, which start the next event.
+//
+// When the bytes name a result member together with those before them, the
+// event is withheld alone, as one that arrives whole is, and the stream goes
+// on. The start of the event has already reached the client and cannot be
+// recalled, so the writer ends it there with a blank line, which every client
+// reads as the end of an event: the client then holds an event cut short,
+// whose bytes name no result member, followed by the error event that takes
+// the place of the whole when its start named the request it answers. The
+// rest of the event is skipped. A server that ends lines with a bare CR
+// leaves no blank line to skip to, so then the stream ends instead.
 func (rw *instructionsWriter) forwardRest(data []byte) ([]byte, error) {
 	n, ended := rw.eventRest(data)
-	window := slices.Concat(rw.rawTail, data[:n])
-	if mayNameResultMember(window) {
-		rw.warn("an event larger than the middleware reads names a member of the result")
-		return nil, rw.withholdRest()
-	}
-	rw.rawTail = rawStreamTail(window)
-	if _, err := rw.ResponseWriter.Write(data[:n]); err != nil {
-		return nil, err
-	}
-	if !ended {
+	window := slices.Concat(rw.forwardTail, data[:n])
+	if !mayNameResultMember(window) {
+		rw.forwardTail = forwardTailOf(window)
+		if _, err := rw.ResponseWriter.Write(data[:n]); err != nil {
+			return nil, err
+		}
+		if ended {
+			rw.forwarding = false
+			rw.forwardTail = nil
+			return data[n:], nil
+		}
 		return nil, nil
 	}
+	rw.warn("an event larger than the middleware reads names a member of the result")
 	rw.forwarding = false
-	rw.rawTail = nil
-	return data[n:], nil
+	rw.forwardTail = nil
+	if hasBareCR(bytes.TrimSuffix(data[:n], sseCR)) {
+		return nil, rw.withholdRest()
+	}
+	cut := []byte("\n\n")
+	if rw.forwardID.IsValid() && rw.forwardMessage {
+		cut = append(cut, sseErrorEvent(withheldResponse(rw.forwardID))...)
+	}
+	if _, err := rw.ResponseWriter.Write(cut); err != nil {
+		return nil, err
+	}
+	rw.flush()
+	if ended {
+		return data[n:], nil
+	}
+	rw.skipping = true
+	return nil, nil
 }
 
-// skip drops data, bytes of the event the writer skips (see releaseOversized),
-// up to the blank line that ends it, and returns the bytes after that line,
+// skip drops data, bytes of the event the writer skips (see releaseHeld), up
+// to the blank line that ends it, and returns the bytes after that line,
 // which start the next event; it returns nothing while the event has not
-// ended. A line that clients split differently would let the event end where
-// this does not look, so it ends the stream.
+// ended. A server that ends lines with a bare CR may never send that blank
+// line, so a bare CR ends the stream rather than leave it silent.
 func (rw *instructionsWriter) skip(data []byte) []byte {
-	if lineSplitIndex(bytes.TrimSuffix(data, sseCR)) >= 0 {
+	if hasBareCR(bytes.TrimSuffix(data, sseCR)) {
 		rw.warn("the event stream has a line ending that clients split differently")
 		_ = rw.withholdRest()
 		return nil
@@ -1049,6 +1068,35 @@ func dispatchedAsMessage(event []sseLine) bool {
 	return len(name) == 0 || string(name) == "message"
 }
 
+// readAlikeByClients reports whether every client splits event into the lines
+// and fields this writer does: no line but a data line holds a bare CR or one
+// of lineSeparators. Inside the value of a data line such a character does no
+// harm. Where this writer decodes the data, the character lies inside a JSON
+// string or, for CR, takes the place of white space, so a client that ends a
+// line there reads a prefix of a JSON value that ends inside it and decodes
+// nothing; data this writer cannot decode is withheld if it may name a result
+// member (see readStreamMessage and readUndecodable). In any other line, a
+// client that ends the line there may read a data line this writer never sees.
+func readAlikeByClients(event []sseLine) bool {
+	for _, line := range event {
+		if lineSplitIndex(bytes.TrimSuffix(line.text, sseCR)) < 0 {
+			continue
+		}
+		if _, isData := sseDataValue(line.text); !isData {
+			return false
+		}
+	}
+	return true
+}
+
+// hasLineSplit reports whether a line of event holds a bare CR or one of
+// lineSeparators.
+func hasLineSplit(event []sseLine) bool {
+	return slices.ContainsFunc(event, func(line sseLine) bool {
+		return lineSplitIndex(bytes.TrimSuffix(line.text, sseCR)) >= 0
+	})
+}
+
 // lineSplitIndex returns the index of the first bare CR (see hasBareCR) or
 // line separator (see lineSeparators) in stream, or -1 when it has none.
 func lineSplitIndex(stream []byte) int {
@@ -1157,10 +1205,10 @@ func unescapeJSONUnicode(data []byte) []byte {
 	return out
 }
 
-// rawStreamTail returns a copy of the last rawStreamTailBytes of data, or of
-// all of it.
-func rawStreamTail(data []byte) []byte {
-	return slices.Clone(data[max(0, len(data)-rawStreamTailBytes):])
+// forwardTailOf returns a copy of the last forwardTailBytes of data, or of all
+// of it.
+func forwardTailOf(data []byte) []byte {
+	return slices.Clone(data[max(0, len(data)-forwardTailBytes):])
 }
 
 // rewriteInstructions returns message, a JSON-RPC response whose result is

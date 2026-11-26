@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -145,6 +148,10 @@ type RunFlags struct {
 	ToolsFilter []string
 	// Tools override file
 	ToolsOverride string
+
+	// Instructions file and how its text combines with the server's instructions
+	InstructionsFile string
+	InstructionsMode string
 
 	// Configuration import
 	FromConfig string
@@ -353,6 +360,11 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"",
 		"Path to a JSON file containing overrides for MCP server tools names and descriptions",
 	)
+	cmd.Flags().StringVar(&config.InstructionsFile, "instructions-file", "",
+		"Path to a text file whose content is added to the instructions the MCP server returns to clients")
+	cmd.Flags().StringVar(&config.InstructionsMode, "instructions-mode", "",
+		"How the --instructions-file text combines with the server's instructions: "+
+			"replace, append, or prepend (default append)")
 	cmd.Flags().StringVar(&config.FromConfig, "from-config", "", "Load configuration from exported file")
 
 	// Environment file processing flags
@@ -655,6 +667,27 @@ func loadToolsOverrideConfig(toolsOverridePath string) (map[string]runner.ToolOv
 	return *loadedToolsOverride, nil
 }
 
+// loadInstructionsConfig reads the instructions file and pairs its text with
+// the mode. It returns nil when no file is given.
+func loadInstructionsConfig(path, mode string) (*instructions.Config, error) {
+	if path == "" {
+		if mode != "" {
+			return nil, fmt.Errorf("--instructions-mode requires --instructions-file")
+		}
+		return nil, nil
+	}
+	// #nosec G304 -- path is the user-supplied --instructions-file flag
+	value, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read instructions file: %w", err)
+	}
+	loaded := &instructions.Config{Mode: instructions.Mode(mode), Value: string(value)}
+	if err := loaded.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid instructions: %w", err)
+	}
+	return loaded, nil
+}
+
 // loadAndMergeWebhookConfigs loads, merges, and validates webhook configuration files.
 // Each file may define validating and/or mutating webhooks. Later files override earlier
 // ones for webhooks with the same name.
@@ -804,6 +837,13 @@ func buildRunnerConfig(
 	if err != nil {
 		return nil, err
 	}
+
+	// Load the instructions before the middleware options below, which read them
+	instructionsConfig, err := loadInstructionsConfig(runFlags.InstructionsFile, runFlags.InstructionsMode)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, runner.WithInstructions(instructionsConfig))
 
 	// Configure remote header forwarding options
 	remoteHeaderOpts, err := configureRemoteHeaderOptions(runFlags)

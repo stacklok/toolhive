@@ -16,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -208,6 +209,13 @@ type Config struct {
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
+
+	// Instructions sets the instructions clients receive in the result of a
+	// successful initialize or server/discover request: vMCP combines it with
+	// any instructions it produces, as mode says. A VirtualMCPServer sets
+	// either spec.instructions or this field, not both.
+	// +optional
+	Instructions *instructions.Config `json:"instructions,omitempty" yaml:"instructions,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

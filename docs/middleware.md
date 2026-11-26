@@ -16,12 +16,13 @@ The middleware chain consists of the following components:
 4. **Token Exchange Middleware**: Exchanges JWT tokens for external service tokens via OAuth 2.0 Token Exchange (optional)
 5. **MCP Parsing Middleware**: Parses JSON-RPC MCP requests and extracts structured data
 6. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
-7. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
-8. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
-9. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
-10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
-11. **On-Behalf-Of (OBO) Middleware**: Exchanges the user's token for a backend-scoped Microsoft Entra token and replaces `Authorization` (optional, operator-configured)
-12. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
+7. **Instructions Middleware**: Sets the `instructions` of `initialize` and `server/discover` results (optional)
+8. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
+9. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
+10. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
+11. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
+12. **On-Behalf-Of (OBO) Middleware**: Exchanges the user's token for a backend-scoped Microsoft Entra token and replaces `Authorization` (optional, operator-configured)
+13. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
 ## Dynamic webhook middleware
 
@@ -893,6 +894,59 @@ A client cannot remove injected headers by naming them in its `Connection` heade
 thv proxy my-server --target-uri https://mcp.example.com --remote-forward-headers "X-Custom-Header=value" --remote-forward-headers "X-API-Key=secret"
 ```
 
+### 13. Instructions Middleware
+
+**Purpose**: Sets the `instructions` an MCP endpoint returns to clients. Clients add server instructions to the model's context while the server is connected, so an operator can add policy or usage guidance without changing the server.
+
+**Location**: `pkg/mcp/instructions_middleware.go`, with the configuration type in `pkg/mcp/instructions`
+
+**Behavior**:
+
+The middleware rewrites the result of a successful `initialize` request and of a successful `server/discover` request, the 2026-07-28 replacement for `initialize`. The mode decides how the configured value combines with the server's instructions:
+
+- `replace`: the value alone.
+- `append` (the default): the server's instructions, a blank line, then the value.
+- `prepend`: the value, a blank line, then the server's instructions.
+
+When the server returns no instructions, every mode returns the value alone. The value is used without leading and trailing ASCII white space (tab, LF, FF, CR and space), the same white space the CRD's `\S` pattern recognises, and is at most 65536 characters. Other white space, such as a no-break space, is kept as text.
+
+The instructions are guidance for the model, not a sanitiser. `replace` removes the server's own instructions, but the server still reaches the model through its tool descriptions and tool results.
+
+The transport, fixed when the middleware is configured, decides what it reads:
+
+- On Streamable HTTP it reads the response to a POSTed `initialize` or `server/discover` request, as a JSON body or an event stream, and rewrites the result whose id is the request's. It also reads a GET with `Last-Event-ID`, which resumes a stream and may replay that result. The response to any other request passes through unread, with its `Content-Length`, and so does any other GET stream, on which a Streamable HTTP server sends no response. vMCP serves Streamable HTTP only.
+- On the legacy SSE transport (transport `sse`, or `stdio` with proxy mode `sse`) the result arrives on the event stream a GET opened, not in the response to the POST. There the middleware reads GET streams and leaves POST responses alone.
+
+The middleware drops the byte order marks an event stream starts with before it reads lines, as clients drop a leading mark, so that the first event's type is read as they read it. It forwards the stream without them, as the tool filter does, so every client then reads the same events.
+
+On the stream that answers a POST, the middleware reads every event, whatever its `event` type, because some clients dispatch every type as a message: the go-sdk legacy SSE client does. The result in an event of any type is rewritten. Only an event without a type or of type `message`, which every client dispatches, ends the search, and after it the rest of the stream passes through unread. A result in an event of another type therefore cannot let a later result through unread. When only an event of another type carried the result, the stream ends with an error event.
+
+A stream a GET opened answers no single request. On the legacy SSE transport it carries every response of the session, and a resumed Streamable HTTP stream may replay any of them. The middleware reads such a stream for as long as it lasts, and rewrites every result that has `protocolVersion`, `serverInfo` or `supportedVersions`, under any spelling a decoder binds to them, whatever its id or `event` type. A decoy result before the real one therefore changes nothing. This costs a check of every event's bytes for the life of the stream: an event that names none of those members, even through JSON escapes or case folding, passes without being decoded, and only the rest is decoded. Events are held until they end, up to 16 MiB, the size the go-sdk lets one event reach by default. An event that grows past that and names none of those members so far is forwarded as it arrives, while its bytes are still checked, so a large tool or resource result reaches the client intact. The limit that remains is on an event over 16 MiB that may name one of them: it is withheld alone, and the stream goes on. When the name shows only after part of the event has been forwarded, that part cannot be recalled, so the middleware ends the event there with a blank line, which every client reads as the end of an event. The client then holds an event cut short, whose bytes name no result member, followed by the error event when the start of the event named the request it answers, and the rest of the event is skipped.
+
+A rewrite sets the result's `instructions` member and keeps every other member as the server sent it. A body the middleware reads loses its `Content-Length`, since the rewrite changes its length. Error responses and responses with a non-2xx status pass through unchanged.
+
+The middleware fails closed, as the tool filter does, so that a server cannot keep the configured text from clients. It withholds a response it reads but cannot rewrite, logs the cause as a warning once per response, and answers with a JSON-RPC error with code `-32603` and the message `internal error`. That covers:
+
+- a body with a content coding or a charset other than UTF-8, or an ambiguous `Content-Type`;
+- a 2xx answer to a POSTed `initialize` or `server/discover` that is neither JSON nor an event stream, or that ends without the result, empty bodies included;
+- in the response to a POST, a JSON body or an event that has not ended larger than 1 MiB, and on a stream a GET opened, an event larger than 16 MiB that may name a result member;
+- an event that may name a result member and has a line that clients split differently: a bare CR, or VT, FF, FS, GS, RS, NEL, U+2028 or U+2029, outside the value of a data line. Every client agrees where an event ends, so the event is decided alone and the events after it are read as usual. Inside a data value these characters do no harm, so a tool result with a pasted paragraph changes nothing, although such an event does not end the search on the stream that answers a POST, since clients that split lines there cannot decode it;
+- a result that does not decode as one unambiguous JSON-RPC message, such as one that spells a member twice or in another case, or that is not an object.
+
+A whole body is answered with the error alone, under HTTP 500 with its own `Content-Length`, without the server's status or `Content-Encoding`. For that reason the client receives nothing of a JSON reply, its status included, until the server has sent all of it. An event stream's status and headers are forwarded at once, and the error event takes the place of the event that carried the result. An event whose request cannot be named, or of a type other than `message`, is dropped rather than replaced, since clients that skip that type would read an error in its place as their answer.
+
+Some failures end the response. On the stream that answers a POST, an event over the bound, or an event not yet ended whose server ends lines with a bare CR, ends the stream after an error event. On a stream a GET opened, an event that may name a result member is withheld alone, as above, and the stream goes on. Only a server that ends lines with a bare CR, which leaves no event end that every client agrees on, gets its GET stream ended, once what it sends may name a result member; until then its events are forwarded as they arrive. A GET whose body cannot be read is answered with the error and ends. Whenever a response ends, the middleware returns an error to the handler's next write, so that the handler stops and the client sees the response end instead of waiting on a connection that delivers nothing more.
+
+Like the tool filter, the middleware forwards a request whose response it reads without the client's `Accept-Encoding`, so the backend answers in the clear. A well-behaved server never meets the cases above.
+
+**Configuration**:
+- `thv run --instructions-file <path> [--instructions-mode replace|append|prepend]`
+- RunConfig: `instructions` with `mode` and `value`
+- Operator: `spec.instructions` on MCPServer, MCPRemoteProxy and VirtualMCPServer
+- vMCP: `instructions` in the vMCP configuration. A VirtualMCPServer sets `spec.instructions` or `spec.config.instructions`, not both.
+
+**Placement**: Inside the MCP Parser, whose parse names the `initialize` and `server/discover` requests, so the middleware outside it, such as audit and the tool filter, sees the rewritten result. Behind the stdio streamable HTTP proxy, a later handshake is answered from the cached InitializeResult. The cache holds the backend's own result and the middleware rewrites each response, so every client receives the configured text once.
+
 ## Data Flow Through Context
 
 The middleware chain uses Go's `context.Context` to pass data between components:
@@ -1284,15 +1338,16 @@ The middleware chain execution order is critical and controlled by the order in 
 5. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
 6. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
 7. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
-8. **Telemetry Middleware** (if enabled) - Starts the request span; finalizes MCP identity after the inner chain returns
-9. **Rate Limit Middleware** (if configured) - Enforces per-identity/tool limits using the parsed request
-10. **Mutating Webhook Middleware** (if configured) - Patches the parsed MCP request and republishes the parse
-11. **Validating Webhook Middleware** (if configured) - Approves or denies the (possibly mutated) request
-12. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
-13. **Authorization Middleware** (if enabled) - Cedar policy evaluation
-14. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
-15. **On-Behalf-Of (OBO) Middleware** (if an `obo` external auth config is referenced) - Exchanges the user's token at Entra and replaces `Authorization`; spliced in from `AdditionalMiddlewareConfigs`
-16. **Recovery Middleware** (always present) - Catches panics
+8. **Instructions Middleware** (if configured) - Sets the instructions of `initialize` and `server/discover` results
+9. **Telemetry Middleware** (if enabled) - Starts the request span; finalizes MCP identity after the inner chain returns
+10. **Rate Limit Middleware** (if configured) - Enforces per-identity/tool limits using the parsed request
+11. **Mutating Webhook Middleware** (if configured) - Patches the parsed MCP request and republishes the parse
+12. **Validating Webhook Middleware** (if configured) - Approves or denies the (possibly mutated) request
+13. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
+14. **Authorization Middleware** (if enabled) - Cedar policy evaluation
+15. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
+16. **On-Behalf-Of (OBO) Middleware** (if an `obo` external auth config is referenced) - Exchanges the user's token at Entra and replaces `Authorization`; spliced in from `AdditionalMiddlewareConfigs`
+17. **Recovery Middleware** (always present) - Catches panics
 
 **Important Ordering Rules**:
 - Audit wraps the whole chain (directly inside the body-size limit): every request that passes the size cap produces an audit event no matter which middleware rejects it. It does not need to run inside auth or the parser — those publish the identity and parsed MCP data back to it via `auth.IdentityHolder` and `mcp.ParsedRequestHolder`.
@@ -1302,6 +1357,7 @@ The middleware chain execution order is critical and controlled by the order in 
 - Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
+- Instructions must come after the MCP Parser, whose parse names the `initialize` and `server/discover` requests whose results it rewrites. On the CLI flag path, `addCoreMiddlewares` adds Usage Metrics right after the parser when it is enabled, so there Instructions follows Usage Metrics
 - Telemetry must come before Rate Limiting so the limiter can annotate the active request span; telemetry finalizes MCP names, attributes, and metrics after downstream processing from the shared parsed-request holder
 - Rate Limiting must come before webhooks so rejected traffic does not invoke outbound webhook requests
 - Mutating webhooks must come before Validating webhooks and before Authorization, so policy evaluation sees the patched request
@@ -1310,7 +1366,7 @@ The middleware chain execution order is critical and controlled by the order in 
 - OBO comes after Header Forward and before Recovery, so it has the final say on the outbound `Authorization` header; it needs the identity the Authentication Middleware publishes, which is why the operator requires `oidcConfigRef` alongside an `obo` config
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
 - Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. The transparent proxy's `Connection` header check (see [Client `Connection` header](#client-connection-header)) runs before all of them. Their rejections (400/413/403) are the only ones not audited.
-- The list above (steps 1-16) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
+- The list above (steps 1-17) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
 
 ### Client `Connection` header
 

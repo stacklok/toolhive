@@ -154,6 +154,8 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1beta1.MCPServer, error) 
 
 	// Note: ToolsFilter is not exported to CRD; use MCPToolConfig resource with toolConfigRef instead
 
+	mcpServer.Spec.Instructions = config.Instructions.DeepCopy()
+
 	return mcpServer, nil
 }
 

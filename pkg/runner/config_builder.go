@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -730,6 +731,21 @@ func WithToolsOverride(toolOverride map[string]ToolOverride) RunConfigBuilderOpt
 	}
 }
 
+// WithInstructions sets the instructions the server returns in its initialize
+// and server/discover results. A nil cfg leaves them as the server sends them.
+func WithInstructions(cfg *instructions.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if cfg == nil {
+			return nil
+		}
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		b.config.Instructions = cfg
+		return nil
+	}
+}
+
 // WithIgnoreConfig sets the ignore configuration
 func WithIgnoreConfig(ignoreConfig *ignore.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -792,6 +808,17 @@ func WithMiddlewareFromFlags(
 			disableUsageMetrics,
 		)
 
+		// Add the instructions middleware inside the MCP parser that
+		// addCoreMiddlewares added, as PopulateMiddlewareConfigs does. It reads
+		// the RunConfig's Instructions and ProxyMode, so WithInstructions and
+		// WithProxyMode must come first.
+		var err error
+		middlewareConfigs, err = addInstructionsMiddleware(middlewareConfigs, b.config.Instructions,
+			types.EffectiveProxyMode(types.TransportType(transportType), b.config.ProxyMode))
+		if err != nil {
+			return err
+		}
+
 		// NOTE: Header forward middleware is NOT added here because secret-backed
 		// headers are not yet resolved at builder time. It is added in Runner.Run()
 		// after WithSecrets() resolves all secret references.
@@ -808,7 +835,6 @@ func WithMiddlewareFromFlags(
 		// patches "method" itself. The broader ordering TODO remains to unify these paths.
 
 		// Add Mutating webhooks before Validating webhooks
-		var err error
 		middlewareConfigs, err = addMutatingWebhookMiddleware(middlewareConfigs, b.config)
 		if err != nil {
 			return err

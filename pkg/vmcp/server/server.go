@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	baseratelimit "github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -175,6 +176,11 @@ type Config struct {
 	// into the header-forward config of each backend call the request triggers.
 	// Empty disables capture (no middleware is installed).
 	PassthroughHeaders []string
+
+	// Instructions sets the instructions of the initialize and server/discover
+	// results the MCP endpoint returns (see mcp.NewInstructionsMiddleware). If
+	// nil, they are returned as the SDK and the core produce them.
+	Instructions *instructions.Config
 
 	// RateLimiter is the optional core-layer limiter applied at CallTool.
 	// It runs below the session optimizer, so tool names are already resolved
@@ -759,6 +765,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	//   forwarded-header capture (if PassthroughHeaders is set) →
 	//   audit (if configured) → auth (if configured) → MCP-parsing →
 	//   telemetry (if configured) → host-guard → call binding →
+	//   instructions (if configured) →
 	//   classification → session ownership (Legacy only) → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
@@ -802,6 +809,22 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// dispatcher 403 is still recorded by the telemetry middleware instead of
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
+
+	// Set the instructions of initialize and server/discover results. Applied
+	// outside classification, so it reads the SDK's initialize and
+	// server/discover results and the Modern dispatcher's server/discover
+	// result alike, and inside the MCP-parsing middleware, whose parse names
+	// the request a response answers. vMCP serves Streamable HTTP only, so
+	// LegacySSE stays unset: of its GET streams, the middleware reads only
+	// one a GET with Last-Event-ID resumes, which may replay a result.
+	if s.config.Instructions != nil {
+		instructionsMiddleware, err := mcpparser.NewInstructionsMiddleware(
+			mcpparser.InstructionsMiddlewareParams{Instructions: *s.config.Instructions})
+		if err != nil {
+			return nil, fmt.Errorf("invalid instructions configuration: %w", err)
+		}
+		mcpHandler = instructionsMiddleware(mcpHandler)
+	}
 
 	// Enforce access tokens bound to one MCP call. It runs before
 	// classification, so Legacy and Modern requests both pass through it, and

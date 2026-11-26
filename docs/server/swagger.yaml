@@ -2239,6 +2239,8 @@ components:
         image:
           description: Image is the Docker image to run
           type: string
+        instructions:
+          $ref: '#/components/schemas/instructions.Config'
         isolate_network:
           description: IsolateNetwork indicates whether to isolate the network for
             the container
@@ -3106,6 +3108,33 @@ components:
         printOverlays:
           description: Whether to print resolved overlay paths for debugging
           type: boolean
+      type: object
+    instructions.Config:
+      description: |-
+        Instructions sets the instructions clients receive in the server's
+        initialize and server/discover results.
+      properties:
+        mode:
+          description: |-
+            Mode says how value combines with the instructions the server returns.
+            replace returns value alone. append returns the server's instructions,
+            a blank line, and value. prepend returns value, a blank line, and the
+            server's instructions. When the server returns no instructions, every
+            mode returns value alone.
+            +kubebuilder:validation:Enum=replace;append;prepend
+            +kubebuilder:default=append
+            +optional
+          type: string
+        value:
+          description: |-
+            Value is the text that mode combines with the server's instructions.
+            Leading and trailing ASCII white space (tab, LF, FF, CR, space) is
+            dropped, and a value that is only such white space is rejected.
+            +kubebuilder:validation:Required
+            +kubebuilder:validation:MinLength=1
+            +kubebuilder:validation:MaxLength=65536
+            +kubebuilder:validation:Pattern=`\S`
+          type: string
       type: object
     model.Argument:
       properties:

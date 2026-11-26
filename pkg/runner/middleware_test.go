@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/instructions"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -769,6 +770,7 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 		upstreamswap.MiddlewareType,
 		awssts.MiddlewareType,
 		obo.MiddlewareType,
+		mcp.InstructionsMiddlewareType,
 	} {
 		_, ok := factories[key]
 		assert.True(t, ok, "factory map should contain %q", key)
@@ -2163,4 +2165,81 @@ func TestPopulateMiddlewareConfigs_StripAuthConflicts(t *testing.T) {
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
+}
+
+// TestInstructionsMiddlewareWiring pins where both middleware paths put the
+// instructions middleware: inside the MCP parser, whose parse names the
+// initialize and server/discover requests it rewrites the responses of, only
+// when instructions are configured, and reading the legacy SSE stream only
+// when clients speak that transport.
+func TestInstructionsMiddlewareWiring(t *testing.T) {
+	t.Parallel()
+
+	cfg := &instructions.Config{Mode: instructions.ModePrepend, Value: "policy"}
+	fromFlags := func(t *testing.T, cfg *instructions.Config, transport types.TransportType, proxyMode types.ProxyMode) []types.MiddlewareConfig {
+		t.Helper()
+		built, err := NewRunConfigBuilder(t.Context(), nil, nil, nil,
+			WithName("test"),
+			WithProxyMode(proxyMode),
+			WithInstructions(cfg),
+			WithMiddlewareFromFlags(nil, nil, nil, nil, nil, "", false, "", "", transport.String(), false),
+		)
+		require.NoError(t, err)
+		return built.MiddlewareConfigs
+	}
+	populated := func(t *testing.T, cfg *instructions.Config, transport types.TransportType, proxyMode types.ProxyMode) []types.MiddlewareConfig {
+		t.Helper()
+		config := &RunConfig{Instructions: cfg, AuthzConfig: &authz.Config{}, Transport: transport, ProxyMode: proxyMode}
+		require.NoError(t, PopulateMiddlewareConfigs(config))
+		return config.MiddlewareConfigs
+	}
+
+	transports := []struct {
+		name      string
+		transport types.TransportType
+		proxyMode types.ProxyMode
+		legacySSE bool
+	}{
+		{name: "streamable-http", transport: types.TransportTypeStreamableHTTP},
+		{name: "stdio behind streamable-http", transport: types.TransportTypeStdio, proxyMode: types.ProxyModeStreamableHTTP},
+		{name: "sse", transport: types.TransportTypeSSE, legacySSE: true},
+		{name: "stdio behind sse", transport: types.TransportTypeStdio, proxyMode: types.ProxyModeSSE, legacySSE: true},
+	}
+	for path, build := range map[string]func(*testing.T, *instructions.Config, types.TransportType, types.ProxyMode) []types.MiddlewareConfig{
+		"PopulateMiddlewareConfigs": populated,
+		"WithMiddlewareFromFlags":   fromFlags,
+	} {
+		for _, tt := range transports {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				mws := build(t, cfg, tt.transport, tt.proxyMode)
+				parserIdx := indexOfMiddleware(t, mws, mcp.ParserMiddlewareType)
+				instructionsIdx := indexOfMiddleware(t, mws, mcp.InstructionsMiddlewareType)
+				assert.Less(t, parserIdx, instructionsIdx,
+					"the instructions middleware goes inside the MCP parser")
+				var params mcp.InstructionsMiddlewareParams
+				require.NoError(t, json.Unmarshal(mws[instructionsIdx].Parameters, &params))
+				assert.Equal(t, mcp.InstructionsMiddlewareParams{Instructions: *cfg, LegacySSE: tt.legacySSE}, params)
+
+				for _, mw := range build(t, nil, tt.transport, tt.proxyMode) {
+					assert.NotEqual(t, mcp.InstructionsMiddlewareType, mw.Type,
+						"no instructions middleware without instructions")
+				}
+			})
+		}
+	}
+}
+
+func TestWithInstructions(t *testing.T) {
+	t.Parallel()
+
+	built, err := NewRunConfigBuilder(t.Context(), nil, nil, nil,
+		WithInstructions(&instructions.Config{Value: "policy"}))
+	require.NoError(t, err)
+	assert.Equal(t, &instructions.Config{Value: "policy"}, built.Instructions)
+
+	_, err = NewRunConfigBuilder(t.Context(), nil, nil, nil,
+		WithInstructions(&instructions.Config{Mode: "after", Value: "policy"}))
+	require.ErrorContains(t, err, "invalid instructions mode")
 }

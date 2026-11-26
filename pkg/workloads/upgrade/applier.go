@@ -385,6 +385,9 @@ func preserveUserConfigFields(dst, old *runner.RunConfig) {
 	dst.ToolsFilter = old.ToolsFilter
 	dst.ToolsOverride = maps.Clone(old.ToolsOverride)
 
+	// Instructions the operator adds to the server's own.
+	dst.Instructions = old.Instructions
+
 	// The pre-built middleware chain. It is derived from the fields above; carry
 	// it over verbatim so the upgraded workload keeps the exact same chain rather
 	// than silently losing all middleware (the builder only rebuilds the chain

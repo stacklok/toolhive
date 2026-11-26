@@ -1990,6 +1990,9 @@ const docTemplate = `{
                         "description": "Image is the Docker image to run",
                         "type": "string"
                     },
+                    "instructions": {
+                        "$ref": "#/components/schemas/instructions.Config"
+                    },
                     "isolate_network": {
                         "description": "IsolateNetwork indicates whether to isolate the network for the container",
                         "type": "boolean"
@@ -2954,6 +2957,20 @@ const docTemplate = `{
                     "printOverlays": {
                         "description": "Whether to print resolved overlay paths for debugging",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "instructions.Config": {
+                "description": "Instructions sets the instructions clients receive in the server's\ninitialize and server/discover results.",
+                "properties": {
+                    "mode": {
+                        "description": "Mode says how value combines with the instructions the server returns.\nreplace returns value alone. append returns the server's instructions,\na blank line, and value. prepend returns value, a blank line, and the\nserver's instructions. When the server returns no instructions, every\nmode returns value alone.\n+kubebuilder:validation:Enum=replace;append;prepend\n+kubebuilder:default=append\n+optional",
+                        "type": "string"
+                    },
+                    "value": {
+                        "description": "Value is the text that mode combines with the server's instructions.\nLeading and trailing ASCII white space (tab, LF, FF, CR, space) is\ndropped, and a value that is only such white space is rejected.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1\n+kubebuilder:validation:MaxLength=65536\n+kubebuilder:validation:Pattern=` + "`" + `\\S` + "`" + `",
+                        "type": "string"
                     }
                 },
                 "type": "object"

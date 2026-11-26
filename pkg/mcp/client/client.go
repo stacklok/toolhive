@@ -11,6 +11,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -41,14 +42,17 @@ type ProbeResult struct {
 // or invoke any server capabilities.
 func Probe(ctx context.Context, serverURL, transport, clientName string) (*ProbeResult, error) {
 	if transport == TransportAuto {
+		// Keep every attempt's error: the cause (a 401 versus a 503 or a timeout)
+		// tells a readiness gate whether to fix credentials or retry.
+		var errs []error
 		for _, candidate := range []string{string(types.TransportTypeStreamableHTTP), string(types.TransportTypeSSE)} {
 			result, err := probeTransport(ctx, serverURL, candidate, clientName)
 			if err == nil {
 				return result, nil
 			}
-			slog.Debug("MCP probe transport failed", "transport", candidate, "error", err)
+			errs = append(errs, fmt.Errorf("%s: %w", candidate, err))
 		}
-		return nil, fmt.Errorf("MCP initialize failed for streamable-http and SSE")
+		return nil, fmt.Errorf("MCP initialize failed: %w", errors.Join(errs...))
 	}
 	return probeTransport(ctx, serverURL, transport, clientName)
 }
@@ -59,8 +63,10 @@ func probeTransport(ctx context.Context, serverURL, transport, clientName string
 		return nil, err
 	}
 	result, err := startAndInitializeResult(ctx, c, clientName)
-	if closeErr := c.Close(); err == nil && closeErr != nil {
-		err = fmt.Errorf("close MCP client after probe: %w", closeErr)
+	// Readiness depends on the handshake, not on session teardown: an ingress
+	// that rejects the closing DELETE must not mark a ready server as not ready.
+	if closeErr := c.Close(); closeErr != nil {
+		slog.Warn(fmt.Sprintf("Failed to close MCP client: %v", closeErr))
 	}
 	if err != nil {
 		return nil, err

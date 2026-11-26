@@ -284,6 +284,12 @@ func TestCachingAggregator_LeaderCancelledWaiterSweepsOnOwnContext(t *testing.T)
 			},
 		},
 		{
+			name: "leader sweep fails as if no backend answered",
+			leaderResult: func(context.Context) (*aggregator.AggregatedCapabilities, error) {
+				return nil, fmt.Errorf("query backends: %w", aggregator.ErrNoBackendCapabilities)
+			},
+		},
+		{
 			name: "leader sweep succeeds with a partial view",
 			leaderResult: func(context.Context) (*aggregator.AggregatedCapabilities, error) {
 				return &aggregator.AggregatedCapabilities{}, nil

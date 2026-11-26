@@ -250,7 +250,10 @@ func (c *cachingAggregator) sharedSweep(
 	}
 	caps, err := c.sweep(ctx, key, gen, backends)
 	if err != nil {
-		if ctx.Err() != nil && isContextError(err) {
+		if ctx.Err() != nil {
+			// Any failure after the leader's context ended may come from it, even one
+			// that is not a context error: DefaultAggregator skips each backend that
+			// fails, cancellation included, and then reports that no backend answered.
 			return nil, &leaderContextError{err: err}
 		}
 		return nil, err
@@ -311,11 +314,6 @@ func (c *cachingAggregator) pruneExpired() {
 			c.cache.Remove(k)
 		}
 	}
-}
-
-// isContextError reports whether err is a context cancellation or deadline error.
-func isContextError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // flightKey scopes a singleflight key to an invalidation generation.

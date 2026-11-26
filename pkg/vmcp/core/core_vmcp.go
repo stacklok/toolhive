@@ -602,7 +602,10 @@ func (c *coreVMCP) LookupBackend(
 // LookupBackendCapabilities implements VMCP.LookupBackendCapabilities. It takes
 // the registry once and decides from that one snapshot whether the lists include
 // backendID, then aggregates once: the backends the lists include when they
-// include it, or backendID alone when its health leaves it out.
+// include it, or the whole registry, as ListBackends does, when its health
+// leaves it out. Conflict resolution depends on which backends are aggregated
+// together, so aggregating it alone could admit an item the whole registry
+// drops, and answer 503 for a backend ListBackends hides.
 func (c *coreVMCP) LookupBackendCapabilities(
 	ctx context.Context, identity *auth.Identity, backendID string,
 ) (*BackendCapabilities, error) {
@@ -617,15 +620,15 @@ func (c *coreVMCP) LookupBackendCapabilities(
 	backends := filterHealthyBackends(all, c.health)
 	listed := slices.ContainsFunc(backends, func(b vmcp.Backend) bool { return b.ID == backendID })
 	if !listed {
-		backends = []vmcp.Backend{all[i]}
+		backends = all
 	}
 
 	agg, err := c.aggregateBackends(ctx, backends)
-	if errors.Is(err, aggregator.ErrNoBackendCapabilities) {
-		// Every backend aggregated failed discovery, this one included.
-		return nil, notFound
-	}
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(err, aggregator.ErrNoBackendCapabilities) {
+			// Every backend aggregated failed discovery, this one included.
+			return nil, notFound
+		}
 		return nil, err
 	}
 	caps, err := c.admittedBackendCapabilities(ctx, identity, agg, backendID)

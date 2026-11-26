@@ -145,10 +145,12 @@ func TestLookupBackendCapabilities_AggregationError(t *testing.T) {
 	assert.NotErrorIs(t, err, vmcp.ErrNotFound)
 }
 
-// TestLookupBackendCapabilities_LeftOutForHealth proves a backend the lists
-// leave out for its health status is aggregated alone: in identity's view, by
-// any kind of item including resource templates, it gets
-// vmcp.ErrBackendUnavailable; out of it, or unreachable, vmcp.ErrNotFound.
+// TestLookupBackendCapabilities_LeftOutForHealth proves that for a backend the
+// lists leave out for its health status the whole registry is aggregated, as
+// ListBackends aggregates it, so conflict resolution decides its items as it
+// does there: in identity's view, by any kind of item including resource
+// templates, it gets vmcp.ErrBackendUnavailable; out of it, or unreachable,
+// vmcp.ErrNotFound.
 func TestLookupBackendCapabilities_LeftOutForHealth(t *testing.T) {
 	t.Parallel()
 	templatesOnly := &aggregator.AggregatedCapabilities{
@@ -180,9 +182,25 @@ func TestLookupBackendCapabilities_LeftOutForHealth(t *testing.T) {
 				}).Times(1)
 			_, err := c.LookupBackendCapabilities(context.Background(), cedarIdentity(), "b2")
 			require.ErrorIs(t, err, tc.want)
-			assert.Equal(t, []string{"b2"}, backendIDs(aggregated), "aggregated alone")
+			assert.Equal(t, []string{"b1", "b2"}, backendIDs(aggregated), "the whole registry is aggregated")
 		})
 	}
+}
+
+// TestLookupBackendCapabilities_CancelledIsNotNotFound proves that when the
+// request's context has ended, an aggregation in which no backend answered is
+// returned as an error, not as vmcp.ErrNotFound: the backends did not fail
+// discovery, the request went away.
+func TestLookupBackendCapabilities_CancelledIsNotNotFound(t *testing.T) {
+	t.Parallel()
+	c, m, _ := newBackendCapabilitiesCore(t, []vmcp.Backend{{ID: "b1"}}, "t1")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).
+		Return(nil, fmt.Errorf("x: %w", aggregator.ErrNoBackendCapabilities))
+	_, err := c.LookupBackendCapabilities(ctx, cedarIdentity(), "b1")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, vmcp.ErrNotFound)
 }
 
 // TestLookupBackendCapabilities_MonitorDecides proves the health monitor's

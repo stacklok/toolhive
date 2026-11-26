@@ -260,8 +260,9 @@ type VMCP interface {
 	//   - any other error when the view cannot be built now.
 	//
 	// A backend the lists include is aggregated with every other backend they
-	// include, so conflict resolution matches the lists. A backend they leave
-	// out for its health is aggregated alone, to decide its visibility only.
+	// include, so conflict resolution matches the lists. For a backend they
+	// leave out for its health, the whole registry is aggregated, as
+	// ListBackends aggregates it, to decide its visibility only.
 	LookupBackendCapabilities(
 		ctx context.Context, identity *auth.Identity, backendID string,
 	) (*BackendCapabilities, error)

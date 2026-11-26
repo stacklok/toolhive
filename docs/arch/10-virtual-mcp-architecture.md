@@ -1557,8 +1557,8 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   `server` must be a backend in the caller's view: one the caller is admitted to at
   least one tool, resource, resource template or prompt of. A server that is unknown,
   hidden by authorization, offers the caller nothing, or contributes nothing to the
-  view (its discovery fails) gets the same 403 `server_not_found`, as an unknown tool
-  gets `tool_not_found`: AS-1 signs any `server` name, so the answer must not tell
+  view (its discovery fails, even when every backend's does) gets the same 403
+  `server_not_found`, as an unknown tool gets `tool_not_found`: AS-1 signs any `server` name, so the answer must not tell
   whether a backend the caller cannot see exists. A backend in the caller's view that
   the core's lists leave out for its health status (unhealthy, unknown or
   unauthenticated, even while it still answers) gets 503; a degraded one stays in the

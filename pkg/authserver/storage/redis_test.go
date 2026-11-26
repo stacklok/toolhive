@@ -6203,6 +6203,101 @@ func TestRedisStorage_CreateProviderIdentity_FailedUserSetWriteLeavesNoLink(t *t
 	require.NoError(t, s.CreateProviderIdentity(ctx, contractIdentity("user-1", "provider-a", "subject-1")))
 }
 
+func TestRedisStorage_ProviderIdentity_LegacyJSONDecodesUnstamped(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	// Old-format JSON without "issuer" or "subject_claim" members.
+	raw := `{"user_id":"user-legacy","provider_id":"default","provider_subject":"sub-1","linked_at":1700000000,"last_used_at":1700000100}`
+	key := redisProviderKey(s.keyPrefix, "default", "sub-1")
+	require.NoError(t, mr.Set(key, raw))
+
+	got, err := s.GetProviderIdentity(ctx, "default", "sub-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-legacy", got.UserID)
+	assert.True(t, got.IsUnstamped())
+	assert.Empty(t, got.Issuer)
+	assert.Empty(t, got.SubjectClaim)
+}
+
+func TestRedisStorage_CompareAndSwapProviderIdentity_FailedSetWritePreservesExistingRow(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-old", CreatedAt: now, UpdatedAt: now}))
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-new", CreatedAt: now, UpdatedAt: now}))
+
+	oldID := &ProviderIdentity{
+		UserID: "user-old", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://old.example.com", SubjectClaim: "sub",
+		LinkedAt: now, LastUsedAt: now,
+	}
+	require.NoError(t, s.CreateProviderIdentity(ctx, oldID))
+
+	// Corrupt the new user's provider set with a non-set key so WRONGTYPE fires.
+	require.NoError(t, mr.Set(redisSetKey(s.keyPrefix, KeyTypeUserProviders, "user-new"), "not-a-set"))
+
+	newID := &ProviderIdentity{
+		UserID: "user-new", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://new.example.com", SubjectClaim: "oid",
+		LinkedAt: now, LastUsedAt: now,
+	}
+	err := s.CompareAndSwapProviderIdentity(ctx, oldID, newID)
+	require.Error(t, err)
+
+	// Existing row must remain intact, not deleted.
+	got, err := s.GetProviderIdentity(ctx, "provider-a", "subject-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-old", got.UserID)
+	assert.Equal(t, "https://old.example.com", got.Issuer)
+	assert.Equal(t, "sub", got.SubjectClaim)
+}
+
+func TestRedisStorage_CompareAndSwapProviderIdentity_CorruptJSONFailsClosed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, mr := newTestRedisStorage(t)
+
+	now := time.Now()
+	require.NoError(t, s.CreateUser(ctx, &User{ID: "user-new", CreatedAt: now, UpdatedAt: now}))
+	key := redisProviderKey(s.keyPrefix, "provider-a", "subject-1")
+	require.NoError(t, mr.Set(key, "{not-valid-json"))
+
+	exp := &ProviderIdentity{UserID: "user-old", ProviderID: "provider-a", ProviderSubject: "subject-1"}
+	rep := &ProviderIdentity{
+		UserID: "user-new", ProviderID: "provider-a", ProviderSubject: "subject-1",
+		Issuer: "https://new.example.com", SubjectClaim: "sub",
+	}
+	err := s.CompareAndSwapProviderIdentity(ctx, exp, rep)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrProviderIdentityChanged)
+	assert.NotErrorIs(t, err, ErrNotFound)
+}
+
+func TestRedisStorage_MigrateLegacyUpstreamData_PreservesBindingFields(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		now := time.Now()
+		require.NoError(t, s.CreateUser(ctx, &User{ID: "user-migrate-bound", CreatedAt: now, UpdatedAt: now}))
+
+		legacyIdentity := &ProviderIdentity{
+			UserID: "user-migrate-bound", ProviderID: "oidc", ProviderSubject: "sub-bound",
+			Issuer: "https://idp.example.com", SubjectClaim: "oid",
+			LinkedAt: now, LastUsedAt: now,
+		}
+		require.NoError(t, s.CreateProviderIdentity(ctx, legacyIdentity))
+
+		require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "my-upstream", "oidc"))
+
+		migrated, err := s.GetProviderIdentity(ctx, "my-upstream", "sub-bound")
+		require.NoError(t, err)
+		assert.Equal(t, "https://idp.example.com", migrated.Issuer)
+		assert.Equal(t, "oid", migrated.SubjectClaim)
+	})
+}
+
 // setHas reports set membership, treating a missing set as empty.
 func setHas(mr *miniredis.Miniredis, key, member string) bool {
 	ok, err := mr.IsMember(key, member)

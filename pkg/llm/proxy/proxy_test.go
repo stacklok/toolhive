@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -61,20 +62,34 @@ func newTLSGateway(t *testing.T, handler http.Handler) *Proxy {
 	gateway := httptest.NewTLSServer(handler)
 	t.Cleanup(gateway.Close)
 
-	cfg := &llm.Config{
-		GatewayURL: gateway.URL,
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
-	p, err := New(cfg, &stubTokenSource{token: "test-token"})
-	require.NoError(t, err)
+	p := newProxyOnFreePort(t, gateway.URL, &stubTokenSource{token: "test-token"})
 	p.transport = gateway.Client().Transport
-	t.Cleanup(func() { _ = p.listener.Close() })
 	return p
 }
 
+// newProxyOnFreePort creates a Proxy for gatewayURL listening on a free loopback
+// port, and closes its listener when the test ends. New binds the configured
+// port, so freePort finds one first; a parallel test can take that port before
+// New binds it, so a bind that finds it in use is retried on another port.
+func newProxyOnFreePort(t *testing.T, gatewayURL string, ts TokenSource, opts ...Option) *Proxy {
+	t.Helper()
+	const maxAttempts = 5
+	for attempt := 1; ; attempt++ {
+		cfg := &llm.Config{GatewayURL: gatewayURL, Proxy: llm.ProxyConfig{ListenPort: freePort(t)}}
+		p, err := New(cfg, ts, opts...)
+		if errors.Is(err, syscall.EADDRINUSE) && attempt < maxAttempts {
+			continue
+		}
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = p.listener.Close() })
+		return p
+	}
+}
+
 // freePort returns an available TCP port on loopback.
-// It binds then immediately closes to discover the port number; there is a
-// small TOCTOU window before the caller binds, which is acceptable in tests.
+// It binds then immediately closes to discover the port number; another test
+// can take the port before the caller binds it, so callers that bind it should
+// go through newProxyOnFreePort, which retries.
 func freePort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -96,19 +111,12 @@ func TestNew_RejectsHTTPGatewayURL(t *testing.T) {
 
 func TestNew_ValidConfig(t *testing.T) {
 	t.Parallel()
-	cfg := &llm.Config{
-		GatewayURL: "https://gateway.example.com",
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
-	p, err := New(cfg, &stubTokenSource{token: "tok"})
-	require.NoError(t, err)
+	p := newProxyOnFreePort(t, "https://gateway.example.com", &stubTokenSource{token: "tok"})
 	require.NotNil(t, p)
 	// Addr must be a valid TCP address on loopback.
 	host, _, splitErr := net.SplitHostPort(p.Addr())
 	require.NoError(t, splitErr)
 	assert.Equal(t, "127.0.0.1", host)
-	// Close the listener to free the port.
-	_ = p.listener.Close()
 }
 
 func TestHandler_InjectsToken(t *testing.T) {
@@ -165,13 +173,7 @@ func TestHandler_StripsIncomingAuthorization(t *testing.T) {
 
 func TestHandler_RejectsDNSRebindingHost(t *testing.T) {
 	t.Parallel()
-	cfg := &llm.Config{
-		GatewayURL: "https://gateway.example.com",
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
-	p, err := New(cfg, &stubTokenSource{token: "tok"})
-	require.NoError(t, err)
-	defer p.listener.Close()
+	p := newProxyOnFreePort(t, "https://gateway.example.com", &stubTokenSource{token: "tok"})
 
 	for _, host := range []string{"evil.com", "evil.com:80", "192.168.1.1", "192.168.1.1:8080"} {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -193,13 +195,7 @@ func TestHandler_RejectsDNSRebindingHost(t *testing.T) {
 
 func TestHandler_Returns502OnTokenError(t *testing.T) {
 	t.Parallel()
-	cfg := &llm.Config{
-		GatewayURL: "https://gateway.example.com",
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
-	p, err := New(cfg, &stubTokenSource{err: errors.New("token unavailable")})
-	require.NoError(t, err)
-	defer p.listener.Close()
+	p := newProxyOnFreePort(t, "https://gateway.example.com", &stubTokenSource{err: errors.New("token unavailable")})
 
 	req := loopbackRequest("/v1/chat/completions")
 	w := httptest.NewRecorder()
@@ -214,13 +210,7 @@ func TestHandler_Returns502OnTokenError(t *testing.T) {
 
 func TestHandler_Returns401WithActionableMessageOnErrTokenRequired(t *testing.T) {
 	t.Parallel()
-	cfg := &llm.Config{
-		GatewayURL: "https://gateway.example.com",
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
-	p, err := New(cfg, &stubTokenSource{err: llm.ErrTokenRequired})
-	require.NoError(t, err)
-	defer p.listener.Close()
+	p := newProxyOnFreePort(t, "https://gateway.example.com", &stubTokenSource{err: llm.ErrTokenRequired})
 
 	req := loopbackRequest("/v1/chat/completions")
 	w := httptest.NewRecorder()
@@ -239,12 +229,7 @@ func TestHandler_Returns401WithActionableMessageOnErrTokenRequired(t *testing.T)
 // t.Cleanup runs.
 func startTestProxy(t *testing.T, gateway *httptest.Server) string {
 	t.Helper()
-	cfg := &llm.Config{
-		GatewayURL: gateway.URL,
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
-	p, err := New(cfg, &stubTokenSource{token: "test-token"})
-	require.NoError(t, err)
+	p := newProxyOnFreePort(t, gateway.URL, &stubTokenSource{token: "test-token"})
 	p.transport = gateway.Client().Transport
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -363,13 +348,7 @@ func TestWithTLSSkipVerify(t *testing.T) {
 
 	t.Run("default transport rejects self-signed cert", func(t *testing.T) {
 		t.Parallel()
-		cfg := &llm.Config{
-			GatewayURL: gateway.URL,
-			Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-		}
-		p, err := New(cfg, &stubTokenSource{token: "tok"})
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = p.listener.Close() })
+		p := newProxyOnFreePort(t, gateway.URL, &stubTokenSource{token: "tok"})
 
 		req := loopbackRequest("/v1/models")
 		w := httptest.NewRecorder()
@@ -381,13 +360,7 @@ func TestWithTLSSkipVerify(t *testing.T) {
 
 	t.Run("WithTLSSkipVerify(true) accepts self-signed cert", func(t *testing.T) {
 		t.Parallel()
-		cfg := &llm.Config{
-			GatewayURL: gateway.URL,
-			Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-		}
-		p, err := New(cfg, &stubTokenSource{token: "tok"}, WithTLSSkipVerify(true))
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = p.listener.Close() })
+		p := newProxyOnFreePort(t, gateway.URL, &stubTokenSource{token: "tok"}, WithTLSSkipVerify(true))
 
 		req := loopbackRequest("/v1/models")
 		w := httptest.NewRecorder()
@@ -434,10 +407,6 @@ func newBlockingTokenProxy(t *testing.T) (p *Proxy, release chan struct{}, sawCt
 	}))
 	t.Cleanup(gateway.Close)
 
-	cfg := &llm.Config{
-		GatewayURL: gateway.URL,
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
 	release = make(chan struct{})
 	sawCtx = make(chan context.Context, 1)
 	src := &stubTokenSource{
@@ -454,10 +423,8 @@ func newBlockingTokenProxy(t *testing.T) (p *Proxy, release chan struct{}, sawCt
 			}
 		},
 	}
-	p, err := New(cfg, src)
-	require.NoError(t, err)
+	p = newProxyOnFreePort(t, gateway.URL, src)
 	p.transport = gateway.Client().Transport
-	t.Cleanup(func() { _ = p.listener.Close() })
 	return p, release, sawCtx
 }
 

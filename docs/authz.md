@@ -579,6 +579,12 @@ Then `tools/list` will only show the "weather" tool for that user.
 
 A filtered list depends on the caller's permissions, so `tools/list`, `prompts/list`, and `resources/list` responses carry the HTTP header `Cache-Control: private, no-store`, and a `cacheScope` or `ttlMs` member the backend sent in the result is replaced with `"private"` or `0`. The proxy does not add either member when the backend omitted it, so a list from a backend on an MCP revision that predates these members reaches the client without them. A result that repeats `cacheScope` or `ttlMs`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error. `resources/templates/list` responses carry the same header, and their result always includes `cacheScope: "private"` and `ttlMs: 0`.
 
+On the POST path, a filtered method's response that the filter cannot read as labeled is not forwarded unfiltered:
+
+- A body whose `Content-Type` is neither `application/json` nor `text/event-stream` is checked as both. If it carries a JSON-RPC result, it is filtered as if it had been labeled correctly. A body with no result in either shape passes through unchanged.
+- A body, labeled `application/json` or not, that carries a result outside a clean JSON-RPC response, or names a `result` the decoder cannot read (such as one nested past `encoding/json`'s depth limit), gets HTTP 500 with a generic JSON-RPC internal error, served as `application/json`. The error carries the request id, or the body's own top-level id when the request has none.
+- An SSE event with a lone CR line break, whose data could carry a result when split at that CR, is replaced with one `data:` line carrying a JSON-RPC error with the request id. Clients disagree on whether a lone CR ends a line, so the filter cannot know which data the client will read.
+
 The SSE transport (`--transport sse`) and the GET stream of streamable HTTP filter list answers on the event stream. The middleware wraps every `GET`, so this applies to each GET it sees. Each event is filtered as it arrives, with the filter chosen from the result's shape:
 
 - A list answer (tools, prompts, resources, resource templates, skills) is filtered by policy.

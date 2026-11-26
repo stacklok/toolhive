@@ -174,7 +174,9 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		case sniffFilterJSON, sniffRejectJSON:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as JSON",
 				"method", rfw.method, "contentType", contentType)
-			rfw.ResponseWriter.Header().Del("Content-Length")
+			// processJSONResponse answers either route with a filtered Response or
+			// an error, never the backend's bytes, so the head must describe JSON.
+			rfw.relabelAsJSON()
 			return rfw.processJSONResponse(rawResponse)
 		case sniffFilterSSE:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as SSE",
@@ -189,6 +191,9 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 			if id == (jsonrpc2.ID{}) {
 				id = topLevelID(rawResponse)
 			}
+			// The backend's Content-Length and media type describe the dropped
+			// body, not the short JSON error that replaces it.
+			rfw.relabelAsJSON()
 			return rfw.writeErrorResponse(id,
 				errors.New("dropped a frame carrying a result outside a clean Response"))
 		case sniffPassThrough:
@@ -242,9 +247,18 @@ func (rfw *ResponseFilteringWriter) rejectEncodedResponse() {
 	slog.Warn("dropping content-encoded response to a filtered method; its body cannot be filtered",
 		"method", rfw.method, "contentEncoding", truncateForLog(rfw.contentEncoding),
 		"backendStatus", rfw.statusCode)
+	rfw.relabelAsJSON()
+	rfw.statusCode = http.StatusInternalServerError
+}
+
+// relabelAsJSON rewrites the response head for a JSON body the filter writes in
+// place of the backend's: the JSON media type, and none of the backend's entity
+// headers, which describe bytes that are not written. A stale Content-Length
+// larger than the replacement truncates it, and a stale media type mislabels it.
+// It must run before the headers are committed.
+func (rfw *ResponseFilteringWriter) relabelAsJSON() {
 	mcpparser.DeleteEntityHeaders(rfw.Header())
 	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
-	rfw.statusCode = http.StatusInternalServerError
 }
 
 // Flush implements http.Flusher if the underlying ResponseWriter supports it.

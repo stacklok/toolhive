@@ -231,9 +231,10 @@ func serverKeys[T any](
 //     (such as an elicitation reply).
 //
 // A token with a list-call entry may send the handshake, server/discover, ping,
-// GET and DELETE as above, and the list method its entry names, any number of
-// times, each answered with only the items of the entry's server (see
-// serveListCall). It starts no call, so it is never used up.
+// GET and DELETE as above, and the list method its entry names once, answered
+// with all of the entry's server's items (see serveListCall). That list call
+// is the token's one call: it uses the token up, as a tools/call does, and a
+// cancellation for it is admitted while it is open.
 //
 // Everything else is refused (see refuse), and everything after the token's
 // exp with 401. A later refusal, such as the session-ownership 404 or a Cedar
@@ -323,6 +324,13 @@ func (cb *callBinding) servePost(
 		cb.serveInitialize(w, r, next, token, parsed)
 	case slices.Contains(callBindingPassMethods, parsed.Method):
 		next.ServeHTTP(w, r)
+	case parsed.Method == "notifications/cancelled":
+		requestID, ok := cancelledRequestID(parsed.Params)
+		if !ok {
+			cb.refuse(w, r, parsed, token, callbinding.ReasonNoOpenCall)
+			return
+		}
+		cb.serveCallMessage(w, r, next, token, parsed, requestID)
 	case token.Entry.IsList():
 		cb.serveListCall(w, r, next, identity, token, parsed)
 	case parsed.Method == "tools/list":
@@ -331,13 +339,6 @@ func (cb *callBinding) servePost(
 		next.ServeHTTP(w, r)
 	case parsed.Method == "tools/call":
 		cb.serveToolCall(w, r, next, identity, token, parsed)
-	case parsed.Method == "notifications/cancelled":
-		requestID, ok := cancelledRequestID(parsed.Params)
-		if !ok {
-			cb.refuse(w, r, parsed, token, callbinding.ReasonNoOpenCall)
-			return
-		}
-		cb.serveCallMessage(w, r, next, token, parsed, requestID)
 	default:
 		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
 	}
@@ -359,8 +360,13 @@ func (cb *callBinding) servePost(
 // the last key of the unfiltered page, which may name another server's item.
 // So the vMCP follows the pages itself (see listPages) and answers with every
 // one of the server's items in one response, without nextCursor: the client
-// never sees a cursor, so no cursor can name an item it may not list. A list
-// call starts no call and does not use up the token.
+// never sees a cursor, so no cursor can name an item it may not list.
+//
+// A list call is the token's one call, as a tools/call is for a tool-call
+// token: it is recorded before the list is served and uses the token up, so a
+// second request with it is refused with token_reused. The pages the vMCP
+// follows belong to that one call. A refusal before the call is recorded, or
+// a 503 from the list lookup, leaves the token unused.
 //
 // Only an empty body (such as the 202 for a notification), a JSON-RPC error,
 // and a body that is not JSON on a status other than 2xx (such as the
@@ -370,12 +376,14 @@ func (cb *callBinding) serveListCall(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	switch {
-	case parsed.Method == token.Entry.Method:
-	case parsed.Method == "tools/call" || toolcalldetails.IsListMethod(parsed.Method):
-		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodMismatch)
+	if reason := listCallRefusal(token, parsed); reason != "" {
+		cb.refuse(w, r, parsed, token, reason)
 		return
-	default:
+	}
+	requestID, ok := requestIDKey(parsed.ID)
+	if !ok {
+		// A list notification has no ID and gets no answer; nothing
+		// legitimate sends one.
 		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
 		return
 	}
@@ -384,6 +392,11 @@ func (cb *callBinding) serveListCall(
 		cb.unavailable(w, r, parsed, token, "list", err)
 		return
 	}
+	expiry, ok := cb.startCall(w, r, token, parsed, requestID)
+	if !ok {
+		return
+	}
+	defer cb.endCall(r.Context(), token, expiry)
 	first := &listResponseBuffer{header: w.Header(), status: http.StatusOK}
 	next.ServeHTTP(first, r)
 	body := first.body.Bytes()
@@ -422,6 +435,20 @@ func (cb *callBinding) serveListCall(
 	slog.DebugContext(r.Context(), "call binding: answered a call-bound list call",
 		"jti", token.JTI, "client_id", token.ClientID, "server", token.Entry.Server, "method", token.Entry.Method)
 	writeListResponse(w, first.status, out)
+}
+
+// listCallRefusal returns the reason to refuse a request sent with a
+// list-call token, or "" for the entry's own list method: method_mismatch for
+// a tools/call or another list method, method_not_allowed for anything else.
+func listCallRefusal(token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest) string {
+	switch {
+	case parsed.Method == token.Entry.Method:
+		return ""
+	case parsed.Method == "tools/call" || toolcalldetails.IsListMethod(parsed.Method):
+		return callbinding.ReasonMethodMismatch
+	default:
+		return callbinding.ReasonMethodNotAllowed
+	}
 }
 
 // maxListPages bounds the pages one list call follows: at the SDK's page size
@@ -594,16 +621,8 @@ func (cb *callBinding) serveToolCall(
 		return
 	}
 
-	now := cb.now()
-	expiry := cb.recordExpiry(token, now)
-	call := callbinding.Call{SessionID: callSessionID(r, parsed), RequestID: requestID, Started: now}
-	started, err := cb.record.Start(ctx, token.Key, call, expiry)
-	if err != nil {
-		cb.unavailable(w, r, parsed, token, "record", err)
-		return
-	}
-	if !started {
-		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenReused)
+	expiry, ok := cb.startCall(w, r, token, parsed, requestID)
+	if !ok {
 		return
 	}
 	defer cb.endCall(ctx, token, expiry)
@@ -616,6 +635,30 @@ func (cb *callBinding) serveToolCall(
 	// cancellation: accepting messages for a call after its request returns
 	// is left to the change that also accepts them after exp.
 	next.ServeHTTP(w, r)
+}
+
+// startCall records the token as having started the call that requestID
+// names, on the request's session. It returns the record's expiry and true,
+// or answers the request and returns false: token_reused when the token has
+// started a call already, 503 when the record fails. The caller ends the call
+// with endCall once its request returns.
+func (cb *callBinding) startCall(
+	w http.ResponseWriter, r *http.Request, token *callbinding.Token,
+	parsed *mcpparser.ParsedMCPRequest, requestID string,
+) (time.Time, bool) {
+	now := cb.now()
+	expiry := cb.recordExpiry(token, now)
+	call := callbinding.Call{SessionID: callSessionID(r, parsed), RequestID: requestID, Started: now}
+	started, err := cb.record.Start(r.Context(), token.Key, call, expiry)
+	if err != nil {
+		cb.unavailable(w, r, parsed, token, "record", err)
+		return time.Time{}, false
+	}
+	if !started {
+		cb.refuse(w, r, parsed, token, callbinding.ReasonTokenReused)
+		return time.Time{}, false
+	}
+	return expiry, true
 }
 
 // checkToolCall checks a tools/call against the token's entry. It returns

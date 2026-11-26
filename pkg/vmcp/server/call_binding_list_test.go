@@ -74,8 +74,9 @@ func listedKeys(t *testing.T, method, body string) []string {
 }
 
 // TestCallBinding_ListCall checks that a list-call token lists, on Legacy and
-// Modern, only the items of its entry's server, for each list method, and
-// that listing does not use the token up.
+// Modern, only the items of its entry's server, for each list method, once:
+// the list call uses the token up, so a second list call and a new session
+// are refused with token_reused.
 func TestCallBinding_ListCall(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -102,21 +103,22 @@ func TestCallBinding_ListCall(t *testing.T) {
 
 			token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, tc.method)}))
 			session := s.session(t, token)
-			for id := 2; id <= 3; id++ {
-				resp := s.send(t, http.MethodPost, token, session, listBody(id, tc.method), nil)
-				require.Equal(t, http.StatusOK, resp.status, "a list call does not use the token up: %s", resp.body)
-				assert.Equal(t, []string{tc.want}, listedKeys(t, tc.method, resp.body))
-				assert.JSONEq(t, cbJSON(id), string(rpcID(t, resp.body)))
-			}
+			resp := s.send(t, http.MethodPost, token, session, listBody(2, tc.method), nil)
+			require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+			assert.Equal(t, []string{tc.want}, listedKeys(t, tc.method, resp.body))
+			assert.JSONEq(t, "2", string(rpcID(t, resp.body)))
+			requireRefused(t, s.send(t, http.MethodPost, token, session, listBody(3, tc.method), nil),
+				callbinding.ReasonTokenReused, 3)
+			requireRefused(t, s.initialize(t, token), callbinding.ReasonTokenReused, 1)
 
+			modernToken := s.tokens.add("modern", claimsFor(cbClient, "jti-2", []any{listEntry(cbServer, tc.method)}))
 			body, headers := cbModernList(4, tc.method)
-			modern := s.send(t, http.MethodPost, token, "", body, headers)
+			modern := s.send(t, http.MethodPost, modernToken, "", body, headers)
 			require.Equal(t, http.StatusOK, modern.status, "body: %s", modern.body)
 			assert.Equal(t, []string{tc.want}, listedKeys(t, tc.method, modern.body))
 			assert.Contains(t, modern.body, `"resultType"`, "the rest of the Modern result is kept")
-
-			// Listing started no call, so initialize still passes.
-			require.Equal(t, http.StatusOK, s.initialize(t, token).status)
+			body, headers = cbModernList(5, tc.method)
+			requireRefused(t, s.send(t, http.MethodPost, modernToken, "", body, headers), callbinding.ReasonTokenReused, 5)
 		})
 	}
 }
@@ -158,11 +160,11 @@ func TestCallBinding_ListCallMismatches(t *testing.T) {
 			callbinding.ReasonMethodNotAllowed, 30+i)
 	}
 	requireRefused(t, s.send(t, http.MethodPost, token, session, cancelBody("2"), nil),
-		callbinding.ReasonMethodNotAllowed, nil)
+		callbinding.ReasonNoOpenCall, nil)
 	requireRefused(t, s.send(t, http.MethodPost, token, session, `{"jsonrpc":"2.0","id":7,"result":{}}`, nil),
 		callbinding.ReasonNoOpenCall, nil)
 
-	// A refusal does not use the token up.
+	// No refusal used the token up: its one list call still runs.
 	again := s.send(t, http.MethodPost, token, session, listBody(35, "tools/list"), nil)
 	require.Equal(t, http.StatusOK, again.status, "body: %s", again.body)
 	assert.Equal(t, []string{cbTool}, listedKeys(t, "tools/list", again.body))
@@ -285,8 +287,38 @@ func TestCallBinding_ListCallCollectsEveryPage(t *testing.T) {
 			assert.NotContains(t, resp.body, "nextCursor")
 			assert.NotContains(t, resp.body, "other_", "no other server's tool, in an item or a cursor")
 			assert.JSONEq(t, "3", string(rpcID(t, resp.body)))
+
+			// The pages the vMCP followed were one call: the token is now used up.
+			again := s.send(t, http.MethodPost, token, "",
+				`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":`+modernListParams("")+`}`, modernListHeaders)
+			requireRefused(t, again, callbinding.ReasonTokenReused, 4)
 		})
 	}
+}
+
+// TestCallBinding_ListAndToolCallShareOneUse checks that the single-use record
+// is per token, whatever its entry: a token that started a tool call cannot
+// start a list call under the same issuer and jti, and the other way round.
+func TestCallBinding_ListAndToolCallShareOneUse(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{})
+	callEntryFor := []any{callEntry(cbServer, cbTool, argsHash(t, `{}`))}
+	listEntryFor := []any{listEntry(cbServer, "tools/list")}
+
+	call := s.tokens.add("call-first", claimsFor(cbClient, "shared-1", callEntryFor))
+	list := s.tokens.add("list-second", claimsFor(cbClient, "shared-1", listEntryFor))
+	requireCallRan(t, s.send(t, http.MethodPost, call, s.session(t, call), toolCallBody(2, cbTool, "{}"), nil))
+	requireRefused(t, s.send(t, http.MethodPost, list, "", listBody(3, "tools/list"), nil),
+		callbinding.ReasonTokenReused, 3)
+
+	list = s.tokens.add("list-first", claimsFor(cbClient, "shared-2", listEntryFor))
+	call = s.tokens.add("call-second", claimsFor(cbClient, "shared-2", callEntryFor))
+	listSession := s.session(t, list)
+	resp := s.send(t, http.MethodPost, list, listSession, listBody(4, "tools/list"), nil)
+	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+	requireRefused(t, s.send(t, http.MethodPost, call, listSession, toolCallBody(5, cbTool, "{}"), nil),
+		callbinding.ReasonTokenReused, 5)
+	assert.Equal(t, int32(1), s.fc.callToolCalls.Load())
 }
 
 // TestCallBinding_ListCallPageWalk drives serveBound with a stand-in handler
@@ -300,9 +332,6 @@ func TestCallBinding_ListCallPageWalk(t *testing.T) {
 	cb, err := newCallBinding(callbinding.Config{}, nil,
 		func(context.Context, *auth.Identity, string, string) (map[string]struct{}, error) { return keep, nil })
 	require.NoError(t, err)
-	token, reason := callbinding.FromClaims(
-		claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}), nil)
-	require.Empty(t, reason)
 	// page is a page of items with nextCursor cursor, or none when cursor is
 	// nil.
 	page := func(items string, cursor *string) string {
@@ -400,8 +429,12 @@ func TestCallBinding_ListCallPageWalk(t *testing.T) {
 			})
 			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody(2, "tools/list")))
 			rec := httptest.NewRecorder()
+			// Each case is its own token: a list call uses its token up.
+			token, reason := callbinding.FromClaims(
+				claimsFor(cbClient, tc.name, []any{listEntry(cbServer, "tools/list")}), nil)
+			require.Empty(t, reason)
 			cb.serveBound(rec, req, next, &auth.Identity{}, token,
-				&mcpparser.ParsedMCPRequest{Method: "tools/list", ID: float64(2), IsRequest: true})
+				&mcpparser.ParsedMCPRequest{Method: "tools/list", ID: int64(2), IsRequest: true})
 
 			require.Equal(t, tc.wantStatus, rec.Code, "body: %s", rec.Body.String())
 			assert.NotContains(t, rec.Body.String(), "other")
@@ -521,7 +554,7 @@ func TestCallBinding_ListCallClientGone(t *testing.T) {
 	rec := httptest.NewRecorder()
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { cancel() })
 	cb.serveBound(rec, req, next, &auth.Identity{}, token,
-		&mcpparser.ParsedMCPRequest{Method: "tools/list", ID: float64(2), IsRequest: true})
+		&mcpparser.ParsedMCPRequest{Method: "tools/list", ID: int64(2), IsRequest: true})
 	assert.Empty(t, rec.Body.String())
 	assert.False(t, rec.Flushed)
 }
@@ -538,10 +571,7 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 	cb, err := newCallBinding(callbinding.Config{}, nil,
 		func(context.Context, *auth.Identity, string, string) (map[string]struct{}, error) { return keep, nil })
 	require.NoError(t, err)
-	token, reason := callbinding.FromClaims(
-		claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}), nil)
-	require.Empty(t, reason)
-	parsed := &mcpparser.ParsedMCPRequest{Method: "tools/list", ID: float64(2), IsRequest: true}
+	parsed := &mcpparser.ParsedMCPRequest{Method: "tools/list", ID: int64(2), IsRequest: true}
 
 	tests := []struct {
 		name       string
@@ -607,6 +637,10 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 			})
 			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody(2, "tools/list")))
 			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user-1"}}
+			// Each case is its own token: a list call uses its token up.
+			token, reason := callbinding.FromClaims(
+				claimsFor(cbClient, tc.name, []any{listEntry(cbServer, "tools/list")}), nil)
+			require.Empty(t, reason)
 			cb.serveBound(rec, req, next, identity, token, parsed)
 
 			assert.False(t, flushedEarly, "nothing reaches the client before the filter runs")

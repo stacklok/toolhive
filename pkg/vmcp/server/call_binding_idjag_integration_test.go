@@ -501,8 +501,8 @@ var chainWant = map[string]string{
 // TestCallBindingIDJAG_ListCall runs a list-call entry through AS-1 and AS-2
 // to the vMCP, for each list method: AS-1 signs it, AS-2 copies it, and the
 // vMCP answers the entry's list method with only the entry's server's items,
-// on Legacy and Modern, as often as asked. Another list method and a
-// tools/call are refused, and no backend tool runs.
+// on Legacy and Modern, once: a second list call with the token is refused.
+// Another list method and a tools/call are refused, and no backend tool runs.
 func TestCallBindingIDJAG_ListCall(t *testing.T) {
 	t.Parallel()
 	c := startIDJAGChain(t)
@@ -519,15 +519,17 @@ func TestCallBindingIDJAG_ListCall(t *testing.T) {
 			token := c.accessToken(t, chainListEntry("alpha", method))
 			session := c.session(t, token)
 			list := `{"jsonrpc":"2.0","id":2,"method":"` + method + `"}`
-			for range 2 {
-				status, body, _ := c.post(t, token, session, list, nil)
-				require.Equal(t, http.StatusOK, status, "body: %s", body)
-				assert.Equal(t, []string{want}, chainListItems(t, method, body))
-			}
+			status, body, _ := c.post(t, token, session, list, nil)
+			require.Equal(t, http.StatusOK, status, "body: %s", body)
+			assert.Equal(t, []string{want}, chainListItems(t, method, body))
+			status, body, _ = c.post(t, token, session, list, nil)
+			assert.Equal(t, http.StatusUnauthorized, status, "a list call uses the token up: %s", body)
+			assert.Contains(t, body, "(token_reused)")
 
+			modernToken := c.accessToken(t, chainListEntry("alpha", method))
 			modern := `{"jsonrpc":"2.0","id":3,"method":"` + method + `","params":{"_meta":` +
 				`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`
-			status, body, _ := c.post(t, token, "", modern,
+			status, body, _ = c.post(t, modernToken, "", modern,
 				http.Header{"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {method}})
 			require.Equal(t, http.StatusOK, status, "body: %s", body)
 			assert.Equal(t, []string{want}, chainListItems(t, method, body))

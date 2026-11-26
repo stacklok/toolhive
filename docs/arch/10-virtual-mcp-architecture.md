@@ -1232,7 +1232,7 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 10 | MCP Parsing | Always | Validates every MCP POST regardless of `Content-Type`, including when auth is nil; publishes calls and notifications for downstream controls. A second application skips already-parsed requests. |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Loopback Host guard | Always | DNS-rebinding protection: on a connection that arrived over loopback, rejects a non-loopback `Host` header with 403 before classification, so Legacy and Modern requests are held to the same rule. Mirrors go-sdk's localhost protection, which covers only Legacy requests that reach `StreamableHTTPHandler`; Modern requests (`dispatchModern`) and cross-replica Legacy sessions rehydrated by toolhive-core's `mcpcompat` did not pass through it, and the guard covers all of them. mcpcompat also runs session cleanup for a Legacy DELETE around go-sdk's Host check, so without the guard a DELETE with a forged `Host` and a known session ID could end that session even though go-sdk answered 403; the guard runs first and stops this. Only the MCP route is guarded: `/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`, `/.well-known/` and the embedded auth server routes are deliberately left unguarded because they are unauthenticated by design and expose only operational metadata. Connections on a non-loopback local address (e.g. a pod IP) are unaffected; a loopback hop that preserves a non-loopback `Host` must rewrite it. See `pkg/vmcp/server/loopback_host_guard.go`. |
-| 13 | Call binding | Always | Before Modern/Legacy classification, so it covers both. Refuses a request whose access token carries an `authorization_details` entry of type `https://toolhive.dev/mcp_tool_call` unless the request is the one `tools/call` the entry names, once, the list method a list-call entry names (answered with only that backend's items), or a message the token may send without starting a call. Runs whether or not Authorization is configured and can only refuse or narrow. See "Call-bound access tokens" below. |
+| 13 | Call binding | Always | Before Modern/Legacy classification, so it covers both. Refuses a request whose access token carries an `authorization_details` entry of type `https://toolhive.dev/mcp_tool_call` unless the request is the one `tools/call` the entry names, once, the one list call a list-call entry names (answered with only that backend's items), or a message the token may send without starting a call. Runs whether or not Authorization is configured and can only refuse or narrow. See "Call-bound access tokens" below. |
 | 14 | Session ownership | Always | After Modern/Legacy classification (Legacy only), rejects any request carrying the `Mcp-Session-Id` of a session the authenticated caller does not own with a non-disclosing plain-text 404, before the Streamable HTTP transport routes it. See "Session Ownership" below. |
 | 15 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport after the session-ownership check (row 14) and before the transport's session-existence validation and SDK dispatch, so a foreign or unknown session gets 404 before any Cedar 403 (only the loopback Host guard, row 12, and a call-binding refusal, row 13, come first). Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
@@ -1524,15 +1524,17 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   optimizer-enabled instance, is never listed. Pages are cut before this filter, and
   a cursor carries the last key of the unfiltered page, so the vMCP follows the pages
   itself and answers with all of the backend's items in one response, without
-  `nextCursor`. A list call starts no call and does not use up the token. A
-  `tools/call` or another list method is refused with `method_mismatch`. Known
+  `nextCursor`. The list call is the token's one call, as a `tools/call` is for a
+  tool-call entry: it uses up the token (the pages the vMCP follows belong to it).
+  A `tools/call` or another list method is refused with `method_mismatch`. Known
   limit: a Legacy session lists what it registered, so a name that moved to the
   entry's backend since then shows its earlier metadata.
 - GET and DELETE. The session-ownership check then limits them to sessions the
   token's principal owns. Once the token has started its call, they are limited to
   that call's session (`session_mismatch`); a Modern call has none. Neither uses up
   the token.
-- On the Legacy session of its call, while the call's request is open and younger
+- On the Legacy session of its call (a tool call or a list call), while the call's
+  request is open and younger
   than the maximum call duration: a `notifications/cancelled` for the call's JSON-RPC
   ID, and any JSON-RPC response (for example an in-band elicitation reply). The vMCP
   does not see which server-to-client requests the SDK is waiting on, so any response
@@ -1559,7 +1561,8 @@ when the embedder's validator allows more. A stream opened before `exp` keeps ru
 a `callbinding.Record`, and stays recorded until `exp` or until the call has run for
 the maximum call duration (`CallBinding.MaxCallDuration`, 30 minutes by default),
 whichever is later, plus a one-minute margin for a record whose clock runs ahead of
-the replica's. A second `tools/call` with the same token is refused (`token_reused`).
+the replica's. A second call with the same token, a `tools/call` or a list call, is
+refused (`token_reused`).
 A refusal by this middleware does not use up the token; a later refusal, such as the
 session-ownership 404 or a Cedar 403, does. The default record is in memory, so it
 covers one replica: a replay to another replica is accepted, and the vMCP warns at

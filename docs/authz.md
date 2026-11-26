@@ -89,7 +89,7 @@ access token that carries an `authorization_details` entry of type
 `https://toolhive.dev/mcp_tool_call` may start only the one `tools/call` its entry
 names, once. A retried call, such as the retry after a URL elicitation, is a second
 call and needs a fresh token. An entry that names a list call (a backend and a list
-method) instead lets the token send that list method, as often as needed, answered
+method) instead lets the token send that list method once, answered
 with only that backend's items; it cannot start a `tools/call`. Before its `exp`, such
 a token may also send, to the MCP endpoint:
 

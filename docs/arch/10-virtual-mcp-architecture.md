@@ -1175,6 +1175,15 @@ Exchanged tokens are cached to avoid repeated exchange calls.
 
 **Implementation**: `pkg/vmcp/auth/`, `pkg/vmcp/cache/`
 
+#### Delegated upstream authentication
+
+On `AdmissionRouteDelegated`, `upstream_inject` reads the configured provider's
+access token for the resolved user through a `UserCredentialReader` supplied by
+the embedder. If the reader is absent or the lookup fails, the backend request
+fails closed without falling back to session-loaded credentials. Interactive
+and unspecified routes are unchanged. See [delegated strategy behavior](17-token-exchange-delegation.md#delegated-upstream-credentials-in-vmcp)
+and [embedder wiring](vmcp-library.md#delegated-upstream-credentials).
+
 ### Per-User Upstream Filtering
 
 When vMCP runs its embedded authorization server with multiple upstream providers

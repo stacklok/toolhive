@@ -134,6 +134,17 @@ not found. On a Modern backend, when the read fails on an optional list
 (resources, resource templates, or prompts) after the tool list succeeded,
 that list is empty and vMCP logs a warning that names the credential failure.
 
+A never-connected user who calls an omitted tool gets an unknown-tool error
+(JSON-RPC `-32602`: `unknown tool` on Modern, `tool "<name>" not found` on
+Legacy), not a result naming the provider. If no backend returns
+capabilities, discovery itself fails instead of producing a tool list.
+
+After the user connects the provider, Modern requests can still see the old
+view until the capability cache TTL expires (30 seconds by default). On Legacy,
+start a new session to pick up tools missing from the session's advertised
+list; if the shared capability view is still cached, wait for it to expire
+before starting that session.
+
 In code mode, a script's tool call (`execute_tool_script`) does not go through
 these renderers. The script receives the error text, which is the same text
 named above and carries no backend or transport detail, and the outer call

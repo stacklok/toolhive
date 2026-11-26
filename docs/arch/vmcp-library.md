@@ -129,6 +129,24 @@ vMCP put the entry into that client's access tokens; otherwise every call from i
 refused. See
 [Call-bound access tokens](10-virtual-mcp-architecture.md#call-bound-access-tokens).
 
+### Delegated upstream credentials
+
+If you build your own outgoing auth registry with
+`vmcpauth.NewDefaultOutgoingAuthRegistry()`, construct and register the
+`upstream_inject` strategy with an `upstreamtoken.UserCredentialReader`:
+
+```go
+strategy := strategies.NewUpstreamInjectStrategy(strategies.WithUserCredentialReader(reader))
+```
+
+On `AdmissionRouteDelegated`, a nil reader fails closed with `upstream
+credential unavailable`; the strategy does not fall back to credentials on
+`Identity.UpstreamTokens`. Interactive and unspecified routes still use
+`Identity.UpstreamTokens`. When using ToolHive's in-process reader over
+user-keyed storage, follow the [incoming validator startup requirements](11-auth-server-storage.md#validator-rule-for-embedded-issuer-tokens).
+See [delegated credential failures](../error-handling.md#vmcp-delegated-credential-failures)
+for how missing or unavailable credentials affect discovery and tool calls.
+
 ## `pkg/vmcp/` Stability Table
 
 The table below maps every sub-package to its stability level per RFC THV-0059. Verify against the merged RFC if there is a discrepancy.

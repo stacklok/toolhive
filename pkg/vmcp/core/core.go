@@ -258,13 +258,15 @@ type VMCP interface {
 	// It returns:
 	//   - an error wrapping vmcp.ErrNotFound when the backend is unknown or
 	//     out of group, offers identity nothing (every item is denied, or it has
-	//     none), or contributes nothing (its discovery fails). These are not
-	//     told apart, so the error does not reveal whether a backend identity
-	//     cannot see exists;
+	//     none), or contributes nothing (its discovery fails while another
+	//     backend's succeeds). These are not told apart, so the error does not
+	//     reveal whether a backend identity cannot see exists;
 	//   - an error wrapping vmcp.ErrBackendUnavailable when the backend is in
 	//     identity's view but the lists leave it out for its health status
 	//     (health.ShouldAdvertise is false: unhealthy, unknown, unauthenticated);
-	//   - any other error when the view cannot be built now.
+	//   - any other error when the view cannot be built now, including one
+	//     wrapping aggregator.ErrNoBackendCapabilities when no backend in the
+	//     registry answers discovery: every backendID gets that error alike.
 	//
 	// The backend is looked up first in one aggregation of the backends the
 	// lists include, so conflict resolution matches the lists, and a backend

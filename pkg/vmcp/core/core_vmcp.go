@@ -611,7 +611,8 @@ func (c *coreVMCP) LookupBackend(
 // refusal does the same work, and neither the response time nor an aggregation
 // error's 503 tells an unknown name from a backend identity cannot see. When
 // every backend is healthy, the second aggregation is the first one again,
-// which the capability cache answers.
+// which the capability cache answers. When no backend in the whole registry
+// answers, every name gets that error, which a list call answers with 503.
 func (c *coreVMCP) LookupBackendCapabilities(
 	ctx context.Context, identity *auth.Identity, backendID string,
 ) (*AdmittedBackendCapabilities, error) {
@@ -624,12 +625,14 @@ func (c *coreVMCP) LookupBackendCapabilities(
 	healthy := filterHealthyBackends(all, c.health)
 
 	caps, err := c.admittedIn(ctx, identity, healthy, backendID)
-	if err != nil {
+	if err != nil && (ctx.Err() != nil || !errors.Is(err, aggregator.ErrNoBackendCapabilities)) {
 		return nil, err
 	}
 	if caps != nil && has(healthy) {
 		return caps, nil
 	}
+	// When no backend in the whole registry answers, the error is returned as
+	// it is, so the caller can answer it as an outage: it depends on no name.
 	visible, err := c.admittedIn(ctx, identity, all, backendID)
 	if err != nil {
 		return nil, err
@@ -643,16 +646,13 @@ func (c *coreVMCP) LookupBackendCapabilities(
 
 // admittedIn aggregates backends and returns what identity is admitted to on
 // backendID there, with backendID's transiently unavailable lists, or nil when
-// it offers identity nothing or no backend answered (every one failed
-// discovery). An aggregation that fails once ctx has ended returns the error.
+// it offers identity nothing. A failed aggregation, including one in which no
+// backend answered (aggregator.ErrNoBackendCapabilities), returns its error.
 func (c *coreVMCP) admittedIn(
 	ctx context.Context, identity *auth.Identity, backends []vmcp.Backend, backendID string,
 ) (*AdmittedBackendCapabilities, error) {
 	agg, err := c.aggregateBackends(ctx, backends)
 	if err != nil {
-		if ctx.Err() == nil && errors.Is(err, aggregator.ErrNoBackendCapabilities) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	caps, err := c.admittedBackendCapabilities(ctx, identity, agg, backendID)

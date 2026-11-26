@@ -63,9 +63,7 @@ type Aggregator interface {
 	// 2. Resolve conflicts
 	// 3. Merge into final view
 	// When no backend's capabilities could be queried, it returns an error
-	// wrapping ErrNoBackendCapabilities; the core answers a backend's list
-	// call as not found on that error, as it answers a backend that failed
-	// discovery.
+	// wrapping ErrNoBackendCapabilities.
 	AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error)
 }
 

@@ -41,18 +41,23 @@ import (
 // lcModernBackend is a Modern (2026-07-28) MCP backend that offers the named
 // tools, resource templates and prompts. While failPrompts is set, its
 // prompts/list fails with HTTP 503, which the vMCP's client takes as a
-// transient failure.
+// transient failure; while down is set, every request fails with HTTP 503.
 type lcModernBackend struct {
 	tools       []string
 	templates   []string
 	prompts     []string
 	failPrompts atomic.Bool
+	down        atomic.Bool
 }
 
 // start serves the backend and returns its MCP endpoint.
 func (b *lcModernBackend) start(tb testing.TB) string {
 	tb.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if b.down.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		var req struct {
 			ID any `json:"id"`
 		}
@@ -288,6 +293,13 @@ func (s *lcServer) listToken(backend, method string) string {
 // returns the status and body.
 func (s *lcServer) list(tb testing.TB, token, method string) (int, string) {
 	tb.Helper()
+	status, body, _ := s.listWithHeader(tb, token, method)
+	return status, body
+}
+
+// listWithHeader is list that also returns the response header.
+func (s *lcServer) listWithHeader(tb testing.TB, token, method string) (int, string, http.Header) {
+	tb.Helper()
 	body := `{"jsonrpc":"2.0","id":2,"method":"` + method + `","params":{"_meta":` +
 		`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -304,7 +316,7 @@ func (s *lcServer) list(tb testing.TB, token, method string) (int, string) {
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(tb, err)
-	return resp.StatusCode, string(raw)
+	return resp.StatusCode, string(raw), resp.Header
 }
 
 // TestCallBindingReal_ListCallOneAggregation checks, against the real core,
@@ -420,6 +432,50 @@ func TestCallBindingReal_ListCallHiddenUnhealthy(t *testing.T) {
 		assert.Equal(t, unknownStatus, status, "%s: %s", backend, body)
 		assert.Equal(t, unknownBody, body, backend)
 	}
+}
+
+// TestCallBindingReal_ListCallAllBackendsDown checks, against the real core,
+// that while no backend answers discovery every list call gets the same 503,
+// whatever server it names, so the outage tells nothing about which backends
+// exist, and the token stays unused: the same token lists once the backends
+// are back. With a backend answering again, an unknown server and a backend
+// Cedar hides go back to the same 403 server_not_found.
+func TestCallBindingReal_ListCallAllBackendsDown(t *testing.T) {
+	t.Parallel()
+	backends := map[string]*lcModernBackend{
+		"alpha":  {tools: []string{"alpha_tool"}},
+		"hidden": {tools: []string{"hidden_tool"}},
+	}
+	s := newLCServer(t, backends,
+		`permit(principal, action == Action::"call_tool", resource == Tool::"alpha_tool");`)
+	for _, b := range backends {
+		b.down.Store(true)
+	}
+
+	alphaToken := s.listToken("alpha", "tools/list")
+	realStatus, realBody, realHeader := s.listWithHeader(t, alphaToken, "tools/list")
+	unknownStatus, unknownBody, unknownHeader := s.listWithHeader(t, s.listToken("no-such-backend", "tools/list"), "tools/list")
+	assert.Equal(t, http.StatusServiceUnavailable, realStatus, "body: %s", realBody)
+	assert.Equal(t, realStatus, unknownStatus)
+	assert.Equal(t, realBody, unknownBody, "an outage is answered alike for every server")
+	for _, h := range []http.Header{realHeader, unknownHeader} {
+		h.Del("Date")
+	}
+	assert.Equal(t, realHeader, unknownHeader)
+
+	for _, b := range backends {
+		b.down.Store(false)
+	}
+	hiddenStatus, hiddenBody := s.list(t, s.listToken("hidden", "tools/list"), "tools/list")
+	unknownStatus, unknownBody = s.list(t, s.listToken("no-such-backend", "tools/list"), "tools/list")
+	assert.Equal(t, http.StatusForbidden, hiddenStatus, "body: %s", hiddenBody)
+	assert.Contains(t, hiddenBody, "(server_not_found)")
+	assert.Equal(t, unknownStatus, hiddenStatus)
+	assert.Equal(t, unknownBody, hiddenBody)
+
+	status, body := s.list(t, alphaToken, "tools/list")
+	require.Equal(t, http.StatusOK, status, "the token was not used: %s", body)
+	assert.Equal(t, []string{"alpha_tool"}, chainListItems(t, "tools/list", body))
 }
 
 // BenchmarkCallBindingReal_ListCallCedar times, with Cedar on, a list call on a

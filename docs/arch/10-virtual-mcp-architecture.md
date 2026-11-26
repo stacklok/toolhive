@@ -1558,17 +1558,20 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   `server` must be a backend in the caller's view: one the caller is admitted to at
   least one tool, resource, resource template or prompt of. A server that is unknown,
   hidden by authorization, offers the caller nothing, or contributes nothing to the
-  view (its discovery fails, even when every backend's does) gets the same 403
-  `server_not_found`, as an unknown tool gets `tool_not_found`: AS-1 signs any `server` name, so the answer must not tell
-  whether a backend the caller cannot see exists. A backend in the caller's view that
+  view (its discovery fails while another backend's succeeds) gets the same 403
+  `server_not_found`, as an unknown tool gets `tool_not_found`: AS-1 signs any
+  `server` name, so the answer must not tell whether a backend the caller cannot see
+  exists. A backend in the caller's view that
   the core's lists leave out for its health status (unhealthy, unknown or
   unauthenticated, even while it still answers) gets 503; a degraded one stays in the
   lists and is listed. A backend in the caller's view whose list of the method's
   items failed transiently (a Modern backend's optional list, which the lists report
   as empty) also gets 503; one the caller could see only through that list is not
-  known to be in view, so it gets 403.
-  The check and the items come from one aggregation
-  (`core.LookupBackendCapabilities`), so they cannot disagree. A list call that
+  known to be in view, so it gets 403. While no backend answers discovery, every list call gets 503, whatever its
+  `server`, so the outage tells nothing about which backends exist. The check and the
+  items come from one aggregation (`core.LookupBackendCapabilities`), so they cannot
+  disagree, and every refusal runs the same aggregations, so its timing does not tell
+  the reasons apart either. A list call that
   carries a cursor is refused with `invalid_params`. A `tools/call` or another list
   method is refused with `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
   a tool-call entry: it uses up the token. It is recorded only once its answer is

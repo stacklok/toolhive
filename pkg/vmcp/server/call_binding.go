@@ -181,7 +181,8 @@ func (s *Server) callBindingRoute(ctx context.Context, identity *auth.Identity, 
 // 503, when server is in identity's view but the core's lists leave it out for
 // its health status (health.ShouldAdvertise admits healthy, degraded and
 // unmonitored backends), when the method's list failed transiently on server,
-// so its items are unknown, or when the view cannot be built now.
+// so its items are unknown, or when the view cannot be built now, such as when
+// no backend answers discovery, which every server name gets alike.
 func (s *Server) callBindingListItems(
 	ctx context.Context, identity *auth.Identity, method, server string,
 ) ([]json.RawMessage, error) {

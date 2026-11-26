@@ -511,6 +511,9 @@ func remoteProxyActive(status rt.WorkloadStatus) bool {
 	case rt.WorkloadStatusStarting, rt.WorkloadStatusRunning, rt.WorkloadStatusUnhealthy,
 		rt.WorkloadStatusAuthRetrying, rt.WorkloadStatusUnauthenticated:
 		return true
+	case rt.WorkloadStatusStopping, rt.WorkloadStatusStopped, rt.WorkloadStatusRemoving,
+		rt.WorkloadStatusError, rt.WorkloadStatusPolicyStopped, rt.WorkloadStatusUnknown:
+		return false
 	default:
 		return false
 	}

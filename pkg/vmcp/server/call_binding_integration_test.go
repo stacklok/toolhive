@@ -42,7 +42,13 @@ type cbRealServer struct {
 func newCallBindingRealServer(t *testing.T, toolDelay time.Duration, policies ...string) *cbRealServer {
 	t.Helper()
 	s := &cbRealServer{calls: &atomic.Int32{}, claims: map[string]map[string]any{}}
-	backendURL := startRealMCPBackendWithToolDelay(t, toolDelay, func() { s.calls.Add(1) })
+	s.serve(t, startRealMCPBackendWithToolDelay(t, toolDelay, func() { s.calls.Add(1) }), policies...)
+	return s
+}
+
+// serve builds the vMCP over the backend at backendURL.
+func (s *cbRealServer) serve(t *testing.T, backendURL string, policies ...string) {
+	t.Helper()
 	authMw := func(next http.Handler) http.Handler {
 		withParser := mcpparser.ParsingMiddleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +66,6 @@ func newCallBindingRealServer(t *testing.T, toolDelay time.Duration, policies ..
 	// No policies leaves authorization unconfigured.
 	ts := buildCedarAuthzServerWithConfig(t, backendURL, nil, nil, authMw, nil, policies...)
 	s.url = ts.URL
-	return s
 }
 
 // token registers a token bound to one call of the backend's echo tool with
@@ -93,9 +98,17 @@ func (s *cbRealServer) post(t *testing.T, token, session, body string) (int, str
 // send is post that also returns the response's Mcp-Session-Id.
 func (s *cbRealServer) send(t *testing.T, token, session, body string) (int, string, string) {
 	t.Helper()
+	return cbPostMCP(t, s.url, token, session, body, nil)
+}
+
+// cbPostMCP posts a JSON-RPC body to the MCP endpoint at baseURL as the
+// holder of token (none when empty), on session when set, with extra
+// headers, and returns the status, body and Mcp-Session-Id.
+func cbPostMCP(t *testing.T, baseURL, token, session, body string, extra http.Header) (int, string, string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/mcp", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/mcp", strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -105,6 +118,11 @@ func (s *cbRealServer) send(t *testing.T, token, session, body string) (int, str
 	if session != "" {
 		req.Header.Set("Mcp-Session-Id", session)
 	}
+	for k, vs := range extra {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -113,20 +131,89 @@ func (s *cbRealServer) send(t *testing.T, token, session, body string) (int, str
 	return resp.StatusCode, string(raw), resp.Header.Get("Mcp-Session-Id")
 }
 
-// session opens a Legacy session without a token, as the tests' principal.
-func (s *cbRealServer) session(t *testing.T) string {
+// cbOpenSession opens a Legacy session at baseURL as the holder of token
+// (none when empty) and returns its ID.
+func cbOpenSession(t *testing.T, baseURL, token string) string {
 	t.Helper()
-	status, _, sessionID := s.send(t, "", "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":`+
-		`{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cb","version":"1"}}}`)
-	require.Equal(t, http.StatusOK, status)
+	status, body, sessionID := cbPostMCP(t, baseURL, token, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":`+
+		`{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cb","version":"1"}}}`, nil)
+	require.Equal(t, http.StatusOK, status, "initialize: %s", body)
 	require.NotEmpty(t, sessionID)
-	status, _ = s.post(t, "", sessionID, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	require.Equal(t, http.StatusAccepted, status)
+	status, body, _ = cbPostMCP(t, baseURL, token, sessionID, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, nil)
+	require.Equal(t, http.StatusAccepted, status, "notifications/initialized: %s", body)
 	return sessionID
 }
 
+// session opens a Legacy session without a token, as the tests' principal.
+func (s *cbRealServer) session(t *testing.T) string {
+	t.Helper()
+	return cbOpenSession(t, s.url, "")
+}
+
 func cbEchoCall(id int, args string) string {
-	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"echo","arguments":%s}}`, id, args)
+	return cbToolCall(id, "echo", args)
+}
+
+// cbToolCall is a tools/call body for tool with args.
+func cbToolCall(id int, tool, args string) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":%s}}`,
+		id, tool, args)
+}
+
+// listToken registers a token bound to listing method on the real backend,
+// and returns it.
+func (s *cbRealServer) listToken(jti, method string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.claims[jti] = map[string]any{
+		"iss": "https://issuer.example.com", "sub": cbRealPrincipal, "jti": jti,
+		"exp": float64(time.Now().Add(time.Hour).Unix()),
+		"authorization_details": []any{map[string]any{
+			"type": toolcalldetails.Type, "server": "real-backend", "method": method,
+		}},
+	}
+	return jti
+}
+
+// TestCallBindingReal_ListCallKeepsAdmission checks that a list-call token's
+// list is still filtered by Cedar: a tool on the bound server that Cedar
+// hides stays hidden, so the binding only ever narrows what admission lists.
+func TestCallBindingReal_ListCallKeepsAdmission(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		policies []string
+		want     []string
+	}{
+		{name: "without authorization both tools are listed", want: []string{"echo", "ping"}},
+		{name: "a tool Cedar hides stays hidden", policies: []string{admissionPermitEcho}, want: []string{"echo"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &cbRealServer{calls: &atomic.Int32{}, claims: map[string]map[string]any{}}
+			s.serve(t, startEchoPingBackend(t), tc.policies...)
+			session := s.session(t)
+			waitForEchoTool(t, s.url, session)
+
+			status, body := s.post(t, s.listToken("list", "tools/list"), session,
+				`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+			require.Equal(t, http.StatusOK, status, "body: %s", body)
+			var resp struct {
+				Result struct {
+					Tools []struct {
+						Name string `json:"name"`
+					} `json:"tools"`
+				} `json:"result"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(body), &resp))
+			var names []string
+			for _, tool := range resp.Result.Tools {
+				names = append(names, tool.Name)
+			}
+			assert.ElementsMatch(t, tc.want, names)
+		})
+	}
 }
 
 // TestCallBindingReal_CedarHidesTool checks that a tool Cedar hides from the

@@ -9,10 +9,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -399,7 +397,7 @@ func (c *idJAGChain) login(t *testing.T) string {
 	require.NoError(t, err)
 	now := time.Now()
 	token, err := jwt.Signed(signer).Claims(jwt.Claims{
-		Issuer: c.as1URL, Subject: chainUser, Audience: jwt.Audience{chainLoginAud}, ID: chainJTI(t),
+		Issuer: c.as1URL, Subject: chainUser, Audience: jwt.Audience{chainLoginAud}, ID: rand.Text(),
 		Expiry: jwt.NewNumericDate(now.Add(30 * time.Minute)), IssuedAt: jwt.NewNumericDate(now),
 	}).Claims(map[string]any{"client_id": chainSourceApp, "scope": "openid profile offline_access"}).Serialize()
 	require.NoError(t, err)
@@ -415,7 +413,7 @@ func (*idJAGChain) token(t *testing.T, issuer, client string, key *ecdsa.Private
 	require.NoError(t, err)
 	now := time.Now()
 	assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
-		Issuer: client, Subject: client, Audience: jwt.Audience{issuer}, ID: chainJTI(t),
+		Issuer: client, Subject: client, Audience: jwt.Audience{issuer}, ID: rand.Text(),
 		IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Minute)),
 	}).Serialize()
 	require.NoError(t, err)
@@ -438,14 +436,6 @@ func (*idJAGChain) token(t *testing.T, issuer, client string, key *ecdsa.Private
 	return token
 }
 
-func chainJTI(t *testing.T) string {
-	t.Helper()
-	b := make([]byte, 12)
-	_, err := rand.Read(b)
-	require.NoError(t, err)
-	return hex.EncodeToString(b)
-}
-
 // chainJWTClaim returns the raw bytes of one claim of a JWT, without
 // verifying it.
 func chainJWTClaim(t *testing.T, token, name string) json.RawMessage {
@@ -460,42 +450,16 @@ func chainJWTClaim(t *testing.T, token, name string) json.RawMessage {
 }
 
 // post sends a JSON-RPC body to the vMCP with token, on session when set,
-// with extra headers, and returns the status and body.
+// with extra headers, and returns the status, body and Mcp-Session-Id.
 func (c *idJAGChain) post(t *testing.T, token, session, body string, extra http.Header) (int, string, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.vmcpURL+"/mcp", strings.NewReader(body))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+token)
-	if session != "" {
-		req.Header.Set("Mcp-Session-Id", session)
-	}
-	for k, vs := range extra {
-		for _, v := range vs {
-			req.Header.Add(k, v)
-		}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	return resp.StatusCode, string(raw), resp.Header.Get("Mcp-Session-Id")
+	return cbPostMCP(t, c.vmcpURL, token, session, body, extra)
 }
 
 // session opens a Legacy session with token.
 func (c *idJAGChain) session(t *testing.T, token string) string {
 	t.Helper()
-	status, body, session := c.post(t, token, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":`+
-		`{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"chain","version":"1"}}}`, nil)
-	require.Equal(t, http.StatusOK, status, "initialize: %s", body)
-	require.NotEmpty(t, session)
-	status, body, _ = c.post(t, token, session, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, nil)
-	require.Equal(t, http.StatusAccepted, status, "notifications/initialized: %s", body)
-	return session
+	return cbOpenSession(t, c.vmcpURL, token)
 }
 
 // chainListItems returns the keys of the items in a list response.
@@ -568,6 +532,13 @@ func TestCallBindingIDJAG_ListCall(t *testing.T) {
 			require.Equal(t, http.StatusOK, status, "body: %s", body)
 			assert.Equal(t, []string{want}, chainListItems(t, method, body))
 
+			// A token bound to the other backend lists that backend's item, so
+			// both items are there to be told apart.
+			betaToken := c.accessToken(t, chainListEntry("beta", method))
+			status, body, _ = c.post(t, betaToken, c.session(t, betaToken), list, nil)
+			require.Equal(t, http.StatusOK, status, "body: %s", body)
+			assert.Equal(t, []string{strings.ReplaceAll(want, "alpha", "beta")}, chainListItems(t, method, body))
+
 			other := "prompts/list"
 			if method == other {
 				other = "tools/list"
@@ -576,7 +547,7 @@ func TestCallBindingIDJAG_ListCall(t *testing.T) {
 			assert.Equal(t, http.StatusForbidden, status, "body: %s", body)
 			assert.Contains(t, body, "(method_mismatch)")
 
-			status, body, _ = c.post(t, token, session, cbEchoCallFor(5, "alpha_echo", `{"input":"x"}`), nil)
+			status, body, _ = c.post(t, token, session, cbToolCall(5, "alpha_echo", `{"input":"x"}`), nil)
 			assert.Equal(t, http.StatusForbidden, status, "body: %s", body)
 			assert.Contains(t, body, "(method_mismatch)")
 			assert.Zero(t, c.toolCalls.Load(), "no list-call token runs a tool")
@@ -597,7 +568,7 @@ func TestCallBindingIDJAG_ToolCallTokenCannotList(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status, "body: %s", body)
 	assert.Contains(t, body, "(method_not_allowed)")
 
-	status, body, _ = c.post(t, token, session, cbEchoCallFor(3, "beta_echo", `{"input":"hi"}`), nil)
+	status, body, _ = c.post(t, token, session, cbToolCall(3, "beta_echo", `{"input":"hi"}`), nil)
 	require.Equal(t, http.StatusOK, status, "body: %s", body)
 	assert.Contains(t, body, "hi")
 	assert.Equal(t, int32(1), c.toolCalls.Load())
@@ -611,9 +582,4 @@ func chainToolEntry(t *testing.T, tool, args string) string {
 	backend, _, _ := strings.Cut(tool, "_")
 	return fmt.Sprintf(`{"type":%q,"server":%q,"tool":%q,"arguments_sha256":%q,"operation_id":"op-1"}`,
 		toolcalldetails.Type, backend, tool, hash)
-}
-
-func cbEchoCallFor(id int, tool, args string) string {
-	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":%s}}`,
-		id, tool, args)
 }

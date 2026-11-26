@@ -170,7 +170,7 @@ func ParseEntry(raw json.RawMessage) (Entry, error) {
 		OperationID:     members[memberOperationID],
 		Method:          members[memberMethod],
 	}
-	if isList && !slices.Contains(listMethods, entry.Method) {
+	if isList && !IsListMethod(entry.Method) {
 		return Entry{}, invalid(ReasonInvalidMethod)
 	}
 	if isCall && !argumentsSHA256Format.MatchString(entry.ArgumentsSHA256) {
@@ -187,6 +187,13 @@ const (
 	memberOperationID     = "operation_id"
 	memberMethod          = "method"
 )
+
+// IsListMethod reports whether method is one of the methods a list-call entry
+// may name: tools/list, prompts/list, resources/list or
+// resources/templates/list, exactly.
+func IsListMethod(method string) bool {
+	return slices.Contains(listMethods, method)
+}
 
 // listMethods is the exact set of methods a list call may name.
 var listMethods = []string{"tools/list", "prompts/list", "resources/list", "resources/templates/list"}

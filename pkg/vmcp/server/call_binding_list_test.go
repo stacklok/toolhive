@@ -4,18 +4,24 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
@@ -155,6 +161,11 @@ func TestCallBinding_ListCallMismatches(t *testing.T) {
 	requireRefused(t, s.send(t, http.MethodPost, token, session, `{"jsonrpc":"2.0","id":7,"result":{}}`, nil),
 		callbinding.ReasonNoOpenCall, nil)
 
+	// A refusal does not use the token up.
+	again := s.send(t, http.MethodPost, token, session, listBody(35, "tools/list"), nil)
+	require.Equal(t, http.StatusOK, again.status, "body: %s", again.body)
+	assert.Equal(t, []string{cbTool}, listedKeys(t, "tools/list", again.body))
+
 	assert.Zero(t, s.fc.callToolCalls.Load())
 	assert.Equal(t, baseline, s.fc.listPromptsCalls.Load(), "a refused list call never reaches the core")
 	assert.Zero(t, s.fc.readResourceCalls.Load())
@@ -180,6 +191,81 @@ func TestCallBinding_ListCallServerWithoutItems(t *testing.T) {
 	resp := s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "tools/list"), nil)
 	require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
 	assert.Empty(t, listedKeys(t, "tools/list", resp.body))
+}
+
+// TestCallBinding_ListCallFollowsCursor walks a Modern tools/list larger than
+// one page with one list-call token: pages hold only the bound server's
+// tools, including an empty page that still carries a cursor, and the walk
+// collects exactly that server's tools.
+func TestCallBinding_ListCallFollowsCursor(t *testing.T) {
+	t.Parallel()
+	s := newCallBindingTestServer(t, cbServerOptions{wrap: func(fc *fakeCore) core.VMCP {
+		fc.tools = nil
+		for i := range modernPageSize + 5 {
+			fc.tools = append(fc.tools, vmcp.Tool{Name: fmt.Sprintf("other_%05d", i), BackendID: "other"})
+		}
+		fc.tools = append(fc.tools,
+			vmcp.Tool{Name: "zz_" + cbTool, BackendID: cbServer}, vmcp.Tool{Name: "zz_" + cbTool + "_2", BackendID: cbServer})
+		return fc
+	}})
+	token := s.tokens.add("list", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+
+	var listed []string
+	cursor := ""
+	for page := 0; ; page++ {
+		require.Less(t, page, 5, "the walk must end")
+		params := `{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
+			`"io.modelcontextprotocol/clientCapabilities":{}}`
+		if cursor != "" {
+			params += `,"cursor":` + cbJSON(cursor)
+		}
+		resp := s.send(t, http.MethodPost, token, "",
+			`{"jsonrpc":"2.0","id":`+cbJSON(page+2)+`,"method":"tools/list","params":`+params+`}}`,
+			http.Header{"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/list"}})
+		require.Equal(t, http.StatusOK, resp.status, "body: %s", resp.body)
+		keys := listedKeys(t, "tools/list", resp.body)
+		if page == 0 {
+			assert.Empty(t, keys, "the first page holds only other servers' tools")
+		}
+		listed = append(listed, keys...)
+		var result struct {
+			Result struct {
+				NextCursor string `json:"nextCursor"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(resp.body), &result))
+		if cursor = result.Result.NextCursor; cursor == "" {
+			break
+		}
+	}
+	assert.Equal(t, []string{"zz_" + cbTool, "zz_" + cbTool + "_2"}, listed)
+}
+
+// TestCallBinding_ListCallRefusalIsAudited checks that a list-call token's
+// refusal is audited as a denial with its reason.
+func TestCallBinding_ListCallRefusalIsAudited(t *testing.T) {
+	t.Parallel()
+	auditPath := filepath.Join(t.TempDir(), "audit.log")
+	s := newCallBindingTestServer(t, cbServerOptions{auditFile: auditPath})
+	token := s.tokens.add("list-token-value", claimsFor(cbClient, "jti-1", []any{listEntry(cbServer, "tools/list")}))
+	requireRefused(t, s.send(t, http.MethodPost, token, s.session(t, token), listBody(2, "prompts/list"), nil),
+		callbinding.ReasonMethodMismatch, 2)
+
+	require.Eventually(t, func() bool {
+		raw, err := os.ReadFile(auditPath)
+		if err != nil {
+			return false
+		}
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			var event map[string]any
+			if json.Unmarshal(line, &event) == nil && event["outcome"] == audit.OutcomeDenied {
+				encoded := cbJSON(event)
+				return strings.Contains(encoded, `"denial_reason":"method_mismatch"`) &&
+					!strings.Contains(encoded, "list-token-value")
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
 }
 
 // listErrCore fails ListTools until cleared.
@@ -300,11 +386,24 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 			wantBody:   `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"}],"nextCursor":"c"}}`,
 		},
 		{
-			name:       "not found passes unchanged",
+			name:       "plain error body passes unchanged",
 			status:     http.StatusNotFound,
 			body:       "session not found",
 			wantStatus: http.StatusNotFound,
 			wantBody:   "session not found",
+		},
+		{
+			name:       "result on another status is filtered too",
+			status:     http.StatusAccepted,
+			body:       `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"},{"name":"` + cbOtherTool + `"}]}}`,
+			wantStatus: http.StatusAccepted,
+			wantBody:   `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"` + cbTool + `"}]}}`,
+		},
+		{
+			name:       "result without its items member fails closed",
+			status:     http.StatusOK,
+			body:       `{"jsonrpc":"2.0","id":2,"result":{"items":[{"name":"` + cbOtherTool + `"}]}}`,
+			wantStatus: http.StatusInternalServerError,
 		},
 		{
 			name:       "JSON-RPC error passes unchanged",
@@ -342,7 +441,7 @@ func TestCallBinding_ListCallResponseHandling(t *testing.T) {
 			assert.Equal(t, tc.wantStatus, rec.Code)
 			assert.Empty(t, rec.Header().Get("Content-Length"))
 			switch {
-			case tc.wantStatus != http.StatusOK && tc.wantBody != "":
+			case tc.wantStatus == http.StatusNotFound:
 				assert.Equal(t, tc.wantBody, rec.Body.String())
 				return
 			case tc.wantBody != "":

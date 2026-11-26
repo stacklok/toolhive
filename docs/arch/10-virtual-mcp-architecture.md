@@ -1516,12 +1516,17 @@ another path that goes through the authenticated MCP chain is refused; `/health`
 - For a list-call entry, instead of any `tools/call` or `tools/list` above: the list
   method the entry names, answered with only the items whose backend is the entry's
   `server` (a list request names no server, so the binding narrows the answer). The
-  items come from the same admission-filtered lists dispatch serves; one without a
-  single backend, such as a composite tool, or any tool on an optimizer-enabled
-  instance, is never listed. The response is filtered after every later check, and a
-  200 that cannot be read as a list result is replaced by a 500. A list call starts
-  no call and does not use up the token, so a client may follow `nextCursor` with
-  it. A `tools/call` or another list method is refused with `method_mismatch`.
+  middleware filters the response, after every later check: Legacy lists are served
+  from the SDK's per-session store, which offers no filter hook, so this covers both
+  revisions. An item is kept when its name (tools, prompts), URI (resources) or URI
+  template is one the vMCP's current admission-filtered view attributes to that
+  backend; one without a single backend, such as a composite tool, or any tool on an
+  optimizer-enabled instance, is never listed. A list call starts no call and does
+  not use up the token, so a client may follow `nextCursor` with it. A `tools/call`
+  or another list method is refused with `method_mismatch`. Known limits: a Legacy
+  session lists what it registered, so a name that moved to the entry's backend since
+  then shows its earlier metadata; and pages are cut before filtering, so a
+  `nextCursor` (past 1,000 items) encodes the last key of the unfiltered page.
 - GET and DELETE. The session-ownership check then limits them to sessions the
   token's principal owns. Once the token has started its call, they are limited to
   that call's session (`session_mismatch`); a Modern call has none. Neither uses up
@@ -1580,9 +1585,10 @@ answers a Cedar denial: `insufficient_scope` is what MCP clients read as a step-
 hint, and no scope would make these requests acceptable. Both messages end with the
 reason. The refusal is audited like a Cedar denial (outcome `denied`), with the reason
 in `metadata.extra.denial_reason`, for a stream-opening GET too. Logs carry the `jti`,
-the client, the entry's server, tool and operation ID, and the reason; never the token
-or the arguments. When the record or the route lookup fails for a reason other than
-authorization, the vMCP answers 503 and the token stays unused.
+the client, the entry's server, tool, method and operation ID, and the reason; never
+the token or the arguments. When the record, the route lookup or a list-call token's
+list lookup fails for a reason other than authorization, the vMCP answers 503 and the
+token stays unused.
 
 **Implementation**: `pkg/vmcp/server/call_binding.go`,
 `pkg/vmcp/server/call_binding_params.go`, `pkg/vmcp/callbinding` (list results:

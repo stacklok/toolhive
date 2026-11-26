@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 )
@@ -348,18 +350,28 @@ func (cb *callBinding) servePost(
 // any other request with method_not_allowed.
 //
 // The list is served by the usual handler, after every later check, and then
-// filtered. A list call starts no call and does not use up the token, so a
-// client may follow nextCursor with the same token.
+// filtered here, on the response: a Legacy list is answered by the SDK from
+// the session's own tool store, which toolhive-core's mcpcompat offers no hook
+// to filter, so this is the one place that covers Legacy and Modern alike.
+// Every response body is filtered, whatever its status, so nothing that
+// carries a result goes out unfiltered; only an empty body (such as the 202
+// for a notification), a JSON-RPC error, and a body that is not JSON on a
+// status other than 2xx (such as the session-ownership 404) pass unchanged.
+// Anything else gets a 500.
+//
+// A list call starts no call and does not use up the token, so a client may
+// follow nextCursor with the same token.
 func (cb *callBinding) serveListCall(
 	w http.ResponseWriter, r *http.Request, next http.Handler,
 	identity *auth.Identity, token *callbinding.Token, parsed *mcpparser.ParsedMCPRequest,
 ) {
-	if parsed.Method != token.Entry.Method {
-		reason := callbinding.ReasonMethodNotAllowed
-		if parsed.Method == "tools/call" || callbinding.IsListMethod(parsed.Method) {
-			reason = callbinding.ReasonMethodMismatch
-		}
-		cb.refuse(w, r, parsed, token, reason)
+	switch {
+	case parsed.Method == token.Entry.Method:
+	case parsed.Method == "tools/call" || toolcalldetails.IsListMethod(parsed.Method):
+		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodMismatch)
+		return
+	default:
+		cb.refuse(w, r, parsed, token, callbinding.ReasonMethodNotAllowed)
 		return
 	}
 	keep, err := cb.listItems(r.Context(), identity, parsed.Method, token.Entry.Server)
@@ -376,17 +388,21 @@ func (cb *callBinding) serveListCall(
 		slog.DebugContext(r.Context(), "call binding: a list call ended before it was answered", "jti", token.JTI)
 		return
 	}
-	if buffered.status == http.StatusOK {
+	if len(body) > 0 {
 		filtered, err := callbinding.FilterListResult(parsed.Method, body, keep)
-		if err != nil {
+		switch {
+		case err == nil:
+			body = filtered
+		case buffered.status >= http.StatusMultipleChoices && !json.Valid(body):
+			// A plain error body, such as the session-ownership 404.
+		default:
 			slog.ErrorContext(r.Context(), "call binding: could not limit a list result to the token's server",
-				"jti", token.JTI, "mcp_method", parsed.Method, "error", err)
+				"jti", token.JTI, "mcp_method", parsed.Method, "status", buffered.status, "error", err)
 			w.Header().Del("Content-Length")
 			writeCallBindingError(w, parsed, http.StatusInternalServerError, mcpparser.CodeInternalError,
 				"Internal error: the list could not be limited to the access token's server")
 			return
 		}
-		body = filtered
 	}
 	slog.DebugContext(r.Context(), "call binding: answered a call-bound list call",
 		"jti", token.JTI, "client_id", token.ClientID, "server", token.Entry.Server, "method", token.Entry.Method)

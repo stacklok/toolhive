@@ -225,6 +225,19 @@ func TestRegister_IDJAGPath(t *testing.T) {
 	}
 }
 
+// TestIsListMethod checks that IsListMethod accepts exactly the methods a
+// list-call entry may name.
+func TestIsListMethod(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{
+		"tools/list", "prompts/list", "resources/list", "resources/templates/list",
+		"tools/call", "Tools/list", "tools/list ", "resources/templates/list/", "completion/complete", "",
+	} {
+		_, err := ParseEntry(json.RawMessage(replace(listCall, "tools/list", method)))
+		assert.Equal(t, err == nil, IsListMethod(method), "%q", method)
+	}
+}
+
 func TestParseEntry(t *testing.T) {
 	t.Parallel()
 

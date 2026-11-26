@@ -4,7 +4,6 @@
 package callbinding
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,18 +12,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 )
 
-// TestIsListMethod checks that the list methods are exactly the methods a
-// list-call entry may name.
-func TestIsListMethod(t *testing.T) {
+// TestListResultMembersCoverListMethods pins the result members to the list
+// methods a list-call entry may name, so a method added there cannot reach
+// the filter without its members.
+func TestListResultMembersCoverListMethods(t *testing.T) {
 	t.Parallel()
 	for _, method := range []string{
 		"tools/list", "prompts/list", "resources/list", "resources/templates/list",
-		"tools/call", "Tools/list", "tools/list ", "resources/templates/list/", "completion/complete", "",
+		"tools/call", "Tools/list", "completion/complete", "",
 	} {
-		raw, err := json.Marshal(map[string]string{"type": toolcalldetails.Type, "server": "s", "method": method})
-		require.NoError(t, err)
-		_, err = toolcalldetails.ParseEntry(raw)
-		assert.Equal(t, err == nil, IsListMethod(method), "%q", method)
+		_, filtered := listResultMembers[method]
+		assert.Equal(t, toolcalldetails.IsListMethod(method), filtered, "%q", method)
 	}
 }
 
@@ -77,12 +75,12 @@ func TestFilterListResult(t *testing.T) {
 			want:     `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"nextCursor":"n"}}`,
 		},
 		{
-			// encoding/json would match "NAME" to a name field; the key is
-			// read by its exact name.
-			name:     "key in other letter case is dropped",
+			// encoding/json would match "NAME" to a name field, so an item
+			// whose key could be read two ways is refused.
+			name:     "key in other letter case is refused",
 			method:   "tools/list",
-			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"NAME":"github_read"},{"Name":"github_read"}]}}`,
-			want:     `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`,
+			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"NAME":"github_read"}]}}`,
+			refused:  true,
 		},
 		{
 			name:     "item without a string key is dropped",
@@ -91,10 +89,40 @@ func TestFilterListResult(t *testing.T) {
 			want:     `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`,
 		},
 		{
-			name:     "method other than the result's member lists nothing",
+			name:     "result without the method's items member",
 			method:   "prompts/list",
 			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"other_read"}]}}`,
-			want:     `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"other_read"}]}}`,
+			refused:  true,
+		},
+		{
+			name:     "items member in other letter case",
+			method:   "tools/list",
+			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"Tools":[{"name":"other_read"}]}}`,
+			refused:  true,
+		},
+		{
+			name:     "items member twice",
+			method:   "tools/list",
+			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[],"tools":[{"name":"other_read"}]}}`,
+			refused:  true,
+		},
+		{
+			name:     "result member twice",
+			method:   "tools/list",
+			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[]},"result":{"tools":[{"name":"other_read"}]}}`,
+			refused:  true,
+		},
+		{
+			name:     "item key twice",
+			method:   "tools/list",
+			response: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"github_read","name":"other_read"}]}}`,
+			refused:  true,
+		},
+		{
+			name:     "cache hints marked private and stale",
+			method:   "tools/list",
+			response: `{"jsonrpc":"2.0","id":1,"result":{"ttlMs":60000,"cacheScope":"public","tools":[]}}`,
+			want:     `{"jsonrpc":"2.0","id":1,"result":{"ttlMs":0,"cacheScope":"private","tools":[]}}`,
 		},
 		{
 			name:     "JSON-RPC error passes unchanged",
@@ -148,13 +176,22 @@ func TestFilterListResult(t *testing.T) {
 	}
 }
 
-// TestFilterListResultKeepsCharacters checks that kept items keep the
-// characters the handler wrote: <, > and & are not escaped.
-func TestFilterListResultKeepsCharacters(t *testing.T) {
+// TestFilterListResultKeepsBytes checks that the response keeps the bytes and
+// member order the handler wrote, apart from the filtered items: <, > and &
+// stay unescaped and numbers keep their spelling.
+func TestFilterListResultKeepsBytes(t *testing.T) {
 	t.Parallel()
-	got, err := FilterListResult("tools/list",
-		[]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"a","description":"<b> & c"}]}}`),
+	got, err := FilterListResult("tools/list", []byte(`{"jsonrpc":"2.0","id":12345678901234567890,`+
+		`"result":{"nextCursor":"c","tools":[{"name":"a","description":"<b> & c"},{"name":"b"}],"_meta":{"n":1.50}}}`),
 		map[string]struct{}{"a": {}})
 	require.NoError(t, err)
-	assert.Contains(t, string(got), `"description":"<b> & c"`)
+	assert.Equal(t, `{"jsonrpc":"2.0","id":12345678901234567890,`+
+		`"result":{"nextCursor":"c","tools":[{"name":"a","description":"<b> & c"}],"_meta":{"n":1.50}}}`, string(got))
+}
+
+func TestFilterListResultNamesTheCause(t *testing.T) {
+	t.Parallel()
+	_, err := FilterListResult("tools/list", []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`), nil)
+	require.ErrorIs(t, err, ErrListResult)
+	assert.Contains(t, err.Error(), "no items member")
 }

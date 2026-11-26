@@ -77,15 +77,6 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 		Resources: []string{"statefulsets"},
 		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 	},
-	// The proxy runner no longer sets blockOwnerDeletion on its Service owner
-	// references (#6836), but older runner images (pinned via
-	// operator.toolhiveRunnerImage) still do, which needs this grant under
-	// OwnerReferencesPermissionEnforcement. Kept for one release; remove later.
-	{
-		APIGroups: []string{"apps"},
-		Resources: []string{"statefulsets/finalizers"},
-		Verbs:     []string{"update"},
-	},
 	{
 		APIGroups: []string{""},
 		Resources: []string{"services"},
@@ -214,7 +205,6 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods/attach,verbs=create;get
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 

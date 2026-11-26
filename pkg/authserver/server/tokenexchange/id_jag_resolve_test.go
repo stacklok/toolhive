@@ -234,7 +234,13 @@ func TestIDJAGResolve_Resolver(t *testing.T) {
 	}
 }
 
-func TestIDJAGResolve_Found(t *testing.T) {
+// TestIDJAGResolve_FoundIssuesMarkedSessionlessToken checks the token a
+// resolved redemption issues: it carries the delegated-access marker and
+// no_upstream_session but no tsid (a usable tsid prevents delegated admission
+// at vMCP). Redemption grants no scope, and populating the response adds no
+// refresh token. The HTTP-level test covers a client that asks for
+// offline_access. Other fosite handlers are not exercised here.
+func TestIDJAGResolve_FoundIssuesMarkedSessionlessToken(t *testing.T) {
 	t.Parallel()
 
 	mock := mocks.NewMockResolver(gomock.NewController(t))
@@ -254,6 +260,14 @@ func TestIDJAGResolve_Found(t *testing.T) {
 	assert.Equal(t, resolveTestUser, sess.GetSubject())
 	assert.Equal(t, true, sess.JWTClaims.Extra[claimnames.DelegatedAccessKey])
 	assert.Equal(t, fosite.Arguments{idJAGTestResource}, f.req.GetGrantedAudience())
+	assert.NotContains(t, sess.JWTClaims.Extra, claimnames.TokenSessionIDKey)
+	assert.Equal(t, true, sess.JWTClaims.Extra[claimnames.NoUpstreamSessionKey])
+
+	assert.Empty(t, f.req.GetGrantedScopes())
+	resp := fosite.NewAccessResponse()
+	require.NoError(t, f.h.PopulateTokenEndpointResponse(t.Context(), f.req, resp))
+	assert.NotEmpty(t, resp.GetAccessToken())
+	assert.NotContains(t, resp.ToMap(), "refresh_token")
 }
 
 // TestIDJAGResolve_FillsClientLifespan is a wiring test: the resolve path

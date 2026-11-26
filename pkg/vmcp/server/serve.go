@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -157,8 +158,10 @@ type ServerConfig struct {
 
 	// CallBinding sets up enforcement of access tokens bound to one MCP call.
 	// The vMCP always enforces a token that carries an authorization_details
-	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
-	// only the one tools/call its entry names, once. CallBinding adds the
+	// entry of type https://toolhive.dev/mcp_tool_call: with a tool-call entry
+	// it may start only the one tools/call the entry names, once; with a
+	// list-call entry, only the one list call the entry names, answered with
+	// only that backend's items. CallBinding adds the
 	// clients whose tokens must carry one, the maximum call duration, the
 	// single-use record, and the parameters of the 401 challenge. The zero
 	// value lists no client and keeps the record in memory, on this replica
@@ -240,12 +243,16 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	var srv *Server
 
 	// Validate call binding before anything that needs releasing is built. Its
-	// route closes over the late-assigned srv like the completion handler
-	// below, and runs only at request time.
+	// route and list lookups close over the late-assigned srv like the
+	// completion handler below, and run only at request time.
 	callBinding, err := newCallBinding(cfg.CallBinding, func(
 		ctx context.Context, identity *auth.Identity, name string,
 	) (string, error) {
 		return srv.callBindingRoute(ctx, identity, name)
+	}, func(
+		ctx context.Context, identity *auth.Identity, method, server string,
+	) ([]json.RawMessage, error) {
+		return srv.callBindingListItems(ctx, identity, method, server)
 	})
 	if err != nil {
 		return nil, err

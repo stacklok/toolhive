@@ -283,8 +283,10 @@ type Config struct {
 
 	// CallBinding sets up enforcement of access tokens bound to one MCP call.
 	// The vMCP always enforces a token that carries an authorization_details
-	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
-	// only the one tools/call its entry names, once. CallBinding adds the
+	// entry of type https://toolhive.dev/mcp_tool_call: with a tool-call entry
+	// it may start only the one tools/call the entry names, once; with a
+	// list-call entry, only the one list call the entry names, answered with
+	// only that backend's items. CallBinding adds the
 	// clients whose tokens must carry one, the maximum call duration, the
 	// single-use record, and the parameters of the 401 challenge. The zero
 	// value lists no client and keeps the record in memory, on this replica

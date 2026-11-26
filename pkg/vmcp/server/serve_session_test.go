@@ -140,6 +140,17 @@ type fakeCore struct {
 	resourceTemplates []vmcp.ResourceTemplate
 	prompts           []vmcp.Prompt
 
+	// emptyBackends are configured backends that list nothing; every
+	// BackendID of the items above is a configured backend too.
+	emptyBackends []string
+	// unavailableBackends are configured backends missing from the current
+	// view, as an unreachable backend is.
+	unavailableBackends []string
+	// backendStatus is the registry health status of a configured backend,
+	// set with setBackendStatus; absent means none (healthy).
+	backendStatusMu sync.Mutex
+	backendStatus   map[string]vmcp.BackendHealthStatus
+
 	listToolsCalls             atomic.Int32
 	listResourcesCalls         atomic.Int32
 	listResourceTemplatesCalls atomic.Int32
@@ -421,12 +432,62 @@ func (f *fakeCore) CheckResourceRead(context.Context, *auth.Identity, string) er
 
 func (*fakeCore) CheckPromptGet(context.Context, *auth.Identity, string) error { return nil }
 
-func (*fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
-	return nil, nil
+// ListBackends returns the configured backends: every backend an item names,
+// emptyBackends and unavailableBackends.
+func (f *fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
+	ids := slices.Clone(f.emptyBackends)
+	ids = append(ids, f.unavailableBackends...)
+	for _, t := range f.tools {
+		ids = append(ids, t.BackendID)
+	}
+	for _, p := range f.prompts {
+		ids = append(ids, p.BackendID)
+	}
+	for _, r := range f.resources {
+		ids = append(ids, r.BackendID)
+	}
+	for _, t := range f.resourceTemplates {
+		ids = append(ids, t.BackendID)
+	}
+	slices.Sort(ids)
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
+	backends := []vmcp.Backend{}
+	for _, id := range slices.Compact(ids) {
+		if id != "" {
+			backends = append(backends, vmcp.Backend{ID: id, Name: id, HealthStatus: f.backendStatus[id]})
+		}
+	}
+	return backends, nil
 }
 
-func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
-	return nil, vmcp.ErrNotFound
+// setBackendStatus sets the registry health status ListBackends reports for
+// backend id.
+func (f *fakeCore) setBackendStatus(id string, status vmcp.BackendHealthStatus) {
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
+	if f.backendStatus == nil {
+		f.backendStatus = map[string]vmcp.BackendHealthStatus{}
+	}
+	f.backendStatus[id] = status
+}
+
+// LookupBackend applies the real core's rule: a backend is in identity's
+// view when identity's lists hold at least one of its tools, resources or
+// prompts (resource templates do not count) and it contributes to the view,
+// which an unavailable backend does not. The backend carries its registry
+// health status.
+func (f *fakeCore) LookupBackend(_ context.Context, identity *auth.Identity, id string) (*vmcp.Backend, error) {
+	lists := f.listsFor(identity)
+	visible := slices.ContainsFunc(lists.tools, func(t vmcp.Tool) bool { return t.BackendID == id }) ||
+		slices.ContainsFunc(lists.resources, func(r vmcp.Resource) bool { return r.BackendID == id }) ||
+		slices.ContainsFunc(lists.prompts, func(p vmcp.Prompt) bool { return p.BackendID == id })
+	if id == "" || !visible || slices.Contains(f.unavailableBackends, id) {
+		return nil, vmcp.ErrNotFound
+	}
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
+	return &vmcp.Backend{ID: id, Name: id, HealthStatus: f.backendStatus[id]}, nil
 }
 
 func (*fakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {

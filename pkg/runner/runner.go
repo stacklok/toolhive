@@ -1032,6 +1032,16 @@ func (r *Runner) persistRefreshToken(
 	updatedRemoteAuthConfig.CachedTokenExpiry = expiry
 
 	if err := updatedConfig.SaveState(ctx); err != nil {
+		// The new secret is already stored but nothing references it, so it
+		// would otherwise be orphaned just like the OAUTH_REFRESH_TOKEN_*
+		// leaks this path is meant to prevent. Best-effort cleanup only: the
+		// storage error is what we report, and the provider may be read-only.
+		if secretName != previousSecretName {
+			if deleteErr := secretManager.DeleteSecret(ctx, secretName); deleteErr != nil {
+				slog.Warn("Failed to delete uncommitted OAuth refresh token secret",
+					"secret_name", secretName, "error", deleteErr)
+			}
+		}
 		return fmt.Errorf("failed to save config with token reference: %w", err)
 	}
 

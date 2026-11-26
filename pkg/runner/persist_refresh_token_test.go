@@ -95,6 +95,10 @@ func TestRunner_PersistRefreshToken_SaveStateFailurePreservesLiveConfig(t *testi
 			blockPersistedStateSave(t, "failed-refresh")
 			return nil
 		})
+	// The newly stored secret has no durable reference after SaveState fails,
+	// so clean it up best-effort. The previous generation must survive.
+	secretManager.EXPECT().DeleteSecret(ctx, "OAUTH_REFRESH_TOKEN_failed-refresh").Return(nil)
+	secretManager.EXPECT().DeleteSecret(ctx, "OAUTH_REFRESH_TOKEN_previous").Times(0)
 
 	original := remote.Config{
 		Issuer:                "https://issuer.example.com",

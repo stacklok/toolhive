@@ -43,9 +43,6 @@ spec:
                     value: streamable-http
                 proxyPort: 8080
                 mcpPort: 8080
-                permissionProfile:
-                  type: builtin
-                  name: network
                 resources:
                   limits:
                     cpu: "100m"

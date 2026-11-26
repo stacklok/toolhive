@@ -7,17 +7,21 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
@@ -33,8 +37,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runtime"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
+	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
@@ -46,25 +52,24 @@ var ErrContainerExitedRestartNeeded = errors.New("container exited, restart need
 // probeProtocolVersion is the MCP protocol revision the readiness probe advertises
 // in the JSON-RPC params.protocolVersion of its initialize handshake.
 //
-// It is deliberately pinned to 2025-11-25 — the current stable revision and the
-// newest one that still defines the `initialize` method — rather than tracking
-// mcp.LATEST_PROTOCOL_VERSION. The upcoming 2026-07-28 revision (draft; subject to
-// change until it ships) removes `initialize` entirely (replaced by server/discover
-// + per-request _meta, SEP-2575), so a probe that sent method:"initialize" with a
-// 2026-07-28 version string would be internally inconsistent. When ToolHive adopts
-// 2026-07-28 (issue #5754) the probe must switch to server/discover — which, like
-// all 2026-07-28 Streamable HTTP POSTs, carries the required Mcp-Method/Mcp-Name
-// headers — and fall back to this initialize path for older backends. Pinning here
-// keeps the probe's method and version consistent regardless of what the SDK later
-// declares "latest".
+// It is deliberately pinned to 2025-11-25 rather than tracking
+// mcp.LATEST_PROTOCOL_VERSION, because this probe uses initialize. The final
+// 2026-07-28 revision removes initialize (replaced by server/discover and
+// per-request _meta, SEP-2575), so sending initialize with a 2026-07-28 version
+// would be internally inconsistent. This readiness probe does not yet support
+// Modern requests; that would require a server/discover probe with the required
+// Mcp-Method/Mcp-Name headers and a fallback to initialize for older backends.
+// Pinning here keeps the probe's method and version consistent regardless of
+// what the SDK later declares "latest".
 //
 // The value is sent only in the request body, NOT as an MCP-Protocol-Version
-// header: the spec scopes that header to requests made AFTER initialization
-// (carrying the negotiated version), and requires a server to reject an unsupported
-// header value with HTTP 400. Sending it on the initialize request itself would let
-// a backend that only supports an older revision 400 the probe — a false
-// "not-ready" — whereas body-based version negotiation degrades gracefully (the
-// server answers HTTP 200 with its own supported version).
+// header: for this 2025-11-25 initialize handshake, the spec scopes that header
+// to requests made AFTER initialization (carrying the negotiated version), and
+// requires a server to reject an unsupported header value with HTTP 400. Sending
+// it on the initialize request itself would let a backend that only supports an
+// older revision 400 the probe — a false "not-ready" — whereas body-based version
+// negotiation degrades gracefully (the server answers HTTP 200 with its own
+// supported version).
 const probeProtocolVersion = "2025-11-25"
 
 // Runner is responsible for running an MCP server with the provided configuration
@@ -96,6 +101,11 @@ type Runner struct {
 	diagnosticsServer *diagnostics.Server
 
 	statusManager statuses.StatusManager
+
+	// statusMu serializes the status writes made by transport callbacks with
+	// the read-then-write that marks the workload running, so a status set by
+	// a callback is never overwritten on the strength of a stale read.
+	statusMu sync.Mutex
 
 	// authenticatedTokenSource is the wrapped token source for remote workloads with authentication monitoring
 	authenticatedTokenSource *auth.MonitoredTokenSource
@@ -193,10 +203,33 @@ func (c *RunConfig) GetPort() int {
 	return c.Port
 }
 
+// parseProxyTimeout parses an optional Go duration string from RunConfig. An
+// empty string yields 0, which the proxy treats as "use the package default".
+// Negative durations and unparsable values are rejected.
+func parseProxyTimeout(name, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", name, value, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s must be non-negative, got %s", name, d)
+	}
+	return d, nil
+}
+
 // Run runs the MCP server with the provided configuration
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
+	// Validate serialized RunConfig input before any provider or runtime work.
+	// The builder and middleware helper repeat this check at their own boundaries.
+	if r.Config.MaxRequestBodySize < 0 {
+		return fmt.Errorf("max_request_body_size must be non-negative, got %d", r.Config.MaxRequestBodySize)
+	}
+
 	// Resolve session TTL once so both the transport proxy and Redis storage use
 	// the same effective value, rather than each applying their own zero-fallback
 	// independently. SessionTTL is stored as a Go duration string so the
@@ -215,6 +248,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Resolve the proxy HTTP server read timeout. Empty/zero means "use the proxy
+	// default"; the proxy option ignores non-positive values.
+	proxyReadTimeout, parseErr := parseProxyTimeout("proxy_read_timeout", r.Config.ProxyReadTimeout)
+	if parseErr != nil {
+		return parseErr
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:                     r.Config.Transport,
@@ -228,6 +268,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		StrictProtocolValidation: r.Config.StrictProtocolValidation,
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
+		ReadTimeout:              proxyReadTimeout,
+		StripConsentCookie:       r.Config.EmbeddedAuthServerConfig != nil,
 	}
 
 	// Set proxy mode for stdio transport
@@ -296,6 +338,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	if err := canonicalizeOIDCMiddlewareConfig(r.Config); err != nil {
+		return fmt.Errorf("invalid OIDC middleware configuration: %w", err)
+	}
+
+	if err := validateCredentialStrippingMiddleware(r.Config.MiddlewareConfigs, r.Config); err != nil {
+		return fmt.Errorf("invalid credential stripping middleware configuration: %w", err)
+	}
+
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
 	// §"Security Warning") is wired here, after both middleware-population
 	// paths, because it is the single place where Host/Port/AllowedOrigins are
@@ -310,9 +360,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Body-size limit is always the outermost middleware, regardless of how the
 	// chain was assembled (PopulateMiddlewareConfigs above, or WithMiddlewareFromFlags
-	// which pre-populates the slice and takes the else branch). Idempotent, so the
-	// operator/Populate path is a no-op here.
-	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(r.Config.MiddlewareConfigs)
+	// which pre-populates the slice and takes the else branch). Existing body-limit
+	// entries are replaced so the typed RunConfig value is authoritative.
+	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(
+		r.Config.MiddlewareConfigs,
+		r.Config.MaxRequestBodySize,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to add body limit middleware: %w", err)
 	}
@@ -332,10 +385,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		var err error
-		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
+		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(
+			ctx, r.Config.EmbeddedAuthServerConfig, authserverrunner.WithListenerHost(r.bindHost()),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
+		defer func() {
+			if err := r.embeddedAuthServer.Close(); err != nil {
+				slog.Warn("failed to close embedded auth server", "error", err)
+			}
+		}()
 		slog.Debug("embedded authorization server initialized")
 
 		// Create the upstream token service eagerly now that the auth server exists.
@@ -373,13 +433,28 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 
-	// Serve Prometheus metrics on a dedicated diagnostics listener rather than
-	// handing the handler to the transport, which would register it on the
-	// application mux where it outranks the middleware chain and stays
-	// unauthenticated. Leaving transportConfig.PrometheusHandler nil is what
-	// keeps the proxies from mounting /metrics at all.
+	if err := r.startEmbeddedAuthServerListener(); err != nil {
+		return err
+	}
+
+	// Metrics are served on a dedicated diagnostics listener so access can be
+	// restricted by port; see pkg/diagnostics.
 	if err := r.startDiagnosticsServer(); err != nil {
 		return err
+	}
+
+	// During the deprecation window /metrics is ALSO served on the transport port,
+	// so an existing scrape configuration keeps working while it is moved. Handing
+	// the handler to the transport is what mounts it there; leaving it nil is what
+	// keeps the proxies from mounting it at all. See
+	// telemetry.DefaultMetricsOnTransportPort for the cutover.
+	if mountPrometheusHandlerOnTransportPort(r.prometheusHandler, r.Config.TelemetryConfig) {
+		transportConfig.PrometheusHandler = r.prometheusHandler
+		slog.Warn("serving prometheus metrics on the transport port as well as the diagnostics port; "+
+			"this is deprecated and the transport-port copy will be removed; see #6384 for the timeline. "+
+			"Move scrapers to the "+
+			"diagnostics address logged above, then set metricsOnTransportPort: false to verify",
+			"transport_port", r.Config.Port)
 	}
 
 	// Release the listener on every exit from Run, not just the happy path.
@@ -433,6 +508,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.K8sPodTemplatePatch,
 			r.Config.IsolateNetwork,
 			r.Config.AllowDockerGateway,
+			r.Config.ReadOnlyRootfs,
 			r.Config.IgnoreConfig,
 			r.Config.Host,
 			r.Config.TargetPort,
@@ -461,15 +537,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
-		storage, err := session.NewRedisStorage(ctx, tcredis.Config{
+		tlsCfg, err := redisCfg.TLS.Load()
+		if err != nil {
+			return fmt.Errorf("redis session storage TLS configuration: %w", err)
+		}
+		storage, err := session.NewRedisStorage(ctx, redisconn.Config{
 			Addr:     redisCfg.Address,
 			Password: os.Getenv(session.RedisPasswordEnvVar),
 			DB:       int(redisCfg.DB),
+			TLS:      tlsCfg,
 		}, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}
 		slog.Info("using Redis session storage",
+			"store", redisCfg.Address,
 			"address", redisCfg.Address,
 			"db", redisCfg.DB,
 			"key_prefix", keyPrefix,
@@ -525,21 +607,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Set the token source on the transport
 		transportHandler.SetTokenSource(tokenSource)
 
-		// Set the health check failure callback for remote servers
-		transportHandler.SetOnHealthCheckFailed(func() {
-			slog.Warn("health check failed for remote server, marking as unhealthy", "server", r.Config.BaseName)
-			// Use Background context for status update callback - this is triggered by health check
-			// failure and is independent of any request context. The callback is fired asynchronously
-			// and needs its own lifecycle separate from the transport's parent context.
-			if err := r.statusManager.SetWorkloadStatus(
-				context.Background(),
-				r.Config.BaseName,
-				rt.WorkloadStatusUnhealthy,
-				"Health check failed",
-			); err != nil {
-				slog.Error("failed to update workload status", "error", err)
-			}
-		})
+		// Set the health check callbacks for remote servers
+		transportHandler.SetOnHealthCheckFailed(r.markRemoteUnhealthy)
+		transportHandler.SetOnHealthCheckRecovered(r.markRemoteRecovered)
 
 		// Set the unauthorized response callback for bearer token authentication
 		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
@@ -548,9 +618,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Use Background context for status update callback - this is triggered by 401 response
 			// and is independent of any request context. The callback is fired asynchronously
 			// and needs its own lifecycle separate from the transport's parent context.
-			if err := r.statusManager.SetWorkloadStatus(
+			if _, err := r.transitionWorkloadStatus(
 				context.Background(),
-				r.Config.BaseName,
+				nil,
 				rt.WorkloadStatusUnauthenticated,
 				errorMsg,
 			); err != nil {
@@ -699,22 +769,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	// At this point, we can consider the workload started successfully.
-	// However, we should preserve unauthenticated status if it was already set
-	// (e.g., if bearer token authentication failed during initialization)
-	currentWorkload, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
-	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
-		slog.Warn("failed to get current workload status", "error", err)
-	}
-
-	// Only set status to running if it's not already unauthenticated
-	// This preserves the unauthenticated state when bearer token authentication fails
-	if err == nil && currentWorkload.Status == rt.WorkloadStatusUnauthenticated {
-		slog.Debug("preserving unauthenticated status for workload", "workload", r.Config.BaseName)
-	} else {
-		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
-			// If we can't set the status to `running` - treat it as a fatal error.
-			return fmt.Errorf("failed to set workload status: %w", err)
-		}
+	// However, we should preserve a status a transport callback already set:
+	// - unauthenticated: bearer token authentication failed during initialization
+	// - unhealthy: health checks failed before waitForInitializeSuccess returned;
+	//   the health check loop owns the move back to running
+	if _, err := r.transitionWorkloadStatus(ctx, keepStatusOnStartup, rt.WorkloadStatusRunning, ""); err != nil {
+		// If we can't set the status to `running` - treat it as a fatal error.
+		return fmt.Errorf("failed to set workload status: %w", err)
 	}
 
 	// Wait for either a signal or the done channel to be closed
@@ -858,12 +919,81 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	return tokenSource, nil
 }
 
+// decodeStoredRunConfig decodes stored state without ReadJSON: its migrations
+// save state themselves and its normalizations are meant to stay in memory.
+func decodeStoredRunConfig(reader io.Reader) (*RunConfig, error) {
+	var stored *RunConfig
+	if err := json.NewDecoder(reader).Decode(&stored); err != nil {
+		// Custom unmarshalers (remote.Config, time.Time) can echo input.
+		return nil, fmt.Errorf("invalid stored run configuration: %T", err)
+	}
+	if stored == nil {
+		return nil, errors.New("stored run configuration is empty")
+	}
+	return stored, nil
+}
+
+// loadAndScrubRunConfig returns the stored state with legacy resolved secret
+// values removed. It changes neither the live config nor the state on disk.
+func (r *Runner) loadAndScrubRunConfig(ctx context.Context) (*RunConfig, error) {
+	stored, err := state.LoadRunConfig(ctx, r.Config.BaseName, decodeStoredRunConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load stored run configuration for %q: %w", r.Config.BaseName, err)
+	}
+	for i, reference := range stored.Secrets {
+		parameter, err := secrets.ParseSecretParameter(reference)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stored secret reference at index %d", i)
+		}
+		delete(stored.EnvVars, parameter.Target)
+	}
+	if stored.HeaderForward != nil {
+		if err := scrubStoredHeaderParameters(stored.MiddlewareConfigs, stored.HeaderForward.AddHeadersFromSecret); err != nil {
+			return nil, err
+		}
+	}
+	return stored, nil
+}
+
+// scrubStoredHeaderParameters removes secret headers from header-forward
+// entries, modifying the middlewares slice in place; pass a freshly decoded copy.
+// Params are decoded into the struct the middleware factory uses, so duplicate
+// or case-variant add_headers members resolve as they do at runtime.
+func scrubStoredHeaderParameters(middlewares []types.MiddlewareConfig, secretHeaders map[string]string) error {
+	secret := make(map[string]bool, len(secretHeaders))
+	for name := range secretHeaders {
+		secret[http.CanonicalHeaderKey(name)] = true
+	}
+	for i := range middlewares {
+		if middlewares[i].Type != headerfwd.HeaderForwardMiddlewareName || len(middlewares[i].Parameters) == 0 {
+			continue
+		}
+		var params headerfwd.HeaderForwardMiddlewareParams
+		if err := json.Unmarshal(middlewares[i].Parameters, &params); err != nil {
+			return fmt.Errorf("invalid stored header forwarding parameters: %T", err)
+		}
+		maps.DeleteFunc(params.AddHeaders, func(name, _ string) bool {
+			return secret[http.CanonicalHeaderKey(name)]
+		})
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return fmt.Errorf("failed to encode stored header forwarding parameters: %T", err)
+		}
+		middlewares[i].Parameters = encoded
+	}
+	return nil
+}
+
 func (r *Runner) persistRefreshToken(
 	ctx context.Context,
 	secretManager secrets.Provider,
 	refreshToken string,
 	expiry time.Time,
 ) error {
+	updatedConfig, err := r.loadAndScrubRunConfig(ctx)
+	if err != nil {
+		return err
+	}
 	secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
 		r.Config.Name,
 		"OAUTH_REFRESH_TOKEN_",
@@ -877,12 +1007,18 @@ func (r *Runner) persistRefreshToken(
 		return fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
-	r.Config.RemoteAuthConfig.CachedRefreshTokenRef = secretName
-	r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
+	updatedRemoteAuthConfig := *r.Config.RemoteAuthConfig
+	updatedConfig.RemoteAuthConfig = &updatedRemoteAuthConfig
+	updatedRemoteAuthConfig.CachedRefreshTokenRef = secretName
+	updatedRemoteAuthConfig.CachedTokenExpiry = expiry
 
-	if err := r.Config.SaveState(ctx); err != nil {
+	if err := updatedConfig.SaveState(ctx); err != nil {
 		return fmt.Errorf("failed to save config with token reference: %w", err)
 	}
+
+	// Preserve pointer identity so the auth handler and runner observe the same
+	// complete config only after the durable write succeeds.
+	*r.Config.RemoteAuthConfig = updatedRemoteAuthConfig
 
 	slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
 	return nil
@@ -897,7 +1033,10 @@ func (r *Runner) persistClientCredentials(
 	tokenEndpointAuthMethod string,
 	registeredCallbackPort int,
 ) error {
-	updatedConfig := *r.Config
+	updatedConfig, err := r.loadAndScrubRunConfig(ctx)
+	if err != nil {
+		return err
+	}
 	updatedRemoteAuthConfig := remote.Config{}
 	if r.Config.RemoteAuthConfig != nil {
 		updatedRemoteAuthConfig = *r.Config.RemoteAuthConfig
@@ -908,7 +1047,6 @@ func (r *Runner) persistClientCredentials(
 	if clientSecret != "" {
 		clientSecretSecretName := updatedRemoteAuthConfig.CachedClientSecretRef
 		if clientSecretSecretName == "" {
-			var err error
 			clientSecretSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(
 				r.Config.Name,
 				"OAUTH_CLIENT_SECRET_",
@@ -930,7 +1068,6 @@ func (r *Runner) persistClientCredentials(
 	if regAccessToken != "" {
 		regTokenSecretName := updatedRemoteAuthConfig.CachedRegTokenRef
 		if regTokenSecretName == "" {
-			var err error
 			regTokenSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(r.Config.Name, "OAUTH_REG_TOKEN_", secretManager)
 			if err != nil {
 				return fmt.Errorf("failed to generate registration token secret name: %w", err)
@@ -1182,4 +1319,150 @@ func waitForInitializeSuccess(
 			delay = maxDelay
 		}
 	}
+}
+
+// startEmbeddedAuthServerListener starts the embedded auth server's TLS
+// listener when one is configured, and is a no-op otherwise. The listener port
+// is fixed and part of the issuer URL, so a clash with the proxy or diagnostics
+// port is reported instead of being resolved by picking another port.
+func (r *Runner) startEmbeddedAuthServerListener() error {
+	if r.embeddedAuthServer == nil || r.Config.EmbeddedAuthServerConfig == nil ||
+		r.Config.EmbeddedAuthServerConfig.TLSListener == nil {
+		return nil
+	}
+	if r.Config.Port == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("proxy port %d conflicts with the auth server TLS listener port", r.Config.Port)
+	}
+	if r.prometheusHandler != nil && diagnosticsPort(r.Config.TelemetryConfig) == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("diagnostics port %d conflicts with the auth server TLS listener port", authserverrunner.TLSListenerPort)
+	}
+	if err := r.embeddedAuthServer.Start(); err != nil {
+		return fmt.Errorf("failed to start auth server TLS listener: %w", err)
+	}
+	return nil
+}
+
+// keepStatusOnStartup reports whether the startup write of running must keep the
+// current status, because a transport callback set it while the workload started.
+// A status that cannot be read, because the workload is not found or the read
+// fails, is not kept: startup writes running regardless.
+func keepStatusOnStartup(current rt.WorkloadStatus, _ error) bool {
+	return current == rt.WorkloadStatusUnauthenticated || current == rt.WorkloadStatusUnhealthy
+}
+
+// keepStatusOnRemoteUnhealthy reports whether a failed health check must keep the
+// current status rather than write unhealthy. It keeps:
+//   - unhealthy, so the repeated callback does not rewrite it;
+//   - unauthenticated, which the health check cannot clear, so letting it through
+//     would let a later recovery report a server that rejects every request as running;
+//   - stopping, stopped and removing, which the workload manager writes while it
+//     shuts the proxy down, during which a health check can still fail;
+//   - a status that cannot be read: a workload that is not found has been deleted,
+//     and writing would recreate its status, and a failed read is retried on the
+//     next failed check.
+func keepStatusOnRemoteUnhealthy(current rt.WorkloadStatus, readErr error) bool {
+	return readErr != nil ||
+		current == rt.WorkloadStatusUnhealthy ||
+		current == rt.WorkloadStatusUnauthenticated ||
+		current == rt.WorkloadStatusStopping ||
+		current == rt.WorkloadStatusStopped ||
+		current == rt.WorkloadStatusRemoving
+}
+
+// keepStatusOnRemoteRecovered reports whether a passing health check must keep the
+// current status rather than write running. It writes only over unhealthy, so it
+// never overrides a status another writer set in the meantime, nor one it cannot read.
+func keepStatusOnRemoteRecovered(current rt.WorkloadStatus, readErr error) bool {
+	return readErr != nil || current != rt.WorkloadStatusUnhealthy
+}
+
+// remoteUnhealthyStatusContext is the status context of a remote workload that
+// failed its health checks.
+const remoteUnhealthyStatusContext = "Remote server failed health checks"
+
+// markRemoteUnhealthy is the health check failure callback for remote servers. It
+// writes unhealthy unless keepStatusOnRemoteUnhealthy keeps the current status. It
+// does not report failures to the proxy: the proxy calls it again on every failed
+// check while the server stays unhealthy, so a failed read or write is retried.
+func (r *Runner) markRemoteUnhealthy() {
+	// Use Background context for status update callback - this is triggered by health check
+	// failure and is independent of any request context. The callback is fired asynchronously
+	// and needs its own lifecycle separate from the transport's parent context.
+	changed, err := r.transitionWorkloadStatus(
+		context.Background(),
+		keepStatusOnRemoteUnhealthy,
+		rt.WorkloadStatusUnhealthy,
+		remoteUnhealthyStatusContext,
+	)
+	if err != nil {
+		slog.Warn("failed to mark remote server unhealthy, retrying on the next failed health check",
+			"server", r.Config.BaseName, "error", err)
+		return
+	}
+	if changed {
+		slog.Warn("health check failed for remote server, marking as unhealthy", "server", r.Config.BaseName)
+	}
+}
+
+// markRemoteRecovered is the health check recovery callback for remote servers. It
+// moves the workload back to running only from unhealthy. It returns nil when the
+// recovery is handled: the status was written, or was deliberately left alone
+// because it is not unhealthy or the workload is not found. It returns an error
+// when the status cannot be read or written, so the proxy calls it again on the
+// next passing check rather than losing the recovery.
+func (r *Runner) markRemoteRecovered() error {
+	_, err := r.transitionWorkloadStatus(
+		context.Background(),
+		keepStatusOnRemoteRecovered,
+		rt.WorkloadStatusRunning,
+		"",
+	)
+	return err
+}
+
+// transitionWorkloadStatus sets the workload status, unless preserve is non-nil
+// and reports that the current status must be kept, and reports whether it wrote.
+// It holds statusMu so the read and the write are atomic with respect to the
+// other callers.
+//
+// preserve receives the current status and the error from reading it. When the
+// read fails, current is unknown and readErr is non-nil; rt.ErrWorkloadNotFound
+// means the workload has no status. If preserve keeps a status whose read failed
+// with any other error, transitionWorkloadStatus returns that error, so the caller
+// can retry; a workload that is not found is not an error. If preserve lets the
+// write through despite a failed read, the write proceeds.
+func (r *Runner) transitionWorkloadStatus(
+	ctx context.Context,
+	preserve func(current rt.WorkloadStatus, readErr error) bool,
+	status rt.WorkloadStatus,
+	statusContext string,
+) (bool, error) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+
+	if preserve != nil {
+		workload, readErr := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
+		current := rt.WorkloadStatusUnknown
+		if readErr == nil {
+			current = workload.Status
+		}
+		readFailed := readErr != nil && !errors.Is(readErr, rt.ErrWorkloadNotFound)
+		if preserve(current, readErr) {
+			if readFailed {
+				return false, fmt.Errorf("failed to get current workload status: %w", readErr)
+			}
+			slog.Debug("preserving workload status",
+				"workload", r.Config.BaseName, "status", current, "skipped_status", status)
+			return false, nil
+		}
+		if readFailed {
+			slog.Warn("failed to get current workload status, setting it anyway",
+				"workload", r.Config.BaseName, "status", status, "error", readErr)
+		}
+	}
+
+	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, status, statusContext); err != nil {
+		return false, err
+	}
+	return true, nil
 }

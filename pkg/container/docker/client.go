@@ -90,6 +90,11 @@ type dockerAPI interface {
 
 // deployOps defines the internal operations used by DeployWorkload.
 // It allows unit tests to substitute a fake implementation to avoid hitting a real Docker daemon.
+type bridgeNetworkAPI interface {
+	NetworkList(context.Context, mobyclient.NetworkListOptions) (mobyclient.NetworkListResult, error)
+	NetworkInspect(context.Context, string, mobyclient.NetworkInspectOptions) (mobyclient.NetworkInspectResult, error)
+}
+
 type deployOps interface {
 	createExternalNetworks(ctx context.Context) error
 	createNetwork(ctx context.Context, name string, labels map[string]string, internal bool) error
@@ -116,6 +121,10 @@ type deployOps interface {
 		isolateNetwork bool,
 	) error
 	getContainerNetworkIP(ctx context.Context, containerName, networkName string) (string, error)
+	discoverBridgeGateways(ctx context.Context) ([]netip.Addr, error)
+	// cleanupFailedIsolation best-effort removes the given sidecars and the
+	// internal network of a workload whose setup failed.
+	cleanupFailedIsolation(ctx context.Context, name, networkName string, sidecars []string)
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -127,6 +136,8 @@ type Client struct {
 	imageManager images.ImageManager
 	ops          deployOps
 	proxy        networkProxy // selected at construction time via newNetworkProxy
+	bridgeAPI    bridgeNetworkAPI
+	hostAPI      hostDiscoveryAPI
 }
 
 // NewClient creates a new container client
@@ -144,6 +155,8 @@ func NewClient(ctx context.Context) (*Client, error) {
 		client:       dockerClient,
 		api:          dockerClient,
 		imageManager: imageManager,
+		bridgeAPI:    dockerClient,
+		hostAPI:      dockerClient,
 	}
 	// Default ops implementation uses the real client methods.
 	c.ops = c
@@ -155,6 +168,12 @@ func NewClient(ctx context.Context) (*Client, error) {
 	c.proxy = proxy
 
 	return c, nil
+}
+
+// RuntimeType returns the container runtime this client is connected to
+// (docker, podman or colima).
+func (c *Client) RuntimeType() runtime.Type {
+	return c.runtimeType
 }
 
 // DeployWorkload creates and starts a workload.
@@ -173,7 +192,7 @@ func (c *Client) DeployWorkload(
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
 	isolateNetwork bool,
-) (int, error) {
+) (_ int, retErr error) {
 	// Get permission config from profile
 	var ignoreConfig *ignore.Config
 	if options != nil {
@@ -183,6 +202,7 @@ func (c *Client) DeployWorkload(
 	if err != nil {
 		return 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
+	permissionConfig.ReadOnlyRootfs = options != nil && options.ReadOnlyRootfs
 
 	// Determine if we should attach stdio
 	attachStdio := options == nil || options.AttachStdio
@@ -236,6 +256,10 @@ func (c *Client) DeployWorkload(
 	}
 
 	networkIsolation := false
+	// mcpCreated is set once the MCP container exists. From then on `thv rm`
+	// can find the auxiliary containers and network through it, and removing
+	// them here would leave the MCP container without its network.
+	mcpCreated := false
 	// pspec and egress are populated in the isolation block and reused by
 	// SetupIngress after the MCP container is created.
 	var (
@@ -245,28 +269,68 @@ func (c *Client) DeployWorkload(
 	if effectiveIsolation {
 		networkIsolation = true
 
+		// A restart reaches this point with the stopped MCP container still in
+		// place, so the network and sidecars below belong to an existing
+		// workload and must survive a failed attempt. If the lookup fails,
+		// assume the container exists: leaving resources behind beats removing
+		// ones a workload depends on.
+		existingMcpID, lookupErr := c.findExistingContainer(ctx, name)
+		mcpExisted := lookupErr != nil || existingMcpID != ""
+
 		internalNetworkLabels := map[string]string{}
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.ops.createNetwork(ctx, networkName, internalNetworkLabels, true)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create internal network: %w", err)
 		}
+		// sidecars lists the auxiliary containers this attempt has started
+		// to create. Ingress is only set up after the MCP container exists,
+		// so it is never part of a rollback.
+		var sidecars []string
+		// The internal network and the dns/egress containers are not
+		// tied to the MCP container yet, so `thv rm` cannot find them if setup
+		// fails before the MCP container is created. Remove them in that case,
+		// but only for a new workload (see mcpExisted above).
+		defer func() {
+			if retErr != nil && !mcpCreated && !mcpExisted {
+				// Detach from the caller's cancellation so a cancelled request
+				// still cleans up, but bound the cleanup so it cannot hang.
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+				defer cancel()
+				c.ops.cleanupFailedIsolation(cleanupCtx, name, networkName, sidecars)
+			}
+		}()
 
-		// create dns container
+		// Start or reuse DNS normally before reading Podman's generated hosts.
 		dnsContainerName := fmt.Sprintf("%s-dns", name)
-		_, dnsContainerIP, err := c.ops.createDnsContainer(ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig)
-		if dnsContainerIP != "" {
-			additionalDNS = dnsContainerIP
-		}
+		sidecars = append(sidecars, "dns")
+		dnsContainerID, dnsContainerIP, err := c.ops.createDnsContainer(
+			ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig,
+		)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create dns container: %w", err)
 		}
+		additionalDNS = dnsContainerIP
+
+		// Snapshot after DNS startup, which may recreate a missing network.
+		// Bridges or host mappings changed later require a workload redeploy.
+		gatewayIPs, err := c.ops.discoverBridgeGateways(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to discover Docker bridge gateways: %w", err)
+		}
+		aliases, err := c.discoverHostAliases(ctx, dnsContainerID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to discover runtime host addresses: %w", err)
+		}
+		gatewayIPs = append(slices.Clone(gatewayIPs), aliases...)
+		slices.SortFunc(gatewayIPs, netip.Addr.Compare)
+		gatewayIPs = slices.Compact(gatewayIPs)
 
 		pspec = proxySpec{
 			WorkloadName:       name,
 			Permissions:        permissionProfile.Network,
 			AllowDockerGateway: options != nil && options.AllowDockerGateway,
-			GatewayIP:          c.getDockerBridgeGatewayIP(ctx),
+			GatewayIPs:         gatewayIPs,
 			TransportType:      transportType,
 			UpstreamPort:       upstreamPort,
 			AttachStdio:        attachStdio,
@@ -275,6 +339,7 @@ func (c *Client) DeployWorkload(
 
 		// SetupEgress runs before createMcpContainer so its env vars can be
 		// injected into the workload and the egress proxy has a head start.
+		sidecars = append(sidecars, "egress")
 		egress, err = c.proxy.SetupEgress(ctx, pspec)
 		if err != nil {
 			return 0, fmt.Errorf("failed to set up egress proxy: %w", err)
@@ -313,6 +378,7 @@ func (c *Client) DeployWorkload(
 	if err != nil {
 		return 0, fmt.Errorf("failed to create mcp container: %w", err)
 	}
+	mcpCreated = true
 
 	// Don't try and set up an ingress proxy if the transport type is stdio.
 	if transportType == "stdio" {
@@ -887,13 +953,23 @@ func (c *Client) getPermissionConfigFromProfile(
 // findExistingContainer finds a container with the exact name
 // Uses container runtime's name filter for efficiency but then verifies exact match to prevent partial matching
 func (c *Client) findExistingContainer(ctx context.Context, name string) (string, error) {
+	found, err := c.findContainerByName(ctx, name)
+	if err != nil || found == nil {
+		return "", err
+	}
+	return found.ID, nil
+}
+
+// findContainerByName returns the container with the exact name, or nil when
+// there is none.
+func (c *Client) findContainerByName(ctx context.Context, name string) (*container.Summary, error) {
 	// Use name filter to narrow results, then verify exact match
 	listResult, err := c.api.ContainerList(ctx, mobyclient.ContainerListOptions{
 		All:     true, // Include stopped containers
 		Filters: mobyclient.Filters{}.Add("name", name),
 	})
 	if err != nil {
-		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+		return nil, NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
 
 	// Verify exact name match from the filtered results (name filter does partial matching)
@@ -901,12 +977,12 @@ func (c *Client) findExistingContainer(ctx context.Context, name string) (string
 		for _, containerName := range cont.Names {
 			// Container names in the API have a leading slash
 			if containerName == "/"+name || containerName == name {
-				return cont.ID, nil
+				return &cont, nil
 			}
 		}
 	}
 
-	return "", nil
+	return nil, nil
 }
 
 // compareBasicConfig compares basic container configuration (image, command, env vars, labels, stdio settings)
@@ -988,7 +1064,8 @@ func compareLabels(existingLabels, desiredLabels map[string]string) bool {
 	return true
 }
 
-// compareHostConfig compares host configuration (network mode, capabilities, security options)
+// compareHostConfig compares host configuration (network mode, capabilities, security options,
+// privileged mode, read-only rootfs, restart policy)
 func compareHostConfig(existing *container.InspectResponse, desired *container.HostConfig) bool {
 	// Compare network mode
 	if string(existing.HostConfig.NetworkMode) != string(desired.NetworkMode) {
@@ -1013,8 +1090,21 @@ func compareHostConfig(existing *container.InspectResponse, desired *container.H
 		return false
 	}
 
+	// Compare read-only root filesystem
+	if existing.HostConfig.ReadonlyRootfs != desired.ReadonlyRootfs {
+		return false
+	}
+
 	// Compare restart policy
 	if existing.HostConfig.RestartPolicy.Name != desired.RestartPolicy.Name {
+		return false
+	}
+
+	// Compare requested host mappings, so DNS sidecars created before the
+	// host-gateway mapping was added are recreated rather than reused without
+	// it. Containers that request none are not compared: runtimes may report
+	// mappings they add themselves.
+	if len(desired.ExtraHosts) > 0 && !compareStringSlices(existing.HostConfig.ExtraHosts, desired.ExtraHosts) {
 		return false
 	}
 
@@ -1225,29 +1315,97 @@ func (c *Client) getContainerNetworkIP(ctx context.Context, containerName, netwo
 	return netSettings.IPAddress.String(), nil
 }
 
-// getDockerBridgeGatewayIP returns the gateway IP of the Docker default bridge
-// network by inspecting it at runtime. This handles platform differences:
-// Linux Docker Engine uses 172.17.0.1 by default, while Docker Desktop on macOS
-// uses 192.168.65.1 and Colima typically uses 192.168.5.1 or similar. Querying
-// the daemon directly is more accurate than hardcoding platform-specific IPs.
-// Falls back to dockerDefaultBridgeGatewayIP on any error or when the underlying
-// Docker client is unavailable.
-func (c *Client) getDockerBridgeGatewayIP(ctx context.Context) string {
-	if c.client == nil {
-		return dockerDefaultBridgeGatewayIP
-	}
-	nr, err := c.client.NetworkInspect(ctx, "bridge", mobyclient.NetworkInspectOptions{})
-	if err != nil {
-		slog.Debug("failed to inspect bridge network, using default gateway IP", "error", err)
-		return dockerDefaultBridgeGatewayIP
-	}
-	for _, cfg := range nr.Network.IPAM.Config {
-		if cfg.Gateway.IsValid() {
-			return cfg.Gateway.String()
+// discoverBridgeGateways returns every gateway configured on every bridge
+// network. Networks are inspected by immutable ID; a concurrent deletion causes
+// one bounded relist before failing closed.
+func (c *Client) discoverBridgeGateways(ctx context.Context) ([]netip.Addr, error) {
+	api := c.bridgeAPI
+	if api == nil {
+		if c.client == nil {
+			return nil, errors.New("docker client is unavailable")
 		}
+		api = c.client
 	}
-	slog.Debug("bridge network has no gateway in IPAM config, using default gateway IP")
-	return dockerDefaultBridgeGatewayIP
+
+	for attempt := 0; attempt < 2; attempt++ {
+		networks, err := api.NetworkList(ctx, mobyclient.NetworkListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("list Docker networks: %w", err)
+		}
+
+		gateways := make(map[netip.Addr]struct{})
+		relist := false
+		bridgeCount := 0
+		for _, summary := range networks.Items {
+			if summary.Driver != "bridge" {
+				continue
+			}
+			if summary.ID == "" {
+				return nil, errors.New("docker daemon returned a bridge network without an ID")
+			}
+			bridgeCount++
+			networkGateways, err := inspectBridgeNetworkGateways(
+				ctx,
+				api,
+				summary,
+				c.runtimeType == runtime.TypePodman,
+			)
+			if err != nil {
+				if errdefs.IsNotFound(err) && attempt == 0 {
+					relist = true
+					break
+				}
+				return nil, err
+			}
+			for _, gateway := range networkGateways {
+				gateways[gateway] = struct{}{}
+			}
+		}
+		if relist {
+			continue
+		}
+		if bridgeCount == 0 || len(gateways) == 0 {
+			return nil, errors.New("docker daemon returned no bridge gateways")
+		}
+
+		result := slices.Collect(maps.Keys(gateways))
+		slices.SortFunc(result, netip.Addr.Compare)
+		return result, nil
+	}
+	return nil, errors.New("docker bridge networks changed during discovery")
+}
+
+func inspectBridgeNetworkGateways(
+	ctx context.Context,
+	api bridgeNetworkAPI,
+	summary network.Summary,
+	allowAbsentGateways bool,
+) ([]netip.Addr, error) {
+	inspected, err := api.NetworkInspect(ctx, summary.ID, mobyclient.NetworkInspectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("inspect Docker bridge network %s: %w", summary.ID, err)
+	}
+	if inspected.Network.ID != summary.ID || inspected.Network.Driver != "bridge" {
+		return nil, fmt.Errorf("docker bridge network %s inspection returned inconsistent identity", summary.ID)
+	}
+	if len(inspected.Network.IPAM.Config) == 0 {
+		return nil, fmt.Errorf("docker bridge network %s has no IPAM configuration", summary.ID)
+	}
+
+	gateways := make([]netip.Addr, 0, len(inspected.Network.IPAM.Config))
+	for _, config := range inspected.Network.IPAM.Config {
+		if !config.Gateway.IsValid() {
+			if allowAbsentGateways {
+				// The Podman compatibility transport maps its explicit "<nil>"
+				// sentinel to an invalid address. Malformed non-empty values fail
+				// during JSON decoding before discovery reaches this case.
+				continue
+			}
+			return nil, fmt.Errorf("docker bridge network %s has an invalid IPAM gateway", summary.ID)
+		}
+		gateways = append(gateways, config.Gateway.Unmap())
+	}
+	return gateways, nil
 }
 
 // DeleteNetwork deletes a network by name.
@@ -1279,6 +1437,36 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
 	return nil
+}
+
+// cleanupFailedIsolation best-effort removes the given sidecars and the internal
+// network of a workload whose setup failed. A container is only removed when it
+// carries the auxiliary label, because a user workload may be named like a
+// sidecar (e.g. "app-egress"). Every sidecar is attempted and the network is
+// always deleted, even when an earlier step fails. Failures are logged: the
+// original setup error is what the caller needs.
+func (c *Client) cleanupFailedIsolation(ctx context.Context, name, networkName string, sidecars []string) {
+	var errs []error
+	for _, suffix := range sidecars {
+		sidecarName := fmt.Sprintf("%s-%s", name, suffix)
+		found, err := c.findContainerByName(ctx, sidecarName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("find %s container: %w", suffix, err))
+			continue
+		}
+		if found == nil || found.Labels[ToolhiveAuxiliaryWorkloadLabel] != LabelValueTrue {
+			continue
+		}
+		if err := c.removeContainer(ctx, found.ID); err != nil {
+			errs = append(errs, fmt.Errorf("remove %s container: %w", suffix, err))
+		}
+	}
+	if err := c.deleteNetwork(ctx, networkName); err != nil {
+		errs = append(errs, fmt.Errorf("remove internal network %s: %w", networkName, err))
+	}
+	if err := errors.Join(errs...); err != nil {
+		slog.Warn("failed to fully clean up after failed setup", "name", name, "error", err)
+	}
 }
 
 // removeContainer removes a container by ID, without removing any associated networks or proxy containers.
@@ -1352,6 +1540,35 @@ func convertEnvVars(envVars map[string]string) []string {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
 	return env
+}
+
+// readOnlyScratchPaths are the paths given a writable tmpfs when the root
+// filesystem is read-only.
+var readOnlyScratchPaths = []string{"/tmp", "/var/tmp", "/run"}
+
+// readOnlyScratchTmpfsOptions caps each scratch tmpfs, because MCP containers
+// run without memory limits and an uncapped tmpfs could consume host memory.
+const readOnlyScratchTmpfsOptions = "rw,nosuid,nodev,noexec,size=64m"
+
+// readOnlyRootfsTmpfs returns the tmpfs mounts for a read-only root filesystem.
+//
+// Setting them explicitly keeps Docker and Podman consistent: Podman's compat
+// API adds its own executable, uncapped tmpfs on /tmp, /var/tmp and /run
+// whenever ReadonlyRootfs is set, but only for paths nothing else mounts,
+// while Docker adds none. Paths already targeted by a mount are skipped,
+// since Docker refuses to start a container with a duplicate mount point.
+func readOnlyRootfsTmpfs(mounts []runtime.Mount) map[string]string {
+	taken := make(map[string]bool, len(mounts))
+	for _, m := range mounts {
+		taken[m.Target] = true
+	}
+	tmpfs := make(map[string]string, len(readOnlyScratchPaths))
+	for _, p := range readOnlyScratchPaths {
+		if !taken[p] {
+			tmpfs[p] = readOnlyScratchTmpfsOptions
+		}
+	}
+	return tmpfs
 }
 
 // convertMounts converts internal mount format to Docker mount format
@@ -1550,6 +1767,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 	dnsHostConfig := &container.HostConfig{
 		Mounts:      nil,
 		NetworkMode: container.NetworkMode("bridge"),
+		ExtraHosts:  dnsExtraHosts(c.runtimeType),
 		CapAdd:      nil,
 		CapDrop:     nil,
 		SecurityOpt: []string{"label:disable"},
@@ -1613,12 +1831,13 @@ func (c *Client) createMcpContainer(
 
 	// Create host configuration
 	hostConfig := &container.HostConfig{
-		Mounts:      convertMounts(permissionConfig.Mounts),
-		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
-		CapAdd:      permissionConfig.CapAdd,
-		CapDrop:     permissionConfig.CapDrop,
-		SecurityOpt: permissionConfig.SecurityOpt,
-		Privileged:  permissionConfig.Privileged,
+		Mounts:         convertMounts(permissionConfig.Mounts),
+		NetworkMode:    container.NetworkMode(permissionConfig.NetworkMode),
+		CapAdd:         permissionConfig.CapAdd,
+		CapDrop:        permissionConfig.CapDrop,
+		SecurityOpt:    permissionConfig.SecurityOpt,
+		Privileged:     permissionConfig.Privileged,
+		ReadonlyRootfs: permissionConfig.ReadOnlyRootfs,
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -1629,6 +1848,9 @@ func (c *Client) createMcpContainer(
 			return NewContainerError(err, "", fmt.Sprintf("invalid additional DNS address %q: %v", additionalDNS, err))
 		}
 		hostConfig.DNS = []netip.Addr{dnsAddr}
+	}
+	if permissionConfig.ReadOnlyRootfs {
+		hostConfig.Tmpfs = readOnlyRootfsTmpfs(permissionConfig.Mounts)
 	}
 
 	// Configure ports if options are provided

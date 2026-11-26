@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -37,8 +38,10 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 			workloadName = e2e.GenerateUniqueServerName("api-workload")
 		})
 
-		// Note: Workload cleanup is handled by suite-level CLI cleanup in e2e_suite_test.go
-		// No per-test cleanup needed - this avoids 90-second API deletion timeouts
+		// Each spec removes the workloads it creates (deleteAPIWorkloadOnCleanup), after
+		// letting them leave the starting state, so they do not hold Docker networks for
+		// the rest of the suite. The suite-level CLI cleanup in e2e_suite_test.go remains
+		// as a backstop.
 
 		Context("when creating workload from registry", func() {
 			It("should successfully create OSV server workload", func() {
@@ -53,6 +56,7 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				By("Verifying the response status is 201 Created")
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated),
 					"Should return 201 Created for successful workload creation")
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Verifying the response contains workload details")
 				var result map[string]interface{}
@@ -87,6 +91,7 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 
 				By("Verifying the response status is 201 Created")
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Verifying the response contains workload details")
 				var result map[string]interface{}
@@ -183,17 +188,10 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated),
 					"First workload should be created successfully")
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true) // Use all=true to see all states
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Attempting to create duplicate workload with same name")
 				resp2 := createWorkload(apiServer, createReq)
@@ -229,7 +227,6 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 
 			It("should list running workloads by default", func() {
 				workloadName := e2e.GenerateUniqueServerName("api-list-test")
-				// Note: Workload cleanup handled by suite-level CLI cleanup
 
 				By("Creating a workload")
 				createReq := map[string]interface{}{
@@ -239,17 +236,10 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true) // Use all=true to see all states
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second,
 					"Workload should be running within 30 seconds")
 
 				By("Verifying workload appears in default list")
@@ -267,7 +257,6 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 
 			It("should list all workloads including stopped when all=true", func() {
 				workloadName := e2e.GenerateUniqueServerName("api-list-all-test")
-				// Note: Workload cleanup handled by suite-level CLI cleanup
 
 				By("Creating and then stopping a workload")
 				createReq := map[string]interface{}{
@@ -277,17 +266,10 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				// Wait for it to be running
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true) // Use all=true to see all states
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				// Stop the workload
 				stopResp := stopWorkload(apiServer, workloadName)
@@ -336,7 +318,6 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 		Context("when getting workload details", func() {
 			It("should return workload configuration for existing workload", func() {
 				workloadName := e2e.GenerateUniqueServerName("api-get-test")
-				// Note: Workload cleanup handled by suite-level CLI cleanup
 
 				By("Creating a workload")
 				createReq := map[string]interface{}{
@@ -346,8 +327,9 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				By("Waiting for workload to be running")
+				By("Waiting for workload to be listed")
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true) // Use all=true to see all states
 					for _, w := range workloads {
@@ -401,8 +383,9 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				By("Waiting for workload to be running")
+				By("Waiting for workload to be listed")
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true) // Use all=true to see all states
 					for _, w := range workloads {
@@ -445,17 +428,10 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true) // Use all=true to see all states
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Stopping the workload")
 				stopResp := stopWorkload(apiServer, workloadName)
@@ -530,6 +506,7 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 			resp := createWorkload(apiServer, createReq)
 			resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+			deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 			By("Step 3: Verifying workload appears in list")
 			Eventually(func() bool {
@@ -544,15 +521,7 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				"Created workload should appear in list")
 
 			By("Step 3.5: Waiting for workload to reach running state")
-			Eventually(func() bool {
-				workloads := listWorkloads(apiServer, true)
-				for _, w := range workloads {
-					if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-						return true
-					}
-				}
-				return false
-			}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+			waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second,
 				"Workload should reach running state before deletion")
 
 			By("Step 4: Deleting workload")
@@ -615,6 +584,90 @@ func listWorkloads(server *e2e.Server, all bool) []core.Workload {
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to decode workload list")
 
 	return result.Workloads
+}
+
+// waitForAPIWorkloadRunning polls the API every 2 seconds until the named
+// workload reports running, failing with description if it does not within
+// timeout.
+//
+// Polling stops at once if the workload reports error; see
+// stopTryingIfAPIWorkloadErrored.
+func waitForAPIWorkloadRunning(server *e2e.Server, name string, timeout time.Duration, description ...interface{}) {
+	EventuallyWithOffset(1, func() error {
+		for _, w := range listWorkloads(server, true) { // all=true to see every state
+			if w.Name != name {
+				continue
+			}
+			stopTryingIfAPIWorkloadErrored(w, name)
+			if w.Status == runtime.WorkloadStatusRunning {
+				return nil
+			}
+			return fmt.Errorf("workload %s has status %q", name, w.Status)
+		}
+		return fmt.Errorf("workload %s is not listed", name)
+	}, timeout, 2*time.Second).Should(Succeed(), description...)
+}
+
+// stopTryingIfAPIWorkloadErrored ends the enclosing Eventually immediately if w
+// is the named workload and reports error. The runner sets that status only
+// after it has given up (restarts exhausted, or a setup failure it does not
+// retry), so polling for running until the timeout cannot change the outcome.
+func stopTryingIfAPIWorkloadErrored(w core.Workload, name string) {
+	if w.Name == name && w.Status == runtime.WorkloadStatusError {
+		StopTrying(fmt.Sprintf("workload %s entered terminal status %q: %s",
+			name, w.Status, w.StatusContext)).Now()
+	}
+}
+
+// apiWorkloadRemovalTimeout bounds how long a spec's cleanup waits for its
+// workload to leave the list.
+const apiWorkloadRemovalTimeout = 2 * time.Minute
+
+// deleteAPIWorkloadOnCleanup removes the named workload when the spec ends, so
+// that it does not keep holding a Docker network for the rest of the suite. A
+// workload the spec already deleted is tolerated.
+//
+// Settle wait: before deleting, it waits (up to ServerReadyTimeout) for the
+// workload to leave the starting state. Deleting a workload whose detached
+// start is still running returns at once, and the start then creates the
+// workload's network after the removal, leaking it (#7043). A spec that ends
+// right after the create, or after only checking that the workload is listed,
+// would otherwise hit that race. A workload still starting when this wait ends
+// is deleted anyway.
+//
+// Removal wait: the API deletes in the background, so after the delete it
+// waits (up to apiWorkloadRemovalTimeout) for the workload to leave the list.
+// A workload still listed when this wait ends is logged rather than failing
+// the spec; the suite-level cleanup in e2e_suite_test.go remains as a
+// backstop.
+//
+// The removal wait matters because the thv serve process is killed by the
+// cleanup StartServer registered, which could otherwise interrupt the
+// deletion. DeferCleanup runs in reverse order, so call this after
+// StartServer.
+func deleteAPIWorkloadOnCleanup(server *e2e.Server, name string) {
+	DeferCleanup(func() {
+		settleDeadline := time.Now().Add(e2e.ServerReadyTimeout())
+		for time.Now().Before(settleDeadline) && slices.ContainsFunc(listWorkloads(server, true),
+			func(w core.Workload) bool { return w.Name == name && w.Status == runtime.WorkloadStatusStarting }) {
+			time.Sleep(time.Second)
+		}
+
+		resp := deleteWorkloadAsync(server, name)
+		_ = resp.Body.Close()
+
+		deadline := time.Now().Add(apiWorkloadRemovalTimeout)
+		for time.Now().Before(deadline) {
+			if !slices.ContainsFunc(listWorkloads(server, true), func(w core.Workload) bool {
+				return w.Name == name
+			}) {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+		GinkgoWriter.Printf("Warning: workload %s still listed %v after cleanup delete\n",
+			name, apiWorkloadRemovalTimeout)
+	})
 }
 
 // deleteWorkloadAsync makes a DELETE API call without waiting for completion.

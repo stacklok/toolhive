@@ -39,6 +39,7 @@ Run "thv secret setup" first to configure a secrets provider before using any se
 		newSecretDeleteCommand(),
 		newSecretListCommand(),
 		newSecretResetKeyringCommand(),
+		newSecretUpgradeProtectionCommand(),
 		newSecretProviderCommand(),
 	)
 
@@ -367,6 +368,50 @@ If descriptions exist for the secrets, the command displays them alongside the n
 
 	cmd.Flags().BoolVar(&systemFlag, "system", false, "List system-managed secrets (registry auth, workload tokens)")
 
+	return cmd
+}
+
+func newSecretUpgradeProtectionCommand() *cobra.Command {
+	var yes bool
+
+	cmd := &cobra.Command{
+		Use:   "upgrade-protection",
+		Short: "Upgrade encrypted secrets protection",
+		Long: `Upgrade a legacy encrypted secrets file to the current Argon2id protection.
+
+This operation is irreversible for older ToolHive versions: they cannot read the
+upgraded file. Stop or upgrade all local ToolHive processes before continuing.`,
+		Args: cobra.NoArgs,
+		PreRunE: func(_ *cobra.Command, _ []string) error {
+			cfg := config.NewDefaultProvider().GetConfig()
+			providerType, err := cfg.Secrets.GetProviderType()
+			if err != nil {
+				return fmt.Errorf("failed to get secrets provider type: %w", err)
+			}
+			if providerType != secrets.EncryptedType {
+				return fmt.Errorf("upgrade-protection requires the %s secrets provider", secrets.EncryptedType)
+			}
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			confirmed, err := requireConfirmation(
+				"Upgrade encrypted secrets protection to Argon2id. This is irreversible for older ToolHive "+
+					"versions: they will no longer be able to read this store. Stop or upgrade every other "+
+					"ToolHive installation, workload, proxy, and server process that accesses this secrets "+
+					"file before continuing", yes)
+			if err != nil {
+				return err
+			}
+			if !confirmed {
+				return nil
+			}
+			if err := secrets.UpgradeEncryptedProtection(); err != nil {
+				return fmt.Errorf("failed to upgrade encrypted secrets protection: %w", err)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the compatibility confirmation")
 	return cmd
 }
 

@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -235,4 +237,249 @@ func TestMCPRemoteProxyPodTemplateSpecDriftDetection(t *testing.T) {
 
 	proxy.Spec.PodTemplateSpec = nil
 	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+}
+
+// Resources set through podTemplateSpec are layered over the defaults before
+// the strategic merge patch runs. Otherwise a podTemplateSpec that sets only
+// requests keeps the default limits and produces request > limit, which the
+// apiserver rejects.
+func TestMCPRemoteProxyPodTemplateSpecResources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		resources       mcpv1beta1.ResourceRequirements
+		podTemplateSpec string
+		wantRequests    corev1.ResourceList
+		wantLimits      corev1.ResourceList
+	}{
+		{
+			name: "requests above the default limits raise the defaulted limits",
+			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
+				`"resources":{"requests":{"cpu":"1","memory":"512Mi"}}}]}}`,
+			wantRequests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		},
+		{
+			// Kubernetes copies the limits into the missing requests at Pod
+			// creation, as it does without defaults.
+			name: "limits without requests drop the default requests",
+			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
+				`"resources":{"limits":{"cpu":"20m","memory":"2Gi"}}}]}}`,
+			wantRequests: nil,
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("20m"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
+			},
+		},
+		{
+			name: "podTemplateSpec wins over spec.resources",
+			resources: mcpv1beta1.ResourceRequirements{
+				Limits: mcpv1beta1.ResourceList{Memory: "1Gi"},
+			},
+			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
+				`"resources":{"limits":{"memory":"768Mi"}}}]}}`,
+			wantRequests: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("50m"),
+			},
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("200m"),
+				corev1.ResourceMemory: resource.MustParse("768Mi"),
+			},
+		},
+		{
+			name: "null removes the default limit",
+			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
+				`"resources":{"limits":{"memory":null}}}]}}`,
+			wantRequests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("200m"),
+			},
+		},
+		{
+			name: "resources on another container are ignored",
+			podTemplateSpec: `{"spec":{"containers":[{"name":"sidecar","image":"busybox:latest",` +
+				`"resources":{"requests":{"memory":"1Gi"}}}]}}`,
+			wantRequests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+			wantLimits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("200m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proxy := &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "template-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
+					RemoteURL:       "https://mcp.example.com",
+					Resources:       tt.resources,
+					PodTemplateSpec: rawPodTemplateSpecJSON(t, tt.podTemplateSpec),
+				},
+			}
+			reconciler := &MCPRemoteProxyReconciler{
+				Scheme:           testutil.NewScheme(t),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+			require.NotNil(t, deployment)
+
+			container, ok := findContainerByName(deployment.Spec.Template.Spec.Containers, mcpRemoteProxyContainerName)
+			require.True(t, ok)
+			assert.True(t, equality.Semantic.DeepEqual(tt.wantRequests, container.Resources.Requests),
+				"requests: want %v, got %v", tt.wantRequests, container.Resources.Requests)
+			assert.True(t, equality.Semantic.DeepEqual(tt.wantLimits, container.Resources.Limits),
+				"limits: want %v, got %v", tt.wantLimits, container.Resources.Limits)
+
+			assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+		})
+	}
+}
+
+// Scheduling can arrive from either resourceOverrides.proxyDeployment or
+// podTemplateSpec. Drift detection must account for both, so an override-only
+// comparison would report false drift on a podTemplateSpec-supplied value.
+func TestMCPRemoteProxySchedulingOverridesAndPodTemplateSpec(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	reconciler := &MCPRemoteProxyReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	t.Run("overrides applied and stable", func(t *testing.T) {
+		t.Parallel()
+
+		proxy := &mcpv1beta1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "sched-proxy", Namespace: "default"},
+			Spec: mcpv1beta1.MCPRemoteProxySpec{
+				RemoteURL: "https://mcp.example.com",
+				ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+						NodeSelector: map[string]string{"workload-class": "mcp-warm"},
+						Tolerations: []corev1.Toleration{{
+							Key:      "workload-class",
+							Operator: corev1.TolerationOpEqual,
+							Value:    "mcp-warm",
+							Effect:   corev1.TaintEffectNoSchedule,
+						}},
+					},
+				},
+			},
+		}
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+		assert.Equal(t, map[string]string{"workload-class": "mcp-warm"},
+			deployment.Spec.Template.Spec.NodeSelector)
+		require.Len(t, deployment.Spec.Template.Spec.Tolerations, 1)
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+			"freshly built deployment must not report drift")
+
+		// Clearing the overrides must be detected.
+		proxy.Spec.ResourceOverrides = nil
+		assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+			"clearing the overrides must be detected as drift")
+	})
+
+	t.Run("podTemplateSpec-supplied scheduling is not false drift", func(t *testing.T) {
+		t.Parallel()
+
+		proxy := &mcpv1beta1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "tmpl-sched-proxy", Namespace: "default"},
+			Spec: mcpv1beta1.MCPRemoteProxySpec{
+				RemoteURL:       "https://mcp.example.com",
+				PodTemplateSpec: rawPodTemplateSpecJSON(t, `{"spec":{"nodeSelector":{"disk":"ssd"}}}`),
+			},
+		}
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+		assert.Equal(t, map[string]string{"disk": "ssd"}, deployment.Spec.Template.Spec.NodeSelector)
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+			"scheduling from podTemplateSpec must not be mistaken for drift against empty overrides")
+	})
+
+	// Locks the precedence the API godoc promises when both routes are used: it is
+	// a merge in which podTemplateSpec wins on whatever it sets, so nodeSelector
+	// merges per key and affinity per sub-field, while tolerations -- an atomic
+	// list -- is replaced.
+	t.Run("podTemplateSpec precedence over the overrides", func(t *testing.T) {
+		t.Parallel()
+
+		overrideToleration := corev1.Toleration{
+			Key:      "workload-class",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "mcp-warm",
+			Effect:   corev1.TaintEffectNoSchedule,
+		}
+		proxy := &mcpv1beta1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "both-sched-proxy", Namespace: "default"},
+			Spec: mcpv1beta1.MCPRemoteProxySpec{
+				RemoteURL: "https://mcp.example.com",
+				PodTemplateSpec: rawPodTemplateSpecJSON(t, `{"spec":{
+					"nodeSelector":{"zone":"from-template","disk":"ssd"},
+					"tolerations":[{"key":"from-template","operator":"Exists","effect":"NoSchedule"}],
+					"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{
+						"nodeSelectorTerms":[{"matchExpressions":[{"key":"from-template","operator":"Exists"}]}]}}}
+				}}`),
+				ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+						NodeSelector: map[string]string{"zone": "from-override", "workload-class": "mcp-warm"},
+						Tolerations:  []corev1.Toleration{overrideToleration},
+						Affinity: &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						}},
+					},
+				},
+			},
+		}
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+
+		// nodeSelector merges: podTemplateSpec wins on "zone", the override's
+		// unique "workload-class" key survives.
+		assert.Equal(t,
+			map[string]string{"zone": "from-template", "disk": "ssd", "workload-class": "mcp-warm"},
+			deployment.Spec.Template.Spec.NodeSelector)
+
+		// tolerations is an atomic list, so it is replaced, not appended.
+		require.Len(t, deployment.Spec.Template.Spec.Tolerations, 1)
+		assert.Equal(t, "from-template", deployment.Spec.Template.Spec.Tolerations[0].Key)
+		assert.NotContains(t, deployment.Spec.Template.Spec.Tolerations, overrideToleration)
+
+		// affinity merges per sub-field: podTemplateSpec supplied only
+		// nodeAffinity, so the override's podAntiAffinity survives alongside it.
+		require.NotNil(t, deployment.Spec.Template.Spec.Affinity)
+		assert.NotNil(t, deployment.Spec.Template.Spec.Affinity.NodeAffinity,
+			"nodeAffinity from podTemplateSpec must be applied")
+		assert.NotNil(t, deployment.Spec.Template.Spec.Affinity.PodAntiAffinity,
+			"podAntiAffinity set only in the overrides must survive the merge")
+
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+			"the overridden fields must not be reported as perpetual drift")
+	})
 }

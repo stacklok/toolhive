@@ -1,13 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tokenexchange implements RFC 8693 token exchange for the authorization server.
-// It provides validation of subject tokens that were issued by the same authorization
-// server, enabling agents to act on behalf of users through delegation.
 package tokenexchange
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -16,6 +14,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
 
 // allowedSignatureAlgorithms lists the signing algorithms accepted during JWT verification.
@@ -64,16 +64,17 @@ type ValidatedClaims struct {
 	// MayAct holds the authorized actor from the "may_act" claim (RFC 8693 §4.4).
 	// Nil when the subject token does not carry a may_act claim.
 	MayAct *MayActClaim
-	// ExternalActor is the client identity that the external-issuer validation
-	// path has already authorized for delegation, via a per-issuer actor-claim
-	// allowlist match. It is set ONLY by that path (multi_issuer_validator.go),
-	// after the resolved actor claim is confirmed present in the issuer's
-	// AllowedActors — never populated from token claims by buildValidatedClaims
-	// or assignClaim. It is empty for self-issued tokens and for external
-	// tokens that carry a may_act claim (may_act is authoritative there
-	// instead). A non-empty value means the validator has already authorized
-	// this token's actor for delegation; it is not itself a raw claim.
+	// ExternalActor is the external actor claim value when the allowlist
+	// authorization path matched. It is empty when ActorMatcher alone
+	// authorized the token, because a matcher need not identify an actor.
+	// It is never populated from token claims by buildValidatedClaims or
+	// assignClaim, and is empty for self-issued and may_act-bearing tokens.
 	ExternalActor string
+	// ExternalActorAuthorized reports that the external issuer authorized
+	// delegation through AllowedActors or ActorMatcher. It is separate from
+	// ExternalActor because ActorMatcher can authorize without an actor claim.
+	// It is false for self-issued and may_act-bearing tokens.
+	ExternalActorAuthorized bool
 	// ExternalIssuer is set by the external-issuer validation path
 	// (validateExternalToken in multi_issuer_validator.go) to that issuer's
 	// IssuerURL, for EVERY external token it validates — unlike
@@ -89,7 +90,7 @@ type ValidatedClaims struct {
 	// AllowedDelegateClients is set for EVERY external token — like
 	// ExternalIssuer and unlike ExternalActor, it does not depend on whether
 	// the token carries a may_act claim (see validateExternalToken). That
-	// matters: the may_act path bypasses the AllowedActors allowlist
+	// matters: the may_act path bypasses AllowedActors and ActorMatcher
 	// entirely, so it is the path that most needs this restriction to still
 	// apply. It is set to that issuer's configured
 	// TrustedIssuer.AllowedDelegateClients, and is never populated
@@ -103,6 +104,15 @@ type ValidatedClaims struct {
 	AllowedDelegateClients []string
 	// Extra contains all non-standard claims not captured by other fields.
 	Extra map[string]any
+	// Claims holds every verified claim as decoded, registered ones included.
+	// It is shared with the validator's decode result: treat it as read-only
+	// and deep-copy before handing it to code that may modify it.
+	Claims map[string]any
+	// AuthorizationDetails holds the verified authorization_details member
+	// exactly as signed, nil when the token has no such member. Numbers keep
+	// every digit, unlike the decoded copy in Claims. A member that is present
+	// with the value null is the bytes "null", not nil.
+	AuthorizationDetails json.RawMessage
 }
 
 // MayActClaim represents the RFC 8693 §4.4 may_act claim from a subject token.
@@ -182,8 +192,13 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 	// unknown kid is worth an on-demand JWKS refresh. This validator's JWKS
 	// never comes over HTTP — it's this authorization server's own
 	// PublicJWKS() — so there is nothing to refresh.
-	standardClaims, extraClaims, _, err := verifySignature(parsedToken, v.publicJWKS)
+	verified, _, err := verifySignature(parsedToken, v.publicJWKS)
 	if err != nil {
+		return nil, err
+	}
+	standardClaims, extraClaims := verified.standard, verified.extra
+
+	if err := rejectIDJAGType(parsedToken); err != nil {
 		return nil, err
 	}
 
@@ -229,7 +244,59 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 		return nil, err
 	}
 
-	return buildValidatedClaims(standardClaims, extraClaims), nil
+	return buildValidatedClaims(verified), nil
+}
+
+// signedByThisServer parses rawToken and returns its claims when the signature
+// verifies against this server's keys and iss equals this server's issuer. It
+// checks nothing else: not exp, aud, sub, typ, id-token shape or may_act. That
+// is enough to trust the token's claims to refuse it, never to accept it, which
+// is why it is separate from Validate.
+func (v *SelfIssuedTokenValidator) signedByThisServer(rawToken string) (*ValidatedClaims, error) {
+	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
+	if err != nil {
+		return nil, fmt.Errorf("token is not a valid JWT: %w", err)
+	}
+	verified, _, err := verifySignature(parsedToken, v.publicJWKS)
+	if err != nil {
+		return nil, err
+	}
+	if verified.standard.Issuer != v.issuer {
+		return nil, fmt.Errorf("token was not issued by this server")
+	}
+	return buildValidatedClaims(verified), nil
+}
+
+// rejectIDJAGType refuses a token whose JOSE typ header is the ID-JAG type. It
+// is called from SelfIssuedTokenValidator.Validate and
+// MultiIssuerTokenValidator.validateExternalToken. That covers the
+// token-exchange subject token (MultiIssuerTokenValidator, which hands this
+// server's own tokens to SelfIssuedTokenValidator), the actor token
+// (SelfIssuedTokenValidator only), and the subject token a top-level exchange
+// grant is created from (decideTopLevel, SelfIssuedTokenValidator).
+// It must run only after the signature has verified, so the header is
+// trustworthy, and it is deliberately separate from verifySignature, which
+// ID-JAG and JWT-bearer redemption share and which must keep accepting ID-JAGs.
+//
+// An absent typ, or a typ that is not a string, is accepted, as the pkg/auth
+// token validator does: neither can name the ID-JAG type. The one-signature
+// check is defensive; jwt.ParseSigned only accepts compact serialization, which
+// always has exactly one signature.
+//
+// RFC 8725 Section 3.12: validation rules for different token types must be
+// mutually exclusive. An issuer that signs ID-JAGs with the same key as its
+// access tokens (a trusted external issuer today, and this authorization
+// server once it issues ID-JAGs) could otherwise have one presented in their
+// place.
+func rejectIDJAGType(token *jwt.JSONWebToken) error {
+	if len(token.Headers) != 1 {
+		return errors.New("token must contain exactly one JOSE signature")
+	}
+	typ, _ := token.Headers[0].ExtraHeaders[jose.HeaderType].(string)
+	if idjag.IsIDJAG(typ) {
+		return errors.New("token is an ID-JAG, which is not accepted in place of an access token")
+	}
+	return nil
 }
 
 // verifySignature attempts to verify the JWT signature using the provided public keys.
@@ -252,7 +319,7 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 func verifySignature(
 	token *jwt.JSONWebToken,
 	publicJWKS *jose.JSONWebKeySet,
-) (jwt.Claims, map[string]any, bool, error) {
+) (verifiedClaims, bool, error) {
 	candidates := publicJWKS.Keys
 	var kidMatched bool
 	if len(token.Headers) > 0 && token.Headers[0].KeyID != "" {
@@ -280,22 +347,37 @@ func verifySignature(
 		}
 		var claims jwt.Claims
 		extra := map[string]any{}
-		err := token.Claims(key, &claims, &extra)
+		// A map, not a struct field: encoding/json matches struct tags without
+		// regard to letter case, so a struct would read "AUTHORIZATION_DETAILS".
+		members := map[string]json.RawMessage{}
+		err := token.Claims(key, &claims, &extra, &members)
 		if err == nil {
-			return claims, extra, kidMatched, nil
+			return verifiedClaims{
+				standard: claims, extra: extra, authorizationDetails: members[authorizationDetailsParam],
+			}, kidMatched, nil
 		}
 		lastErr = err
 	}
 	if lastErr != nil {
-		return jwt.Claims{}, nil, kidMatched, fmt.Errorf("subject token signature verification failed: %w", lastErr)
+		return verifiedClaims{}, kidMatched, fmt.Errorf("subject token signature verification failed: %w", lastErr)
 	}
 	if filtered > 0 {
-		return jwt.Claims{}, nil, kidMatched, fmt.Errorf(
+		return verifiedClaims{}, kidMatched, fmt.Errorf(
 			"subject token signature verification failed: no compatible keys in JWKS "+
 				"(%d key(s) present but all skipped by use/alg filter)",
 			len(candidates))
 	}
-	return jwt.Claims{}, nil, kidMatched, fmt.Errorf("subject token signature verification failed: no keys in JWKS")
+	return verifiedClaims{}, kidMatched, fmt.Errorf("subject token signature verification failed: no keys in JWKS")
+}
+
+// verifiedClaims is the payload of a token whose signature verified, decoded
+// three ways from the same bytes.
+type verifiedClaims struct {
+	standard jwt.Claims
+	extra    map[string]any
+	// authorizationDetails is the raw authorization_details member, nil when
+	// absent.
+	authorizationDetails json.RawMessage
 }
 
 // validateAudience checks that tokenAudience intersects allowedAudiences.
@@ -314,17 +396,17 @@ func validateAudience(tokenAudience jwt.Audience, allowedAudiences []string) err
 	return fmt.Errorf("token audience %v does not match any allowed audience", []string(tokenAudience))
 }
 
-// buildValidatedClaims constructs a ValidatedClaims from standard and extra claims.
-func buildValidatedClaims(
-	standard jwt.Claims,
-	extra map[string]any,
-) *ValidatedClaims {
+// buildValidatedClaims constructs a ValidatedClaims from a verified payload.
+func buildValidatedClaims(verified verifiedClaims) *ValidatedClaims {
+	standard, extra := verified.standard, verified.extra
 	vc := &ValidatedClaims{
-		Subject:  standard.Subject,
-		Issuer:   standard.Issuer,
-		Audience: []string(standard.Audience),
-		JWTID:    standard.ID,
-		Extra:    make(map[string]any),
+		Subject:              standard.Subject,
+		Issuer:               standard.Issuer,
+		Audience:             []string(standard.Audience),
+		JWTID:                standard.ID,
+		Extra:                make(map[string]any),
+		Claims:               extra,
+		AuthorizationDetails: verified.authorizationDetails,
 	}
 
 	if standard.Expiry != nil {

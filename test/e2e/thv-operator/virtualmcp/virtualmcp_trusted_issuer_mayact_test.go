@@ -107,8 +107,8 @@ var _ = ginkgo.Describe("VirtualMCPServer trusted issuer allowMayAct", ginkgo.Or
 		})).To(gomega.Succeed())
 
 		ginkgo.By("deploying Dex as the (unexercised) embedded authorization server upstream")
-		dexInfo, cleanupDexFn = deployDex(ctx, k8sClient, dexName, defaultNamespace,
-			vmcpDeniedIssuer+"/oauth/callback", timeout, pollInterval)
+		dexInfo, cleanupDexFn = deployDex(ctx, k8sClient, dexName,
+			vmcpDeniedIssuer+"/oauth/callback")
 
 		ginkgo.By("deploying the parameterized OIDC server as the trusted external issuer")
 		oidcIssuer, _, oidcCleanupFn = DeployParameterizedOIDCServer(ctx, k8sClient, oidcName, defaultNamespace, timeout, pollInterval)

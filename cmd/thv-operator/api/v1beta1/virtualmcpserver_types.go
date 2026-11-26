@@ -19,7 +19,20 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="config.rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="config.rateLimiting.perUser requires incomingAuth.type oidc"
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools) || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="per-tool perUser rate limiting requires incomingAuth.type oidc"
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.sessionStorage) || !has(self.config.sessionStorage.tls)",message="config.sessionStorage.tls is ignored by the operator; set sessionStorage.tls instead"
 // +kubebuilder:validation:XValidation:rule="!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer) && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider == 'openai')",message="embeddingServerRef provisions a managed TEI server and cannot be combined with optimizer.embeddingProvider 'openai'; openai mode uses embeddingService directly"
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.authServerUpstreamFilter) || has(self.authServerConfig)",message="authServerUpstreamFilter requires authServerConfig to be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.authServerUpstreamFilter) || (has(self.authServerConfig) && has(self.authServerConfig.upstreamProviders) && size(self.authServerConfig.upstreamProviders) >= 2)",message="authServerUpstreamFilter requires at least two configured upstream providers"
+// Deeper cross-reference checks (every referenced upstream provider must
+// exist, and no reference to the mandatory first provider) were previously
+// expressed as CEL on this struct but were removed because they pushed the
+// cluster's x-kubernetes-validations cost budget over the per-schema limit
+// in realistic deployments where upstreamProviders is unbounded. The same
+// invariants are re-checked at reconciliation time by
+// validateAuthServerUpstreamFilter in the VirtualMCPServer controller, which
+// surfaces a terminal AuthServerConfigValidated=False condition — only the
+// kubectl-apply-time feedback is lost, not the safety.
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
@@ -31,10 +44,14 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:validation:Required
 	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
 
-	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
+	// OutgoingAuth configures authentication from Virtual MCP to backend resources.
 	// This field takes precedence over config.OutgoingAuth and should be preferred because it
 	// supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure
 	// dynamic discovery of credentials, rather than requiring secrets to be embedded in config.
+	// Referenced MCPExternalAuthConfig types supported by VirtualMCPServer are tokenExchange,
+	// headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo.
+	// Unsupported types are reported per backend in
+	// status.conditions with Reason: UnsupportedAuthType.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
@@ -107,6 +124,20 @@ type VirtualMCPServerSpec struct {
 	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
 	// +optional
 	AuthServerConfig *EmbeddedAuthServerConfig `json:"authServerConfig,omitempty"`
+
+	// AuthServerUpstreamFilter optionally narrows the multi-upstream
+	// authorization chain per-request based on the first upstream's resolved
+	// identity, so principals only walk the upstream providers they are
+	// entitled to. Lives beside AuthServerConfig (rather than nested in it)
+	// because the shared EmbeddedAuthServerConfig type is also used by
+	// MCPExternalAuthConfig, where multi-upstream filtering has no meaning.
+	//
+	// When nil, every request walks the full upstream chain in configured
+	// order — the behavior from before the filter hook existed. The filter
+	// only controls which OAuth credentials are collected during login;
+	// backend and tool authorization remain Cedar's responsibility.
+	// +optional
+	AuthServerUpstreamFilter *AuthServerUpstreamFilterConfig `json:"authServerUpstreamFilter,omitempty"`
 
 	// Replicas is the desired number of vMCP pod replicas.
 	// VirtualMCPServer creates a single Deployment for the vMCP aggregator process,
@@ -204,10 +235,13 @@ type IncomingAuthConfig struct {
 	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 }
 
-// OutgoingAuthConfig configures authentication from Virtual MCP to backend MCPServers
+// OutgoingAuthConfig configures authentication from Virtual MCP to backend resources.
+// Referenced MCPExternalAuthConfig resources support tokenExchange, headerInjection,
+// unauthenticated, awsSts, upstreamInject, xaa, and obo.
 type OutgoingAuthConfig struct {
 	// Source defines how backend authentication configurations are determined
-	// - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
+	// - discovered: Automatically discover from backend MCPServer, MCPRemoteProxy,
+	//   and MCPServerEntry externalAuthConfigRef fields
 	// - inline: Explicit per-backend configuration in VirtualMCPServer
 	// +kubebuilder:validation:Enum=discovered;inline
 	// +kubebuilder:default=discovered
@@ -224,15 +258,18 @@ type OutgoingAuthConfig struct {
 	Backends map[string]BackendAuthConfig `json:"backends,omitempty"`
 }
 
-// BackendAuthConfig defines authentication configuration for a backend MCPServer
+// BackendAuthConfig defines authentication configuration for a backend resource.
 type BackendAuthConfig struct {
 	// Type defines the authentication type
 	// +kubebuilder:validation:Enum=discovered;externalAuthConfigRef
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
-	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-	// Only used when Type is "externalAuthConfigRef"
+	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource.
+	// Only used when Type is "externalAuthConfigRef". Supported referenced types are
+	// tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,
+	// and obo. Unsupported types are reported for the affected backend in
+	// status.conditions with Reason: UnsupportedAuthType.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 }
@@ -255,8 +292,124 @@ const (
 // +gendoc
 type DiscoveredBackend = vmcptypes.DiscoveredBackend
 
+// AuthServerUpstreamFilterConfig configures the group-based filter that
+// narrows which of authServerConfig.upstreamProviders a given principal must
+// walk during multi-upstream authorization. The filter runs exactly once per
+// authorization, on the first upstream's callback leg, and may only narrow
+// the chain — it cannot reorder it, add unknown providers, or remove the
+// mandatory first provider. See the pkg/authserver/upstreamfilter package
+// for the full semantic contract.
+type AuthServerUpstreamFilterConfig struct {
+	// Claim is the exact top-level JWT/OIDC claim name to read group
+	// membership from on the first upstream's resolved principal. Defaults
+	// to "groups" when empty. Nested claims (e.g. Keycloak's
+	// realm_access.roles) are not supported and must be flattened to a
+	// top-level string array by the identity provider.
+	//
+	// The value is read from the identity the first upstream resolves: an
+	// OIDC upstream fills it from the validated ID token, a pure OAuth2
+	// upstream from the userinfo response. Groups carried only in an access
+	// token never reach it. Before enabling the filter, configure the first
+	// upstream to include the claim in its ID token or userinfo response,
+	// and request any required scopes. A missing claim fails the
+	// authorization (defaultUpstreams covers a valid-but-empty claim and
+	// unmatched groups, not an absent one), so enabling the filter before
+	// the provider emits the claim locks every principal out.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Claim string `json:"claim,omitempty"`
+
+	// Rules assigns groups to upstream provider subsets. A principal matches
+	// a rule if any of its groups appears in the rule's groups list
+	// (any-of / OR semantics). Multiple matching rules are combined by
+	// union — the effective chain contains every upstream from every
+	// matching rule, deduplicated and in configured order.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=atomic
+	Rules []UpstreamFilterGroupRule `json:"rules"`
+
+	// DefaultUpstreams is used when the claim is a valid empty array or
+	// when no rule matches. When omitted, no optional upstreams are added —
+	// the mandatory first upstream remains but the authorization walks no
+	// further. Every entry must name a configured
+	// authServerConfig.upstreamProviders provider other than the mandatory
+	// first provider; those cross-reference checks are enforced at
+	// reconciliation time rather than by CEL (CEL cost-budget constraints
+	// moved the check into the Go filter constructor; see the top-level CEL
+	// rules on VirtualMCPServerSpec for the shape invariants that remain at
+	// admission time).
+	// +optional
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=set
+	DefaultUpstreams []string `json:"defaultUpstreams,omitempty"`
+}
+
+// UpstreamFilterGroupRule pairs a set of principal group names with the set
+// of non-first upstream provider names those principals are entitled to walk.
+type UpstreamFilterGroupRule struct {
+	// Groups is the set of principal group names this rule matches. Matching
+	// is case-sensitive and exact. Per-element emptiness and duplicate
+	// detection are enforced at reconciliation time by the Go filter
+	// constructor, which runs again before the auth server starts.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=set
+	Groups []string `json:"groups"`
+
+	// UpstreamProviders lists the non-first upstream provider names to
+	// include in the chain when this rule matches. Every entry must name a
+	// configured authServerConfig.upstreamProviders provider other than the
+	// mandatory first provider; these cross-reference checks are enforced at
+	// reconciliation time rather than by CEL (CEL cost-budget constraints
+	// moved the check into the Go filter constructor). Per-element emptiness
+	// and duplicates are also enforced at reconciliation time.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=set
+	UpstreamProviders []string `json:"upstreamProviders"`
+}
+
+// VirtualMCPServerRuntimeStatus is the runtime-owned status snapshot. The
+// operator projects this snapshot into the top-level compatibility fields and
+// remains the sole writer of the top-level Conditions array.
+type VirtualMCPServerRuntimeStatus struct {
+	// Phase is the lifecycle phase observed by the running vMCP process.
+	// +optional
+	Phase VirtualMCPServerPhase `json:"phase,omitempty"`
+
+	// Message provides detail about the runtime phase.
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// Conditions contains runtime health observations.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// DiscoveredBackends contains the runtime's latest backend observations.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
+
+	// BackendCount is the number of routable backends observed by the runtime.
+	// +optional
+	BackendCount int32 `json:"backendCount,omitempty"`
+}
+
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {
+	// Runtime is the status snapshot written exclusively by the vMCP process.
+	// The operator projects it into the top-level compatibility fields.
+	// +optional
+	Runtime *VirtualMCPServerRuntimeStatus `json:"runtime,omitempty"`
+
 	// Conditions represent the latest available observations of the VirtualMCPServer's state
 	// +listType=map
 	// +listMapKey=type
@@ -356,6 +509,13 @@ const (
 
 	// ConditionTypeVirtualMCPServerTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
 	ConditionTypeVirtualMCPServerTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
+
+	// ConditionTypeVirtualMCPServerCABundleRefValidated indicates whether the incoming OIDC CA bundle reference is valid.
+	ConditionTypeVirtualMCPServerCABundleRefValidated = "CABundleRefValidated"
+
+	// ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration reports
+	// whether inline auth uses released legacy inbound grant fields.
+	ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration = "DeprecatedInboundGrantConfiguration"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -423,6 +583,14 @@ const (
 	// ConditionReasonAuthServerConfigInvalid indicates the AuthServerConfig is invalid
 	ConditionReasonAuthServerConfigInvalid = "AuthServerConfigInvalid"
 
+	// ConditionReasonVirtualMCPServerLegacyInboundGrantFields indicates that
+	// inline auth uses released legacy inbound grant fields.
+	ConditionReasonVirtualMCPServerLegacyInboundGrantFields = "LegacyInboundGrantFields"
+
+	// ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration indicates
+	// that inline auth uses only canonical inbound grant configuration.
+	ConditionReasonVirtualMCPServerCanonicalInboundGrantConfiguration = "CanonicalInboundGrantConfiguration"
+
 	// ConditionReasonAuthzRequiresUpstream indicates that authorization policies are
 	// configured but no upstream IDP is available to source claims from. Without an
 	// upstream, Cedar evaluates against the ToolHive-issued AS token, whose claim
@@ -460,6 +628,15 @@ const (
 
 	// ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError indicates a transient error occurred fetching the config
 	ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError = "TelemetryConfigRefFetchError"
+
+	// ConditionReasonVirtualMCPServerCABundleRefValid indicates the CA ConfigMap and selected key exist.
+	ConditionReasonVirtualMCPServerCABundleRefValid = "CABundleRefValid"
+
+	// ConditionReasonVirtualMCPServerCABundleRefNotFound indicates the CA ConfigMap does not exist.
+	ConditionReasonVirtualMCPServerCABundleRefNotFound = "CABundleRefNotFound"
+
+	// ConditionReasonVirtualMCPServerCABundleRefInvalid indicates an invalid reference or missing CA key.
+	ConditionReasonVirtualMCPServerCABundleRefInvalid = "CABundleRefInvalid"
 )
 
 // Backend authentication types
@@ -555,8 +732,19 @@ func (r *VirtualMCPServer) ExplicitPrimaryUpstreamProvider() (name string, fromD
 	return "", false
 }
 
+// ApplyDefaults applies controller-side defaults that are intentionally not
+// persisted to the API server. Call it before Validate during reconciliation.
+// Keeping defaulting out of Validate makes validation pure: it runs against
+// cached objects and its mutations would never be written back to the API.
+func (r *VirtualMCPServer) ApplyDefaults() {
+	if r.Spec.EmbeddingServerRef != nil && r.Spec.Config.Optimizer == nil {
+		r.Spec.Config.Optimizer = &config.OptimizerConfig{}
+	}
+}
+
 // Validate performs validation for VirtualMCPServer
-// This method is called by the controller during reconciliation
+// This method is called by the controller during reconciliation.
+// It must not mutate the spec; use ApplyDefaults for defaulting.
 func (r *VirtualMCPServer) Validate() error {
 	// Validate Group is set — spec.groupRef.name is required
 	// Note: CEL cannot validate embedded types from other packages
@@ -600,8 +788,9 @@ func (r *VirtualMCPServer) Validate() error {
 // Rules:
 // - embeddingServerRef.name must be non-empty when ref is provided
 // - optimizer requires either embeddingServerRef or a manually set embeddingService
-// - if embeddingServerRef is set without optimizer, auto-populate optimizer with defaults
 //
+// EmbeddingServerRef without an optimizer is materialized by ApplyDefaults before
+// validation; validation itself must stay side-effect free.
 // The controller handles the remaining cases at runtime (event emission, URL population).
 func (r *VirtualMCPServer) validateEmbeddingServer() error {
 	// Validate ref name is non-empty
@@ -619,13 +808,6 @@ func (r *VirtualMCPServer) validateEmbeddingServer() error {
 		return fmt.Errorf(
 			"spec.config.optimizer requires an embedding service: " +
 				"set spec.embeddingServerRef (recommended) or spec.config.optimizer.embeddingService")
-	}
-
-	// EmbeddingServerRef is set but optimizer is not configured: auto-populate
-	// optimizer with default values so the embedding server is actually used.
-	// The controller emits a Kubernetes event for this case.
-	if hasRef && !hasOptimizer {
-		r.Spec.Config.Optimizer = &config.OptimizerConfig{}
 	}
 
 	return nil

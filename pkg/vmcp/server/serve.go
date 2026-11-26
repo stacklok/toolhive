@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,10 +14,12 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
@@ -26,7 +29,7 @@ import (
 // ServerConfig holds the transport-only runtime configuration for Serve.
 //
 // It carries the subset of the legacy server.Config that configures the HTTP/SDK
-// runtime, plus the cross-cutting TelemetryProvider/AuditConfig that are consumed
+// runtime, plus the cross-cutting TelemetryProvider/AuditConfig/AuditSubjectEnricher that are consumed
 // by both the core (core.New) and the transport (Serve) — not a clean partition.
 // The fields the core exclusively owns (Aggregator, Router, BackendClient, Authz,
 // composite-tool WorkflowDefs) live on core.Config instead and are absent here.
@@ -137,9 +140,33 @@ type ServerConfig struct {
 	// core.New). If nil, no telemetry is recorded.
 	TelemetryProvider *telemetry.Provider
 
+	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware,
+	// applied inside the MCP parsing middleware. If nil, no usage is reported.
+	// ToolHive's own entry points set it (pkg/vmcp/cli); embedders should leave
+	// it nil (see docs/arch/vmcp-library.md).
+	UsageMetricsMiddleware func(http.Handler) http.Handler
+
 	// AuditConfig is the cross-cutting audit configuration (also consumed by
 	// core.New). If nil, no audit logging is performed.
 	AuditConfig *audit.Config
+
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to the
+	// per-request MCP audit events. Set the same enricher on
+	// core.Config.AuditSubjectEnricher so composite-tool workflow events carry
+	// them too. It has no effect when AuditConfig is nil.
+	AuditSubjectEnricher audit.SubjectEnricher
+
+	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// The vMCP always enforces a token that carries an authorization_details
+	// entry of type https://toolhive.dev/mcp_tool_call: with a tool-call entry
+	// it may start only the one tools/call the entry names, once; with a
+	// list-call entry, only the one list call the entry names, answered with
+	// only that backend's items. CallBinding adds the
+	// clients whose tokens must carry one, the maximum call duration, the
+	// single-use record, and the parameters of the 401 challenge. The zero
+	// value lists no client and keeps the record in memory, on this replica
+	// only. See callbinding.Config.
+	CallBinding callbinding.Config
 }
 
 // Serve is the transport-side entry point of the New/Serve split: it wraps an
@@ -169,8 +196,9 @@ type ServerConfig struct {
 // by the core (built/started in core.New, stopped in core.Close); Serve neither constructs
 // nor starts it, and the status reporter reads it back through the core (#5443 reversal).
 //
-// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
-// nil required collaborator (SessionManagerConfig or BackendRegistry). The session
+// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, a
+// nil required collaborator (SessionManagerConfig or BackendRegistry), or an invalid
+// CallBinding (a negative MaxCallDuration or an empty client ID). The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
@@ -213,6 +241,24 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// mirrors the hooks' close-over-srv pattern. Setting the handler makes the shim
 	// auto-advertise the completions capability at initialize.
 	var srv *Server
+
+	// Validate call binding before anything that needs releasing is built. Its
+	// route and list lookups close over the late-assigned srv like the
+	// completion handler below, and run only at request time.
+	callBinding, err := newCallBinding(cfg.CallBinding, func(
+		ctx context.Context, identity *auth.Identity, name string,
+	) (string, error) {
+		return srv.callBindingRoute(ctx, identity, name)
+	}, func(
+		ctx context.Context, identity *auth.Identity, method, server string,
+	) ([]json.RawMessage, error) {
+		return srv.callBindingListItems(ctx, identity, method, server)
+	})
+	if err != nil {
+		return nil, err
+	}
+	warnCallBindingRecordPerReplica(cfg)
+
 	completionHandler := func(ctx context.Context, req mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 		return srv.coreCompletionHandler(ctx, req)
 	}
@@ -250,7 +296,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// initialize, violating MCP 2025-11-25's "Servers that support prompts MUST
 	// declare the prompts capability during initialization".
 	//
-	// R1 (verified against toolhive-core v0.0.34 / go-sdk v1.7.0-pre.3): go-sdk's own
+	// R1 (verified against toolhive-core / go-sdk): go-sdk's own
 	// AddTool/RemoveTools (and the resource/prompt equivalents) call a shared
 	// changeAndNotify that debounces (10ms) and then broadcasts the
 	// notification to EVERY session currently connected to this *gosdk.Server
@@ -306,32 +352,46 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		}
 	}()
 
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionManagerConfig, cfg.BackendRegistry)
-	if err != nil {
-		return nil, err
-	}
-
-	// Built last — after the fallible calls above — because NewManager starts a cleanup
-	// goroutine on construction (released only by Stop), so an early error return cannot
-	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
-	sessionManager := transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
-
+	// Assemble the server before the vMCP session manager so the manager's
+	// background cache sweep can be handed srv.healthResync.remove: a session the
+	// sweep reclaims (expired or terminated) is gone for good, so its health-resync
+	// registration is dropped right away instead of waiting for the next health or
+	// list_changed trigger to prune it (#5786). The method value binds
+	// &srv.healthResync before the sweep goroutine starts, and the registry has its
+	// own lock, so filling in the remaining fields below does not race with it.
 	srv = &Server{
 		config:             serveCfg,
 		core:               v,
 		mcpServer:          mcpServer,
 		backendRegistry:    cfg.BackendRegistry,
-		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
-		vmcpSessionMgr:     vmcpSessMgr,
-		// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
-		// session registration builds a per-session optimizer over the core's tools.
-		// Nil when the optimizer is disabled; the store/cleanup stay owned by the
-		// session manager (optimizerCleanup, appended to shutdownFuncs below).
-		optimizerFactory: vmcpSessMgr.OptimizerFactory(),
-		ready:            make(chan struct{}),
-		statusReporter:   cfg.StatusReporter,
+		ready:              make(chan struct{}),
+		statusReporter:     cfg.StatusReporter,
+		callBinding:        callBinding,
 	}
+
+	sessMgrCfg, err := withSharedEmbeddings(serveCfg.SessionStorage, cfg.SessionManagerConfig)
+	if err != nil {
+		return nil, err
+	}
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(
+		sessionDataStorage, sessMgrCfg, cfg.BackendRegistry,
+		sessionmanager.WithSweptSessionHook(srv.healthResync.remove),
+	)
+	if err != nil {
+		return nil, err
+	}
+	srv.vmcpSessionMgr = vmcpSessMgr
+	// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
+	// session registration builds a per-session optimizer over the core's tools.
+	// Nil when the optimizer is disabled; the store/cleanup stay owned by the
+	// session manager (optimizerCleanup, appended to shutdownFuncs below).
+	srv.optimizerFactory = vmcpSessMgr.OptimizerFactory()
+
+	// Built last — after the fallible calls above — because NewManager starts a cleanup
+	// goroutine on construction (released only by Stop), so an early error return cannot
+	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
+	srv.sessionManager = transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
 
 	// Server-lifetime parent context for asynchronous tools/resources/prompts
 	// list_changed resync work (#5748, #5969). Cancelling it on Stop aborts any
@@ -370,6 +430,18 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	hooks.AddBeforeCallTool(func(hookCtx context.Context, _ any, _ *mcp.CallToolRequest) {
 		srv.lazyInjectSessionTools(hookCtx)
 	})
+
+	// Backend-health-driven tools resync (#5786, serve_health_resync.go):
+	// subscribe to the core-owned health monitor so passthrough sessions pick
+	// up catalog changes (a backend recovering/failing, backends added/removed)
+	// without reconnecting. The monitor debounces delivery and the listener
+	// runs off the health-check path; the core stops the monitor — and with it
+	// this callback — inside v.Close() during Stop. Nil when health monitoring
+	// is disabled, in which case sessions keep today's snapshot-at-registration
+	// behavior.
+	if reporter := srv.backendHealth(); reporter != nil {
+		reporter.OnChange(srv.resyncSessionsOnBackendHealthChange)
+	}
 
 	// Surface the capability gate's verdict once at startup: the blocker list is
 	// derived from construction-time configuration and cannot change afterwards,
@@ -422,9 +494,23 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,
 		TelemetryProvider:       cfg.TelemetryProvider,
+		UsageMetricsMiddleware:  cfg.UsageMetricsMiddleware,
 		AuditConfig:             cfg.AuditConfig,
+		AuditSubjectEnricher:    cfg.AuditSubjectEnricher,
 		StatusReportingInterval: cfg.StatusReportingInterval,
 		Watcher:                 cfg.Watcher,
 		SessionStorage:          cfg.SessionStorage,
 	}
+}
+
+// warnCallBindingRecordPerReplica warns once at startup when sessions are
+// shared between replicas but call binding keeps its single-use record in
+// memory: a call-bound token can then start one call on each replica.
+func warnCallBindingRecordPerReplica(cfg *ServerConfig) {
+	if cfg.CallBinding.Record != nil || cfg.SessionStorage == nil || cfg.SessionStorage.Provider != "redis" {
+		return
+	}
+	slog.Warn("call binding: sessions are stored in Redis, but the single-use record of call-bound " +
+		"access tokens is in memory, so a call-bound token can start one call on each replica; " +
+		"set CallBinding.Record to a shared record to refuse the replay across replicas")
 }

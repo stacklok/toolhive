@@ -28,17 +28,17 @@ thv registry convert [flags]
 ### Options
 
 ```
-  -h, --help         help for convert
-      --in string    Input file (default: stdin)
-      --in-place     Overwrite the input file (writes a .bak backup unless --no-backup is set)
-      --no-backup    Do not write a .bak backup when using --in-place
-      --out string   Output file (default: stdout)
+  -h, --help[=true|false]        help for convert
+      --in string                Input file (default: stdin)
+      --in-place[=true|false]    Overwrite the input file (writes a .bak backup unless --no-backup is set)
+      --no-backup[=true|false]   Do not write a .bak backup when using --in-place
+      --out string               Output file (default: stdout)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

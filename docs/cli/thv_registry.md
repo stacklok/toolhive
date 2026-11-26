@@ -20,13 +20,13 @@ Manage the MCP server registry, including listing and getting information about 
 ### Options
 
 ```
-  -h, --help   help for registry
+  -h, --help[=true|false]   help for registry
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
@@ -106,7 +106,7 @@ func (m Model) renderRegistryListOverlay() string {
 			BorderForeground(ui.ColorPurple).Padding(0, 1).Width(boxW).
 			Render(sb.String()),
 		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(ui.ColorDim),
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(ui.ColorDim)),
 	)
 }
 
@@ -149,7 +149,7 @@ func (m Model) renderRegistryDetailOverlay() string {
 			BorderForeground(ui.ColorPurple).Padding(0, 1).Width(boxW).
 			Render(sb.String()),
 		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(ui.ColorDim),
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(ui.ColorDim)),
 	)
 }
 
@@ -361,7 +361,7 @@ func (m Model) renderRunFormOverlay() string {
 			BorderForeground(ui.ColorPurple).Padding(0, 1).Width(boxW).
 			Render(sb.String()),
 		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(ui.ColorDim),
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(ui.ColorDim)),
 	)
 }
 

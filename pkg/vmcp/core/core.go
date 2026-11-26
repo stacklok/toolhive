@@ -65,8 +65,23 @@ type DiscoverCapabilities struct {
 //     cannot forward _meta (see the NOTE on [vmcp.ResourceReadResult].Meta).
 //     Do not rely on it.
 //
-// ctx is used only for cancellation, deadlines, and trace propagation — never to
-// carry identity or other domain data.
+// ctx carries cancellation, deadlines, and trace propagation, plus — for the
+// components below the core — the explicit identity (see below). It never
+// carries other domain data.
+//
+// Identity handed to components below the core: the composer, workflow auditor,
+// backend auth strategies, backend telemetry, the backend client's fallback
+// identity, and the capability cache key read the caller from ctx
+// (auth.IdentityFromContext), not from a parameter. Every core method that
+// takes an identity therefore derives a context carrying the explicit identity
+// (nil stays anonymous) and uses it for capability aggregation and backend
+// calls, replacing any identity ctx carried. The core still never READS
+// identity from ctx for its own decisions — admission takes the explicit
+// parameter — it only hands that parameter to downstream readers that do.
+// This expands reliance on identity-in-ctx (vmcp anti-pattern #1); threading
+// the identity explicitly through those components is the larger follow-up
+// (issue #7143, option 2). The vmcp server passes the same identity in both
+// places, so its behavior is unchanged.
 type VMCP interface {
 	// ListTools returns the tools advertised to identity. The returned
 	// [vmcp.Tool] values carry their logical BackendID.
@@ -246,11 +261,15 @@ type VMCP interface {
 // declared here as the contract; New's body (which wires them into a concrete
 // *coreVMCP) lands in a later change.
 //
-// Cross-cutting TelemetryProvider/AuditConfig are consumed by both New and Serve
+// Cross-cutting TelemetryProvider/AuditConfig/AuditSubjectEnricher are consumed by both New and Serve
 // (not a clean partition). HealthMonitorConfig is the backend health monitoring
 // configuration; the core builds, starts, and stops the monitor from it (a nil config
 // disables monitoring, including all backends — matching today's no-monitor behavior).
 type Config struct {
+	// ScopeAuthorization requires incoming scopes on direct calls without hiding
+	// otherwise permitted tools from discovery. Composite workflows are unsupported.
+	ScopeAuthorization *vmcp.ScopeAuthorizationConfig
+
 	// Aggregator discovers and merges backend capabilities into the advertised set.
 	Aggregator aggregator.Aggregator
 
@@ -285,6 +304,15 @@ type Config struct {
 
 	// AuditConfig is the cross-cutting audit configuration (also consumed by Serve).
 	AuditConfig *audit.Config
+
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to the
+	// composite-tool workflow audit events. Set the same enricher on the
+	// transport's ServerConfig so per-request MCP events carry them too. It has
+	// no effect when AuditConfig is nil. See audit.SubjectEnricher.
+	//
+	// On workflow events the enricher (and the built-in subjects) see the
+	// identity passed to CallTool, not any identity the context carries.
+	AuditSubjectEnricher audit.SubjectEnricher
 
 	// HealthMonitorConfig configures backend health monitoring. The core builds, starts, and
 	// (via Close) stops the monitor from it, filters capabilities with it, and exposes it via

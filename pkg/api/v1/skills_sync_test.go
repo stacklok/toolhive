@@ -51,16 +51,17 @@ func TestSyncSkillsEndpoint(t *testing.T) {
 		wantContains string
 	}{
 		{
-			name: "successful sync returns 200 with result",
+			name: "successful sync forwards adoption public key and returns result",
 			service: &skillServiceWithSync{
 				SkillService: skillsmocks.NewMockSkillService(gomock.NewController(t)),
 				syncFn: func(_ context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
 					assert.Equal(t, "/tmp/proj", opts.ProjectRoot)
-					assert.True(t, opts.Check)
+					assert.True(t, opts.Adopt)
+					assert.Equal(t, "encoded-public-key", opts.PublicKey)
 					return &skills.SyncResult{AlreadyCurrent: []string{"my-skill"}}, nil
 				},
 			},
-			body:         `{"project_root":"/tmp/proj","check":true}`,
+			body:         `{"project_root":"/tmp/proj","adopt":true,"public_key":"encoded-public-key"}`,
 			wantStatus:   http.StatusOK,
 			wantContains: `"my-skill"`,
 		},

@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -160,21 +162,28 @@ var _ server.ClientSession = (*resourcesOnlySession)(nil)
 var _ server.SessionWithResources = (*resourcesOnlySession)(nil)
 
 // stubSessionManager is a minimal SessionManager for the #5748 resync tests.
-// Only GetMultiSession is meaningful (its returned liveness bool drives the
-// resync liveness guard); the rest satisfy the interface and fail loudly if a
-// test reaches them unexpectedly.
+// LookupOwner drives the resync liveness guard: a nil lookupErr reports the
+// session live, transportsession.ErrSessionNotFound reports it gone, and any
+// other error is a storage failure. GetMultiSession only counts calls, so tests
+// can assert the guard never takes the TTL-refreshing path. The rest satisfy
+// the interface and fail loudly if a test reaches them unexpectedly.
 type stubSessionManager struct {
-	alive bool
+	lookupErr            error
+	getMultiSessionCalls atomic.Int32
 }
 
 func (m *stubSessionManager) GetMultiSession(context.Context, string) (vmcpsession.MultiSession, bool) {
-	return nil, m.alive
+	m.getMultiSessionCalls.Add(1)
+	return nil, false
 }
 func (*stubSessionManager) Generate() string { panic("stubSessionManager: Generate unexpected") }
 func (*stubSessionManager) Validate(string) (bool, error) {
 	panic("stubSessionManager: Validate unexpected")
 }
 func (*stubSessionManager) Terminate(string) (bool, error) { return false, nil }
+func (m *stubSessionManager) LookupOwner(context.Context, string) (string, error) {
+	return "", m.lookupErr
+}
 func (*stubSessionManager) CreateSession(
 	context.Context, string, vmcpsession.ListChangedSink,
 ) (vmcpsession.MultiSession, error) {
@@ -184,6 +193,7 @@ func (*stubSessionManager) DecorateSession(string, func(vmcpsession.MultiSession
 	panic("stubSessionManager: DecorateSession unexpected")
 }
 func (*stubSessionManager) NotifyBackendExpired(string, string, map[string]string) {}
+func (*stubSessionManager) EvictStaleSessions(context.Context) int                 { return 0 }
 
 var _ SessionManager = (*stubSessionManager)(nil)
 
@@ -378,7 +388,7 @@ func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 
 	w := &listChangedResyncWorker{
 		baseCtx: context.Background(),
-		run: func(context.Context) {
+		run: func(context.Context, bool) {
 			n := inFlight.Add(1)
 			for {
 				m := maxSeen.Load()
@@ -395,7 +405,7 @@ func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 	}
 
 	// First trigger starts the (blocked) worker goroutine.
-	w.trigger()
+	w.trigger(true)
 	select {
 	case <-firstStarted:
 	case <-time.After(5 * time.Second):
@@ -405,7 +415,7 @@ func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 	// While the first run is blocked, fire many more triggers. Each must return
 	// immediately (non-blocking) and collapse into a single dirty re-run.
 	for range 50 {
-		w.trigger()
+		w.trigger(true)
 	}
 
 	close(release) // let the first run finish; one coalesced re-run should follow
@@ -422,9 +432,10 @@ func TestListChangedResyncWorker_CoalescesAndNonBlocking(t *testing.T) {
 }
 
 // TestRunListChangedResync verifies (#5748, extended by #5969) the resync
-// body run off the receive loop, per capability kind: it skips terminated
-// sessions (liveness guard), and for a live session it invalidates the cache
-// and reconstructs a context carrying the captured identity + forwarded
+// body run off the receive loop, per capability kind: it skips sessions whose
+// liveness check fails, pruning only those absent from storage, and never
+// calls the TTL-refreshing GetMultiSession. For a live session it invalidates
+// the cache and reconstructs a context carrying the captured identity + forwarded
 // headers (B-HIGH-1) before re-deriving/replacing ONLY the store belonging to
 // the notification's kind.
 func TestRunListChangedResync(t *testing.T) {
@@ -447,31 +458,59 @@ func TestRunListChangedResync(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			t.Run("terminated session: skipped entirely", func(t *testing.T) {
-				t.Parallel()
-				fc := &fakeCore{
-					tools:             []vmcp.Tool{{Name: "fresh"}},
-					resources:         []vmcp.Resource{{Name: "fresh", URI: "fresh"}},
-					resourceTemplates: []vmcp.ResourceTemplate{{Name: "fresh", URITemplate: "fresh"}},
-					prompts:           []vmcp.Prompt{{Name: "fresh"}},
-				}
-				srv := &Server{core: fc, vmcpSessionMgr: &stubSessionManager{alive: false}}
-				toolsSess := &fakeToolsSession{id: "sess-1"}
-				capsSess := &fakeCapsSession{id: "sess-1"}
+			// A failed liveness check skips the run. Only a session absent from
+			// storage is pruned from the health fan-out: a storage failure or a
+			// server shutdown says nothing about whether the session is alive.
+			skipCases := []struct {
+				name       string
+				lookupErr  error
+				cancelCtx  bool
+				wantPruned bool
+			}{
+				{name: "absent session: skipped and pruned", lookupErr: transportsession.ErrSessionNotFound, wantPruned: true},
+				{name: "storage failure: skipped, registration kept", lookupErr: errors.New("storage unavailable")},
+				{name: "server stopping: skipped, registration kept", lookupErr: context.Canceled, cancelCtx: true},
+			}
+			for _, sc := range skipCases {
+				t.Run(sc.name, func(t *testing.T) {
+					t.Parallel()
+					fc := &fakeCore{
+						tools:             []vmcp.Tool{{Name: "fresh"}},
+						resources:         []vmcp.Resource{{Name: "fresh", URI: "fresh"}},
+						resourceTemplates: []vmcp.ResourceTemplate{{Name: "fresh", URITemplate: "fresh"}},
+						prompts:           []vmcp.Prompt{{Name: "fresh"}},
+					}
+					mgr := &stubSessionManager{lookupErr: sc.lookupErr}
+					srv := &Server{core: fc, vmcpSessionMgr: mgr}
+					srv.healthResync.add("sess-1", &listChangedResyncWorker{})
 
-				var sess server.ClientSession = toolsSess
-				if tc.kind != vmcpsession.KindTools {
-					sess = capsSess
-				}
+					var sess server.ClientSession = &fakeToolsSession{id: "sess-1"}
+					if tc.kind != vmcpsession.KindTools {
+						sess = &fakeCapsSession{id: "sess-1"}
+					}
 
-				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind)
+					ctx, cancel := context.WithCancel(context.Background())
+					t.Cleanup(cancel)
+					if sc.cancelCtx {
+						cancel()
+					}
 
-				assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "terminated session must not invalidate the cache")
-				assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "terminated session must not re-aggregate")
-				assert.Equal(t, int32(0), fc.listResourcesCalls.Load(), "terminated session must not re-aggregate")
-				assert.Equal(t, int32(0), fc.listResourceTemplatesCalls.Load(), "terminated session must not re-aggregate")
-				assert.Equal(t, int32(0), fc.listPromptsCalls.Load(), "terminated session must not re-aggregate")
-			})
+					srv.runListChangedResync(ctx, "sess-1", sess, identity, fwd, tc.kind, true)
+
+					assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "skipped run must not invalidate the cache")
+					assert.Equal(t, int32(0), fc.listToolsCalls.Load(), "skipped run must not re-aggregate")
+					assert.Equal(t, int32(0), fc.listResourcesCalls.Load(), "skipped run must not re-aggregate")
+					assert.Equal(t, int32(0), fc.listResourceTemplatesCalls.Load(), "skipped run must not re-aggregate")
+					assert.Equal(t, int32(0), fc.listPromptsCalls.Load(), "skipped run must not re-aggregate")
+					assert.Equal(t, int32(0), mgr.getMultiSessionCalls.Load(),
+						"the liveness guard must not refresh the session TTL or restore the session")
+					if sc.wantPruned {
+						assert.Empty(t, srv.healthResync.snapshot(), "absent session must be pruned from the health fan-out")
+					} else {
+						assert.Len(t, srv.healthResync.snapshot(), 1, "possibly-live session must stay registered")
+					}
+				})
+			}
 
 			t.Run("live session: invalidates, reconstructs ctx, replaces only this kind", func(t *testing.T) {
 				t.Parallel()
@@ -481,7 +520,9 @@ func TestRunListChangedResync(t *testing.T) {
 					resourceTemplates: []vmcp.ResourceTemplate{{Name: "fresh", URITemplate: "fresh"}},
 					prompts:           []vmcp.Prompt{{Name: "fresh"}},
 				}
-				srv := &Server{core: fc, vmcpSessionMgr: &stubSessionManager{alive: true}}
+				mgr := &stubSessionManager{}
+				srv := &Server{core: fc, vmcpSessionMgr: mgr}
+				srv.healthResync.add("sess-1", &listChangedResyncWorker{})
 				toolsSess := &fakeToolsSession{id: "sess-1", tools: map[string]server.ServerTool{
 					"stale": {Tool: mcp.Tool{Name: "stale"}},
 				}}
@@ -503,9 +544,12 @@ func TestRunListChangedResync(t *testing.T) {
 					sess = capsSess
 				}
 
-				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind)
+				srv.runListChangedResync(context.Background(), "sess-1", sess, identity, fwd, tc.kind, true)
 
 				assert.Equal(t, int32(1), fc.invalidateCacheCalls.Load(), "live session must invalidate the cache once")
+				assert.Equal(t, int32(0), mgr.getMultiSessionCalls.Load(),
+					"the liveness guard must not refresh the session TTL or restore the session")
+				assert.Len(t, srv.healthResync.snapshot(), 1, "live session must stay registered")
 
 				var resyncCtx context.Context
 				switch tc.kind {
@@ -585,12 +629,12 @@ func TestBuildListChangedSink_DispatchesByKind(t *testing.T) {
 		fc := &fakeCore{resources: []vmcp.Resource{{Name: "fresh", URI: "fresh"}}}
 		srv := &Server{
 			core:           fc,
-			vmcpSessionMgr: &stubSessionManager{alive: true},
+			vmcpSessionMgr: &stubSessionManager{},
 			resyncBaseCtx:  context.Background(),
 		}
 		sess := &fakeCapsSession{id: "sess-1"}
 
-		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink, _ := srv.buildListChangedSink("sess-1", sess, nil, nil)
 		sink(context.Background(), "backend-1", vmcpsession.KindResources)
 
 		require.Eventually(t, func() bool { return fc.invalidateCacheCalls.Load() >= 1 },
@@ -606,12 +650,12 @@ func TestBuildListChangedSink_DispatchesByKind(t *testing.T) {
 		fc := &fakeCore{prompts: []vmcp.Prompt{{Name: "fresh"}}}
 		srv := &Server{
 			core:           fc,
-			vmcpSessionMgr: &stubSessionManager{alive: true},
+			vmcpSessionMgr: &stubSessionManager{},
 			resyncBaseCtx:  context.Background(),
 		}
 		sess := &fakeCapsSession{id: "sess-1"}
 
-		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink, _ := srv.buildListChangedSink("sess-1", sess, nil, nil)
 		sink(context.Background(), "backend-1", vmcpsession.KindPrompts)
 
 		require.Eventually(t, func() bool { return fc.invalidateCacheCalls.Load() >= 1 },
@@ -627,12 +671,12 @@ func TestBuildListChangedSink_DispatchesByKind(t *testing.T) {
 		fc := &fakeCore{tools: []vmcp.Tool{{Name: "fresh"}}}
 		srv := &Server{
 			core:           fc,
-			vmcpSessionMgr: &stubSessionManager{alive: true},
+			vmcpSessionMgr: &stubSessionManager{},
 			resyncBaseCtx:  context.Background(),
 		}
 		sess := &fakeToolsSession{id: "sess-1"}
 
-		sink := srv.buildListChangedSink("sess-1", sess, nil, nil)
+		sink, _ := srv.buildListChangedSink("sess-1", sess, nil, nil)
 		sink(context.Background(), "backend-1", vmcpsession.ChangeKind("unknown"))
 
 		assert.Equal(t, int32(0), fc.invalidateCacheCalls.Load(), "unknown kind must not invalidate the cache")

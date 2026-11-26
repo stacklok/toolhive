@@ -10,8 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -126,15 +129,27 @@ func newToolSessionFactory(
 
 // fakeCore is a configurable core.VMCP for Serve-path tests. It advertises a fixed
 // tool/resource set, counts ListTools/ListResources/CallTool invocations (so tests
-// can assert the "exactly once per session" aggregation contract), and resolves
-// Lookup* against the advertised set. It is the Serve-path counterpart to the mock
-// session factory: the factory establishes the session record, the core supplies the
-// advertised set and call routing.
+// can assert the "exactly once per session" aggregation contract), records the
+// subject each List* call received, and resolves Lookup* against the advertised
+// set. It is the Serve-path counterpart to the mock session factory: the factory
+// establishes the session record, the core supplies the advertised set and call
+// routing.
 type fakeCore struct {
 	tools             []vmcp.Tool
 	resources         []vmcp.Resource
 	resourceTemplates []vmcp.ResourceTemplate
 	prompts           []vmcp.Prompt
+
+	// emptyBackends are configured backends that list nothing; every
+	// BackendID of the items above is a configured backend too.
+	emptyBackends []string
+	// unavailableBackends are configured backends missing from the current
+	// view, as an unreachable backend is.
+	unavailableBackends []string
+	// backendStatus is the registry health status of a configured backend,
+	// set with setBackendStatus; absent means none (healthy).
+	backendStatusMu sync.Mutex
+	backendStatus   map[string]vmcp.BackendHealthStatus
 
 	listToolsCalls             atomic.Int32
 	listResourcesCalls         atomic.Int32
@@ -154,6 +169,7 @@ type fakeCore struct {
 	completeValues  []string     // returned by Complete when completeErr is nil
 
 	callErr           error          // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
+	callStructured    map[string]any // when set, CallTool returns it as StructuredContent on success
 	readErr           error          // when set, ReadResource returns it
 	readMeta          map[string]any // when set, ReadResource sets it as result.Meta on success
 	promptErr         error          // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
@@ -189,6 +205,38 @@ type fakeCore struct {
 	// not just a collapse where one key goes missing.
 	callIdentitiesMu sync.Mutex
 	callIdentities   map[string]*auth.Identity
+
+	// listSubjectsMu guards listSubjects, the subject (empty for a nil
+	// identity) each List* call received, keyed by MCP method name.
+	listSubjectsMu sync.Mutex
+	listSubjects   map[string][]string
+
+	// subjectLists, when it has an entry for the calling subject, replaces the
+	// tools/resources/templates/prompts the List* methods return for that
+	// subject, so a test can tell whose list a response carries. Nil by
+	// default: every caller then gets the fields above.
+	subjectLists map[string]*subjectList
+}
+
+// subjectList is a per-subject override of fakeCore's advertised lists.
+type subjectList struct {
+	tools             []vmcp.Tool
+	resources         []vmcp.Resource
+	resourceTemplates []vmcp.ResourceTemplate
+	prompts           []vmcp.Prompt
+}
+
+// listsFor returns the lists to advertise to identity: its subjectLists entry
+// when one exists, otherwise the fakeCore-wide fields.
+func (f *fakeCore) listsFor(identity *auth.Identity) subjectList {
+	if identity != nil {
+		if l, ok := f.subjectLists[identity.Subject]; ok {
+			return *l
+		}
+	}
+	return subjectList{
+		tools: f.tools, resources: f.resources, resourceTemplates: f.resourceTemplates, prompts: f.prompts,
+	}
 }
 
 // ctxBox wraps a context.Context for atomic.Pointer storage on fakeCore.
@@ -196,10 +244,11 @@ type ctxBox struct{ ctx context.Context }
 
 var _ core.VMCP = (*fakeCore)(nil)
 
-func (f *fakeCore) ListTools(ctx context.Context, _ *auth.Identity) ([]vmcp.Tool, error) {
+func (f *fakeCore) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
 	f.listToolsCalls.Add(1)
+	f.recordListSubject("tools/list", identity)
 	f.lastListToolsCtx.Store(&ctxBox{ctx: ctx})
-	return f.tools, nil
+	return f.listsFor(identity).tools, nil
 }
 
 func (f *fakeCore) CallTool(
@@ -214,7 +263,10 @@ func (f *fakeCore) CallTool(
 	if f.callErr != nil {
 		return nil, f.callErr
 	}
-	return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}}}, nil
+	return &vmcp.ToolCallResult{
+		Content:           []vmcp.Content{{Type: vmcp.ContentTypeText, Text: "ok"}},
+		StructuredContent: f.callStructured,
+	}, nil
 }
 
 // enableCallIdentityRecording turns on per-call identity recording (see
@@ -247,6 +299,27 @@ func (f *fakeCore) recordCallIdentity(args map[string]any, identity *auth.Identi
 	f.callIdentities[key] = identity
 }
 
+// recordListSubject appends identity's subject (empty for nil) under method; see listSubjects.
+func (f *fakeCore) recordListSubject(method string, identity *auth.Identity) {
+	subject := ""
+	if identity != nil {
+		subject = identity.Subject
+	}
+	f.listSubjectsMu.Lock()
+	defer f.listSubjectsMu.Unlock()
+	if f.listSubjects == nil {
+		f.listSubjects = make(map[string][]string)
+	}
+	f.listSubjects[method] = append(f.listSubjects[method], subject)
+}
+
+// listSubjectsFor returns a copy of the subjects the given list method received.
+func (f *fakeCore) listSubjectsFor(method string) []string {
+	f.listSubjectsMu.Lock()
+	defer f.listSubjectsMu.Unlock()
+	return slices.Clone(f.listSubjects[method])
+}
+
 // callIdentityFor returns the identity CallTool observed for the request whose
 // "caller" argument equals key, or nil if no such call was recorded.
 func (f *fakeCore) callIdentityFor(key string) *auth.Identity {
@@ -255,15 +328,17 @@ func (f *fakeCore) callIdentityFor(key string) *auth.Identity {
 	return f.callIdentities[key]
 }
 
-func (f *fakeCore) ListResources(ctx context.Context, _ *auth.Identity) ([]vmcp.Resource, error) {
+func (f *fakeCore) ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error) {
 	f.listResourcesCalls.Add(1)
+	f.recordListSubject("resources/list", identity)
 	f.lastListResourcesCtx.Store(&ctxBox{ctx: ctx})
-	return f.resources, nil
+	return f.listsFor(identity).resources, nil
 }
 
-func (f *fakeCore) ListResourceTemplates(context.Context, *auth.Identity) ([]vmcp.ResourceTemplate, error) {
+func (f *fakeCore) ListResourceTemplates(_ context.Context, identity *auth.Identity) ([]vmcp.ResourceTemplate, error) {
 	f.listResourceTemplatesCalls.Add(1)
-	return f.resourceTemplates, nil
+	f.recordListSubject("resources/templates/list", identity)
+	return f.listsFor(identity).resourceTemplates, nil
 }
 
 func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string) (*vmcp.ResourceReadResult, error) {
@@ -278,10 +353,11 @@ func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string)
 	}, nil
 }
 
-func (f *fakeCore) ListPrompts(ctx context.Context, _ *auth.Identity) ([]vmcp.Prompt, error) {
+func (f *fakeCore) ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error) {
 	f.listPromptsCalls.Add(1)
+	f.recordListSubject("prompts/list", identity)
 	f.lastListPromptsCtx.Store(&ctxBox{ctx: ctx})
-	return f.prompts, nil
+	return f.listsFor(identity).prompts, nil
 }
 
 func (f *fakeCore) GetPrompt(
@@ -356,12 +432,62 @@ func (f *fakeCore) CheckResourceRead(context.Context, *auth.Identity, string) er
 
 func (*fakeCore) CheckPromptGet(context.Context, *auth.Identity, string) error { return nil }
 
-func (*fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
-	return nil, nil
+// ListBackends returns the configured backends: every backend an item names,
+// emptyBackends and unavailableBackends.
+func (f *fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
+	ids := slices.Clone(f.emptyBackends)
+	ids = append(ids, f.unavailableBackends...)
+	for _, t := range f.tools {
+		ids = append(ids, t.BackendID)
+	}
+	for _, p := range f.prompts {
+		ids = append(ids, p.BackendID)
+	}
+	for _, r := range f.resources {
+		ids = append(ids, r.BackendID)
+	}
+	for _, t := range f.resourceTemplates {
+		ids = append(ids, t.BackendID)
+	}
+	slices.Sort(ids)
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
+	backends := []vmcp.Backend{}
+	for _, id := range slices.Compact(ids) {
+		if id != "" {
+			backends = append(backends, vmcp.Backend{ID: id, Name: id, HealthStatus: f.backendStatus[id]})
+		}
+	}
+	return backends, nil
 }
 
-func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
-	return nil, vmcp.ErrNotFound
+// setBackendStatus sets the registry health status ListBackends reports for
+// backend id.
+func (f *fakeCore) setBackendStatus(id string, status vmcp.BackendHealthStatus) {
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
+	if f.backendStatus == nil {
+		f.backendStatus = map[string]vmcp.BackendHealthStatus{}
+	}
+	f.backendStatus[id] = status
+}
+
+// LookupBackend applies the real core's rule: a backend is in identity's
+// view when identity's lists hold at least one of its tools, resources or
+// prompts (resource templates do not count) and it contributes to the view,
+// which an unavailable backend does not. The backend carries its registry
+// health status.
+func (f *fakeCore) LookupBackend(_ context.Context, identity *auth.Identity, id string) (*vmcp.Backend, error) {
+	lists := f.listsFor(identity)
+	visible := slices.ContainsFunc(lists.tools, func(t vmcp.Tool) bool { return t.BackendID == id }) ||
+		slices.ContainsFunc(lists.resources, func(r vmcp.Resource) bool { return r.BackendID == id }) ||
+		slices.ContainsFunc(lists.prompts, func(p vmcp.Prompt) bool { return p.BackendID == id })
+	if id == "" || !visible || slices.Contains(f.unavailableBackends, id) {
+		return nil, vmcp.ErrNotFound
+	}
+	f.backendStatusMu.Lock()
+	defer f.backendStatusMu.Unlock()
+	return &vmcp.Backend{ID: id, Name: id, HealthStatus: f.backendStatus[id]}, nil
 }
 
 func (*fakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
@@ -753,6 +879,128 @@ func TestBuildSessionDataStorageRedis(t *testing.T) {
 	// error can't satisfy this test. ("redis" alone is unsuitable — the unsupported-
 	// provider error text also lists "redis".)
 	assert.ErrorContains(t, err, "redis: failed to connect")
+}
+
+// logSyncBuffer is a concurrency-safe io.Writer over a bytes.Buffer. slog.SetDefault
+// is process-global, so while a capturing handler is installed any parallel test in
+// this package can write a record into it; a plain bytes.Buffer would be a data race.
+type logSyncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logSyncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logSyncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// unsetSessionRedisPassword ensures THV_SESSION_REDIS_PASSWORD is absent for the
+// duration of the test, restoring any ambient value afterward. t.Setenv cannot
+// express "unset", and the presence of the variable (not just its value) is what
+// buildSessionDataStorage now keys on, so tests of the unset path must remove it.
+func unsetSessionRedisPassword(t *testing.T) {
+	t.Helper()
+	if orig, ok := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar); ok {
+		require.NoError(t, os.Unsetenv(vmcpconfig.RedisPasswordEnvVar))
+		t.Cleanup(func() { _ = os.Setenv(vmcpconfig.RedisPasswordEnvVar, orig) })
+	}
+}
+
+// TestBuildSessionDataStorageRedis_NoAuthWarns verifies the "redis" provider emits
+// exactly one startup WARN naming the store when THV_SESSION_REDIS_PASSWORD is unset
+// (an intended no-auth connection). The WARN is emitted before the connection Ping, so
+// it is captured even though the unreachable address makes the overall call fail.
+// Not parallel: it mutates env and swaps the process-global slog default.
+//
+//nolint:paralleltest // env mutation and slog.SetDefault mutate process-global state
+func TestBuildSessionDataStorageRedis_NoAuthWarns(t *testing.T) {
+	unsetSessionRedisPassword(t)
+
+	var buf logSyncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1", // unreachable: Ping fails after the WARN is emitted
+		},
+	})
+	require.Error(t, err)
+
+	logged := buf.String()
+	// Count the distinctive message rather than the generic level=WARN token,
+	// so an unrelated WARN captured by the process-global default cannot skew
+	// the assertion.
+	assert.Equal(t, 1, strings.Count(logged, "without authentication"))
+	assert.Contains(t, logged, "127.0.0.1:1")
+}
+
+// TestBuildSessionDataStorageRedis_SetButEmptyPasswordErrors verifies a set-but-empty
+// THV_SESSION_REDIS_PASSWORD is a hard error (a mis-keyed/emptied secret), not a
+// silent downgrade to no-auth — mirroring the auth server's convertRedisACLConfig.
+// The error is returned before any connection attempt, so the unreachable address
+// is never dialed.
+//
+//nolint:paralleltest // t.Setenv mutates process-global state
+func TestBuildSessionDataStorageRedis_SetButEmptyPasswordErrors(t *testing.T) {
+	t.Setenv(vmcpconfig.RedisPasswordEnvVar, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ds, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1",
+		},
+	})
+	require.Error(t, err)
+	assert.Nil(t, ds)
+	assert.ErrorContains(t, err, "is set but empty")
+}
+
+// TestBuildSessionDataStorageRedis_AuthenticatedLogsInfo is the counterpart to the
+// no-auth test: a non-empty THV_SESSION_REDIS_PASSWORD must take the INFO branch —
+// logging "using Redis session storage" and no "without authentication" WARN. The
+// capturing handler is set to LevelInfo so the positive INFO assertion actually
+// exercises that log line, rather than only proving the WARN string is absent.
+// Not parallel: it uses t.Setenv and swaps the process-global slog default.
+//
+//nolint:paralleltest // t.Setenv and slog.SetDefault mutate process-global state
+func TestBuildSessionDataStorageRedis_AuthenticatedLogsInfo(t *testing.T) {
+	t.Setenv(vmcpconfig.RedisPasswordEnvVar, "a-real-password")
+
+	var buf logSyncBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1", // unreachable: the INFO fires before the Ping fails
+		},
+	})
+	require.Error(t, err)
+
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "using Redis session storage"))
+	assert.NotContains(t, logged, "without authentication")
 }
 
 // TestServeHandlerSkipsDiscoveryAndRoutesCallThroughCore drives the FULL shared
@@ -1233,6 +1481,46 @@ func TestServeCoreToolHandler(t *testing.T) {
 	}
 }
 
+// TestServeCoreToolHandlerStructuredContentOnTheWire pins the Legacy tools/call
+// wire result: structuredContent is present exactly when the core result carries
+// one. A nil map must omit the member, not encode it as "structuredContent": null
+// (the mcp-go result field is `any`, so a typed nil map would be a non-nil value).
+func TestServeCoreToolHandlerStructuredContentOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		structured map[string]any
+		wantMember bool
+	}{
+		{name: "no structuredContent omits the member", structured: nil, wantMember: false},
+		{name: "structuredContent object is forwarded", structured: map[string]any{"k": "v"}, wantMember: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}, callStructured: tc.structured}
+			srv, sessionID, _ := registerServeSession(t, fc)
+
+			req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+			res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
+			require.NoError(t, err)
+			require.NotNil(t, res)
+
+			body, err := json.Marshal(res)
+			require.NoError(t, err)
+			var wire map[string]any
+			require.NoError(t, json.Unmarshal(body, &wire))
+
+			got, present := wire["structuredContent"]
+			assert.Equal(t, tc.wantMember, present, "wire result: %s", body)
+			if tc.wantMember {
+				assert.Equal(t, map[string]any{"k": "v"}, got)
+			}
+		})
+	}
+}
+
 func TestServeCoreToolHandlerCodedErrorReturnsStructuredToolResult(t *testing.T) {
 	t.Parallel()
 
@@ -1280,6 +1568,55 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 
 	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return !ok },
 		2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
+}
+
+func TestServeEnforceSessionBinding_Delegated(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, owner, caller string }{
+		{"wrong client", delegatedOwnerToken, "other-client"},
+		{"wrong actor issuer", delegatedOwnerToken, "other-actor-issuer"},
+		{"delegated caller", "interactive", delegatedOwnerToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv, sessionID := newDelegatedBindingSession(t, tc.owner)
+			caller := delegatedOwnershipIdentities()[tc.caller]
+			err := srv.enforceSessionBinding(auth.WithIdentity(t.Context(), caller), sessionID, caller)
+			require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
+		})
+	}
+}
+
+func TestServeEnforceSessionBinding_DelegatedRenewedToken(t *testing.T) {
+	t.Parallel()
+
+	srv, sessionID := newDelegatedBindingSession(t, delegatedOwnerToken)
+	caller := delegatedOwnershipIdentities()["renewed"]
+	ctx := auth.WithIdentity(t.Context(), caller)
+	require.NoError(t, srv.enforceSessionBinding(ctx, sessionID, caller))
+	_, exists := srv.vmcpSessionMgr.GetMultiSession(ctx, sessionID)
+	require.True(t, exists, "a renewed token must not terminate the session")
+}
+
+// newDelegatedBindingSession creates a session owned by the named ownership
+// test identity on a Serve-built server.
+func newDelegatedBindingSession(t *testing.T, owner string) (*Server, string) {
+	t.Helper()
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: ownershipTestTool}}}
+	srv, err := Serve(t.Context(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: vmcpsession.NewSessionFactory(nil)},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Stop(context.Background())) })
+
+	sessionID := srv.vmcpSessionMgr.Generate()
+	ownerCtx := auth.WithIdentity(t.Context(), delegatedOwnershipIdentities()[owner])
+	_, err = srv.vmcpSessionMgr.CreateSession(ownerCtx, sessionID, nil)
+	require.NoError(t, err)
+	return srv, sessionID
 }
 
 // TestServeCoreResourceHandler covers the Serve resource path: the core's resource is

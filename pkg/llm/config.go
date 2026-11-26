@@ -25,11 +25,14 @@ type OIDCConfig = pkgoidc.ClientConfig
 // Config holds all LLM gateway settings persisted under the llm: key in
 // ToolHive's config.yaml.
 type Config struct {
-	GatewayURL    string        `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
-	TLSSkipVerify bool          `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
-	OIDC          OIDCConfig    `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
-	Proxy         ProxyConfig   `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
-	Bedrock       BedrockConfig `yaml:"bedrock,omitempty"           json:"bedrock,omitempty"`
+	GatewayURL    string `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
+	TLSSkipVerify bool   `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
+	// ShortPromptCache opts Claude Code out of ToolHive's default one-hour
+	// prompt-cache lifetime and restores Claude Code's five-minute default.
+	ShortPromptCache bool          `yaml:"short_prompt_cache,omitempty" json:"short_prompt_cache,omitempty"`
+	OIDC             OIDCConfig    `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
+	Proxy            ProxyConfig   `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
+	Bedrock          BedrockConfig `yaml:"bedrock,omitempty"           json:"bedrock,omitempty"`
 	// Models is the persisted, single source of truth for the model IDs applied
 	// during setup. It feeds two consumers: credential-helper clients (Claude
 	// Desktop) write it verbatim as inferenceModels, and — when Bedrock compat is
@@ -38,7 +41,14 @@ type Config struct {
 	// consumers consistent on a later plain "thv llm setup".
 	Models          []string     `yaml:"models,omitempty"            json:"models,omitempty"`
 	ConfiguredTools []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
+	// discoveryAccessToken is populated only for the duration of setup. It is
+	// deliberately unexported so authentication material can never be persisted.
+	discoveryAccessToken string
 }
+
+// SetDiscoveryAccessToken makes the token obtained by setup's authentication
+// flow available to authenticated model discovery without persisting it.
+func (c *Config) SetDiscoveryAccessToken(token string) { c.discoveryAccessToken = token }
 
 // BedrockConfig holds settings for configuring Claude Code to reach an LLM
 // gateway that forwards to AWS Bedrock. It is persisted so that a later plain
@@ -68,13 +78,31 @@ type ToolConfig struct {
 	// Tool is the canonical tool identifier (e.g. "claude-code", "cursor").
 	Tool string `yaml:"tool" json:"tool"`
 	// Mode is the authentication mode: one of the llmgateway.Mode* values
-	// ("direct", "proxy", "credential-helper", "codex-auth").
+	// ("direct", "proxy", "credential-helper", "codex-auth", "vscode").
 	Mode string `yaml:"mode" json:"mode"`
 	// ConfigPath is the absolute path to the tool's config file that was patched.
 	ConfigPath string `yaml:"config_path" json:"config_path"`
 	// EnvFilePath is the absolute path to the .env file written during setup,
 	// or empty if no .env file was managed for this tool.
 	EnvFilePath string `yaml:"env_file_path,omitempty" json:"env_file_path,omitempty"`
+	// BedrockCompat records whether setup wrote the Bedrock-compat keys into
+	// ConfigPath (Claude Code and Codex only), so the next setup and teardown
+	// remove them only when ToolHive put them there. It is kept per tool rather
+	// than read from Config.Bedrock, which "thv llm config set" can change
+	// without touching any tool's files. Nil on a record written before this
+	// field existed; see bedrockKeysWritten. SetFields pins such a record to the
+	// old setting before changing it.
+	BedrockCompat *bool `yaml:"bedrock_compat,omitempty" json:"bedrock_compat,omitempty"`
+}
+
+// bedrockKeysWritten reports whether tc's config file holds Bedrock keys
+// ToolHive wrote. A record written before ToolConfig.BedrockCompat existed
+// falls back to compat, the persisted Bedrock-compat setting.
+func (tc ToolConfig) bedrockKeysWritten(compat bool) bool {
+	if tc.BedrockCompat != nil {
+		return *tc.BedrockCompat
+	}
+	return compat
 }
 
 // IsConfigured reports whether the minimum required fields are present for the

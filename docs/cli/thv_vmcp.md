@@ -22,13 +22,13 @@ servers from a ToolHive group into a single unified endpoint.
 ### Options
 
 ```
-  -h, --help   help for vmcp
+  -h, --help[=true|false]   help for vmcp
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

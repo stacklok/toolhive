@@ -23,6 +23,8 @@ import (
 // (30s TTL) turns the second view into a cache hit (vmcp anti-patterns #8/#9: the
 // core does not cache, Serve does). identity is never logged.
 func (c *coreVMCP) CheckToolCall(ctx context.Context, identity *auth.Identity, name string, args map[string]any) error {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	// Clone args before handing them to the admission seam, matching CallTool's
 	// copy-before-mutating-caller-input discipline (the caller's map — here the
 	// parsed request's Arguments, shared via context — must not be mutated).
@@ -41,6 +43,8 @@ func (c *coreVMCP) CheckToolCall(ctx context.Context, identity *auth.Identity, n
 // resource. It needs no aggregated view (the URI alone identifies the decision),
 // so it works even when the aggregator is failing. identity is never logged.
 func (c *coreVMCP) CheckResourceRead(ctx context.Context, identity *auth.Identity, uri string) error {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	return c.authorizeResourceRead(ctx, identity, uri)
 }
 
@@ -48,6 +52,8 @@ func (c *coreVMCP) CheckResourceRead(ctx context.Context, identity *auth.Identit
 // prompt. It needs no aggregated view (the name alone identifies the decision),
 // so it works even when the aggregator is failing. identity is never logged.
 func (c *coreVMCP) CheckPromptGet(ctx context.Context, identity *auth.Identity, name string) error {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	return c.authorizePromptGet(ctx, identity, name)
 }
 
@@ -75,6 +81,7 @@ func (c *coreVMCP) authorizeToolCall(
 	args map[string]any,
 	tool *vmcp.Tool,
 ) error {
+	advertised := tool != nil
 	if tool == nil {
 		tool = &vmcp.Tool{Name: name}
 	}
@@ -82,6 +89,9 @@ func (c *coreVMCP) authorizeToolCall(
 		return fmt.Errorf("%w: tool %q: %w", vmcp.ErrAuthorizationFailed, name, err)
 	} else if !allowed {
 		return fmt.Errorf("%w: tool %q", vmcp.ErrAuthorizationFailed, name)
+	}
+	if advertised {
+		return c.scopeAuthorization.Check(identity, name)
 	}
 	return nil
 }
@@ -92,9 +102,32 @@ func (c *coreVMCP) authorizeToolCall(
 // authorizer error fails closed, classified as ErrAuthorizationFailed (see
 // authorizeToolCall). Shared by ReadResource and CheckResourceRead.
 func (c *coreVMCP) authorizeResourceRead(ctx context.Context, identity *auth.Identity, uri string) error {
-	if allowed, err := c.admission.AllowResourceRead(ctx, identity, &vmcp.Resource{URI: uri}); err != nil {
+	allowed, err := c.admission.AllowResourceRead(ctx, identity, &vmcp.Resource{URI: uri})
+	return resourceReadDecisionError(uri, allowed, err)
+}
+
+// authorizeResourceTemplateRead is authorizeResourceRead for a completion on a
+// resource template: the string is a template, not a concrete URI, so admission
+// applies its template check instead of the canonical-form check.
+func (c *coreVMCP) authorizeResourceTemplateRead(ctx context.Context, identity *auth.Identity, tmpl string) error {
+	allowed, err := c.admission.AllowResourceTemplateRead(ctx, identity, &vmcp.ResourceTemplate{URITemplate: tmpl})
+	return resourceReadDecisionError(tmpl, allowed, err)
+}
+
+// resourceReadDecisionError maps a resource admission decision to nil (allowed)
+// or an error wrapping ErrAuthorizationFailed. An over-length URI is never echoed.
+func resourceReadDecisionError(uri string, allowed bool, err error) error {
+	overCap := len(uri) > vmcp.MaxResourceURILength
+	if err != nil {
+		if overCap {
+			return fmt.Errorf("%w: resource URI exceeds %d bytes: %w", vmcp.ErrAuthorizationFailed, vmcp.MaxResourceURILength, err)
+		}
 		return fmt.Errorf("%w: resource %q: %w", vmcp.ErrAuthorizationFailed, uri, err)
-	} else if !allowed {
+	}
+	if !allowed {
+		if overCap {
+			return fmt.Errorf("%w: resource URI exceeds %d bytes", vmcp.ErrAuthorizationFailed, vmcp.MaxResourceURILength)
+		}
 		return fmt.Errorf("%w: resource %q", vmcp.ErrAuthorizationFailed, uri)
 	}
 	return nil

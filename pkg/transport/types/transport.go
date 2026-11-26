@@ -131,6 +131,10 @@ type Transport interface {
 	// For transports that don't support health checks (e.g., stdio), this is a no-op.
 	SetOnHealthCheckFailed(callback HealthCheckFailedCallback)
 
+	// SetOnHealthCheckRecovered sets the callback for health check recovery after failures.
+	// For transports that don't support health checks (e.g., stdio), this is a no-op.
+	SetOnHealthCheckRecovered(callback HealthCheckRecoveredCallback)
+
 	// SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.
 	// For transports that don't support this (e.g., stdio), this is a no-op.
 	SetOnUnauthorizedResponse(callback UnauthorizedResponseCallback)
@@ -195,13 +199,24 @@ type Proxy interface {
 	// SendMessageToDestination sends a message to the destination.
 	SendMessageToDestination(msg jsonrpc2.Message) error
 
-	// ForwardResponseToClients forwards a response from the destination to clients.
+	// ForwardResponseToClients delivers a message from the destination to the
+	// client session(s) it belongs to. Implementations must never deliver a
+	// message to a session that did not originate it.
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 }
 
-// HealthCheckFailedCallback is a function that is called when a health check fails.
-// This allows the transport to notify the runner/status manager when remote servers become unhealthy.
+// HealthCheckFailedCallback is called when a server reaches the health check failure
+// threshold, so the runner/status manager can mark the workload unhealthy. For a remote
+// server it is called again on every failed check while the server stays unhealthy, so
+// implementations must be idempotent and should write only when the status differs.
 type HealthCheckFailedCallback func()
+
+// HealthCheckRecoveredCallback is called when a remote server passes a health check
+// after HealthCheckFailedCallback was called, so the runner/status manager can mark the
+// workload running again. A nil error means the recovery is handled (the status was
+// written, or deliberately left alone); a non-nil error means the proxy calls it again
+// on the next passing check. A recovery before the failure threshold does not call it.
+type HealthCheckRecoveredCallback func() error
 
 // UnauthorizedResponseCallback is a function that is called when a 401 Unauthorized response is received.
 // This allows the transport to notify the runner/status manager when bearer tokens become invalid.
@@ -279,6 +294,11 @@ type Config struct {
 	//	}
 	PrefixHandlers map[string]http.Handler
 
+	// StripConsentCookie prevents the embedded auth server's remembered-consent
+	// cookie family (__Host-thv_consent_*), not all auth server browser cookies,
+	// from reaching the MCP backend. Only set when the embedded AS is mounted.
+	StripConsentCookie bool
+
 	// SessionStorage overrides the default in-memory session store when set.
 	// Used for Redis-backed session sharing across replicas.
 	// When nil, transports use their default in-memory LocalStorage.
@@ -288,6 +308,12 @@ type Config struct {
 	// Sessions idle for longer than this duration are cleaned up by the session
 	// manager's background worker. Zero uses session.DefaultSessionTTL.
 	SessionTTL time.Duration
+
+	// ReadTimeout bounds reading the entire request (headers + body) on the proxy
+	// http.Server. Zero uses the proxy package default; negative values are
+	// rejected. Applies to all HTTP transports; it never affects SSE responses,
+	// which stream on the response side.
+	ReadTimeout time.Duration
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

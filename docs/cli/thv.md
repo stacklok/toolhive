@@ -29,8 +29,8 @@ thv [flags]
 ### Options
 
 ```
-      --debug   Enable debug mode
-  -h, --help    help for thv
+      --debug[=true|false]   Enable debug mode
+  -h, --help[=true|false]    help for thv
 ```
 
 ### SEE ALSO

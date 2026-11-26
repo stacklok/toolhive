@@ -109,14 +109,17 @@ mcp__github__list_pull_requests(
 ```
 Look for the PR with title matching "Release v<new-version>".
 
-Report the PR URL to the user.
+Report the PR URL to the user. Tell them that once the PR is merged, the
+`create-release-tag.yml` run waits for a reviewer on the `release`
+environment, other than the person who merged, to approve it from the run
+page. No tag or GitHub Release is created until then.
 
 ## Release Workflow Chain
 
 For reference, here's what happens after the PR is merged:
 
 1. **create-release-pr.yml** (manual) → Creates PR with version bumps
-2. **create-release-tag.yml** (auto on VERSION change) → Creates git tag + GitHub Release
+2. **create-release-tag.yml** (auto on VERSION change) → Waits for approval on the `release` environment, then creates git tag + GitHub Release
 3. **releaser.yml** (auto on release publish) → Builds binaries, images, Helm charts
 
 See [WORKFLOW-REFERENCE.md](references/WORKFLOW-REFERENCE.md) for detailed workflow documentation.

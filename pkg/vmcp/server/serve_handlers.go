@@ -28,8 +28,9 @@ import (
 // handlers that route invocations through core.CallTool / core.ReadResource with
 // an explicit *auth.Identity. The session factory does NOT aggregate on this path,
 // so there is no second aggregation and no drift between the advertised set and
-// the call path. Identity binding is still enforced by the session layer via
-// enforceSessionBinding before each call reaches the core.
+// the call path. Identity binding is enforced on every session-bearing request by
+// sessionOwnershipMiddleware, and again by enforceSessionBinding before each call
+// reaches the core.
 //
 // The legacy server.New path (s.core == nil) is untouched: it sources capabilities
 // from the session factory's aggregation via Manager.GetAdaptedTools/Resources and
@@ -303,13 +304,13 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 
 		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
 		if err != nil {
-			return conversion.ErrorToToolResult(err), nil
+			return legacyToolCallError(server.ClientSessionFromContext(ctx), err)
 		}
 
 		return &mcp.CallToolResult{
 			Result:            mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
 			Content:           conversion.ToMCPContents(result.Content),
-			StructuredContent: result.StructuredContent,
+			StructuredContent: conversion.ToMCPStructuredContent(result.StructuredContent),
 			IsError:           result.IsError,
 		}, nil
 	}
@@ -541,11 +542,13 @@ func completionDenyMessage(refType string) string {
 }
 
 // enforceSessionBinding validates caller against the session's stored identity
-// binding. It is the SOLE identity-binding enforcement point on the Serve call
+// binding. It is the call-path layer of identity-binding enforcement on the Serve
 // path: requests reach the core directly, bypassing the BindSession decorator that
-// performs this check on MultiSession.CallTool on the legacy path. The SDK's
-// SessionIdManager.Validate only gates session existence/termination, not caller
-// identity, so without this check a different principal could reuse the session ID.
+// performs this check on MultiSession.CallTool on the legacy path. Handler rejects a
+// foreign caller earlier, on every session-bearing request (sessionOwnershipMiddleware);
+// this check remains for embedders that mount the MCP server without that middleware.
+// The SDK's SessionIdManager.Validate only gates session existence/termination, not
+// caller identity.
 //
 // It fails closed in two ways: a missing session record (already terminated/expired)
 // rejects the caller, and ValidateCaller rejects an empty/unparsable binding with
@@ -567,6 +570,7 @@ func (s *Server) enforceSessionBinding(ctx context.Context, sessionID string, ca
 func (s *Server) terminateOnBindingFailure(sessionID, capability string, err error) {
 	slog.Warn("caller authorization failed, terminating session",
 		"session_id", sessionID, "capability", capability, "error", err)
+	s.healthResync.remove(sessionID)
 	if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
 		slog.Error("failed to terminate session after auth failure",
 			"session_id", sessionID, "error", termErr)

@@ -35,6 +35,11 @@ type installSkillRequest struct {
 	// verified signature; the exception is recorded in the project's lock
 	// file.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key the artifact
+	// must verify against, for artifacts signed with a cosign key pair rather
+	// than keylessly. Required the first time such an artifact is installed
+	// project-scoped, and pinned in the lock file from then on.
+	PublicKey string `json:"public_key,omitempty"`
 	// Group is the group name to add the skill to after installation
 	Group string `json:"group,omitempty"`
 }
@@ -77,9 +82,16 @@ type buildSkillRequest struct {
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
-	// Key is the path to a cosign private key used to sign the pushed
-	// artifact
+	// Key is the path to a cosign private key, resolved on the server's
+	// filesystem. Accepted only when the request carries the secret capability
+	// from the owner-protected local server discovery file; other requests are
+	// refused with 403, since honoring one would let an untrusted caller have
+	// the server sign with any key it can read. Use IdentityToken when calling
+	// a remote or manually configured server.
 	Key string `json:"key,omitempty"`
+	// IdentityToken is a short-lived OIDC identity token used for keyless
+	// signing, mutually exclusive with Key
+	IdentityToken string `json:"identity_token,omitempty"`
 	// NoSign pushes without signing
 	NoSign bool `json:"no_sign,omitempty"`
 }
@@ -102,6 +114,8 @@ type syncSkillsRequest struct {
 	// AllowUnsigned permits adopting skills whose signature state cannot be
 	// established, recording them as unsigned
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey supplies the cosign public key for key-signed adoption.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // upgradeSkillsRequest represents the request to upgrade a project's skills.
@@ -114,13 +128,15 @@ type upgradeSkillsRequest struct {
 	Names []string `json:"names,omitempty"`
 	// Preview reports what would change without installing (still fetches to compare digests)
 	Preview bool `json:"preview,omitempty"`
-	// FailOnChanges exits with an error when any mutable source would upgrade
+	// FailOnChanges reports content and trust changes without applying them
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
 	// AllowRefChange permits resolvedReference changes during upgrade
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
 	// AllowSignerChange permits upgrading to an artifact signed by a
 	// different identity than the recorded one
 	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
+	// PublicKey proposes a cosign public key as the replacement trust anchor.
+	PublicKey string `json:"public_key,omitempty"`
 	// Clients lists target client identifiers. Empty means every
 	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`

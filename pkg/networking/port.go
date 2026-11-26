@@ -26,6 +26,15 @@ const (
 	MaxAttempts = 10
 )
 
+// CallbackPortInUseError reports that a requested OAuth callback port is unavailable.
+type CallbackPortInUseError struct {
+	Port int
+}
+
+func (e *CallbackPortInUseError) Error() string {
+	return fmt.Sprintf("OAuth callback port %d is already in use", e.Port)
+}
+
 // IsAvailable checks if a port is available
 func IsAvailable(port int) bool {
 	// Check TCP
@@ -135,7 +144,7 @@ func ValidateCallbackPort(callbackPort int, clientID string) error {
 		// For pre-registered clients, the port must be available
 		// The user likely configured this port in their IdP/app
 		if !IsAvailable(callbackPort) {
-			return fmt.Errorf("OAuth callback port %d is not available - please choose a different port", callbackPort)
+			return &CallbackPortInUseError{Port: callbackPort}
 		}
 	}
 

@@ -89,6 +89,7 @@ The CLI automatically detects container runtimes in this order:
 
 1. **Podman** - Checks for Podman socket at:
    - `$TOOLHIVE_PODMAN_SOCKET` (if set)
+   - `container_runtime.podman_socket` in the config file (if set)
    - `/var/run/podman/podman.sock`
    - `$XDG_RUNTIME_DIR/podman/podman.sock`
    - `~/.local/share/containers/podman/machine/podman.sock` (Podman Machine on macOS)
@@ -96,6 +97,7 @@ The CLI automatically detects container runtimes in this order:
 
 2. **Docker** (including Docker Desktop, Rancher Desktop, and OrbStack) - Checks for Docker socket at:
    - `$TOOLHIVE_DOCKER_SOCKET` (if set)
+   - `container_runtime.docker_socket` in the config file (if set)
    - `/var/run/docker.sock`
    - `~/.docker/run/docker.sock` (Docker Desktop on macOS)
    - `~/.docker/desktop/docker.sock` (Docker Desktop on Linux)
@@ -104,7 +106,28 @@ The CLI automatically detects container runtimes in this order:
 
 3. **Colima** - Checks for Colima socket at:
    - `$TOOLHIVE_COLIMA_SOCKET` (if set)
+   - `container_runtime.colima_socket` in the config file (if set)
    - `~/.colima/default/docker.sock`
+
+An environment variable or config file entry is an explicit override: when
+set, it is the only candidate for its runtime and auto-detection is skipped. A
+`TOOLHIVE_*_SOCKET` variable takes precedence over the config file. A config
+file entry only applies to its own runtime, so a stale `podman_socket` rules
+out Podman but does not stop Docker or Colima from being detected.
+
+The config file entries persist the overrides in
+`$XDG_CONFIG_HOME/toolhive/config.yaml`, which helps when the CLI and the
+desktop UI are launched with different environments:
+
+```yaml
+container_runtime:
+  docker_socket: /run/user/1000/docker.sock
+  podman_socket: /run/user/1000/podman/podman.sock
+  colima_socket: /home/user/.colima/custom/docker.sock
+```
+
+On Windows, `docker_socket` and `podman_socket` take named pipe paths (for
+example `\\.\pipe\docker_engine`) and `colima_socket` is ignored.
 
 ### Detached Process Model
 
@@ -168,8 +191,9 @@ graph TB
 
 1. **User starts UI**: ToolHive Studio application launches
 
-2. **Studio spawns API server**: `thv serve`
-   - Starts HTTP API server on configurable port (default: 8080)
+2. **Studio spawns API server**: `thv serve --openapi --socket=<path>`
+   - Binds a UNIX socket (a named pipe on Windows), not a TCP port, so the API
+     is reachable only by local processes — no web page can reach it
    - Exposes RESTful endpoints for workload management
 
 3. **API Server (`pkg/api/server.go`)**:

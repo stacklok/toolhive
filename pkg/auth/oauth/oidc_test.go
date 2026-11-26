@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -379,6 +380,20 @@ func TestValidateOIDCDocument(t *testing.T) {
 					Issuer:        "https://example.com",
 					TokenEndpoint: "https://example.com/token",
 					JWKSURI:       "https://example.com/jwks",
+				},
+			},
+			expectedIssuer: "https://example.com",
+			expectError:    true,
+			errorMsg:       "missing authorization_endpoint",
+		},
+		{
+			name: "token-exchange metadata without authorization endpoint",
+			doc: &oauthproto.OIDCDiscoveryDocument{
+				AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+					Issuer:              "https://example.com",
+					TokenEndpoint:       "https://example.com/token",
+					JWKSURI:             "https://example.com/jwks",
+					GrantTypesSupported: []string{oauthproto.GrantTypeTokenExchange},
 				},
 			},
 			expectedIssuer: "https://example.com",
@@ -1258,6 +1273,7 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 				0,  // Use auto-select port for tests
 				"", // No resource
 				client,
+				false,
 			)
 
 			if tt.expectError {
@@ -1273,6 +1289,58 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 			if tt.validate != nil {
 				tt.validate(t, config)
 			}
+		})
+	}
+}
+
+func TestCreateOAuthConfigFromOIDC_PrivateIPPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		blockPrivateIPs bool
+		wantErr         bool
+	}{
+		{name: "blocks loopback issuer", blockPrivateIPs: true, wantErr: true},
+		{name: "allows loopback issuer", blockPrivateIPs: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var hits atomic.Int32
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(oauthproto.OIDCDiscoveryDocument{
+					AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
+						Issuer:                server.URL,
+						AuthorizationEndpoint: server.URL + "/authorize",
+						TokenEndpoint:         server.URL + "/token",
+						JWKSURI:               server.URL + "/jwks",
+						RegistrationEndpoint:  server.URL + "/register",
+					},
+				})
+			}))
+			t.Cleanup(server.Close)
+
+			config, err := CreateOAuthConfigFromOIDC(
+				context.Background(), server.URL, "test-client", "", nil, true, 0, "", tt.blockPrivateIPs,
+			)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, networking.ErrPrivateIpAddress)
+				assert.Nil(t, config)
+				assert.Zero(t, hits.Load(), "blocked issuer must not reach the listener")
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, server.URL+"/authorize", config.AuthURL)
+			assert.Equal(t, server.URL+"/token", config.TokenURL)
+			assert.Equal(t, int32(1), hits.Load())
 		})
 	}
 }
@@ -1462,5 +1530,22 @@ func TestBuildWellKnownURLs(t *testing.T) {
 			assert.Equal(t, tt.expectedOIDCURL, oidcURL, "OIDC URL should match expected")
 			assert.Equal(t, tt.expectedOAuthURL, oauthURL, "OAuth URL should match expected")
 		})
+	}
+}
+
+// TestNewOIDCDiscoveryTransport_BoundsIdleConnectionPool pins that the OIDC
+// discovery transport bounds its pool in both dial modes. This is one of the
+// exact sites #6483 names; a zero IdleConnTimeout would pin a socket and its
+// goroutine pair for the process lifetime.
+func TestNewOIDCDiscoveryTransport_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	for _, blockPrivateIPs := range []bool{false, true} {
+		transport := newOIDCDiscoveryTransport(blockPrivateIPs)
+		assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+		assert.Equal(t, 100, transport.MaxIdleConns)
+		assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+		assert.Equal(t, blockPrivateIPs, transport.DisableKeepAlives,
+			"blockPrivateIPs must disable keep-alive so pooling cannot skip the per-dial SSRF check")
 	}
 }

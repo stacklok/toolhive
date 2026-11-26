@@ -10,9 +10,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/adrg/xdg"
 	mobyclient "github.com/moby/moby/client"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -69,8 +73,10 @@ var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker
 func NewDockerClient(ctx context.Context) (*mobyclient.Client, string, runtime.Type, error) {
 	var lastErr error
 
+	overrides := loadSocketConfig()
+
 	for _, sp := range supportedSocketPaths {
-		socketPaths, runtimeType, err := findContainerSocket(sp)
+		socketPaths, runtimeType, err := findContainerSocket(sp, overrides)
 		if err != nil {
 			//nolint:gosec // G706: runtime type from internal config
 			slog.Debug("failed to find socket", "runtime", sp, "error", err)
@@ -79,7 +85,7 @@ func NewDockerClient(ctx context.Context) (*mobyclient.Client, string, runtime.T
 		}
 
 		for _, socketPath := range socketPaths {
-			c, err := newClientWithSocketPath(ctx, socketPath)
+			c, err := newClientWithSocketPath(ctx, socketPath, runtimeType)
 			if err != nil {
 				lastErr = err
 				//nolint:gosec // G706: runtime type from internal config
@@ -120,9 +126,12 @@ func dockerPermissionHint(err error) string {
 }
 
 // NewClientWithSocketPath creates a new container client with a specific socket path
-func newClientWithSocketPath(ctx context.Context, socketPath string) (*mobyclient.Client, error) {
+func newClientWithSocketPath(ctx context.Context, socketPath string, runtimeType runtime.Type) (*mobyclient.Client, error) {
 	// Create platform-specific client
-	_, opts := newPlatformClient(socketPath)
+	httpClient, opts := newPlatformClient(socketPath)
+	if runtimeType == runtime.TypePodman {
+		httpClient.Transport = newPodmanNetworkCompatRoundTripper(httpClient.Transport)
+	}
 
 	// Create Docker client with the custom HTTP client
 	dockerClient, err := mobyclient.New(opts...)
@@ -143,7 +152,46 @@ func newClientWithSocketPath(ctx context.Context, socketPath string) (*mobyclien
 // runtime, preferring Podman over Docker. The returned slice is ordered from
 // highest to lowest priority and may contain multiple entries on Unix when
 // several known socket locations exist on disk simultaneously.
-func findContainerSocket(rt runtime.Type) ([]string, runtime.Type, error) {
+//
+// Sources are consulted in order: TOOLHIVE_*_SOCKET environment variables, the
+// overrides from the config file, then auto-detection of well-known paths.
+func findContainerSocket(rt runtime.Type, overrides runtime.SocketConfig) ([]string, runtime.Type, error) {
 	// Use platform-specific implementation
-	return findPlatformContainerSocket(rt)
+	return findPlatformContainerSocket(rt, overrides)
+}
+
+// loadSocketConfig reads the container_runtime block from the default ToolHive
+// config file.
+//
+// The file is read directly rather than through pkg/config's Provider because
+// pkg/config transitively imports this package. As a consequence, providers
+// injected via config.RegisterProviderFactory do not supply socket overrides;
+// only the default XDG config file does.
+func loadSocketConfig() runtime.SocketConfig {
+	// Same location as pkg/config's default path, joined by hand because
+	// xdg.ConfigFile creates the parent directory and this is a read-only probe.
+	return loadSocketConfigFromPath(filepath.Join(xdg.ConfigHome, "toolhive", "config.yaml"))
+}
+
+// loadSocketConfigFromPath reads the container_runtime block from the config
+// file at configPath. It is best-effort: a missing, unreadable, or malformed
+// file yields empty overrides so that auto-detection still runs, matching the
+// behavior when no config file has been written yet.
+func loadSocketConfigFromPath(configPath string) runtime.SocketConfig {
+	data, err := os.ReadFile(filepath.Clean(configPath)) // #nosec G304 -- path is the ToolHive config file, not user input
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			slog.Debug("failed to read config file for socket overrides", "path", configPath, "error", err)
+		}
+		return runtime.SocketConfig{}
+	}
+
+	var cfg struct {
+		ContainerRuntime runtime.SocketConfig `yaml:"container_runtime"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		slog.Debug("failed to parse config file for socket overrides", "path", configPath, "error", err)
+		return runtime.SocketConfig{}
+	}
+	return cfg.ContainerRuntime
 }

@@ -4,13 +4,18 @@
 package runner
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -18,7 +23,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -71,7 +75,7 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// effective Host/Port/AllowedOrigins are fully resolved.
 
 	// Body size limit middleware (always present, outermost). See addBodyLimitMiddleware.
-	middlewareConfigs, err := addBodyLimitMiddleware(middlewareConfigs)
+	middlewareConfigs, err := addBodyLimitMiddleware(middlewareConfigs, config.MaxRequestBodySize)
 	if err != nil {
 		return err
 	}
@@ -99,8 +103,15 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 
 	// Authentication middleware (always present)
+	embeddedAuthServerIssuer := func() string {
+		if config.EmbeddedAuthServerConfig != nil {
+			return config.EmbeddedAuthServerConfig.Issuer
+		}
+		return ""
+	}()
 	authParams := auth.MiddlewareParams{
-		OIDCConfig: config.OIDCConfig,
+		OIDCConfig:               config.OIDCConfig,
+		EmbeddedAuthServerIssuer: embeddedAuthServerIssuer,
 	}
 	authConfig, authErr := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
 	if authErr != nil {
@@ -250,7 +261,7 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 
 	// Additional middleware configs injected by external-auth handlers via
-	// WithAdditionalMiddlewareConfigs (e.g. the enterprise OBO handler). Upstream
+	// WithAdditionalMiddlewareConfigs (e.g. the operator's OBO config). The runner
 	// carries these pre-built configs verbatim and does not interpret their
 	// parameters. They are spliced into the backend-egress group here: after auth
 	// (so the authenticated identity is available) and after the awssts /
@@ -267,7 +278,14 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// the proxyrunner re-populates via the len(MiddlewareConfigs)==0 guard. The cost
 	// is that a fully-populated ConfigMap carries the entry in both slices; the
 	// duplicate is inert because the proxyrunner reads MiddlewareConfigs.
-	middlewareConfigs = append(middlewareConfigs, config.AdditionalMiddlewareConfigs...)
+	//
+	// The one exception to "verbatim" is the OBO subject provider default; see
+	// defaultOBOSubjectProvider.
+	additional, err := defaultOBOSubjectProvider(config.AdditionalMiddlewareConfigs, config.EmbeddedAuthServerConfig)
+	if err != nil {
+		return err
+	}
+	middlewareConfigs = append(middlewareConfigs, additional...)
 
 	// Recovery middleware (always present, added last). The proxy transports
 	// apply this slice in reverse order (see applyMiddlewares), so the
@@ -283,6 +301,125 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
+	return nil
+}
+
+// oboSubjectProviderKey is the obo.MiddlewareParameters JSON key that selects
+// the upstream provider whose token is the OBO subject.
+const oboSubjectProviderKey = "subjectTokenProviderName"
+
+// defaultOBOSubjectProvider returns middlewares with every OBO config that
+// leaves subjectTokenProviderName empty defaulted to the embedded auth server's
+// first upstream. Behind an embedded auth server the inbound token is
+// ToolHive's own session JWT, which Entra rejects with invalid_grant, so
+// without the default every request would fail. The upstream is chosen the
+// same way addUpstreamSwapMiddleware chooses the one whose token it injects:
+// the first, with no error when there are several.
+//
+// This deliberately differs from vMCP, whose authtypes.DefaultSubjectProviderName
+// returns ErrAmbiguousSubjectProvider for more than one upstream. The operator,
+// the only producer of OBO entries in AdditionalMiddlewareConfigs, rejects an
+// MCPServer or MCPRemoteProxy with more than one embedded upstream before the
+// RunConfig is built, so the first upstream is the only one here; following
+// upstream swap keeps the OBO subject and the injected token on one provider.
+//
+// Without an embedded auth server, or one with no upstreams, middlewares is
+// returned as is. Otherwise the result is a copy and middlewares is never
+// modified, so the serialized AdditionalMiddlewareConfigs carrier keeps the
+// operator's original. Other parameters, including keys this version does not
+// know, are kept.
+func defaultOBOSubjectProvider(
+	middlewares []types.MiddlewareConfig,
+	embeddedCfg *authserver.RunConfig,
+) ([]types.MiddlewareConfig, error) {
+	if embeddedCfg == nil || len(embeddedCfg.Upstreams) == 0 {
+		return middlewares, nil
+	}
+	names := make([]string, len(embeddedCfg.Upstreams))
+	for i, u := range embeddedCfg.Upstreams {
+		names[i] = u.Name
+	}
+	providerName, err := json.Marshal(authserver.ResolveFirstUpstreamName(names))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode OBO subject provider name: %w", err)
+	}
+
+	out := slices.Clone(middlewares)
+	for i, mw := range out {
+		if mw.Type != obo.MiddlewareType {
+			continue
+		}
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(mw.Parameters, &params); err != nil {
+			return nil, fmt.Errorf("invalid OBO middleware parameters: %w", err)
+		}
+		var current string
+		if raw, ok := params[oboSubjectProviderKey]; ok {
+			if err := json.Unmarshal(raw, &current); err != nil {
+				return nil, fmt.Errorf("invalid OBO %s: %w", oboSubjectProviderKey, err)
+			}
+		}
+		if current != "" {
+			continue
+		}
+		if params == nil {
+			params = map[string]json.RawMessage{}
+		}
+		params[oboSubjectProviderKey] = providerName
+		updated, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode OBO middleware parameters: %w", err)
+		}
+		out[i].Parameters = updated
+	}
+	return out, nil
+}
+
+var errOIDCAuthenticationMiddlewareCount = errors.New("OIDC configuration requires exactly one authentication middleware")
+
+// canonicalizeOIDCMiddlewareConfig synchronizes the serialized authentication
+// middleware with the canonical OIDC configuration when the chain is populated.
+func canonicalizeOIDCMiddlewareConfig(config *RunConfig) error {
+	if config.OIDCConfig == nil || len(config.MiddlewareConfigs) == 0 {
+		return nil
+	}
+
+	authMiddlewareIndex := -1
+	for i, middlewareConfig := range config.MiddlewareConfigs {
+		if middlewareConfig.Type != auth.MiddlewareType {
+			continue
+		}
+		if authMiddlewareIndex >= 0 {
+			return errOIDCAuthenticationMiddlewareCount
+		}
+		authMiddlewareIndex = i
+	}
+	if authMiddlewareIndex < 0 {
+		return errOIDCAuthenticationMiddlewareCount
+	}
+
+	var params auth.MiddlewareParams
+	parameters := config.MiddlewareConfigs[authMiddlewareIndex].Parameters
+	if string(bytes.TrimSpace(parameters)) == "null" {
+		return errors.New("authentication middleware parameters cannot be null")
+	}
+	if err := json.Unmarshal(parameters, &params); err != nil {
+		return fmt.Errorf("failed to decode authentication middleware parameters: %w", err)
+	}
+
+	if embeddedAuthServerConfig := config.EmbeddedAuthServerConfig; embeddedAuthServerConfig != nil &&
+		embeddedAuthServerConfig.Issuer != "" {
+		params.EmbeddedAuthServerIssuer = embeddedAuthServerConfig.Issuer
+	}
+
+	canonicalConfig := *config.OIDCConfig
+	canonicalConfig.Scopes = slices.Clone(config.OIDCConfig.Scopes)
+	params.OIDCConfig = &canonicalConfig
+	middlewareConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, params)
+	if err != nil {
+		return fmt.Errorf("failed to encode authentication middleware parameters: %w", err)
+	}
+	config.MiddlewareConfigs[authMiddlewareIndex] = *middlewareConfig
 	return nil
 }
 
@@ -359,19 +496,34 @@ func addTokenExchangeMiddleware(
 // oversized request body is rejected with 413 before auth, the MCP parser, or any
 // handler buffers it via io.ReadAll — regardless of which builder assembled the chain.
 //
-// Idempotent: if the chain already starts with body-limit, the slice is returned
-// unchanged. Defaults to bodylimit.DefaultMaxRequestBodySize.
-func addBodyLimitMiddleware(middlewares []types.MiddlewareConfig) ([]types.MiddlewareConfig, error) {
-	if len(middlewares) > 0 && middlewares[0].Type == bodylimit.MiddlewareType {
-		return middlewares, nil
+// Existing body-limit entries are replaced so the typed RunConfig field remains
+// authoritative. The relative order of every other middleware is preserved.
+// Zero defaults to bodylimit.DefaultMaxRequestBodySize; negative values are rejected.
+func addBodyLimitMiddleware(
+	middlewares []types.MiddlewareConfig,
+	maxRequestBodySize int64,
+) ([]types.MiddlewareConfig, error) {
+	if maxRequestBodySize < 0 {
+		return nil, fmt.Errorf("max_request_body_size must be non-negative, got %d", maxRequestBodySize)
+	}
+	if maxRequestBodySize == 0 {
+		maxRequestBodySize = bodylimit.DefaultMaxRequestBodySize
 	}
 	bodyLimitConfig, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
-		MaxBytes: bodylimit.DefaultMaxRequestBodySize,
+		MaxBytes: maxRequestBodySize,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create body limit middleware config: %w", err)
 	}
-	return append([]types.MiddlewareConfig{*bodyLimitConfig}, middlewares...), nil
+
+	result := make([]types.MiddlewareConfig, 0, len(middlewares)+1)
+	result = append(result, *bodyLimitConfig)
+	for _, middleware := range middlewares {
+		if middleware.Type != bodylimit.MiddlewareType {
+			result = append(result, middleware)
+		}
+	}
+	return result, nil
 }
 
 // addHeaderForwardMiddleware adds header forward middleware if configured for remote servers
@@ -418,6 +570,19 @@ func addUpstreamSwapMiddleware(
 		return middlewares, nil
 	}
 
+	// A token-only embedded auth server has no upstream credential to swap. Like
+	// DisableUpstreamTokenInjection, it strips client credentials only after auth.
+	// An explicit swap configuration is invalid rather than silently ignored.
+	if len(config.EmbeddedAuthServerConfig.Upstreams) == 0 {
+		if config.UpstreamSwapConfig != nil {
+			return nil, fmt.Errorf("upstream swap cannot be configured without upstreams")
+		}
+		if err := validateCredentialInjectionConflicts(config, "token-only embedded auth server"); err != nil {
+			return nil, err
+		}
+		return addAuthHeaderStripMiddleware(middlewares)
+	}
+
 	// When upstream token injection is disabled, strip the client's credential
 	// headers (Authorization, Cookie, Proxy-Authorization) so they never reach
 	// the upstream server. Two ordering invariants apply, pinned by
@@ -430,13 +595,12 @@ func addUpstreamSwapMiddleware(
 	//     strip, silently defeating the flag — that contradiction is rejected
 	//     here instead.
 	if config.EmbeddedAuthServerConfig.DisableUpstreamTokenInjection {
-		if config.TokenExchangeConfig != nil {
-			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with token exchange: " +
-				"token exchange would re-add an Authorization header after strip-auth removes it")
+		if config.UpstreamSwapConfig != nil {
+			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with upstream swap: " +
+				"upstream swap would re-add an Authorization header after strip-auth removes it")
 		}
-		if config.AWSStsConfig != nil {
-			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with AWS STS: " +
-				"SigV4 signing would re-add credentials after strip-auth removes them")
+		if err := validateCredentialInjectionConflicts(config, "disableUpstreamTokenInjection"); err != nil {
+			return nil, err
 		}
 		return addAuthHeaderStripMiddleware(middlewares)
 	}
@@ -485,6 +649,10 @@ func injectUpstreamProviderIfNeeded(
 		return authzCfg, nil
 	}
 
+	if len(embeddedCfg.Upstreams) == 0 {
+		return authzCfg, nil
+	}
+
 	names := make([]string, len(embeddedCfg.Upstreams))
 	for i, u := range embeddedCfg.Upstreams {
 		names[i] = u.Name
@@ -492,6 +660,119 @@ func injectUpstreamProviderIfNeeded(
 	providerName := authserver.ResolveFirstUpstreamName(names)
 
 	return cedar.InjectUpstreamProvider(authzCfg, providerName)
+}
+
+// validateCredentialStrippingMiddleware verifies that a pre-built middleware chain
+// cannot bypass the credential-stripping guarantees required when no upstream
+// credential is available or its injection is disabled. The chain must include
+// exactly one strip-auth middleware after authentication.
+func validateCredentialStrippingMiddleware(
+	middlewares []types.MiddlewareConfig,
+	config *RunConfig,
+) error {
+	if !requiresCredentialStripping(config) {
+		return nil
+	}
+	if err := validateCredentialStrippingConfig(config); err != nil {
+		return err
+	}
+
+	authIndex, stripAuthIndex, err := credentialStrippingMiddlewareIndices(middlewares)
+	if err != nil {
+		return err
+	}
+	if stripAuthIndex == -1 {
+		return fmt.Errorf("credential stripping requires strip-auth middleware")
+	}
+	if authIndex == -1 {
+		return fmt.Errorf("credential stripping requires auth middleware")
+	}
+	if stripAuthIndex < authIndex {
+		return fmt.Errorf("credential stripping requires strip-auth middleware after auth middleware")
+	}
+	return nil
+}
+
+func requiresCredentialStripping(config *RunConfig) bool {
+	return config.EmbeddedAuthServerConfig != nil &&
+		(len(config.EmbeddedAuthServerConfig.Upstreams) == 0 ||
+			config.EmbeddedAuthServerConfig.DisableUpstreamTokenInjection)
+}
+
+func validateCredentialStrippingConfig(config *RunConfig) error {
+	if config.UpstreamSwapConfig != nil {
+		return fmt.Errorf("credential stripping cannot be combined with upstream swap")
+	}
+	if config.TokenExchangeConfig != nil {
+		return fmt.Errorf("credential stripping cannot be combined with token exchange")
+	}
+	if config.AWSStsConfig != nil {
+		return fmt.Errorf("credential stripping cannot be combined with AWS STS")
+	}
+	if hasCredentialInjectingAdditionalMiddleware(config.AdditionalMiddlewareConfigs) {
+		return fmt.Errorf("credential stripping cannot be combined with OBO middleware")
+	}
+	return nil
+}
+
+func credentialStrippingMiddlewareIndices(middlewares []types.MiddlewareConfig) (int, int, error) {
+	authIndex, stripAuthIndex := -1, -1
+	for i, middleware := range middlewares {
+		if err := credentialInjectingMiddlewareError(middleware.Type); err != nil {
+			return 0, 0, err
+		}
+		if middleware.Type == auth.MiddlewareType && authIndex == -1 {
+			authIndex = i
+		}
+		if middleware.Type != headerfwd.StripAuthMiddlewareName {
+			continue
+		}
+		if stripAuthIndex != -1 {
+			return 0, 0, fmt.Errorf("credential stripping requires exactly one strip-auth middleware")
+		}
+		stripAuthIndex = i
+	}
+	return authIndex, stripAuthIndex, nil
+}
+
+func credentialInjectingMiddlewareError(middlewareType string) error {
+	switch middlewareType {
+	case upstreamswap.MiddlewareType:
+		return fmt.Errorf("credential stripping cannot be combined with upstream swap middleware")
+	case tokenexchange.MiddlewareType:
+		return fmt.Errorf("credential stripping cannot be combined with token exchange middleware")
+	case awssts.MiddlewareType:
+		return fmt.Errorf("credential stripping cannot be combined with AWS STS middleware")
+	case obo.MiddlewareType:
+		return fmt.Errorf("credential stripping cannot be combined with OBO middleware")
+	default:
+		return nil
+	}
+}
+
+func validateCredentialInjectionConflicts(config *RunConfig, reason string) error {
+	if hasCredentialInjectingAdditionalMiddleware(config.AdditionalMiddlewareConfigs) {
+		return fmt.Errorf(
+			"%s cannot be combined with OBO middleware: "+
+				"OBO would re-add credentials after strip-auth removes them", reason)
+	}
+	if config.TokenExchangeConfig != nil {
+		return fmt.Errorf(
+			"%s cannot be combined with token exchange: "+
+				"token exchange would re-add an Authorization header after strip-auth removes it", reason)
+	}
+	if config.AWSStsConfig != nil {
+		return fmt.Errorf(
+			"%s cannot be combined with AWS STS: "+
+				"SigV4 signing would re-add credentials after strip-auth removes them", reason)
+	}
+	return nil
+}
+
+func hasCredentialInjectingAdditionalMiddleware(middlewares []types.MiddlewareConfig) bool {
+	return slices.ContainsFunc(middlewares, func(middleware types.MiddlewareConfig) bool {
+		return middleware.Type == obo.MiddlewareType
+	})
 }
 
 // addAuthHeaderStripMiddleware adds the strip-auth middleware
@@ -589,6 +870,7 @@ func addRateLimitMiddleware(middlewares []types.MiddlewareConfig, config *RunCon
 		Config:     config.RateLimitConfig,
 		RedisAddr:  redisAddr,
 		RedisDB:    redisDB,
+		RedisTLS:   config.ScalingConfig.SessionRedis.TLS,
 	}
 	mwConfig, err := types.NewMiddlewareConfig(ratelimit.MiddlewareType, params)
 	if err != nil {

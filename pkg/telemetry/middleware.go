@@ -325,8 +325,9 @@ func (m *HTTPMiddleware) addEnvironmentAttributes(span trace.Span) {
 	// Include environment variables from host machine as configured
 	// Only environment variables specified in the config will be read and included
 	for _, envVar := range m.config.EnvironmentVariables {
-		if envVar == "" {
-			continue // Skip empty environment variable names
+		// A "NAME=value" assignment must not become part of the span attribute key.
+		if envVar == "" || strings.Contains(envVar, "=") {
+			continue // Skip empty or assignment-style environment variable names
 		}
 
 		value := os.Getenv(envVar)
@@ -584,17 +585,13 @@ func (m *HTTPMiddleware) sanitizeArguments(arguments map[string]interface{}) str
 
 		// Limit value length and convert to string
 		valueStr := fmt.Sprintf("%v", value)
-		if len(valueStr) > 100 {
-			valueStr = valueStr[:100] + "..."
-		}
+		valueStr = truncateUTF8(valueStr, 100)
 
 		parts = append(parts, fmt.Sprintf("%s=%s", key, valueStr))
 	}
 
 	result := strings.Join(parts, ", ")
-	if len(result) > 200 {
-		result = result[:200] + "..."
-	}
+	result = truncateUTF8(result, 200)
 
 	return result
 }
@@ -708,6 +705,20 @@ func (rw *responseWriter) Flush() {
 	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// truncateUTF8 shortens s to at most maxBytes bytes, backing up to a UTF-8 rune
+// boundary so a multi-byte character is never split, and appends "..." when
+// the value was truncated.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	limit := maxBytes
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit] + "..."
 }
 
 // truncateLabelValue bounds a client-controlled metric label value to

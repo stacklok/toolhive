@@ -37,6 +37,14 @@ func TestParamHeadersForSchema(t *testing.T) {
 			want: map[string]string{"Mcp-Param-Region": "eu-west1"},
 		},
 		{
+			name: "designated empty string is sentinel-encoded",
+			schema: objSchema(map[string]any{
+				"region": annotated("string", "Region"),
+			}),
+			args: map[string]any{"region": ""},
+			want: map[string]string{"Mcp-Param-Region": "=?base64??="},
+		},
+		{
 			name:   "boolean is mirrored as true/false",
 			schema: objSchema(map[string]any{"dry_run": annotated("boolean", "Dry-Run")}),
 			args:   map[string]any{"dry_run": true},

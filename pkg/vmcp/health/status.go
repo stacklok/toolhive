@@ -193,26 +193,43 @@ func (*statusTracker) copyState(state *backendHealthState) *State {
 // If the backend had recent failures, it's marked as degraded (recovering state).
 // If the backend was previously unhealthy, this transition is logged.
 //
+// The returned bool reports whether the backend's advertisability changed
+// (see ShouldAdvertise): true when a previously-excluded backend becomes part
+// of the advertised catalog (recovery) — including a never-successful backend
+// whose tracked BackendUnknown state had excluded it. A previously-untracked
+// backend's first success is NOT reported: before tracking, aggregation served
+// the registry fallback, which is advertisable in practice
+// (ShouldAdvertise("") is true), and the first success is advertisable too, so
+// nothing flips — "this backend exists now" is the membership notification's
+// job (Monitor.UpdateBackends), and reporting it here would spend the debounce
+// window's leading edge on a no-op delivery. The Monitor uses the returned
+// bool to drive OnChange listeners.
+//
 // Parameters:
 //   - backendID: Unique identifier for the backend
 //   - backendName: Human-readable name for logging
 //   - status: The health status returned by the health check (healthy or degraded)
-func (t *statusTracker) RecordSuccess(backendID string, backendName string, status vmcp.BackendHealthStatus) {
+func (t *statusTracker) RecordSuccess(
+	backendID string, backendName string, status vmcp.BackendHealthStatus,
+) (advertisabilityChanged bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	// Ignore removed backends to prevent race conditions with in-flight health checks
 	if t.isRemoved(backendID) {
 		slog.Debug("ignoring health check result for removed backend", "backend", backendName)
-		return
+		return false
 	}
 
 	state, exists := t.getOrCreateState(backendID, backendName, status, 0, nil)
 	if !exists {
-		// Initialize new state - no failure history, so accept status as-is
+		// Initialize new state - no failure history, so accept status as-is.
+		// Quiet: the pre-tracking registry fallback was advertisable in
+		// practice (ShouldAdvertise("") is true) and so is this first success,
+		// so advertisability did not flip (see the method comment).
 		slog.Debug("backend initialized", "backend", backendName, "status", status)
 		state.circuitBreaker.RecordSuccess()
-		return
+		return false
 	}
 
 	// Check for status transition
@@ -247,6 +264,8 @@ func (t *statusTracker) RecordSuccess(backendID string, backendName string, stat
 
 	// Update circuit breaker
 	state.circuitBreaker.RecordSuccess()
+
+	return ShouldAdvertise(previousStatus) != ShouldAdvertise(state.status)
 }
 
 // RecordRevision stores the backend's negotiated MCP revision read-model. It is
@@ -265,19 +284,32 @@ func (t *statusTracker) RecordRevision(backendID, revision string) {
 // This increments the consecutive failure count and may transition the backend to unhealthy
 // if the threshold is exceeded. Status transitions are logged.
 //
+// The returned bool reports whether the backend's advertisability changed
+// (see ShouldAdvertise): true when the backend's failure streak genuinely
+// crosses the unhealthy threshold and drops it out of the catalog — including
+// a never-successful backend whose quiet below-threshold failures left the
+// aggregation on the registry-fallback view (advertisable in practice). A
+// first or below-threshold failure is NOT reported: withdrawing a brand-new
+// backend on its first failed probe is the normal path for a workload still
+// starting when the registry first lists it, and reporting it would flap every
+// connected session's advertised catalog despite UnhealthyThreshold promising
+// tolerance. The Monitor uses the returned bool to drive OnChange listeners.
+//
 // Parameters:
 //   - backendID: Unique identifier for the backend
 //   - backendName: Human-readable name for logging
 //   - status: The health status returned by the health check (unhealthy, unauthenticated, etc.)
 //   - err: The error encountered during health check
-func (t *statusTracker) RecordFailure(backendID string, backendName string, status vmcp.BackendHealthStatus, err error) {
+func (t *statusTracker) RecordFailure(
+	backendID string, backendName string, status vmcp.BackendHealthStatus, err error,
+) (advertisabilityChanged bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	// Ignore removed backends to prevent race conditions with in-flight health checks
 	if t.isRemoved(backendID) {
 		slog.Debug("ignoring health check result for removed backend", "backend", backendName)
-		return
+		return false
 	}
 
 	state, exists := t.getOrCreateState(backendID, backendName, vmcp.BackendUnknown, 1, err)
@@ -291,17 +323,27 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 				"failures", state.consecutiveFailures,
 				"threshold", t.unhealthyThreshold,
 				"error", err)
-		} else {
-			slog.Warn("backend initialized with failure",
-				"backend", backendName,
-				"failures", 1,
-				"threshold", t.unhealthyThreshold,
-				"status", vmcp.BackendUnknown,
-				"error", err)
+			state.circuitBreaker.RecordFailure()
+			// A threshold of 1 classifies the backend on its very first
+			// result: the pre-tracking registry-fallback view (advertisable
+			// in practice) is superseded by a non-advertisable status, so
+			// report the withdrawal.
+			return !ShouldAdvertise(state.status)
 		}
 
+		slog.Warn("backend initialized with failure",
+			"backend", backendName,
+			"failures", 1,
+			"threshold", t.unhealthyThreshold,
+			"status", vmcp.BackendUnknown,
+			"error", err)
 		state.circuitBreaker.RecordFailure()
-		return
+		// Below the threshold, stay quiet (see the method comment): the
+		// withdrawal is reported at the genuine threshold crossing (the
+		// previousStatus == BackendUnknown case below), and a recovery is
+		// reported by RecordSuccess (BackendUnknown -> degraded/healthy
+		// flips advertisability).
+		return false
 	}
 
 	// Record the failure
@@ -346,6 +388,18 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 
 	// Update circuit breaker
 	state.circuitBreaker.RecordFailure()
+
+	if previousStatus == vmcp.BackendUnknown {
+		// A never-successful backend: its below-threshold failures were
+		// recorded quietly (init path above) while aggregation kept serving
+		// the registry fallback, which is advertisable in practice. The
+		// genuine threshold crossing is therefore this backend's first real
+		// withdrawal and must be reported, even though ShouldAdvertise is
+		// false for BackendUnknown and the new status alike.
+		return thresholdReached && statusChanged && !ShouldAdvertise(state.status)
+	}
+
+	return ShouldAdvertise(previousStatus) != ShouldAdvertise(state.status)
 }
 
 // GetStatus returns the current health status for a backend.

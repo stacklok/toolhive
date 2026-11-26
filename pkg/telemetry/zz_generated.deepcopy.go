@@ -32,6 +32,11 @@ func (in *Config) DeepCopyInto(out *Config) {
 			(*out)[key] = val
 		}
 	}
+	if in.MetricsOnTransportPort != nil {
+		in, out := &in.MetricsOnTransportPort, &out.MetricsOnTransportPort
+		*out = new(bool)
+		**out = **in
+	}
 	if in.EnvironmentVariables != nil {
 		in, out := &in.EnvironmentVariables, &out.EnvironmentVariables
 		*out = make([]string, len(*in))

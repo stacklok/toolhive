@@ -24,7 +24,10 @@ func WithForwardedHeaders(ctx context.Context, headers map[string]string) contex
 }
 
 // ForwardedHeadersFromContext returns the forwarded headers captured for the
-// current request, or nil if none were captured.
+// current request, or nil if no capture ran (e.g. an empty allowlist). Downstream
+// of CaptureMiddleware with a configured allowlist, the result is a non-nil empty
+// map when the request carried none of the listed headers. Callers should test
+// len() rather than nil.
 func ForwardedHeadersFromContext(ctx context.Context) map[string]string {
 	h, _ := ctx.Value(forwardedHeadersKey{}).(map[string]string)
 	return h
@@ -53,7 +56,7 @@ func CaptureMiddleware(allow []string) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Collect the values of allowlisted headers that are actually present.
+			// Collect the values of allowlisted headers present on this request.
 			fwd := make(map[string]string, len(canonical))
 			for _, name := range canonical {
 				if v := r.Header.Get(name); v != "" {
@@ -61,12 +64,10 @@ func CaptureMiddleware(allow []string) func(http.Handler) http.Handler {
 				}
 			}
 
-			if len(fwd) == 0 {
-				// Nothing to attach — skip the context allocation on the fast path.
-				next.ServeHTTP(w, r)
-				return
-			}
-
+			// Attach the map even when it is empty. The handler may run under a
+			// context that falls back to values captured by an earlier request on
+			// the same session; an explicit empty map shadows those, so a header
+			// absent on this request is not forwarded.
 			ctx := WithForwardedHeaders(r.Context(), fwd)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

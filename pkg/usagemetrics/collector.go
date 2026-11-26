@@ -6,6 +6,7 @@ package usagemetrics
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"os"
 	"time"
 
@@ -49,20 +50,49 @@ func shouldEnableMetrics(configDisabled bool, isCI func() bool, getEnv func(stri
 	return true
 }
 
+// CollectorOption configures a Collector.
+type CollectorOption func(*Collector)
+
+// WithProfile sets the function that describes the server being reported on.
+// It is called on every flush, so it must be cheap and safe for concurrent use.
+func WithProfile(profile func() Profile) CollectorOption {
+	return func(c *Collector) {
+		c.profile = profile
+	}
+}
+
+// WithComponent sets the component reported in the User-Agent (for example
+// "vmcp"). By default the component is "local" or "operator", depending on
+// whether the process runs in Kubernetes.
+func WithComponent(component string) CollectorOption {
+	return func(c *Collector) {
+		c.client.component = component
+	}
+}
+
+// WithEndpoint sets the URL reports are sent to, instead of the Stacklok
+// update service. Tests use it to point the collector at a local server.
+func WithEndpoint(endpoint string) CollectorOption {
+	return func(c *Collector) {
+		c.client.endpoint = endpoint
+	}
+}
+
 // NewCollector creates a new metrics collector
-func NewCollector() (*Collector, error) {
+func NewCollector(opts ...CollectorOption) (*Collector, error) {
 	client := NewClient("")
 	collector := &Collector{
 		instanceID:  uuid.NewString(), // Generate new instance ID for this process
 		currentDate: getCurrentDateUTC(),
 		client:      client,
+		counts:      newCounts(),
 		stopCh:      make(chan struct{}),
 		doneCh:      make(chan struct{}),
 		flushCh:     make(chan struct{}, 1),
 	}
-
-	// Counter starts at 0
-	collector.counter.Store(0)
+	for _, opt := range opts {
+		opt(collector)
+	}
 
 	return collector, nil
 }
@@ -76,20 +106,49 @@ func (c *Collector) Start() {
 	go c.flushLoop()
 }
 
-// IncrementToolCall increments the tool call counter atomically
+// IncrementToolCall records a tool call from an unidentified client.
 func (c *Collector) IncrementToolCall() {
-	c.counter.Add(1)
+	c.IncrementToolCallFrom(ClientUnknown)
+}
+
+// IncrementToolCallFrom records a tool call made by the given client. The client
+// name is normalized, so callers may pass the raw clientInfo name.
+func (c *Collector) IncrementToolCallFrom(client string) {
+	client = NormalizeClientName(client)
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	c.counts.total++
+	c.counts.byClient[client]++
+}
+
+// IncrementCodeModeCall records that a tool call already counted by
+// IncrementToolCallFrom invoked the vMCP code mode tool.
+func (c *Collector) IncrementCodeModeCall() {
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	c.counts.codeModeCalls++
+}
+
+// AddCodeModeToolCalls records n tool calls made from inside a code mode
+// script. They are reported separately and never added to the tool call count.
+// Non-positive values are ignored.
+func (c *Collector) AddCodeModeToolCalls(n int64) {
+	if n <= 0 {
+		return
+	}
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	c.counts.codeModeToolCalls += n
 }
 
 // Flush sends the current metrics to the API
 // Checks for midnight boundary crossing and handles daily reset
 func (c *Collector) Flush() error {
 	currentDate := getCurrentDateUTC()
-	count := c.counter.Load()
 
 	//nolint:gosec // G706: instance ID and date from internal state
 	slog.Debug("usage metrics flush triggered",
-		"count", count, "date", currentDate, "instance_id", c.instanceID)
+		"date", currentDate, "instance_id", c.instanceID)
 
 	// Check if we crossed midnight UTC
 	if c.currentDate != currentDate {
@@ -104,18 +163,19 @@ func (c *Collector) Flush() error {
 		slog.Debug("date changed, flushing previous day's count",
 			"previous_date", c.currentDate, "current_date", currentDate)
 
-		if count > 0 {
+		// Take the previous day's per-client split and reset both counters
+		// together, so the split always adds up to the count.
+		prev := c.resetCounts()
+
+		if prev.hasCalls() {
 			// Create fake timestamp for end of previous day
 			previousDayTimestamp := c.currentDate + "T23:59:00Z"
 
-			record := MetricRecord{
-				Count:     count,
-				Timestamp: previousDayTimestamp,
-			}
+			record := c.newRecord(prev, previousDayTimestamp)
 
 			//nolint:gosec // G706: date from internal state
 			slog.Debug("flushing tool calls for previous day at midnight boundary",
-				"count", count, "date", c.currentDate)
+				"count", prev.total, "date", c.currentDate)
 
 			if err := c.client.SendMetrics(c.instanceID, record); err != nil {
 				slog.Debug("failed to send metrics for previous day",
@@ -124,9 +184,8 @@ func (c *Collector) Flush() error {
 			}
 		}
 
-		// Reset for the new day
+		// Start the new day
 		c.currentDate = currentDate
-		c.counter.Store(0)
 
 		return nil
 	}
@@ -138,13 +197,11 @@ func (c *Collector) Flush() error {
 	now := time.Now().UTC()
 	timestamp := now.Format(time.RFC3339) // ISO 8601 format
 
-	record := MetricRecord{
-		Count:     count,
-		Timestamp: timestamp,
-	}
+	current := c.snapshotCounts()
+	record := c.newRecord(current, timestamp)
 
 	//nolint:gosec // G706: timestamp from time.Now()
-	slog.Debug("flushing tool calls", "count", count, "timestamp", timestamp)
+	slog.Debug("flushing tool calls", "count", current.total, "timestamp", timestamp)
 
 	if err := c.client.SendMetrics(c.instanceID, record); err != nil {
 		slog.Debug("failed to send metrics", "error", err)
@@ -155,7 +212,10 @@ func (c *Collector) Flush() error {
 	return nil
 }
 
-// Shutdown performs final flush and stops background goroutines
+// Shutdown stops background goroutines and sends a final report if any tool
+// calls, including code mode script tool calls, were counted. With nothing to report it sends nothing: an idle process
+// already announced itself through the periodic flush, and a process that is
+// restarted repeatedly would otherwise add one empty report per restart.
 func (c *Collector) Shutdown(ctx context.Context) {
 	if c.shutdown.Load() {
 		return
@@ -169,9 +229,11 @@ func (c *Collector) Shutdown(ctx context.Context) {
 		close(c.stopCh)
 	}
 
-	// Perform final flush
-	if err := c.Flush(); err != nil {
-		slog.Warn("failed to flush metrics on shutdown", "error", err)
+	// Perform final flush, unless there is nothing to report
+	if c.snapshotCounts().hasCalls() {
+		if err := c.Flush(); err != nil {
+			slog.Warn("failed to flush metrics on shutdown", "error", err)
+		}
 	}
 
 	// Wait for goroutines to finish with timeout (only if started)
@@ -187,7 +249,42 @@ func (c *Collector) Shutdown(ctx context.Context) {
 
 // GetCurrentCount returns the current count (for testing/debugging)
 func (c *Collector) GetCurrentCount() int64 {
-	return c.counter.Load()
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	return c.counts.total
+}
+
+// snapshotCounts returns a copy of the current counts.
+func (c *Collector) snapshotCounts() counts {
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	snap := c.counts
+	snap.byClient = maps.Clone(c.counts.byClient)
+	return snap
+}
+
+// resetCounts returns the current counts and resets them all together.
+func (c *Collector) resetCounts() counts {
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	prev := c.counts
+	c.counts = newCounts()
+	return prev
+}
+
+// newRecord builds the payload for one report, adding the server profile.
+func (c *Collector) newRecord(n counts, timestamp string) MetricRecord {
+	record := MetricRecord{
+		Count:             n.total,
+		Timestamp:         timestamp,
+		CallsByClient:     n.byClient,
+		CodeModeCalls:     n.codeModeCalls,
+		CodeModeToolCalls: n.codeModeToolCalls,
+	}
+	if c.profile != nil {
+		record.Profile = c.profile().normalize()
+	}
+	return record
 }
 
 // flushLoop periodically flushes metrics

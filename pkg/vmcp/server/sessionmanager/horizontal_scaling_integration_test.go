@@ -17,7 +17,7 @@ import (
 
 	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -58,7 +58,7 @@ func newSharedRedisStorageWithTTL(t *testing.T, mr *miniredis.Miniredis, ttl tim
 	t.Helper()
 	storage, err := transportsession.NewRedisSessionDataStorage(
 		context.Background(),
-		tcredis.Config{
+		redisconn.Config{
 			Addr: mr.Addr(),
 		},
 		"test:vmcp:session:",

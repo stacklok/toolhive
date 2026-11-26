@@ -331,9 +331,10 @@ func TestGitCertificateRefAndRunner(t *testing.T) {
 			"the observed ref must reach the lock file, or nothing can be enforced later")
 		assert.Equal(t, testGitRunner, provenance.RunnerEnvironment)
 
-		require.NoError(t, checkPinnedCertificateFields(observed, provenance))
+		require.NoError(t, checkProvenanceExpectation(observed, NewLockExpectation(provenance)))
 		require.ErrorIs(t,
-			checkPinnedCertificateFields(observed, &lockfile.Provenance{RepositoryRef: "refs/heads/attacker"}),
+			checkProvenanceExpectation(
+				observed, NewLockExpectation(&lockfile.Provenance{RepositoryRef: "refs/heads/attacker"})),
 			ErrSignerMismatch)
 	})
 
@@ -348,9 +349,9 @@ func TestGitCertificateRefAndRunner(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, observed.RepositoryRef)
 		assert.Empty(t, observed.RunnerEnvironment)
-		require.NoError(t, checkPinnedCertificateFields(observed, &lockfile.Provenance{
+		require.NoError(t, checkProvenanceExpectation(observed, NewLockExpectation(&lockfile.Provenance{
 			SignerIdentity: "dev@example.com",
 			CertIssuer:     testGitIssuer,
-		}), "an entry pinning neither field must keep verifying")
+		})), "an entry pinning neither field must keep verifying")
 	})
 }

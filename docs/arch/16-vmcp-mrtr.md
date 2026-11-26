@@ -20,59 +20,11 @@ Decision framing follows RFC-0083 (`stacklok/toolhive-rfcs`,
 workflow-handle design in its D5; this document sequences D5's enforcement
 machinery and specifies the MRTR flows that trigger it.
 
-**Spec sources.** Written against the 2026-07-28 revision as published in
-`modelcontextprotocol/modelcontextprotocol@main` on 2026-07-27, one day before
-the revision's finalization date, when it still lived at `schema/draft`
-(`LATEST_PROTOCOL_VERSION = "2026-07-28"`): `schema/draft/schema.ts`,
-`/specification/draft/basic/patterns/mrtr`, SEP-2322 (Status: Final), SEP-2577
-(Status: Final), and the draft changelog. Anything cited from those sources
-should be re-verified against the final text once cut; the MRTR SEP and schema
-types were already Final at time of writing.
-
-*Re-checked 2026-07-28 (the nominal finalization date): the revision is
-still not cut — no `schema/2026-07-28` directory exists,
-`/specification/2026-07-28/` pages 404, and `schema/draft/schema.ts` is
-byte-identical to the copy this design was written against. The checklist
-below therefore remains pending the final cut.*
-
-**Draft-only dependencies (re-verify against the final cut).** The schema
-types and the SEPs are Final and low-risk. Five load-bearing points in this
-design rest on the draft *spec pages'* text, which refines (or diverges from)
-the Final SEP and could still move before the final cut:
-
-- **The three-method table.** SEP-2322 (Final) also allows
-  `InputRequiredResult` on `GetTaskPayloadRequest`; the draft page dropped it
-  when tasks moved to an extension. If the final restores a fourth method,
-  the relay's method allow-list grows — a table edit, not a design change.
-- **Capability gating** (server requirement 7, "MUST NOT send an
-  `inputRequests` that the client has not declared") is not stated by
-  SEP-2322, but it is not merely page-local either: the core `_meta` section
-  of `/specification/draft/basic` carries the general form as a MUST — a
-  server "MUST NOT rely on capabilities the client has not declared" and MUST
-  answer a request that needs one with `MissingRequiredClientCapabilityError`
-  (`-32021`) listing the missing capabilities in `data.requiredCapabilities`.
-  The MRTR requirement is the pattern-specific instance. Capability mirroring
-  is designed around it; the risk is only that the final cut reshuffles which
-  page states it.
-- **Server requirement 6** ("at least one of `inputRequests` or
-  `requestState`") is stated on the page *and* in `schema/draft/schema.ts`'s
-  `InputRequiredResult` doc comment ("At least one of `inputRequests` or
-  `requestState` MUST be present") — anchored in the Final-typed schema, so
-  the least likely of these to move. It governs what vMCP treats as a backend
-  protocol violation (the egress decode fails closed on it — see slice 1).
-- **Unrecognized `resultType` severity.** SEP-2322 says the client "SHOULD
-  treat unrecognized values as invalid protocol responses"; the draft basic
-  page's ResultType section tightens it: any unrecognized value "MUST be
-  considered invalid". The egress decode implements the MUST (sentinel-only,
-  no extractable round); a final cut that reverts to SHOULD costs nothing,
-  since rejecting remains SHOULD-conformant.
-- **The `requestState` security language** differs between the two: SEP-2322
-  says user-specific state "MUST use some mechanism to cryptographically
-  bind" it to the user, while the page allows omitting integrity protection
-  "only when tampering can cause nothing worse than request failure". The
-  workflow-handle design (below) satisfies the stricter reading — state never
-  leaves the server and the handle is owner-checked — so it is robust to
-  either landing in the final.
+**Spec sources.** This design follows the finalized MCP 2026-07-28 revision:
+`schema/2026-07-28/schema.ts`, `/specification/2026-07-28/basic`, and
+`/specification/2026-07-28/basic/patterns/mrtr`, alongside SEP-2322 (Final),
+SEP-2577 (Final), and the 2026-07-28 changelog. These are final-version
+references; the design does not depend on unpublished draft text.
 
 ## Protocol recap (what MRTR actually is)
 
@@ -85,7 +37,7 @@ Instead, a server answers a request it cannot complete with a `Result` whose
 required `resultType` is `"input_required"`:
 
 ```typescript
-// schema/draft/schema.ts
+// schema/2026-07-28/schema.ts
 export type InputRequest = CreateMessageRequest | ListRootsRequest | ElicitRequest;
 export interface InputRequests { [key: string]: InputRequest; }
 export interface InputRequiredResult extends Result {
@@ -127,7 +79,7 @@ halves of these cells were built in #6006; this table is the MRTR overlay.
 | Downstream client | Backend | MRTR shape |
 |---|---|---|
 | Modern | Modern | **Stateless pass-through** (the core design, below) |
-| Modern | Legacy | **No MRTR bridge — deliberate.** Parking a live Legacy backend call server-side to synthesize `input_required` rounds is per-round server state with token-capability and replica-affinity costs: the session the revision removed, in different clothes. Costed and rejected in the client-edge limitation section of doc 10; the sanctioned stateful path is the Tasks extension (SEP-2663). The call fails with the two-path contract #6061 (merged) implements in `writeModernCallFailure`: `-32021` + `data.requiredCapabilities` when the client did not declare the capability, an explicit `-32603` naming SEP-2322 when it did. That contract is **permanent for this cell** — MRTR slices supersede it only where the backend is Modern. |
+| Modern | Legacy | **No MRTR bridge — deliberate.** Parking a live Legacy backend call server-side to synthesize `input_required` rounds is per-round server state with token-capability and replica-affinity costs: the session the revision removed, in different clothes. Costed and rejected in the client-edge limitation section of doc 10; the sanctioned stateful path is the Tasks extension (SEP-2663). The call fails with the two-path contract #6061 implements in `writeModernCallFailure`: `-32021` at HTTP 400 with `data.requiredCapabilities` when the client did not declare the capability (go-sdk clients decode the JSON-RPC error body without permanently breaking the connection), or an explicit `-32603` at HTTP 200 naming SEP-2322 when it did. That contract is **permanent for this cell** — MRTR slices supersede it only where the backend is Modern. |
 | Legacy | Modern | **In-request bridge**: vMCP fulfills the backend's `inputRequests` through the existing Legacy forwarding seams and retries the backend call itself (below) |
 | Legacy | Legacy | Today's server-initiated forwarding, unchanged |
 
@@ -169,6 +121,14 @@ vMCP adds **no state of its own**:
    `inputResponses` + `requestState`. vMCP routes it exactly like the first
    round (routing is deterministic by capability name through the routing
    table) and forwards both fields verbatim to the backend.
+
+**Open question: does the relay pass URL mode through?** A backend's
+`inputRequests` can include `elicitation/create` with `mode: "url"`, which
+would put a backend-chosen URL in front of the user. Today no backend can do
+that: the only URL elicitation vMCP renders is the in-process answer an
+embedder's decorator returns (#7022), and a backend's round renders as
+`-32603`. Whether the relay forwards URL-mode requests verbatim, filters them,
+or requires an opt-in is #6059's call, raised there.
 
 Round-trip state lives **only** in the backend's `requestState`, whose
 integrity/user-binding obligations sit with the backend that minted it, per
@@ -219,7 +179,7 @@ arms, no winner picked here:
 3. **Server-side handle over a verbatim backend round**: relay verbatim *to
    the backend*, but make the **downstream-visible** `requestState` an opaque
    handle into a server-side entry `{backend, capability,
-   owner=binding.Format(iss, sub), backend requestState, TTL}` — the same D5
+   owner=session binding, backend requestState, TTL}` — the same D5
    handle machinery the composite slice below already builds, and **no keys
    at all** (the state never leaves the server, so there is nothing to sign
    or seal). This closes cross-principal replay, cross-backend A→B
@@ -260,7 +220,7 @@ pod — fulfills each `inputRequest` through the existing server-initiated
 forwarding seams (`vmcp.ElicitationRequester`, `vmcp.SamplingRequester`, both
 capability-gated on what the Legacy client advertised at `initialize`), then
 retries the backend call with the collected `inputResponses` and echoed
-`requestState`. Precedent: go-sdk v1.7's own `serverMultiRoundTripMiddleware`
+`requestState`. Precedent: go-sdk's `serverMultiRoundTripMiddleware`
 performs exactly this bridge for its handlers ("When a handler returns
 InputRequests and the client does not support multi-round-trip, the middleware
 fulfills the requests by calling the client directly and reinvokes the
@@ -302,13 +262,14 @@ RFC-0083 D5 sequences the durable machinery on:
   client-visible `requestState` is a **handle**, not serialized state.
 - **Handle format** (RFC-0083 D5, followed verbatim): a server-minted,
   ≥128-bit opaque random token; an owner field on `WorkflowStatus` holding
-  the authenticated `(iss, sub)` pair encoded exactly as the existing
-  identity binding does — `pkg/vmcp/session/binding`'s
-  `Format(iss, sub)`, which returns `iss + "\x00" + sub` (and an error for
-  empty components), plaintext, not hashed — so the two owner-binding
-  mechanisms stay consistent.
+  the full session binding of the authenticated identity, produced by
+  `sessionbinding.FromIdentity` (`pkg/auth/sessionbinding`), plaintext, not
+  hashed. For an interactive caller this is `iss + "\x00" + sub`; for a
+  delegated caller it also carries the route, `client_id` and actor, so
+  delegated callers keep client and actor isolation. The handle owner and the
+  session owner use the same encoding and the same comparison.
 - **Owner check on resume**: the retry's authenticated identity must satisfy
-  `binding.Format(iss, sub) == status.Owner` before any state is loaded;
+  `sessionbinding.Validate(status.Owner, identity)` before any state is loaded;
   a mismatch is an audit-visible security signal (owner-mismatch resume),
   fails closed, and reveals nothing about the handle's existence.
 - **TTL at write** (bounding the replay window per MRTR server requirement 5)
@@ -318,10 +279,12 @@ RFC-0083 D5 sequences the durable machinery on:
   leaves the server, and the handle is an unguessable capability whose owner
   is checked server-side — stronger than client-side AEAD, with no
   key-management surface.
-- **Under `incomingAuth: anonymous`** the owner check is vacuous: every
-  anonymous session stores the same `binding.UnauthenticatedSentinel`, and
-  `validateCallerBinding` accepts any anonymous caller
-  (`pkg/vmcp/session/internal/security`), so "the original user" is not a
+- **Under `incomingAuth: anonymous`** the owner check is vacuous: the
+  anonymous auth middleware (`pkg/auth/anonymous.go`) gives every caller the
+  same issuer `toolhive-local` and subject `anonymous`, so every handle's owner
+  is the same two-field binding `toolhive-local\x00anonymous`, and
+  `sessionbinding.Validate` accepts any caller. (The unauthenticated sentinel
+  applies only to a nil identity.) "The original user" is not a
   concept the deployment has — the owner-mismatch audit signal can never
   fire, and protection reduces to handle unguessability plus TTL. Slice 5
   **accepts this as a documented single-tenant caveat rather than refusing to
@@ -360,7 +323,11 @@ call: `input_required` results flow back through the ordinary return path —
 - core: `core.CallTool`/`ReadResource`/`GetPrompt` propagate it (suspending a
   workflow first when the caller is the composer);
 - server: `dispatchModern` renders it as the `resultType:"input_required"`
-  envelope, and accepts `inputResponses`/`requestState` params on the retry.
+  envelope through `writeModernInputRequired`, and accepts
+  `inputResponses`/`requestState` params on the retry. The writer is shared:
+  today it renders the URL elicitation answer
+  (`vmcp.URLElicitationRequiredError`), converted to an `InputRequiredResult`
+  at render time.
 
 ## Sampling: deprecated pass-through, no feature work
 
@@ -368,7 +335,7 @@ Explicit answer to "does sampling deserve an MRTR path": **vMCP builds no
 sampling feature; sampling flows through the generic relay only.**
 
 - The MRTR union still carries it: `InputRequest = CreateMessageRequest |
-  ListRootsRequest | ElicitRequest` (schema/draft, above). SEP-2577's
+  ListRootsRequest | ElicitRequest` (schema/2026-07-28, above). SEP-2577's
   explicit union freeze ("The following union types reference deprecated
   types but MUST NOT be modified during the deprecation period",
   `seps/2577-deprecate-roots-sampling-and-logging.md`) enumerates only
@@ -402,45 +369,40 @@ relay-only transit on cell 1 and an explicit refusal on cell 3.
 
 ## Gaps in the pinned SDK surface (upstream candidates for toolhive-core)
 
-Verified against go-sdk `v1.7.0-pre.3` (the transitive pin via
-`toolhive-core v0.0.34`) and `toolhive-core/mcpcompat`:
+Verified against go-sdk and toolhive-core's `mcpcompat`:
 
-1. **mcpcompat drops MRTR fields in both directions.**
-   `mcpcompat/mcp.CallToolResult` carries only an unexported `resultType`
-   (populated by `UnmarshalJSON`, feeds `NeedsInput()`); it has **no**
-   `InputRequests`/`RequestState` fields, so a decoded `input_required`
-   result loses its payload. `CallToolParams` (`Name`, `Arguments`, `Meta`,
-   `Task`) cannot carry `inputResponses`/`requestState` on a retry. Upstream
-   ask: add both field pairs (go-sdk's own `mcp.CallToolResult` already
-   exports `InputRequests InputRequestMap` and `RequestState string`).
-2. **No no-initialize client primitive** in mcpcompat's public API (tracked
-   as #6018) — the reason `pkg/vmcp/client`'s hand-rolled `modernCall` exists
-   at all, and therefore where MRTR egress decode/retry params must live
-   until #6018's upstream work lands.
-3. **go-sdk's MRTR internals are unexported where vMCP needs them.** The
-   client retry loop exists (`clientMultiRoundTripMiddleware`,
-   `MultiRoundTripOptions.Disabled` for manual handling) but its pieces
-   (`fulfillInputRequests`, `setMultiRoundTripRetryParams`) are unexported;
-   server-side, `resultType` is settable only via unexported
-   `setResultType`/`setCompleteResultType` inside `ServerSession` dispatch —
-   exactly the dispatch the stateless Modern path bypasses — so the
-   hand-rolled `modern_envelope.go` must emit `input_required` itself.
-   Upstream ask (shared with #6018's step 1): exported stateless
-   client/server MRTR primitives.
-4. **`ServerSession.assertServerInitiatedRequestAllowed` gates by negotiated
-   protocol version only** (`v1.7.0-pre.3` `mcp/server.go:1544-1553`:
-   `iparams.ProtocolVersion >= protocolVersion20260728`), never consulting
-   capability declarations. Harmless for this design — the seams it guards
-   are only used on Legacy sessions — but it forecloses any notion of
-   re-enabling server-initiated requests for a capability-declaring Modern
-   client. Accounted for, no action.
-5. **`-32021` at HTTP 400 is unshippable** with current go-sdk clients (their
-   transient set is 500/502/503/504/429; any other 4xx is permanent session
-   death), which is why the undeclared-capability error lands at HTTP 200 as
-   a documented deviation — implemented by #6061
-   (`writeModernMissingCapability`), tracked upstream as go-sdk#1117; MRTR
-   does not change it, it *removes the case* for capabilities the client
-   does declare against Modern backends.
+1. **mcpcompat still drops MRTR fields in both directions.** go-sdk's
+   `mcp.CallToolResult` exports `InputRequests` and `RequestState`, but
+   `mcpcompat/mcp.CallToolResult` only records the private `resultType` used by
+   `NeedsInput()`; it has no fields for the input requests or request state.
+   Likewise, mcpcompat's `CallToolParams` has no `inputResponses` or
+   `requestState`, so its public client cannot carry a retry round. The payload
+   is lost on decode and cannot be sent back on retry. Upstream ask: add both
+   field pairs to the compatibility types.
+2. **No public one-shot client call path.** go-sdk and mcpcompat can
+   negotiate Modern with `server/discover` and issue calls through a
+   `ClientSession`. ToolHive's `modernCall` intentionally uses a one-request,
+   identity-scoped HTTP path instead, without retaining a backend
+   `ClientSession`; replacing that path requires a separate design for
+   per-identity projection, error mapping, and per-request build cost.
+3. **MRTR helpers and Modern result annotations remain unexported.** go-sdk's
+   automatic client retry middleware and its helpers for fulfilling
+   `InputRequests` and constructing retry parameters are private. On the server,
+   `resultType`, `setCompleteResultType`, and `annotateServerInfo` are also
+   unexported and run inside `ServerSession` dispatch, which the stateless Modern
+   path bypasses. ToolHive therefore still hand-builds the response envelope to
+   emit `resultType` and `_meta.serverInfo` correctly. An upstream ask is to
+   expose stateless client/server MRTR primitives.
+4. **`ServerSession.assertServerInitiatedRequestAllowed` is version-based.** In
+   go-sdk it rejects elicitation, sampling, and roots on protocol version
+   2026-07-28 without consulting per-request capabilities. That matches the
+   final revision's removal of server-initiated requests; a declared capability
+   does not restore the Legacy request path.
+5. **The old -32021 status workaround is obsolete.** go-sdk decodes a
+   non-2xx JSON-RPC error body and wraps it with `ErrRejected`, so a per-call
+   HTTP 400 does not permanently break the client connection by default. ToolHive
+   now sends the undeclared-capability `-32021` at the required HTTP 400; the
+   declared-capability MRTR limitation remains an explicit `-32603` at HTTP 200.
 
 ## Sequencing (collision-aware)
 
@@ -472,10 +434,21 @@ merges:
    hook), `pkg/vmcp/client/modern_mrtr.go` — none touched by #6033.
 2. **Ingress envelope + retry params (after #6050/#6033).** `dispatchModern`
    accepts `inputResponses`/`requestState`, threads them through
-   `core.CallTool`→`BackendClient`, and renders `input_required` envelopes;
-   parser vocabulary for the two params. Post-#6061, the rendering branch
-   hooks into `writeModernCallFailure` via `vmcp.InputRequiredFromError`,
-   alongside (never instead of) its authz-priority and capability-refusal
+   `core.CallTool`→`BackendClient`, and renders `input_required` envelopes.
+   The envelope writer already exists:
+   `writeModernInputRequired` (`pkg/vmcp/server/modern_envelope.go`, #7022)
+   takes a `*vmcp.InputRequiredResult` and is what the URL elicitation answer
+   renders through today (doc 10, "Answering a call with a URL elicitation").
+   This slice reuses it for relayed backend rounds rather than adding a second
+   writer. Retries already pass through the parser untouched, so this slice
+   adds the threading, not acceptance. Today `dispatchModern` reads
+   `inputResponses` only to honor a decline or cancel of the URL elicitation
+   answer (`writeModernToolCallFailure`); it does not pass them on. Post-#6061, the rendering branch
+   hooks into the Modern call-failure classifiers via
+   `vmcp.InputRequiredFromError`: `writeModernToolCallFailure` for
+   `tools/call` (which already handles the URL elicitation answer there) and
+   `writeModernCallFailure` for `resources/read` and `prompts/get`. It sits
+   alongside (never instead of) their authz-priority and capability-refusal
    branches — the two cannot co-occur: the refusal recorder fires only on
    the Legacy-backend forwarding seams, `input_required` only from a Modern
    backend's envelope.
@@ -484,10 +457,9 @@ merges:
    dispatch threads the downstream declaration to the egress call (reusing
    #6061's `modernClientDeclaredCapability` reading of `_meta`); the relay
    goes live end-to-end. The `requestState` open decision above (verbatim vs
-   #6059's routing-context wrapper) must be resolved here at the latest. The `-32021`-shaped
-   undeclared-capability error contract landed ahead of this in #6061
-   (merged 2026-07-28; `-32021` at HTTP 200 as the documented deviation,
-   upstream go-sdk#1117). When this slice lands, #6061's declared-capability
+   #6059's routing-context wrapper) must be resolved here at the latest. The
+   undeclared-capability `-32021` contract landed ahead of this in #6061 at the
+   spec-required HTTP 400. When this slice lands, #6061's declared-capability
    `-32603` message ("multi-round retrieval … which this server does not
    implement") stops being true for Modern backends and needs rescoping to
    the Legacy-backend cell it permanently serves.
@@ -498,7 +470,7 @@ merges:
    dispatch, owner-mismatch audit signal.
 
 Slices 2–5 each update doc 10's client-edge limitation section (whose current
-text truthfully says MRTR is unserved) and the forwarding-test dispositions
+text says backend-relayed MRTR is unserved) and the forwarding-test dispositions
 from #6051 as their claims become false.
 
 ## Testing strategy
@@ -521,8 +493,7 @@ from #6051 as their claims become false.
 ## References
 
 - SEP-2322 (Final), SEP-2577 (Final), SEP-2663 (tasks redesign);
-  `schema/draft/schema.ts` and `/specification/draft/basic/patterns/mrtr` as
-  of 2026-07-27.
+  `schema/2026-07-28/schema.ts` and `/specification/2026-07-28/basic/patterns/mrtr`.
 - RFC-0083 (`stacklok/toolhive-rfcs`) — D5, Alternative 3, implementation
   plan's deferred list.
 - [10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md) — the

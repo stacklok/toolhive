@@ -95,6 +95,32 @@ type Manager struct {
 	// path can build a per-session optimizer over the core's tools. The store and
 	// cleanup remain owned by this Manager (cleanup returned from New).
 	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error)
+
+	// sweepCancel cancels the background cache sweep started by New, including
+	// a sweep in flight, and sweepDone is closed once sweepLoop has returned.
+	// Both are nil when the sweep is disabled. See sweepLoop and stopSweep.
+	sweepCancel context.CancelFunc
+	sweepDone   chan struct{}
+
+	// onSessionSwept is called with the ID of each session the background sweep
+	// evicts. Nil unless set with WithSweptSessionHook.
+	onSessionSwept func(sessionID string)
+}
+
+// Option configures optional Manager behavior in New.
+type Option func(*Manager)
+
+// WithSweptSessionHook registers fn to run with the ID of each session the
+// background sweep evicts because its storage record is gone or marked
+// terminated. Those sessions are over for good, so fn can release state the
+// caller keeps per session. fn is not called for other cache removals (LRU
+// pressure, EvictStaleSessions, checkSession drift), since those sessions may
+// still be live. fn runs on the sweep goroutine after the session has been
+// closed, so it must not block. It is never called when the sweep is disabled.
+func WithSweptSessionHook(fn func(sessionID string)) Option {
+	return func(m *Manager) {
+		m.onSessionSwept = fn
+	}
 }
 
 // New creates a Manager backed by the given SessionDataStorage and backend
@@ -114,6 +140,7 @@ func New(
 	storage transportsession.DataStorage,
 	cfg *FactoryConfig,
 	backendRegistry vmcp.BackendRegistry,
+	opts ...Option,
 ) (*Manager, func(context.Context) error, error) {
 	if cfg == nil || cfg.Base == nil {
 		return nil, nil, fmt.Errorf("sessionmanager.New: FactoryConfig.Base (SessionFactory) is required")
@@ -124,6 +151,9 @@ func New(
 	if (cfg.OptimizerFactory != nil || cfg.OptimizerConfig != nil) && !cfg.AdvertiseFromCore {
 		return nil, nil, fmt.Errorf("sessionmanager.New: the optimizer requires " +
 			"FactoryConfig.AdvertiseFromCore (the Serve layer builds it over the core's tools)")
+	}
+	if err := checkOptimizerOptions(cfg); err != nil {
+		return nil, nil, err
 	}
 	capacity := cfg.CacheCapacity
 	if capacity == 0 {
@@ -141,6 +171,9 @@ func New(
 		storage:       storage,
 		backendReg:    backendRegistry,
 		backendHealth: cfg.BackendHealth,
+	}
+	for _, opt := range opts {
+		opt(sm)
 	}
 
 	// Surface the resolved optimizer factory to the Serve path. The constructor
@@ -163,15 +196,29 @@ func New(
 				slog.Warn("session cache: error closing evicted session",
 					"session_id", id, "error", closeErr)
 			}
-			slog.Warn("session cache: session evicted from node-local cache",
+			// Eviction is a routine lifecycle transition (LRU capacity, TTL
+			// expiry, or a backend dropped from the registry), not a fault: the
+			// session is recoverable from storage via RestoreSession. Log at
+			// DEBUG so a generation swap that evicts many sessions does not emit
+			// a burst of WARNs (a real close failure is still surfaced above).
+			slog.Debug("session cache: session evicted from node-local cache",
 				"session_id", id)
 		},
 	)
 
 	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, sm.Terminate)
 
+	// Start the proactive cache sweep that reclaims sessions terminated on
+	// another replica (see sweepLoop). Disabled when SweepInterval is negative.
+	if sweepInterval := resolveSweepInterval(cfg.SweepInterval); sweepInterval > 0 {
+		sweepCtx, sweepCancel := context.WithCancel(context.Background())
+		sm.sweepCancel = sweepCancel
+		sm.sweepDone = make(chan struct{})
+		go sm.sweepLoop(sweepCtx, sweepInterval)
+	}
+
 	cleanup := func(ctx context.Context) error {
-		return optimizerCleanup(ctx)
+		return errors.Join(sm.stopSweep(ctx), optimizerCleanup(ctx))
 	}
 	return sm, cleanup, nil
 }
@@ -196,6 +243,12 @@ func (m *Manager) OptimizerFactory() func(context.Context, []mcpserver.ServerToo
 // client-level read/write timeouts.
 const generateTimeout = 5 * time.Second
 
+// defaultSweepInterval is the default period between proactive session-cache
+// sweeps (see FactoryConfig.SweepInterval and sweepLoop). It bounds how long a
+// session terminated on another replica lingers in the node-local cache — its
+// MultiSession and backend connections held open — before the sweep closes it.
+const defaultSweepInterval = time.Minute
+
 // createSessionStorageTimeout bounds each individual storage operation inside
 // CreateSession() (two Load checks and one final Store). The caller's ctx is
 // used as the parent so auth values and request-level cancellation still
@@ -211,7 +264,8 @@ const validateTimeout = 3 * time.Second
 
 // restoreStorageTimeout bounds storage.Load calls (GETEX) in the
 // GetMultiSession restore path (loadSession) and in the checkSession liveness
-// check. Both are single-key Redis reads; 3 s is generous.
+// check, and each storage.LoadMetadata call in the background cache sweep
+// (sweepExpiredSessions). All are single-key Redis reads; 3 s is generous.
 const restoreStorageTimeout = 3 * time.Second
 
 // restoreMetadataWriteTimeout bounds the storage.Update call that persists
@@ -488,18 +542,59 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 	return false, nil
 }
 
+// LookupOwner returns the identity binding persisted for sessionID, the value
+// the HTTP layer checks the caller against before a session-bearing request is
+// routed (see sessionbinding.Lookup). It reads only the session metadata: it
+// never restores the live MultiSession or contacts a backend, so a foreign
+// caller is rejected before any per-session state is built on this replica.
+//
+// An absent or terminated session yields transportsession.ErrSessionNotFound, and
+// so does an ID that names a key holding something other than session metadata,
+// such as a shared optimizer embedding under the same prefix: answering it as a
+// storage failure would let a caller probe those keys. A Phase 1 placeholder has
+// no owner yet and yields an empty binding, which the caller must treat as
+// unowned. Any other error is a storage failure.
+//
+// With Redis-backed storage the binding is shared across replicas, so the check
+// holds on a replica that did not create the session; this does not provide
+// live-stream affinity. Unlike Validate, the read does not refresh the session
+// TTL, so a caller that is then rejected cannot keep someone else's session alive.
+func (sm *Manager) LookupOwner(ctx context.Context, sessionID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, validateTimeout)
+	defer cancel()
+
+	metadata, err := sm.storage.LoadMetadata(ctx, sessionID)
+	if errors.Is(err, transportsession.ErrUndecodableSessionData) {
+		slog.Debug("Manager.LookupOwner: the session ID names a key that holds no session metadata")
+		return "", transportsession.ErrSessionNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if metadata[MetadataKeyTerminated] == MetadataValTrue {
+		return "", transportsession.ErrSessionNotFound
+	}
+	return metadata[sessiontypes.MetadataKeyIdentityBinding], nil
+}
+
 // Terminate implements the SDK's SessionIdManager.Terminate().
 //
 // The two session types are handled asymmetrically to prevent a race condition
 // where client termination during the Phase 1→Phase 2 window could resurrect
 // sessions with open backend connections:
 //
-//   - MultiSession (Phase 2): the storage key is deleted. The node-local cache
-//     self-heals on the next Get: checkSession detects ErrSessionNotFound,
-//     evicts the entry, and onEvict closes backend connections. After deletion
-//     Validate() reports the absent key as (isTerminated=true, nil), so the next
-//     request — on this or any other replica — is rejected with a definitive 404
-//     and the client re-initializes instead of retrying the dead session.
+//   - MultiSession (Phase 2): the storage key is deleted and the node-local
+//     cache entry is removed, eagerly scheduling onEvict to close the session's
+//     backend connections. Storage is deleted first so that a loadSession whose
+//     metadata Update runs after the delete is rejected by the pre-existing SET
+//     XX guard; the residual race between that Update succeeding and the cache
+//     insertion is out of scope here. Removal drains evictions, but a concurrent
+//     operation may claim the callback, so Terminate can return before Close
+//     finishes. After deletion Validate() reports the absent key as
+//     (isTerminated=true, nil), so the next request — on this or any other
+//     replica — is rejected with a definitive 404 and the client re-initializes
+//     instead of retrying the dead session. Other replicas still self-heal
+//     through checkSession on their next cache access.
 //
 //   - Placeholder (Phase 1): the session is marked terminated=true and left
 //     for TTL cleanup. This prevents CreateSession() from opening backend
@@ -529,11 +624,30 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	}
 
 	if _, isFullSession := metadata[sessiontypes.MetadataKeyIdentityBinding]; isFullSession {
-		// Phase 2 (full MultiSession): delete from storage. The cache entry will be
-		// evicted lazily on the next Get when checkSession finds the session gone.
+		// Phase 2 (full MultiSession): delete from storage, then remove the
+		// node-local cache entry to eagerly schedule backend cleanup. A
+		// concurrent eviction drain can claim onEvict, so Terminate need not
+		// wait for Close to finish.
+		//
+		// Order matters. Deleting the storage record first means a loadSession
+		// whose metadata Update runs after this delete is rejected by the
+		// pre-existing SET XX guard, so it cannot resurrect the session.
+		// This does not make termination race-free: the window between that
+		// Update returning true and the cache insertion on the Get miss path
+		// is pre-existing and out of scope for this change.
+		//
+		// Relying on lazy eviction alone is not enough: checkSession only runs
+		// on the cache-hit path, and a well-behaved client stops using a
+		// terminated session ID, so that Get may never come. The entry would
+		// then hold its backend connections and capability copies until some
+		// unrelated eviction trigger fires. See #6762.
 		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
+		// onEvict closes the session's backend connections, so no extra
+		// teardown is needed here. Other replicas still self-heal through
+		// checkSession on their next cache access.
+		sm.sessions.Remove(sessionID)
 		slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 		return false, nil
 	}
@@ -633,6 +747,152 @@ func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string, metadata m
 			"workload_id", workloadID,
 			"error", err)
 	}
+}
+
+// EvictStaleSessions proactively evicts every live cached session that still
+// holds a connection to a backend no longer present in the registry — for
+// example a backend dropped by a dynamic-registry generation swap (#6546).
+// Eviction closes the session's backend connections through the cache's onEvict
+// hook, reclaiming any lingering server-push (SSE) stream to the dropped backend
+// that would otherwise persist until the owning client session ended. The next
+// GetMultiSession for an evicted session rebuilds it via RestoreSession against
+// the current registry (which no longer lists the dropped backend), so only the
+// surviving backends reconnect and the storage metadata is refreshed on that path.
+//
+// It compares each cached session's MetadataKeyBackendIDs against current
+// registry membership, so it is idempotent and a no-op when nothing is stale
+// (e.g. after an Upsert that only adds a backend). Returns the number of
+// sessions evicted.
+//
+// Trade-off: rebuilding the whole session briefly disconnects and reconnects the
+// surviving backends on the next request. This deliberately reuses the existing
+// lazy-eviction/RestoreSession machinery rather than mutating a live session in
+// place to close a single connection (vMCP anti-pattern #10: reconstruct, don't
+// mutate).
+//
+// Residual window: eviction operates on sessions already in the cache. A session
+// whose RestoreSession is in flight when the drop commits may have read the
+// pre-drop registry and opened a connection to the soon-dropped backend; it is
+// cached only after this pass has scanned, so it escapes this eviction. Such a
+// session's stale connection is reclaimed on the next registry change, on
+// checkSession metadata drift, or ultimately at session end — i.e. it falls back
+// to the original session-lifetime bound, never worse. Closing this window fully
+// would require re-filtering each restored session against current membership
+// before caching it; it is left as the accepted best-effort of a polling model.
+func (sm *Manager) EvictStaleSessions(ctx context.Context) int {
+	raw := sm.backendReg.List(ctx)
+	present := make(map[string]struct{}, len(raw))
+	for i := range raw {
+		present[raw[i].ID] = struct{}{}
+	}
+
+	evicted := sm.sessions.RemoveMatching(func(_ string, sess vmcpsession.MultiSession) bool {
+		return referencesMissingBackend(sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs], present)
+	})
+	if evicted > 0 {
+		// DEBUG for consistency with New's eviction closure: a backend leaving
+		// the registry is a routine lifecycle transition, not a fault, and the
+		// project convention is "INFO sparingly".
+		slog.Debug("evicted sessions referencing backends removed from the registry",
+			"evicted_sessions", evicted)
+	}
+	return evicted
+}
+
+// referencesMissingBackend reports whether backendIDs (the comma-separated
+// MetadataKeyBackendIDs value) names at least one backend absent from present.
+// An empty or whitespace-only list references no backend and is never stale.
+func referencesMissingBackend(backendIDs string, present map[string]struct{}) bool {
+	for _, id := range vmcpsession.ParseBackendIDs(backendIDs) {
+		if _, ok := present[id]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveSweepInterval maps FactoryConfig.SweepInterval to the period New
+// starts the sweep with: 0 selects defaultSweepInterval, and a negative value
+// is returned as is, meaning the sweep is disabled.
+func resolveSweepInterval(configured time.Duration) time.Duration {
+	if configured == 0 {
+		return defaultSweepInterval
+	}
+	return configured
+}
+
+// sweepLoop periodically runs sweepExpiredSessions until ctx is cancelled by
+// stopSweep, then closes sweepDone. It is the proactive counterpart to
+// checkSession's lazy liveness check: a session terminated on another replica,
+// or one that expired after its client abandoned it, is never accessed again,
+// so checkSession never runs for it and its MultiSession (and open backend
+// connections) would otherwise sit in the cache until LRU eviction (#6932).
+func (sm *Manager) sweepLoop(ctx context.Context, interval time.Duration) {
+	defer close(sm.sweepDone)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			evicted := sm.sweepExpiredSessions(ctx)
+			if evicted > 0 {
+				slog.Debug("session cache: sweep evicted terminated sessions",
+					"evicted_sessions", evicted)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// stopSweep cancels the background sweep, including a sweep in flight, and
+// waits for sweepLoop to return or ctx to end, whichever comes first. It is a
+// no-op when the sweep is disabled and is safe to call more than once.
+func (sm *Manager) stopSweep(ctx context.Context) error {
+	if sm.sweepCancel == nil {
+		return nil
+	}
+	sm.sweepCancel()
+	// Prefer the already-stopped case so a cleanup called with an expired ctx
+	// does not report a failure for a sweep that has in fact stopped.
+	select {
+	case <-sm.sweepDone:
+		return nil
+	default:
+	}
+	select {
+	case <-sm.sweepDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for the session cache sweep to stop: %w", ctx.Err())
+	}
+}
+
+// sweepExpiredSessions evicts every cached session whose storage record is gone
+// or marked terminated, reports each evicted ID to onSessionSwept, and returns
+// how many it evicted. Unlike checkSession (the cache-hit path), it reads via
+// LoadMetadata, which does NOT refresh the Redis TTL, so sweeping a live
+// session does not extend its lifetime. Each read is bounded by
+// restoreStorageTimeout, and the sweep stops early once ctx ends.
+func (sm *Manager) sweepExpiredSessions(ctx context.Context) int {
+	evicted := sm.sessions.Sweep(ctx, func(ctx context.Context, sessionID string, _ vmcpsession.MultiSession) bool {
+		readCtx, cancel := context.WithTimeout(ctx, restoreStorageTimeout)
+		defer cancel()
+		metadata, err := sm.storage.LoadMetadata(readCtx, sessionID)
+		if errors.Is(err, transportsession.ErrSessionNotFound) {
+			return true
+		}
+		if err != nil {
+			return false // transient storage error or shutdown — keep cached
+		}
+		return metadata[MetadataKeyTerminated] == MetadataValTrue
+	})
+	if sm.onSessionSwept != nil {
+		for _, sessionID := range evicted {
+			sm.onSessionSwept(sessionID)
+		}
+	}
+	return len(evicted)
 }
 
 // updateMetadata writes a complete metadata snapshot to storage using a
@@ -743,8 +1003,9 @@ func (sm *Manager) loadSession(ctx context.Context, sessionID string) (vmcpsessi
 
 	// Don't restore placeholder sessions (Phase 2 never ran).
 	// BindSession always writes MetadataKeyIdentityBinding during Phase 2
-	// (the unauthenticated sentinel for anonymous sessions, a bound (iss, sub)
-	// binding for authenticated ones). Its absence means Generate() stored
+	// (the unauthenticated sentinel for anonymous sessions, a bound
+	// binding (issuer and subject, plus route, client_id and actor for
+	// delegated ones) for authenticated ones). Its absence means Generate() stored
 	// this record but CreateSession() never completed — treat it as "not
 	// found" rather than "corrupted".
 	//

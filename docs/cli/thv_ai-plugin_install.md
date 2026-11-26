@@ -15,8 +15,12 @@ Install an AI-tool plugin
 
 ### Synopsis
 
-Install a plugin by name or OCI reference.
-The plugin will be fetched from a remote registry and installed locally.
+Install a plugin from git, an OCI reference, or an exact registry name.
+
+Project-scoped installs verify signatures and record trust in toolhive.lock.yaml.
+Use --public-key for the first project install of a key-pair-signed OCI artifact;
+the key is then pinned for sync and upgrade. User-scoped installs do not use
+lock-file verification and reject --public-key.
 
 ```
 thv ai-plugin install [plugin-name] [flags]
@@ -25,18 +29,20 @@ thv ai-plugin install [plugin-name] [flags]
 ### Options
 
 ```
-      --clients string        Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
-      --force                 Overwrite existing plugin directory
-      --group string          Group to add the plugin to after installation
-  -h, --help                  help for install
-      --project-root string   Project root path for project-scoped installs
-      --scope string          Installation scope (user, project) (default "user")
+      --allow-unsigned[=true|false]   Allow installing a project-scoped plugin without a verified signature (recorded in the lock file)
+      --clients string                Comma-separated target client apps (e.g. claude-code,codex), or "all" for every available client
+      --force[=true|false]            Overwrite existing plugin directory
+      --group string                  Group to add the plugin to after installation
+  -h, --help[=true|false]             help for install
+      --project-root string           Project root path for project-scoped installs
+      --public-key string             Path to the cosign public key (cosign.pub) a key-pair-signed plugin must verify against. Required the first time such a plugin is installed project-scoped; the key is then pinned in the lock file and reused automatically
+      --scope string                  Installation scope (user, project) (default "user")
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

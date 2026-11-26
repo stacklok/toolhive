@@ -148,12 +148,10 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 
 			// Verify specific parsed requests. mcpcompat's client is Modern-first
 			// (SEP-2575) on every transport, so both arms send server/discover
-			// first. The SSE server transport advertises 2026-07-28 unconditionally
-			// (no ProtocolVersionSupporter gate), so discover succeeds and
-			// "initialize" is never sent there. The streamable-HTTP server here is
-			// stateful (no WithStateless), which gates 2026-07-28 on being
-			// stateless, so its discover negotiates down and it additionally sends
-			// "initialize".
+			// first. The deprecated SSE transport does not serve 2026-07-28, so
+			// discover reports only supported Legacy revisions and the client then
+			// sends "initialize". The stateful streamable-HTTP server likewise
+			// cannot negotiate 2026-07-28 and falls back to "initialize".
 			foundSessionEstablished := false
 			foundToolCall := false
 			foundResourceRead := false
@@ -181,8 +179,8 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 			}
 			assert.True(t, foundSessionEstablished, "session establishment request (initialize or server/discover) should have been parsed")
 			if tc.transport == "sse" {
-				assert.Contains(t, methodsSeen, "server/discover", "SSE arm should negotiate via server/discover")
-				assert.NotContains(t, methodsSeen, "initialize", "SSE arm is Modern-first and should never fall back to initialize here")
+				assert.Contains(t, methodsSeen, "server/discover", "SSE arm should probe via server/discover")
+				assert.Contains(t, methodsSeen, "initialize", "SSE arm should fall back to initialize after discovering only Legacy revisions")
 			}
 			assert.True(t, foundToolCall, "Tool call request should have been parsed")
 			assert.True(t, foundResourceRead, "Resource read request should have been parsed")

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -118,20 +119,24 @@ const (
 	ErrPrivateIpAddress = "the provided URL redirects to a private IP address, which is not allowed"
 )
 
-// nat64Prefixes are the NAT64 translation prefixes whose embedded IPv4 address
-// lives in the low 32 bits (RFC 6052 §2.2 "/96" embedding). An address inside
-// one of these is routed to that IPv4 by a NAT64 gateway, so its true
-// reachability is determined by the embedded IPv4, not by the (global-unicast)
-// IPv6 form.
-//   - 64:ff9b::/96   well-known prefix (RFC 6052), always a /96
-//   - 64:ff9b:1::/96 the /96 sub-prefix of the RFC 8215 local-use 64:ff9b:1::/48
+// low32EmbeddingPrefixes are the IPv6 prefixes whose addresses carry a full
+// IPv4 address in the low 32 bits. An address inside one of these reaches that
+// IPv4 through a translator or a dual-stack host, so its true reachability is
+// determined by the embedded IPv4, not by the IPv6 form.
+//   - 64:ff9b::/96     NAT64 well-known prefix (RFC 6052 §2.2), always a /96
+//   - 64:ff9b:1::/96   the /96 sub-prefix of the RFC 8215 local-use 64:ff9b:1::/48
+//   - ::/96            IPv4-compatible addresses (RFC 4291 §2.5.5.1, deprecated)
+//   - ::ffff:0:0:0/96  IPv4-translated addresses (SIIT, RFC 2765 §2.1)
+//
+// IPv4-mapped addresses (::ffff:0:0/96) are not listed: net.IP.To4 already
+// unwraps them to IPv4.
 //
 // The rest of the local-use 64:ff9b:1::/48 uses a shorter NAT64 prefix, where
 // the embedded IPv4 is NOT in the low 32 bits and cannot be located from the
 // address alone. Decoding the low 32 bits there could read attacker-chosen
 // suffix bytes and misclassify an internal target as public, so that remainder
 // is blocked wholesale via privateIPBlocks to avoid a false-negative bypass.
-var nat64Prefixes []*net.IPNet
+var low32EmbeddingPrefixes []*net.IPNet
 
 // sixToFourPrefix is the 6to4 prefix 2002::/16 (RFC 3056, deprecated by
 // RFC 7526). A 6to4 address embeds a full IPv4 address in bits 16-47
@@ -143,14 +148,14 @@ var nat64Prefixes []*net.IPNet
 // 6to4 addresses).
 var sixToFourPrefix *net.IPNet
 
-// embeddedIPv4 returns the IPv4 address embedded in a NAT64 or 6to4 address
-// if ip falls inside one of those translation prefixes, or nil otherwise.
+// embeddedIPv4 returns the IPv4 address embedded in ip if ip falls inside one
+// of low32EmbeddingPrefixes or the 6to4 prefix, or nil otherwise.
 func embeddedIPv4(ip net.IP) net.IP {
 	v6 := ip.To16()
 	if v6 == nil || ip.To4() != nil {
 		return nil
 	}
-	for _, block := range nat64Prefixes {
+	for _, block := range low32EmbeddingPrefixes {
 		if block.Contains(ip) {
 			return net.IPv4(v6[12], v6[13], v6[14], v6[15])
 		}
@@ -196,14 +201,16 @@ func init() {
 		privateIPBlocks = append(privateIPBlocks, block)
 	}
 	for _, cidr := range []string{
-		"64:ff9b::/96",   // NAT64 well-known prefix, /96 embedding (RFC 6052)
-		"64:ff9b:1::/96", // /96 sub-prefix of the local-use range (RFC 8215)
+		"64:ff9b::/96",    // NAT64 well-known prefix, /96 embedding (RFC 6052)
+		"64:ff9b:1::/96",  // /96 sub-prefix of the local-use range (RFC 8215)
+		"::/96",           // IPv4-compatible (RFC 4291 §2.5.5.1)
+		"::ffff:0:0:0/96", // IPv4-translated (RFC 2765 §2.1)
 	} {
 		_, block, err := net.ParseCIDR(cidr)
 		if err != nil {
 			panic(fmt.Errorf("parse error on %q: %w", cidr, err))
 		}
-		nat64Prefixes = append(nat64Prefixes, block)
+		low32EmbeddingPrefixes = append(low32EmbeddingPrefixes, block)
 	}
 	const sixToFourCIDR = "2002::/16"
 	_, sixToFourBlock, err := net.ParseCIDR(sixToFourCIDR)
@@ -225,8 +232,10 @@ func init() {
 // (RFC 6052) and the 64:ff9b:1::/96 sub-prefix of the RFC 8215 local-use
 // range; the rest of 64:ff9b:1::/48 uses a non-/96 embedding that cannot be
 // decoded from the address alone and is blocked wholesale (see
-// privateIPBlocks). 6to4 addresses (2002::/16, RFC 3056) are decoded the same
-// way, extracting the IPv4 from bits 16-47 (e.g. 2002:a9fe:a9fe:: ->
+// privateIPBlocks). IPv4-compatible (::/96) and IPv4-translated
+// (::ffff:0:0:0/96) addresses use the same low-32-bit embedding and are decoded
+// the same way. 6to4 addresses (2002::/16, RFC 3056) are decoded too,
+// extracting the IPv4 from bits 16-47 (e.g. 2002:a9fe:a9fe:: ->
 // 169.254.169.254). Teredo addresses (2001::/32, RFC 4380) obfuscate their
 // embedded IPv4 via bitwise NOT and so cannot be decoded from the address
 // alone; they are blocked wholesale (see privateIPBlocks).
@@ -245,15 +254,24 @@ func IsPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// AddressReferencesPrivateIp returns an error if the address references a private IP address
+// AddressReferencesPrivateIp returns an error if the "host:port" address does
+// not name a public IP. It is meant for a dialer's Control hook, which receives
+// the resolved IP literal, so a host that is not an IP literal is rejected
+// rather than treated as public. A zone suffix (fe80::1%eth0) is dropped before
+// classifying the address, so it cannot hide a private address. The dialer
+// also passes zoned IPv4 forms such as 127.0.0.1%lo0 (from a zoned
+// IPv4-mapped literal), which netip would otherwise refuse to parse.
 func AddressReferencesPrivateIp(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
 	}
-	// Check for a private IP address or loopback
-	ip := net.ParseIP(host)
-	if IsPrivateIP(ip) {
+	host, _, _ = strings.Cut(host, "%")
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("refusing to dial %q: not an IP address", host)
+	}
+	if IsPrivateIP(net.IP(addr.AsSlice())) {
 		return errors.New(ErrPrivateIpAddress)
 	}
 

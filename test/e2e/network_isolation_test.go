@@ -6,13 +6,10 @@ package e2e_test
 import (
 	"context"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -210,69 +207,147 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 			return result
 		}
 
-		// resultText concatenates the text content of a tool result.
-		resultText := func(result *mcp.CallToolResult) string {
-			var sb strings.Builder
-			for _, c := range result.Content {
-				if tc, ok := mcp.AsTextContent(c); ok {
-					sb.WriteString(tc.Text)
-				}
-			}
-			return sb.String()
-		}
-
-		// dockerBridgeGatewayIP returns the host gateway IP of the default Docker
-		// bridge — the same address the egress proxy denies by default, and the
-		// address a container uses to reach the host on Linux.
-		dockerBridgeGatewayIP := func() string {
-			//nolint:gosec // fixed, test-controlled arguments
-			out, err := exec.Command("docker", "network", "inspect", "bridge",
-				"-f", "{{range .IPAM.Config}}{{.Gateway}}{{end}}").Output()
-			Expect(err).ToNot(HaveOccurred(), "Should be able to inspect the docker bridge network")
-			return strings.TrimSpace(string(out))
-		}
-
-		It("denies the bridge gateway IP by default and, where routable, reaches it with the flag", func() {
-			By("Starting a host service reachable from containers")
-			listener, err := net.Listen("tcp", ":0") //nolint:gosec // binds an ephemeral port for the test
-			Expect(err).ToNot(HaveOccurred(), "Should be able to listen on an ephemeral port")
-			port := listener.Addr().(*net.TCPAddr).Port
-			srv := &http.Server{
-				Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "host-service-ok") }),
-				ReadHeaderTimeout: 5 * time.Second,
-			}
-			go func() { _ = srv.Serve(listener) }()
-			DeferCleanup(func() { _ = srv.Close() })
-
-			// Target the bridge gateway IP, not host.docker.internal: an IP needs no
-			// DNS resolution, so a blocked fetch unambiguously means the egress
-			// `docker_gateway_ip` deny fired (see #5640 — the isolated resolver
-			// cannot resolve host.docker.internal, which would confound a
-			// hostname-based assertion). The hostname deny rule is pinned by the
-			// config test below instead.
-			gatewayIP := dockerBridgeGatewayIP()
+		It("denies the default bridge gateway by default and reaches it with the flag", func() {
+			port := startPublishedHTTPService(fmt.Sprintf("ni-default-gateway-%d", GinkgoRandomSeed()))
+			gatewayIP := dockerNetworkGateway("bridge")
 			target := fmt.Sprintf("http://%s:%d/", gatewayIP, port)
 
-			By("Confirming the gateway IP is blocked by the egress proxy by default")
+			By("Confirming the default bridge gateway is blocked by the egress proxy")
 			denyServer := startFetchServer("deny", "")
 			Expect(fetchThrough(denyServer, target).IsError).To(BeTrue(),
-				"the egress proxy must deny the bridge gateway IP without --allow-docker-gateway")
+				"the egress proxy must deny the default bridge gateway without --allow-docker-gateway")
 			retireServer(denyServer)
 
-			By("Confirming --allow-docker-gateway grants access so the host is reachable")
+			By("Confirming --allow-docker-gateway grants access to the same reachable target")
 			allowServer := startFetchServer("allow", "", "--allow-docker-gateway")
-			result := fetchThrough(allowServer, target)
-			if result.IsError {
-				// The deny→allow swap is pinned deterministically by the config test
-				// below; whether the bridge gateway actually routes to a host
-				// service is environment-specific — it works on Linux Docker Engine
-				// (where the bridge gateway is the host), but on Docker Desktop the
-				// host lives behind host.docker.internal, not the bridge gateway. Skip
-				// the positive reachability leg where the gateway is not host-routable.
-				Skip("docker bridge gateway is not routable to the host in this environment (e.g. Docker Desktop)")
+			Expect(fetchThrough(allowServer, target).IsError).To(BeFalse(),
+				"the explicit gateway opt-in must reach the host-published service")
+		})
+
+		It("blocks the gateway of every external network attached to the proxy", func() {
+			port := startPublishedHTTPService(fmt.Sprintf("ni-host-squid-%d", GinkgoRandomSeed()))
+			server := startFetchServer("attached-gateway", "")
+			gatewayIP := dockerNetworkGateway("toolhive-external")
+
+			target := fmt.Sprintf("http://%s:%d/", gatewayIP, port)
+			directOutput, directErr := directHTTPRequestFromNetwork("toolhive-external", target)
+			Expect(directErr).ToNot(HaveOccurred(), "gateway target must be reachable without the proxy: %s", directOutput)
+			result := fetchThrough(server, target)
+			Expect(result.IsError).To(BeTrue(),
+				"network isolation must block host access through every proxy network gateway")
+		})
+
+		It("blocks gateways owned by Docker bridges the proxy is not attached to", func() {
+			port := startPublishedHTTPService(fmt.Sprintf("ni-host-unattached-%d", GinkgoRandomSeed()))
+			networkName := fmt.Sprintf("ni-unattached-%d", GinkgoRandomSeed())
+			created, output := createDockerBridgeNetwork(networkName, false)
+			Expect(created).To(BeTrue(), "should create an unattached bridge: %s", output)
+			gatewayIP := dockerNetworkGateway(networkName)
+			server := startFetchServer("unattached-gateway", "")
+
+			target := fmt.Sprintf("http://%s:%d/", gatewayIP, port)
+			directOutput, directErr := directHTTPRequestFromNetwork("toolhive-external", target)
+			if directErr != nil {
+				Skip("unattached bridge gateway is not reachable from the proxy network: " + directOutput)
 			}
-			Expect(resultText(result)).To(ContainSubstring("host-service-ok"),
-				"with --allow-docker-gateway the fetch must reach the host service through the egress proxy")
+			result := fetchThrough(server, target)
+			Expect(result.IsError).To(BeTrue(),
+				"network isolation must block host access through reachable Docker bridge gateways")
+		})
+
+		It("blocks an attached gateway under a port-only outbound profile", func() {
+			port := startPublishedHTTPService(fmt.Sprintf("ni-host-port-only-%d", GinkgoRandomSeed()))
+			profile := fmt.Sprintf(`{
+				"name": "port-only",
+				"network": {"outbound": {"insecure_allow_all": false, "allow_port": [%d]}}
+			}`, port)
+			server := startFetchServer("port-only", profile)
+			gatewayIP := dockerNetworkGateway("toolhive-external")
+
+			target := fmt.Sprintf("http://%s:%d/", gatewayIP, port)
+			directOutput, directErr := directHTTPRequestFromNetwork("toolhive-external", target)
+			Expect(directErr).ToNot(HaveOccurred(), "port-only target must be reachable without the proxy: %s", directOutput)
+			result := fetchThrough(server, target)
+			Expect(result.IsError).To(BeTrue(),
+				"an allowed port must not grant access to a host gateway")
+		})
+
+		It("enforces gateway policy for the workload internal bridge", func() {
+			port := startPublishedHTTPService(fmt.Sprintf("ni-host-internal-%d", GinkgoRandomSeed()))
+			denyServer := startFetchServer("internal-deny", internalGatewayDenyProfile)
+			networkName, target, output, err := probeInternalGateway(denyServer, port)
+			if err != nil {
+				Skip(fmt.Sprintf("Docker runtime cannot route from %s to its gateway target %s: %s", networkName, target, output))
+			}
+			Expect(fetchThrough(denyServer, target).IsError).To(BeTrue(), "default gateway policy must block the internal gateway")
+			retireServer(denyServer)
+
+			allowServer := startFetchServer("internal-allow", internalGatewayAllowProfile, "--allow-docker-gateway")
+			networkName, target, output, err = probeInternalGateway(allowServer, port)
+			if err != nil {
+				Skip(fmt.Sprintf("Docker runtime cannot route from %s to its gateway target %s: %s", networkName, target, output))
+			}
+			Expect(fetchThrough(allowServer, target).IsError).To(BeFalse(), "gateway opt-in must allow the internal gateway")
+		})
+
+		It("mitigates direct gateway access under an unrelated hostname allowlist", func() {
+			port := startPublishedHTTPService(fmt.Sprintf("ni-host-allowlist-%d", GinkgoRandomSeed()))
+			profile := fmt.Sprintf(`{
+				"name": "hostname-allowlist",
+				"network": {"outbound": {
+					"insecure_allow_all": false,
+					"allow_host": ["example.com"],
+					"allow_port": [443, %d]
+				}}
+			}`, port)
+			server := startFetchServer("hostname-allowlist", profile)
+			gatewayIP := dockerNetworkGateway("toolhive-external")
+
+			Expect(fetchThrough(server, "https://example.com").IsError).To(BeFalse(),
+				"the explicit hostname allowlist must preserve its permitted destination")
+			result := fetchThrough(server, fmt.Sprintf("http://%s:%d/", gatewayIP, port))
+			Expect(result.IsError).To(BeTrue(),
+				"a bare gateway IP must not match an unrelated hostname allowlist")
+		})
+
+		It("allows each reachable startup-snapshot gateway under the explicit opt-in", func() {
+			port := startPublishedHTTPService(fmt.Sprintf("ni-host-opt-in-%d", GinkgoRandomSeed()))
+			unattached := fmt.Sprintf("ni-opt-in-unattached-%d", GinkgoRandomSeed())
+			created, output := createDockerBridgeNetwork(unattached, false)
+			Expect(created).To(BeTrue(), "should create an unattached bridge: %s", output)
+			profile := `{"name":"gateway-opt-in","network":{"outbound":{"allow_host":["example.com"],"allow_port":[443]}}}`
+			server := startFetchServer("gateway-opt-in", profile, "--allow-docker-gateway")
+
+			for _, target := range dockerGatewayTargets(port, unattached) {
+				output, err := directHTTPRequestFromNetwork("toolhive-external", target.url)
+				if err != nil && target.optional {
+					GinkgoWriter.Printf("optional %s is not reachable in this environment: %s\n", target.name, output)
+					continue
+				}
+				Expect(err).ToNot(HaveOccurred(), "%s must be reachable without the proxy: %s", target.name, output)
+				Expect(fetchThrough(server, target.url).IsError).To(BeFalse(), "%s must be allowed", target.name)
+			}
+		})
+
+		It("blocks a reachable IPv6 Docker bridge gateway when IPv6 is available", func() {
+			port := startPublishedHTTPService(fmt.Sprintf("ni-host-ipv6-%d", GinkgoRandomSeed()))
+			networkName := fmt.Sprintf("ni-ipv6-%d", GinkgoRandomSeed())
+			created, output := createDockerBridgeNetwork(networkName, true)
+			if !created {
+				Skip("Docker cannot create an IPv6 bridge in this environment: " + output)
+			}
+			gatewayIP, ok := dockerNetworkGatewayForFamily(networkName, true)
+			if !ok {
+				Skip("Docker did not assign an IPv6 gateway")
+			}
+			server := startFetchServer("ipv6-gateway", "")
+			target := fmt.Sprintf("http://[%s]:%d/", gatewayIP, port)
+			if directOutput, directErr := directHTTPRequestFromNetwork("toolhive-external", target); directErr != nil {
+				Skip("IPv6 gateway is not reachable from the proxy network in this environment: " + directOutput)
+			}
+
+			Expect(fetchThrough(server, target).IsError).To(BeTrue(),
+				"network isolation must block reachable IPv6 Docker bridge gateways")
 		})
 
 		// This test pins the egress ACL rules deterministically on a real, deployed

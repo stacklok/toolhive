@@ -5,6 +5,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -65,11 +66,16 @@ type coreVMCP struct {
 	// admission enforces the authorization decision for List* (filter) and
 	// Call/Read/Get (deny) from one source. Never nil: New installs an allow-all
 	// seam when authz is unconfigured.
-	admission Admission
+	admission          Admission
+	scopeAuthorization *vmcp.ScopeAuthorizationConfig
 
 	// workflowDefs holds the validated composite-tool workflow definitions keyed
 	// by advertised tool name.
 	workflowDefs map[string]*composer.WorkflowDefinition
+
+	// workflowAuditor owns the optional workflow audit log writer and is closed
+	// with the core. Nil when workflow audit logging is disabled.
+	workflowAuditor *audit.WorkflowAuditor
 
 	// composerFactory builds a per-call composite-tool engine bound to a routing
 	// table, generalizing server.New's sessionComposerFactory (server.go:393).
@@ -81,6 +87,7 @@ type coreVMCP struct {
 	stopStore func()
 
 	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ VMCP = (*coreVMCP)(nil)
@@ -132,11 +139,22 @@ func New(cfg *Config) (VMCP, error) {
 			return nil, fmt.Errorf("invalid audit configuration: %w", err)
 		}
 		var err error
-		workflowAuditor, err = audit.NewWorkflowAuditor(cfg.AuditConfig)
+		workflowAuditor, err = audit.NewWorkflowAuditor(
+			cfg.AuditConfig, audit.WithSubjectEnricher(cfg.AuditSubjectEnricher))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
 		}
 		slog.Info("workflow audit logging enabled")
+	}
+	closeWorkflowAuditor := func() error {
+		if workflowAuditor == nil {
+			return nil
+		}
+		if err := workflowAuditor.Close(); err != nil {
+			slog.Warn("failed to close workflow auditor", "error", err)
+			return err
+		}
+		return nil
 	}
 
 	// The elicitation handler depends only on the domain-typed ElicitationRequester
@@ -168,7 +186,11 @@ func New(cfg *Config) (VMCP, error) {
 	instruments, err := newWorkflowInstruments(cfg.TelemetryProvider)
 	if err != nil {
 		stopStore()
-		return nil, fmt.Errorf("failed to create workflow telemetry instruments: %w", err)
+		cleanupErr := closeWorkflowAuditor()
+		return nil, errors.Join(
+			fmt.Errorf("failed to create workflow telemetry instruments: %w", err),
+			cleanupErr,
+		)
 	}
 
 	// composerFactory builds a composite-tool engine bound to a specific routing
@@ -195,7 +217,8 @@ func New(cfg *Config) (VMCP, error) {
 	workflowDefs, err := validateWorkflowDefs(validationEngine, cfg.WorkflowDefs)
 	if err != nil {
 		stopStore()
-		return nil, fmt.Errorf("workflow validation failed: %w", err)
+		cleanupErr := closeWorkflowAuditor()
+		return nil, errors.Join(fmt.Errorf("workflow validation failed: %w", err), cleanupErr)
 	}
 
 	// Build and start the backend health monitor (#5443 reversal: the core owns its
@@ -206,19 +229,22 @@ func New(cfg *Config) (VMCP, error) {
 	healthMonitor, healthProvider, err := buildHealthMonitor(cfg)
 	if err != nil {
 		stopStore()
-		return nil, err
+		cleanupErr := closeWorkflowAuditor()
+		return nil, errors.Join(err, cleanupErr)
 	}
 
 	return &coreVMCP{
-		aggregator:      cfg.Aggregator,
-		backendRegistry: cfg.BackendRegistry,
-		backendClient:   backendClient,
-		health:          healthProvider,
-		healthMonitor:   healthMonitor,
-		admission:       admission,
-		workflowDefs:    workflowDefs,
-		composerFactory: composerFactory,
-		stopStore:       stopStore,
+		aggregator:         cfg.Aggregator,
+		backendRegistry:    cfg.BackendRegistry,
+		backendClient:      backendClient,
+		health:             healthProvider,
+		healthMonitor:      healthMonitor,
+		admission:          admission,
+		scopeAuthorization: cfg.ScopeAuthorization.DeepCopy(),
+		workflowDefs:       workflowDefs,
+		workflowAuditor:    workflowAuditor,
+		composerFactory:    composerFactory,
+		stopStore:          stopStore,
 	}, nil
 }
 
@@ -274,6 +300,8 @@ func (c *coreVMCP) BackendHealth() health.Reporter {
 // (ErrNilCaller/ErrUnauthorizedCaller) lives in the Serve session layer, not
 // here. identity is never logged.
 func (c *coreVMCP) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -284,6 +312,8 @@ func (c *coreVMCP) ListTools(ctx context.Context, identity *auth.Identity) ([]vm
 // ListResources health-filters the registry, aggregates resources on demand, and
 // returns only those identity is admitted to read.
 func (c *coreVMCP) ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -301,6 +331,8 @@ func (c *coreVMCP) ListResources(ctx context.Context, identity *auth.Identity) (
 func (c *coreVMCP) ListResourceTemplates(
 	ctx context.Context, identity *auth.Identity,
 ) ([]vmcp.ResourceTemplate, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -342,6 +374,8 @@ func (c *coreVMCP) filterResourceTemplates(
 // ListPrompts health-filters the registry, aggregates prompts on demand, and
 // returns only those identity is admitted to get.
 func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -358,6 +392,8 @@ func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]
 // filtering -- is what guarantees a flag can never drift from what the
 // corresponding List* verb would show for the same identity.
 func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (DiscoverCapabilities, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return DiscoverCapabilities{}, err
@@ -393,6 +429,8 @@ func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (Disco
 // same health/advertising AND admission view: a name that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound (a denied tool is never resolved).
 func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Tool, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	tools, err := c.ListTools(ctx, identity)
 	if err != nil {
 		return nil, err
@@ -410,13 +448,20 @@ func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name
 // reading it. Delegates to ListResources, so a URI that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound.
 //
-// A URI backed by a resource TEMPLATE resolves too: after the concrete-resource
-// miss, the URI is checked against the admission-filtered resource templates
-// (the same view ListResourceTemplates advertises) — an exact template-string
-// match (the form a resources/subscribe or completion ref/resource carries) or
-// a template-expansion match. This keeps subscribe's admission aligned with
-// read: any URI ReadResource would serve is a valid subscription target.
+// A URI backed by a resource TEMPLATE resolves too. Resolution order is:
+//
+//  1. Exact match against the advertised concrete resources.
+//  2. Exact template-string match (the form a resources/subscribe or completion
+//     ref/resource carries).
+//  3. Reject a URI over MaxResourceURILength without matching or echoing it.
+//  4. Match a concrete URI against an admission-filtered template expansion.
+//
+// The templates are the same view ListResourceTemplates advertises, keeping
+// subscribe's admission aligned with read: any URI ReadResource would serve is a
+// valid subscription target.
 func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.Resource, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	resources, err := c.ListResources(ctx, identity)
 	if err != nil {
 		return nil, err
@@ -432,8 +477,30 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 	if err != nil {
 		return nil, err
 	}
+	// Exact template-string matches precede the cap check because clients can
+	// subscribe to or reference the advertised template itself.
 	for i := range templates {
-		if templates[i].URITemplate == uri || templateMatches(templates[i].URITemplate, uri) {
+		if templates[i].URITemplate == uri {
+			return &vmcp.Resource{
+				URI:         templates[i].URITemplate,
+				Name:        templates[i].Name,
+				Description: templates[i].Description,
+				MimeType:    templates[i].MimeType,
+				BackendID:   templates[i].BackendID,
+			}, nil
+		}
+	}
+
+	// Template matching is superlinear in URI length and uncancellable, so an
+	// oversize client URI is rejected before matching. Log the length, never the URI.
+	if len(uri) > vmcp.MaxResourceURILength {
+		slog.Warn("skipping template matching for resource URI over length cap",
+			"length", len(uri), "max", vmcp.MaxResourceURILength)
+		return nil, fmt.Errorf("%w: resource URI exceeds %d bytes", vmcp.ErrNotFound, vmcp.MaxResourceURILength)
+	}
+
+	for i := range templates {
+		if templateMatches(templates[i].URITemplate, uri) {
 			// Project the template onto a resource (the same projection
 			// filterResourceTemplates uses) so lookup and list agree on the shape.
 			return &vmcp.Resource{
@@ -453,6 +520,10 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 // invalid template string reports no match (it was already logged and skipped
 // at routing-table construction).
 func templateMatches(tmplStr, uri string) bool {
+	// An oversized client-supplied URI is a non-match; see vmcp.MaxResourceURILength.
+	if len(uri) > vmcp.MaxResourceURILength {
+		return false
+	}
 	tmpl, err := uritemplate.New(tmplStr)
 	if err != nil {
 		return false
@@ -464,6 +535,8 @@ func templateMatches(tmplStr, uri string) bool {
 // retrieving it. Delegates to ListPrompts, so a name that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound.
 func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Prompt, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	prompts, err := c.ListPrompts(ctx, identity)
 	if err != nil {
 		return nil, err
@@ -485,6 +558,8 @@ func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, na
 func (c *coreVMCP) ListBackends(
 	ctx context.Context, identity *auth.Identity, filterUnauthorized bool,
 ) ([]vmcp.Backend, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	all := c.backendRegistry.List(ctx)
 	if !filterUnauthorized {
 		return all, nil
@@ -508,6 +583,8 @@ func (c *coreVMCP) ListBackends(
 func (c *coreVMCP) LookupBackend(
 	ctx context.Context, identity *auth.Identity, backendID string,
 ) (*vmcp.Backend, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	backends, err := c.ListBackends(ctx, identity, true)
 	if err != nil {
 		return nil, err
@@ -537,19 +614,32 @@ func (c *coreVMCP) InvalidateCapabilityCache() {
 	invalidator.InvalidateAll()
 }
 
-// Close stops the workflow state store's cleanup goroutine. It is idempotent:
-// the underlying Stop closes a channel that cannot be closed twice, so the work
-// is guarded by sync.Once and subsequent calls return nil.
+// Close stops the workflow state store's cleanup goroutine, closes the optional
+// workflow auditor, and stops the health monitor. It returns cleanup errors from
+// the first call, and is idempotent: the underlying cleanup work is guarded by
+// sync.Once and subsequent calls return nil.
 func (c *coreVMCP) Close() error {
+	ran := false
 	c.closeOnce.Do(func() {
+		ran = true
 		c.stopStore()
+		if c.workflowAuditor != nil {
+			if err := c.workflowAuditor.Close(); err != nil {
+				slog.Warn("failed to close workflow auditor", "error", err)
+				c.closeErr = errors.Join(c.closeErr, err)
+			}
+		}
 		if c.healthMonitor != nil {
 			if err := c.healthMonitor.Stop(); err != nil {
 				slog.Warn("failed to stop health monitor", "error", err)
+				c.closeErr = errors.Join(c.closeErr, err)
 			}
 		}
 	})
-	return nil
+	if !ran {
+		return nil
+	}
+	return c.closeErr
 }
 
 // aggregatedView health-filters the backend registry and aggregates capabilities
@@ -740,6 +830,12 @@ func validateConfig(cfg *Config) error {
 		return fmt.Errorf(
 			"%w: Elicitation is required when a workflow contains an elicitation step", vmcp.ErrInvalidConfig)
 	}
+	if err := cfg.ScopeAuthorization.Validate(); err != nil {
+		return fmt.Errorf("%w: scope authorization: %w", vmcp.ErrInvalidConfig, err)
+	}
+	if cfg.ScopeAuthorization != nil && len(cfg.WorkflowDefs) != 0 {
+		return fmt.Errorf("%w: scope authorization does not support composite workflows", vmcp.ErrInvalidConfig)
+	}
 	return nil
 }
 
@@ -837,7 +933,8 @@ func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.
 		// Include healthy, degraded, and empty/zero-value (assume healthy) backends.
 		// Explicitly exclude unhealthy, unknown, and unauthenticated backends.
 		// The predicate is shared with session establishment's stricter
-		// counterpart — see health.ShouldAdvertise / health.ShouldOpenSession.
+		// counterpart — see health.ShouldAdvertise / health.ShouldOpenSession —
+		// and with the health monitor's change detection (Monitor.OnChange).
 		if health.ShouldAdvertise(healthStatus) {
 			healthy = append(healthy, *backend)
 		} else {

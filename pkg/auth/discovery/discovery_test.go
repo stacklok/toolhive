@@ -1391,6 +1391,29 @@ func startIssuerServer(t *testing.T, tokenEndpoint func(issuerURL string) string
 	return server.URL
 }
 
+// TestCreateOAuthConfig_BlocksPrivateIssuerDiscoveryFallback verifies that the
+// OIDC fallback preserves OAuthFlowConfig's private-IP policy.
+func TestCreateOAuthConfig_BlocksPrivateIssuerDiscoveryFallback(t *testing.T) {
+	t.Parallel()
+
+	var discoveryHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		discoveryHits.Add(1)
+		http.Error(w, "unexpected discovery request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	config, err := createOAuthConfig(context.Background(), server.URL, &OAuthFlowConfig{
+		ClientID:        "test-client",
+		AllowPrivateIPs: false,
+	})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, networking.ErrPrivateIpAddress)
+	assert.Nil(t, config)
+	assert.Zero(t, discoveryHits.Load(), "OIDC fallback must not reach a private issuer")
+}
+
 // TestCreateOAuthConfig_DiscoveredTokenEndpoint is the regression test for
 // GHSA-3768-rwj3-38p2. An operator-configured issuer that names its own
 // authority in its metadata keeps the operator's trust; one that names a
@@ -1440,6 +1463,7 @@ func TestCreateOAuthConfig_DiscoveredTokenEndpoint(t *testing.T) {
 				ClientID:             "test-client",
 				IssuerTrusted:        true,
 				TokenEndpointTrusted: true,
+				AllowPrivateIPs:      true,
 			})
 			require.NoError(t, err)
 
@@ -1448,5 +1472,38 @@ func TestCreateOAuthConfig_DiscoveredTokenEndpoint(t *testing.T) {
 			require.Equal(t, wantTokenURL, cfg.TokenURL)
 			assert.Equal(t, tt.wantTrusted, cfg.TokenEndpointTrusted)
 		})
+	}
+}
+
+// TestNewDetectionClient_BoundsIdleConnectionPool pins that the auth-detection
+// client bounds its idle-connection pool. This is one of the exact sites #6483
+// names; a zero IdleConnTimeout would pin a socket and its goroutine pair for
+// the process lifetime.
+func TestNewDetectionClient_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	client := newDetectionClient(DefaultDiscoveryConfig())
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "detection client must use an *http.Transport")
+
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+}
+
+// TestNewResourceMetadataTransport_BoundsIdleConnectionPool pins that the RFC
+// 9728 metadata transport bounds its pool in both dial modes. The bounds are
+// set regardless of blockPrivateIPs (they are moot only when keep-alive is
+// disabled, which is a separate field).
+func TestNewResourceMetadataTransport_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	for _, blockPrivateIPs := range []bool{false, true} {
+		transport := newResourceMetadataTransport(blockPrivateIPs)
+		assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+		assert.Equal(t, 100, transport.MaxIdleConns)
+		assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+		assert.Equal(t, blockPrivateIPs, transport.DisableKeepAlives,
+			"blockPrivateIPs must disable keep-alive so pooling cannot skip the per-dial SSRF check")
 	}
 }

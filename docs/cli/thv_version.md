@@ -24,15 +24,15 @@ thv version [flags]
 ### Options
 
 ```
-      --format string   Output format (json or text) (default "text")
-  -h, --help            help for version
-      --json            Output version information as JSON (deprecated, use --format instead)
+      --format string       Output format (json or text) (default "text")
+  -h, --help[=true|false]   help for version
+      --json[=true|false]   Output version information as JSON (deprecated, use --format instead)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

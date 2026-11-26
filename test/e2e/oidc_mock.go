@@ -60,6 +60,17 @@ const jwtKeyID = "test-key-1"
 type OIDCMockOption struct {
 	fositeOpt func(*fosite.Config)
 	clientOpt func(*fosite.DefaultClient)
+
+	extraClientID     string
+	extraClientSecret string
+}
+
+// WithAdditionalClient registers one more confidential client. Tokens issued to
+// it through the client_credentials grant carry its ID as the subject, so a test
+// can authenticate two distinct principals against the same issuer. Client-level
+// options such as WithClientAudience apply to it as well.
+func WithAdditionalClient(clientID, clientSecret string) OIDCMockOption {
+	return OIDCMockOption{extraClientID: clientID, extraClientSecret: clientSecret}
 }
 
 // WithClientAudience sets the allowed audience(s) on the registered test client.
@@ -124,30 +135,38 @@ func newOIDCMockServer(
 		return nil, fmt.Errorf("failed to generate RSA key: %w", err)
 	}
 
-	// Hash the client secret — Fosite's DefaultClientAuthenticationStrategy uses
-	// BCryptHasher.Compare, so the stored secret must be bcrypt-hashed.
-	// Use the same cost as the Fosite config to keep them consistent.
-	hashedSecret, err := bcrypt.GenerateFromPassword([]byte(clientSecret), config.HashCost)
-	if err != nil {
-		return nil, fmt.Errorf("failed to hash client secret: %w", err)
-	}
-
-	// Create memory store and register the test client.
+	// Create memory store and register the test client, plus any additional
+	// clients. Client-level options apply to every registered client.
 	store := storage.NewMemoryStore()
-	client := &fosite.DefaultClient{
-		ID:            clientID,
-		Secret:        hashedSecret,
-		RedirectURIs:  []string{"http://localhost:8080/callback", "http://127.0.0.1:8080/callback"},
-		ResponseTypes: []string{"code"},
-		GrantTypes:    []string{"authorization_code", "refresh_token", "client_credentials"},
-		Scopes:        []string{"openid", "profile", "email"},
-	}
+	clients := map[string]string{clientID: clientSecret}
 	for _, opt := range opts {
-		if opt.clientOpt != nil {
-			opt.clientOpt(client)
+		if opt.extraClientID != "" {
+			clients[opt.extraClientID] = opt.extraClientSecret
 		}
 	}
-	store.Clients[clientID] = client
+	for id, secret := range clients {
+		// Hash the client secret — Fosite's DefaultClientAuthenticationStrategy uses
+		// BCryptHasher.Compare, so the stored secret must be bcrypt-hashed.
+		// Use the same cost as the Fosite config to keep them consistent.
+		hashedSecret, err := bcrypt.GenerateFromPassword([]byte(secret), config.HashCost)
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash client secret: %w", err)
+		}
+		client := &fosite.DefaultClient{
+			ID:            id,
+			Secret:        hashedSecret,
+			RedirectURIs:  []string{"http://localhost:8080/callback", "http://127.0.0.1:8080/callback"},
+			ResponseTypes: []string{"code"},
+			GrantTypes:    []string{"authorization_code", "refresh_token", "client_credentials"},
+			Scopes:        []string{"openid", "profile", "email"},
+		}
+		for _, opt := range opts {
+			if opt.clientOpt != nil {
+				opt.clientOpt(client)
+			}
+		}
+		store.Clients[id] = client
+	}
 
 	// Create JWT strategy
 	jwtStrategy := compose.NewOAuth2JWTStrategy(

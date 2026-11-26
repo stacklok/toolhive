@@ -27,11 +27,13 @@ type deadlineTrackingResponseWriter struct {
 	*httptest.ResponseRecorder
 	deadlineSet bool
 	deadline    time.Time
+	deadlines   []time.Time
 }
 
 func (d *deadlineTrackingResponseWriter) SetWriteDeadline(t time.Time) error {
 	d.deadlineSet = true
 	d.deadline = t
+	d.deadlines = append(d.deadlines, t)
 	return nil
 }
 
@@ -97,9 +99,10 @@ func TestWriteTimeout_GETOnWrongPathLeavesDeadlineUntouched(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-// TestWriteTimeout_POSTLeavesDeadlineUntouched verifies that POST requests are not
-// touched by the middleware — their deadline comes from http.Server.WriteTimeout.
-func TestWriteTimeout_POSTLeavesDeadlineUntouched(t *testing.T) {
+// TestWriteTimeout_MCPPOSTDefersDeadlineUntilResponse verifies that MCP POST
+// requests are unbounded while computing and receive a fresh write deadline
+// when their non-streaming response starts.
+func TestWriteTimeout_MCPPOSTDefersDeadlineUntilResponse(t *testing.T) {
 	t.Parallel()
 
 	w := newDeadlineTracker()
@@ -107,7 +110,41 @@ func TestWriteTimeout_POSTLeavesDeadlineUntouched(t *testing.T) {
 
 	mw(noopHandler).ServeHTTP(w, r)
 
-	assert.False(t, w.deadlineSet, "POST deadline is managed by http.Server.WriteTimeout, not the middleware")
+	require.Len(t, w.deadlines, 2)
+	assert.True(t, w.deadlines[0].IsZero(), "the handler computation deadline must be cleared")
+	assert.False(t, w.deadlines[1].IsZero(), "response writing must receive a bounded deadline")
+	assert.True(t, w.deadlines[1].After(time.Now()), "response write deadline must be in the future")
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestWriteTimeout_MCPPostSSEResponseRemainsUnbounded(t *testing.T) {
+	t.Parallel()
+
+	w := newDeadlineTracker()
+	r := httptest.NewRequest(http.MethodPost, testEndpointPath, nil)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw(handler).ServeHTTP(w, r)
+
+	require.Len(t, w.deadlines, 1)
+	assert.True(t, w.deadlines[0].IsZero(), "SSE response must retain the cleared deadline")
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// TestWriteTimeout_POSTOnWrongPathLeavesDeadlineUntouched verifies that only
+// the configured MCP endpoint gets the relaxed POST deadline.
+func TestWriteTimeout_POSTOnWrongPathLeavesDeadlineUntouched(t *testing.T) {
+	t.Parallel()
+
+	w := newDeadlineTracker()
+	r := httptest.NewRequest(http.MethodPost, "/health", nil)
+
+	mw(noopHandler).ServeHTTP(w, r)
+
+	assert.False(t, w.deadlineSet, "POST on non-MCP path must retain the server WriteTimeout")
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 

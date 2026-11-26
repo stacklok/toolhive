@@ -20,13 +20,13 @@ The config command provides subcommands to manage application configuration sett
 ### Options
 
 ```
-  -h, --help   help for config
+  -h, --help[=true|false]   help for config
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

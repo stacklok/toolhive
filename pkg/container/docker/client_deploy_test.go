@@ -4,11 +4,21 @@
 package docker
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/netip"
+	"strconv"
 	"testing"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -37,6 +47,9 @@ type fakeDeployOps struct {
 	mcpIP    string
 	errMcpIP error
 
+	gatewayIPs  []netip.Addr
+	errGateways error
+
 	mcpCalled        bool
 	mcpName          string
 	mcpNetworkName   string
@@ -54,19 +67,36 @@ type fakeDeployOps struct {
 	// callOrder tracks the sequence of operation calls for ordering assertions.
 	callOrder *[]string
 
+	// cleanupCalls records cleanupFailedIsolation invocations as "workload/network".
+	cleanupCalls []string
+	// cleanupSidecars records which sidecars cleanup was asked to remove.
+	cleanupSidecars []string
+	// cleanupCtxErr and cleanupHasDeadline describe the context cleanup ran with.
+	cleanupCtxErr      error
+	cleanupHasDeadline bool
+
 	// error injection
 	errExternalNetworks error
 	errCreateNetwork    error
 	errDNS              error
 	errMcp              error
+
+	// onCreateDNS, when set, runs inside createDnsContainer before it returns.
+	onCreateDNS func()
 }
 
 func (f *fakeDeployOps) createExternalNetworks(_ context.Context) error {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "createExternalNetworks")
+	}
 	f.externalNetworksCalled = true
 	return f.errExternalNetworks
 }
 
 func (f *fakeDeployOps) createNetwork(_ context.Context, name string, labels map[string]string, internal bool) error {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "createNetwork")
+	}
 	f.createNetworkCalls = append(f.createNetworkCalls, struct {
 		name     string
 		internal bool
@@ -75,9 +105,35 @@ func (f *fakeDeployOps) createNetwork(_ context.Context, name string, labels map
 	return f.errCreateNetwork
 }
 
+func (f *fakeDeployOps) discoverBridgeGateways(_ context.Context) ([]netip.Addr, error) {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "discoverBridgeGateways")
+	}
+	if f.errGateways != nil {
+		return nil, f.errGateways
+	}
+	if f.gatewayIPs == nil {
+		return []netip.Addr{netip.MustParseAddr("172.17.0.1")}, nil
+	}
+	return f.gatewayIPs, nil
+}
+
 func (f *fakeDeployOps) createDnsContainer(_ context.Context, _ string, _ bool, _ string, _ map[string]*network.EndpointSettings) (string, string, error) {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "createDnsContainer")
+	}
 	f.dnsCalled = true
+	if f.onCreateDNS != nil {
+		f.onCreateDNS()
+	}
 	return f.dnsID, f.dnsIP, f.errDNS
+}
+
+func (f *fakeDeployOps) cleanupFailedIsolation(ctx context.Context, name, networkName string, sidecars []string) {
+	f.cleanupSidecars = sidecars
+	f.cleanupCalls = append(f.cleanupCalls, name+"/"+networkName)
+	f.cleanupCtxErr = ctx.Err()
+	_, f.cleanupHasDeadline = ctx.Deadline()
 }
 
 func (f *fakeDeployOps) getContainerNetworkIP(_ context.Context, _, _ string) (string, error) {
@@ -123,8 +179,9 @@ type fakeNetworkProxy struct {
 	setupCalled   bool // SetupEgress was called
 	ingressCalled bool // SetupIngress was called
 	capturedSpec  proxySpec
-	ingressPort   int // returned by SetupIngress
-	err           error
+	ingressPort   int   // returned by SetupIngress
+	err           error // returned by SetupEgress (and SetupIngress when errIngress is nil)
+	errIngress    error // returned by SetupIngress only, when set
 	// callOrder tracks cross-component ordering when shared with fakeDeployOps.
 	callOrder *[]string
 }
@@ -149,18 +206,49 @@ func (f *fakeNetworkProxy) SetupIngress(_ context.Context, spec proxySpec, _ egr
 	}
 	f.ingressCalled = true
 	f.capturedSpec = spec
+	if f.errIngress != nil {
+		return 0, f.errIngress
+	}
 	if f.err != nil {
 		return 0, f.err
 	}
 	return f.ingressPort, nil
 }
 
-// newClientWithOpsAndProxy creates a minimal client with the provided ops, proxy, and a fake dockerAPI.
+// testDockerHostAlias is the host-gateway address the default fake DNS sidecar
+// reports, standing in for Docker Desktop's VM host address.
+var testDockerHostAlias = netip.MustParseAddr("198.51.100.254")
+
+// fakeHostAPI serves a fixed hosts file as the DNS sidecar's /etc/hosts archive.
+type fakeHostAPI struct{ hosts string }
+
+func (f fakeHostAPI) CopyFromContainer(
+	context.Context, string, mobyclient.CopyFromContainerOptions,
+) (mobyclient.CopyFromContainerResult, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "hosts", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(f.hosts))}); err != nil {
+		return mobyclient.CopyFromContainerResult{}, err
+	}
+	if _, err := tw.Write([]byte(f.hosts)); err != nil {
+		return mobyclient.CopyFromContainerResult{}, err
+	}
+	if err := tw.Close(); err != nil {
+		return mobyclient.CopyFromContainerResult{}, err
+	}
+	return mobyclient.CopyFromContainerResult{Content: io.NopCloser(&buf)}, nil
+}
+
+// newClientWithOpsAndProxy creates a minimal Docker-runtime client with the
+// provided ops, proxy, a fake dockerAPI, and a DNS sidecar whose hosts file maps
+// host.docker.internal to testDockerHostAlias.
 func newClientWithOpsAndProxy(ops deployOps, proxy networkProxy) *Client {
 	return &Client{
-		api:   opsToFakeDockerAPI(),
-		ops:   ops,
-		proxy: proxy,
+		runtimeType: runtime.TypeDocker,
+		api:         opsToFakeDockerAPI(),
+		ops:         ops,
+		proxy:       proxy,
+		hostAPI:     fakeHostAPI{hosts: testDockerHostAlias.String() + " host.docker.internal\n"},
 	}
 }
 
@@ -394,6 +482,52 @@ func TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded(t *testing.T) 
 	assert.True(t, fops.dnsCalled, "DNS container must be created on the isolation path")
 }
 
+// TestDeployWorkload_ReadOnlyRootfs_ForwardedToPermissionConfig verifies that the
+// ReadOnlyRootfs deploy option reaches the MCP container's permission config and
+// stays off by default.
+func TestDeployWorkload_ReadOnlyRootfs_ForwardedToPermissionConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts func() *runtime.DeployWorkloadOptions
+		want bool
+	}{
+		{name: "unset", opts: runtime.NewDeployWorkloadOptions, want: false},
+		{name: "enabled", opts: func() *runtime.DeployWorkloadOptions {
+			o := runtime.NewDeployWorkloadOptions()
+			o.ReadOnlyRootfs = true
+			return o
+		}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fops := &fakeDeployOps{}
+			c := newClientWithOps(fops)
+
+			_, err := c.DeployWorkload(
+				t.Context(),
+				"img",
+				"name",
+				nil,
+				map[string]string{},
+				map[string]string{},
+				&permissions.Profile{},
+				"stdio",
+				tt.opts(),
+				false,
+			)
+			require.NoError(t, err)
+
+			require.NotNil(t, fops.mcpPermissionCfg)
+			assert.Equal(t, tt.want, fops.mcpPermissionCfg.ReadOnlyRootfs)
+		})
+	}
+}
+
 // TestDeployWorkload_NonBridgeNetwork_DropsIsolation verifies that when
 // isolateNetwork=true but the network mode is non-bridge (host/none), the
 // isolation sidecars are never created, no proxy env vars are injected, and the
@@ -498,18 +632,20 @@ func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported transport type")
 }
 
-// TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter locks in the ordering
-// contract: egress is provisioned BEFORE the MCP container (so proxy env vars are
-// injected), and ingress is provisioned AFTER it. Creating the ingress before the
+// TestDeployWorkload_IsolatedGatewaySnapshotAndProxyOrdering locks in the ordering
+// contract: gateway discovery runs once after DNS startup and before proxy setup;
+// egress is provisioned BEFORE the MCP container (so proxy env vars are injected), and ingress is provisioned AFTER it. Creating the ingress before the
 // MCP container caused the squid reverse proxy to cache a negative DNS lookup for
 // the not-yet-existent upstream and never recover, leaving the workload stuck.
-func TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter(t *testing.T) {
+func TestDeployWorkload_IsolatedGatewaySnapshotAndProxyOrdering(t *testing.T) {
 	t.Parallel()
 
-	callOrder := make([]string, 0, 3)
+	callOrder := make([]string, 0, 7)
+	internalGateway := netip.MustParseAddr("172.18.0.1")
 	fops := &fakeDeployOps{
-		dnsIP:     "172.18.0.10",
-		callOrder: &callOrder,
+		dnsIP:      "172.18.0.10",
+		gatewayIPs: []netip.Addr{internalGateway},
+		callOrder:  &callOrder,
 	}
 	fproxy := &fakeNetworkProxy{
 		ingressPort: 18081,
@@ -536,7 +672,215 @@ func TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter(t *testing.T) {
 		true,
 	)
 	require.NoError(t, err)
+	require.Len(t, fops.createNetworkCalls, 1)
+	require.True(t, fops.createNetworkCalls[0].internal, "internal workload network must exist before gateway discovery")
+	require.Equal(t, []netip.Addr{internalGateway, testDockerHostAlias}, fproxy.capturedSpec.GatewayIPs,
+		"the post-create gateway snapshot and the Docker host-gateway address must reach generated proxy policy")
 
-	require.Equal(t, []string{"SetupEgress", "createMcpContainer", "SetupIngress"}, callOrder,
-		"egress must be set up before the MCP container and ingress after it")
+	require.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways", "SetupEgress", "createMcpContainer", "SetupIngress"}, callOrder,
+		"gateway discovery must snapshot after DNS startup and before proxy setup")
+}
+
+func TestDeployWorkload_GatewayDiscoveryFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{errGateways: errors.New("unavailable")}
+	fproxy := &fakeNetworkProxy{}
+	client := newClientWithOpsAndProxy(fops, fproxy)
+
+	_, err := client.DeployWorkload(
+		t.Context(), "image", "app", nil, nil, map[string]string{},
+		&permissions.Profile{}, "stdio", runtime.NewDeployWorkloadOptions(), true,
+	)
+	require.ErrorContains(t, err, "failed to discover Docker bridge gateways")
+	assert.True(t, fops.dnsCalled)
+	assert.False(t, fproxy.setupCalled)
+	assert.False(t, fops.mcpCalled)
+}
+
+var errBoom = errors.New("boom")
+
+// TestDeployWorkload_SetupFailureCleanup pins when a failed deploy removes the
+// isolation resources (internal network, DNS, proxies): only for a new
+// workload that failed before its MCP container exists. Once the MCP container
+// exists, `thv rm` cleans up through RemoveWorkload; a restart keeps the
+// resources that belong to the existing workload; without isolation there is
+// nothing to clean up.
+func TestDeployWorkload_SetupFailureCleanup(t *testing.T) {
+	t.Parallel()
+
+	badPortBinding := func() *runtime.DeployWorkloadOptions {
+		opts := runtime.NewDeployWorkloadOptions()
+		opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+		opts.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostIP: "127.0.0.1", HostPort: "not-a-port"}}}
+		return opts
+	}
+	ingressOpts := func() *runtime.DeployWorkloadOptions {
+		opts := runtime.NewDeployWorkloadOptions()
+		opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+		opts.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostIP: "127.0.0.1", HostPort: ""}}}
+		return opts
+	}
+	existingMcp := &existingLookup{items: []container.Summary{{ID: "mcp-id", Names: []string{"/app"}}}}
+	failedLookup := &existingLookup{err: errors.New("daemon unavailable")}
+
+	tests := []struct {
+		name        string
+		fops        *fakeDeployOps
+		fproxy      *fakeNetworkProxy
+		transport   string
+		isolate     bool
+		opts        func() *runtime.DeployWorkloadOptions // nil means defaults
+		existing    *existingLookup                       // nil means no existing MCP container
+		wantErr     error
+		wantCleanup []string // sidecars cleanup removes; nil means no cleanup
+		wantMcp     bool
+	}{
+		{name: "dns container creation fails", fops: &fakeDeployOps{errDNS: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: []string{"dns"}},
+		{name: "gateway discovery fails", fops: &fakeDeployOps{errGateways: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: []string{"dns"}},
+		{name: "egress setup fails", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{err: errBoom}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: []string{"dns", "egress"}},
+		{name: "port binding is invalid", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, opts: badPortBinding, wantErr: strconv.ErrSyntax, wantCleanup: []string{"dns", "egress"}},
+		{name: "mcp container creation fails", fops: &fakeDeployOps{errMcp: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom, wantCleanup: []string{"dns", "egress"}, wantMcp: true},
+		{name: "internal network creation fails", fops: &fakeDeployOps{errCreateNetwork: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantErr: errBoom},
+		{name: "success keeps resources", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, wantMcp: true},
+		{name: "mcp ip lookup fails after mcp container exists", fops: &fakeDeployOps{errMcpIP: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "sse", isolate: true, opts: ingressOpts, wantErr: errBoom, wantMcp: true},
+		{name: "ingress setup fails after mcp container exists", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{errIngress: errBoom}, transport: "sse", isolate: true, opts: ingressOpts, wantErr: errBoom, wantMcp: true},
+		{name: "no isolation, mcp container creation fails", fops: &fakeDeployOps{errMcp: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: false, opts: ingressOpts, wantErr: errBoom, wantMcp: true},
+		{name: "restart with stopped mcp container keeps resources", fops: &fakeDeployOps{errDNS: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, existing: existingMcp, wantErr: errBoom},
+		{name: "restart with failed existence lookup keeps resources", fops: &fakeDeployOps{errDNS: errBoom}, fproxy: &fakeNetworkProxy{}, transport: "stdio", isolate: true, existing: failedLookup, wantErr: errBoom},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client := newClientWithOpsAndProxy(tt.fops, tt.fproxy)
+			if tt.existing != nil {
+				client.api = &fakeDockerAPI{listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
+					return tt.existing.items, tt.existing.err
+				}}
+			}
+			opts := runtime.NewDeployWorkloadOptions()
+			if tt.opts != nil {
+				opts = tt.opts()
+			}
+			_, err := client.DeployWorkload(
+				t.Context(), "image", "app", nil, nil, map[string]string{},
+				&permissions.Profile{}, tt.transport, opts, tt.isolate,
+			)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantMcp, tt.fops.mcpCalled)
+			if tt.wantCleanup != nil {
+				assert.Equal(t, []string{"app/toolhive-app-internal"}, tt.fops.cleanupCalls)
+				assert.Equal(t, tt.wantCleanup, tt.fops.cleanupSidecars)
+			} else {
+				assert.Empty(t, tt.fops.cleanupCalls)
+			}
+		})
+	}
+}
+
+// existingLookup is what the fake Docker API returns when DeployWorkload looks
+// for an already existing MCP container by name.
+type existingLookup struct {
+	items []container.Summary
+	err   error
+}
+
+// TestDeployWorkload_CleanupSurvivesCancelledContextWithDeadline pins that the
+// cleanup is detached from the caller's cancellation (a cancelled request must
+// still remove its leaked resources) and is bounded by its own timeout.
+func TestDeployWorkload_CleanupSurvivesCancelledContextWithDeadline(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	// Cancel from inside the failing step (after the existing-container lookup
+	// has run) so the deploy fails with a cancelled context, as when a request
+	// is aborted mid-setup.
+	fops := &fakeDeployOps{errDNS: context.Canceled, onCreateDNS: cancel}
+	client := newClientWithOpsAndProxy(fops, &fakeNetworkProxy{})
+
+	_, err := client.DeployWorkload(
+		ctx, "image", "app", nil, nil, map[string]string{},
+		&permissions.Profile{}, "stdio", runtime.NewDeployWorkloadOptions(), true,
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, []string{"app/toolhive-app-internal"}, fops.cleanupCalls)
+	require.NoError(t, fops.cleanupCtxErr, "cleanup must not inherit the caller's cancellation")
+	require.True(t, fops.cleanupHasDeadline, "cleanup must be bounded by its own timeout")
+}
+
+// Both runtimes read their host-access alias from the running DNS sidecar and
+// fail closed when it is missing. On Docker this is the host-gateway address,
+// which on Docker Desktop is not any bridge network's gateway.
+func TestDeployWorkload_RuntimeHostDiscovery(t *testing.T) {
+	t.Parallel()
+	for _, rt := range []struct {
+		runtime runtime.Type
+		alias   string
+	}{{runtime.TypePodman, "host.containers.internal"}, {runtime.TypeDocker, "host.docker.internal"}} {
+		for _, allow := range []bool{false, true} {
+			for _, tt := range []struct {
+				name       string
+				hosts      string
+				dnsErr     error
+				gatewayErr error
+				status     int
+				wantErr    string
+			}{
+				{name: "sorted union", hosts: "::ffff:192.0.2.9 " + rt.alias + "\n" +
+					"10.0.0.1 gateway.docker.internal\n", status: http.StatusOK},
+				{name: "DNS startup failure", dnsErr: errors.New("start failed"), wantErr: "failed to create dns container"},
+				{name: "gateway failure", gatewayErr: errors.New("list failed"), wantErr: "failed to discover Docker bridge gateways"},
+				{name: "missing aliases", hosts: "127.0.0.1 localhost\n", status: http.StatusOK, wantErr: "hosts missing " + rt.alias},
+				{name: "archive failure", status: http.StatusInternalServerError, wantErr: "read running DNS hosts"},
+			} {
+				t.Run(fmt.Sprintf("%s/%s/allow=%t", rt.runtime, tt.name, allow), func(t *testing.T) {
+					t.Parallel()
+					var order []string
+					gateways := []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("10.0.0.1")}
+					ops := &fakeDeployOps{dnsID: "running-dns", dnsIP: "10.0.0.2", gatewayIPs: gateways,
+						errDNS: tt.dnsErr, errGateways: tt.gatewayErr, callOrder: &order}
+					proxy := &fakeNetworkProxy{callOrder: &order}
+					client := newClientWithOpsAndProxy(ops, proxy)
+					client.runtimeType = rt.runtime
+					data := hostsArchive(t, "hosts", tt.hosts, tar.TypeReg)
+					client.hostAPI = discoveryHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+						assert.Equal(t, "/v1.44/containers/running-dns/archive", r.URL.Path)
+						assert.Equal(t, "/etc/hosts", r.URL.Query().Get("path"))
+						assert.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways"}, order)
+						order = append(order, "archive")
+						w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString([]byte(`{"name":"hosts"}`)))
+						w.WriteHeader(tt.status)
+						_, err := w.Write(data)
+						assert.NoError(t, err)
+					})
+					options := runtime.NewDeployWorkloadOptions()
+					options.AllowDockerGateway = allow
+					options.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+					options.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostIP: "127.0.0.1", HostPort: ""}}}
+					_, err := client.DeployWorkload(t.Context(), "image", "app", nil, nil, map[string]string{},
+						&permissions.Profile{}, "sse", options, true)
+					if tt.wantErr != "" {
+						require.ErrorContains(t, err, tt.wantErr)
+						assert.False(t, ops.mcpCalled)
+						assert.False(t, proxy.setupCalled)
+						assert.False(t, proxy.ingressCalled)
+						return
+					}
+					require.NoError(t, err)
+					require.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways",
+						"archive", "SetupEgress", "createMcpContainer", "SetupIngress"}, order)
+					require.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("192.0.2.9"),
+						netip.MustParseAddr("2001:db8::1")}, proxy.capturedSpec.GatewayIPs)
+					require.Equal(t, allow, proxy.capturedSpec.AllowDockerGateway)
+					require.Equal(t, "10.0.0.2", ops.mcpAdditionalDNS)
+					require.Equal(t, []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("10.0.0.1")}, gateways,
+						"discovery must not mutate the caller's gateway slice")
+				})
+			}
+		}
+	}
 }

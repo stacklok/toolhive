@@ -31,19 +31,22 @@ func TestUpgradeSkillsEndpoint(t *testing.T) {
 		wantContains string
 	}{
 		{
-			name: "successful upgrade returns 200 with outcomes",
+			name: "successful upgrade forwards replacement public key and returns outcomes",
 			service: &skillServiceWithSync{
 				SkillService: skillsmocks.NewMockSkillService(gomock.NewController(t)),
 				upgradeFn: func(_ context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
 					assert.Equal(t, "/tmp/proj", opts.ProjectRoot)
 					assert.Equal(t, []string{"my-skill"}, opts.Names)
 					assert.True(t, opts.AllowRefChange)
+					assert.True(t, opts.AllowSignerChange)
+					assert.Equal(t, "encoded-public-key", opts.PublicKey)
 					return &skills.UpgradeResult{Outcomes: []skills.UpgradeOutcome{
 						{Name: "my-skill", Status: skills.UpgradeStatusUpgraded},
 					}}, nil
 				},
 			},
-			body:         `{"project_root":"/tmp/proj","names":["my-skill"],"allow_ref_change":true}`,
+			body: `{"project_root":"/tmp/proj","names":["my-skill"],"allow_ref_change":true,` +
+				`"allow_signer_change":true,"public_key":"encoded-public-key"}`,
 			wantStatus:   http.StatusOK,
 			wantContains: `"upgraded"`,
 		},

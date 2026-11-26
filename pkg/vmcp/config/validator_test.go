@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -239,6 +240,57 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			wantErr: true,
 			errMsg:  "caBundlePath contains invalid path characters",
 		},
+		{
+			name: "valid OIDC auth with absolute jwksAuthTokenPath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "OIDC rejects relative jwksAuthTokenPath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "token",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath must be an absolute path",
+		},
+		{
+			name: "OIDC rejects jwksAuthTokenPath with path traversal",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/../../etc/passwd",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath contains invalid path characters",
+		},
+		{
+			name: "OIDC rejects jwksAuthTokenPath with null byte",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:            "https://example.com",
+					Audience:          "vmcp",
+					JWKSAuthTokenPath: "/var/run/tok\x00en",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwksAuthTokenPath contains invalid path characters",
+		},
 	}
 
 	for _, tt := range tests {
@@ -257,6 +309,49 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 					t.Errorf("validateIncomingAuth() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
 			}
+		})
+	}
+}
+
+func TestValidateOIDCFilePaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		oidc   *OIDCConfig
+		errMsg string
+	}{
+		{name: "nil config", oidc: nil},
+		{name: "no paths set", oidc: &OIDCConfig{}},
+		{
+			name: "absolute paths",
+			oidc: &OIDCConfig{
+				CABundlePath:      "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+		},
+		{
+			name:   "relative caBundlePath",
+			oidc:   &OIDCConfig{CABundlePath: "ca.crt"},
+			errMsg: "incomingAuth.oidc.caBundlePath must be an absolute path",
+		},
+		{
+			name:   "relative jwksAuthTokenPath",
+			oidc:   &OIDCConfig{JWKSAuthTokenPath: "token"},
+			errMsg: "incomingAuth.oidc.jwksAuthTokenPath must be an absolute path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateOIDCFilePaths(tt.oidc)
+			if tt.errMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errMsg)
 		})
 	}
 }
@@ -1251,6 +1346,131 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "at least one upstream",
+		},
+		{
+			name: "zero upstreams with SPIFFE client association",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{ClientID: "spiffe-client"}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical token exchange and no delegate clients",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one upstream",
+		},
+		{
+			name: "zero upstreams with legacy and canonical delegate clients",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:          "http://localhost:9090",
+				DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "legacy-client"}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "canonical-client"}},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "inbound grants are invalid",
+		},
+		{
+			name: "zero upstreams with delegate client",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				DelegateClients:  []authserver.DelegateClientRunConfig{{ClientID: "delegate-client"}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical delegate client",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "delegate-client"}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical JWT bearer policy",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					Name:      "idp",
+					IssuerURL: "https://issuer.example.com",
+				}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
+						IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+							IssuerRef: "idp", MaxAssertionAge: "5m",
+						}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with JWT bearer trusted issuer",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{},
+				}},
+			},
+			wantErr: false,
 		},
 		{
 			name: "v07_audience_not_in_allowed",

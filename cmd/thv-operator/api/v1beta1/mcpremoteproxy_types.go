@@ -47,6 +47,18 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:validation:Pattern=`^https?://`
 	RemoteURL string `json:"remoteUrl"`
 
+	// AllowPrivateEndpoint permits RemoteURL to point at a private or
+	// in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and
+	// hostnames ending in "cluster.local". (Bare ".svc" hostnames are never
+	// blocked, since no DNS resolution is performed.) Enable this to reach a
+	// co-located in-cluster backend in-mesh so the backend's workload-identity
+	// authorization policy still applies. Loopback, link-local, cloud-metadata,
+	// and kubernetes.default endpoints remain blocked regardless of this
+	// setting.
+	// +kubebuilder:default=false
+	// +optional
+	AllowPrivateEndpoint bool `json:"allowPrivateEndpoint,omitempty"`
+
 	// ProxyPort is the port to expose the MCP proxy on
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
@@ -71,8 +83,13 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
-	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
-	// When specified, the proxy will exchange validated incoming tokens for remote service tokens.
+	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
+	// Supported types are tokenExchange, bearerToken, unauthenticated,
+	// embeddedAuthServer, awsSts, and obo.
+	// For new embedded authorization server configurations, prefer AuthServerRef.
+	// headerInjection, upstreamInject, and xaa are accepted but not applied by the
+	// MCPRemoteProxy: they take effect when a VirtualMCPServer discovers this
+	// proxy as a backend.
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
@@ -116,7 +133,14 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
 
-	// Resources defines the resource requirements for the proxy container
+	// Resources defines the resource requirements for the proxy container.
+	// Unset fields fall back to defaults: requests of 50m CPU and 64Mi memory,
+	// limits of 200m CPU and 256Mi memory. Resources set on the "toolhive"
+	// container through podTemplateSpec take precedence over this field.
+	// A limit set without a request, here or in podTemplateSpec, drops the
+	// default request so Kubernetes copies the limit into the request as usual.
+	// A request set without a limit raises the default limit to match if the
+	// request is above it. Requests and limits the user sets explicitly are used as given.
 	// +optional
 	Resources ResourceRequirements `json:"resources,omitempty"`
 

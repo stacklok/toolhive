@@ -7,6 +7,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -92,6 +93,17 @@ type Config struct {
 	// +optional
 	PrometheusPort int `json:"prometheusPort,omitempty" yaml:"prometheusPort,omitempty"`
 
+	// MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+	// transport port, in addition to the diagnostics port. It exists to give
+	// deployments a migration window: while true, an existing scrape configuration
+	// aimed at the transport port keeps working, and a new one aimed at
+	// PrometheusPort works too, so a scraper can be moved and verified before the
+	// old location goes away. See https://github.com/stacklok/toolhive/issues/6384 for
+	// the removal timeline.
+	//
+	// +optional
+	MetricsOnTransportPort *bool `json:"metricsOnTransportPort,omitempty" yaml:"metricsOnTransportPort,omitempty"`
+
 	// EnvironmentVariables is a list of environment variable names that should be
 	// included in telemetry spans as attributes. Only variables in this list will
 	// be read from the host machine and included in spans for observability.
@@ -130,7 +142,8 @@ func (c Config) GoString() string {
 	return c.String()
 }
 
-// String returns a human-readable representation of the Config with sensitive header values redacted.
+// String returns a human-readable representation of the Config with sensitive header values
+// and environment variable entries redacted.
 func (c Config) String() string {
 	// Redact header values to prevent credential leakage
 	redactedHeaders := make(map[string]string, len(c.Headers))
@@ -140,12 +153,38 @@ func (c Config) String() string {
 
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
 		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
-		"EnablePrometheusMetricsPath: %t, PrometheusPort: %d, EnvironmentVariables: %v, CustomAttributes: %v, "+
+		"EnablePrometheusMetricsPath: %t, PrometheusPort: %d, MetricsOnTransportPort: %t, "+
+		"EnvironmentVariables: [%d redacted], CustomAttributes: %v, "+
 		"UseLegacyAttributes: %t, CACertPath: %q}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
 		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
-		c.EnablePrometheusMetricsPath, c.PrometheusPort, c.EnvironmentVariables, c.CustomAttributes,
+		c.EnablePrometheusMetricsPath, c.PrometheusPort, c.ServeMetricsOnTransportPort(),
+		len(c.EnvironmentVariables), c.CustomAttributes,
 		c.UseLegacyAttributes, c.CACertPath)
+}
+
+// DefaultMetricsOnTransportPort is the value used when Config.MetricsOnTransportPort
+// is unset.
+//
+// True during the deprecation window: /metrics is served on both the transport port
+// and the diagnostics port, so no existing scrape configuration breaks. Flipping this
+// to false is the entire cutover — it stops serving the transport-port copy and leaves
+// only the diagnostics port. Deployments that set MetricsOnTransportPort explicitly
+// are unaffected by the flip, by design.
+//
+// Flipping it is not the whole job: #6384 carries the timeline and the cleanup this
+// field, its CLI flag, and its CRD entry all need afterwards.
+const DefaultMetricsOnTransportPort = true
+
+// ServeMetricsOnTransportPort reports whether /metrics should also be served on the
+// main transport port. It resolves the unset case at the point of use, which is what
+// makes changing DefaultMetricsOnTransportPort take effect for workloads that already
+// exist. A nil receiver reports the default so callers need no nil check.
+func (c *Config) ServeMetricsOnTransportPort() bool {
+	if c == nil || c.MetricsOnTransportPort == nil {
+		return DefaultMetricsOnTransportPort
+	}
+	return *c.MetricsOnTransportPort
 }
 
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.
@@ -287,7 +326,7 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 		providers.WithMetricsEnabled(config.MetricsEnabled),
 		providers.WithSamplingRate(config.GetSamplingRateFloat()),
 		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
-		providers.WithCustomAttributes(config.CustomAttributes),
+		providers.WithCustomAttributes(mergeRegisteredResourceAttributes(config.CustomAttributes)),
 	}
 
 	// Merge globally registered processors (self-registered by integrations such
@@ -303,6 +342,21 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 	}
 
 	return setGlobalProvidersAndReturn(telemetryProviders, config)
+}
+
+// mergeRegisteredResourceAttributes overlays the caller's custom attributes on
+// top of any registered via RegisterResourceAttributes, so an explicitly
+// configured attribute always wins over one a self-registered integration
+// supplied as a default. The caller's map is never mutated.
+func mergeRegisteredResourceAttributes(configured map[string]string) map[string]string {
+	registered := RegisteredResourceAttributes()
+	if len(registered) == 0 {
+		return configured
+	}
+	merged := make(map[string]string, len(registered)+len(configured))
+	maps.Copy(merged, registered)
+	maps.Copy(merged, configured)
+	return merged
 }
 
 // setGlobalProvidersAndReturn sets the global providers for OTEL and returns the providers
@@ -356,6 +410,19 @@ func (p *Provider) MeterProvider() metric.MeterProvider {
 // Returns nil if no metrics port is configured.
 func (p *Provider) PrometheusHandler() http.Handler {
 	return p.prometheusHandler
+}
+
+// PrometheusPort returns the configured diagnostics port for the Prometheus
+// /metrics endpoint. Zero means unset; see diagnostics.ResolvePort.
+func (p *Provider) PrometheusPort() int {
+	return p.config.PrometheusPort
+}
+
+// ServeMetricsOnTransportPort reports whether this provider's configuration also
+// wants /metrics on the main transport port. Resolves the unset case against the
+// current default; see Config.ServeMetricsOnTransportPort.
+func (p *Provider) ServeMetricsOnTransportPort() bool {
+	return p.config.ServeMetricsOnTransportPort()
 }
 
 // validateOtelConfig validates the otel configuration

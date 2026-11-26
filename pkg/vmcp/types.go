@@ -546,14 +546,14 @@ type ToolCallResult struct {
 	// This is the array of content items returned by the backend.
 	Content []Content
 
-	// StructuredContent is structured output (preferred for composite tools and workflows).
-	// If the backend MCP server provides StructuredContent, it is used directly.
-	// Otherwise, this is populated by converting the Content array to a map:
-	//   - First text item: key="text"
-	//   - Additional text items: key="text_1", "text_2", etc.
-	//   - Image items: key="image_0", "image_1", etc.
-	// This allows templates to access fields via {{.steps.stepID.output.text}}.
-	// Note: No JSON parsing is performed - backends must provide structured data explicitly.
+	// StructuredContent is structured output, or nil when there is none. For a
+	// backend tool call it is the object the backend sent; it is nil when the
+	// backend sent none or sent a value that is not an object. vMCP never
+	// synthesizes it from Content, because this result is also returned to clients
+	// on pass-through calls. Composite workflows that need a map for templates
+	// build one from Content themselves (conversion.ContentArrayToMap). Results
+	// vMCP produces itself (composite tool output, coded errors, optimizer
+	// find_tool) set their own.
 	StructuredContent map[string]any
 
 	// IsError indicates if the tool call failed.
@@ -667,6 +667,19 @@ type CompletionResult struct {
 	// HasMore indicates additional options exist beyond those in Values.
 	HasMore bool
 }
+
+// MaxResourceURILength caps the length, in bytes, of a client-supplied resource
+// URI that is matched against RFC 6570 resource templates.
+//
+// Template matching is not linear: its cost is quadratic in the number of
+// separators a URI places inside a template variable, and it takes no context,
+// so a closed connection or request deadline cannot stop it. The request body
+// cap is 8MB and only CallTool is rate-limited, so without this cap a handful
+// of resources/read, resources/subscribe or completion/complete requests could
+// pin a CPU for minutes. Exact concrete-resource and template-string lookups are
+// map lookups and are not subject to the cap. 2048 bytes is the conventional
+// practical URL limit and far beyond any resource URI a backend advertises.
+const MaxResourceURILength = 2048
 
 // RoutingTable contains the mappings from capability names to backend targets.
 // This is the output of the aggregation phase and input to the router.

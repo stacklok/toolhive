@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -60,10 +62,15 @@ type Auditor struct {
 	auditLogger   *slog.Logger
 	transportType string // e.g., "sse", "streamable-http"
 	logWriter     io.Writer
+	// subjectEnricher adds embedder-supplied subjects to each event; nil
+	// leaves events unchanged.
+	subjectEnricher SubjectEnricher
 }
 
 // NewAuditorWithTransport creates a new Auditor with the given configuration and transport information.
-func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, error) {
+// opts set behavior that is configured from Go rather than the serialized Config,
+// such as WithSubjectEnricher.
+func NewAuditorWithTransport(config *Config, transportType string, opts ...Option) (*Auditor, error) {
 	var logWriter io.Writer = os.Stdout // default to stdout
 
 	if config != nil {
@@ -77,18 +84,29 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 		logWriter = w
 	}
 
+	o := buildOptions(opts)
+
 	return &Auditor{
-		config:        config,
-		auditLogger:   NewAuditLogger(logWriter),
-		transportType: transportType,
-		logWriter:     logWriter,
+		config:          config,
+		auditLogger:     NewAuditLogger(logWriter),
+		transportType:   transportType,
+		logWriter:       logWriter,
+		subjectEnricher: o.subjectEnricher,
 	}, nil
 }
 
 // Close closes the underlying log writer if it implements io.Closer.
 // This should be called when the auditor is no longer needed to properly release resources.
 func (a *Auditor) Close() error {
-	if closer, ok := a.logWriter.(io.Closer); ok {
+	return closeLogWriter(a.logWriter)
+}
+
+func closeLogWriter(logWriter io.Writer) error {
+	if logWriter == os.Stdout || logWriter == os.Stderr {
+		return nil
+	}
+
+	if closer, ok := logWriter.(io.Closer); ok {
 		return closer.Close()
 	}
 	return nil
@@ -178,9 +196,9 @@ func (*Auditor) isMCPStreamOpenRequest(r *http.Request) bool {
 // inner chain returns: BackendInfo (backend routing), an auth.IdentityHolder
 // (identity attached by an auth middleware running INSIDE audit), an
 // mcp.ParsedRequestHolder (parsed MCP data from a parser running INSIDE
-// audit), and an mcp.AuthzDenialMarker (pre-parse refusals flagged by the
-// authz middleware running INSIDE audit). Each is only injected when absent
-// so nested auditors share carriers.
+// audit), and an mcp.AuthzDenialMarker (refusals flagged by a check running
+// INSIDE audit: the authz middleware, or the vMCP's call binding). Each is
+// only injected when absent so nested auditors share carriers.
 func ensureAuditContext(r *http.Request) *http.Request {
 	ctx := r.Context()
 	changed := false
@@ -281,13 +299,11 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	// Determine outcome based on status code
 	outcome := a.determineOutcome(rw.statusCode)
 
-	// A refusal by the authz middleware before message-level authorization
-	// could run (e.g. a non-JSON POST carrying a smuggled JSON-RPC body)
-	// writes a 400, which determineOutcome maps to a generic failure. The
-	// marker reclassifies it as a denial so blocked sweeps are alertable.
-	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {
-		outcome = OutcomeDenied
-	}
+	// A refusal flagged on the marker is a denial whatever its status: the
+	// authz middleware's 400 for a request it refuses before message-level
+	// authorization could run, which determineOutcome would map to a generic
+	// failure, or a vMCP call-binding refusal, which also names its reason.
+	outcome, denialReason := markedDenial(r, outcome)
 
 	// When HTTP status indicates success, check for JSON-RPC errors
 	// hidden inside HTTP 200 responses.
@@ -308,7 +324,7 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	source := a.extractSource(r)
 
 	// Extract subject information
-	subjects := a.extractSubjects(r)
+	subjects := a.extractSubjects(r, eventType)
 
 	// Determine component name
 	component := a.determineComponent(r)
@@ -327,6 +343,9 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 
 	// Add metadata
 	a.addMetadata(event, r, duration, rw)
+	if denialReason != "" {
+		event.Metadata.Extra[MetadataExtraKeyDenialReason] = denialReason
+	}
 
 	// Attach JSON-RPC error details so operators can see the error code
 	// and message without enabling full response data capture.
@@ -602,14 +621,19 @@ func identityFromRequest(r *http.Request) (*auth.Identity, bool) {
 	return nil, false
 }
 
-// extractSubjects extracts subject information from the HTTP request.
-func (*Auditor) extractSubjects(r *http.Request) map[string]string {
+// extractSubjects extracts subject information from the HTTP request,
+// including any subjects the configured SubjectEnricher adds. eventType is
+// the event being built, used only to label an enricher panic.
+func (a *Auditor) extractSubjects(r *http.Request, eventType string) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity.
-	if identity, ok := identityFromRequest(r); ok {
+	identity, ok := identityFromRequest(r)
+	if ok {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
+
+	applySubjectEnricher(r.Context(), a.subjectEnricher, identity, eventType, subjects)
 
 	// If no user found in claims, set anonymous
 	if subjects[SubjectKeyUser] == "" {
@@ -700,6 +724,24 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 	if backendInfo, ok := BackendInfoFromContext(r.Context()); ok && backendInfo != nil && backendInfo.BackendName != "" {
 		event.Metadata.Extra["backend_name"] = backendInfo.BackendName
 	}
+
+	stampTraceContext(r.Context(), event)
+}
+
+// stampTraceContext records the trace and span IDs carried by ctx on the event,
+// so an audit record can be joined to the distributed trace of the request that
+// produced it. It adds nothing when ctx carries no valid span context, which is
+// the case when the request arrived without a traceparent and tracing is off.
+func stampTraceContext(ctx context.Context, event *AuditEvent) {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return
+	}
+	if event.Metadata.Extra == nil {
+		event.Metadata.Extra = make(map[string]any)
+	}
+	event.Metadata.Extra[MetadataExtraKeyTraceID] = sc.TraceID().String()
+	event.Metadata.Extra[MetadataExtraKeySpanID] = sc.SpanID().String()
 }
 
 // addEventData adds request/response data to the audit event if configured.
@@ -805,13 +847,15 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 	source := a.extractSource(r)
 
 	// Extract subject information
-	subjects := a.extractSubjects(r)
+	subjects := a.extractSubjects(r, EventTypeSSEConnection)
 
 	// Determine component name
 	component := a.determineComponent(r)
 
-	// Create the audit event for SSE connection
-	event := NewAuditEvent(EventTypeSSEConnection, source, a.determineOutcome(statusCode), subjects, component)
+	// Create the audit event for SSE connection. A stream open refused by a
+	// check that marks its refusals is a denial with its reason.
+	outcome, denialReason := markedDenial(r, a.determineOutcome(statusCode))
+	event := NewAuditEvent(EventTypeSSEConnection, source, outcome, subjects, component)
 
 	// Attach the RFC 8693 delegation chain, if the caller used a delegated token
 	event.WithDelegationChain(a.extractDelegationChain(r))
@@ -829,7 +873,21 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 		"transport":  a.transportType,
 		"user_agent": r.Header.Get("User-Agent"),
 	}
+	if denialReason != "" {
+		event.Metadata.Extra[MetadataExtraKeyDenialReason] = denialReason
+	}
+	stampTraceContext(r.Context(), event)
 
 	// Log the event
 	event.LogTo(r.Context(), a.auditLogger, LevelAudit)
+}
+
+// markedDenial returns OutcomeDenied and the marked reason when a check inside
+// the audit middleware flagged the request as refused on its
+// mcp.AuthzDenialMarker, and outcome with no reason otherwise.
+func markedDenial(r *http.Request, outcome string) (string, string) {
+	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {
+		return OutcomeDenied, marker.Reason
+	}
+	return outcome, ""
 }

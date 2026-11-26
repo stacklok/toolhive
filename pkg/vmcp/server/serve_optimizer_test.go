@@ -21,7 +21,9 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpratelimit "github.com/stacklok/toolhive/pkg/vmcp/ratelimit"
@@ -484,4 +486,66 @@ func TestServeOptimizerLazyInjectsForRehydratedSession(t *testing.T) {
 		"re-injection must re-derive from a fresh core.ListTools, not a cached set")
 	assert.Equal(t, buildsBefore+1, optFactory.calls.Load(),
 		"re-injection must rebuild the optimizer over the freshly aggregated set")
+}
+
+// TestWithSharedEmbeddings pins when Serve shares optimizer embeddings through
+// the session-storage Redis: only for an optimizer built from config over Redis
+// session storage, and never by modifying the caller's config.
+func TestWithSharedEmbeddings(t *testing.T) {
+	t.Parallel()
+
+	redisStorage := &vmcpconfig.SessionStorageConfig{Provider: "redis", Address: "127.0.0.1:6379"}
+	fromConfig := func() *sessionmanager.FactoryConfig {
+		return &sessionmanager.FactoryConfig{OptimizerConfig: &optimizer.Config{}}
+	}
+
+	for _, tc := range []struct {
+		name       string
+		storage    *vmcpconfig.SessionStorageConfig
+		smCfg      *sessionmanager.FactoryConfig
+		wantShared bool
+		wantErr    string
+	}{
+		{name: "redis session storage", storage: redisStorage, smCfg: fromConfig(), wantShared: true},
+		{name: "in-process session storage", storage: &vmcpconfig.SessionStorageConfig{Provider: "memory"}, smCfg: fromConfig()},
+		{name: "no session storage", smCfg: fromConfig()},
+		{name: "optimizer disabled", storage: redisStorage, smCfg: &sessionmanager.FactoryConfig{}},
+		{
+			name:    "pre-built optimizer factory",
+			storage: redisStorage,
+			smCfg: &sessionmanager.FactoryConfig{
+				OptimizerConfig: &optimizer.Config{},
+				OptimizerFactory: func(context.Context, []server.ServerTool) (optimizer.Optimizer, error) {
+					return nil, nil
+				},
+			},
+		},
+		{
+			name: "unreadable TLS CA",
+			storage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis", Address: "127.0.0.1:6379",
+				TLS: &redisconfig.TLSConfig{CACertFile: "/nonexistent/ca.pem"},
+			},
+			smCfg:   fromConfig(),
+			wantErr: "redis session storage TLS configuration",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := withSharedEmbeddings(tc.storage, tc.smCfg)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if !tc.wantShared {
+				assert.Same(t, tc.smCfg, got, "the config is used as is")
+				return
+			}
+			assert.NotSame(t, tc.smCfg, got, "the caller's config must not be modified")
+			assert.Empty(t, tc.smCfg.OptimizerOptions, "the caller's options must not be modified")
+			assert.Len(t, got.OptimizerOptions, 1, "the shared-embeddings option is added")
+		})
+	}
 }

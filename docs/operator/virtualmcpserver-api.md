@@ -145,16 +145,23 @@ spec:
 
 ### `.spec.outgoingAuth` (optional)
 
-Configures authentication from Virtual MCP to backend MCPServers.
+Configures authentication from Virtual MCP to backend resources.
 
 **Type**: `OutgoingAuthConfig`
 
 **Fields**:
 - `source` (string, optional): How backend authentication configurations are determined
-  - `discovered` (default): Automatically discover from backend's `MCPServer.spec.externalAuthConfigRef`
+  - `discovered` (default): Automatically discover from backend `MCPServer`, `MCPRemoteProxy`, and `MCPServerEntry` `externalAuthConfigRef` fields
   - `inline`: Explicit per-backend configuration in VirtualMCPServer
 - `default` (BackendAuthConfig, optional): Default behavior for backends without explicit auth config
 - `backends` (map[string]BackendAuthConfig, optional): Per-backend authentication overrides
+
+In both modes the operator reads `spec.externalAuthConfigRef` from the backend
+workload (`MCPServer`, `MCPRemoteProxy` or `MCPServerEntry`) and mounts the secrets
+that strategy needs onto the vMCP Deployment. An entry under `backends` overrides
+the workload's configuration for that backend, and only the override's secrets are
+mounted. `source` selects how the running vMCP resolves backend auth, not whether
+the operator reads these workload references.
 
 **Example (discovered mode)**:
 ```yaml
@@ -176,13 +183,9 @@ spec:
         externalAuthConfigRef:
           name: github-token-exchange
       slack:
-        type: service_account
-        serviceAccount:
-          credentialsRef:
-            name: slack-bot-token
-            key: token
-          headerName: Authorization
-          headerFormat: "Bearer {token}"
+        type: externalAuthConfigRef
+        externalAuthConfigRef:
+          name: slack-header-injection
 ```
 
 #### BackendAuthConfig
@@ -192,6 +195,14 @@ spec:
   - `discovered`: Automatically discover from backend
   - `externalAuthConfigRef`: Reference an MCPExternalAuthConfig resource
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=externalAuthConfigRef)
+
+Referenced `MCPExternalAuthConfig` resources support `tokenExchange`,
+`headerInjection`, `unauthenticated`, `awsSts`, `upstreamInject`, `obo`, and
+`xaa`. Unsupported types are reported through an `UnsupportedAuthType`
+condition instead of being silently ignored. When the unsupported type is on
+an entry declared here (`default` or `backends`), no new configuration is
+published and the VirtualMCPServer reports `Phase: Failed` until the entry is
+fixed.
 
 ### `.spec.passthroughHeaders` (optional)
 
@@ -482,6 +493,16 @@ Standard Kubernetes conditions representing the latest observations of the Virtu
 - `AuthConfigured`: Indicates whether authentication is configured
 - `BackendsDiscovered`: Indicates whether backends have been discovered
 - `GroupRefValidated`: Indicates whether the GroupRef is valid
+- `CABundleRefValidated`: Checks the incoming OIDC CA ConfigMap and selected key
+  referenced through `spec.incomingAuth.oidcConfigRef`. The key defaults to
+  `ca.crt`. Reasons are `CABundleRefValid` (`True`), `CABundleRefNotFound`
+  (`False`, missing ConfigMap), and `CABundleRefInvalid` (`False`, invalid
+  reference or missing key). Missing or invalid references are advisory and allow
+  reconciliation to continue. Removing the CA reference removes the condition;
+  ConfigMap create, update, and delete events refresh it. Transient ConfigMap read
+  errors preserve the previous condition and retry before resource reconciliation
+  and the status flush, deferring pending updates while deployed resources remain
+  in place.
 
 ### `.status.discoveredBackends`
 
@@ -594,11 +615,9 @@ spec:
       type: discovered
     backends:
       slack:  # Override for specific backend
-        type: service_account
-        serviceAccount:
-          credentialsRef:
-            name: slack-bot-token
-            key: token
+        type: externalAuthConfigRef
+        externalAuthConfigRef:
+          name: slack-header-injection
 
   # Composite tools
   compositeTools:
@@ -706,4 +725,4 @@ The VirtualMCPServer CRD includes comprehensive validation:
 - [MCPExternalAuthConfig](./crd-api.md#apiv1beta1mcpexternalauthconfig): External authentication configuration
 - [MCPToolConfig](./crd-api.md#apiv1beta1mcptoolconfig): Tool filtering and renaming configuration
 - [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
-- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md): Complete design proposal
+- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/toolhive/THV-0008-virtual-mcp-server.md): Complete design proposal

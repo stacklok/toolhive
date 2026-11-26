@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
@@ -66,6 +68,7 @@ func (r *MCPServerEntryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		ctxLogger.Error(err, "Failed to get MCPServerEntry")
 		return ctrl.Result{}, err
 	}
+	originalStatus := entry.DeepCopy().Status
 
 	// Validate all referenced resources. Transient errors are returned directly
 	// to force a requeue rather than persisting a misleading condition.
@@ -102,6 +105,9 @@ func (r *MCPServerEntryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Persist status
 	entry.Status.ObservedGeneration = entry.Generation
+	if equality.Semantic.DeepEqual(originalStatus, entry.Status) {
+		return ctrl.Result{}, nil
+	}
 	if err := r.Status().Update(ctx, entry); err != nil {
 		if errors.IsConflict(err) {
 			return ctrl.Result{RequeueAfter: mcpServerEntryRequeueDelay}, nil
@@ -289,6 +295,36 @@ func (r *MCPServerEntryReconciler) validateExternalAuthConfigRef(
 		return false, err
 	}
 
+	// Surface a source-level validation failure (for example, a malformed OBO
+	// config reported as Valid=False / InvalidConfig) on the
+	// consumer before checking the type support matrix. The source failure is
+	// more specific than consumer compatibility and is terminal until either
+	// resource changes, so return false without an error to avoid a retry loop.
+	if mirrored := mirroredExternalAuthConfigInvalid(authConfig); mirrored != nil {
+		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mirrored.Reason,
+			Message:            mirrored.Message,
+			ObservedGeneration: entry.Generation,
+		})
+		return false, nil
+	}
+
+	if err := externalauthsupport.Validate(
+		externalauthsupport.ConsumerMCPServerEntry,
+		authConfig.Spec.Type,
+	); err != nil {
+		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			Message:            err.Error(),
+			ObservedGeneration: entry.Generation,
+		})
+		return false, nil
+	}
+
 	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated,
 		Status:             metav1.ConditionTrue,
@@ -424,11 +460,14 @@ func (r *MCPServerEntryReconciler) validateHeaderForwardSecretRefs(
 }
 
 // validateRemoteURL checks that the RemoteURL is well-formed and does not target
-// a blocked internal or metadata endpoint (SSRF protection).
+// a blocked internal or metadata endpoint (SSRF protection). When the entry sets
+// spec.allowPrivateEndpoint, private-network and cluster-internal endpoints are
+// permitted.
 func (*MCPServerEntryReconciler) validateRemoteURL(
 	entry *mcpv1beta1.MCPServerEntry,
 ) bool {
-	if err := validation.ValidateRemoteURL(entry.Spec.RemoteURL); err != nil {
+	opts := validation.ValidateRemoteURLOptions{AllowPrivateEndpoint: entry.Spec.AllowPrivateEndpoint}
+	if err := validation.ValidateRemoteURL(entry.Spec.RemoteURL, opts); err != nil {
 		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated,
 			Status:             metav1.ConditionFalse,

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Scope represents the scope at which a skill is installed.
@@ -128,6 +128,9 @@ type ParseResult struct {
 	Metadata      map[string]string
 	Requires      []Dependency
 	Body          []byte
+	// bodyLine is the 1-based line of the original content on which Body
+	// starts, used to report file-absolute line numbers.
+	bodyLine int
 }
 
 // SkillMetadata contains metadata about a skill.
@@ -171,9 +174,11 @@ type InstalledSkill struct {
 	// toolhive.lock.yaml. Only ever true for project-scoped installs. No
 	// omitempty: false is an observable state (unmanaged), not an absence.
 	Managed bool `json:"managed"`
-	// SigstoreBundle is the serialized Sigstore bundle captured at install
-	// time, used for offline re-verification during sync. Nil for unsigned
-	// installs. Never serialized to API responses.
+	// SigstoreBundle is the signature material captured at install time,
+	// used for offline re-verification during sync. It is core's durable
+	// form (see verifier.Result.Bundle), not necessarily bare Sigstore
+	// bundle JSON, and is re-verified against the ARTIFACT digest. Nil for
+	// unsigned installs. Never serialized to API responses.
 	SigstoreBundle []byte `json:"-"`
 }
 

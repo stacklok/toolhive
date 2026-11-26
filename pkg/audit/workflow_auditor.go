@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -21,11 +22,17 @@ type WorkflowAuditor struct {
 	auditLogger *slog.Logger
 	config      *Config
 	component   string
+	logWriter   io.Writer
+	// subjectEnricher adds embedder-supplied subjects to each event; nil
+	// leaves events unchanged.
+	subjectEnricher SubjectEnricher
 }
 
 // NewWorkflowAuditor creates a new workflow auditor.
 // If config is nil, creates a default configuration with stdout logging.
-func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
+// opts set behavior that is configured from Go rather than the serialized Config,
+// such as WithSubjectEnricher.
+func NewWorkflowAuditor(config *Config, opts ...Option) (*WorkflowAuditor, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -41,11 +48,21 @@ func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
 		component = "vmcp-composer"
 	}
 
+	o := buildOptions(opts)
+
 	return &WorkflowAuditor{
-		auditLogger: NewAuditLogger(logWriter),
-		config:      config,
-		component:   component,
+		auditLogger:     NewAuditLogger(logWriter),
+		config:          config,
+		component:       component,
+		logWriter:       logWriter,
+		subjectEnricher: o.subjectEnricher,
 	}, nil
+}
+
+// Close closes the underlying log writer if it owns a closeable resource.
+// This should be called when the workflow auditor is no longer needed.
+func (w *WorkflowAuditor) Close() error {
+	return closeLogWriter(w.logWriter)
 }
 
 // LogWorkflowStarted logs the start of workflow execution.
@@ -319,7 +336,7 @@ func (w *WorkflowAuditor) newEvent(ctx context.Context, eventType, outcome strin
 		eventType,
 		w.extractSource(ctx),
 		outcome,
-		w.extractSubjects(ctx),
+		w.extractSubjects(ctx, eventType),
 		w.component,
 	)
 	w.attachDelegation(ctx, event)
@@ -336,14 +353,20 @@ func (*WorkflowAuditor) extractSource(_ context.Context) EventSource {
 	}
 }
 
-// extractSubjects extracts subject information from context.
-func (*WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string {
+// extractSubjects extracts subject information from context, including any
+// subjects the configured SubjectEnricher adds.
+//
+// eventType is the event being built, used only to label an enricher panic.
+func (w *WorkflowAuditor) extractSubjects(ctx context.Context, eventType string) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity
-	if identity, ok := auth.IdentityFromContext(ctx); ok {
+	identity, ok := auth.IdentityFromContext(ctx)
+	if ok {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
+
+	applySubjectEnricher(ctx, w.subjectEnricher, identity, eventType, subjects)
 
 	// If no user found, set anonymous
 	if subjects[SubjectKeyUser] == "" {

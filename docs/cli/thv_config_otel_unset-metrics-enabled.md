@@ -24,13 +24,13 @@ thv config otel unset-metrics-enabled [flags]
 ### Options
 
 ```
-  -h, --help   help for unset-metrics-enabled
+  -h, --help[=true|false]   help for unset-metrics-enabled
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

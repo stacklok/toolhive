@@ -17,6 +17,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,15 +26,18 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
@@ -79,6 +84,12 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				// Verify service account
 				assert.Equal(t, proxyRunnerServiceAccountNameForRemoteProxy("basic-proxy"),
 					dep.Spec.Template.Spec.ServiceAccountName)
+
+				// Verify default resource requirements when Spec.Resources is empty
+				assert.Equal(t, resource.MustParse("50m"), container.Resources.Requests[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("64Mi"), container.Resources.Requests[corev1.ResourceMemory])
+				assert.Equal(t, resource.MustParse("200m"), container.Resources.Limits[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("256Mi"), container.Resources.Limits[corev1.ResourceMemory])
 			},
 		},
 		{
@@ -104,6 +115,32 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				assert.Equal(t, "512Mi", container.Resources.Limits.Memory().String())
 				assert.Equal(t, "100m", container.Resources.Requests.Cpu().String())
 				assert.Equal(t, "128Mi", container.Resources.Requests.Memory().String())
+			},
+		},
+		{
+			name: "with partial resource overrides",
+			proxy: v1beta1test.NewMCPRemoteProxy("partial-resources-proxy", "default",
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.Resources = mcpv1beta1.ResourceRequirements{
+						Limits: mcpv1beta1.ResourceList{
+							CPU: "1",
+						},
+						Requests: mcpv1beta1.ResourceList{
+							Memory: "128Mi",
+						},
+					}
+				}),
+			),
+			validate: func(t *testing.T, dep *appsv1.Deployment) {
+				t.Helper()
+				container := dep.Spec.Template.Spec.Containers[0]
+				// User-provided fields take precedence; missing fields keep defaults,
+				// except the CPU request, which Kubernetes copies from the user's CPU
+				// limit at Pod creation.
+				assert.NotContains(t, container.Resources.Requests, corev1.ResourceCPU)
+				assert.Equal(t, resource.MustParse("128Mi"), container.Resources.Requests[corev1.ResourceMemory])
+				assert.Equal(t, resource.MustParse("1"), container.Resources.Limits[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("256Mi"), container.Resources.Limits[corev1.ResourceMemory])
 			},
 		},
 		{
@@ -270,7 +307,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			svc := reconciler.serviceForMCPRemoteProxy(context.TODO(), tt.proxy)
+			svc := reconciler.serviceForMCPRemoteProxy(context.TODO(), tt.proxy, false)
 			require.NotNil(t, svc)
 
 			if tt.validate != nil {
@@ -331,6 +368,130 @@ func TestBuildResourceRequirements(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResourceRequirementsForRemoteProxy tests default injection and merge behavior
+func TestResourceRequirementsForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		proxy    *mcpv1beta1.MCPRemoteProxy
+		validate func(*testing.T, corev1.ResourceRequirements)
+	}{
+		{
+			name:  "defaults when resources omitted",
+			proxy: v1beta1test.NewMCPRemoteProxy("defaults-proxy", "default"),
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				assert.Equal(t, resource.MustParse("50m"), res.Requests[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("64Mi"), res.Requests[corev1.ResourceMemory])
+				assert.Equal(t, resource.MustParse("200m"), res.Limits[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("256Mi"), res.Limits[corev1.ResourceMemory])
+			},
+		},
+		{
+			name: "user overrides win over defaults",
+			proxy: v1beta1test.NewMCPRemoteProxy("override-resources-proxy", "default",
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.Resources = mcpv1beta1.ResourceRequirements{
+						Limits: mcpv1beta1.ResourceList{
+							CPU:    "1",
+							Memory: "512Mi",
+						},
+						Requests: mcpv1beta1.ResourceList{
+							CPU:    "100m",
+							Memory: "128Mi",
+						},
+					}
+				}),
+			),
+			validate: func(t *testing.T, res corev1.ResourceRequirements) {
+				t.Helper()
+				assert.Equal(t, resource.MustParse("100m"), res.Requests[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("128Mi"), res.Requests[corev1.ResourceMemory])
+				assert.Equal(t, resource.MustParse("1"), res.Limits[corev1.ResourceCPU])
+				assert.Equal(t, resource.MustParse("512Mi"), res.Limits[corev1.ResourceMemory])
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := resourceRequirementsForRemoteProxy(tt.proxy)
+			require.NoError(t, err)
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
+		})
+	}
+}
+
+// TestMCPRemoteProxyDeploymentNeedsUpdate_Resources detects resource drift with defaults
+func TestMCPRemoteProxyDeploymentNeedsUpdate_Resources(t *testing.T) {
+	t.Parallel()
+
+	newReconciler := func(t *testing.T) *MCPRemoteProxyReconciler {
+		t.Helper()
+		return &MCPRemoteProxyReconciler{
+			Scheme:           testutil.NewScheme(t),
+			PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		}
+	}
+
+	t.Run("freshly built deployment does not need update", func(t *testing.T) {
+		t.Parallel()
+		reconciler := newReconciler(t)
+		proxy := v1beta1test.NewMCPRemoteProxy("resources-drift-proxy", "default")
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+	})
+
+	t.Run("deployment created before defaults existed needs update", func(t *testing.T) {
+		t.Parallel()
+		reconciler := newReconciler(t)
+		proxy := v1beta1test.NewMCPRemoteProxy("resources-drift-proxy", "default")
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+		deployment.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
+		assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+	})
+
+	t.Run("non-canonical overrides do not drift after apiserver round-trip", func(t *testing.T) {
+		t.Parallel()
+		reconciler := newReconciler(t)
+		proxy := v1beta1test.NewMCPRemoteProxy("resources-canonical-proxy", "default",
+			v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+				p.Spec.Resources = mcpv1beta1.ResourceRequirements{
+					Limits:   mcpv1beta1.ResourceList{CPU: "0.2", Memory: "1024Mi"},
+					Requests: mcpv1beta1.ResourceList{CPU: "1000m"},
+				}
+			}),
+		)
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+
+		// The apiserver stores quantities in canonical form, so the object read
+		// back on the next reconcile is not reflect.DeepEqual to the one we built.
+		container := &deployment.Spec.Template.Spec.Containers[0]
+		container.Resources.Limits = canonicalizeResourceList(container.Resources.Limits)
+		container.Resources.Requests = canonicalizeResourceList(container.Resources.Requests)
+
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+	})
+}
+
+func canonicalizeResourceList(in corev1.ResourceList) corev1.ResourceList {
+	out := make(corev1.ResourceList, len(in))
+	for name, quantity := range in {
+		out[name] = resource.MustParse(quantity.String())
+	}
+	return out
 }
 
 // TestBuildHeaderForwardSecretEnvVars tests the buildHeaderForwardSecretEnvVars function
@@ -805,18 +966,15 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testin
 }
 
 // TestMCPRemoteProxyDeployment_OBOSecretEnvVars verifies that an obo-typed
-// MCPExternalAuthConfig referenced from an MCPRemoteProxy injects the registered
-// OBOHandler.SecretEnvVars output into the proxy container, and that the
+// MCPExternalAuthConfig referenced from an MCPRemoteProxy mounts the OBO client
+// secret into the proxy container under obo.ClientSecretEnvVar, and that the
 // deployment builder and drift check agree on it so a correctly-configured
-// resource does not hot-loop. A stub OBO handler stands in for the out-of-tree
-// enterprise handler.
-//
-//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+// resource does not hot-loop.
 func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
-	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+	t.Parallel()
 
 	oboEnvVar := corev1.EnvVar{
-		Name: "TOOLHIVE_OBO_CLIENT_SECRET",
+		Name: obo.ClientSecretEnvVar,
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
@@ -824,11 +982,6 @@ func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
 			},
 		},
 	}
-	stub := defaultOBOHandlerStub()
-	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-		return []corev1.EnvVar{oboEnvVar}, nil
-	}
-	ctrlutil.RegisterOBOHandler(stub)
 
 	scheme := testutil.NewScheme(t)
 
@@ -839,7 +992,12 @@ func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
-			OBO:  &mcpv1beta1.OBOConfig{},
+			OBO: &mcpv1beta1.OBOConfig{
+				TenantID:        "contoso.onmicrosoft.com",
+				ClientID:        "client-id",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "obo-secret", Key: "client-secret"},
+				Audience:        "api://backend/.default",
+			},
 		},
 	}
 
@@ -863,10 +1021,52 @@ func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
 
 	container := deployment.Spec.Template.Spec.Containers[0]
 	assert.Contains(t, container.Env, oboEnvVar,
-		"OBO handler SecretEnvVars output must be injected into the proxy container")
+		"the OBO client secret must be mounted into the proxy container")
 
 	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
 		"freshly built deployment with an OBO env var must not be seen as drifted")
+}
+
+// TestMCPRemoteProxyDeployment_OBOSecretEnvVars_Error covers the MCPRemoteProxy
+// path when the OBO secret env var cannot be produced (an obo config with no
+// clientSecretRef): the builder logs the ValidationError and leaves the env var
+// out. Unlike MCPServer, the builder and drift check share buildEnvVarsForProxy,
+// so they agree and the Deployment is not reported as drifted. The
+// MCPExternalAuthConfig reconciler surfaces the underlying InvalidConfig.
+func TestMCPRemoteProxyDeployment_OBOSecretEnvVars_Error(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef(authConfig.Name),
+	)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(authConfig).Build()
+	reconciler := &MCPRemoteProxyReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	ctx, lines := newLogCapturingContext(t)
+	deployment := reconciler.deploymentForMCPRemoteProxy(ctx, proxy, "test-checksum")
+	require.NotNil(t, deployment)
+	for _, ev := range deployment.Spec.Template.Spec.Containers[0].Env {
+		assert.NotEqual(t, obo.ClientSecretEnvVar, ev.Name)
+	}
+	assert.True(t, slices.ContainsFunc(*lines, func(line string) bool {
+		return strings.Contains(line, "Failed to generate OBO secret environment variables") &&
+			strings.Contains(line, "obo: clientSecretRef must set both name and key")
+	}), "the builder must log the OBO validation failure; got %v", *lines)
+
+	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+		"builder and drift check share buildEnvVarsForProxy, so the OBO-env-less Deployment is not drifted")
 }
 
 func TestMCPRemoteProxyDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
@@ -1181,7 +1381,10 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
-				Port: 8080,
+				Name:       "http",
+				Port:       8080,
+				TargetPort: intstr.FromInt(8080),
+				Protocol:   corev1.ProtocolTCP,
 			}},
 		},
 	}
@@ -1251,10 +1454,45 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			r := &MCPRemoteProxyReconciler{}
-			result := r.serviceNeedsUpdate(tt.service, tt.proxy)
+			result := r.serviceNeedsUpdate(tt.service, tt.proxy, false)
 			assert.Equal(t, tt.needsUpdate, result)
 		})
 	}
+}
+
+func TestBuildRedisPasswordEnvVarForRemoteProxy_GlobalDefault(t *testing.T) {
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379", SecretName: "global-redis-secret", SecretKey: "redis-password"}
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, session.RedisPasswordEnvVar, got[0].Name)
+	assert.Empty(t, got[0].Value, "must not use plaintext Value")
+	require.NotNil(t, got[0].ValueFrom)
+	require.NotNil(t, got[0].ValueFrom.SecretKeyRef)
+	assert.Equal(t, "global-redis-secret", got[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "redis-password", got[0].ValueFrom.SecretKeyRef.Key)
+}
+
+func TestBuildRedisPasswordEnvVarForRemoteProxy_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379", SecretName: "global-secret", SecretKey: "redis-password"}
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxySessionStorage(&mcpv1beta1.SessionStorageConfig{Provider: "memory"}))
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
+	assert.Empty(t, got, "non-Redis provider should not receive global Redis password env var")
+}
+
+func TestBuildRedisPasswordEnvVarForRemoteProxy_PasswordlessGlobalDefault(t *testing.T) {
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
+	assert.Empty(t, got, "global default without a secret name must not inject a password env var")
 }
 
 // TestBuildRedisPasswordEnvVarForRemoteProxy mirrors VirtualMCPServer's
@@ -1303,7 +1541,7 @@ func TestBuildRedisPasswordEnvVarForRemoteProxy(t *testing.T) {
 			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
 				v1beta1test.WithRemoteProxySessionStorage(tc.storage),
 			)
-			env := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+			env := buildRedisPasswordEnvVarForRemoteProxy(proxy, nil)
 			if tc.expectEnVar {
 				require.Len(t, env, 1)
 				assert.Equal(t, session.RedisPasswordEnvVar, env[0].Name)

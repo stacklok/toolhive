@@ -16,26 +16,96 @@ package controllers
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
+
+func newExternalAuthConfigForConsumerTest(
+	t *testing.T,
+	name string,
+	authType mcpv1beta1.ExternalAuthType,
+) *mcpv1beta1.MCPExternalAuthConfig {
+	t.Helper()
+
+	config := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: authType},
+	}
+	switch authType {
+	case mcpv1beta1.ExternalAuthTypeTokenExchange:
+		config.Spec.TokenExchange = &mcpv1beta1.TokenExchangeConfig{
+			TokenURL: "https://issuer.example/token",
+			ClientID: "client-id",
+			Audience: "backend",
+		}
+	case mcpv1beta1.ExternalAuthTypeHeaderInjection:
+		config.Spec.HeaderInjection = &mcpv1beta1.HeaderInjectionConfig{
+			HeaderName:     "X-Backend-Token",
+			ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "header-secret", Key: "value"},
+		}
+	case mcpv1beta1.ExternalAuthTypeBearerToken:
+		config.Spec.BearerToken = &mcpv1beta1.BearerTokenConfig{
+			TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "bearer-secret", Key: "token"},
+		}
+	case mcpv1beta1.ExternalAuthTypeUnauthenticated:
+		// No type-specific configuration is valid for unauthenticated.
+	case mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer:
+		config.Spec.EmbeddedAuthServer = &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name: "oidc",
+				Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+					IssuerURL: "https://idp.example.com",
+					ClientID:  "client-id",
+				},
+			}},
+		}
+	case mcpv1beta1.ExternalAuthTypeAWSSts:
+		config.Spec.AWSSts = &mcpv1beta1.AWSStsConfig{
+			Region:          "us-east-1",
+			FallbackRoleArn: "arn:aws:iam::123456789012:role/toolhive-test",
+		}
+	case mcpv1beta1.ExternalAuthTypeUpstreamInject:
+		config.Spec.UpstreamInject = &mcpv1beta1.UpstreamInjectSpec{ProviderName: "oidc"}
+	case mcpv1beta1.ExternalAuthTypeOBO:
+		config.Spec.OBO = &mcpv1beta1.OBOConfig{}
+	case mcpv1beta1.ExternalAuthTypeXAA:
+		config.Spec.XAA = &mcpv1beta1.XAASpec{
+			IDPTokenURL:    "https://idp.example.com/token",
+			TargetTokenURL: "https://target.example.com/token",
+			TargetAudience: "https://target.example.com",
+			TargetResource: "https://backend.example.com/mcp",
+		}
+	default:
+		t.Fatalf("unsupported test auth type %q", authType)
+	}
+
+	return config
+}
 
 func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 	t.Parallel()
@@ -208,6 +278,262 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPServerReconciler_handleExternalAuthConfig_UnsupportedAuthType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		authType mcpv1beta1.ExternalAuthType
+	}{
+		{name: "bearer token", authType: mcpv1beta1.ExternalAuthTypeBearerToken},
+		{name: "AWS STS", authType: mcpv1beta1.ExternalAuthTypeAWSSts},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			const (
+				generation   int64 = 17
+				previousHash       = "previous-supported-hash"
+			)
+			authConfig := newExternalAuthConfigForConsumerTest(t, "auth-config", tt.authType)
+			authConfig.Status.ConfigHash = "unsupported-hash"
+			mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{ExternalAuthConfigHash: previousHash}),
+				v1beta1test.Mutate(func(server *mcpv1beta1.MCPServer) {
+					server.Generation = generation
+				}),
+			)
+
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(authConfig, mcpServer).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+				Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), mcpServer)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), string(tt.authType))
+			assert.Contains(t, err.Error(), "MCPServer")
+			cond := meta.FindStatusCondition(
+				mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, cond.Reason)
+			assert.Equal(t, generation, cond.ObservedGeneration)
+			assert.Contains(t, cond.Message, string(tt.authType))
+			assert.Contains(t, cond.Message, "MCPServer")
+			assert.Equal(t, previousHash, mcpServer.Status.ExternalAuthConfigHash,
+				"an unsupported config must not advance the last applied config hash")
+		})
+	}
+}
+
+// TestMCPServerReconciler_handleExternalAuthConfig_AcceptsTypesAppliedByVirtualMCPServer
+// covers an MCPServer that is a VirtualMCPServer backend. Discovered mode reads
+// the auth reference from the backend resource and applies it when calling the
+// backend, so the MCPServer has to accept the type and reconcile normally even
+// though its own proxy runner does nothing with it. The condition stays True
+// but says so: an MCPServer that no VirtualMCPServer discovers must not read as
+// protected by a config its proxy never applies.
+func TestMCPServerReconciler_handleExternalAuthConfig_AcceptsTypesAppliedByVirtualMCPServer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		authType mcpv1beta1.ExternalAuthType
+	}{
+		{name: "header injection", authType: mcpv1beta1.ExternalAuthTypeHeaderInjection},
+		{name: "upstream injection", authType: mcpv1beta1.ExternalAuthTypeUpstreamInject},
+		{name: "XAA", authType: mcpv1beta1.ExternalAuthTypeXAA},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authConfig := newExternalAuthConfigForConsumerTest(t, "auth-config", tt.authType)
+			authConfig.Status.ConfigHash = "discovered-hash"
+			mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+			)
+
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(authConfig, mcpServer).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+				Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			require.NoError(t, reconciler.handleExternalAuthConfig(t.Context(), mcpServer),
+				"a type applied by VirtualMCPServer must not fail the backend")
+			cond := meta.FindStatusCondition(
+				mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAppliedByVirtualMCPServer, cond.Reason)
+			assert.Contains(t, cond.Message, string(tt.authType))
+			assert.Contains(t, cond.Message, "only when a VirtualMCPServer discovers this backend")
+			assert.Equal(t, "discovered-hash", mcpServer.Status.ExternalAuthConfigHash)
+
+			// Repointing the config to a type the proxy runner applies clears the advisory.
+			var applied mcpv1beta1.MCPExternalAuthConfig
+			require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(authConfig), &applied))
+			applied.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeUnauthenticated}
+			require.NoError(t, fakeClient.Update(t.Context(), &applied))
+			require.NoError(t, reconciler.handleExternalAuthConfig(t.Context(), mcpServer))
+			cond = meta.FindStatusCondition(
+				mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, cond.Reason)
+			assert.Equal(t, "MCPExternalAuthConfig 'auth-config' is valid", cond.Message)
+		})
+	}
+}
+
+func TestMCPServerReconciler_handleExternalAuthConfig_RecoversFromUnsupportedAuthType(t *testing.T) {
+	t.Parallel()
+
+	const (
+		namespace = "default"
+		authName  = "auth-config"
+	)
+	authConfig := newExternalAuthConfigForConsumerTest(
+		t, authName, mcpv1beta1.ExternalAuthTypeBearerToken)
+	authConfig.Status.ConfigHash = "unsupported-hash"
+	mcpServer := v1beta1test.NewMCPServer("test-server", namespace,
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef(authName),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig, mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	require.Error(t, reconciler.handleExternalAuthConfig(t.Context(), mcpServer))
+	cond := meta.FindStatusCondition(
+		mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, cond)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, cond.Reason)
+
+	var updatedConfig mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKey{Name: authName, Namespace: namespace}, &updatedConfig))
+	updatedConfig.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{
+		Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+		TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+			TokenURL: "https://issuer.example/token",
+			ClientID: "client-id",
+			Audience: "backend",
+		},
+	}
+	updatedConfig.Status.ConfigHash = "supported-hash"
+	require.NoError(t, fakeClient.Update(t.Context(), &updatedConfig))
+
+	require.NoError(t, reconciler.handleExternalAuthConfig(t.Context(), mcpServer))
+	recovered := meta.FindStatusCondition(
+		mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, recovered,
+		"the condition must flip to True after the source becomes supported, not linger at False")
+	assert.Equal(t, metav1.ConditionTrue, recovered.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, recovered.Reason)
+	assert.Equal(t, "supported-hash", mcpServer.Status.ExternalAuthConfigHash)
+}
+
+func TestMCPServerReconciler_UnsupportedExternalAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	authConfig := newExternalAuthConfigForConsumerTest(
+		t, "auth-config", mcpv1beta1.ExternalAuthTypeBearerToken)
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+		v1beta1test.Mutate(func(server *mcpv1beta1.MCPServer) {
+			server.Finalizers = []string{MCPServerFinalizerName}
+		}),
+	)
+
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig, mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{
+		Name: mcpServer.Name, Namespace: mcpServer.Namespace,
+	}}
+
+	result, err := reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	assert.True(t, result.IsZero(), "unsupported auth should be terminal until a watched resource changes")
+
+	afterFirst := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), request.NamespacedName, afterFirst))
+	condition := meta.FindStatusCondition(
+		afterFirst.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, condition.Reason)
+}
+
+// TestMCPServerReconciler_UnsupportedAuthTypeDoesNotFlapLastTransitionTime
+// guards against mirrorInvalidOnMCPServer's clear branch clobbering the
+// ExternalAuthConfigValidated condition that the consumer/type check owns. The
+// referenced MCPExternalAuthConfig is healthy, so the mirror takes its clear
+// branch on every reconcile; without ownedByLocalValidation recognising
+// ConditionReasonUnsupportedAuthType the condition would be removed and
+// immediately re-added, restamping LastTransitionTime each time.
+func TestMCPServerReconciler_UnsupportedAuthTypeDoesNotFlapLastTransitionTime(t *testing.T) {
+	t.Parallel()
+
+	// Seeded well in the past: metav1.Time has second resolution, so a
+	// remove-then-re-add within one call is only observable against a
+	// timestamp that predates the test run.
+	seeded := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	authConfig := newExternalAuthConfigForConsumerTest(
+		t, "auth-config", mcpv1beta1.ExternalAuthTypeBearerToken)
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Conditions: []metav1.Condition{{
+				Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonUnsupportedAuthType,
+				Message:            "already recorded",
+				LastTransitionTime: seeded,
+			}},
+		}),
+	)
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig, mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	require.Error(t, reconciler.handleExternalAuthConfig(t.Context(), mcpServer))
+
+	condition := meta.FindStatusCondition(
+		mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, condition, "condition must survive the mirror's clear branch")
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, condition.Reason)
+	assert.Equal(t, seeded, condition.LastTransitionTime,
+		"an unchanged unsupported-type failure must not restamp LastTransitionTime")
 }
 
 func TestMCPServerReconciler_handleExternalAuthConfig_SameNamespace(t *testing.T) {
@@ -384,9 +710,8 @@ func TestMCPServerReconciler_handleExternalAuthConfig_NoHashInConfig(t *testing.
 
 // TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition verifies
 // the Status Condition Parity mirror added for #5347: when the referenced
-// MCPExternalAuthConfig has Status.Conditions[Valid]=False (e.g. an obo-typed
-// config that the default OBO handler rejected with Reason=EnterpriseRequired
-// in upstream-only builds), the MCPServer reconciler must surface a parallel
+// MCPExternalAuthConfig has Status.Conditions[Valid]=False, the MCPServer
+// reconciler must surface a parallel
 // ExternalAuthConfigValidated=False condition that carries the same reason and
 // message — instead of silently propagating the dispatch error through the
 // generic phase-Failed path.
@@ -399,21 +724,20 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 	const (
 		authName  = "obo-config"
 		namespace = "default"
-		reason    = mcpv1beta1.ConditionReasonEnterpriseRequired
-		message   = "on-behalf-of (OBO) external auth type requires an enterprise build"
+		reason    = testSourceInvalidReason
+		message   = testSourceInvalidMessage
 	)
 
 	tests := []struct {
-		name                   string
-		sourceValid            *metav1.Condition
-		preexisting            []metav1.Condition
-		wantMirrored           bool
-		wantReason             string
-		wantMessage            string
-		wantPreexistingCleared bool
+		name         string
+		sourceValid  *metav1.Condition
+		preexisting  []metav1.Condition
+		wantMirrored bool
+		wantReason   string
+		wantMessage  string
 	}{
 		{
-			name: "source Valid=False/EnterpriseRequired is mirrored",
+			name: "source Valid=False/SourceRejected is mirrored",
 			sourceValid: &metav1.Condition{
 				Type:    mcpv1beta1.ConditionTypeValid,
 				Status:  metav1.ConditionFalse,
@@ -422,19 +746,37 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 			},
 			wantMirrored: true,
 			wantReason:   reason,
-			wantMessage:  message,
+			wantMessage:  mirroredConditionMessage(authName, message),
 		},
 		{
-			name: "source Valid=False/InvalidConfig is mirrored verbatim",
+			name: "source Valid=False/InvalidConfig keeps its reason behind the mirror marker",
 			sourceValid: &metav1.Condition{
 				Type:    mcpv1beta1.ConditionTypeValid,
 				Status:  metav1.ConditionFalse,
 				Reason:  mcpv1beta1.ConditionReasonInvalidConfig,
-				Message: "custom OBO handler rejected the spec",
+				Message: "obo: clientId is required",
 			},
 			wantMirrored: true,
 			wantReason:   mcpv1beta1.ConditionReasonInvalidConfig,
-			wantMessage:  "custom OBO handler rejected the spec",
+			wantMessage:  "Referenced MCPExternalAuthConfig 'obo-config' is invalid: obo: clientId is required",
+		},
+		{
+			// Regression guard for a stale mirror whose Reason collides with a
+			// locally-owned one: the marker, not the Reason, decides ownership.
+			name: "stale mirrored InvalidConfig is cleared when source has healed",
+			sourceValid: &metav1.Condition{
+				Type:   mcpv1beta1.ConditionTypeValid,
+				Status: metav1.ConditionTrue,
+				Reason: "ValidationSucceeded",
+			},
+			preexisting: []metav1.Condition{{
+				Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+				Message:            mirroredConditionMessage(authName, "obo: clientId is required"),
+				ObservedGeneration: 11,
+			}},
+			wantMirrored: false,
 		},
 		{
 			name: "source Valid=True does not produce a mirror",
@@ -464,11 +806,10 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 			preexisting: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
-				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Reason:  testSourceInvalidReason,
 				Message: "stale mirror from a previous reconcile",
 			}},
-			wantMirrored:           false,
-			wantPreexistingCleared: true,
+			wantMirrored: false,
 		},
 	}
 
@@ -496,6 +837,9 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Conditions: tt.preexisting}),
 				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 					m.Generation = serverGeneration
+					// obo needs incoming OIDC; without it the handler
+					// rejects the server before the success writer runs.
+					m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc"}
 				}),
 			)
 
@@ -514,11 +858,13 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 
 			if !tt.wantMirrored {
 				assert.NoError(t, err, "no error expected when source is valid")
-				if tt.wantPreexistingCleared {
-					assert.Nil(t, cond, "stale mirror condition must be cleared once source has healed")
-				} else {
-					assert.Nil(t, cond, "no mirror condition expected when source is valid")
-				}
+				// The mirror clears any stale False; handleExternalAuthConfig's own
+				// success writer then records the validated state, so the condition
+				// ends up True rather than absent.
+				require.NotNil(t, cond, "success writer must record the validated state")
+				assert.Equal(t, metav1.ConditionTrue, cond.Status,
+					"no mirrored failure must remain once the source is valid")
+				assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, cond.Reason)
 				return
 			}
 
@@ -556,7 +902,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnRefRemoved(t
 			Conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
-				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Reason:  testSourceInvalidReason,
 				Message: "stale mirror from when the ref pointed at an obo-typed config",
 			}},
 		}),
@@ -597,7 +943,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 			Conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
-				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Reason:  testSourceInvalidReason,
 				Message: "stale mirror — source has since been deleted",
 			}},
 		}),
@@ -620,7 +966,293 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 		"stale mirror must be cleared when the referenced source is NotFound")
 }
 
-// TestMCPServerReconciler_ExternalAuthConfigRefInvalidEmbeddedConfigSteadyState
+func TestMCPServerReconciler_InvalidUpstreamCABundleIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("auth"),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name: "upstream",
+				Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{
+					ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt"},
+				}},
+			}}},
+		},
+	}
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authConfig, bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
+	require.NoError(t, err)
+	assert.Zero(t, result)
+
+	actual := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+	assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, actual.Status.Phase)
+	ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	condition := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason)
+}
+
+// guards against mirrorInvalidOnMCPServer's clear branch clobbering the
+// ExternalAuthConfigValidated condition that the upstream CA bundle check owns.
+// The referenced MCPExternalAuthConfig is healthy, so the mirror takes its clear
+// branch on every reconcile; without ownedByLocalValidation recognising
+// ConditionReasonInvalidCABundle the condition would be removed and immediately
+// re-added, restamping LastTransitionTime each time.
+// caBundleRepairAuthConfig returns an embedded auth server config that is valid
+// apart from its CA bundle, so a reconcile that gets past the bundle check does
+// not then fail on unrelated missing fields.
+func caBundleRepairAuthConfig() *mcpv1beta1.MCPExternalAuthConfig {
+	return &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				HMACSecretRefs:       []mcpv1beta1.SecretKeyRef{{Name: "hmac-secret", Key: "hmac"}},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+					Name: "upstream",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL:   "https://idp.example.com",
+						ClientID:    "client",
+						CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt"}},
+					},
+				}},
+			},
+		},
+	}
+}
+
+// The referenced ConfigMap starts without the key the bundle names, then gains
+// valid PEM. Neither metadata.generation nor the MCPExternalAuthConfig spec hash
+// changes across the repair, so this only passes if the condition is re-derived
+// from observed state rather than held by a hash guard — and only if a True
+// writer exists at all.
+func TestMCPServerReconciler_ExternalAuthConfigCABundleRepairRestoresTrue(t *testing.T) {
+	t.Parallel()
+
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("auth"),
+	)
+	authConfig := caBundleRepairAuthConfig()
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authConfig, bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.handleExternalAuthConfig(t.Context(), server)
+	require.Error(t, err, "a bundle ConfigMap without the named key must fail validation")
+	brokenCondition := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, brokenCondition)
+	require.Equal(t, metav1.ConditionFalse, brokenCondition.Status)
+	require.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, brokenCondition.Reason)
+
+	repaired := &corev1.ConfigMap{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(bundle), repaired))
+	repaired.Data = map[string]string{"ca.crt": string(mapperTestCertificatePEM(t))}
+	require.NoError(t, fakeClient.Update(t.Context(), repaired))
+
+	require.NoError(t, reconciler.handleExternalAuthConfig(t.Context(), server))
+	healedCondition := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, healedCondition)
+	assert.Equal(t, metav1.ConditionTrue, healedCondition.Status,
+		"repairing the ConfigMap must clear the CA bundle failure")
+	assert.Equal(t, mcpv1beta1.ConditionReasonExternalAuthConfigValid, healedCondition.Reason)
+}
+
+func TestMCPServerReconciler_InvalidCABundleDoesNotFlapLastTransitionTime(t *testing.T) {
+	t.Parallel()
+
+	// Seeded well in the past: metav1.Time has second resolution, so a
+	// remove-then-re-add within one reconcile is only observable against a
+	// timestamp that predates the test run.
+	seeded := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithImage("test"),
+		v1beta1test.WithExternalAuthConfigRef("auth"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Conditions: []metav1.Condition{{
+				Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
+				Message:            "invalid CA bundle: already recorded",
+				LastTransitionTime: seeded,
+			}},
+		}),
+	)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name: "upstream",
+				Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{
+					ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle"}, Key: "ca.crt"},
+				}},
+			}}},
+		},
+	}
+	// Present but keyless: the same terminal CA failure the seeded condition
+	// records, so the reconcile re-derives it unchanged.
+	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "default"}}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(server, authConfig, bundle).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	_, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
+	require.NoError(t, err)
+
+	actual := &mcpv1beta1.MCPServer{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+	condition := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+	require.NotNil(t, condition, "condition must survive the mirror's clear branch")
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidCABundle, condition.Reason)
+	assert.Equal(t, seeded, condition.LastTransitionTime,
+		"an unchanged terminal CA failure must not restamp LastTransitionTime")
+}
+
+// TestMCPServerReconciler_handleExternalAuthConfig_DoesNotFlapLastTransitionTime
+// guards against mirrorInvalidOnMCPServer's clear branch removing a condition
+// that it did not write. The referenced MCPExternalAuthConfig is healthy, so the
+// mirror takes its clear branch on every reconcile. If it removed the healthy
+// True condition (or another owner's failure), handleExternalAuthConfig would
+// re-add it a few lines later with a fresh LastTransitionTime, so every
+// reconcile would write status and that write would trigger the next reconcile.
+func TestMCPServerReconciler_handleExternalAuthConfig_DoesNotFlapLastTransitionTime(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authName   = "auth"
+		namespace  = "default"
+		configHash = "config-hash"
+		generation = int64(3)
+	)
+
+	healthySource := func() *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: authName, Namespace: namespace},
+			Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeUnauthenticated},
+			Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+				ConfigHash: configHash,
+				Conditions: []metav1.Condition{{
+					Type:   mcpv1beta1.ConditionTypeValid,
+					Status: metav1.ConditionTrue,
+					Reason: "ValidationSucceeded",
+				}},
+			},
+		}
+	}
+	multiUpstreamSource := func() *mcpv1beta1.MCPExternalAuthConfig {
+		source := healthySource()
+		source.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{Name: "first", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				{Name: "second", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+			}},
+		}
+		return source
+	}
+
+	tests := []struct {
+		name        string
+		source      *mcpv1beta1.MCPExternalAuthConfig
+		seeded      metav1.Condition
+		expectError bool
+	}{
+		{
+			name:   "healthy ExternalAuthConfigValid condition",
+			source: healthySource(),
+			seeded: metav1.Condition{
+				Status:  metav1.ConditionTrue,
+				Reason:  mcpv1beta1.ConditionReasonExternalAuthConfigValid,
+				Message: "MCPExternalAuthConfig 'auth' is valid",
+			},
+		},
+		{
+			name:   "multi-upstream failure owned by the single-upstream check",
+			source: multiUpstreamSource(),
+			seeded: metav1.Condition{
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonExternalAuthConfigMultiUpstream,
+				Message: "MCPServer supports only one upstream provider (found 2); use VirtualMCPServer for multi-upstream",
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Seeded well in the past: metav1.Time has second resolution, so a
+			// remove-then-re-add within one reconcile is only observable against a
+			// timestamp that predates the test run.
+			seeded := tt.seeded
+			seeded.Type = mcpv1beta1.ConditionTypeExternalAuthConfigValidated
+			seeded.ObservedGeneration = generation
+			seeded.LastTransitionTime = metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+
+			server := v1beta1test.NewMCPServer("server", namespace,
+				v1beta1test.WithImage("test"),
+				v1beta1test.WithExternalAuthConfigRef(authName),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+					ExternalAuthConfigHash: configHash,
+					Conditions:             []metav1.Condition{seeded},
+				}),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Generation = generation
+				}),
+			)
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(server, tt.source).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+				Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), server)
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			condition := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, condition)
+			assert.Equal(t, seeded, *condition,
+				"an unchanged condition must not be removed and re-added with a fresh LastTransitionTime")
+		})
+	}
+}
+
 // guards against mirrorInvalidOnMCPServer's clear branch clobbering the
 // ExternalAuthConfigValidated condition that handleInvalidEmbeddedAuthServerConfig
 // owns for a different reason (delegate clients configured without OIDC).
@@ -668,32 +1300,178 @@ func TestMCPServerReconciler_ExternalAuthConfigRefInvalidEmbeddedConfigSteadySta
 	assert.Equal(t, initial.Status, actual.Status)
 }
 
-// TestMCPServerDeployment_OBOSecretEnvVars verifies that an obo-typed
-// MCPExternalAuthConfig referenced from an MCPServer injects the registered
-// OBOHandler.SecretEnvVars output into the proxy container, and that the
-// deployment builder (deploymentForMCPServer) and the drift check
-// (deploymentNeedsUpdate) agree on it. MCPServer assembles env in two separate
-// functions, so this guards the builder/drift symmetry that prevents a reconcile
-// hot-loop. A stub OBO handler stands in for the out-of-tree enterprise handler.
-//
-//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
-func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
-	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+// TestMCPServerReconciler_handleExternalAuthConfig_OBORequiresIncomingAuth
+// verifies an MCPServer that references an obo config is rejected with
+// ExternalAuthConfigValidated=False / InvalidConfig when it has no
+// oidcConfigRef, and accepted once it has one.
+func TestMCPServerReconciler_handleExternalAuthConfig_OBORequiresIncomingAuth(t *testing.T) {
+	t.Parallel()
 
-	oboEnvVar := corev1.EnvVar{
-		Name: "TOOLHIVE_OBO_CLIENT_SECRET",
-		ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
-				Key:                  "client-secret",
-			},
+	tests := []struct {
+		name       string
+		withOIDC   bool
+		wantStatus metav1.ConditionStatus
+		wantReason string
+	}{
+		{name: "no oidcConfigRef is rejected", wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig},
+		{name: "oidcConfigRef set is accepted", withOIDC: true, wantStatus: metav1.ConditionTrue, wantReason: mcpv1beta1.ConditionReasonExternalAuthConfigValid},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := testutil.NewScheme(t)
+			authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
+				},
+			}
+			mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Generation = 3
+					if tt.withOIDC {
+						m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc"}
+					}
+				}),
+			)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(authConfig, mcpServer).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+				Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), mcpServer)
+
+			cond := meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, cond)
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			if !tt.withOIDC {
+				var vErr *obo.ValidationError
+				require.ErrorAs(t, err, &vErr, "the rejection must be terminal so Reconcile does not requeue")
+				assert.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, cond.Message)
+				assert.Equal(t, int64(3), cond.ObservedGeneration)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal drives Reconcile for
+// an MCPServer that references a valid obo config but has no oidcConfigRef.
+// The rejection is a spec defect, so Reconcile records it on status and returns
+// an empty result with no error rather than requeueing with backoff. Only a
+// failure to persist that rejection is returned, so the write is retried. A
+// non-validation error (a missing referenced config) is returned and requeued.
+func TestMCPServerReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	statusErr := stderrors.New("simulated status write failure")
+	// failRejectionWrite fails only the status write that records the obo
+	// rejection, so an unrelated earlier write cannot satisfy the assertion.
+	failRejectionWrite := interceptor.Funcs{
+		SubResourceUpdate: func(
+			ctx context.Context, c client.Client, subResource string, obj client.Object,
+			opts ...client.SubResourceUpdateOption,
+		) error {
+			if m, ok := obj.(*mcpv1beta1.MCPServer); ok {
+				cond := meta.FindStatusCondition(m.Status.Conditions,
+					mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+				if cond != nil && cond.Reason == mcpv1beta1.ConditionReasonInvalidConfig {
+					return statusErr
+				}
+			}
+			return c.SubResource(subResource).Update(ctx, obj, opts...)
 		},
 	}
-	stub := defaultOBOHandlerStub()
-	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-		return []corev1.EnvVar{oboEnvVar}, nil
+
+	tests := []struct {
+		name        string
+		authRef     string
+		interceptor *interceptor.Funcs
+		wantErr     error
+		// wantNotFound expects the lookup of the referenced config to fail
+		// as not found, which must requeue and never record the obo rejection.
+		wantNotFound bool
+	}{
+		{name: "rejection is persisted and not requeued", authRef: "obo-config"},
+		{name: "failed status write is retried", authRef: "obo-config", interceptor: &failRejectionWrite, wantErr: statusErr},
+		{name: "missing referenced config is requeued", authRef: "missing-config", wantNotFound: true},
 	}
-	ctrlutil.RegisterOBOHandler(stub)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := v1beta1test.NewMCPServer("server", "default",
+				v1beta1test.WithImage("test"),
+				v1beta1test.WithExternalAuthConfigRef(tt.authRef),
+			)
+			authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  validOBOSpec(),
+				},
+			}
+			scheme := testutil.NewScheme(t)
+			builder := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(server, authConfig).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{})
+			if tt.interceptor != nil {
+				builder = builder.WithInterceptorFuncs(*tt.interceptor)
+			}
+			fakeClient := builder.Build()
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(server)})
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr, "an unpersisted rejection must be retried, not dropped")
+				return
+			}
+
+			actual := &mcpv1beta1.MCPServer{}
+			if tt.wantNotFound {
+				require.Error(t, err, "a missing referenced config must be returned so it requeues")
+				assert.EqualError(t, err, "MCPExternalAuthConfig missing-config not found in namespace default")
+				require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+				validated := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+				assert.Nil(t, validated, "a lookup failure must not record a Validated condition")
+				return
+			}
+			require.NoError(t, err, "a spec defect must not be returned as an error (that requeues with backoff)")
+			assert.Equal(t, ctrl.Result{}, result)
+
+			require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(server), actual))
+			assert.Equal(t, mcpv1beta1.MCPServerPhaseFailed, actual.Status.Phase)
+			ready := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+			require.NotNil(t, ready)
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			validated := meta.FindStatusCondition(actual.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+			require.NotNil(t, validated)
+			assert.Equal(t, metav1.ConditionFalse, validated.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validated.Reason)
+			assert.Equal(t, ctrlutil.MsgOBORequiresIncomingAuth, validated.Message)
+		})
+	}
+}
+
+// TestMCPServerDeployment_OBOSecretEnvVars verifies that an obo-typed
+// MCPExternalAuthConfig referenced from an MCPServer mounts the OBO client
+// secret into the proxy container under obo.ClientSecretEnvVar, and that the
+// deployment builder (deploymentForMCPServer) and the drift check
+// (deploymentNeedsUpdate) agree on it. MCPServer assembles env in two separate
+// functions, so this guards the builder/drift symmetry that prevents a
+// reconcile hot-loop.
+func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
+	t.Parallel()
 
 	scheme := testutil.NewScheme(t)
 
@@ -701,7 +1479,12 @@ func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
-			OBO:  &mcpv1beta1.OBOConfig{},
+			OBO: &mcpv1beta1.OBOConfig{
+				TenantID:        "contoso.onmicrosoft.com",
+				ClientID:        "client-id",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "obo-secret", Key: "client-secret"},
+				Audience:        "api://backend/.default",
+			},
 		},
 	}
 	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
@@ -720,31 +1503,28 @@ func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
 	require.NotNil(t, deployment)
 
 	container := deployment.Spec.Template.Spec.Containers[0]
-	assert.Contains(t, container.Env, oboEnvVar,
-		"OBO handler SecretEnvVars output must be injected into the proxy container")
+	assert.Contains(t, container.Env, corev1.EnvVar{
+		Name: obo.ClientSecretEnvVar,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
+				Key:                  "client-secret",
+			},
+		},
+	}, "the OBO client secret must be mounted into the proxy container")
 
 	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
 		"builder and drift check must agree on the OBO env var (no reconcile hot-loop)")
 }
 
-// TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence locks in the
-// documented MCPServer builder/drift behavior when the registered OBO handler
-// returns a genuine (non-ErrEnterpriseRequired) error: the builder logs and
-// continues, producing an OBO-env-less Deployment without failing, while
-// deploymentNeedsUpdate reports the Deployment needs an update. This divergence
-// is described at the drift site and exercised nowhere else at the controller
-// level. (The inert ErrEnterpriseRequired path stays symmetric — see the test
-// above — because AddOBOSecretEnvVars swallows it.)
-//
-//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
-func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.T) {
-	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
-
-	stub := defaultOBOHandlerStub()
-	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-		return nil, errors.New("secret not yet available")
-	}
-	ctrlutil.RegisterOBOHandler(stub)
+// TestMCPServerDeployment_OBOSecretEnvVars_ErrorDivergence locks in the
+// documented MCPServer builder/drift behavior when the OBO secret env var cannot
+// be produced (here: an obo config with no clientSecretRef): the builder logs
+// and continues, producing an OBO-env-less Deployment without failing, while
+// deploymentNeedsUpdate reports the Deployment needs an update. The
+// MCPExternalAuthConfig reconciler surfaces the underlying InvalidConfig.
+func TestMCPServerDeployment_OBOSecretEnvVars_ErrorDivergence(t *testing.T) {
+	t.Parallel()
 
 	scheme := testutil.NewScheme(t)
 
@@ -766,13 +1546,127 @@ func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.
 
 	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
-	// Builder logs-and-continues: a Deployment is still produced (no error, no
-	// panic), with no OBO env var injected.
 	deployment, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
-	require.NoError(t, err, "builder must log-and-continue on a genuine OBO handler error, not fail")
+	require.NoError(t, err, "builder must log-and-continue on an OBO env var error, not fail")
 	require.NotNil(t, deployment)
+	for _, ev := range deployment.Spec.Template.Spec.Containers[0].Env {
+		assert.NotEqual(t, obo.ClientSecretEnvVar, ev.Name)
+	}
 
-	// Drift check returns true on the same error — the documented divergence.
 	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
-		"deploymentNeedsUpdate reports drift while the OBO handler errors")
+		"deploymentNeedsUpdate reports drift while the OBO env var cannot be produced")
+}
+
+// newLogCapturingContext returns a context carrying a controller-runtime logger
+// that records every rendered log line, and the slice it records into.
+func newLogCapturingContext(t *testing.T) (context.Context, *[]string) {
+	t.Helper()
+	var lines []string
+	logger := funcr.New(func(prefix, args string) {
+		lines = append(lines, prefix+" "+args)
+	}, funcr.Options{})
+	return log.IntoContext(t.Context(), logger), &lines
+}
+
+// TestLogOBOSecretEnvVarError verifies that an OBO secret env var error is
+// logged with its detail only when it is an *obo.ValidationError, whose message
+// is safe to surface. Any other error may name a Secret, so it is logged
+// generically with a pointer to the MCPExternalAuthConfig status.
+func TestLogOBOSecretEnvVarError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		validationMsg = "obo: clientSecretRef must set both name and key"
+		sensitiveText = "obo-secret/client-secret"
+		genericHint   = "see the referenced MCPExternalAuthConfig status for details"
+	)
+
+	tests := []struct {
+		name        string
+		err         error
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name:        "ValidationError is logged with its message",
+			err:         &obo.ValidationError{Message: validationMsg},
+			wantContain: []string{validationMsg},
+			wantAbsent:  []string{genericHint},
+		},
+		{
+			name:        "wrapped ValidationError is logged with its message",
+			err:         fmt.Errorf("resolving obo env: %w", &obo.ValidationError{Message: validationMsg}),
+			wantContain: []string{validationMsg},
+			wantAbsent:  []string{genericHint},
+		},
+		{
+			name:        "other error is redacted",
+			err:         fmt.Errorf("secret %s not found", sensitiveText),
+			wantContain: []string{genericHint},
+			wantAbsent:  []string{sensitiveText},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, lines := newLogCapturingContext(t)
+			logOBOSecretEnvVarError(ctx, tt.err)
+
+			require.Len(t, *lines, 1, "the failure must be logged exactly once")
+			for _, want := range tt.wantContain {
+				assert.Contains(t, (*lines)[0], want)
+			}
+			for _, absent := range tt.wantAbsent {
+				assert.NotContains(t, (*lines)[0], absent)
+			}
+		})
+	}
+}
+
+// TestMCPServerDeployment_TLSListenerKeepsHTTPProbes verifies that enabling the
+// auth server TLS listener leaves the proxy's health probes on plain HTTP: the
+// listener serves the auth server on its own port, not the MCP port.
+func TestMCPServerDeployment_TLSListenerKeepsHTTPProbes(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+					Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{},
+				}},
+				TLSListener: &mcpv1beta1.TLSListenerConfig{
+					CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "tls.crt"},
+					PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "tls.key"},
+				},
+			},
+		},
+	}
+	mcpServer := v1beta1test.NewMCPServer("server", "default", v1beta1test.WithExternalAuthConfigRef(authConfig.Name))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(authConfig).Build()
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	deployment, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	require.Contains(t, container.Ports, corev1.ContainerPort{
+		Name:          ctrlutil.AuthServerTLSListenerPortName,
+		ContainerPort: 8443,
+		Protocol:      corev1.ProtocolTCP,
+	})
+
+	for name, probe := range map[string]*corev1.Probe{
+		"startup": container.StartupProbe, "liveness": container.LivenessProbe, "readiness": container.ReadinessProbe,
+	} {
+		require.NotNil(t, probe, name)
+		require.NotNil(t, probe.HTTPGet, name)
+		assert.Empty(t, probe.HTTPGet.Scheme, "%s probe must use the default HTTP scheme", name)
+		assert.Equal(t, "http", probe.HTTPGet.Port.StrVal, name)
+	}
 }

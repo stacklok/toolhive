@@ -688,6 +688,7 @@ func TestEncodeSentinelName(t *testing.T) {
 	}{
 		{name: "plain ASCII name unchanged", input: "my-tool", wantSame: true},
 		{name: "URI with colon and slash unchanged", input: "file:///tmp/foo.txt", wantSame: true},
+		{name: "empty value is encoded", input: "", wantSame: false},
 		{name: "accented character encoded", input: "café-résumé", wantSame: false},
 		{name: "CJK character encoded", input: "工具", wantSame: false},
 		{name: "CR in value encoded", input: "bad\rname", wantSame: false},

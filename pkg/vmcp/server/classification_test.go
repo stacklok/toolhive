@@ -46,8 +46,9 @@ type classificationErrorBody struct {
 func classifyingHandlerTestServer() *Server {
 	return &Server{
 		config: &Config{
-			Name:    testServerName,
-			Version: testServerVersion,
+			Name:         testServerName,
+			Version:      testServerVersion,
+			EndpointPath: defaultEndpointPath,
 		},
 		core: &modernFakeCore{tools: []vmcp.Tool{{Name: "echo", InputSchema: map[string]any{"type": "object"}}}},
 	}
@@ -115,7 +116,7 @@ func TestClassifyingHandler(t *testing.T) {
 			// A body that is otherwise a well-formed Modern request (valid _meta
 			// protocolVersion + clientCapabilities) but omits the mandatory
 			// MCP-Protocol-Version header MUST be rejected with -32020, not
-			// dispatched: the draft Streamable HTTP spec requires the header on
+			// dispatched: the final 2026-07-28 Streamable HTTP spec requires the header on
 			// every Modern POST. Without the header-presence check in
 			// classifyingHandler this would classify Modern with a nil error and
 			// return 200.
@@ -346,12 +347,10 @@ func TestModernDispatchBlockers(t *testing.T) {
 //
 //   - A well-formed Modern request is refused with a conformant 400 + -32022
 //     UnsupportedProtocolVersionError whose data lists the Legacy version, so a
-//     Modern-first client (go-sdk v1.7+ probes before initialize) negotiates
-//     down cleanly instead of hitting go-sdk's unparsable plain-text
-//     stateful rejection.
-//   - server/discover is exempt and falls through to the SDK path, whose
-//     stateful transport advertises the Legacy-only version list — the one
-//     request a client needs answered to negotiate down.
+//     Modern-first client negotiates down cleanly.
+//   - server/discover is exempt and falls through to go-sdk, whose
+//     stateful transport advertises its transport-filtered Legacy-only version
+//     list — the one request a client needs answered to negotiate down.
 //   - Legacy traffic falls through untouched: the gate only ever refuses
 //     requests that classified Modern.
 //
@@ -431,6 +430,80 @@ func TestClassifyingHandler_ModernCapabilityGate(t *testing.T) {
 			assert.Equal(t, mcpparser.MCPVersionModern, body.Error.Data.Requested)
 			assert.Equal(t, []string{mcpparser.MCPVersionLegacy}, body.Error.Data.Supported,
 				"the refusal must list the Legacy version so the client can negotiate down")
+		})
+	}
+}
+
+func TestClassifyingHandlerModernEndpointPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		endpointPath string
+		requestPath  string
+		wantDispatch bool
+	}{
+		{
+			name:         "default endpoint dispatches Modern request",
+			endpointPath: defaultEndpointPath,
+			requestPath:  defaultEndpointPath,
+			wantDispatch: true,
+		},
+		{
+			name:         "default endpoint query dispatches Modern request",
+			endpointPath: defaultEndpointPath,
+			requestPath:  defaultEndpointPath + "?cursor=next",
+			wantDispatch: true,
+		},
+		{
+			name:         "SSE endpoint falls through",
+			endpointPath: defaultEndpointPath,
+			requestPath:  "/sse",
+		},
+		{
+			name:         "custom endpoint dispatches Modern request",
+			endpointPath: "/custom/mcp",
+			requestPath:  "/custom/mcp",
+			wantDispatch: true,
+		},
+		{
+			name:         "custom endpoint query dispatches Modern request",
+			endpointPath: "/custom/mcp",
+			requestPath:  "/custom/mcp?cursor=next",
+			wantDispatch: true,
+		},
+		{
+			name:         "custom endpoint suffix falls through",
+			endpointPath: "/custom/mcp",
+			requestPath:  "/custom/mcp/sse",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := classifyingHandlerTestServer()
+			srv.config.EndpointPath = tt.endpointPath
+			ctx := context.WithValue(t.Context(), mcpparser.MCPRequestContextKey, wellFormedModernToolsList())
+			req := httptest.NewRequest(http.MethodPost, tt.requestPath, nil).WithContext(ctx)
+			req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
+
+			nextCalled := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			rec := httptest.NewRecorder()
+			srv.classifyingHandler(next).ServeHTTP(rec, req)
+
+			assert.Equal(t, !tt.wantDispatch, nextCalled,
+				"path %q with endpoint %q: unexpected dispatch result", tt.requestPath, tt.endpointPath)
+			if tt.wantDispatch {
+				assert.Contains(t, rec.Body.String(), `"resultType":"complete"`,
+					"path %q with endpoint %q: Modern dispatch response", tt.requestPath, tt.endpointPath)
+			}
 		})
 	}
 }

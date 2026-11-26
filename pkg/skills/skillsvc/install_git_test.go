@@ -257,6 +257,41 @@ func TestInstallFromGit(t *testing.T) {
 	}
 }
 
+func TestApplyGitInstallExistingRefreshMetadataPreservesManaged(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	store := storemocks.NewMockSkillStore(ctrl)
+	store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
+
+	existing := skills.InstalledSkill{
+		Metadata:    skills.SkillMetadata{Name: "my-skill", Version: "1.0.0"},
+		Scope:       skills.ScopeProject,
+		ProjectRoot: "/project",
+		Reference:   "git://github.com/test/my-skill@old",
+		Digest:      testCommitHash,
+		Status:      skills.InstallStatusInstalled,
+		Clients:     []string{"claude-code"},
+		Managed:     true,
+	}
+	opts := skills.InstallOptions{
+		Name:            existing.Metadata.Name,
+		Version:         existing.Metadata.Version,
+		ProjectRoot:     existing.ProjectRoot,
+		Reference:       "git://github.com/test/my-skill@new",
+		Digest:          existing.Digest,
+		RefreshMetadata: true,
+	}
+
+	result, err := (&service{store: store}).applyGitInstallExisting(
+		t.Context(), opts, existing.Scope, existing,
+		[]string{"claude-code"}, nil, nil,
+	)
+	require.NoError(t, err)
+	assert.True(t, result.Skill.Managed)
+	assert.Equal(t, opts.Reference, result.Skill.Reference)
+}
+
 func TestInstallFromGitGroupRegistrationRollback(t *testing.T) {
 	t.Parallel()
 

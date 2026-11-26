@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -115,12 +116,16 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				ResourceURL:        "https://resource.example.com",
 				JWKSAllowPrivateIP: true, ProtectedResourceAllowPrivateIP: true,
 				JWKSURL: "https://issuer.example.com/jwks", IntrospectionURL: "https://issuer.example.com/introspect",
+				RequiredSubject:       "system:serviceaccount:clients:agent",
+				RequiredSubjectPrefix: "system:serviceaccount:clients:",
 			},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				require.NotNil(t, config.IncomingAuth.OIDC)
 				assert.Equal(t, "https://issuer.example.com", config.IncomingAuth.OIDC.Issuer)
+				assert.Equal(t, "system:serviceaccount:clients:agent", config.IncomingAuth.OIDC.RequiredSubject)
+				assert.Equal(t, "system:serviceaccount:clients:", config.IncomingAuth.OIDC.RequiredSubjectPrefix)
 				assert.Equal(t, "my-audience", config.IncomingAuth.OIDC.Audience)
 				assert.Equal(t, "https://resource.example.com", config.IncomingAuth.OIDC.Resource)
 				assert.Equal(t, "https://issuer.example.com/jwks", config.IncomingAuth.OIDC.JWKSURL)
@@ -228,6 +233,35 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, config.IncomingAuth.OIDC)
 				assert.Empty(t, config.IncomingAuth.OIDC.CABundlePath)
+			},
+		},
+		{
+			name:          "k8s service account JWKSAuthTokenPath maps to JWKSAuthTokenPath",
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:            "https://kubernetes.default.svc",
+				JWKSAuthTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Equal(t,
+					"/var/run/secrets/kubernetes.io/serviceaccount/token",
+					config.IncomingAuth.OIDC.JWKSAuthTokenPath)
+			},
+		},
+		{
+			name:          "empty JWKSAuthTokenPath results in empty JWKSAuthTokenPath",
+			oidcConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1beta1.MCPOIDCConfigTypeInline),
+			mockReturn:    &oidc.OIDCConfig{Issuer: "https://issuer.example.com"},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Empty(t, config.IncomingAuth.OIDC.JWKSAuthTokenPath)
 			},
 		},
 		{
@@ -1549,6 +1583,41 @@ func TestConverter_SessionStorage(t *testing.T) {
 			},
 		},
 		{
+			name: "redis provider with TLS CA secret points at the mounted CA file",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS: &mcpv1beta1.RedisTLSConfig{
+					CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS: &redisconfig.TLSConfig{
+					CACertFile: "/etc/toolhive/session-redis-tls/ca.crt",
+				},
+			},
+		},
+		{
+			name: "spec.config.sessionStorage.tls never reaches the vMCP config",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS:      &mcpv1beta1.RedisTLSConfig{},
+			},
+			inlineConfig: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{CACertFile: "/user/supplied/ca.crt", InsecureSkipVerify: true},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{},
+			},
+		},
+		{
 			name: "memory provider results in nil SessionStorage",
 			sessionStorage: &mcpv1beta1.SessionStorageConfig{
 				Provider: "memory",
@@ -1821,6 +1890,7 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	converter, err := NewConverter(mockResolver, k8sClient)
 	require.NoError(t, err)
 
+	maxDCRClients := int32(500)
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 		v1beta1test.WithVMCPGroupRef("test-group"),
 		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
@@ -1831,6 +1901,14 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 			Issuer: "https://authserver.example.com",
 			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
 				{Name: "signing-key", Key: "private.pem"},
+			},
+			Storage: &mcpv1beta1.AuthServerStorageConfig{
+				Type:          mcpv1beta1.AuthServerStorageTypeMemory,
+				MaxDCRClients: &maxDCRClients,
+			},
+			RegistrationRateLimit: &mcpv1beta1.RateLimitBucket{
+				MaxTokens:    3,
+				RefillPeriod: metav1.Duration{Duration: 18 * time.Second},
 			},
 			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
 				ClientID:        "delegate client / does not affect env name",
@@ -1864,6 +1942,14 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 
 	// Verify Issuer comes from AuthServerConfig, not IncomingAuth
 	assert.Equal(t, "https://authserver.example.com", runConfig.Issuer)
+
+	// Verify the DCR client cap and /oauth/register rate reach the RunConfig.
+	require.NotNil(t, runConfig.Storage)
+	require.NotNil(t, runConfig.Storage.MaxDCRClients)
+	assert.Equal(t, 500, *runConfig.Storage.MaxDCRClients)
+	require.NotNil(t, runConfig.RegistrationRateLimit)
+	assert.InDelta(t, 3.0/18.0, runConfig.RegistrationRateLimit.RequestsPerSecond, 1e-9)
+	assert.Equal(t, 3, runConfig.RegistrationRateLimit.Burst)
 
 	// Verify AllowedAudiences derived from IncomingAuth OIDC Resource (takes precedence over Audience)
 	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.AllowedAudiences)
@@ -2127,7 +2213,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},
@@ -2162,7 +2249,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "github",
 				},
 			},
@@ -2182,7 +2270,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},
@@ -2225,25 +2314,35 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 	}
 }
 
-// TestConverter_PassthroughHeaders verifies that spec.passthroughHeaders is promoted
-// correctly, takes precedence over spec.config.passthroughHeaders, and that the
-// auto-passthrough path (only spec.config.passthroughHeaders set) is preserved.
-func TestConvertSessionStorage_GlobalDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+func TestConvertSessionStorage_DefaultSelection(t *testing.T) {
+	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			// sessionStorage is nil
-		},
+	tests := []struct {
+		name     string
+		defaults *controllerutil.DefaultRedisConfig
+	}{
+		{name: "no injected defaults leaves storage unset"},
+		{name: "injected defaults select global Redis", defaults: &controllerutil.DefaultRedisConfig{Addr: "global-redis:6379"}},
 	}
-	got := convertSessionStorage(vmcp)
-	require.NotNil(t, got)
-	assert.Equal(t, mcpv1beta1.SessionStorageProviderRedis, got.Provider)
-	assert.Equal(t, "global-redis:6379", got.Address)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &mcpv1beta1.VirtualMCPServer{Spec: mcpv1beta1.VirtualMCPServerSpec{}}
+			got := convertSessionStorage(vmcp, tt.defaults)
+			if tt.defaults == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, mcpv1beta1.SessionStorageProviderRedis, got.Provider)
+			assert.Equal(t, "global-redis:6379", got.Address)
+		})
+	}
 }
 
 func TestConvertSessionStorage_SpecTakesPrecedence(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &controllerutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
@@ -2253,11 +2352,14 @@ func TestConvertSessionStorage_SpecTakesPrecedence(t *testing.T) {
 			},
 		},
 	}
-	got := convertSessionStorage(vmcp)
+	got := convertSessionStorage(vmcp, defaults)
 	require.NotNil(t, got)
 	assert.Equal(t, "local-redis:6379", got.Address)
 }
 
+// TestConverter_PassthroughHeaders verifies that spec.passthroughHeaders is promoted
+// correctly, takes precedence over spec.config.passthroughHeaders, and that the
+// auto-passthrough path (only spec.config.passthroughHeaders set) is preserved.
 func TestConverter_PassthroughHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -2296,4 +2398,83 @@ func TestConverter_PassthroughHeaders(t *testing.T) {
 			assert.Equal(t, tt.want, config.PassthroughHeaders)
 		})
 	}
+}
+
+func TestConvertSessionStorage_GlobalTLS(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		storage  *mcpv1beta1.SessionStorageConfig
+		globalCA string
+		wantAddr string
+		wantTLS  *redisconfig.TLSConfig
+	}{
+		{name: "global system roots", wantAddr: "global-redis:6380", wantTLS: &redisconfig.TLSConfig{}},
+		{name: "global private CA", globalCA: "global-ca", wantAddr: "global-redis:6380",
+			wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+		{name: "explicit plaintext does not inherit TLS", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6379"}, wantAddr: "local-redis:6379"},
+		{name: "explicit system roots do not inherit CA", globalCA: "global-ca",
+			storage:  &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{}},
+			wantAddr: "local-redis:6380", wantTLS: &redisconfig.TLSConfig{}},
+		{name: "explicit CA overrides global CA", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{
+				CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "local-ca", Key: "local.pem"}}},
+			wantAddr: "local-redis:6380", wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+		{name: "memory retains existing global fallback", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "memory"}, wantAddr: "global-redis:6380",
+			wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			defaults := &controllerutil.DefaultRedisConfig{Addr: "global-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{}}
+			if tt.globalCA != "" {
+				defaults.TLS.CACertSecretRef = &mcpv1beta1.SecretKeyRef{Name: tt.globalCA, Key: "ca.crt"}
+			}
+			before := tt.storage.DeepCopy()
+			server := v1beta1test.NewVirtualMCPServer("vmcp", "default", v1beta1test.WithVMCPSessionStorage(tt.storage))
+			got := convertSessionStorage(server, defaults)
+			require.NotNil(t, got)
+			assert.Equal(t, "redis", got.Provider)
+			assert.Equal(t, tt.wantAddr, got.Address)
+			assert.Equal(t, tt.wantTLS, got.TLS)
+			assert.Equal(t, before, server.Spec.SessionStorage)
+		})
+	}
+}
+
+// TestConvertExternalAuthConfigToStrategy_OBOUsesPerConfigSecretEnv verifies
+// the inline outgoing-auth path points each OBO backend at its own client
+// secret env var, so two OBO backends in one vMCP pod never collide.
+func TestConvertExternalAuthConfigToStrategy_OBOUsesPerConfigSecretEnv(t *testing.T) {
+	t.Parallel()
+
+	newOBO := func(name string) *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeOBO,
+				OBO: &mcpv1beta1.OBOConfig{
+					TenantID:        "contoso.onmicrosoft.com",
+					ClientID:        "client-id",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: name + "-secret", Key: "client-secret"},
+					Audience:        "api://backend/.default",
+				},
+			},
+		}
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	first, err := converter.convertExternalAuthConfigToStrategy(t.Context(), newOBO("obo-a"))
+	require.NoError(t, err)
+	second, err := converter.convertExternalAuthConfigToStrategy(t.Context(), newOBO("obo-b"))
+	require.NoError(t, err)
+
+	require.NotNil(t, first.OBO)
+	require.NotNil(t, second.OBO)
+	assert.Equal(t, controllerutil.GenerateUniqueOBOSecretEnvVarName("obo-a"), first.OBO.ClientSecretEnv)
+	assert.Equal(t, controllerutil.GenerateUniqueOBOSecretEnvVarName("obo-b"), second.OBO.ClientSecretEnv)
+	assert.NotEqual(t, first.OBO.ClientSecretEnv, second.OBO.ClientSecretEnv)
+	assert.Empty(t, first.OBO.ClientSecret)
 }

@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,7 +71,25 @@ func (tc *testContext) assertRoleExists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, tc.proxyRunnerNameForRBAC, role.Name)
 	assert.Equal(t, tc.mcpServer.Namespace, role.Namespace)
-	assert.Equal(t, defaultRBACRules, role.Rules)
+	assert.Equal(t, expectedRoleRules(tc.mcpServer.Spec.Transport), role.Rules)
+}
+
+// podAttachRuleFixture restates the pods/attach rule rather than reusing
+// stdioRBACRules, so a change to the production rule's verbs or resources shows
+// up as a test failure instead of being mirrored silently.
+var podAttachRuleFixture = rbacv1.PolicyRule{
+	APIGroups: []string{""},
+	Resources: []string{"pods/attach"},
+	Verbs:     []string{"create", "get"},
+}
+
+// expectedRoleRules is what a proxy-runner Role should carry for a transport:
+// the shared rules, plus pods/attach only where the proxy actually attaches.
+func expectedRoleRules(mcpTransport string) []rbacv1.PolicyRule {
+	if mcpTransport == "stdio" || mcpTransport == "" {
+		return append(slices.Clone(defaultRBACRules), podAttachRuleFixture)
+	}
+	return defaultRBACRules
 }
 
 func (tc *testContext) assertRoleBindingExists(t *testing.T) {
@@ -416,6 +435,91 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	}, mcpServerSA)
 	require.NoError(t, err)
 	assert.Equal(t, expectedSecrets, mcpServerSA.ImagePullSecrets)
+}
+
+// TestEnsureRBACResources_Role_PodsAttachScopedToStdio pins the permission to
+// the one transport that uses it. The proxy runner attaches to the MCP pod's
+// stdio only for the stdio transport; granting pods/attach for the HTTP
+// transports hands every such deployment a permission equivalent to pod exec
+// that it can never exercise.
+func TestEnsureRBACResources_Role_PodsAttachScopedToStdio(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		transport      string
+		wantPodsAttach bool
+	}{
+		{
+			name:           "stdio attaches to the pod",
+			transport:      "stdio",
+			wantPodsAttach: true,
+		},
+		{
+			name:           "streamable-http never calls AttachToWorkload",
+			transport:      "streamable-http",
+			wantPodsAttach: false,
+		},
+		{
+			name:           "sse never calls AttachToWorkload",
+			transport:      "sse",
+			wantPodsAttach: false,
+		},
+		{
+			name:           "empty transport is treated as the stdio CRD default",
+			transport:      "",
+			wantPodsAttach: true,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc := setupTest(t, fmt.Sprintf("test-server-attach-%d", i), "default")
+			tc.mcpServer.Spec.Transport = tt.transport
+
+			require.NoError(t, tc.ensureRBACResources())
+
+			role := &rbacv1.Role{}
+			require.NoError(t, tc.client.Get(context.TODO(), types.NamespacedName{
+				Name:      tc.proxyRunnerNameForRBAC,
+				Namespace: tc.mcpServer.Namespace,
+			}, role))
+
+			if tt.wantPodsAttach {
+				assert.Contains(t, role.Rules, podAttachRuleFixture,
+					"transport %q attaches to the pod and needs pods/attach", tt.transport)
+			} else {
+				assert.NotContains(t, role.Rules, podAttachRuleFixture,
+					"transport %q never attaches and must not be granted pods/attach", tt.transport)
+			}
+
+			// Whatever the transport, the shared rules must survive intact.
+			for _, want := range defaultRBACRules {
+				assert.Contains(t, role.Rules, want)
+			}
+		})
+	}
+}
+
+// TestRBACRulesForTransport_ReturnsFreshSlice guards the backing array of the
+// package-level defaultRBACRules: appending the stdio rule onto it directly
+// would let one call mutate what every later call sees.
+func TestRBACRulesForTransport_ReturnsFreshSlice(t *testing.T) {
+	t.Parallel()
+
+	before := slices.Clone(defaultRBACRules)
+
+	stdio := rbacRulesForTransport("stdio")
+	require.Contains(t, stdio, podAttachRuleFixture)
+
+	assert.Equal(t, before, defaultRBACRules, "defaultRBACRules must not be mutated")
+	assert.NotContains(t, rbacRulesForTransport("streamable-http"), podAttachRuleFixture)
+
+	// Mutating a returned slice must not reach a later caller.
+	stdio[0] = rbacv1.PolicyRule{APIGroups: []string{"mutated"}}
+	assert.NotEqual(t, stdio[0], rbacRulesForTransport("stdio")[0])
 }
 
 func createTestMCPServer(name, namespace string) *mcpv1beta1.MCPServer {

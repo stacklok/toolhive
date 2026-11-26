@@ -73,7 +73,18 @@ kubectl annotate mcpserver my-mcpserver mcpserver.toolhive.stacklok.dev/restarte
 kubectl annotate mcpserver my-mcpserver \
   mcpserver.toolhive.stacklok.dev/restarted-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   mcpserver.toolhive.stacklok.dev/restart-strategy="immediate"
+
+# Standard Kubernetes bounce — also supported. The operator preserves
+# kubectl.kubernetes.io/restartedAt on the proxy Deployment and workload
+# StatefulSet instead of treating it as drift.
+kubectl rollout restart deploy/my-mcpserver
+kubectl rollout restart sts/my-mcpserver
 ```
+
+`kubectl rollout restart` works for `MCPServer`, `MCPRemoteProxy`, and
+`VirtualMCPServer` Deployments (and the MCPServer workload StatefulSet).
+The CR annotation above remains the GitOps-friendly path because it is
+declared on the custom resource rather than a child workload.
 
 ## Implementation Details
 

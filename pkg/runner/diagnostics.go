@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/diagnostics"
@@ -30,19 +31,7 @@ func (r *Runner) startDiagnosticsServer() error {
 		return nil
 	}
 
-	// Bind to the same host as the proxy so a deployment that reaches the
-	// workload can reach its metrics, but on a separate port that deployments
-	// are not expected to route publicly. Note this means the operator's
-	// 0.0.0.0 default applies here too: the endpoint stays reachable from other
-	// pods, so restricting it is a NetworkPolicy job, which is what the separate
-	// port makes possible. Mirror the builder's host default so a config
-	// assembled without WithHost does not bind to every interface.
-	host := r.Config.Host
-	if host == "" {
-		host = transport.LocalhostIPv4
-	}
-
-	server, err := diagnostics.New(host, diagnosticsPort(r.Config.TelemetryConfig), r.prometheusHandler)
+	server, err := diagnostics.New(r.bindHost(), diagnosticsPort(r.Config.TelemetryConfig), r.prometheusHandler)
 	if err != nil {
 		return fmt.Errorf("failed to create diagnostics server: %w", err)
 	}
@@ -54,14 +43,39 @@ func (r *Runner) startDiagnosticsServer() error {
 	return nil
 }
 
+// bindHost returns the host the runner's side listeners (diagnostics, auth
+// server TLS) bind to.
+//
+// They bind to the same host as the proxy so a deployment that reaches the
+// workload can reach them, but on separate ports that deployments are not
+// expected to route publicly. Note this means the operator's 0.0.0.0 default
+// applies here too: the endpoints stay reachable from other pods, so
+// restricting them is a NetworkPolicy job, which is what the separate ports
+// make possible. Mirror the builder's host default so a config assembled
+// without WithHost does not bind to every interface.
+func (r *Runner) bindHost() string {
+	if r.Config.Host == "" {
+		return transport.LocalhostIPv4
+	}
+	return r.Config.Host
+}
+
 // diagnosticsPort resolves the port the diagnostics listener should request.
 // An unset port falls back to diagnostics.DefaultPort so a scraper has a
 // predictable target rather than an arbitrary one.
 func diagnosticsPort(cfg *telemetry.Config) int {
-	if cfg == nil || cfg.PrometheusPort == 0 {
+	if cfg == nil {
 		return diagnostics.DefaultPort
 	}
-	return cfg.PrometheusPort
+	return diagnostics.ResolvePort(cfg.PrometheusPort)
+}
+
+// mountPrometheusHandlerOnTransportPort reports whether Run should hand the
+// Prometheus handler to the transport, which is what makes the proxies also serve
+// /metrics on the transport port during the migration window (see
+// telemetry.DefaultMetricsOnTransportPort).
+func mountPrometheusHandlerOnTransportPort(handler http.Handler, cfg *telemetry.Config) bool {
+	return handler != nil && cfg.ServeMetricsOnTransportPort()
 }
 
 // stopDiagnosticsServer shuts the diagnostics listener down. It is safe to call

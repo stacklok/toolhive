@@ -7,25 +7,25 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
-	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
-	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -1085,65 +1085,140 @@ func findCondition(conditions []metav1.Condition, t string) *metav1.Condition {
 	return nil
 }
 
-// TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequired
-// proves the dispatch wiring: with the default OBO handler installed (the
-// upstream-only state), reconciling an obo-typed MCPExternalAuthConfig surfaces
-// Valid=False / Reason=EnterpriseRequired rather than the generic "unsupported
-// external auth type" path. Drives the reconciler directly with a fake client
-// to bypass the CRD enum (which does not admit "obo" until #5329 lands).
-func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequired(t *testing.T) {
+// validOBOSpec returns an obo spec the operator's OBO validation accepts.
+func validOBOSpec() *mcpv1beta1.OBOConfig {
+	return &mcpv1beta1.OBOConfig{
+		TenantID:        "contoso.onmicrosoft.com",
+		ClientID:        "client-id",
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "obo-secret", Key: "client-secret"},
+		Audience:        "api://backend/.default",
+	}
+}
+
+// TestMCPExternalAuthConfigReconciler_OBO_Validation drives Reconcile for an
+// obo-typed MCPExternalAuthConfig: a well-formed config becomes Valid=True, and
+// each malformed config becomes Valid=False / Reason=InvalidConfig with the
+// validation message. Neither path requeues.
+func TestMCPExternalAuthConfigReconciler_OBO_Validation(t *testing.T) {
 	t.Parallel()
 
-	cfg := &mcpv1beta1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "obo-config",
-			Namespace: "default",
+	tests := []struct {
+		name        string
+		spec        *mcpv1beta1.OBOConfig
+		wantStatus  metav1.ConditionStatus
+		wantReason  string
+		wantMessage string
+	}{
+		{name: "valid config", spec: validOBOSpec(), wantStatus: metav1.ConditionTrue, wantReason: "ValidationSucceeded"},
+		{
+			name: "negative cache skew",
+			spec: func() *mcpv1beta1.OBOConfig {
+				c := validOBOSpec()
+				c.CacheSkew = &metav1.Duration{Duration: -time.Second}
+				return c
+			}(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "obo: cacheSkew must not be negative",
 		},
-		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-			Type: mcpv1beta1.ExternalAuthTypeOBO,
-			OBO:  &mcpv1beta1.OBOConfig{},
+		{
+			name: "cache skew above MaxInt32 seconds",
+			spec: func() *mcpv1beta1.OBOConfig {
+				c := validOBOSpec()
+				c.CacheSkew = &metav1.Duration{Duration: (math.MaxInt32 + 1) * time.Second}
+				return c
+			}(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "obo: cacheSkew is too large",
+		},
+		{
+			name:       "tenant neither guid nor domain",
+			spec:       func() *mcpv1beta1.OBOConfig { c := validOBOSpec(); c.TenantID = "not a tenant"; return c }(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "entra obo: TenantID must be a directory GUID or a domain name",
+		},
+		{
+			name: "non-loopback http authority",
+			spec: func() *mcpv1beta1.OBOConfig {
+				c := validOBOSpec()
+				c.Authority = "http://login.microsoftonline.com"
+				return c
+			}(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "entra obo: Authority must use https (http allowed only for loopback)",
+		},
+		{
+			name:       "missing tenant",
+			spec:       func() *mcpv1beta1.OBOConfig { c := validOBOSpec(); c.TenantID = ""; return c }(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "entra obo: TenantID is required",
+		},
+		{
+			name:       "missing client id",
+			spec:       func() *mcpv1beta1.OBOConfig { c := validOBOSpec(); c.ClientID = ""; return c }(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "obo: clientId is required",
+		},
+		{
+			name:       "missing client secret ref",
+			spec:       func() *mcpv1beta1.OBOConfig { c := validOBOSpec(); c.ClientSecretRef = nil; return c }(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "obo: clientSecretRef must set both name and key",
+		},
+		{
+			name:       "neither audience nor scopes",
+			spec:       func() *mcpv1beta1.OBOConfig { c := validOBOSpec(); c.Audience = ""; return c }(),
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "obo: at least one of audience or scopes is required",
+		},
+		{
+			name:       "empty placeholder spec",
+			spec:       &mcpv1beta1.OBOConfig{},
+			wantStatus: metav1.ConditionFalse, wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "obo: clientId is required",
 		},
 	}
 
-	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
-	req := reconcile.Request{NamespacedName: types.NamespacedName{
-		Name:      cfg.Name,
-		Namespace: cfg.Namespace,
-	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	// First reconcile adds the finalizer; the requeued reconcile runs the body.
-	result, err := r.Reconcile(t.Context(), req)
-	require.NoError(t, err)
-	if result.RequeueAfter > 0 {
-		_, err = r.Reconcile(t.Context(), req)
-		require.NoError(t, err)
+			cfg := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "obo-config",
+					Namespace:  "default",
+					Finalizers: []string{ExternalAuthConfigFinalizerName},
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  tt.spec,
+				},
+			}
+
+			r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
+
+			result, err := r.Reconcile(t.Context(), req)
+			require.NoError(t, err)
+			assert.Zero(t, result.RequeueAfter)
+
+			var updated mcpv1beta1.MCPExternalAuthConfig
+			require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
+
+			validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+			require.NotNil(t, validCond, "Valid condition must be set for OBO-typed config")
+			assert.Equal(t, tt.wantStatus, validCond.Status)
+			assert.Equal(t, tt.wantReason, validCond.Reason)
+			if tt.wantStatus == metav1.ConditionFalse {
+				assert.Equal(t, tt.wantMessage, validCond.Message)
+			}
+		})
 	}
-
-	var updated mcpv1beta1.MCPExternalAuthConfig
-	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
-
-	validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
-	require.NotNil(t, validCond, "Valid condition must be set for OBO-typed config")
-	assert.Equal(t, metav1.ConditionFalse, validCond.Status)
-	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, validCond.Reason,
-		"the exact reason string is part of the user-facing contract — external consumers pattern-match on it")
-
-	// Generic-error guard: the dispatch path must NOT leak a generic
-	// "unsupported external auth type" or "unknown middleware type" message.
-	assert.NotContains(t, validCond.Message, "unsupported external auth type")
-	assert.NotContains(t, validCond.Message, "unknown middleware type")
-
-	// Positive assertion: condition.Message must surface the sentinel's
-	// user-facing text. Without this check a refactor that emptied or
-	// rewrote the message would still pass the reason-string assertion.
-	assert.Equal(t, obo.ErrEnterpriseRequired.Error(), validCond.Message,
-		"condition.Message must surface the sentinel's user-facing text")
 }
 
 // TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized
 // proves that when a user switches an existing config from embeddedAuthServer
 // (which set IdentitySynthesized=True) to obo, the stale IdentitySynthesized
-// condition is removed alongside the new Valid=False/EnterpriseRequired
+// condition is removed alongside the new Valid=False/InvalidConfig
 // condition. Regression for the bug where setInvalid's MutateAndPatchStatus
 // diffed against an already-mutated snapshot and silently dropped the
 // IdentitySynthesized removal.
@@ -1195,155 +1270,88 @@ func TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized(t *t
 	assert.Nil(t, findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized),
 		"stale IdentitySynthesized condition must be removed once the spec leaves embeddedAuthServer")
 
-	// Valid=False/EnterpriseRequired must be set in the same reconcile pass.
+	// Valid=False/InvalidConfig must be set in the same reconcile pass.
 	validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 	require.NotNil(t, validCond)
 	assert.Equal(t, metav1.ConditionFalse, validCond.Status)
-	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, validCond.Reason)
+	assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validCond.Reason)
 }
 
-// defaultOBOHandlerStub returns a handler whose every method returns
-// obo.ErrEnterpriseRequired — the same shape as the package default. Used to
-// restore the registered handler after a test that overrode it.
-func defaultOBOHandlerStub() ctrlutil.OBOHandler {
-	return ctrlutil.OBOHandler{
-		Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return obo.ErrEnterpriseRequired },
-		ApplyRunConfig: func(
-			context.Context, client.Client, string,
-			*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption,
-		) error {
-			return obo.ErrEnterpriseRequired
-		},
-		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-			return nil, obo.ErrEnterpriseRequired
-		},
-	}
-}
+// TestMCPExternalAuthConfigReconciler_OBO_ErrorTriage drives the OBO error
+// triage with each kind of validation error:
+//
+//   - errors.As(err, &*obo.ValidationError) → permanent, InvalidConfig, with the
+//     typed error's Message written verbatim (any wrap prefix is dropped)
+//   - anything else                         → transient; the error is returned
+//     so controller-runtime requeues, and no Valid condition is written
+func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriage(t *testing.T) {
+	t.Parallel()
 
-// TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile drives the
-// production three-way error triage in the OBO branch of Reconcile by
-// registering a stub OBO handler whose Validate returns each test's error,
-// then calling Reconcile and asserting on the resulting condition (or the
-// returned error, for the transient case). The three buckets are:
-//
-//   - errors.Is(err, ErrEnterpriseRequired) → permanent, EnterpriseRequired
-//   - errors.As(err, &*obo.ValidationError) → permanent, InvalidConfig
-//   - anything else                         → transient; Reconcile returns
-//     the error, no condition write
-//
-// This exercises the production errors.Is decision (so a regression that
-// swaps stderrors.Is for == would be caught — that would break the vMCP
-// "failed to convert to strategy: %w" wrap path) AND the new errors.As
-// decision for *obo.ValidationError.
-//
-//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
-func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T) {
 	tests := []struct {
-		name        string
-		validateErr error
-		// Exactly one of these two paths is exercised per test case:
-		// either the reconciler writes a permanent Valid=False condition with
-		// the expected reason/message, or it returns a transient error and
-		// writes no Valid condition.
+		name          string
+		validateErr   error
 		wantTransient bool
-		wantReason    string
 		wantMessage   string
 	}{
 		{
-			name:        "bare sentinel produces EnterpriseRequired (permanent)",
-			validateErr: obo.ErrEnterpriseRequired,
-			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-			wantMessage: obo.ErrEnterpriseRequired.Error(),
-		},
-		{
-			name:        "wrapped sentinel still produces EnterpriseRequired via errors.Is",
-			validateErr: fmt.Errorf("outer: %w", obo.ErrEnterpriseRequired),
-			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
-			wantMessage: "outer: " + obo.ErrEnterpriseRequired.Error(),
-		},
-		{
 			name:        "ValidationError produces InvalidConfig (permanent)",
 			validateErr: &obo.ValidationError{Message: "audience must be a non-empty URL"},
-			wantReason:  mcpv1beta1.ConditionReasonInvalidConfig,
 			wantMessage: "audience must be a non-empty URL",
 		},
 		{
 			name:        "wrapped ValidationError still produces InvalidConfig via errors.As",
 			validateErr: fmt.Errorf("validating obo spec: %w", &obo.ValidationError{Message: "missing tokenURL"}),
-			wantReason:  mcpv1beta1.ConditionReasonInvalidConfig,
-			// setInvalid is called with the unwrapped ValidationError, so its
-			// Message lands verbatim — the wrap prefix is discarded on purpose
-			// so handler-author-visible text controls what kubectl describe shows.
 			wantMessage: "missing tokenURL",
 		},
 		{
-			name:          "unclassified error is transient — Reconcile returns it, no condition write",
-			validateErr:   stderrors.New("transient JWKS fetch failed"),
+			name:          "unclassified error is transient",
+			validateErr:   stderrors.New("transient failure"),
 			wantTransient: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Always restore the default after the subtest so we don't leak
-			// the stub into other tests that share this package.
-			t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
-
-			// Install the per-case stub: Validate returns tt.validateErr;
-			// the other two methods keep the default behavior.
-			stub := defaultOBOHandlerStub()
-			stub.Validate = func(*mcpv1beta1.MCPExternalAuthConfig) error { return tt.validateErr }
-			ctrlutil.RegisterOBOHandler(stub)
+			t.Parallel()
 
 			cfg := &mcpv1beta1.MCPExternalAuthConfig{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "obo-config",
-					Namespace: "default",
-				},
+				ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
 				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 					Type: mcpv1beta1.ExternalAuthTypeOBO,
-					OBO:  &mcpv1beta1.OBOConfig{},
+					OBO:  validOBOSpec(),
 				},
 			}
-
 			r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
-			req := reconcile.Request{NamespacedName: types.NamespacedName{
-				Name:      cfg.Name,
-				Namespace: cfg.Namespace,
-			}}
 
-			// First reconcile may just add the finalizer; the requeued
-			// reconcile runs the body that exercises the triage.
-			result, err := r.Reconcile(t.Context(), req)
-			if result.RequeueAfter > 0 {
-				require.NoError(t, err)
-				result, err = r.Reconcile(t.Context(), req)
-			}
+			handled, err := r.applyOBOValidationResult(t.Context(), cfg, tt.validateErr)
+			require.True(t, handled)
 
 			var updated mcpv1beta1.MCPExternalAuthConfig
-			require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
+			require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(cfg), &updated))
 			validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 
 			if tt.wantTransient {
-				// Transient path: Reconcile must return an error that
-				// preserves the underlying cause (errors.Is must still match
-				// it through the wrap), and no Valid condition is written.
 				require.Error(t, err, "transient errors must propagate so controller-runtime requeues")
-				assert.ErrorIs(t, err, tt.validateErr,
-					"the transient error must remain inspectable via errors.Is")
-				assert.Nil(t, validCond,
-					"transient errors must not write a Valid condition; "+
-						"locking the resource into a permanent state would block self-healing")
+				assert.ErrorIs(t, err, tt.validateErr)
+				assert.Nil(t, validCond, "transient errors must not write a Valid condition")
 				return
 			}
 
 			require.NoError(t, err)
 			require.NotNil(t, validCond)
 			assert.Equal(t, metav1.ConditionFalse, validCond.Status)
-			assert.Equal(t, tt.wantReason, validCond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonInvalidConfig, validCond.Reason)
 			assert.Equal(t, tt.wantMessage, validCond.Message)
 		})
 	}
+
+	t.Run("nil error is not handled", func(t *testing.T) {
+		t.Parallel()
+		r, _ := newTestMCPExternalAuthConfigReconciler(t)
+		handled, err := r.applyOBOValidationResult(t.Context(), &mcpv1beta1.MCPExternalAuthConfig{}, nil)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+	})
 }
 
 // TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition
@@ -1356,10 +1364,271 @@ func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T
 //
 // The concurrent-writer guarantee — that a condition written by a disjoint
 // owner between the reconciler's Get and its patch survives because
+func TestMCPExternalAuthConfigReconciler_InvalidConfigReturnsStatusPatchError(t *testing.T) {
+	t.Parallel()
+
+	patchErr := stderrors.New("injected status patch failure")
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "invalid-config", Namespace: "default",
+			Finalizers: []string{ExternalAuthConfigFinalizerName},
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer},
+	}
+	scheme := testutil.NewScheme(t)
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(cfg).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(
+				_ context.Context, _ client.Client, subResource string, _ client.Object,
+				_ client.Patch, _ ...client.SubResourcePatchOption,
+			) error {
+				assert.Equal(t, "status", subResource)
+				return patchErr
+			},
+		}).
+		Build()
+	recorder := events.NewFakeRecorder(10)
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: recorder}
+
+	result, err := r.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)})
+	require.ErrorIs(t, err, patchErr)
+	assert.Zero(t, result)
+	assert.Empty(t, drainEvents(recorder), "events must wait until the invalid status transition persists")
+}
+
 // MutateAndPatchStatus sends a partial merge-patch rather than a full PUT — is
 // proven against the shared ctrlutil.MutateAndPatchStatus helper (used by all
 // three config controllers) in
 // TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPExternalAuthConfigReconciler_CanonicalTrustedIssuerEndpointValidationOnCreateAndUpdate(t *testing.T) {
+	t.Parallel()
+
+	const unsafeJWKSURL = "https://sentinel-user:sentinel-password@issuer.example.com/keys"
+
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "canonical-validation", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+					Name: "external", IssuerURL: "https://issuer.example.com", JWKSURL: unsafeJWKSURL,
+				}},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+						IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+							IssuerRef: "external", ExpectedAudience: "audience",
+							AllowedDelegateClients: []string{"delegate"},
+						}},
+					},
+				},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)}
+
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+	var got mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid := findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionFalse, valid.Status)
+	assert.Contains(t, valid.Message, "jwks_url: must not contain userinfo")
+	assert.NotContains(t, valid.Message, unsafeJWKSURL)
+	assert.NotContains(t, valid.Message, "sentinel-user")
+	assert.NotContains(t, valid.Message, "sentinel-password")
+
+	got.Spec.EmbeddedAuthServer.TrustedIssuers[0].JWKSURL = "https://issuer.example.com/keys"
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	_, err = r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid = findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionTrue, valid.Status)
+}
+
+func TestMCPExternalAuthConfigReconciler_DuplicateCredentialIssuerStatusIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	const credentialIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "duplicate-credential-issuer", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{
+					{Name: "external", IssuerURL: credentialIssuerURL},
+					{Name: "duplicate", IssuerURL: credentialIssuerURL},
+				},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+					}},
+				}},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)}
+
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+	var got mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid := findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionFalse, valid.Status)
+	assert.Contains(t, valid.Message, "duplicates")
+	assert.NotContains(t, valid.Message, credentialIssuerURL)
+	assert.NotContains(t, valid.Message, "sentinel-user")
+	assert.NotContains(t, valid.Message, "sentinel-password")
+}
+
+func TestMCPExternalAuthConfigReconciler_DeprecatedInboundGrantTransitions(t *testing.T) {
+	t.Parallel()
+
+	delegate := mcpv1beta1.DelegateClientConfig{
+		ClientID:        "sensitive-client-id",
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sensitive-secret", Key: "sensitive-token-key"},
+		Scopes:          []string{"openid"}, Audiences: []string{"https://api.example.com"},
+	}
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "deprecated-grants", Namespace: "default", Generation: 7,
+			Finalizers: []string{ExternalAuthConfigFinalizerName},
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com", DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	recorder := events.NewFakeRecorder(10)
+	r.Recorder = recorder
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
+
+	reconcileAndGet := func() mcpv1beta1.MCPExternalAuthConfig {
+		t.Helper()
+		result, err := r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+		assert.Zero(t, result.RequeueAfter)
+		var got mcpv1beta1.MCPExternalAuthConfig
+		require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+		return got
+	}
+	assertCondition := func(got mcpv1beta1.MCPExternalAuthConfig, status metav1.ConditionStatus, reason string, generation int64) {
+		t.Helper()
+		condition := meta.FindStatusCondition(got.Status.Conditions,
+			mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration)
+		require.NotNil(t, condition)
+		assert.Equal(t, status, condition.Status)
+		assert.Equal(t, reason, condition.Reason)
+		assert.Equal(t, generation, condition.ObservedGeneration)
+		assert.NotContains(t, condition.Message, "sensitive-client-id")
+		assert.NotContains(t, condition.Message, "sensitive-secret")
+		assert.NotContains(t, condition.Message, "sensitive-token-key")
+	}
+
+	got := reconcileAndGet()
+	assertCondition(got, metav1.ConditionTrue, mcpv1beta1.ConditionReasonLegacyInboundGrantFields, 7)
+	assert.Contains(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration).Message,
+		"spec.embeddedAuthServer.delegateClients -> spec.embeddedAuthServer.inboundGrants.tokenExchange.delegateClients")
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	steadyResourceVersion := got.ResourceVersion
+	got = reconcileAndGet()
+	assert.Equal(t, steadyResourceVersion, got.ResourceVersion, "steady state must not write status")
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.EmbeddedAuthServer.DelegateClients = nil
+	got.Spec.EmbeddedAuthServer.InboundGrants = &mcpv1beta1.InboundGrantsConfig{
+		TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+		},
+	}
+	got.Generation = 8
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assertCondition(got, metav1.ConditionFalse,
+		mcpv1beta1.ConditionReasonCanonicalInboundGrantConfiguration, 8)
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.EmbeddedAuthServer.InboundGrants = nil
+	got.Spec.EmbeddedAuthServer.DelegateClients = []mcpv1beta1.DelegateClientConfig{delegate}
+	got.Generation = 9
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assertCondition(got, metav1.ConditionTrue, mcpv1beta1.ConditionReasonLegacyInboundGrantFields, 9)
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.Type = mcpv1beta1.ExternalAuthTypeTokenExchange
+	got.Spec.EmbeddedAuthServer = nil
+	got.Spec.TokenExchange = &mcpv1beta1.TokenExchangeConfig{TokenURL: "https://issuer.example.com/token"}
+	got.Generation = 10
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration))
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+}
+
+func TestDeprecatedInboundGrantFields_SPIFFEAudiences(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		cfg   *mcpv1beta1.EmbeddedAuthServerConfig
+		paths []deprecatedInboundGrantField
+	}{
+		{name: "nil config"},
+		{
+			name: "no audiences",
+			cfg: &mcpv1beta1.EmbeddedAuthServerConfig{InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+				SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{ClientID: "a", Resources: []string{"https://api.example.com"}}},
+			}},
+		},
+		{
+			name: "audiences on the second association only",
+			cfg: &mcpv1beta1.EmbeddedAuthServerConfig{InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+				SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{
+					{ClientID: "a"},
+					{ClientID: "b", Audiences: []string{"https://api.example.com"}},
+				},
+			}},
+			paths: []deprecatedInboundGrantField{{
+				path:        "spec.embeddedAuthServer.inboundGrants.spiffeClientAuth[1].audiences",
+				replacement: "spec.embeddedAuthServer.inboundGrants.spiffeClientAuth[1].resources",
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := deprecatedInboundGrantFields(tt.cfg, "spec.embeddedAuthServer")
+			assert.ElementsMatch(t, tt.paths, got)
+		})
+	}
+}
+
 func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
 	t.Parallel()
 

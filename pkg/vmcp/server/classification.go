@@ -4,6 +4,7 @@
 package server
 
 import (
+	"cmp"
 	"net/http"
 
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
@@ -51,7 +52,25 @@ const methodServerDiscover = "server/discover"
 // middleware in the chain, so a Modern dispatch that gets gated 403 is still
 // audited as "denied".
 func (s *Server) classifyingHandler(next http.Handler) http.Handler {
+	// Serve and buildServeConfig apply no defaulting, so an embedder that calls
+	// Serve directly can leave EndpointPath empty; default it here rather than
+	// comparing against "" and never matching.
+	endpointPath := cmp.Or(s.config.EndpointPath, defaultEndpointPath)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only the MCP endpoint is classified. This is a routing scope, NOT a
+		// security boundary: authorization is enforced independently on both
+		// sides of it — by the SDK's pre-dispatch CallGate on the fall-through
+		// path, and by dispatchModern's own core.Check* calls on the Modern
+		// path. Do not tighten it into a security check, and do not delete it
+		// as redundant: since GHSA-h4mf-84xq-q2fc the parser parses any JSON
+		// POST on any path, so without this a Modern-_meta POST to an
+		// arbitrary path would newly reach dispatchModern.
+		if r.URL.Path != endpointPath {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		parsed := mcpparser.GetParsedMCPRequest(r.Context())
 		if parsed == nil {
 			next.ServeHTTP(w, r)
@@ -71,7 +90,7 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 		}
 
 		// A Modern (2026-07-28) request over HTTP MUST carry the
-		// MCP-Protocol-Version header (draft Streamable HTTP "Server Validation").
+		// MCP-Protocol-Version header (2026-07-28 Streamable HTTP "Server Validation").
 		// ClassifyRevision is transport-agnostic -- it also serves header-less
 		// stdio -- so it admits a Modern request signaled only by the reserved
 		// io.modelcontextprotocol/* _meta keys and defers the header-presence rule
@@ -93,15 +112,17 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 		// vMCP does not serve the Modern revision.
 		//
 		// Answer that conformantly here rather than letting the request reach the
-		// SDK. The draft's Streamable HTTP "Protocol Version Header" section
+		// SDK. The 2026-07-28 Streamable HTTP "Protocol Version Header" section
 		// requires a server that does not implement a requested version -- "whether
 		// the version is unknown to the server, or is a known version the server has
 		// chosen not to support" -- to reply 400 with an UnsupportedProtocolVersionError
-		// listing the versions it does support. A gated instance is exactly the
-		// second case. Falling through instead yields go-sdk's stateful-server
-		// rejection, which is a 400 with a PLAIN-TEXT body whose text is Go-API advice
-		// for the server author ("set StreamableHTTPOptions.Stateless = true") -- not
-		// parseable as a protocol error and carrying no version list.
+		// listing the versions it does support. This instance has chosen not to serve
+		// Modern because the enabled features exceed its stateless dispatch path, so
+		// its truthful supported list is Legacy only. Preserve this ToolHive-owned
+		// -32022 response with data.supported; it is distinct from the SDK's default
+		// stateful-server rejection, which is also JSON-RPC -32022 / HTTP 400 with
+		// data.supported in go-sdk (plain text only with
+		// MCPGODEBUG=plaintextstatefulrejection=1).
 		//
 		// server/discover is deliberately exempt: it is how a client learns which
 		// revisions a server supports, so rejecting it on version grounds would leave
@@ -109,7 +130,7 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 		// and its stateful path answers discover with the transport-filtered version
 		// list -- which excludes 2026-07-28 for a stateful transport -- so the
 		// fall-through is not just tolerable but the correct advertisement: a
-		// Modern-first client (go-sdk v1.7+ probes discover before initialize)
+		// Modern-first client (go-sdk probes discover before initialize)
 		// reads it and lands on the Legacy handshake without ever seeing an error.
 		if blocked := s.modernDispatchBlockers(); len(blocked) > 0 {
 			if parsed.Method == methodServerDiscover {
@@ -129,7 +150,7 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 
 // missingProtocolVersionHeaderError is returned when a request classifies Modern
 // (2026-07-28) over HTTP but omits the mandatory MCP-Protocol-Version header. The
-// draft Streamable HTTP "Server Validation" rules make a missing required standard
+// 2026-07-28 Streamable HTTP "Server Validation" rules make a missing required standard
 // header a -32020 (HeaderMismatch) condition, so this maps to the same wire code
 // and HTTP 400 as the header/body mismatch mcp.ClassifyRevision already produces
 // when the header is present but wrong.

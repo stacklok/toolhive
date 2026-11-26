@@ -7,6 +7,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,9 +18,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -36,7 +39,16 @@ const (
 	// authServerRefKindMCPExternalAuthConfig is the Kind value on a TypedLocalObjectReference
 	// that identifies the ref as pointing to an MCPExternalAuthConfig resource.
 	authServerRefKindMCPExternalAuthConfig = "MCPExternalAuthConfig"
+
+	// inboundGrantDeprecationEventReason is emitted when released legacy grant
+	// fields transition from absent to populated.
+	inboundGrantDeprecationEventReason = "InboundGrantsLegacyFieldsDeprecated"
 )
+
+type deprecatedInboundGrantField struct {
+	path        string
+	replacement string
+}
 
 // MCPExternalAuthConfigReconciler reconciles a MCPExternalAuthConfig object
 type MCPExternalAuthConfigReconciler struct {
@@ -108,9 +120,13 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		// in place, so the Warning fires only when entering the invalid state.
 		wasInvalid := conditionStatusIs(externalAuthConfig.Status.Conditions,
 			mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
+		wasDeprecated := conditionStatusIs(externalAuthConfig.Status.Conditions,
+			mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
 		updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 			func(c *mcpv1beta1.MCPExternalAuthConfig) {
 				r.applyIdentitySynthesizedCondition(c)
+				r.applyDeprecatedInboundGrantCondition(c)
+				c.Status.ObservedGeneration = c.Generation
 				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 					Type:               mcpv1beta1.ConditionTypeValid,
 					Status:             metav1.ConditionFalse,
@@ -121,23 +137,25 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 			})
 		if updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
+			return ctrl.Result{}, updateErr
 		}
 		// Emit the Warning only on the transition into the invalid state, and
 		// only once the condition persisted, so a failing status write does not
 		// re-fire the event every reconcile.
-		if !wasInvalid && updateErr == nil {
+		if !wasInvalid {
 			emitConfigEvent(r.Recorder, externalAuthConfig, corev1.EventTypeWarning,
 				eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
 		}
+		desiredDeprecated := conditionStatusIs(externalAuthConfig.Status.Conditions,
+			mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+		emitInboundGrantDeprecationEvent(r.Recorder, externalAuthConfig, wasDeprecated, desiredDeprecated)
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
 
-	// Dispatch OBO-typed configs through the registered handler. The default
-	// handler returns obo.ErrEnterpriseRequired so upstream-only builds surface
-	// Valid=False / Reason=EnterpriseRequired here rather than failing later
-	// inside a consumer reconciler with a generic "unsupported" error. The OBO
-	// failure path routes through setInvalid, which applies the advisory inside
-	// its own patch closure.
+	// Validate OBO-typed configs beyond what the CRD schema can express (tenant
+	// and authority shape, secret reference, audience or scopes). The failure
+	// path routes through setInvalid, which applies the advisory inside its own
+	// patch closure.
 	if externalAuthConfig.Spec.Type == mcpv1beta1.ExternalAuthTypeOBO {
 		if handled, err := r.triageOBOValidation(ctx, externalAuthConfig); handled {
 			return ctrl.Result{}, err
@@ -158,6 +176,114 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	return r.updateSteadyStateStatus(ctx, externalAuthConfig)
 }
 
+func deprecatedInboundGrantFields(cfg *mcpv1beta1.EmbeddedAuthServerConfig, root string) []deprecatedInboundGrantField {
+	if cfg == nil {
+		return nil
+	}
+	fields := make([]deprecatedInboundGrantField, 0)
+	if len(cfg.DelegateClients) > 0 {
+		fields = append(fields, deprecatedInboundGrantField{
+			path: root + ".delegateClients", replacement: root + ".inboundGrants.tokenExchange.delegateClients",
+		})
+	}
+	for i, issuer := range cfg.TrustedIssuers {
+		issuerPath := fmt.Sprintf("%s.trustedIssuers[%d]", root, i)
+		tokenExchangeReplacement := root + ".inboundGrants.tokenExchange.issuerPolicies"
+		legacyTokenExchangeFields := []struct {
+			populated bool
+			name      string
+		}{
+			{issuer.ExpectedAudience != "", "expectedAudience"},
+			{issuer.ActorClaim != "", "actorClaim"},
+			{len(issuer.AllowedActors) > 0, "allowedActors"},
+			{issuer.ActorMatcher != "", "actorMatcher"},
+			{len(issuer.AllowedDelegateClients) > 0, "allowedDelegateClients"},
+			{issuer.AllowMayAct, "allowMayAct"},
+		}
+		for _, field := range legacyTokenExchangeFields {
+			if field.populated {
+				fields = append(fields, deprecatedInboundGrantField{
+					path: issuerPath + "." + field.name, replacement: tokenExchangeReplacement,
+				})
+			}
+		}
+		if issuer.JWTBearerGrant != nil {
+			fields = append(fields, deprecatedInboundGrantField{
+				path:        issuerPath + ".jwtBearerGrant",
+				replacement: root + ".inboundGrants.jwtBearer.issuerPolicies",
+			})
+		}
+	}
+	if cfg.InboundGrants != nil {
+		for i, spiffeClient := range cfg.InboundGrants.SPIFFEClientAuth {
+			//nolint:staticcheck // Reports the deprecated field to the user.
+			if len(spiffeClient.Audiences) > 0 {
+				associationPath := fmt.Sprintf("%s.inboundGrants.spiffeClientAuth[%d]", root, i)
+				fields = append(fields, deprecatedInboundGrantField{
+					path: associationPath + ".audiences", replacement: associationPath + ".resources",
+				})
+			}
+		}
+	}
+	return fields
+}
+
+func deprecatedInboundGrantMessage(fields []deprecatedInboundGrantField) string {
+	paths := make([]string, len(fields))
+	for i, field := range fields {
+		paths[i] = field.path + " -> " + field.replacement
+	}
+	return "Deprecated inbound grant fields are configured: " + strings.Join(paths, ", ")
+}
+
+func setDeprecatedInboundGrantCondition(
+	conditions *[]metav1.Condition,
+	generation int64,
+	fields []deprecatedInboundGrantField,
+	conditionType, trueReason, falseReason string,
+) {
+	condition := metav1.Condition{
+		Type: conditionType, ObservedGeneration: generation,
+		Status: metav1.ConditionFalse, Reason: falseReason,
+		Message: "Only canonical inbound grant configuration is populated",
+	}
+	if len(fields) > 0 {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = trueReason
+		condition.Message = deprecatedInboundGrantMessage(fields)
+	}
+	meta.SetStatusCondition(conditions, condition)
+}
+
+func (*MCPExternalAuthConfigReconciler) applyDeprecatedInboundGrantCondition(
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+) {
+	if cfg.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || cfg.Spec.EmbeddedAuthServer == nil {
+		meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration)
+		return
+	}
+	setDeprecatedInboundGrantCondition(
+		&cfg.Status.Conditions,
+		cfg.Generation,
+		deprecatedInboundGrantFields(cfg.Spec.EmbeddedAuthServer, "spec.embeddedAuthServer"),
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration,
+		mcpv1beta1.ConditionReasonLegacyInboundGrantFields,
+		mcpv1beta1.ConditionReasonCanonicalInboundGrantConfiguration,
+	)
+}
+
+func emitInboundGrantDeprecationEvent(
+	recorder events.EventRecorder,
+	obj runtime.Object,
+	wasDeprecated, desiredDeprecated bool,
+) {
+	if recorder == nil || wasDeprecated || !desiredDeprecated {
+		return
+	}
+	recorder.Eventf(obj, nil, corev1.EventTypeWarning, inboundGrantDeprecationEventReason, "MigrateInboundGrants",
+		"Released legacy inbound grant fields are deprecated; see status condition for canonical replacement paths")
+}
+
 // setValidTrueAndSynthesized stamps ConditionTypeValid=True and refreshes the
 // IdentitySynthesized advisory on the supplied object. It is callable inside a
 // MutateAndPatchStatus closure: applyIdentitySynthesizedCondition is idempotent
@@ -166,6 +292,8 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 // skips.
 func (r *MCPExternalAuthConfigReconciler) setValidTrueAndSynthesized(c *mcpv1beta1.MCPExternalAuthConfig) {
 	r.applyIdentitySynthesizedCondition(c)
+	r.applyDeprecatedInboundGrantCondition(c)
+	c.Status.ObservedGeneration = c.Generation
 	meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeValid,
 		Status:             metav1.ConditionTrue,
@@ -220,50 +348,54 @@ func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	})
 }
 
-// triageOBOValidation runs the registered OBO handler's Validate and routes
-// the result through the three-bucket contract documented on OBOHandler:
-//
-//   - ErrEnterpriseRequired   → permanent, Reason=EnterpriseRequired
-//   - *obo.ValidationError    → permanent, Reason=InvalidConfig (the typed
-//     error's Message is written verbatim into condition.Message)
-//   - anything else           → transient; return the error wrapped so
-//     controller-runtime requeues with backoff and self-heals once the
-//     upstream dependency (Secret/JWKS/webhook) recovers
-//
-// Returns handled=true to signal the caller to return immediately (with a
-// zero ctrl.Result and the returned error). handled=false means Validate
-// succeeded and the reconciler should continue with the Valid=True path.
-//
-// Extracted from Reconcile so the parent stays under the gocyclo threshold.
+// triageOBOValidation runs ctrlutil.OBOValidate on cfg and hands the result to
+// applyOBOValidationResult. The two are split only so tests can drive
+// applyOBOValidationResult with an injected error (for example a transient,
+// non-ValidationError one, which the built-in validator never returns but a
+// handler registered through the deprecated ctrlutil.RegisterOBOHandler may);
+// Reconcile always enters through this function.
 func (r *MCPExternalAuthConfigReconciler) triageOBOValidation(
 	ctx context.Context,
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
 ) (handled bool, err error) {
-	validateErr := ctrlutil.OBOValidate(cfg)
+	return r.applyOBOValidationResult(ctx, cfg, ctrlutil.OBOValidate(cfg))
+}
+
+// applyOBOValidationResult routes an OBO validation result through the error
+// contract documented on obo.ValidationError:
+//
+//   - nil                     → handled=false; the reconciler continues with
+//     the Valid=True path
+//   - *obo.ValidationError    → permanent, Reason=InvalidConfig (the typed
+//     error's Message is written verbatim into condition.Message)
+//   - anything else           → transient; return the error wrapped so
+//     controller-runtime requeues with backoff and self-heals once the
+//     dependency recovers
+//
+// handled=true tells the caller to return immediately with a zero ctrl.Result
+// and the returned error.
+func (r *MCPExternalAuthConfigReconciler) applyOBOValidationResult(
+	ctx context.Context,
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+	validateErr error,
+) (handled bool, err error) {
 	if validateErr == nil {
 		return false, nil
 	}
-	switch {
-	case stderrors.Is(validateErr, obo.ErrEnterpriseRequired):
-		return true, r.setInvalid(ctx, cfg, validateErr, mcpv1beta1.ConditionReasonEnterpriseRequired)
-	default:
-		var valErr *obo.ValidationError
-		if stderrors.As(validateErr, &valErr) {
-			return true, r.setInvalid(ctx, cfg, valErr, mcpv1beta1.ConditionReasonInvalidConfig)
-		}
-		// Transient: return the error so controller-runtime requeues with
-		// backoff. Locking the resource into a permanent InvalidConfig on a
-		// transient I/O blip would require the user to touch the spec for
-		// the failure to clear, defeating self-healing.
-		return true, fmt.Errorf("OBO handler validation failed: %w", validateErr)
+	var valErr *obo.ValidationError
+	if stderrors.As(validateErr, &valErr) {
+		return true, r.setInvalid(ctx, cfg, valErr, mcpv1beta1.ConditionReasonInvalidConfig)
 	}
+	// Transient: return the error so controller-runtime requeues with backoff.
+	// Locking the resource into a permanent InvalidConfig on a transient I/O
+	// blip would require the user to touch the spec for the failure to clear.
+	return true, fmt.Errorf("OBO validation failed: %w", validateErr)
 }
 
 // setInvalid writes a Valid=False condition through MutateAndPatchStatus,
 // using the supplied reason string and the error's message as the condition
-// message. Returns an empty result with no requeue: the spec must change (or
-// an out-of-tree handler must be registered) for this branch to clear, so
-// requeuing buys nothing.
+// message. Returns an empty result with no requeue: the spec must change for
+// this branch to clear, so requeuing buys nothing.
 //
 // The IdentitySynthesized advisory is recomputed inside the patch closure so
 // both the advisory transition (e.g., when a user switches a config from
@@ -292,6 +424,8 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 	// the Warning fires only when entering the invalid state.
 	wasInvalid := conditionStatusIs(fresh.Status.Conditions,
 		mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
+	wasDeprecated := conditionStatusIs(fresh.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
 	if patchErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {
 		// applyIdentitySynthesizedCondition is idempotent on the same spec;
 		// re-applying it inside the closure folds the advisory transition into
@@ -299,6 +433,8 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 		// TestMCPExternalAuthConfigReconciler_IdentitySynthesizedTransitionsOnValidationFailure
 		// for the related validation-path regression guard.
 		r.applyIdentitySynthesizedCondition(c)
+		r.applyDeprecatedInboundGrantCondition(c)
+		c.Status.ObservedGeneration = c.Generation
 		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,
@@ -313,6 +449,9 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 		emitConfigEvent(r.Recorder, fresh, corev1.EventTypeWarning,
 			eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
 	}
+	desiredDeprecated := conditionStatusIs(fresh.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+	emitInboundGrantDeprecationEvent(r.Recorder, fresh, wasDeprecated, desiredDeprecated)
 	return nil
 }
 
@@ -331,6 +470,8 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 	// place, so a single Normal event fires on the False->True transition.
 	wasInvalid := conditionStatusIs(externalAuthConfig.Status.Conditions,
 		mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
+	wasDeprecated := conditionStatusIs(externalAuthConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
 
 	// Single status patch covering the hash-change success path: the new hash
 	// and generation, and the Valid=True / IdentitySynthesized conditions. All
@@ -346,6 +487,9 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		return ctrl.Result{}, err
 	}
 	emitConfigRecoveryEvent(r.Recorder, externalAuthConfig, wasInvalid)
+	desiredDeprecated := conditionStatusIs(externalAuthConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+	emitInboundGrantDeprecationEvent(r.Recorder, externalAuthConfig, wasDeprecated, desiredDeprecated)
 
 	return ctrl.Result{}, nil
 }
@@ -570,6 +714,10 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Watches(&mcpv1beta1.MCPServer{}, enqueueReferencedConfig(indexMCPServerByExternalAuthConfigRef),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&mcpv1beta1.MCPRemoteProxy{}, enqueueReferencedConfig(indexMCPRemoteProxyByExternalAuthConfigRef),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 
@@ -587,6 +735,8 @@ func (r *MCPExternalAuthConfigReconciler) updateSteadyStateStatus(
 	// place, so a single Normal event fires on the False->True transition.
 	wasInvalid := conditionStatusIs(externalAuthConfig.Status.Conditions,
 		mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
+	wasDeprecated := conditionStatusIs(externalAuthConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
 
 	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 		func(c *mcpv1beta1.MCPExternalAuthConfig) {
@@ -596,6 +746,9 @@ func (r *MCPExternalAuthConfigReconciler) updateSteadyStateStatus(
 		return ctrl.Result{}, err
 	}
 	emitConfigRecoveryEvent(r.Recorder, externalAuthConfig, wasInvalid)
+	desiredDeprecated := conditionStatusIs(externalAuthConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration, metav1.ConditionTrue)
+	emitInboundGrantDeprecationEvent(r.Recorder, externalAuthConfig, wasDeprecated, desiredDeprecated)
 
 	return ctrl.Result{}, nil
 }

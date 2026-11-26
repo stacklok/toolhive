@@ -484,7 +484,7 @@ In Kubernetes, the operator projects each selected ConfigMap key as a read-only 
 
 **Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go:monitorHealth`
 
-ToolHive performs health checks to verify that workloads are running and responding correctly. Health checks are **always enabled** for both local and remote workloads.
+ToolHive performs health checks to verify that workloads are running and responding correctly. Health checks are **always enabled** for local workloads and **enabled by default** for remote workloads (see the opt-out below).
 
 **Local workloads (containers):**
 - Verifies the container is running and responding
@@ -492,12 +492,14 @@ ToolHive performs health checks to verify that workloads are running and respond
 
 **Remote workloads:**
 - Verifies the upstream server is reachable and not answering with a 5xx status. The check goes to the remote URL's path and query, not the host's root, so a failing MCP endpoint on a shared host is detected; any status below 500, including 401, counts as healthy
+- Each check is a plain `GET` to the remote MCP endpoint (a `POST` of an MCP `ping` when the server is run with `--stateless`), sent every `TOOLHIVE_HEALTH_CHECK_INTERVAL` (default: 10s). For an SSE remote, the `GET` opens an SSE connection and drops it once the response headers arrive, so every check is a new stream on the remote server
 - Failures count from the first interval check, without waiting for initialization, because a remote server that keeps failing never completes it
 - After `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD` consecutive failures (default: 5), the workload transitions to `unhealthy` with the status context "Remote server failed health checks", but the proxy keeps running and checking, since ToolHive does not own the remote server's lifecycle
 - When a later check passes, the workload returns to `running` without a restart (for example, a scale-to-zero backend after a cold start)
-- The status is written only on these transitions. While the server stays unhealthy, each failed check re-reads the status and writes `unhealthy` again only if something else changed it. An `unauthenticated` status is kept, because a health check cannot tell that the credentials work again
+- While the server stays unhealthy, every failed check notifies the runner again. The runner re-reads the stored status and writes `unhealthy` only if it is something else; it keeps an `unauthenticated` status, because a health check cannot tell that the credentials work again, and keeps `stopping`, `stopped`, and `removing`, nor recreates the status of a deleted workload. A check that finishes after the proxy starts shutting down does not notify the runner. These are best-effort: the workload manager writes from another process, so a write can still land between the runner's read and write, though `thv stop` writes `stopped` last, after signalling the proxy. If writing `running` on recovery fails, each later passing check retries it until it is recorded
 - `thv list` shows unhealthy remote workloads, with that context, without `-a`
-- Setting `TOOLHIVE_REMOTE_HEALTHCHECKS=false` (or `0`) turns the checks off for remote workloads, for a server that answers the health check request badly while serving MCP requests normally
+- A failed check's error, reported in the `mcp.error` member of the proxy's unauthenticated `/health` response and in the pinger's debug logs, names the remote URL by scheme and host only (for example, `https://example.com`), because a remote URL's path or query can carry secrets
+- Setting `TOOLHIVE_REMOTE_HEALTHCHECKS=false` (or `0`) turns the checks off for remote workloads, for a server that answers the health check request badly while serving MCP requests normally, or where a request every interval is unwanted (for example, an SSE server that should not see a new connection per check)
 
 ### Proxy Request Timeout (Stdio Transport)
 

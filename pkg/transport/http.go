@@ -70,7 +70,8 @@ type HTTPTransport struct {
 	// onHealthCheckFailed is called when a health check fails for remote servers
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
-	// onHealthCheckRecovered is called when a health check recovers after failures
+	// onHealthCheckRecovered is called when a health check recovers after failures,
+	// and again on later passing checks until it returns nil
 	onHealthCheckRecovered types.HealthCheckRecoveredCallback
 
 	// onUnauthorizedResponse is called when a 401 Unauthorized response is received
@@ -312,9 +313,11 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 
 		remoteRawQuery = remoteURL.RawQuery
 
-		//nolint:gosec // G706: logging proxy port and remote URL from config
+		// The path and query can carry secrets, so only their presence is logged.
+		//nolint:gosec // G706: logging proxy port and remote scheme and host from config
 		slog.Debug("setting up transparent proxy to forward to remote URL",
-			"port", t.proxyPort, "target", targetURI, "base_path", remoteBasePath, "raw_query", remoteRawQuery)
+			"port", t.proxyPort, "target", targetURI,
+			"has_base_path", remoteBasePath != "", "has_query", remoteRawQuery != "")
 	} else {
 		if t.containerName == "" {
 			return transporterrors.ErrContainerNameNotSet

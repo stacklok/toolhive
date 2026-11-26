@@ -51,7 +51,7 @@ func TestResolveThroughUserKeyedStorage(t *testing.T) {
 			}))
 
 			resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
-				idpIssuer: {Name: "corp-idp", SubjectClaim: "sub"},
+				idpIssuer: {Name: "corp-idp", SubjectClaim: "sub", RowIssuer: idpIssuer, RowSubjectClaim: "sub"},
 			}, stor)
 			require.NoError(t, err)
 

@@ -1163,7 +1163,12 @@ func newSubjectResolver(cfg Config, store subjectresolver.IdentityStore) (subjec
 			"subject_mode resolve needs an OIDC identity provider as the first upstream")
 	}
 	resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
-		signIn.issuer: {Name: ResolveUpstreamName(cfg.Upstreams[0].Name), SubjectClaim: signIn.subjectClaim},
+		signIn.issuer: {
+			Name:            ResolveUpstreamName(cfg.Upstreams[0].Name),
+			SubjectClaim:    signIn.subjectClaim,
+			RowIssuer:       signIn.issuer,
+			RowSubjectClaim: signIn.subjectClaim,
+		},
 	}, store)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subject resolver: %w", err)

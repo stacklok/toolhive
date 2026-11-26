@@ -1585,11 +1585,15 @@ type UserStorage interface {
 //
 // It is deliberately not embedded in UserStorage or Storage so external
 // storage decorators remain compatible without implementing local row
-// replacement. Callers find it through ProviderIdentitySwapperFor, which peels
-// only ToolHive's own storage decorators. An external decorator must implement
+// replacement. Callers find it through ProviderIdentitySwapperFor, which looks
+// underneath only ToolHive's own storage decorators (those marked by the
+// unexported storageDecorator interface). An external decorator must implement
 // this interface itself, or callers treat the capability as absent. When it is
 // absent, sign-in leaves unstamped rows unstamped and refuses a stamped
 // mismatch with the handlers package's ErrIdentityBindingMismatch.
+//
+// Unlike AssertionJWTConsumer, it is not forwarded through each decorator:
+// absence is a legitimate state here, and the resolver handles it deliberately.
 type ProviderIdentitySwapper interface {
 	// CompareAndSwapProviderIdentity atomically updates the row at
 	// (replacement.ProviderID, replacement.ProviderSubject) iff

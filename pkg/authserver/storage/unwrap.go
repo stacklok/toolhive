@@ -16,30 +16,38 @@ func Unwrap(stor Storage) Storage {
 	}
 }
 
+// storageDecorator is implemented by ToolHive's own storage decorators. They
+// leave provider-identity rows to the Storage they wrap, so a capability
+// lookup may look underneath them. Its method is unexported, so types outside
+// this package cannot implement it: an external wrapper stops the lookup even
+// if it has Unwrap, and must implement the capability itself to offer it.
+type storageDecorator interface {
+	Unwrap() Storage
+	storageDecorator()
+}
+
+func (*UserKeyedUpstreamStorage) storageDecorator() {}
+func (*ClientAdmissionStorage) storageDecorator()   {}
+func (*SPIFFEStorageDecorator) storageDecorator()   {}
+func (*CIMDStorageDecorator) storageDecorator()     {}
+func (cimdShapeGuardStorage) storageDecorator()     {}
+
 // ProviderIdentitySwapperFor returns the outermost ProviderIdentitySwapper on
-// stor. It peels only ToolHive's own storage decorators (which do not intercept
-// provider-identity rows) so an external decorator — even one that exposes
-// Unwrap() Storage — is never bypassed to write directly to a backing store
-// underneath it.
+// stor. Unwrap says how to walk a decorator stack; storageDecorator says it is
+// safe to look underneath. The walk follows only storageDecorator, never
+// Unwrap alone, so a wrapper written outside this package is not bypassed to
+// write directly to the store beneath it, since it may serve identity rows
+// itself. Do not simplify this to Unwrap.
 func ProviderIdentitySwapperFor(stor UserStorage) ProviderIdentitySwapper {
 	for stor != nil {
 		if swapper, ok := stor.(ProviderIdentitySwapper); ok {
 			return swapper
 		}
-		switch d := stor.(type) {
-		case *UserKeyedUpstreamStorage:
-			stor = d.Storage
-		case *ClientAdmissionStorage:
-			stor = d.Storage
-		case *SPIFFEStorageDecorator:
-			stor = d.Storage
-		case *CIMDStorageDecorator:
-			stor = d.Storage
-		case cimdShapeGuardStorage:
-			stor = d.Storage
-		default:
+		d, ok := stor.(storageDecorator)
+		if !ok {
 			return nil
 		}
+		stor = d.Unwrap()
 	}
 	return nil
 }

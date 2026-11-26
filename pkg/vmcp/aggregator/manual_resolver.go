@@ -125,6 +125,7 @@ func (r *ManualConflictResolver) applyOverridesAndResolve(
 // resolveToolWithOverride applies overrides to a single tool.
 func (r *ManualConflictResolver) resolveToolWithOverride(backendID string, tool vmcp.Tool) *ResolvedTool {
 	resolvedName := tool.Name
+	title := tool.Title
 	description := tool.Description
 	annotations := tool.Annotations
 
@@ -137,13 +138,14 @@ func (r *ManualConflictResolver) resolveToolWithOverride(backendID string, tool 
 		if override.Description != "" {
 			description = override.Description
 		}
+		title = applyTitleOverride(title, override.Annotations)
 		annotations = applyAnnotationOverrides(annotations, override.Annotations)
 	}
 
 	return &ResolvedTool{
 		ResolvedName:              resolvedName,
 		OriginalName:              tool.Name,
-		Title:                     tool.Title,
+		Title:                     title,
 		Description:               description,
 		InputSchema:               tool.InputSchema,
 		OutputSchema:              tool.OutputSchema,

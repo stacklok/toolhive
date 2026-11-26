@@ -53,15 +53,16 @@ func processBackendTools(
 	// Build reverse map: overridden name -> original name (for lookup after processing)
 	reverseOverrideMap := make(map[string]string)
 
-	// Add overrides if configured
-	if len(workloadConfig.Overrides) > 0 {
-		for originalName, override := range workloadConfig.Overrides {
-			if override != nil {
-				opts = append(opts, mcp.WithToolsOverride(originalName, override.Name, override.Description))
-				// Track the mapping from overridden name back to original name
-				if override.Name != "" {
-					reverseOverrideMap[override.Name] = originalName
-				}
+	// Add name/description overrides if configured (annotation-only overrides are applied below)
+	for originalName, override := range workloadConfig.Overrides {
+		if override == nil {
+			continue
+		}
+		if override.Name != "" || override.Description != "" {
+			opts = append(opts, mcp.WithToolsOverride(originalName, override.Name, override.Description))
+			// Track the mapping from overridden name back to original name
+			if override.Name != "" {
+				reverseOverrideMap[override.Name] = originalName
 			}
 		}
 	}
@@ -102,16 +103,19 @@ func processBackendTools(
 			continue
 		}
 
-		// Apply annotation overrides if configured
+		// Apply annotation overrides if configured; annotations.title also updates top-level Title
+		// so MCP clients (which prefer top-level title over annotations.title) see the override.
+		title := originalTool.Title
 		annotations := originalTool.Annotations
 		if override, hasOverride := workloadConfig.Overrides[originalName]; hasOverride && override != nil {
+			title = applyTitleOverride(title, override.Annotations)
 			annotations = applyAnnotationOverrides(annotations, override.Annotations)
 		}
 
 		// Construct the result tool with processed name/description but original schema
 		result = append(result, vmcp.Tool{
 			Name:         simpleTool.Name, // Use the processed (potentially overridden) name
-			Title:        originalTool.Title,
+			Title:        title,
 			Description:  simpleTool.Description, // Use the processed (potentially overridden) description
 			InputSchema:  originalTool.InputSchema,
 			OutputSchema: originalTool.OutputSchema,
@@ -121,6 +125,15 @@ func processBackendTools(
 	}
 
 	return result
+}
+
+// applyTitleOverride returns the overridden title when annotations.title is configured,
+// ensuring operator title overrides take precedence over backend-supplied top-level titles.
+func applyTitleOverride(base string, overrides *config.ToolAnnotationsOverride) string {
+	if overrides != nil && overrides.Title != nil {
+		return *overrides.Title
+	}
+	return base
 }
 
 // applyAnnotationOverrides merges annotation overrides onto a base ToolAnnotations.

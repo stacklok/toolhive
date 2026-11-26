@@ -286,16 +286,23 @@ func TestIDJAGDecidesAgainBeforeMinting(t *testing.T) {
 	assert.Empty(t, resp.GetAccessToken(), "nothing is minted")
 }
 
-// TestIDJAGMintUsesGrantExpiryAndDecisionTime sets the clock by value: decide
-// takes now, so no wall clock is read.
-func TestIDJAGMintUsesGrantExpiryAndDecisionTime(t *testing.T) {
+// TestIDJAGMintUsesGrantExpiryAndMintTime sets the clock by value: decide
+// takes now, and the mint reads the handler's clock again, after the hooks.
+func TestIDJAGMintUsesGrantExpiryAndMintTime(t *testing.T) {
 	t.Parallel()
 
 	// exchangeGrantNow is a whole second; the offsets below rely on it.
 	base := exchangeGrantNow
-	record := idJAGRecord("ok", testRefreshClient, "", base.Add(1500*time.Millisecond), oauthproto.TokenTypeIDJAG)
-	record.CreatedAt = base
-	h := idJAGHandler(t, &recordStore{grants: idJAGRecords(record)})
+	newHandler := func(t *testing.T, mintAt time.Time) *RefreshTokenHandler {
+		t.Helper()
+		record := idJAGRecord("ok", testRefreshClient, "", base.Add(1500*time.Millisecond), oauthproto.TokenTypeIDJAG)
+		record.CreatedAt = base
+		h := idJAGHandler(t, &recordStore{grants: idJAGRecords(record)})
+		h.clock = func() time.Time { return mintAt }
+		return h
+	}
+
+	h := newHandler(t, base.Add(400*time.Millisecond))
 	decided, err := h.decide(t.Context(), idJAGRequest("x.ok"), base.Add(200*time.Millisecond))
 	require.NoError(t, err)
 	require.NotNil(t, decided.idJAG)
@@ -303,7 +310,15 @@ func TestIDJAGMintUsesGrantExpiryAndDecisionTime(t *testing.T) {
 	require.NoError(t, h.issueIDJAG(t.Context(), decided.idJAG, resp))
 	claims := decodeJWTPart(t, resp.GetAccessToken(), 1)
 	assert.Equal(t, json.Number("1800000001"), claims["exp"], "exp is the floor of the grant's expiry")
-	assert.Equal(t, json.Number("1800000000"), claims["iat"], "iat is the decision time")
+	assert.Equal(t, json.Number("1800000000"), claims["iat"], "iat is the mint time")
+
+	// The grant expires after the decision and before the mint.
+	h = newHandler(t, base.Add(1600*time.Millisecond))
+	decided, err = h.decide(t.Context(), idJAGRequest("x.ok"), base.Add(200*time.Millisecond))
+	require.NoError(t, err)
+	resp = fosite.NewAccessResponse()
+	requireOAuthError(t, h.issueIDJAG(t.Context(), decided.idJAG, resp), "invalid_grant", reasonBoundElapsed)
+	assert.Empty(t, resp.GetAccessToken(), "nothing is minted")
 }
 
 // TestIDJAGMintIsBoundedByTheCurrentCap sets the clock by value. The client's
@@ -340,6 +355,7 @@ func TestIDJAGMintIsBoundedByTheCurrentCap(t *testing.T) {
 			record.CreatedAt = tt.created
 			store := idJAGStore(record)
 			h := idJAGHandler(t, store)
+			h.clock = func() time.Time { return base }
 			policy := h.clientPolicies[testRefreshClient]
 			policy.ExchangeRefreshTokens = map[string]time.Duration{oauthproto.TokenTypeIDJAG: tt.cap}
 			h.clientPolicies[testRefreshClient] = policy

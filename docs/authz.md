@@ -865,8 +865,10 @@ A session-less token carries at most `sub`, `act`, `client_id` and `scope`, plus
 from the subject token; RFC 7523 JWT-bearer has no end user and carries neither).
 A token redeemed from an ID-JAG that carries `authorization_details` also
 carries the entries the authorization server granted: whole entries the
-ID-JAG's issuer signed, possibly fewer of them. An ID-JAG whose types are not
-registered is refused rather than redeemed (see
+ID-JAG's issuer signed, possibly fewer of them. When ToolHive's authorization
+server issues the ID-JAG, it signs the entries its client requested (see
+[On ID-JAG minting](arch/17-token-exchange-delegation.md#on-id-jag-minting)).
+An ID-JAG whose types are not registered is refused rather than redeemed (see
 [Authorization details](arch/17-token-exchange-delegation.md#on-id-jag-redemption)).
 Nothing else crosses. In particular **no upstream attribute is carried** — no
 `groups`, no `roles`, no `department`, nothing the pinned IdP asserted about the

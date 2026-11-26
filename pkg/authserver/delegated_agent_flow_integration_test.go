@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -325,9 +326,8 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			// value for the session grant's ID-JAG and for the scheduled run's
 			// child grant.
 			assert.Equal(t, wantAct, claims["act"], tc.name)
-			// Until Delegated access: subject mapping at ID-JAG redemption (#6887)
-			// is built, AS-2 has no local user for AS-1's subject, so sub is
-			// the issuer-qualified AS-1 subject. That change flips this.
+			// AS-2 here is a namespaced server: it has no local user for AS-1's
+			// subject, so sub is the issuer-qualified AS-1 subject.
 			assert.Equal(t, f.as1+"#"+f.sub, claims["sub"], tc.name)
 		}
 
@@ -379,6 +379,53 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		// plain JWT-bearer handler gets it and refuses the typ.
 		res = f.as2.redeem(t, f.as2.client, f.sessionLogin)
 		requireError(t, res, "invalid_grant", "invalid_assertion: The assertion JOSE typ header is not supported.")
+
+		// The broker sends one call entry on the ID-JAG request. AS-1
+		// signs it into the ID-JAG and returns it; the broker redeems with no
+		// parameter, and AS-2 copies the signed entry into the access token
+		// and returns it. All four are the same bytes, and the token still
+		// lives no longer than the ID-JAG.
+		entry := `[` + e2eCall + `]`
+		mintWith := func(details string) tokenResult {
+			return f.as1Env.requestIDJAGWith(t, broker, f.session, f.as2Issuer, func(form url.Values) {
+				actorPairWith("accept")(form)
+				form.Set("authorization_details", details)
+			})
+		}
+		before := time.Now()
+		res = mintWith(entry)
+		require.Equal(t, http.StatusOK, res.status, res.body)
+		idjag := res.str(t, "access_token")
+		assert.Equal(t, entry, string(res.details(t)))
+		assert.Equal(t, entry, string(jwtDetailsClaim(t, idjag)))
+		_, idjagClaims := decodeIDJAG(t, idjag)
+		assert.Equal(t, map[string]any{"iss": flowActIssuer, "sub": flowAgentID}, idjagClaims["act"])
+		res = f.as2.redeem(t, f.as2.client, idjag)
+		require.Equal(t, http.StatusOK, res.status, res.body)
+		assert.Equal(t, entry, string(res.details(t)))
+		assert.Equal(t, entry, string(jwtDetailsClaim(t, res.str(t, "access_token"))))
+		expiresIn, ok := res.body["expires_in"].(float64)
+		require.True(t, ok, "expires_in is a number: %v", res.body["expires_in"])
+		assert.LessOrEqual(t, int64(expiresIn), intClaim(t, idjagClaims, "exp")-before.Unix(),
+			"expires_in is capped by the ID-JAG")
+
+		// A second entry is refused at AS-1, before the actor validator.
+		mark = a.callCount()
+		twoEntries := strings.TrimSuffix(entry, "]") + "," + strings.TrimPrefix(entry, "[")
+		res = mintWith(twoEntries)
+		requireError(t, res, "invalid_authorization_details", e2eSingleEntry)
+		assert.Equal(t, mark, a.callCount(), "a refused entry never reaches the validator")
+
+		// A redemption that still sends the parameter is refused.
+		res = mintWith(entry)
+		require.Equal(t, http.StatusOK, res.status, res.body)
+		res = postToken(t, f.as2.srv.URL, f.as2.client, url.Values{
+			"grant_type":            {oauthproto.GrantTypeJWTBearer},
+			"assertion":             {res.str(t, "access_token")},
+			"resource":              {xrtIDJAGResource},
+			"authorization_details": {entry},
+		})
+		requireError(t, res, "invalid_authorization_details", "parameter_not_allowed")
 	})
 
 	t.Run("revoke", func(t *testing.T) {
@@ -531,6 +578,10 @@ func startFlow(t *testing.T, backend string) *flow {
 	// Each login consumes one queued user.
 	f.oidc.QueueUser(&mockoidc.MockUser{Subject: realLoginUpstreamSubject, Email: realLoginUpstreamEmail})
 
+	// A call type is registered on both servers: AS-1 signs the entry into
+	// the ID-JAG, and AS-2 copies it into the access token.
+	callRegistry := e2eDetailsRegistry(t)
+
 	f.as1Env = startXRTServerOn(t, backend, l1, func(cfg *authserver.RunConfig, issuer string) {
 		cfg.Upstreams = []authserver.UpstreamRunConfig{realLoginUpstream(t, f.oidc, issuer)}
 		setBrokerActorProfile(cfg)
@@ -550,6 +601,7 @@ func startFlow(t *testing.T, backend string) *flow {
 		authserverrunner.WithActorTokenValidators(map[string]tokenexchange.ActorValidatorRegistration{
 			actorTestValidator: {Validator: f.actor.mock, ActIssuer: flowActIssuer},
 		}),
+		authserverrunner.WithAuthorizationDetailsRegistry(callRegistry),
 	)
 	f.actor.setEnv(f.as1Env)
 	require.Equal(t, f.as1, f.as1Env.issuer)
@@ -585,7 +637,8 @@ func startFlow(t *testing.T, backend string) *flow {
 
 	f.sub, f.sessionLogin, f.scheduleLogin = sub, login1, login2
 
-	f.as2 = startAS2(t, l2, f.as1, f.sub, authserverrunner.WithAccessTokenType("at+jwt"))
+	f.as2 = startAS2(t, l2, f.as1, f.sub, authserverrunner.WithAccessTokenType("at+jwt"),
+		authserverrunner.WithAuthorizationDetailsRegistry(callRegistry))
 	require.Equal(t, f.as2Issuer, f.as2.issuer)
 	return f
 }

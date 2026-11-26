@@ -2115,9 +2115,10 @@ type Config struct {
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
 	// AuthorizationDetailsRegistry validates RFC 9396 authorization_details on
-	// RFC 8693 token-exchange requests, and decides which entries of an
-	// ID-JAG's signed authorization_details claim a redemption grants into the
-	// issued token. It is Go-only and is not part of RunConfig.
+	// RFC 8693 token-exchange requests, decides which requested entries a
+	// token exchange for an ID-JAG signs into the ID-JAG, and decides which
+	// entries of an ID-JAG's signed authorization_details claim a redemption
+	// grants into the issued token. It is Go-only and is not part of RunConfig.
 	AuthorizationDetailsRegistry *authorizationdetails.Registry
 
 	// AllowConfidentialClientRegistration permits DCR of confidential clients

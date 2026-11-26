@@ -1050,22 +1050,58 @@ Two warnings:
   service built over the raw storage handle skips the wrapper and reads
   session-keyed rows.
 
-Turning it on ignores existing session-keyed rows, so users connect again once.
-Turning it off later does the same in reverse. Revoking a token does not remove
-the shared row. The refresher never deletes the user's row. When it cannot store
-a rotated refresh token it clears the dead refresh token from the row with a
-compare-and-swap against the token it redeemed, and keeps the row. If a sign-in
-stored a different token in the meantime the swap fails and that row is left
-alone. A small window remains: a sign-in that carried the same dead token
-forward before the swap loses it, and its fresh access token is replaced by the
-expired one, so the user signs in once more. With the option off the refresher
-deletes the row, as before. When the delete or the clear succeeds, its error
-wraps `storage.ErrNotFound`, so the per-user reader and the guard treat the
-connection as needing authorization; a lost swap or a storage error returns a
-plain error. That holds when the access token is expired. When only the ID token
-is expired, the per-user reader re-reads the kept row and serves the stored
-credential until its access token expires; the empty refresh token then leads to
-authorize-again.
+Revoking a token does not remove the shared row. The refresher never deletes
+the user's row. When it cannot store a rotated refresh token it clears the dead
+refresh token from the row with a compare-and-swap against the token it
+redeemed, and keeps the row. If a sign-in stored a different token in the
+meantime the swap fails and that row is left alone. A small window remains: a
+sign-in that carried the same dead token forward before the swap loses it, and
+its fresh access token is replaced by the expired one, so the user signs in once
+more. With the option off the refresher deletes the row, as before. When the
+delete or the clear succeeds, its error wraps `storage.ErrNotFound`, so the
+per-user reader and the guard treat the connection as needing authorization; a
+lost swap or a storage error returns a plain error. The cleared row also gets an
+expired access token, so the connection needs authorization at once, whether the
+refresh was for an expired access token or only for an expired ID token. Without
+that, a row whose upstream gave no `expires_in` has no expiry and no storage
+lifetime, and would be served for ever.
+
+### Rollout and rollback
+
+Switch every replica at the same time. Do not run a mixed fleet, because the
+two modes read different rows:
+
+- A session that signed in on an option-off replica has session-keyed rows
+  only. If it refreshes on an option-on replica and the user has no user-keyed
+  row yet, the guard finds no row for the user, and the grant fails with
+  `invalid_grant` and its refresh token is revoked. A retry on an option-off
+  replica fails too, because the token is revoked. If the user already signed
+  in on an option-on replica, the guard and the bearer validator read that
+  user's row instead, and the session continues on option-on replicas.
+- A session that signed in on an option-on replica has a user-keyed row only. If
+  it refreshes on an option-off replica, the guard finds no rows under the
+  session and the grant fails with `invalid_grant`; that replica does not
+  revoke the token. Bearer requests that reach an option-off replica get 401,
+  because the validator finds no upstream access token for the session.
+
+Turning it on: expect one forced sign-in per user. Rows written before the
+option was on are ignored. A client that refreshes before its user has signed
+in again on any client is refused and its refresh token revoked, not only
+refused, so that client signs in again. Clients that refresh after the user's
+new sign-in find the user's new row and continue without signing in.
+
+Turning it off (rollback): the user-keyed rows and their indexes stay in Redis.
+On the Redis backend they are the keys `{prefix}upstream:user:*` and
+`{prefix}upstream:idx:user:*`, and a row for a token that never expires has no
+TTL. The per-user lookup set `{prefix}user:upstream:{uid}` also still lists
+them. With the option off, a sign-in for which the identity provider returns no
+refresh token copies one forward from the user's latest row for that provider
+(`GetLatestUpstreamTokensForUser` reads that set and prefers rows that never
+expire), so it can copy a dead or stale token from a leftover row into the new
+session row. Delete both key patterns before or right after the rollback
+(for example `SCAN` with each pattern and `UNLINK` the keys). The leftover
+members of `{prefix}user:upstream:{uid}` are then skipped as dangling. The
+memory backend needs nothing, because it is cleared on restart.
 
 ### Behaviour
 
@@ -1358,6 +1394,13 @@ each item before turning the option on.
     row. It runs before the embedder's `RefreshGrantHandlers`, so those see only
     grants it accepted. Set `DisableUpstreamRefreshGuard` to keep only the
     embedder's own check.
+11. **Replicas and refresh token rotation.** With more than one replica and an
+    identity provider that rotates refresh tokens and detects reuse (for
+    example Okta, Entra ID or Auth0), shared rows make the cross-replica
+    rotation race in "Handle multi-pod refresh token rotation race condition"
+    (#4122) much more likely. One lost race can revoke the token family at the
+    provider and, through the guard, sign the user out on every client. Use
+    user-affine routing or a single replica until #4122 is fixed.
 
 ## Configuration
 

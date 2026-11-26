@@ -2499,30 +2499,7 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 		return err
 	}
 
-	if err := externalauthsupport.Validate(
-		externalauthsupport.ConsumerMCPServer,
-		externalAuthConfig.Spec.Type,
-	); err != nil {
-		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1beta1.ConditionReasonUnsupportedAuthType,
-			Message:            err.Error(),
-			ObservedGeneration: m.Generation,
-		})
-		return fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", m.Namespace, externalAuthConfig.Name, err)
-	}
-
-	// OBO exchanges the authenticated user's token, so it needs incoming OIDC
-	// authentication. Terminal: the caller records it without requeueing.
-	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, m.Spec.OIDCConfigRef != nil); err != nil {
-		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
-			Message:            err.Error(),
-			ObservedGeneration: m.Generation,
-		})
+	if err := validateMCPServerExternalAuthConsumer(m, externalAuthConfig); err != nil {
 		return err
 	}
 
@@ -2581,6 +2558,43 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 
 		// The change in hash will trigger a reconciliation of the RunConfig
 		// which will pick up the new external auth configuration
+	}
+
+	return nil
+}
+
+// validateMCPServerExternalAuthConsumer checks that an MCPServer can consume
+// externalAuthConfig: the type must be one MCPServer supports, and obo needs
+// incoming OIDC authentication so there is a user token to exchange. A failure
+// is recorded on the ExternalAuthConfigValidated condition and returned; both
+// are terminal, and the caller records them without requeueing.
+func validateMCPServerExternalAuthConsumer(
+	m *mcpv1beta1.MCPServer,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) error {
+	if err := externalauthsupport.Validate(
+		externalauthsupport.ConsumerMCPServer,
+		externalAuthConfig.Spec.Type,
+	); err != nil {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			Message:            err.Error(),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", m.Namespace, externalAuthConfig.Name, err)
+	}
+
+	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, m.Spec.OIDCConfigRef != nil); err != nil {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            err.Error(),
+			ObservedGeneration: m.Generation,
+		})
+		return err
 	}
 
 	return nil

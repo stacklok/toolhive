@@ -277,6 +277,11 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
 		}
+		// The session's DELETE is already in progress: skip the binding check,
+		// which would load the session again and may find it gone.
+		if ctx.Err() != nil {
+			return legacyToolCallError(server.ClientSessionFromContext(ctx), context.Cause(ctx))
+		}
 
 		// Shape-check on the SDK decode first: a non-object payload is rejected before the
 		// core is reached. This validates request shape for the parse we forward too — both
@@ -352,6 +357,9 @@ func (s *Server) coreResourceHandler(
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
 		}
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
+		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
 		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
@@ -400,6 +408,9 @@ func (s *Server) corePromptHandler(
 
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
+		}
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
 		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
@@ -454,6 +465,9 @@ func (s *Server) coreCompletionHandler(
 	}
 	ctx, end := s.openRequests.begin(ctx, sessionID)
 	defer end()
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
 
 	caller, _ := auth.IdentityFromContext(ctx)
 	if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
@@ -503,6 +517,12 @@ func (s *Server) coreSubscribeHandler(ctx context.Context, capability, uri strin
 	sessionID := ""
 	if sess := server.ClientSessionFromContext(ctx); sess != nil {
 		sessionID = sess.SessionID()
+	}
+	// LookupResource may list the backends when the capability cache is cold.
+	ctx, end := s.openRequests.begin(ctx, sessionID)
+	defer end()
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
 	}
 
 	caller, _ := auth.IdentityFromContext(ctx)

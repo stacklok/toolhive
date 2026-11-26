@@ -1378,6 +1378,13 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 		return // tools already registered (normal pod-local case)
 	}
 	sessionID := sess.SessionID()
+	// Listing the tools may reach the backends, so the session's DELETE
+	// cancels it like any other request (see openRequests).
+	ctx, end := s.openRequests.begin(ctx, sessionID)
+	defer end()
+	if ctx.Err() != nil {
+		return
+	}
 
 	// Re-derive the tool set the same way registration did, so cross-pod re-injection
 	// matches the advertised set: a fresh core.ListTools for the request identity (the core

@@ -1324,6 +1324,10 @@ reach it.
   unknown session) makes them start a new session.
   A store failure gets 503. A rejected request never terminates or otherwise
   disturbs the owner's session. Rejections of foreign callers are logged at WARN.
+- The owner's DELETE first cancels the session's Legacy requests still running
+  on the replica that receives it, because the transport closes a session by
+  waiting for its open requests. Requests running on other replicas are not
+  cancelled.
 - Because the check precedes the pre-dispatch authorization gate, a Cedar-denied
   call on a foreign or unknown session ID gets 404 rather than 403. The loopback
   Host guard and call binding run before this check, so their 403 (or call

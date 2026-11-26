@@ -153,6 +153,14 @@ func (s *Server) optimizerToolHandler(
 // mirroring the legacy optimizerdec handler.
 func (s *Server) optimizerFindToolHandler(sessionID string, opt optimizer.Optimizer) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// FindTool may call the embedding service, so the session's DELETE
+		// cancels it like any other call (see openRequests).
+		ctx, end := s.openRequests.begin(ctx, sessionID)
+		defer end()
+		if ctx.Err() != nil {
+			return legacyToolCallError(server.ClientSessionFromContext(ctx), context.Cause(ctx))
+		}
+
 		caller, _ := auth.IdentityFromContext(ctx)
 		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
 			s.terminateOnBindingFailure(sessionID, optimizerdec.FindToolName, err)

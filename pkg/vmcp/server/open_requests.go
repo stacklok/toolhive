@@ -26,10 +26,12 @@ var errSessionTerminated = errors.New("session terminated by the client")
 type openRequests struct {
 	mu sync.Mutex
 	// sessions maps a session ID to the cancel functions of its open
-	// requests. ended holds the sessions whose DELETE is in progress: a
-	// request that starts on one of them is cancelled at once.
+	// requests. ended counts the DELETEs in progress on each session: a
+	// request that starts on one of them is cancelled at once. It is a count
+	// because the owner may send overlapping DELETEs, and the first to finish
+	// must not reopen the session while another is still closing it.
 	sessions map[string]map[*context.CancelCauseFunc]struct{}
-	ended    map[string]struct{}
+	ended    map[string]int
 }
 
 // begin records a request on sessionID and returns its context, which end
@@ -73,23 +75,30 @@ func (o *openRequests) begin(ctx context.Context, sessionID string) (context.Con
 
 // endSession cancels every open request on sessionID, and every request that
 // starts on it until the returned function is called. The caller calls that
-// function once the session is closed.
+// function once the session is closed; calling it again does nothing.
 func (o *openRequests) endSession(sessionID string) func() {
 	o.mu.Lock()
 	reqs := o.sessions[sessionID]
 	delete(o.sessions, sessionID)
 	if o.ended == nil {
-		o.ended = make(map[string]struct{})
+		o.ended = make(map[string]int)
 	}
-	o.ended[sessionID] = struct{}{}
+	o.ended[sessionID]++
 	o.mu.Unlock()
 
 	for cancel := range reqs {
 		(*cancel)(errSessionTerminated)
 	}
+	var once sync.Once
 	return func() {
-		o.mu.Lock()
-		delete(o.ended, sessionID)
-		o.mu.Unlock()
+		once.Do(func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+			if o.ended[sessionID] <= 1 {
+				delete(o.ended, sessionID)
+			} else {
+				o.ended[sessionID]--
+			}
+		})
 	}
 }

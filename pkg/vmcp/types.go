@@ -228,16 +228,23 @@ const (
 	ConditionTypeBackendsDiscovered = "BackendsDiscovered"
 	ConditionTypeReady              = "Ready"
 	ConditionTypeAuthConfigured     = "AuthConfigured"
+	// ConditionTypeUpstreamDiscoveryFailed is True while an optional upstream
+	// identity provider of the embedded auth server is unavailable because its
+	// discovery failed at startup. It is reported only when optional upstreams
+	// are configured.
+	ConditionTypeUpstreamDiscoveryFailed = "UpstreamDiscoveryFailed"
 )
 
 // Reason constants for condition reasons.
 const (
-	ReasonBackendDiscoverySucceeded = "BackendDiscoverySucceeded"
-	ReasonBackendDiscoveryFailed    = "BackendDiscoveryFailed"
-	ReasonServerReady               = "ServerReady"
-	ReasonServerStarting            = "ServerStarting"
-	ReasonServerDegraded            = "ServerDegraded"
-	ReasonServerFailed              = "ServerFailed"
+	ReasonBackendDiscoverySucceeded  = "BackendDiscoverySucceeded"
+	ReasonBackendDiscoveryFailed     = "BackendDiscoveryFailed"
+	ReasonServerReady                = "ServerReady"
+	ReasonServerStarting             = "ServerStarting"
+	ReasonServerDegraded             = "ServerDegraded"
+	ReasonServerFailed               = "ServerFailed"
+	ReasonUpstreamDiscoveryFailed    = "UpstreamDiscoveryFailed"
+	ReasonUpstreamDiscoverySucceeded = "UpstreamDiscoverySucceeded"
 )
 
 // DiscoveredBackend represents a backend server discovered by vMCP runtime.

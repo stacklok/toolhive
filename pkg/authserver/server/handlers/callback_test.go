@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -1266,54 +1267,85 @@ func TestCallbackHandler_TwoUpstreams_FreshSecretsPerLeg(t *testing.T) {
 
 func TestCallbackHandler_TwoUpstreams_AuthorizationURLError_PreservesTokens(t *testing.T) {
 	t.Parallel()
-	handler, storState, _, mockProvider2 := multiUpstreamTestSetup(t)
 
-	// Configure provider-2 to fail when building the authorization URL
-	mockProvider2.authURLErr = errors.New("authorization URL error")
-
-	// Set up a first-leg pending authorization for provider-1.
-	// No pre-existing tokens — the first leg callback stores provider-1 tokens,
-	// then continueChainOrComplete finds provider-2 missing and tries to redirect.
-	sessionID := "chain-session-authurl-err"
-	firstLegState := "authurl-err-first-leg-state"
-	pending := &storage.PendingAuthorization{
-		ClientID:             testAuthClientID,
-		RedirectURI:          testAuthRedirectURI,
-		State:                "client-state-authurl",
-		PKCEChallenge:        "challenge-authurl",
-		PKCEMethod:           "S256",
-		Scopes:               []string{"openid"},
-		InternalState:        firstLegState,
-		UpstreamPKCEVerifier: "authurl-err-verifier-123456789012345678901",
-		UpstreamNonce:        "authurl-err-nonce",
-		UpstreamProviderName: "provider-1",
-		SessionID:            sessionID,
-		CreatedAt:            time.Now(),
+	tests := []struct {
+		name          string
+		authURLErr    error
+		wantError     string
+		wantInMessage string
+	}{
+		{
+			name:       "generic failure is a server error",
+			authURLErr: errors.New("authorization URL error"),
+			wantError:  "error=server_error",
+		},
+		{
+			// An optional upstream whose discovery failed at startup.
+			name:          "unavailable upstream is temporarily unavailable",
+			authURLErr:    fmt.Errorf("upstream %q: %w", "provider-2", upstream.ErrUpstreamUnavailable),
+			wantError:     "error=temporarily_unavailable",
+			wantInMessage: "provider-2",
+		},
 	}
-	cookie := bindPending(t, storState, firstLegState, pending)
 
-	req := newCallbackRequest("code=p1-code&state="+firstLegState, cookie)
-	rec := httptest.NewRecorder()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, storState, _, mockProvider2 := multiUpstreamTestSetup(t)
 
-	handler.CallbackHandler(rec, req)
+			// Configure provider-2 to fail when building the authorization URL
+			mockProvider2.authURLErr = tt.authURLErr
 
-	// Should NOT be a redirect to the next upstream (302) — it should be a fosite
-	// error redirect (303) back to the client with an error.
-	assert.Equal(t, http.StatusSeeOther, rec.Code, "should return fosite error redirect, not upstream redirect")
-	location := rec.Header().Get("Location")
-	assert.Contains(t, location, "error=server_error", "should contain server_error")
-	assert.Contains(t, location, "state=client-state-authurl", "should preserve client state")
+			// Set up a first-leg pending authorization for provider-1.
+			// No pre-existing tokens — the first leg callback stores provider-1 tokens,
+			// then continueChainOrComplete finds provider-2 missing and tries to redirect.
+			sessionID := "chain-session-authurl-err"
+			firstLegState := "authurl-err-first-leg-state"
+			pending := &storage.PendingAuthorization{
+				ClientID:             testAuthClientID,
+				RedirectURI:          testAuthRedirectURI,
+				State:                "client-state-authurl",
+				PKCEChallenge:        "challenge-authurl",
+				PKCEMethod:           "S256",
+				Scopes:               []string{"openid"},
+				InternalState:        firstLegState,
+				UpstreamPKCEVerifier: "authurl-err-verifier-123456789012345678901",
+				UpstreamNonce:        "authurl-err-nonce",
+				UpstreamProviderName: "provider-1",
+				SessionID:            sessionID,
+				CreatedAt:            time.Now(),
+			}
+			cookie := bindPending(t, storState, firstLegState, pending)
 
-	// The completed first leg's credential is preserved — a failure building the NEXT
-	// leg's authorization URL does not invalidate it.
-	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
-		"the first leg's token must survive a next-leg authorization-URL failure")
+			req := newCallbackRequest("code=p1-code&state="+firstLegState, cookie)
+			rec := httptest.NewRecorder()
 
-	// The ephemeral pending authorizations are still cleaned up: the first-leg pending was
-	// deleted on load, and the second-leg pending is deleted on this error path.
-	for state, p := range storState.pendingAuths {
-		assert.Failf(t, "no pending authorizations should remain",
-			"found pending for provider %q with state %q", p.UpstreamProviderName, state)
+			handler.CallbackHandler(rec, req)
+
+			// Should NOT be a redirect to the next upstream (302) — it should be a fosite
+			// error redirect (303) back to the client with an error.
+			assert.Equal(t, http.StatusSeeOther, rec.Code, "should return fosite error redirect, not upstream redirect")
+			location := rec.Header().Get("Location")
+			assert.Contains(t, location, tt.wantError)
+			assert.Contains(t, location, "state=client-state-authurl", "should preserve client state")
+			if tt.wantInMessage != "" {
+				redirect, err := url.Parse(location)
+				require.NoError(t, err)
+				assert.Contains(t, redirect.Query().Get("error_description"), tt.wantInMessage)
+			}
+
+			// The completed first leg's credential is preserved — a failure building the NEXT
+			// leg's authorization URL does not invalidate it.
+			assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
+				"the first leg's token must survive a next-leg authorization-URL failure")
+
+			// The ephemeral pending authorizations are still cleaned up: the first-leg pending was
+			// deleted on load, and the second-leg pending is deleted on this error path.
+			for state, p := range storState.pendingAuths {
+				assert.Failf(t, "no pending authorizations should remain",
+					"found pending for provider %q with state %q", p.UpstreamProviderName, state)
+			}
+		})
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -452,6 +453,13 @@ func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
 				Reason:             "BackendsDegraded",
 				Message:            "1 backend degraded",
 			},
+			{
+				Type:               vmcptypes.ConditionTypeUpstreamDiscoveryFailed,
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             vmcptypes.ReasonUpstreamDiscoveryFailed,
+				Message:            "Optional upstream identity providers unavailable, retrying in the background: idp",
+			},
 		},
 		BackendCount: 2,
 	}
@@ -466,7 +474,8 @@ func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
 		Namespace: "default",
 	}, updated)
 	require.NoError(t, err)
-	assert.Len(t, updated.Status.Runtime.Conditions, 2, "Should have Ready and Degraded conditions")
+	assert.Len(t, updated.Status.Runtime.Conditions, 3,
+		"Should have Ready, Degraded and UpstreamDiscoveryFailed conditions")
 
 	hasDegraded := false
 	for _, cond := range updated.Status.Runtime.Conditions {
@@ -518,6 +527,9 @@ func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
 	}
 	assert.True(t, hasReady, "Ready condition should be present")
 	assert.False(t, hasDegraded, "Degraded condition should be removed after recovery")
+	assert.Nil(t, meta.FindStatusCondition(updated.Status.Runtime.Conditions,
+		vmcptypes.ConditionTypeUpstreamDiscoveryFailed),
+		"UpstreamDiscoveryFailed should be removed once it is no longer reported")
 }
 
 // TestK8sReporter_Start tests the Start lifecycle method.

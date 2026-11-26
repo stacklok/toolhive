@@ -723,7 +723,7 @@ func (c *RunConfig) Validate() error {
 	if err := c.validateRuntimeSPIFFEBundleSources(); err != nil {
 		return err
 	}
-	if err := c.validateUpstreamFilter(); err != nil {
+	if err := c.validateUpstreams(); err != nil {
 		return err
 	}
 	return c.validateBaselineClientScopes()
@@ -845,6 +845,18 @@ func (l *TLSListenerRunConfig) validate() error {
 		return fmt.Errorf("%s must be set", strings.Join(missing, " and "))
 	}
 	return nil
+}
+
+// validateUpstreams checks the run-config view of the upstream list: which
+// upstreams may be optional and the upstream filter. Optional upstreams are
+// checked here as well as in Config.Validate(): DCR registration runs in
+// buildUpstreamConfigs before Config.Validate() is reached, and the DCR check
+// needs the run-config shape.
+func (c *RunConfig) validateUpstreams() error {
+	if err := validateOptionalUpstreams(c.Upstreams); err != nil {
+		return err
+	}
+	return c.validateUpstreamFilter()
 }
 
 // validateUpstreamFilter rejects an UpstreamFilter configuration whose rules or
@@ -1387,6 +1399,15 @@ type UpstreamRunConfig struct {
 	// Type specifies the provider type: "oidc" or "oauth2".
 	Type UpstreamProviderType `json:"type" yaml:"type"`
 
+	// Required controls whether this upstream must be reachable at startup.
+	// Unset or true keeps the fail-fast behavior: a failed OIDC discovery stops
+	// the server. False lets the server start without it; discovery is then
+	// retried in the background and logins through this upstream fail with
+	// temporarily_unavailable until it succeeds. Only an "oidc" upstream with a
+	// pre-provisioned client_id may set false, and never the first upstream,
+	// which leads every authorization chain.
+	Required *bool `json:"required,omitempty" yaml:"required,omitempty"`
+
 	// OIDCConfig contains OIDC-specific configuration.
 	// Required when Type is "oidc", must be nil when Type is "oauth2".
 	OIDCConfig *OIDCUpstreamRunConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
@@ -1822,6 +1843,16 @@ type UpstreamConfig struct {
 
 	// Type specifies the provider type: "oidc" or "oauth2".
 	Type UpstreamProviderType `json:"type" yaml:"type"`
+
+	// Required controls whether a failure to construct this upstream's provider
+	// stops the server. Nil or true keeps the fail-fast behavior. False is
+	// allowed only for an "oidc" upstream other than the first: the server then
+	// starts with a placeholder that refuses every request with
+	// upstream.ErrUpstreamUnavailable and retries construction in the
+	// background until it succeeds or the server closes. Each attempt is
+	// bounded by a context deadline, which a custom UpstreamFactory must honor
+	// for startup and Close to stay bounded. See IsRequired.
+	Required *bool `json:"required,omitempty" yaml:"required,omitempty"`
 
 	// OAuth2Config contains OAuth 2.0 provider configuration.
 	// Used when Type is "oauth2". Must be nil when Type is "oidc".
@@ -3011,6 +3042,10 @@ func (c *Config) validateUpstreams() error {
 		if err := validateUpstreamType(up, c.InsecureAllowHTTP); err != nil {
 			return err
 		}
+
+		if err := validateUpstreamRequired(i, up.Name, up.Type, up.IsRequired()); err != nil {
+			return err
+		}
 	}
 
 	return validateZeroUpstreamMode(
@@ -3071,6 +3106,53 @@ func (c *Config) warnOnAuthorizeCallbackHostMismatch() {
 			)
 		}
 	}
+}
+
+// IsRequired reports whether the upstream must be constructed successfully for
+// the server to start. An unset Required means true.
+func (u *UpstreamConfig) IsRequired() bool {
+	return u.Required == nil || *u.Required
+}
+
+// IsRequired reports whether the upstream must be reachable at startup. An
+// unset Required means true.
+func (u *UpstreamRunConfig) IsRequired() bool {
+	return u.Required == nil || *u.Required
+}
+
+// validateOptionalUpstreams applies validateUpstreamRequired to the run config
+// and additionally rejects required=false with dcr_config: Dynamic Client
+// Registration contacts the upstream at startup, before the provider is built,
+// and has no deferred path.
+func validateOptionalUpstreams(upstreams []UpstreamRunConfig) error {
+	for i := range upstreams {
+		up := &upstreams[i]
+		if err := validateUpstreamRequired(i, up.Name, up.Type, up.IsRequired()); err != nil {
+			return err
+		}
+		if !up.IsRequired() && up.OIDCConfig != nil && up.OIDCConfig.DCRConfig != nil {
+			return fmt.Errorf("upstream %q: required=false is not supported with dcr_config", up.Name)
+		}
+	}
+	return nil
+}
+
+// validateUpstreamRequired rejects required=false where it cannot work as
+// documented: on the first upstream, which leads every authorization chain and
+// is never filtered out, and on any type other than "oidc", the only type that
+// contacts the upstream while it is constructed.
+func validateUpstreamRequired(i int, name string, typ UpstreamProviderType, required bool) error {
+	if required {
+		return nil
+	}
+	if i == 0 {
+		return fmt.Errorf("upstream %q: required=false is not allowed on the first upstream, "+
+			"which leads every authorization chain", name)
+	}
+	if typ != UpstreamProviderTypeOIDC {
+		return fmt.Errorf("upstream %q: required=false is only supported for type %q", name, UpstreamProviderTypeOIDC)
+	}
+	return nil
 }
 
 // redirectURI returns the upstream's configured callback URL for either

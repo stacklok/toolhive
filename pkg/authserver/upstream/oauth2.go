@@ -360,6 +360,12 @@ var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined wi
 // resolves the race once the winner's write has landed, but not before.
 var ErrGrantRejected = errors.New("invalid_grant")
 
+// ErrUpstreamUnavailable is returned by a provider that cannot serve requests
+// yet: an optional upstream whose OIDC discovery failed at startup and is still
+// being retried in the background. Callers can map it to a transient error with
+// errors.Is instead of treating it as a configuration or protocol failure.
+var ErrUpstreamUnavailable = errors.New("upstream identity provider is unavailable")
+
 // IdleConnectionCloser is an optional capability an OAuth2Provider may implement
 // to release the idle keep-alive connections held by its HTTP client. It is the
 // provider-level analogue of networking.IdleConnectionCloser, and is optional

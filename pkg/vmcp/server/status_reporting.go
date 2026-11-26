@@ -5,9 +5,14 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
@@ -145,6 +150,12 @@ func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter)
 		}
 	}
 
+	if s.config != nil && s.config.AuthServer != nil {
+		if cond, ok := upstreamDiscoveryCondition(s.config.AuthServer.OptionalUpstreams()); ok {
+			status.Conditions = append(status.Conditions, cond)
+		}
+	}
+
 	// Log status at debug level
 	slog.Debug("reporting status",
 		"phase", status.Phase,
@@ -155,4 +166,35 @@ func (s *Server) reportStatus(ctx context.Context, reporter vmcpstatus.Reporter)
 	if err := reporter.ReportStatus(ctx, status); err != nil {
 		slog.Error("failed to report status", "error", err)
 	}
+}
+
+// upstreamDiscoveryCondition builds the UpstreamDiscoveryFailed condition from
+// the state of the embedded auth server's optional upstreams. It reports no
+// condition when no optional upstream is configured, True naming the
+// unavailable upstreams while any is being retried, and False once all are
+// available.
+func upstreamDiscoveryCondition(optional []authserver.UpstreamAvailability) (metav1.Condition, bool) {
+	if len(optional) == 0 {
+		return metav1.Condition{}, false
+	}
+	var unavailable []string
+	for _, u := range optional {
+		if !u.Available {
+			unavailable = append(unavailable, u.Name)
+		}
+	}
+	cond := metav1.Condition{
+		Type:               vmcp.ConditionTypeUpstreamDiscoveryFailed,
+		Status:             metav1.ConditionFalse,
+		LastTransitionTime: metav1.Now(),
+		Reason:             vmcp.ReasonUpstreamDiscoverySucceeded,
+		Message:            "All optional upstream identity providers are available",
+	}
+	if len(unavailable) > 0 {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = vmcp.ReasonUpstreamDiscoveryFailed
+		cond.Message = fmt.Sprintf("Optional upstream identity providers unavailable, retrying in the background: %s",
+			strings.Join(unavailable, ", "))
+	}
+	return cond, true
 }

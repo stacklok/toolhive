@@ -11,7 +11,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -228,4 +230,59 @@ func TestReportStatus(t *testing.T) {
 	require.NotNil(t, reporter.lastStatus)
 	assert.Equal(t, vmcp.PhaseReady, reporter.lastStatus.Phase)
 	assert.Equal(t, "Health monitoring disabled", reporter.lastStatus.Message)
+}
+
+func TestUpstreamDiscoveryCondition(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		optional    []authserver.UpstreamAvailability
+		wantOK      bool
+		wantStatus  metav1.ConditionStatus
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name:     "no optional upstreams reports no condition",
+			optional: nil,
+			wantOK:   false,
+		},
+		{
+			name:        "all optional upstreams available",
+			optional:    []authserver.UpstreamAvailability{{Name: "test-idp", Available: true}},
+			wantOK:      true,
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  vmcp.ReasonUpstreamDiscoverySucceeded,
+			wantMessage: "All optional upstream identity providers are available",
+		},
+		{
+			name: "unavailable upstreams are named",
+			optional: []authserver.UpstreamAvailability{
+				{Name: "idp-a", Available: false},
+				{Name: "idp-b", Available: true},
+				{Name: "idp-c", Available: false},
+			},
+			wantOK:      true,
+			wantStatus:  metav1.ConditionTrue,
+			wantReason:  vmcp.ReasonUpstreamDiscoveryFailed,
+			wantMessage: "Optional upstream identity providers unavailable, retrying in the background: idp-a, idp-c",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cond, ok := upstreamDiscoveryCondition(tt.optional)
+			require.Equal(t, tt.wantOK, ok)
+			if !ok {
+				return
+			}
+			assert.Equal(t, vmcp.ConditionTypeUpstreamDiscoveryFailed, cond.Type)
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Equal(t, tt.wantMessage, cond.Message)
+			assert.False(t, cond.LastTransitionTime.IsZero())
+		})
+	}
 }

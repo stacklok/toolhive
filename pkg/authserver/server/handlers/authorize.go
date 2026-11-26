@@ -292,13 +292,34 @@ func (h *Handler) beginUpstream(ctx context.Context, w http.ResponseWriter, req 
 	}
 	upstreamURL, err := provider.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
-		slog.Error("failed to build upstream authorization URL", "error", err)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
+		h.provider.WriteAuthorizeError(ctx, w, ar, authorizationURLError(pending.UpstreamProviderName, err))
 		return
 	}
 	h.setBrowserBindingCookie(w, secrets.State, binding.value)
 	http.Redirect(w, req, upstreamURL, http.StatusSeeOther)
+}
+
+// authorizationURLError logs a failed AuthorizationURL for the named upstream
+// and returns the error to send to the client. An optional upstream that is
+// still unavailable after a failed startup discovery yields
+// temporarily_unavailable naming the upstream, so the client can tell a
+// transient outage from a server fault; anything else stays server_error.
+// The unavailable case is logged at DEBUG only: the upstream's outage was
+// logged at WARN once at startup, and a caller can trigger this line at
+// request rate.
+func authorizationURLError(upstreamName string, err error) *fosite.RFC6749Error {
+	if errors.Is(err, upstream.ErrUpstreamUnavailable) {
+		slog.Debug("refused authorization through an unavailable optional upstream",
+			"upstream", upstreamName)
+		// The configured name, not DisplayName: names are validated DNS labels,
+		// while DisplayName is free text that is only sanitized where the
+		// consent page renders it.
+		return fosite.ErrTemporarilyUnavailable.WithHintf(
+			"The upstream identity provider %q is temporarily unavailable.", upstreamName)
+	}
+	slog.Error("failed to build upstream authorization URL", "upstream", upstreamName, "error", err)
+	return fosite.ErrServerError.WithHint("failed to build authorization URL")
 }
 
 // writeAuthorizeRequestError answers a failed NewAuthorizeRequest: 429 when the

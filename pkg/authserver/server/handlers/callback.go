@@ -999,11 +999,11 @@ func (h *Handler) continueChainOrComplete(
 	}
 	nextURL, err := nextUpstream.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
-		slog.Error("failed to build next upstream authorization URL", "error", err)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
 		// Preserve upstream tokens: failing to build the next leg's authorization URL does
-		// not invalidate the credentials collected so far. Fail authorization without deleting.
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
+		// not invalidate the credentials collected so far, also when the next upstream is
+		// an optional one that is still unavailable. Fail authorization without deleting.
+		h.provider.WriteAuthorizeError(ctx, w, ar, authorizationURLError(nextProvider, err))
 		return
 	}
 

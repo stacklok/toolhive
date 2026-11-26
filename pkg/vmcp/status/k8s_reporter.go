@@ -145,7 +145,11 @@ func (*K8sReporter) updateStatus(vmcpServer *mcpv1beta1.VirtualMCPServer, status
 	for _, condition := range status.Conditions {
 		newConditionTypes[condition.Type] = true
 	}
-	for _, conditionType := range []string{"Ready", "Degraded", "BackendsDiscovered"} {
+	// UpstreamDiscoveryFailed is reported only while optional upstreams are
+	// configured, so it is cleared when it goes missing, like Degraded.
+	for _, conditionType := range []string{
+		"Ready", "Degraded", "BackendsDiscovered", vmcptypes.ConditionTypeUpstreamDiscoveryFailed,
+	} {
 		if !newConditionTypes[conditionType] {
 			if conditionType == "Ready" || conditionType == "BackendsDiscovered" {
 				slog.Warn("core condition missing from new status - this may indicate a bug in status building", "condition", conditionType)

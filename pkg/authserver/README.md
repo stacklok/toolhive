@@ -209,9 +209,15 @@ Interactive flows support both **OIDC** (discovery, ID token and nonce
 validation) and plain **OAuth 2.0** (explicit endpoints, userinfo or
 token-response identity extraction), plus optional upstream Dynamic Client
 Registration. Multiple upstreams can be chained in order under one user
-session, narrowed per user with an optional `UpstreamFilter`. A built-in
-consent page supports remembered consent and pre-authorized consent-exempt
-clients (pre-registered clients only, not dynamically registered ones).
+session, narrowed per user with an optional `UpstreamFilter`. An `oidc`
+upstream other than the first can opt out of the startup requirement
+(`Required: false`): if its discovery fails, the server starts with a
+placeholder that refuses that upstream's leg with
+`upstream.ErrUpstreamUnavailable` (`temporarily_unavailable` to the client),
+retries discovery in the background, and reports the state through
+`OptionalUpstreams`. A built-in consent page supports remembered consent and
+pre-authorized consent-exempt clients (pre-registered clients only, not
+dynamically registered ones).
 
 ### Keys and tokens
 

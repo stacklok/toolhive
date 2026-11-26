@@ -1566,11 +1566,7 @@ func (h *httpBackendClient) legacyListCapabilities(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer func() {
-		if err := c.Close(); err != nil {
-			slog.Debug("failed to close client", "error", err)
-		}
-	}()
+	defer closePerCallClient(ctx, c)
 
 	// Initialize the client and get server capabilities
 	serverCaps, _, err := h.legacyInit(ctx, c, target)
@@ -1926,11 +1922,7 @@ func (h *httpBackendClient) legacyCallTool(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer func() {
-		if err := c.Close(); err != nil {
-			slog.Debug("failed to close client", "error", err)
-		}
-	}()
+	defer closePerCallClient(ctx, c)
 
 	// Initialize the client and capture the backend's advertised capabilities.
 	serverCaps, negotiatedVersion, err := h.legacyInit(ctx, c, target)
@@ -1982,6 +1974,31 @@ func (h *httpBackendClient) legacyCallTool(
 	h.drainServerToClientNotifications(ctx, c)
 
 	return toolResultFromMCP(slog.Default(), result, toolName, target.WorkloadID), nil
+}
+
+// cancelNoticeGrace is how long a per-call backend client stays open after its
+// request was cancelled. When a call's context is cancelled, go-sdk retires the
+// call at once and sends notifications/cancelled to the backend from a
+// background goroutine, giving it up to 5 seconds (notifyCancellationTimeout in
+// go-sdk's mcp/transport.go). Closing the client before that send starts drops
+// the notice, and the backend keeps running work nobody is waiting for.
+const cancelNoticeGrace = 6 * time.Second
+
+// closePerCallClient closes a client opened for a single Legacy request. A
+// request that ended normally closes it at once. A cancelled request closes it
+// in the background after cancelNoticeGrace, so go-sdk's cancel notice reaches
+// the backend first. The caller returns without waiting either way.
+func closePerCallClient(ctx context.Context, c *client.Client) {
+	closeNow := func() {
+		if err := c.Close(); err != nil {
+			slog.Debug("failed to close client", "error", err)
+		}
+	}
+	if ctx.Err() == nil {
+		closeNow()
+		return
+	}
+	time.AfterFunc(cancelNoticeGrace, closeNow)
 }
 
 // toolResultFromMCP converts an mcp.CallToolResult into the vmcp domain result,
@@ -2131,11 +2148,7 @@ func (h *httpBackendClient) legacyReadResource(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer func() {
-		if err := c.Close(); err != nil {
-			slog.Debug("failed to close client", "error", err)
-		}
-	}()
+	defer closePerCallClient(ctx, c)
 
 	// Initialize the client
 	if _, _, err := h.legacyInit(ctx, c, target); err != nil {
@@ -2250,11 +2263,7 @@ func (h *httpBackendClient) legacyGetPrompt(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer func() {
-		if err := c.Close(); err != nil {
-			slog.Debug("failed to close client", "error", err)
-		}
-	}()
+	defer closePerCallClient(ctx, c)
 
 	// Initialize the client
 	if _, _, err := h.legacyInit(ctx, c, target); err != nil {
@@ -2394,11 +2403,7 @@ func (h *httpBackendClient) legacyComplete(
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
-	defer func() {
-		if err := c.Close(); err != nil {
-			slog.Debug("failed to close client", "error", err)
-		}
-	}()
+	defer closePerCallClient(ctx, c)
 
 	// Initialize the client and capture the backend's advertised capabilities.
 	serverCaps, _, err := h.legacyInit(ctx, c, target)

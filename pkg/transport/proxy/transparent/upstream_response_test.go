@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"strings"
@@ -76,7 +77,10 @@ func serveUpstream(t *testing.T, b upstreamBackend) (*httptest.Server, *atomic.V
 }
 
 // newValidatingProxy returns a streamable-http proxy and a reverse proxy using
-// its tracingTransport against backendURL.
+// its tracingTransport against backendURL. The backend leg uses a dedicated
+// transport rather than http.DefaultTransport: httptest.Server.Close in the
+// package's parallel tests calls CloseIdleConnections on the shared transport,
+// which could break a pooled connection and surface as a spurious 502.
 func newValidatingProxy(t *testing.T, backendURL string) (*TransparentProxy, http.Handler) {
 	t.Helper()
 	p := NewTransparentProxy("127.0.0.1", 0, backendURL, nil, nil, nil,
@@ -84,7 +88,17 @@ func newValidatingProxy(t *testing.T, backendURL string) (*TransparentProxy, htt
 	t.Cleanup(func() { _ = p.sessionManager.Stop() })
 	target, err := url.Parse(backendURL)
 	require.NoError(t, err)
-	return p, createBasicProxy(p, target)
+	transport := &http.Transport{DisableKeepAlives: true}
+	t.Cleanup(transport.CloseIdleConnections)
+	return p, &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.SetXForwarded()
+		},
+		FlushInterval:  -1,
+		Transport:      newTracingTransport(transport, p),
+		ModifyResponse: p.modifyResponse,
+	}
 }
 
 // postThroughProxy sends body through the proxy and returns the recorded response.

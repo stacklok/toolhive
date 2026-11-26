@@ -146,6 +146,22 @@ func TestInProcessService_WithProviders(t *testing.T) {
 		assert.Nil(t, failed)
 	})
 
+	t.Run("selected row with nil value is not a filtered-out session", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), "s1").
+			Return(map[string]*storage.UpstreamTokens{"X": nil, "Y": fresh("y")}, nil)
+
+		creds, failed, err := NewInProcessService(stor, nil, WithProviders("X")).
+			GetAllUpstreamCredentials(context.Background(), "s1")
+
+		require.NoError(t, err)
+		assert.NotNil(t, creds)
+		assert.Empty(t, creds)
+		assert.Nil(t, failed)
+	})
+
 	t.Run("session with no rows still returns empty non-nil map", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

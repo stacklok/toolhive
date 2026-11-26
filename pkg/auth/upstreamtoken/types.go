@@ -93,10 +93,17 @@ type TokenReader interface {
 	// are unaffected by expiry. See UpstreamCredential for both consumers.
 	//
 	// Returns an empty map and nil failed map (not error) for unknown sessions.
-	// A reader built with WithProviders returns a nil map when the session
-	// holds rows but that set removed every one; the request is then served
-	// with no upstream tokens. With a nil map, Cedar reports "no session-less
-	// grant provenance" instead of "provider not found".
+	// The validator reads the creds map as follows:
+	//   - A non-nil map, possibly empty, means the rows this reader selected
+	//     were read. The validator answers 401 when it holds no usable access
+	//     token.
+	//   - A nil map with a nil error means the reader selected no row because
+	//     of its own provider filter. The validator then serves the request
+	//     without upstream tokens.
+	//
+	// A reader that filters providers must return nil in that case, not an
+	// empty map. With a nil map, Cedar reports "no session-less grant
+	// provenance" instead of "provider not found".
 	GetAllUpstreamCredentials(ctx context.Context, sessionID string) (
 		creds map[string]UpstreamCredential, failed map[string]error, err error)
 }

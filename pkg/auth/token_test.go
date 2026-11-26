@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	keysmocks "github.com/stacklok/toolhive/pkg/authserver/server/keys/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -3405,6 +3406,63 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				require.False(t, storedOK, "nothing may be stored under the canonical-user key")
 				require.True(t, canonicalOK)
 				require.Equal(t, "test-user", canonical)
+			})
+		}
+	})
+
+	t.Run("provider-filtered reader over real storage", func(t *testing.T) {
+		t.Parallel()
+		fresh := &storage.UpstreamTokens{AccessToken: "allowed-tok", ExpiresAt: time.Now().Add(time.Hour)}
+		unrefreshable := &storage.UpstreamTokens{AccessToken: "old", ExpiresAt: time.Now().Add(-time.Hour)}
+
+		tests := []struct {
+			name       string
+			rows       map[string]*storage.UpstreamTokens
+			wantStatus int
+			wantTokens map[string]string
+		}{
+			{
+				name:       "only rows outside the filter serves the request without tokens",
+				rows:       map[string]*storage.UpstreamTokens{"other": fresh},
+				wantStatus: http.StatusOK,
+			},
+			{
+				name:       "allowed row expired with no refresher is a 401 even beside an outside row",
+				rows:       map[string]*storage.UpstreamTokens{"allowed": unrefreshable, "other": fresh},
+				wantStatus: http.StatusUnauthorized,
+			},
+			{
+				name:       "allowed fresh row is served although an outside row is unrefreshable",
+				rows:       map[string]*storage.UpstreamTokens{"allowed": fresh, "other": unrefreshable},
+				wantStatus: http.StatusOK,
+				wantTokens: map[string]string{"allowed": "allowed-tok"},
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				stor := storage.NewMemoryStorage()
+				t.Cleanup(func() { _ = stor.Close() })
+				for provider, row := range tt.rows {
+					rowCopy := *row
+					rowCopy.ProviderID = provider
+					require.NoError(t, stor.StoreUpstreamTokens(context.Background(), "session-xyz", provider, &rowCopy))
+				}
+				reader := upstreamtoken.NewInProcessService(stor, nil, upstreamtoken.WithProviders("allowed"))
+				v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+				captured, rr := serve(t, v, signToken(claimsWithTsid))
+
+				require.Equal(t, tt.wantStatus, rr.Code)
+				if tt.wantStatus != http.StatusOK {
+					require.Nil(t, captured)
+					return
+				}
+				require.NotNil(t, captured)
+				require.Equal(t, tt.wantTokens, captured.UpstreamTokens)
+				if tt.wantTokens == nil {
+					require.Nil(t, captured.UpstreamIDTokens)
+				}
 			})
 		}
 	})

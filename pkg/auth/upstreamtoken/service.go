@@ -112,7 +112,9 @@ type InProcessServiceOption func(*InProcessService)
 
 // WithProviders limits GetAllUpstreamCredentials to the named providers: a row
 // for any other provider is skipped before any refresh, so it is refreshed by
-// nobody and appears in neither the credentials nor the failed map. An empty
+// nobody and appears in neither the credentials nor the failed map. When every
+// stored row is skipped, GetAllUpstreamCredentials returns a nil map rather
+// than an empty one. An empty
 // set (the default) loads every provider. Names are trimmed and blank names are
 // ignored, so a set of only blank names is empty. A later WithProviders option
 // replaces an earlier one.
@@ -297,10 +299,12 @@ func (s *InProcessService) GetValidTokensForUser(
 // Identity.UpstreamIDTokens for both consumers.
 //
 // Returns an empty map and nil failed map (not error) for unknown sessions.
-// When WithProviders is set and it filters out every stored row, it returns a
-// nil credentials map and nil failed map instead: the session holds rows, just
-// none this service was asked to load, so the validator must not read the
-// empty result as a session with no usable upstream token.
+// When WithProviders is set and it skips at least one stored row and selects
+// none, it returns a nil credentials map and nil failed map instead: the
+// session holds rows, just none this service was asked to load, so the
+// validator must not read the empty result as a session with no usable
+// upstream token. A row for a selected provider counts as selected whatever its
+// stored value, so a selected row with a nil value yields a non-nil empty map.
 func (s *InProcessService) GetAllUpstreamCredentials(
 	ctx context.Context, sessionID string,
 ) (map[string]UpstreamCredential, map[string]error, error) {
@@ -323,13 +327,14 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 	}
 	// TODO(auth): Refresh providers in parallel using errgroup to avoid
 	// worst-case latency of N refreshes when multiple providers need refresh.
-	skipped := 0
+	skipped, selected := 0, 0
 	for providerName, tokens := range allTokens {
-		if tokens == nil {
-			continue
-		}
 		if !s.providerAllowed(providerName) {
 			skipped++
+			continue
+		}
+		selected++
+		if tokens == nil {
 			continue
 		}
 
@@ -353,7 +358,7 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 	// still does not filter what it returns: an ID token the
 	// provider declined to rotate is passed through expired.
 	// See Identity.UpstreamIDTokens for both.
-	if skipped > 0 && len(result) == 0 && failed == nil {
+	if skipped > 0 && selected == 0 {
 		return nil, nil, nil
 	}
 	return result, failed, nil

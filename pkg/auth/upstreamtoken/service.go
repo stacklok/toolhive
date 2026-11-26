@@ -113,8 +113,9 @@ type InProcessServiceOption func(*InProcessService)
 // WithProviders limits GetAllUpstreamCredentials to the named providers: a row
 // for any other provider is skipped before any refresh, so it is refreshed by
 // nobody and appears in neither the credentials nor the failed map. An empty
-// set (the default) loads every provider; blank names are ignored, so a set of
-// only blank names is empty.
+// set (the default) loads every provider. Names are trimmed and blank names are
+// ignored, so a set of only blank names is empty. A later WithProviders option
+// replaces an earlier one.
 //
 // Nothing builds a service with it yet: it is not wired into thv vmcp serve
 // or the runner.
@@ -131,7 +132,7 @@ func WithProviders(names ...string) InProcessServiceOption {
 			if s.providers == nil {
 				s.providers = make(map[string]struct{}, len(names))
 			}
-			s.providers[n] = struct{}{}
+			s.providers[strings.TrimSpace(n)] = struct{}{}
 		}
 	}
 }

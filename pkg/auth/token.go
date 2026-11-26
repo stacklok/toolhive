@@ -1550,9 +1550,11 @@ func (v *TokenValidator) loadUpstreamTokens(
 // With an upstream token reader configured, a token carrying a non-empty string
 // "tsid" is never sessionless, even with a proof. The load then ran for that
 // session and either filled UpstreamTokens or ended the request with a 401 or
-// 503, except when a non-interactive load on a bound validator tolerated
-// ErrNoCanonicalUser and left UpstreamTokens nil. Without this rule, a token with both a tsid and a proof
-// (which the embedded server never mints) would pass that case as sessionless.
+// 503. UpstreamTokens stays nil in two cases: a non-interactive load on a bound
+// validator tolerated ErrNoCanonicalUser, or the reader's provider filter
+// (upstreamtoken.WithProviders) excluded every stored row. Without this rule, a
+// token with both a tsid and a proof (which the embedded server never mints)
+// would pass those cases as sessionless.
 // Without a reader no load is attempted, so the rule does not apply.
 func (v *TokenValidator) isSessionlessGrant(identity *Identity, claims jwt.MapClaims, provenance tokenProvenance) bool {
 	if !provenance.signed() || !v.boundToEmbeddedIssuer() {

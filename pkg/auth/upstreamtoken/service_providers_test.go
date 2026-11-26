@@ -65,6 +65,38 @@ func TestInProcessService_WithProviders(t *testing.T) {
 		assert.Nil(t, failed)
 	})
 
+	t.Run("selected provider fails while filtered-out healthy provider is absent", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), "s1").
+			Return(map[string]*storage.UpstreamTokens{"X": expired("x"), "Y": fresh("y")}, nil)
+
+		creds, failed, err := NewInProcessService(stor, nil, WithProviders("X")).
+			GetAllUpstreamCredentials(context.Background(), "s1")
+
+		require.NoError(t, err)
+		assert.NotNil(t, creds)
+		assert.Empty(t, creds)
+		assert.Contains(t, failed, "X")
+		assert.NotContains(t, creds, "Y")
+		assert.NotContains(t, failed, "Y")
+	})
+
+	t.Run("padded name matches the stored row", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		stor := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), "s1").
+			Return(map[string]*storage.UpstreamTokens{"X": fresh("x"), "Y": fresh("y")}, nil)
+
+		creds, _, err := NewInProcessService(stor, nil, WithProviders(" X ")).
+			GetAllUpstreamCredentials(context.Background(), "s1")
+
+		require.NoError(t, err)
+		assert.Equal(t, map[string]UpstreamCredential{"X": {AccessToken: "x"}}, creds)
+	})
+
 	t.Run("no option loads every provider", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

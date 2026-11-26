@@ -158,6 +158,12 @@ type Identity struct {
 	//                      session at all: local.go, anonymous.go, or middleware
 	//                      validating a JWT from an IdP other than the embedded
 	//                      auth server (see the PlatformUserID note above).
+	//                      A tsid session can also leave it nil, when a
+	//                      non-interactive load on a bound validator tolerated
+	//                      ErrNoCanonicalUser, or when a reader built with
+	//                      upstreamtoken.WithProviders excluded every stored
+	//                      row. In both cases the request continues without
+	//                      upstream tokens.
 	//   - empty map      — never produced by TokenValidator, which answers 401
 	//                      when a tsid session holds no usable access token;
 	//                      a consumer that meets one denies it like a session
@@ -186,6 +192,12 @@ type Identity struct {
 	// State semantics:
 	//   - nil            — no tsid claim was present on the incoming JWT
 	//                      (middleware did not attempt to load credentials).
+	//                      A tsid session can also leave it nil, when a
+	//                      non-interactive load on a bound validator tolerated
+	//                      ErrNoCanonicalUser, or when a reader built with
+	//                      upstreamtoken.WithProviders excluded every stored
+	//                      row. In both cases the request continues without
+	//                      upstream tokens.
 	//   - empty map      — tsid claim was valid but no providers had an
 	//                      ID token stored for the session.
 	//   - populated map  — keys are upstream provider names; values are the

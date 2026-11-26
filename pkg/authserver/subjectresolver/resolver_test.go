@@ -126,25 +126,6 @@ func TestResolve(t *testing.T) {
 			want: "user-1",
 		},
 		{
-			name: "second issuer resolves a row stamped with its row issuer, not its token issuer",
-			ref:  subject.Ref{Issuer: oktaCustomIssuer, Claim: "uid", Value: "abc"},
-			lookup: func(m *mocks.MockUserStorage) {
-				m.EXPECT().GetProviderIdentity(gomock.Any(), "okta", "abc").
-					Return(&storage.ProviderIdentity{UserID: "user-1", Issuer: idpIssuer, SubjectClaim: "sub"}, nil)
-				m.EXPECT().GetUser(gomock.Any(), "user-1").Return(&storage.User{ID: "user-1"}, nil)
-			},
-			want: "user-1",
-		},
-		{
-			name: "row stamped with the token issuer and claim of a second issuer returns unknown",
-			ref:  subject.Ref{Issuer: oktaCustomIssuer, Claim: "uid", Value: "abc"},
-			lookup: func(m *mocks.MockUserStorage) {
-				m.EXPECT().GetProviderIdentity(gomock.Any(), "okta", "abc").
-					Return(&storage.ProviderIdentity{UserID: "user-1", Issuer: oktaCustomIssuer, SubjectClaim: "uid"}, nil)
-			},
-			wantErr: subject.ErrUnknown,
-		},
-		{
 			name:    "second issuer with the claim of another issuer",
 			ref:     subject.Ref{Issuer: oktaCustomIssuer, Claim: "sub", Value: "abc"},
 			wantErr: subject.ErrNotConfigured,
@@ -243,10 +224,10 @@ func TestResolve(t *testing.T) {
 				tt.lookup(store)
 			}
 			r, err := subjectresolver.New(map[string]subjectresolver.Provider{
-				idpIssuer:   {Name: "okta", SubjectClaim: "sub", RowIssuer: idpIssuer, RowSubjectClaim: "sub"},
-				entraIssuer: {Name: "entra", SubjectClaim: "oid", RowIssuer: entraIssuer, RowSubjectClaim: "oid"},
+				idpIssuer:   {Name: "okta", SubjectClaim: "sub"},
+				entraIssuer: {Name: "entra", SubjectClaim: "oid"},
 				oktaCustomIssuer: {
-					Name: "okta", SubjectClaim: "uid", RowIssuer: idpIssuer, RowSubjectClaim: "sub",
+					Name: "okta", SubjectClaim: "uid",
 				},
 			}, store)
 			require.NoError(t, err)
@@ -272,7 +253,7 @@ func TestResolve(t *testing.T) {
 func TestNewRefusesInvalidInput(t *testing.T) {
 	t.Parallel()
 	store := mocks.NewMockUserStorage(gomock.NewController(t))
-	valid := subjectresolver.Provider{Name: "okta", SubjectClaim: "sub", RowIssuer: idpIssuer, RowSubjectClaim: "sub"}
+	valid := subjectresolver.Provider{Name: "okta", SubjectClaim: "sub"}
 
 	tests := []struct {
 		name      string
@@ -285,35 +266,25 @@ func TestNewRefusesInvalidInput(t *testing.T) {
 		{"empty issuer", map[string]subjectresolver.Provider{"": valid}, store, nil},
 		{
 			"empty name",
-			map[string]subjectresolver.Provider{idpIssuer: {SubjectClaim: "sub", RowIssuer: idpIssuer, RowSubjectClaim: "sub"}},
+			map[string]subjectresolver.Provider{idpIssuer: {SubjectClaim: "sub"}},
 			store, nil,
 		},
 		{
 			"empty subject claim",
-			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", RowIssuer: idpIssuer, RowSubjectClaim: "sub"}},
-			store, nil,
-		},
-		{
-			"empty row issuer",
-			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", SubjectClaim: "sub", RowSubjectClaim: "sub"}},
-			store, nil,
-		},
-		{
-			"empty row subject claim",
-			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", SubjectClaim: "sub", RowIssuer: idpIssuer}},
+			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta"}},
 			store, nil,
 		},
 		{
 			"mutable email claim",
 			map[string]subjectresolver.Provider{idpIssuer: {
-				Name: "okta", SubjectClaim: "email", RowIssuer: idpIssuer, RowSubjectClaim: "email",
+				Name: "okta", SubjectClaim: "email",
 			}},
 			store, subject.ErrInvalidBindingClaim,
 		},
 		{
 			"mutable preferred_username claim",
 			map[string]subjectresolver.Provider{idpIssuer: {
-				Name: "okta", SubjectClaim: "preferred_username", RowIssuer: idpIssuer, RowSubjectClaim: "preferred_username",
+				Name: "okta", SubjectClaim: "preferred_username",
 			}},
 			store, subject.ErrInvalidBindingClaim,
 		},
@@ -352,7 +323,7 @@ func TestResolve_UnstampedRowWarnsOnceAndDoesNotWrite(t *testing.T) {
 	}
 
 	r, err := subjectresolver.New(map[string]subjectresolver.Provider{
-		idpIssuer: {Name: "okta", SubjectClaim: "sub", RowIssuer: idpIssuer, RowSubjectClaim: "sub"},
+		idpIssuer: {Name: "okta", SubjectClaim: "sub"},
 	}, stor)
 	require.NoError(t, err)
 
@@ -433,7 +404,7 @@ func TestResolveAndSignIn_BackendAcceptance(t *testing.T) {
 
 			// Resolution accepts the row read-only and leaves it unstamped.
 			resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
-				issuer: {Name: "default", SubjectClaim: claim, RowIssuer: issuer, RowSubjectClaim: claim},
+				issuer: {Name: "default", SubjectClaim: claim},
 			}, stor)
 			require.NoError(t, err)
 			resolved, err := resolver.Resolve(ctx, subject.Ref{Issuer: issuer, Claim: claim, Value: "alice"})
@@ -473,7 +444,7 @@ func TestResolveAndSignIn_BackendAcceptance(t *testing.T) {
 				// Resolution works under old config.
 				oldResolve, err := subjectresolver.New(map[string]subjectresolver.Provider{
 					tc.oldIssuer: {
-						Name: "default", SubjectClaim: tc.oldClaim, RowIssuer: tc.oldIssuer, RowSubjectClaim: tc.oldClaim,
+						Name: "default", SubjectClaim: tc.oldClaim,
 					},
 				}, stor)
 				require.NoError(t, err)
@@ -485,7 +456,7 @@ func TestResolveAndSignIn_BackendAcceptance(t *testing.T) {
 				// Resolution under new config refuses the old row with subject.ErrUnknown and writes nothing.
 				newResolve, err := subjectresolver.New(map[string]subjectresolver.Provider{
 					tc.newIssuer: {
-						Name: "default", SubjectClaim: tc.newClaim, RowIssuer: tc.newIssuer, RowSubjectClaim: tc.newClaim,
+						Name: "default", SubjectClaim: tc.newClaim,
 					},
 				}, stor)
 				require.NoError(t, err)

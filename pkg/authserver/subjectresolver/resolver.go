@@ -44,13 +44,6 @@ type Provider struct {
 	Name string
 	// SubjectClaim is the claim whose value is the provider's subject, such as "sub".
 	SubjectClaim string
-	// RowIssuer and RowSubjectClaim are the issuer and subject claim sign-in
-	// stamps on this provider's identity rows. They can differ from the
-	// token's issuer and SubjectClaim, for example for an Okta custom
-	// authorization server that carries the subject in uid while sign-in
-	// stamps the sign-in issuer and its claim.
-	RowIssuer       string
-	RowSubjectClaim string
 }
 
 // Resolver resolves a subject.Ref to a local user ID.
@@ -67,9 +60,11 @@ var _ subject.Resolver = (*Resolver)(nil)
 // values are the subjects the named upstream stores. New accepts several
 // issuers for the same provider name with different subject claims (an Okta
 // custom authorization server carries the sign-in subject in uid), but nothing
-// configures that yet; it belongs to the third-party issuers work.
+// configures that yet; it belongs to the third-party issuers work. Rows are
+// stamped with the sign-in issuer and claim, so an additional issuer entry,
+// when that work lands, must compare rows against the sign-in binding.
 // It returns an error if the store is nil, no providers are given, an entry has
-// an empty issuer, name, subject claim, row issuer or row subject claim, or
+// an empty issuer, name or subject claim, or
 // subject.ValidateBindingClaim refuses an entry's claim (the error wraps subject.ErrInvalidBindingClaim).
 // The warning ValidateBindingClaim can return, for sub on an Okta custom
 // authorization server, is ignored here; callers who want it call
@@ -83,9 +78,8 @@ func New(providers map[string]Provider, store IdentityStore) (*Resolver, error) 
 	}
 	copied := make(map[string]Provider, len(providers))
 	for issuer, p := range providers {
-		if issuer == "" || p.Name == "" || p.SubjectClaim == "" || p.RowIssuer == "" || p.RowSubjectClaim == "" {
-			return nil, errors.New(
-				"subjectresolver: provider entries need an issuer, a name, a subject claim, a row issuer and a row subject claim")
+		if issuer == "" || p.Name == "" || p.SubjectClaim == "" {
+			return nil, errors.New("subjectresolver: provider entries need an issuer, a name and a subject claim")
 		}
 		if _, err := subject.ValidateBindingClaim(issuer, p.SubjectClaim); err != nil {
 			return nil, fmt.Errorf("subjectresolver: provider %q: %w", p.Name, err)
@@ -98,8 +92,8 @@ func New(providers map[string]Provider, store IdentityStore) (*Resolver, error) 
 // Resolve returns the local user ID for ref. A claim that is not the
 // provider's subject claim is refused here by design, so a value from another
 // claim is never looked up as a stored subject. A stored row stamped with an
-// issuer or subject claim other than the provider's RowIssuer and
-// RowSubjectClaim is also refused with subject.ErrUnknown (read-only, no
+// issuer or subject claim other than the provider's issuer and
+// SubjectClaim is also refused with subject.ErrUnknown (read-only, no
 // write). Pre-upgrade unstamped rows are accepted without
 // writing and logged once per resolver.
 //
@@ -124,7 +118,7 @@ func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error)
 		return "", subject.ErrUnknown
 	}
 	unstamped := identity.IsUnstamped()
-	if !identity.MatchesBinding(p.RowIssuer, p.RowSubjectClaim) && !unstamped {
+	if !identity.MatchesBinding(ref.Issuer, p.SubjectClaim) && !unstamped {
 		return "", subject.ErrUnknown
 	}
 	user, err := r.store.GetUser(ctx, identity.UserID)

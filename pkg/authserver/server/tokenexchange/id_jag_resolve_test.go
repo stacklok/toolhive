@@ -416,10 +416,9 @@ func TestIDJAGResolve_HandlerDoesNotNarrowResolver(t *testing.T) {
 			resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
 				resolveTestUpstreamIssuer: {
 					Name: "first", SubjectClaim: resolveTestClaim,
-					RowIssuer: resolveTestUpstreamIssuer, RowSubjectClaim: resolveTestClaim,
 				},
 				secondIssuer: {
-					Name: "second", SubjectClaim: secondClaim, RowIssuer: secondIssuer, RowSubjectClaim: secondClaim,
+					Name: "second", SubjectClaim: secondClaim,
 				},
 			}, store)
 			require.NoError(t, err)

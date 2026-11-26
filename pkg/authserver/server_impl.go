@@ -137,7 +137,8 @@ func buildUpstreams(ctx context.Context, cfg Config) ([]handlers.NamedUpstream, 
 // provider-identity rows for upCfg. Every valid upstream gets a non-empty pair
 // so stamped rows are always distinct from legacy unstamped rows:
 //   - OIDC: the exact configured Issuer URL and SubjectClaim (default "sub"),
-//     matching Config.signInUpstream and the validated ID token.
+//     matching the validated ID token. Config.signInUpstream and
+//     the run-config validation derive the same pair through oidcIdentityBinding.
 //   - Plain OAuth 2.0: "oauth2:<mode>:sha256:<hex>", where mode is token,
 //     userinfo or synthetic and the hash covers the lower-cased host (and port)
 //     of the endpoint that defines the subject (the token endpoint for token
@@ -162,7 +163,7 @@ func upstreamIdentityBinding(upCfg *UpstreamConfig) (issuer, subjectClaim string
 	}
 	switch {
 	case upCfg.OIDCConfig != nil && upCfg.OIDCConfig.Issuer != "":
-		return upCfg.OIDCConfig.Issuer, cmp.Or(upCfg.OIDCConfig.SubjectClaim, upstream.DefaultSubjectClaim)
+		return oidcIdentityBinding(upCfg.OIDCConfig.Issuer, upCfg.OIDCConfig.SubjectClaim)
 	case upCfg.OAuth2Config != nil:
 		oa := upCfg.OAuth2Config
 		mode, endpoint, claim := func() (string, string, string) {
@@ -190,6 +191,14 @@ func upstreamIdentityBinding(upCfg *UpstreamConfig) (issuer, subjectClaim string
 		return issuer, claim
 	}
 	return "", ""
+}
+
+// oidcIdentityBinding is the binding an OIDC upstream stamps: its issuer and
+// subject claim, which defaults to "sub". It is the one place that default is
+// applied, shared by the stamping, the resolver and the run-config validation,
+// whose issuer field has a different name (IssuerURL).
+func oidcIdentityBinding(issuer, subjectClaim string) (string, string) {
+	return issuer, cmp.Or(subjectClaim, upstream.DefaultSubjectClaim)
 }
 
 // oauth2BindingIssuer builds the stamped issuer for a plain OAuth 2.0 upstream
@@ -1164,10 +1173,8 @@ func newSubjectResolver(cfg Config, store subjectresolver.IdentityStore) (subjec
 	}
 	resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
 		signIn.issuer: {
-			Name:            ResolveUpstreamName(cfg.Upstreams[0].Name),
-			SubjectClaim:    signIn.subjectClaim,
-			RowIssuer:       signIn.issuer,
-			RowSubjectClaim: signIn.subjectClaim,
+			Name:         ResolveUpstreamName(cfg.Upstreams[0].Name),
+			SubjectClaim: signIn.subjectClaim,
 		},
 	}, store)
 	if err != nil {

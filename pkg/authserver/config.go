@@ -2607,10 +2607,8 @@ func (c *Config) signInUpstream() *signInUpstream {
 		return nil
 	}
 	oidc := c.Upstreams[0].OIDCConfig
-	return &signInUpstream{
-		issuer:       oidc.Issuer,
-		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
-	}
+	issuer, claim := oidcIdentityBinding(oidc.Issuer, oidc.SubjectClaim)
+	return &signInUpstream{issuer: issuer, subjectClaim: claim}
 }
 
 // validateResolveIssuers runs the resolve-issuer upstream check for the
@@ -2623,10 +2621,8 @@ func (c *RunConfig) validateResolveIssuers(issuers []tokenexchange.TrustedIssuer
 		return validateResolveIssuerUpstream(issuers, nil)
 	}
 	oidc := c.Upstreams[0].OIDCConfig
-	return validateResolveIssuerUpstream(issuers, &signInUpstream{
-		issuer:       oidc.IssuerURL,
-		subjectClaim: cmp.Or(oidc.SubjectClaim, upstream.DefaultSubjectClaim),
-	})
+	issuer, claim := oidcIdentityBinding(oidc.IssuerURL, oidc.SubjectClaim)
+	return validateResolveIssuerUpstream(issuers, &signInUpstream{issuer: issuer, subjectClaim: claim})
 }
 
 // signInUpstream is the first upstream's issuer and subject claim, which a

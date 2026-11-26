@@ -419,6 +419,43 @@ func TestResolveAndSignIn_BackendAcceptance(t *testing.T) {
 	}
 
 	for backendName, newBackend := range backends {
+		t.Run(backendName+"/unstamped row", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			stor := newBackend(t)
+			const issuer, claim = "https://idp.example.com", "sub"
+
+			now := time.Now()
+			require.NoError(t, stor.CreateUser(ctx, &storage.User{ID: "user-1", CreatedAt: now, UpdatedAt: now}))
+			require.NoError(t, stor.CreateProviderIdentity(ctx, &storage.ProviderIdentity{
+				UserID: "user-1", ProviderID: "default", ProviderSubject: "alice", LinkedAt: now, LastUsedAt: now,
+			}))
+
+			// Resolution accepts the row read-only and leaves it unstamped.
+			resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
+				issuer: {Name: "default", SubjectClaim: claim, RowIssuer: issuer, RowSubjectClaim: claim},
+			}, stor)
+			require.NoError(t, err)
+			resolved, err := resolver.Resolve(ctx, subject.Ref{Issuer: issuer, Claim: claim, Value: "alice"})
+			require.NoError(t, err)
+			assert.Equal(t, "user-1", resolved)
+			row, err := stor.GetProviderIdentity(ctx, "default", "alice")
+			require.NoError(t, err)
+			assert.True(t, row.IsUnstamped())
+
+			// Sign-in returns the same user and stamps the row.
+			signedIn, err := handlers.NewUserResolver(stor,
+				handlers.WithCreateOnlyFor("default"),
+				handlers.WithIdentityBinding("default", issuer, claim),
+			).ResolveUser(ctx, "default", "alice")
+			require.NoError(t, err)
+			assert.Equal(t, "user-1", signedIn.ID)
+			row, err = stor.GetProviderIdentity(ctx, "default", "alice")
+			require.NoError(t, err)
+			assert.Equal(t, issuer, row.Issuer)
+			assert.Equal(t, claim, row.SubjectClaim)
+			assert.Equal(t, "user-1", row.UserID)
+		})
 		for _, tc := range changes {
 			t.Run(backendName+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()

@@ -1003,7 +1003,9 @@ func buildTokenExchangeFactories(
 // order: the built-in upstream refresh guard (unless disabled or there is no
 // refresher, because no upstreams are configured), then the embedder's
 // Config.RefreshGrantHandlers. The guard's set of configured providers comes
-// from upstreams, the same resolved list the refresher was built from.
+// from upstreams, the same resolved list the refresher was built from. With
+// Config.UserKeyedUpstreamStorage the guard checks only the first upstream, the
+// identity provider; stor is then the user-keyed layer.
 func refreshGrantValidatorChain(
 	cfg Config, stor storage.Storage, refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) ([]fosite.TokenEndpointHandler, error) {
@@ -1014,7 +1016,11 @@ func refreshGrantValidatorChain(
 	for i, u := range upstreams {
 		upstreamNames[i] = u.Name
 	}
-	guard, err := newUpstreamRefreshGuard(stor, refresher, upstreamNames)
+	newGuard := newUpstreamRefreshGuard
+	if cfg.UserKeyedUpstreamStorage {
+		newGuard = newUserKeyedUpstreamRefreshGuard
+	}
+	guard, err := newGuard(stor, refresher, upstreamNames)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream refresh guard: %w", err)
 	}

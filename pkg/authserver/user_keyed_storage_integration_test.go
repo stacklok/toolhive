@@ -409,10 +409,7 @@ func TestUserKeyedStorage_SyntheticSubjects(t *testing.T) {
 		t.Run(backend.name+"/synthetic first upstream", func(t *testing.T) {
 			t.Parallel()
 			m := startMockOIDC(t)
-			// The refresh-grant guard is not yet user-aware, so it is disabled
-			// here; with the field on it would refuse for want of a canonical user.
-			ts := setupTestServer(t, userKeyedOpts(backend.opts,
-				withUpstream(newSyntheticOAuth2Provider(t, m)), withoutUpstreamRefreshGuard())...)
+			ts := setupTestServer(t, userKeyedOpts(backend.opts, withUpstream(newSyntheticOAuth2Provider(t, m)))...)
 
 			login := func() (string, map[string]any) {
 				verifier := servercrypto.GeneratePKCEVerifier()

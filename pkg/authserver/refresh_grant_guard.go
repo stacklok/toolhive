@@ -97,6 +97,18 @@ const guardRevokeTimeout = 5 * time.Second
 // through. Comparing the refresh token alone would delete the winner's fresh
 // row.
 //
+// With Config.UserKeyedUpstreamStorage the guard checks only the identity
+// provider's row (the first upstream), because a user's rows are shared by all
+// of their clients. On a confirmed rejection it revokes the refresh token and
+// clears the rejected refresh token from the shared row with a compare-and-swap
+// (a newer token from a sign-in is left alone); the row is kept and nothing is
+// deleted. With the field off, the row deletion bounds the confirmed-rejection
+// refusal WARN to once per session; with it on, the revocation does (a replay
+// of the revoked token is refused before the guard runs). The user-keyed guard
+// also logs its uncertain-result WARN once per refresh grant, where the
+// field-off guard logs that case at DEBUG. That is deliberate: it is the only
+// signal that the guard could not check a credential.
+//
 // A refusal is logged at WARN only when it revokes or follows a confirmed IdP
 // rejection; the row deletion makes the latter happen once per session. The
 // other refusals repeat on every replay of a kept refresh token, so they are
@@ -108,6 +120,11 @@ type upstreamRefreshGuard struct {
 	revoker      oauth2.TokenRevocationStorage
 	recheckDelay time.Duration
 	checkTimeout time.Duration
+	// userKeyed is set only when storage is the user-keyed layer; the guard
+	// then checks the identity provider's row through the per-user reader
+	// instead of walking the session's rows. See
+	// refresh_grant_guard_user_keyed.go.
+	userKeyed *userKeyedCheck
 }
 
 var _ fosite.TokenEndpointHandler = (*upstreamRefreshGuard)(nil)
@@ -163,7 +180,12 @@ func (g *upstreamRefreshGuard) HandleTokenEndpointRequest(ctx context.Context, r
 	}
 	tsid := sess.GetIDPSessionID()
 
-	refused := g.deadUpstream(ctx, tsid)
+	refused := func() *refusal {
+		if g.userKeyed != nil {
+			return g.deadUserKeyedUpstream(ctx, tsid, requester.GetSession().GetSubject())
+		}
+		return g.deadUpstream(ctx, tsid)
+	}()
 	if refused == nil {
 		return nil
 	}
@@ -203,8 +225,7 @@ type refusal struct {
 	// revoke is set when the stored rows prove the credential can never be
 	// used again, so the refused refresh token is revoked too.
 	revoke bool
-	// rejected is set when the IdP's rejection of the refresh was confirmed
-	// and the session's rows were deleted.
+	// rejected is set when the IdP's rejection of the refresh was confirmed.
 	rejected bool
 }
 

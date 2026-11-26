@@ -5081,6 +5081,12 @@ func runFirstLeg(t *testing.T, serverURL, challenge, clientState string) *http.R
 // runFirstLegAs is runFirstLeg for the given registered client.
 func runFirstLegAs(t *testing.T, serverURL, clientID, challenge, clientState string) *http.Response {
 	t.Helper()
+	return runFirstLegWithScopeAs(t, serverURL, clientID, challenge, clientState, "openid profile")
+}
+
+// runFirstLegWithScopeAs is runFirstLegAs requesting the given scope.
+func runFirstLegWithScopeAs(t *testing.T, serverURL, clientID, challenge, clientState, scope string) *http.Response {
+	t.Helper()
 	client := noRedirectClient()
 
 	parsedServerURL, err := url.Parse(serverURL)
@@ -5093,7 +5099,7 @@ func runFirstLegAs(t *testing.T, serverURL, clientID, challenge, clientState str
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 		"response_type":         {"code"},
-		"scope":                 {"openid profile"},
+		"scope":                 {scope},
 	}.Encode()
 
 	resp, err := client.Get(authorizeURL)

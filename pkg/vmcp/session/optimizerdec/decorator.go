@@ -60,6 +60,11 @@ func NewDecorator(sess sessiontypes.MultiSession, opt optimizer.Optimizer) sessi
 // identical pair; each consumer wires its own handlers around these definitions.
 // A fresh slice is returned on every call so callers cannot mutate shared state.
 func OptimizerTools() []vmcp.Tool {
+	readOnly := true
+	destructive := false
+	idempotent := true
+	openWorld := false
+
 	return []vmcp.Tool{
 		{
 			Name: FindToolName,
@@ -74,6 +79,12 @@ func OptimizerTools() []vmcp.Tool {
 				"baseline_tokens, returned_tokens, and savings_percent. " +
 				"Always call this before call_tool to discover the correct tool name and parameter schema.",
 			InputSchema: findToolInputSchema,
+			Annotations: &vmcp.ToolAnnotations{
+				ReadOnlyHint:    &readOnly,
+				DestructiveHint: &destructive,
+				IdempotentHint:  &idempotent,
+				OpenWorldHint:   &openWorld,
+			},
 		},
 		{
 			Name: CallToolName,

@@ -22,6 +22,8 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/subject"
+	"github.com/stacklok/toolhive/pkg/authserver/subjectresolver"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -433,6 +435,38 @@ func TestUserKeyedStorage_SyntheticSubjects(t *testing.T) {
 		assert.Contains(t, rows, "idp")
 		assert.Contains(t, rows, "connector")
 	})
+}
+
+// TestUserKeyedStorage_SyntheticSubjectNeverResolves models switching the
+// first upstream from OAuth2 synthesis to OIDC under the same name while
+// keeping the same store. Resolve mode requires an OIDC first upstream, and
+// a synthetic later leg keeps the first leg's user. A synthetic first-leg
+// sign-in leaves an upstream-token row but no user or provider-identity row
+// for the OIDC resolver to find.
+func TestUserKeyedStorage_SyntheticSubjectNeverResolves(t *testing.T) {
+	t.Parallel()
+	m := startMockOIDC(t)
+	ts := setupTestServer(t, userKeyedOpts(nil, withUpstream(newSyntheticOAuth2Provider(t, m)))...)
+
+	accessToken, _ := loginForTokens(t, ts.Server.URL)
+	sub := stringClaim(t, decodeTestAccessToken(t, ts, accessToken), "sub")
+	require.True(t, upstream.IsSynthesizedSubject(sub))
+
+	providerName := ResolveUpstreamName("")
+	row, err := ts.storage.GetUpstreamTokens(canonicalUserCtx(sub), "", providerName)
+	require.NoError(t, err)
+	require.Equal(t, sub, row.UserID)
+
+	store, ok := ts.storage.(storage.UserStorage)
+	require.True(t, ok, "IDPTokenStorage() must expose the user store")
+	issuer := m.Issuer()
+	resolver, err := subjectresolver.New(map[string]subjectresolver.Provider{
+		issuer: {Name: providerName, SubjectClaim: "sub"},
+	}, store)
+	require.NoError(t, err)
+
+	_, err = resolver.Resolve(t.Context(), subject.Ref{Issuer: issuer, Claim: "sub", Value: sub})
+	assert.ErrorIs(t, err, subject.ErrUnknown)
 }
 
 // TestUserKeyedStorage_DisconnectThroughIDPTokenStorage shows the disconnect

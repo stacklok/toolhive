@@ -702,14 +702,18 @@ reserved band (#6101).
 
 "Does not gate Modern" is not "costs the same", though. The limiter wraps only
 the `CallTool` seam, so the list verbs and `server/discover` are unmetered on
-both eras — but Legacy aggregates once per session registration, while Modern
-re-runs the full backend fan-out on every request with no cache, by design
-(`core_vmcp.go`'s `aggregatedView`). A Modern client can therefore loop
-unmetered, uncached fan-outs — reachable unauthenticated when incoming auth is
-anonymous. Rate-limiting the list/discover verbs, or a short-TTL per-identity
-capability cache, is deferred until profiling shows the per-request fan-out
-cost matters (#5761 — the same deferral recorded in `dispatchModernDiscover`'s
-doc comment).
+both eras. Legacy aggregates once per session registration. Modern re-derives
+the view on every request, but `server.New` wraps the aggregator in
+`NewCachingAggregator` with a 30 second TTL, so discovery is cached per
+identity for 30 seconds and concurrent misses for the same key share one
+backend fan-out. Requests with no identity share one anonymous view. A request
+whose identity is present but cannot be bound to a session (for example, one
+with no issuer claim) is not rejected: it is swept fresh on every call and
+never cached or shared. The cache key is made from the session binding, the
+platform user ID, the forwarded headers and the backend IDs. A Modern client
+can still loop unmetered fan-outs once the TTL expires or when its identity
+cannot be bound, and the list and discover verbs remain outside the rate
+limiter (#5761).
 
 Wire behavior when the gate is closed:
 
@@ -881,12 +885,15 @@ Each worker's resync body (`runListChangedResync`), off the receive loop:
    per-identity capability cache (`aggregator.CacheInvalidator`), covering all
    capability kinds together (tools, resources, resource templates, prompts
    share one cached `AggregatedCapabilities` per identity). This is coarse (not
-   scoped to the one backend that changed): the LRU key is a hash of identity +
-   forwarded headers + backend-set, so per-backend invalidation would need a
-   reverse index that is disproportionate here. The coalescing above already
+   scoped to the one backend that changed): the LRU key combines the caller's
+   identity, forwarded headers and backend IDs (see the rate limiter
+   discussion above), so per-backend invalidation would need a reverse index
+   that is disproportionate here. The coalescing above already
    bounds the purge to at most once per resync burst per kind, and a purge
    only forces the next call per identity to re-sweep — an accepted de-opt /
-   follow-up. An aggregator that does not implement `CacheInvalidator`
+   follow-up. An identity that cannot be bound has no cache entry: it
+   bypasses the cache and is swept fresh on every call, so the purge does not
+   affect it. An aggregator that does not implement `CacheInvalidator`
    WARN-logs instead of silently no-opping.
 4. Re-derives and **replaces** — not merges — the session's advertised set for
    the notification's kind, from the (now cold) cache: `KindTools` re-derives

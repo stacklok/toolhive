@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 )
@@ -54,14 +55,15 @@ const capabilityCacheMaxEntries = 1024
 // cancellation semantics.
 //
 // Security: backend enumeration is identity-dependent — what each backend returns depends on
-// the credential presented to it — so the cache key MUST include the identity and the
-// forwarded credentials, not just the backend set. Keying on (subject, forwarded headers,
-// backend IDs) ensures one caller's capability view is never served to another, while a
-// single caller's view is shared across their sessions. The same key scopes the singleflight
-// group, so a shared sweep only serves callers with the same identity, forwarded credentials
-// and backend set. The key is a SHA-256 digest, so raw credential values are not retained as
-// map keys. The cache is node-local and never persisted (it would be a credentialed view in
-// shared state otherwise).
+// the credential presented to it — so the cache key includes the caller's identity and the
+// forwarded headers, not just the backend set. Both the cache and singleflight use the
+// session binding (which includes the delegated route, client and optional actor), platform
+// user ID, forwarded headers and backend IDs. Requests whose identity cannot be bound bypass
+// both rather than sharing a subject-only key. The key does not include the identity's own
+// tokens (its bearer token and upstream tokens): two requests with the same binding and
+// platform user ID share a view for up to the TTL even if they present different tokens to a
+// backend. The key is a SHA-256 digest, so raw header values are not retained as map keys.
+// The cache is node-local and never persisted.
 type cachingAggregator struct {
 	// Aggregator is the wrapped aggregator; embedding delegates every method except the
 	// AggregateCapabilities override below.
@@ -109,18 +111,29 @@ func (e *leaderContextError) Unwrap() error { return e.err }
 // with it. Embedders that build the core with core.New and serve it themselves must wrap
 // their aggregator with NewCachingAggregator to get caching and burst deduplication, and
 // must only do so if their aggregator's result depends on nothing in the context beyond the
-// cache key inputs (the identity's subject, the forwarded headers and the backend IDs). The
-// cache and the shared sweep hand one caller's result to every other caller with the same
-// key.
+// cache key inputs (the session binding, platform user ID, forwarded headers and backend
+// IDs). The cache and the shared sweep hand one caller's result to every other caller with
+// the same key. That rules out three kinds of aggregator:
+//   - one whose result varies with the identity's tokens, which are not in the key;
+//   - one that relies on side effects of running during the call, such as recording names in
+//     the context, because a hit or a joined sweep skips them (bypass the cache for those
+//     calls);
+//   - one whose caller checks the returned view against a per-call value in the context.
+//     Run that check outside the cache, so it also covers hits and joined sweeps.
+//
+// The core finds the cache through the aggregator type it was given (see
+// CacheInvalidator), so a decorator placed around this one must forward InvalidateAll.
 func NewCachingAggregator(next Aggregator, ttl time.Duration) Aggregator {
 	return newCachingAggregator(next, ttl, time.Now)
 }
 
 // AggregateCapabilities returns a cached view when a fresh entry exists for the caller's
-// identity + forwarded credentials + backend set, and otherwise sweeps the backends (via the
-// wrapped aggregator) and caches the result. Errors are never cached. The returned value is
-// treated as immutable by the core (it derives fresh per-call routers from it), so the cached
-// pointer is shared rather than deep-copied.
+// identity + forwarded headers + backend set, and otherwise sweeps the backends (via the
+// wrapped aggregator) and caches the result. If the identity cannot be bound, it sweeps
+// directly without caching or sharing the result (logging the reason at DEBUG), and still
+// returns ctx.Err() if the context ended during a sweep that returned no error. Errors are
+// never cached. The returned value is treated as immutable by the core (it derives fresh
+// per-call routers from it), so the cached pointer is shared rather than deep-copied.
 //
 // Concurrent misses for the same key share one sweep (singleflight). The shared sweep runs
 // with the context of the caller that started it (the leader); every caller waits on its own
@@ -141,7 +154,19 @@ func NewCachingAggregator(next Aggregator, ttl time.Duration) Aggregator {
 func (c *cachingAggregator) AggregateCapabilities(
 	ctx context.Context, backends []vmcp.Backend,
 ) (*AggregatedCapabilities, error) {
-	key := cacheKey(ctx, backends)
+	key, err := cacheKey(ctx, backends)
+	if err != nil {
+		slog.DebugContext(ctx, "bypassing capability cache: identity cannot be bound", "error", err)
+		// Panic recovery exists in sharedSweep only because DoChan runs the sweep on its own
+		// goroutine. This path keeps the pre-dedup behaviour of unwinding the request goroutine.
+		caps, err := c.Aggregator.AggregateCapabilities(ctx, backends)
+		if err == nil && ctx.Err() != nil {
+			// The wrapped aggregator can return a partial view without error when the
+			// context ends mid-sweep; report the cancellation like the shared path does.
+			return nil, ctx.Err()
+		}
+		return caps, err
+	}
 	if caps, ok := c.lookup(key); ok {
 		return caps, nil
 	}
@@ -323,15 +348,24 @@ func flightKey(gen uint64, key string) string {
 	return strconv.FormatUint(gen, 10) + ":" + key
 }
 
-// cacheKey derives a collision-resistant key from the inputs that drive backend enumeration:
-// the caller's subject, the forwarded headers (passthrough credentials/scopes), and the
-// backend ID set. Hashing keeps raw credential values out of the cache keys.
-func cacheKey(ctx context.Context, backends []vmcp.Backend) string {
-	h := sha256.New()
-
-	if id, ok := auth.IdentityFromContext(ctx); ok && id != nil {
-		_, _ = io.WriteString(h, id.Subject)
+// cacheKey derives a collision-resistant key from the caller's session binding, platform
+// user ID, forwarded headers (passthrough credentials/scopes), and backend ID set.
+// A binding error is returned and makes the request uncacheable. A nil identity binds to
+// the anonymous sentinel, so requests without an identity can still share a key.
+func cacheKey(ctx context.Context, backends []vmcp.Backend) (string, error) {
+	id, _ := auth.IdentityFromContext(ctx)
+	binding, err := sessionbinding.FromIdentity(id)
+	if err != nil {
+		return "", err
 	}
+	var platformUserID string
+	if id != nil {
+		platformUserID = id.PlatformUserID
+	}
+
+	h := sha256.New()
+	// Length framing keeps the fields unambiguous even when the binding contains NULs.
+	_, _ = fmt.Fprintf(h, "%d:%s%d:%s", len(binding), binding, len(platformUserID), platformUserID)
 	_, _ = h.Write([]byte{0})
 
 	fwd := headerforward.ForwardedHeadersFromContext(ctx)
@@ -358,5 +392,5 @@ func cacheKey(ctx context.Context, backends []vmcp.Backend) string {
 		_, _ = h.Write([]byte{0})
 	}
 
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

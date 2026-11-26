@@ -20,13 +20,13 @@ Configure OpenTelemetry settings for observability and monitoring of MCP servers
 ### Options
 
 ```
-  -h, --help   help for otel
+  -h, --help[=true|false]   help for otel
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -51,25 +52,24 @@ var ErrContainerExitedRestartNeeded = errors.New("container exited, restart need
 // probeProtocolVersion is the MCP protocol revision the readiness probe advertises
 // in the JSON-RPC params.protocolVersion of its initialize handshake.
 //
-// It is deliberately pinned to 2025-11-25 — the current stable revision and the
-// newest one that still defines the `initialize` method — rather than tracking
-// mcp.LATEST_PROTOCOL_VERSION. The upcoming 2026-07-28 revision (draft; subject to
-// change until it ships) removes `initialize` entirely (replaced by server/discover
-// + per-request _meta, SEP-2575), so a probe that sent method:"initialize" with a
-// 2026-07-28 version string would be internally inconsistent. When ToolHive adopts
-// 2026-07-28 (issue #5754) the probe must switch to server/discover — which, like
-// all 2026-07-28 Streamable HTTP POSTs, carries the required Mcp-Method/Mcp-Name
-// headers — and fall back to this initialize path for older backends. Pinning here
-// keeps the probe's method and version consistent regardless of what the SDK later
-// declares "latest".
+// It is deliberately pinned to 2025-11-25 rather than tracking
+// mcp.LATEST_PROTOCOL_VERSION, because this probe uses initialize. The final
+// 2026-07-28 revision removes initialize (replaced by server/discover and
+// per-request _meta, SEP-2575), so sending initialize with a 2026-07-28 version
+// would be internally inconsistent. This readiness probe does not yet support
+// Modern requests; that would require a server/discover probe with the required
+// Mcp-Method/Mcp-Name headers and a fallback to initialize for older backends.
+// Pinning here keeps the probe's method and version consistent regardless of
+// what the SDK later declares "latest".
 //
 // The value is sent only in the request body, NOT as an MCP-Protocol-Version
-// header: the spec scopes that header to requests made AFTER initialization
-// (carrying the negotiated version), and requires a server to reject an unsupported
-// header value with HTTP 400. Sending it on the initialize request itself would let
-// a backend that only supports an older revision 400 the probe — a false
-// "not-ready" — whereas body-based version negotiation degrades gracefully (the
-// server answers HTTP 200 with its own supported version).
+// header: for this 2025-11-25 initialize handshake, the spec scopes that header
+// to requests made AFTER initialization (carrying the negotiated version), and
+// requires a server to reject an unsupported header value with HTTP 400. Sending
+// it on the initialize request itself would let a backend that only supports an
+// older revision 400 the probe — a false "not-ready" — whereas body-based version
+// negotiation degrades gracefully (the server answers HTTP 200 with its own
+// supported version).
 const probeProtocolVersion = "2025-11-25"
 
 // Runner is responsible for running an MCP server with the provided configuration
@@ -101,6 +101,11 @@ type Runner struct {
 	diagnosticsServer *diagnostics.Server
 
 	statusManager statuses.StatusManager
+
+	// statusMu serializes the status writes made by transport callbacks with
+	// the read-then-write that marks the workload running, so a status set by
+	// a callback is never overwritten on the strength of a stale read.
+	statusMu sync.Mutex
 
 	// authenticatedTokenSource is the wrapped token source for remote workloads with authentication monitoring
 	authenticatedTokenSource *auth.MonitoredTokenSource
@@ -380,10 +385,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		var err error
-		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
+		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(
+			ctx, r.Config.EmbeddedAuthServerConfig, authserverrunner.WithListenerHost(r.bindHost()),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
+		defer func() {
+			if err := r.embeddedAuthServer.Close(); err != nil {
+				slog.Warn("failed to close embedded auth server", "error", err)
+			}
+		}()
 		slog.Debug("embedded authorization server initialized")
 
 		// Create the upstream token service eagerly now that the auth server exists.
@@ -420,6 +432,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set all named middleware and handlers on transport config
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
+
+	if err := r.startEmbeddedAuthServerListener(); err != nil {
+		return err
+	}
 
 	// Metrics are served on a dedicated diagnostics listener so access can be
 	// restricted by port; see pkg/diagnostics.
@@ -492,6 +508,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.K8sPodTemplatePatch,
 			r.Config.IsolateNetwork,
 			r.Config.AllowDockerGateway,
+			r.Config.ReadOnlyRootfs,
 			r.Config.IgnoreConfig,
 			r.Config.Host,
 			r.Config.TargetPort,
@@ -590,21 +607,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Set the token source on the transport
 		transportHandler.SetTokenSource(tokenSource)
 
-		// Set the health check failure callback for remote servers
-		transportHandler.SetOnHealthCheckFailed(func() {
-			slog.Warn("health check failed for remote server, marking as unhealthy", "server", r.Config.BaseName)
-			// Use Background context for status update callback - this is triggered by health check
-			// failure and is independent of any request context. The callback is fired asynchronously
-			// and needs its own lifecycle separate from the transport's parent context.
-			if err := r.statusManager.SetWorkloadStatus(
-				context.Background(),
-				r.Config.BaseName,
-				rt.WorkloadStatusUnhealthy,
-				"Health check failed",
-			); err != nil {
-				slog.Error("failed to update workload status", "error", err)
-			}
-		})
+		// Set the health check callbacks for remote servers
+		transportHandler.SetOnHealthCheckFailed(r.markRemoteUnhealthy)
+		transportHandler.SetOnHealthCheckRecovered(r.markRemoteRecovered)
 
 		// Set the unauthorized response callback for bearer token authentication
 		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
@@ -613,9 +618,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Use Background context for status update callback - this is triggered by 401 response
 			// and is independent of any request context. The callback is fired asynchronously
 			// and needs its own lifecycle separate from the transport's parent context.
-			if err := r.statusManager.SetWorkloadStatus(
+			if _, err := r.transitionWorkloadStatus(
 				context.Background(),
-				r.Config.BaseName,
+				nil,
 				rt.WorkloadStatusUnauthenticated,
 				errorMsg,
 			); err != nil {
@@ -764,22 +769,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	// At this point, we can consider the workload started successfully.
-	// However, we should preserve unauthenticated status if it was already set
-	// (e.g., if bearer token authentication failed during initialization)
-	currentWorkload, err := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
-	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
-		slog.Warn("failed to get current workload status", "error", err)
-	}
-
-	// Only set status to running if it's not already unauthenticated
-	// This preserves the unauthenticated state when bearer token authentication fails
-	if err == nil && currentWorkload.Status == rt.WorkloadStatusUnauthenticated {
-		slog.Debug("preserving unauthenticated status for workload", "workload", r.Config.BaseName)
-	} else {
-		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
-			// If we can't set the status to `running` - treat it as a fatal error.
-			return fmt.Errorf("failed to set workload status: %w", err)
-		}
+	// However, we should preserve a status a transport callback already set:
+	// - unauthenticated: bearer token authentication failed during initialization
+	// - unhealthy: health checks failed before waitForInitializeSuccess returned;
+	//   the health check loop owns the move back to running
+	if _, err := r.transitionWorkloadStatus(ctx, keepStatusOnStartup, rt.WorkloadStatusRunning, ""); err != nil {
+		// If we can't set the status to `running` - treat it as a fatal error.
+		return fmt.Errorf("failed to set workload status: %w", err)
 	}
 
 	// Wait for either a signal or the done channel to be closed
@@ -1323,4 +1319,150 @@ func waitForInitializeSuccess(
 			delay = maxDelay
 		}
 	}
+}
+
+// startEmbeddedAuthServerListener starts the embedded auth server's TLS
+// listener when one is configured, and is a no-op otherwise. The listener port
+// is fixed and part of the issuer URL, so a clash with the proxy or diagnostics
+// port is reported instead of being resolved by picking another port.
+func (r *Runner) startEmbeddedAuthServerListener() error {
+	if r.embeddedAuthServer == nil || r.Config.EmbeddedAuthServerConfig == nil ||
+		r.Config.EmbeddedAuthServerConfig.TLSListener == nil {
+		return nil
+	}
+	if r.Config.Port == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("proxy port %d conflicts with the auth server TLS listener port", r.Config.Port)
+	}
+	if r.prometheusHandler != nil && diagnosticsPort(r.Config.TelemetryConfig) == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("diagnostics port %d conflicts with the auth server TLS listener port", authserverrunner.TLSListenerPort)
+	}
+	if err := r.embeddedAuthServer.Start(); err != nil {
+		return fmt.Errorf("failed to start auth server TLS listener: %w", err)
+	}
+	return nil
+}
+
+// keepStatusOnStartup reports whether the startup write of running must keep the
+// current status, because a transport callback set it while the workload started.
+// A status that cannot be read, because the workload is not found or the read
+// fails, is not kept: startup writes running regardless.
+func keepStatusOnStartup(current rt.WorkloadStatus, _ error) bool {
+	return current == rt.WorkloadStatusUnauthenticated || current == rt.WorkloadStatusUnhealthy
+}
+
+// keepStatusOnRemoteUnhealthy reports whether a failed health check must keep the
+// current status rather than write unhealthy. It keeps:
+//   - unhealthy, so the repeated callback does not rewrite it;
+//   - unauthenticated, which the health check cannot clear, so letting it through
+//     would let a later recovery report a server that rejects every request as running;
+//   - stopping, stopped and removing, which the workload manager writes while it
+//     shuts the proxy down, during which a health check can still fail;
+//   - a status that cannot be read: a workload that is not found has been deleted,
+//     and writing would recreate its status, and a failed read is retried on the
+//     next failed check.
+func keepStatusOnRemoteUnhealthy(current rt.WorkloadStatus, readErr error) bool {
+	return readErr != nil ||
+		current == rt.WorkloadStatusUnhealthy ||
+		current == rt.WorkloadStatusUnauthenticated ||
+		current == rt.WorkloadStatusStopping ||
+		current == rt.WorkloadStatusStopped ||
+		current == rt.WorkloadStatusRemoving
+}
+
+// keepStatusOnRemoteRecovered reports whether a passing health check must keep the
+// current status rather than write running. It writes only over unhealthy, so it
+// never overrides a status another writer set in the meantime, nor one it cannot read.
+func keepStatusOnRemoteRecovered(current rt.WorkloadStatus, readErr error) bool {
+	return readErr != nil || current != rt.WorkloadStatusUnhealthy
+}
+
+// remoteUnhealthyStatusContext is the status context of a remote workload that
+// failed its health checks.
+const remoteUnhealthyStatusContext = "Remote server failed health checks"
+
+// markRemoteUnhealthy is the health check failure callback for remote servers. It
+// writes unhealthy unless keepStatusOnRemoteUnhealthy keeps the current status. It
+// does not report failures to the proxy: the proxy calls it again on every failed
+// check while the server stays unhealthy, so a failed read or write is retried.
+func (r *Runner) markRemoteUnhealthy() {
+	// Use Background context for status update callback - this is triggered by health check
+	// failure and is independent of any request context. The callback is fired asynchronously
+	// and needs its own lifecycle separate from the transport's parent context.
+	changed, err := r.transitionWorkloadStatus(
+		context.Background(),
+		keepStatusOnRemoteUnhealthy,
+		rt.WorkloadStatusUnhealthy,
+		remoteUnhealthyStatusContext,
+	)
+	if err != nil {
+		slog.Warn("failed to mark remote server unhealthy, retrying on the next failed health check",
+			"server", r.Config.BaseName, "error", err)
+		return
+	}
+	if changed {
+		slog.Warn("health check failed for remote server, marking as unhealthy", "server", r.Config.BaseName)
+	}
+}
+
+// markRemoteRecovered is the health check recovery callback for remote servers. It
+// moves the workload back to running only from unhealthy. It returns nil when the
+// recovery is handled: the status was written, or was deliberately left alone
+// because it is not unhealthy or the workload is not found. It returns an error
+// when the status cannot be read or written, so the proxy calls it again on the
+// next passing check rather than losing the recovery.
+func (r *Runner) markRemoteRecovered() error {
+	_, err := r.transitionWorkloadStatus(
+		context.Background(),
+		keepStatusOnRemoteRecovered,
+		rt.WorkloadStatusRunning,
+		"",
+	)
+	return err
+}
+
+// transitionWorkloadStatus sets the workload status, unless preserve is non-nil
+// and reports that the current status must be kept, and reports whether it wrote.
+// It holds statusMu so the read and the write are atomic with respect to the
+// other callers.
+//
+// preserve receives the current status and the error from reading it. When the
+// read fails, current is unknown and readErr is non-nil; rt.ErrWorkloadNotFound
+// means the workload has no status. If preserve keeps a status whose read failed
+// with any other error, transitionWorkloadStatus returns that error, so the caller
+// can retry; a workload that is not found is not an error. If preserve lets the
+// write through despite a failed read, the write proceeds.
+func (r *Runner) transitionWorkloadStatus(
+	ctx context.Context,
+	preserve func(current rt.WorkloadStatus, readErr error) bool,
+	status rt.WorkloadStatus,
+	statusContext string,
+) (bool, error) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+
+	if preserve != nil {
+		workload, readErr := r.statusManager.GetWorkload(ctx, r.Config.BaseName)
+		current := rt.WorkloadStatusUnknown
+		if readErr == nil {
+			current = workload.Status
+		}
+		readFailed := readErr != nil && !errors.Is(readErr, rt.ErrWorkloadNotFound)
+		if preserve(current, readErr) {
+			if readFailed {
+				return false, fmt.Errorf("failed to get current workload status: %w", readErr)
+			}
+			slog.Debug("preserving workload status",
+				"workload", r.Config.BaseName, "status", current, "skipped_status", status)
+			return false, nil
+		}
+		if readFailed {
+			slog.Warn("failed to get current workload status, setting it anyway",
+				"workload", r.Config.BaseName, "status", status, "error", readErr)
+		}
+	}
+
+	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, status, statusContext); err != nil {
+		return false, err
+	}
+	return true, nil
 }

@@ -24,13 +24,13 @@ thv config unset-ca-cert [flags]
 ### Options
 
 ```
-  -h, --help   help for unset-ca-cert
+  -h, --help[=true|false]   help for unset-ca-cert
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

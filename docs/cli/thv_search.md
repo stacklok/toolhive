@@ -24,14 +24,14 @@ thv search [query] [flags]
 ### Options
 
 ```
-      --format string   Output format (json or text) (default "text")
-  -h, --help            help for search
+      --format string       Output format (json or text) (default "text")
+  -h, --help[=true|false]   help for search
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -71,6 +71,26 @@ func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[stri
 		return nil, fmt.Errorf("cannot load session data with empty ID")
 	}
 	data, err := s.client.GetEx(ctx, s.key(id), s.ttl).Bytes()
+	return decodeRedisSessionData(data, err)
+}
+
+// LoadMetadata retrieves metadata from Redis with a plain GET, leaving the
+// key's TTL unchanged. Returns ErrSessionNotFound if the key does not exist.
+func (s *RedisSessionDataStorage) LoadMetadata(ctx context.Context, id string) (map[string]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session data with empty ID")
+	}
+	data, err := s.client.Get(ctx, s.key(id)).Bytes()
+	return decodeRedisSessionData(data, err)
+}
+
+// ErrUndecodableSessionData reports a value under the session key prefix that
+// is not session metadata. Other features keep keys under the same prefix, so
+// an ID naming one of them reads a value of another kind.
+var ErrUndecodableSessionData = errors.New("failed to deserialize session metadata")
+
+// decodeRedisSessionData maps a Redis read result to session metadata.
+func decodeRedisSessionData(data []byte, err error) (map[string]string, error) {
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, ErrSessionNotFound
@@ -79,7 +99,7 @@ func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[stri
 	}
 	var metadata map[string]string
 	if err := json.Unmarshal(data, &metadata); err != nil {
-		return nil, fmt.Errorf("failed to deserialize session metadata: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrUndecodableSessionData, err)
 	}
 	return metadata, nil
 }

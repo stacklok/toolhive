@@ -16,6 +16,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // defaultMaxMemoryCIMDClients caps the live CIMD rows MemoryStorage keeps.
@@ -53,6 +55,14 @@ type assertionJWTKey struct {
 	purpose string
 	issuer  string
 	jti     string
+}
+
+// exchangeGrantMarker is the replay marker for the subject access token behind
+// a top-level exchange grant. It holds the grant's signature so a later
+// replay-revoke can find the grant.
+type exchangeGrantMarker struct {
+	signature string
+	expiresAt time.Time
 }
 
 // MemoryStorage implements the Storage interface with in-memory maps.
@@ -91,6 +101,14 @@ type MemoryStorage struct {
 	dcrClientExpiry  map[string]time.Time
 	cimdClientExpiry map[string]time.Time
 
+	// configured holds the ID of every client in clients that was last
+	// written by ReconcileConfiguredClient. It is a side map, not a wrapper
+	// around the stored value: wrapping a SPIFFE placeholder would break
+	// isReservedPlaceholder and make a second reconcile of it fail. GetClient
+	// wraps non-reserved stamped clients on the way out. Every other write,
+	// delete and expiry of an ID clears its entry.
+	configured map[string]struct{}
+
 	// maxDCRClients caps the live clients counted by countsTowardDCRCap; zero
 	// means unlimited. /oauth/register is unauthenticated and every call
 	// mints an entry, so an uncapped map is a memory-exhaustion DoS in the
@@ -109,7 +127,8 @@ type MemoryStorage struct {
 	// row costs at most a document refetch. RedisStorage has no such cap.
 	maxCIMDClients int
 
-	// now returns the current time for client expiry.
+	// now returns the current time. It governs client expiry and exchange
+	// grant expiry; the other maps use time.Now.
 	now func() time.Time
 
 	// authCodes maps authorization code -> Requester. Codes are one-time-use;
@@ -166,6 +185,18 @@ type MemoryStorage struct {
 	// assertionJWTs tracks consumed assertion JWTs by purpose, issuer, and JTI.
 	assertionJWTs map[assertionJWTKey]time.Time
 
+	// exchangeGrants maps grant signature -> record for refresh tokens issued
+	// through token exchange. Records are stored as private copies and removed by
+	// cleanupExpired after ExpiresAt.
+	exchangeGrants map[string]*ExchangeGrant
+
+	// exchangeGrantJTIs holds the replay markers of top-level exchange grants,
+	// keyed like assertionJWTs (purpose, issuer, jti). It is separate from
+	// assertionJWTs because its values carry the grant signature, and so
+	// ConsumeAssertionJWT behaves exactly as before. A marker lives until the
+	// subject token's exp plus ExchangeGrantMarkerMargin.
+	exchangeGrantJTIs map[assertionJWTKey]exchangeGrantMarker
+
 	// users maps user ID -> User for user account lookup.
 	// Users are not subject to TTL-based cleanup as they represent persistent accounts.
 	users map[string]*User
@@ -174,10 +205,10 @@ type MemoryStorage struct {
 	// This enables O(1) lookup during authentication callbacks.
 	providerIdentities map[string]*ProviderIdentity
 
-	// dcrCredentials maps DCRKey -> DCRCredentials for RFC 7591 Dynamic Client
+	// dcrCredentials maps dcrkey.Key -> DCRCredentials for RFC 7591 Dynamic Client
 	// Registration credentials. These entries come from OUTBOUND DCR: ToolHive
 	// acting as a DCR client to register itself against a configured upstream
-	// IdP (see pkg/auth/dcr/store.go, the only caller of StoreDCRCredentialsIfAbsent).
+	// IdP (see pkg/auth/dcr/storage_store.go, the resolver persistence adapter).
 	// This is not reachable from the inbound, unauthenticated /oauth/register
 	// handler, so unlike clients (bounded by maxDCRClients and the client expiry maps because
 	// every inbound registration call mints an entry), growth here is bounded
@@ -195,7 +226,7 @@ type MemoryStorage struct {
 	// re-derived by the resolver) accumulate stale entries that survive until
 	// process restart. The Redis backend's SetEX TTL mitigates this in
 	// production deployments.
-	dcrCredentials map[DCRKey]*DCRCredentials
+	dcrCredentials map[dcrkey.Key]*DCRCredentials
 
 	// cleanupInterval is how often the background cleanup runs
 	cleanupInterval time.Duration
@@ -239,8 +270,8 @@ func withMaxCIMDClients(n int) MemoryStorageOption {
 	}
 }
 
-// withClientClock sets the clock used for client expiry, so tests can move
-// past a TTL without sleeping.
+// withClientClock sets the clock used for client expiry and exchange grants,
+// so tests can move past a TTL without sleeping.
 func withClientClock(now func() time.Time) MemoryStorageOption {
 	return func(s *MemoryStorage) {
 		s.now = now
@@ -267,12 +298,15 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		invalidatedCodes:           make(map[string]*timedEntry[bool]),
 		clientAssertionJWTs:        make(map[string]time.Time),
 		assertionJWTs:              make(map[assertionJWTKey]time.Time),
+		exchangeGrants:             make(map[string]*ExchangeGrant),
+		exchangeGrantJTIs:          make(map[assertionJWTKey]exchangeGrantMarker),
 		users:                      make(map[string]*User),
 		providerIdentities:         make(map[string]*ProviderIdentity),
-		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
+		dcrCredentials:             make(map[dcrkey.Key]*DCRCredentials),
 		cleanupInterval:            DefaultCleanupInterval,
 		dcrClientExpiry:            make(map[string]time.Time),
 		cimdClientExpiry:           make(map[string]time.Time),
+		configured:                 make(map[string]struct{}),
 		maxDCRClients:              DefaultMaxDCRClients,
 		maxCIMDClients:             defaultMaxMemoryCIMDClients,
 		now:                        time.Now,
@@ -432,6 +466,21 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	storeNow := s.now()
+	var expiredExchangeGrants []string
+	for k, g := range s.exchangeGrants {
+		if storeNow.After(g.ExpiresAt) {
+			expiredExchangeGrants = append(expiredExchangeGrants, k)
+		}
+	}
+
+	var expiredExchangeGrantJTIs []assertionJWTKey
+	for k, m := range s.exchangeGrantJTIs {
+		if storeNow.After(m.expiresAt) {
+			expiredExchangeGrantJTIs = append(expiredExchangeGrantJTIs, k)
+		}
+	}
+
 	clientNow := s.now()
 	var expiredClients []string
 	for _, expiry := range []map[string]time.Time{s.dcrClientExpiry, s.cimdClientExpiry} {
@@ -459,7 +508,9 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredPendingDeviceLogins) == 0 &&
 		len(expiredPendingDeviceConfirmations) == 0 &&
 		len(expiredJWTs) == 0 &&
-		len(expiredAssertionJWTs) == 0 {
+		len(expiredAssertionJWTs) == 0 &&
+		len(expiredExchangeGrants) == 0 &&
+		len(expiredExchangeGrantJTIs) == 0 {
 		return
 	}
 
@@ -473,6 +524,7 @@ func (s *MemoryStorage) cleanupExpired() {
 			delete(s.clients, k)
 			delete(s.dcrClientExpiry, k)
 			delete(s.cimdClientExpiry, k)
+			delete(s.configured, k)
 		}
 	}
 
@@ -538,6 +590,18 @@ func (s *MemoryStorage) cleanupExpired() {
 	for _, k := range expiredAssertionJWTs {
 		if exp, ok := s.assertionJWTs[k]; ok && now.After(exp) {
 			delete(s.assertionJWTs, k)
+		}
+	}
+
+	for _, k := range expiredExchangeGrants {
+		if g, ok := s.exchangeGrants[k]; ok && storeNow.After(g.ExpiresAt) {
+			delete(s.exchangeGrants, k)
+		}
+	}
+
+	for _, k := range expiredExchangeGrantJTIs {
+		if m, ok := s.exchangeGrantJTIs[k]; ok && storeNow.After(m.expiresAt) {
+			delete(s.exchangeGrantJTIs, k)
 		}
 	}
 }
@@ -608,6 +672,9 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 // reconcile through ReconcileConfiguredClient instead.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	id := client.GetID()
+	if registration.IsConfigured(client) {
+		return fmt.Errorf("client %q must not carry the configured stamp; use ReconcileConfiguredClient", id)
+	}
 	if err := ValidateRegisterableClientID(id); err != nil {
 		return err
 	}
@@ -671,19 +738,38 @@ func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.C
 }
 
 // ReconcileConfiguredClient applies an operator-declared client: creates it
-// if absent, idempotently replaces a matching-fingerprint configured client
-// (the restart-with-unchanged-config case), or refuses with ErrAlreadyExists
-// when the existing record is DCR-issued or a different configured client.
-// See the ClientRegistry interface doc for the full contract.
+// if absent, otherwise replaces the existing record unless
+// configuredClientConflict refuses (or the record is DCR-issued), in which
+// case it returns ErrAlreadyExists. See the ClientRegistry interface doc for
+// the full contract.
 func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosite.Client) error {
 	if registration.DCRIssued(client) {
 		return fmt.Errorf("configured client %q must not carry the DCR-issued marker", client.GetID())
+	}
+	if err := checkConfiguredClientType(client); err != nil {
+		return err
 	}
 	id := client.GetID()
 	if err := ValidateRegisterableClientID(id); err != nil {
 		return err
 	}
 
+	existingFP, incomingFP, replaced, err := s.reconcileConfiguredClientLocked(id, client)
+	if err != nil {
+		return err
+	}
+	if replaced {
+		warnConfiguredClientReplaced(id, existingFP, incomingFP)
+	}
+	return nil
+}
+
+// reconcileConfiguredClientLocked stores client under s.mu and reports the
+// fingerprints of the row it replaced, or replaced=false when it created a
+// new row. The caller logs the replacement after the lock is released.
+func (s *MemoryStorage) reconcileConfiguredClientLocked(
+	id string, client fosite.Client,
+) (existingFP, incomingFP clientFingerprint, replaced bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -691,21 +777,24 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 	existing, exists := s.liveClientLocked(id, now)
 	if !exists {
 		s.putPermanentClientLocked(id, client)
-		return nil
+		s.configured[id] = struct{}{}
+		return existingFP, incomingFP, false, nil
 	}
 	if registration.DCRIssued(existing) {
-		return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
+		return existingFP, incomingFP, false, fmt.Errorf(
+			"%w: client %q is DCR-issued, refusing to overwrite with a configured client",
 			ErrAlreadyExists, id)
 	}
-	if !fingerprintOfClient(existing).equal(fingerprintOfClient(client)) {
-		return fmt.Errorf("%w: client %q is already registered as a different configured client",
-			ErrAlreadyExists, id)
+	existingFP, incomingFP = fingerprintOfClient(existing), fingerprintOfClient(client)
+	if err := configuredClientConflict(id, existingFP, incomingFP); err != nil {
+		return existingFP, incomingFP, false, err
 	}
 
-	// Idempotent restart with unchanged config: replace the stored value so
-	// secret rotation still takes effect.
+	// Replace the stored value so secret rotation and policy changes take
+	// effect.
 	s.putPermanentClientLocked(id, client)
-	return nil
+	s.configured[id] = struct{}{}
+	return existingFP, incomingFP, true, nil
 }
 
 // liveClientLocked returns the client stored at id, or false when there is
@@ -745,15 +834,18 @@ func (s *MemoryStorage) putExpiringClientLocked(id string, client fosite.Client,
 	s.clients[id] = client
 	delete(s.dcrClientExpiry, id)
 	delete(s.cimdClientExpiry, id)
+	delete(s.configured, id)
 	s.expiryMapFor(client)[id] = expiry
 }
 
 // putPermanentClientLocked stores a client without the DCR-issued marker at
-// id; it never expires. Callers must hold s.mu for writing.
+// id; it never expires. It clears the configured stamp; the caller sets it
+// afterwards when the write is a reconcile. Callers must hold s.mu for writing.
 func (s *MemoryStorage) putPermanentClientLocked(id string, client fosite.Client) {
 	s.clients[id] = client
 	delete(s.dcrClientExpiry, id)
 	delete(s.cimdClientExpiry, id)
+	delete(s.configured, id)
 }
 
 // countLiveLocked returns the number of entries in expiry that have not
@@ -826,6 +918,13 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 			"client_id", id, "reason", dcrErr.ErrorDescription)
 		return nil, fosite.ErrInvalidClient.WithHint("client signing keys no longer meet server policy")
 	}
+	if _, stamped := s.configured[id]; stamped && !isReservedPlaceholder(client) {
+		marked, ok := registration.MarkConfigured(client)
+		if !ok {
+			return nil, notFoundRFC6749Error("Client not found")
+		}
+		return marked, nil
+	}
 	return client, nil
 }
 
@@ -870,22 +969,25 @@ func (s *MemoryStorage) ClientAssertionJWTValid(_ context.Context, jti string) e
 	return nil
 }
 
-// SetClientAssertionJWT extends jti's replay marker to its real expiry,
-// rejecting an exp further than MaxAssertionLifespan in the future. This
-// bounds how long a replay-tracking entry survives regardless of what the
-// client's own assertion claims — otherwise a registered caller could set
-// exp decades out and grow this map indefinitely. Unconditional overwrite,
-// not a fresh atomic check: only the caller that already won
+// SetClientAssertionJWT extends jti's replay marker to deadline, which is stored
+// as given. The authorization server hands it the marker deadline
+// (server.ClientAssertionRetainUntil of the assertion's exp), so the marker
+// outlives the clock skew in which the assertion is still accepted. A deadline
+// that server.ValidateClientAssertionMarkerDeadline refuses, because it is not
+// in the future or too far ahead, is rejected with invalid_client and leaves the
+// reservation as it was. The ahead bound keeps a registered caller from setting
+// a deadline decades out and growing this map indefinitely. Unconditional
+// overwrite, not a fresh atomic check: only the caller that already won
 // ClientAssertionJWTValid's reservation reaches this call.
-func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
-	if time.Until(exp) > server.MaxAssertionLifespan {
-		return fmt.Errorf("assertion lifetime exceeds maximum of %s", server.MaxAssertionLifespan)
+func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, deadline time.Time) error {
+	if err := server.ValidateClientAssertionMarkerDeadline(deadline, time.Now()); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.clientAssertionJWTs[jti] = exp
+	s.clientAssertionJWTs[jti] = deadline
 	return nil
 }
 
@@ -911,6 +1013,100 @@ func (s *MemoryStorage) ConsumeAssertionJWT(_ context.Context, purpose, issuer, 
 	}
 
 	s.assertionJWTs[key] = exp
+	return nil
+}
+
+// exchangeGrantAssertionPurpose scopes exchange-grant replay markers, mirroring
+// the purpose argument of ConsumeAssertionJWT. The literal pins the wire string
+// the Redis backend must match.
+const exchangeGrantAssertionPurpose = "exchange-grant"
+
+// cloneExchangeGrant returns a deep copy of g, so neither the caller nor the
+// store can change the other's slices.
+func cloneExchangeGrant(g *ExchangeGrant) *ExchangeGrant {
+	c := *g
+	c.IssuableTokenTypes = slices.Clone(g.IssuableTokenTypes)
+	return &c
+}
+
+// -----------------------
+// ExchangeGrantStorage
+// -----------------------
+
+// CreateExchangeGrant stores a copy of g and, when g.SourceJTI is set, its
+// replay marker. A grant whose shape is invalid, or whose ExpiresAt is already
+// past, is refused. All checks run first and the writes follow under one lock,
+// so a failed call leaves nothing behind.
+//
+// Check order: a duplicate signature is reported before a reused jti. A retry
+// of a create that already succeeded (same signature, same jti) therefore gets
+// ErrAlreadyExists, which says this exact grant exists, instead of ErrJTIKnown.
+func (s *MemoryStorage) CreateExchangeGrant(_ context.Context, g *ExchangeGrant) error {
+	if err := validateExchangeGrantShape(g); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	if now.After(g.ExpiresAt) {
+		return errors.New("exchange grant is already expired")
+	}
+	if existing, ok := s.exchangeGrants[g.Signature]; ok && !now.After(existing.ExpiresAt) {
+		return ErrAlreadyExists
+	}
+
+	var key assertionJWTKey
+	if g.SourceJTI != "" {
+		key = assertionJWTKey{purpose: exchangeGrantAssertionPurpose, issuer: g.SourceIssuer, jti: g.SourceJTI}
+		if m, ok := s.exchangeGrantJTIs[key]; ok && !now.After(m.expiresAt) {
+			return fosite.ErrJTIKnown
+		}
+	}
+
+	s.exchangeGrants[g.Signature] = cloneExchangeGrant(g)
+	if g.SourceJTI != "" {
+		s.exchangeGrantJTIs[key] = exchangeGrantMarker{
+			signature: g.Signature, expiresAt: g.SourceExpiresAt.Add(ExchangeGrantMarkerMargin),
+		}
+	}
+	return nil
+}
+
+// GetExchangeGrant returns a copy of the grant, including revoked grants. A
+// record past its ExpiresAt is reported as ErrNotFound even if cleanup has not
+// removed it yet.
+func (s *MemoryStorage) GetExchangeGrant(_ context.Context, signature string) (*ExchangeGrant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	g, ok := s.exchangeGrants[signature]
+	if !ok || s.now().After(g.ExpiresAt) {
+		return nil, ErrNotFound
+	}
+	return cloneExchangeGrant(g), nil
+}
+
+// RevokeExchangeGrant sets RevokedAt to now unless the grant is already
+// revoked, in which case the first RevokedAt is kept. A missing or expired
+// record returns ErrNotFound.
+func (s *MemoryStorage) RevokeExchangeGrant(_ context.Context, signature string, now time.Time) error {
+	if err := validateExchangeGrantRevokeTime(now); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// now is only the timestamp written; expiry follows the store clock.
+	g, ok := s.exchangeGrants[signature]
+	if !ok || s.now().After(g.ExpiresAt) {
+		return ErrNotFound
+	}
+	if g.RevokedAt.IsZero() {
+		g.RevokedAt = now
+	}
 	return nil
 }
 
@@ -1530,8 +1726,10 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 		ResolvedUserID:          pending.ResolvedUserID,
 		ResolvedUserName:        pending.ResolvedUserName,
 		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		VerifiedUpstream:        pending.VerifiedUpstream,
 		SingleLeg:               pending.SingleLeg,
 		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		SkippedUpstreams:        slices.Clone(pending.SkippedUpstreams),
 		CreatedAt:               pending.CreatedAt,
 	}
 
@@ -1589,8 +1787,10 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		ResolvedUserID:          pending.ResolvedUserID,
 		ResolvedUserName:        pending.ResolvedUserName,
 		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		VerifiedUpstream:        pending.VerifiedUpstream,
 		SingleLeg:               pending.SingleLeg,
 		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		SkippedUpstreams:        slices.Clone(pending.SkippedUpstreams),
 		CreatedAt:               pending.CreatedAt,
 	}, nil
 }
@@ -1710,6 +1910,7 @@ func (s *MemoryStorage) StorePendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
 		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt,
@@ -1746,6 +1947,7 @@ func (s *MemoryStorage) LoadPendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
 		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt,
@@ -1784,6 +1986,7 @@ func cloneDeviceRequest(device *DeviceRequest) *DeviceRequest {
 		ResolvedUserID:    device.ResolvedUserID,
 		ResolvedUserName:  device.ResolvedUserName,
 		ResolvedUserEmail: device.ResolvedUserEmail,
+		VerifiedUpstream:  device.VerifiedUpstream,
 		SessionID:         device.SessionID,
 		CreatedAt:         device.CreatedAt,
 	}
@@ -1872,7 +2075,7 @@ func (s *MemoryStorage) LoadDeviceRequestByUserCode(_ context.Context, userCode 
 // MarkDeviceRequestAuthorized transitions a pending device request to
 // authorized, attaching the resolved identity.
 func (s *MemoryStorage) MarkDeviceRequestAuthorized(
-	_ context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+	_ context.Context, deviceCode string, auth DeviceAuthorization,
 ) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1886,10 +2089,11 @@ func (s *MemoryStorage) MarkDeviceRequestAuthorized(
 	}
 
 	entry.value.Status = DeviceRequestStatusAuthorized
-	entry.value.ResolvedUserID = resolvedUserID
-	entry.value.ResolvedUserName = resolvedUserName
-	entry.value.ResolvedUserEmail = resolvedUserEmail
-	entry.value.SessionID = sessionID
+	entry.value.ResolvedUserID = auth.UserID
+	entry.value.ResolvedUserName = auth.UserName
+	entry.value.ResolvedUserEmail = auth.UserEmail
+	entry.value.VerifiedUpstream = auth.VerifiedUpstream
+	entry.value.SessionID = auth.SessionID
 	return nil
 }
 
@@ -2155,12 +2359,10 @@ func cloneDCRCredentials(c *DCRCredentials) *DCRCredentials {
 // calling. A defensive copy is made so subsequent caller mutations do not
 // affect persisted state.
 //
-// Create-if-absent, not overwrite: a single process's dcrFlight singleflight
-// (see pkg/auth/dcr) already prevents concurrent same-key writers within
-// this process, so the check below is not closing a live race here — it is
-// contract symmetry with RedisStorage.StoreDCRCredentialsIfAbsent, which
-// DOES need it to prevent two replicas from independently registering RFC
-// 7591 clients for the same Key and racing on which write wins.
+// Create-if-absent, not overwrite: the resolver's process-wide singleflight
+// coalesces normal same-key resolutions, but direct store callers can race.
+// This check also preserves symmetry with RedisStorage, where concurrent
+// replicas can independently register distinct RFC 7591 clients.
 //
 // The in-memory backend has no native TTL, so "absent" cannot be a plain
 // map-presence check: the Redis backend's rows self-evict via TTL derived
@@ -2273,7 +2475,7 @@ func dcrCredentialsEqual(a, b *DCRCredentials) bool {
 
 // GetDCRCredentials retrieves DCR credentials by key.
 // Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
-func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {
+func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key dcrkey.Key) (*DCRCredentials, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -2344,4 +2546,5 @@ var (
 	_ UserStorage                      = (*MemoryStorage)(nil)
 	_ DCRCredentialStore               = (*MemoryStorage)(nil)
 	_ AssertionJWTConsumer             = (*MemoryStorage)(nil)
+	_ ExchangeGrantStorage             = (*MemoryStorage)(nil)
 )

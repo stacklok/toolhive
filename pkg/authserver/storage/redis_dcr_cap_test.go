@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,7 +99,7 @@ func TestRedisStorage_DCRCap_IgnoresUncountedClients(t *testing.T) {
 	clock := newManualClock()
 	s := newCappedRedisStorage(t, mr, 2, clock)
 
-	require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured-1"}))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured-1"}))
 	require.NoError(t, s.UpsertDCRIssuedClient(ctx,
 		newDCRClient(t, "https://cimd.example/client.json", "none", "")))
 	require.NoError(t, s.RegisterClient(ctx, newDCRClient(t, "dcr-1", "none", "")))
@@ -107,7 +108,7 @@ func TestRedisStorage_DCRCap_IgnoresUncountedClients(t *testing.T) {
 	require.ErrorIs(t, s.RegisterClient(ctx, newDCRClient(t, "dcr-3", "none", "")), ErrClientCapacity)
 
 	// At the cap, uncounted clients are still accepted.
-	require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured-2"}))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured-2"}))
 	require.NoError(t, s.UpsertDCRIssuedClient(ctx,
 		newDCRClient(t, "https://cimd.example/other.json", "none", "")))
 
@@ -296,7 +297,7 @@ func TestRedisStorage_DCRClientTTLAndIndexScore(t *testing.T) {
 
 		_, err := mr.ZAdd(s.dcrClientIndexKey(), float64(clock.Now().Add(time.Hour).UnixMilli()), "reused-id")
 		require.NoError(t, err)
-		require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "reused-id"}))
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "reused-id"}))
 		count, err := s.CountDCRClients(ctx)
 		require.NoError(t, err)
 		assert.Zero(t, count)

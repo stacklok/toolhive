@@ -25,6 +25,8 @@ By default, ToolHive's embedded auth server uses in-memory storage. This works w
 > gcloud redis instances get-server-ca-certs INSTANCE_NAME --region=REGION --format=json
 > ```
 > For connections without a custom CA, TLS uses the system root CAs. To skip verification (self-signed certs only, not for production), set `tls.insecureSkipVerify: true`.
+>
+> In Kubernetes, changing which Secret or key `caCertSecretRef` points to restarts the MCPServer, MCPRemoteProxy and VirtualMCPServer pods that use the auth server.
 
 ### Kubernetes (MCPExternalAuthConfig CRD)
 
@@ -355,12 +357,22 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}client-idx` | Sorted set of DCR-issued client IDs counted against the DCR client cap, scored by expiry (Unix ms) | None; entries are trimmed as their score passes |
 | `{prefix}user:{user_id}` | User account | None |
 | `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
-| `{prefix}upstream:{session_id}` | Upstream IDP tokens | Matches token lifetime |
+| `{prefix}upstream:{session_id}:{provider}` | Upstream IDP tokens, one key per provider | Access token expiry + 30 days; session expiry + 30 days if the token has no expiry; none if neither is set |
 | `{prefix}pending:{handle_or_state}` | Browser-bound consent handle or upstream callback state | Remaining time until the initial `CreatedAt` + 10 minutes; deadline checked before consent/callback consumption |
 | `{prefix}consent:session:{digest}` | SHA-256 digest of the browser session cookie secret (never the raw secret) | Remaining fixed lifetime, at most 7 days |
 | `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
-| `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
+| `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Deadline set by the server: JWT `exp` plus 60 seconds of clock skew and a 5 second grace |
+| `{prefix}xgrant:{signature}` | HASH holding one exchange grant, the record behind a refresh token issued through token exchange. Field `data` is the immutable JSON record; field `rev_ms` (Unix ms) appears only after revocation | Grant `ExpiresAt`; revoke does not change it |
+| `{prefix}assertion-jwt:{digest}` | Replay marker. For JWT-bearer assertions it is kept until the assertion's `exp`. For an exchange grant it records the subject access token's `(issuer, jti)`, holds the grant signature, and is written only for a top-level grant | JWT-bearer: assertion `exp`. Exchange grant: access token `exp` plus 1 minute |
+
+Exchange grant keys need AOF persistence to survive a restart. Without AOF, or after a failover to a replica that had not received the latest writes, replay markers and revocations can be lost: a lost marker allows a second exchange of the same access token, and a lost revocation makes a grant usable again until it expires. See [Auth Server Storage](arch/11-auth-server-storage.md#exchange-grant-storage).
+
+For how configured (delegate and SPIFFE) client rows behave across restarts and rollbacks, see [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
+
+A delegate client removed from config stops being served after the next restart. It gets `invalid_client` at the token endpoint. Its row is not deleted, and access tokens already issued to it stay valid until they expire. To delete the row, run `DEL {prefix}client:{client_id}`. A newly added delegate gets `invalid_client` on any replica that runs client admission but still has the old config. See "Client admission" in [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
+
+A pending consent or upstream callback for a removed client also gets `invalid_client`, and the device verification page refuses it. The same happens to any client whose lookup ends in not-found, including a CIMD client whose metadata document fetch fails transiently with no servable cache entry; storage and transport failures answer HTTP 500.
 
 When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap before upgrading. Backfilled rows keep their existing TTL of up to 30 days. With the operator, `storage.maxDCRClients` exists only in the new CRDs, so upgrade in this order:
 
@@ -370,7 +382,11 @@ When upgrading to the release that adds the DCR client cap, see the upgrade note
 
 With the older CRDs the API server drops the field, and an older operator ignores it; upgrading the operator first enforces the default cap before you can raise it.
 
-The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, so on Redis Cluster the key prefix must contain a `{...}` hash tag; a prefix without one fails every DCR registration with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
+When upgrading to the release that adds the 60 second clock margin for `private_key_jwt` client assertions, replicas on the older version keep the `{prefix}jwt:{jti}` marker only until the assertion `exp`. An assertion first used on an older replica can be used again on an upgraded replica until 60 seconds after its `exp`. Wait more than 6 minutes after the last older replica stops before relying on replay protection for that window. See [Secretless DCR delegate flow](arch/17-token-exchange-delegation.md#secretless-dcr-delegate-flow).
+
+When upgrading to the release that adds upstream subject identifiers (`sub_id` and the `https://toolhive.dev/upstream_subject` claim), see [Storage and upgrades](arch/11-auth-server-storage.md#storage-and-upgrades): replicas running an older version drop the stored upstream identity during a rolling upgrade or after a rollback, and can issue a stored `sub_id` or upstream subject claim again without checking the disclosure setting.
+
+The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, and a user's first login links the upstream identity with one Lua script that touches `{prefix}user:{user_id}`, `{prefix}provider:...` and `{prefix}user:providers:{user_id}`. On Redis Cluster the key prefix must therefore contain a `{...}` hash tag; a prefix without one fails every DCR registration and every first login with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
 ### Secondary Indexes
 
@@ -380,7 +396,8 @@ Redis Sets are used as secondary indexes for efficient lookups:
 |---|---|
 | `{prefix}reqid:access:{request_id}` | Request ID → access token signatures |
 | `{prefix}reqid:refresh:{request_id}` | Request ID → refresh token signatures |
-| `{prefix}user:upstream:{user_id}` | User → upstream token session IDs |
+| `{prefix}upstream:idx:{session_id}` | Session → that session's upstream token row keys (full keys), one per provider. Its TTL is extended to outlive its longest-lived member; if any member never expires, the index has no TTL |
+| `{prefix}user:upstream:{user_id}` | User → upstream token row keys (full keys), one per session and provider (for example `{prefix}upstream:{session_id}:{provider}`) |
 | `{prefix}user:providers:{user_id}` | User → provider identity keys |
 
 These indexes enable grant-wide operations like token revocation (finding all tokens for a request ID) and user-scoped queries (finding all upstream tokens for a user).
@@ -389,7 +406,7 @@ These indexes enable grant-wide operations like token revocation (finding all to
 
 The storage implementation uses different strategies depending on the consistency requirements of each operation:
 
-- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates
+- **Lua scripts** for strict atomicity: upstream token storage with user reverse-index cleanup, last-used timestamp updates, provider identity linking (user check, set-if-absent link, and reverse-index entry)
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation. These operations use `SMEMBERS` + individual `DEL` calls, meaning partial failures are possible but safe (orphaned keys expire via TTL)
 

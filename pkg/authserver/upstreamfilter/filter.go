@@ -8,14 +8,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/auth/claims"
-	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/oauthproto/claims"
 )
 
 const defaultClaimName = "groups"
 
-// GroupBasedFilter implements handlers.UpstreamFilter by matching the
+// GroupBasedFilter implements UpstreamFilter by matching the
 // principal's group claim against configured rules and returning the union of
 // the matching rules' upstream provider sets. See package documentation and
 // GroupBasedFilterConfig for semantics.
@@ -27,7 +25,7 @@ type GroupBasedFilter struct {
 
 // Compile-time assertion that GroupBasedFilter satisfies the UpstreamFilter
 // contract.
-var _ handlers.UpstreamFilter = (*GroupBasedFilter)(nil)
+var _ UpstreamFilter = (*GroupBasedFilter)(nil)
 
 // NewGroupBasedFilter constructs and validates a GroupBasedFilter.
 //
@@ -80,10 +78,10 @@ func NewGroupBasedFilter(cfg GroupBasedFilterConfig, configuredUpstreams []strin
 	}, nil
 }
 
-// FilterUpstreams implements handlers.UpstreamFilter.
+// FilterUpstreams implements UpstreamFilter.
 //
-// It reads principal.Claims[filter.claim], decodes it as a []string via the
-// shared claims helper, and returns the union of every matching rule's
+// It reads principal.GetClaims()[filter.claim], decodes it as a []string via the
+// strict OAuth claims decoder, and returns the union of every matching rule's
 // UpstreamProviders. The claim MUST be present and MUST be a JSON string
 // array — a missing, nil, non-array, or mixed-type claim value fails the
 // authorization per the filter contract's fail-closed guarantee for
@@ -95,7 +93,7 @@ func NewGroupBasedFilter(cfg GroupBasedFilterConfig, configuredUpstreams []strin
 // configured order and drops any name that is not a non-first configured
 // upstream.
 //
-// principal (including its Claims map) is treated as read-only. Claim values
+// principal (including the map returned by GetClaims()) is treated as read-only. Claim values
 // are not logged.
 //
 // The configured argument is unused: the constructor validated every rule and
@@ -104,13 +102,14 @@ func NewGroupBasedFilter(cfg GroupBasedFilterConfig, configuredUpstreams []strin
 // redundant with the handler layer's own drop-unknown behavior.
 func (f *GroupBasedFilter) FilterUpstreams(
 	_ context.Context,
-	principal auth.PrincipalInfo,
+	principal FilterPrincipal,
 	_ []string,
 ) ([]string, error) {
-	if principal.Claims == nil {
+	principalClaims := principal.GetClaims()
+	if principalClaims == nil {
 		return nil, errors.New("upstream filter: principal claims are absent")
 	}
-	raw, present := principal.Claims[f.claim]
+	raw, present := principalClaims[f.claim]
 	if !present {
 		return nil, fmt.Errorf("upstream filter: claim %q not present in principal claims", f.claim)
 	}

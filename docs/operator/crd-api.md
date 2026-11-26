@@ -58,6 +58,10 @@ _Appears in:_
 
 
 
+
+
+
+
 ## toolhive.stacklok.dev/authtypes
 
 
@@ -106,7 +110,7 @@ _Appears in:_
 | `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
 | `upstreamInject` _[auth.types.UpstreamInjectConfig](#authtypesupstreaminjectconfig)_ | UpstreamInject contains configuration for upstream inject auth strategy.<br />Used when Type = "upstream_inject". |  |  |
 | `awsSts` _[auth.types.AwsStsConfig](#authtypesawsstsconfig)_ | AwsSts contains configuration for AWS STS auth strategy.<br />Used when Type = "aws_sts". |  |  |
-| `obo` _[auth.types.OBOConfig](#authtypesoboconfig)_ | OBO contains configuration for on-behalf-of (OBO) auth strategy.<br />Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;<br />an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy. |  |  |
+| `obo` _[auth.types.OBOConfig](#authtypesoboconfig)_ | OBO contains configuration for on-behalf-of (OBO) auth strategy.<br />Used when Type = "obo". |  |  |
 | `xaa` _[auth.types.XAAConfig](#authtypesxaaconfig)_ | XAA contains configuration for XAA (Cross-Application Access) auth strategy.<br />Used when Type = "xaa". |  |  |
 
 
@@ -137,7 +141,7 @@ OBOConfig configures the on-behalf-of (OBO) authentication strategy.
 This strategy uses the Entra jwt-bearer / on_behalf_of grant to exchange
 the incoming user token for a backend-scoped token on behalf of the user.
 
-Field names follow the OBO runtime contract (the enterprise obo.MiddlewareParameters),
+Field names follow the OBO runtime contract (obo.MiddlewareParameters),
 not the RFC-8693 TokenExchangeConfig, because OBO uses a distinct Entra-specific grant.
 
 
@@ -151,10 +155,10 @@ _Appears in:_
 | `clientId` _string_ | ClientID is the OAuth client ID for the OBO request. |  |  |
 | `clientSecret` _string_ | ClientSecret is the OAuth client secret (use ClientSecretEnv for security). |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the environment variable name containing the client secret.<br />The value will be resolved at runtime from this environment variable. |  |  |
-| `audience` _string_ | Audience is the target audience (resource URI) for the exchanged token. |  |  |
+| `audience` _string_ | Audience is the backend resource (Application ID URI or client ID) for the<br />exchanged token. Used when Scopes is empty, sent to Entra as<br /><audience>/.default (see exchange.Target). |  |  |
 | `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
-| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects which upstream provider's token to use as the<br />subject (assertion) token for the OBO exchange. When set, the token is looked<br />up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the<br />inbound end-user token (Identity.Token) is used directly.<br />Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO<br />converter maps both to the runtime contract without renaming. |  |  |
-| `cacheSkewSeconds` _integer_ | CacheSkewSeconds is the number of seconds to subtract from a cached token's<br />expiry when deciding whether to refresh it. Defaults to zero (no skew).<br />The operator CRD stores this as CacheSkew *metav1.Duration and converts it<br />to an integer-seconds value for the vMCP runtime contract. |  |  |
+| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects which upstream provider's token to use as the<br />subject (assertion) token for the OBO exchange. When set, the token is looked<br />up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the<br />inbound end-user token (Identity.Token) is used directly. Behind an embedded<br />auth server an omitted value defaults to its upstream provider, and is an<br />error when it has more than one (see DefaultSubjectProviderName).<br />Matches the operator CRD's SubjectTokenProviderName field; the OBO<br />converter maps it to the runtime contract without renaming. |  |  |
+| `cacheSkewSeconds` _integer_ | CacheSkewSeconds is the number of seconds to subtract from a cached token's<br />expiry when deciding whether to refresh it. When nil or zero the token<br />cache's default skew (60 seconds) applies; negative values are rejected.<br />The int32 type caps it at math.MaxInt32, the bound the operator enforces<br />on the CRD's CacheSkew.<br />The operator CRD stores this as CacheSkew *metav1.Duration and converts it<br />to an integer-seconds value for the vMCP runtime contract. |  |  |
 
 
 #### auth.types.RoleMapping
@@ -409,7 +413,7 @@ _Appears in:_
 | `groupRef` _string_ | Group references an existing MCPGroup that defines backend workloads.<br />In standalone CLI mode, this is set from the YAML config file.<br />In Kubernetes, the operator populates this from spec.groupRef during conversion. |  | Optional: \{\} <br /> |
 | `backends` _[vmcp.config.StaticBackendConfig](#vmcpconfigstaticbackendconfig) array_ | Backends defines pre-configured backend servers for static mode.<br />When OutgoingAuth.Source is "inline", this field contains the full list of backend<br />servers with their URLs and transport types, eliminating the need for K8s API access.<br />When OutgoingAuth.Source is "discovered", this field is empty and backends are<br />discovered at runtime via Kubernetes API. |  | Optional: \{\} <br /> |
 | `incomingAuth` _[vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)_ | IncomingAuth configures how clients authenticate to the virtual MCP server.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded. |  | Optional: \{\} <br /> |
-| `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded. |  | Optional: \{\} <br /> |
+| `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded.<br />See VirtualMCPServerSpec.OutgoingAuth for supported MCPExternalAuthConfig types. |  | Optional: \{\} <br /> |
 | `aggregation` _[vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies.<br />Supports ToolConfigRef for Kubernetes-native MCPToolConfig resource references. |  | Optional: \{\} <br /> |
 | `compositeTools` _[vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig) array_ | CompositeTools defines inline composite tool workflows.<br />Full workflow definitions are embedded in the configuration.<br />For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs. |  | Optional: \{\} <br /> |
 | `compositeToolRefs` _[vmcp.config.CompositeToolRef](#vmcpconfigcompositetoolref) array_ | CompositeToolRefs references VirtualMCPCompositeToolDefinition resources<br />for complex, reusable workflows. Only applicable when running in Kubernetes.<br />Referenced resources must be in the same namespace as the VirtualMCPServer. |  | Optional: \{\} <br /> |
@@ -421,7 +425,7 @@ _Appears in:_
 | `codeMode` _[vmcp.config.CodeModeConfig](#vmcpconfigcodemodeconfig)_ | CodeMode configures vMCP code mode: server-side execution of Starlark scripts that<br />orchestrate multiple backend tool calls in a single request via the execute_tool_script<br />virtual tool. When enabled, execute_tool_script is advertised alongside the backend<br />tools; a script's inner tool calls are authorized individually, so a script can only<br />reach tools the caller is already permitted to use. Disabled by default. |  | Optional: \{\} <br /> |
 | `sessionStorage` _[vmcp.config.SessionStorageConfig](#vmcpconfigsessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When provider is "redis", the operator injects Redis connection parameters<br />(address, db, keyPrefix) here. The Redis password is provided separately via<br />the THV_SESSION_REDIS_PASSWORD environment variable. |  | Optional: \{\} <br /> |
 | `rateLimiting` _[ratelimit.types.RateLimitConfig](#ratelimittypesratelimitconfig)_ | RateLimiting defines rate limiting configuration for the Virtual MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
-| `passthroughHeaders` _string array_ | PassthroughHeaders is an allowlist of incoming client request header names<br />forwarded verbatim to all backends. Captured at the vMCP incoming edge by<br />headerforward.CaptureMiddleware and consumed once at session creation<br />when the per-session backend client's HeaderForwardConfig is built. Names<br />must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.). |  | Optional: \{\} <br /> |
+| `passthroughHeaders` _string array_ | PassthroughHeaders is an allowlist of incoming client request header names<br />forwarded verbatim to all backends. Captured per request at the vMCP<br />incoming edge by headerforward.CaptureMiddleware: tool calls, resource<br />reads and prompt gets carry the values from the request that triggered<br />them, and a header absent on that request is not forwarded. Session-scoped<br />work (the session's backend connections, its advertised capability list,<br />and background capability resyncs) uses the values from the request that<br />created the session. Names must not be in the restricted set (Host,<br />hop-by-hop, X-Forwarded-*, etc.). |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.ConflictResolutionConfig
@@ -594,6 +598,8 @@ _Appears in:_
 | `clientId` _string_ | ClientID is the OAuth client ID. |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the name of the environment variable containing the client secret.<br />This is the secure way to reference secrets - the actual secret value is never stored<br />in configuration files, only the environment variable name.<br />The secret value will be resolved from this environment variable at runtime. |  |  |
 | `audience` _string_ | Audience is the required token audience. |  |  |
+| `requiredSubject` _string_ | RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.<br />Tokens with a missing or empty "sub" claim are rejected.<br />If RequiredSubjectPrefix is also set, both checks must pass. |  | Optional: \{\} <br /> |
+| `requiredSubjectPrefix` _string_ | RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.<br />Tokens with a missing or empty "sub" claim are rejected.<br />If RequiredSubject is also set, both checks must pass. |  | Optional: \{\} <br /> |
 | `resource` _string_ | Resource is the OAuth 2.0 resource indicator (RFC 8707).<br />Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).<br />If not specified, defaults to Audience. |  |  |
 | `jwksUrl` _string_ | JWKSURL is the explicit JWKS endpoint URL.<br />When set, skips OIDC discovery and fetches the JWKS directly from this URL.<br />This is useful when the OIDC issuer does not serve a /.well-known/openid-configuration. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the token introspection endpoint URL (RFC 7662).<br />When set, enables token introspection for opaque (non-JWT) tokens. |  | Optional: \{\} <br /> |
@@ -602,6 +608,7 @@ _Appears in:_
 | `jwksAllowPrivateIp` _boolean_ | JwksAllowPrivateIP allows OIDC discovery and JWKS fetches to private IP addresses.<br />Enable when the embedded auth server runs on a loopback address and<br />the OIDC middleware needs to fetch its JWKS from that address.<br />Use with caution - only enable for trusted internal IDPs or testing. |  |  |
 | `insecureAllowHttp` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production |  |  |
 | `caBundlePath` _string_ | CABundlePath is the absolute file path to a PEM-encoded CA certificate bundle<br />used when the OIDC middleware performs HTTPS requests to the issuer<br />(OIDC discovery, JWKS fetch, token introspection). When set, the CA bundle<br />at this path is added to the trust store used for verifying the issuer's<br />TLS certificate. Typically populated by the Kubernetes operator from<br />MCPOIDCConfig.spec.inline.caBundleRef (ConfigMap) or from the in-cluster<br />service-account CA when using Kubernetes service-account auth. |  | Optional: \{\} <br /> |
+| `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the absolute file path to a bearer token that the<br />OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.<br />Needed when the issuer requires authentication for those endpoints, such<br />as the Kubernetes API server. Typically populated by the Kubernetes<br />operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the<br />pod's service-account token when using Kubernetes service-account auth. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OperationalConfig
@@ -670,7 +677,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `source` _string_ | Source defines how to discover backend auth: "inline", "discovered"<br />- inline: Explicit configuration in OutgoingAuth<br />- discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only) |  |  |
+| `source` _string_ | Source defines how to discover backend auth: "inline", "discovered"<br />- inline: Explicit configuration in OutgoingAuth<br />- discovered: Auto-discover from backend MCPServer, MCPRemoteProxy, and<br />  MCPServerEntry externalAuthConfigRef fields (Kubernetes only) |  |  |
 | `default` _[auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy)_ | Default is the default auth strategy for backends without explicit config. |  |  |
 | `backends` _object (keys:string, values:[auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy))_ | Backends contains per-backend auth configuration. |  |  |
 
@@ -1864,7 +1871,7 @@ _Appears in:_
 
 
 
-BackendAuthConfig defines authentication configuration for a backend MCPServer
+BackendAuthConfig defines authentication configuration for a backend resource.
 
 
 
@@ -1874,7 +1881,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _string_ | Type defines the authentication type |  | Enum: [discovered externalAuthConfigRef] <br />Required: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "externalAuthConfigRef" |  | Optional: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource.<br />Only used when Type is "externalAuthConfigRef". Supported referenced types are<br />tokenExchange, headerInjection, unauthenticated, awsSts, upstreamInject, xaa,<br />and obo. Unsupported types are reported for the affected backend in<br />status.conditions with Reason: UnsupportedAuthType. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.BearerTokenConfig
@@ -1960,9 +1967,12 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `clientName` _string_ | ClientName is the optional RFC 7591 "client_name" registration metadata<br />sent when ToolHive registers with the upstream. When empty, ToolHive<br />registers as "ToolHive MCP Client". It is display-only metadata: the<br />upstream shows it on its authorization screen, and it is never used as<br />a key. Changing it does not rename an already-registered client; the<br />new value applies only the next time ToolHive registers a fresh client,<br />for example after rotating via RotationKey, or when the upstream<br />rejects the cached registration. Names with leading or trailing<br />whitespace, or containing control or format characters, are rejected. |  | MaxLength: 256 <br />Pattern: `^[^\p\{Cc\}\p\{Cf\}\p\{Z\}]([^\p\{Cc\}\p\{Cf\}]*[^\p\{Cc\}\p\{Cf\}\p\{Z\}])?$` <br />Optional: \{\} <br /> |
 | `discoveryUrl` _string_ | DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver<br />issues a single GET against this URL (no well-known-path fallback) and<br />reads registration_endpoint, authorization_endpoint, token_endpoint,<br />token_endpoint_auth_methods_supported, and scopes_supported from the<br />response.<br />Mutually exclusive with RegistrationEndpoint.<br />HTTPS is required because the registration endpoint resolved from this<br />document carries the initial access token and the issued client_secret<br />(RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd<br />object budget, regex evaluation cost) and matches the conventional URL<br />length cap. |  | MaxLength: 2048 <br />Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
 | `registrationEndpoint` _string_ | RegistrationEndpoint is the RFC 7591 registration endpoint URL used<br />directly, bypassing discovery. When using this field, the caller is<br />expected to also supply AuthorizationEndpoint, TokenEndpoint, and an<br />explicit Scopes list on the parent OAuth2UpstreamConfig.<br />Mutually exclusive with DiscoveryURL.<br />HTTPS is required because the registration endpoint carries the initial<br />access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).<br />MaxLength is a defensive size cap (etcd object budget, regex evaluation<br />cost) and matches the conventional URL length cap. |  | MaxLength: 2048 <br />Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
-| `rotationKey` _string_ | RotationKey is an optional operator-chosen label that is part of the<br />cached registration's identity but is never sent to the upstream.<br />Change it to make the proxies register a fresh client at their next<br />start instead of reusing the cached one: for example after the<br />upstream has dropped the registration, or when a rotation is required.<br />At start ToolHive checks the cached client at the upstream's token<br />endpoint and registers a new one by itself when the upstream answers<br />invalid_client. Where that check cannot tell (an upstream that answers<br />a dropped public client like a live one, or a private_key_jwt client),<br />the stale client_id is only rejected in the user's browser, and<br />changing this key is the remedy. The previous registration's row stays<br />in storage, and upstream refresh tokens bound to the previous client_id<br />stop refreshing, so affected users sign in again. |  | MaxLength: 64 <br />Pattern: `^[A-Za-z0-9._-]+$` <br />Optional: \{\} <br /> |
+| `rotationKey` _string_ | RotationKey is an optional operator-chosen label that is part of the<br />cached registration's identity but is never sent to the upstream.<br />Change it to make the proxies register a fresh client at their next<br />start instead of reusing the cached one: for example after the<br />upstream has dropped the registration, or when a rotation is required.<br />At start ToolHive checks the cached client at the upstream (see<br />RegistrationProbe) and registers a new one by itself when the upstream<br />rejects it. Where the configured probe cannot tell, the stale client_id<br />may only be rejected in the user's browser, and changing this key is<br />the remedy. The previous registration's row stays in storage, and<br />upstream refresh tokens bound to the previous client_id stop<br />refreshing, so affected users sign in again. |  | MaxLength: 64 <br />Pattern: `^[A-Za-z0-9._-]+$` <br />Optional: \{\} <br /> |
+| `registrationProbe` _string_ | RegistrationProbe selects how ToolHive checks the cached upstream client<br />at start. tokenEndpoint (the default) redeems a random authorization<br />code with the cached client and reads invalid_client as "registration<br />gone"; it decides only for upstreams that authenticate the client<br />before validating the grant. authorizationEndpoint sends an<br />authorization request for the cached client without following<br />redirects and reads a direct 400, 401 or 403 that carries an RFC 6749<br />JSON error object (error invalid_client, unauthorized_client or<br />invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose<br />token endpoint answers invalid_grant for any client_id; an HTML page or<br />a bare gateway status is not a verdict. A false rejection re-registers<br />at every start and, when registration also fails, fails startup. none<br />skips the check: the upstream is not contacted, but a registration made<br />with another method than a configured tokenEndpointAuthMethod is still<br />replaced. Otherwise the registration is retired only through<br />RotationKey. |  | Enum: [tokenEndpoint authorizationEndpoint none] <br />Optional: \{\} <br /> |
+| `registrationProbeInterval` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | RegistrationProbeInterval, when set, repeats the start-time check while<br />the proxy runs, as a duration of at least 1m; 5m to 15m suits most<br />upstreams. ToolHive re-reads the cached registration, checks it with<br />RegistrationProbe, replaces a rejected one or registers a missing one,<br />and switches to the result in place when it differs from the client in<br />use, including when another replica replaced it. Without it, a<br />registration the upstream drops stays in use until the proxy restarts.<br />Each check sends at most one RegistrationProbe request to the upstream<br />from every replica (none with RegistrationProbe none), plus a<br />registration request when the probe rejects the client; the<br />tokenEndpoint probe appears in upstream logs as a failed code<br />redemption. A re-registration presents the initial access token the pod<br />read at start, so an upstream that issues single-use initial access<br />tokens still needs a restart to recover. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 | `initialAccessTokenRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | InitialAccessTokenRef is an optional reference to a Kubernetes Secret<br />carrying an RFC 7591 §3 initial access token. When set, the resolver<br />presents the token value as a Bearer credential on the registration<br />request. Mirrors the ClientSecretRef pattern. |  | Optional: \{\} <br /> |
 | `softwareId` _string_ | SoftwareID is the RFC 7591 "software_id" registration metadata value,<br />identifying the client software independent of any particular<br />registration instance. Typically a UUID or short identifier. |  | MaxLength: 255 <br />Optional: \{\} <br /> |
 | `softwareStatement` _string_ | SoftwareStatement is the RFC 7591 "software_statement" JWT asserting<br />metadata about the client software, signed by a party the authorization<br />server trusts.<br />Stored inline on the CR. The JWT is signed but not encrypted, so its<br />contents are visible to anyone with get/list/watch on this resource and<br />appear in etcd backups in plaintext. Treat the value as non-confidential<br />(signed attestation, not a secret). Operators that rotate software<br />statements like bearer credentials should keep them at the authorization<br />server side and rely on the registration endpoint's initial access<br />token (see InitialAccessTokenRef) instead of placing them on the CR.<br />Bounded to 16384 characters as a defensive size cap (etcd object<br />budget, regex evaluation cost). Real-world signed statements with<br />embedded x5c certificate chains, JWKS keys, or OIDC-Federation<br />trust-framework metadata routinely exceed 4 KB. |  | MaxLength: 16384 <br />Optional: \{\} <br /> |
@@ -2034,8 +2044,9 @@ or accepts token exchange without an interactive authorization flow.
 This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
 VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rules below are
 enforced at admission for both CRDs. CEL only requires the explicit opt-in for
-delegate clients using an HTTP issuer; the shared Go validator performs the
-precise loopback-host security check.
+delegate clients and JWT-SVID SPIFFE client_credentials associations using an
+HTTP issuer; the shared Go validator performs the precise loopback-host
+security check.
 
 The shared Go-level ValidateConfidentialClientTransport validator remains the
 source of truth for confidential-client transport and loopback policy,
@@ -2056,17 +2067,18 @@ _Appears in:_
 | `signingKeySecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
-| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's<br />doc comment for why declaring a domain does not by itself enable<br />authentication in this build. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
+| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. Each declaration must be<br />referenced by an inboundGrants.spiffeClientAuth entry. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
-| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
+| `tlsListener` _[api.v1beta1.TLSListenerConfig](#apiv1beta1tlslistenerconfig)_ | TLSListener configures an additional TLS listener on port 8443 that<br />serves the embedded authorization server's routes. MCP traffic, health<br />probes and metrics stay on plain HTTP. Both certificateSecretRef and<br />privateKeySecretRef are required. It is required when<br />inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is<br />checked when the resource is reconciled and reported in status conditions;<br />the API server does not reject it. The operator exposes the listener as an<br />https-auth container port and Service port 8443. Updates to the referenced<br />Secret contents are picked up without a pod restart. |  | Optional: \{\} <br /> |
+| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when token-only operation is<br />enabled by delegateClients (also under inboundGrants.tokenExchange),<br />inboundGrants.spiffeClientAuth, or a trusted issuer with jwtBearerGrant<br />(also under inboundGrants.jwtBearer).<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 | `disableUpstreamTokenInjection` _boolean_ | DisableUpstreamTokenInjection prevents the embedded auth server from injecting<br />upstream IdP tokens into requests forwarded to the backend MCP server.<br />When true, the embedded auth server still handles OAuth flows for clients,<br />but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS<br />the client's credential headers (Authorization, Cookie, Proxy-Authorization)<br />after validating the JWT — the backend receives an unauthenticated request.<br />Use headerForward to attach static credentials (e.g. an API key) if the<br />backend needs them. Cannot be combined with token exchange, AWS STS, or OBO<br />middleware, which would re-add credentials after the strip.<br />This is useful when the backend MCP server does not require authentication<br />(e.g., public documentation servers) but you still want client authentication. | false | Optional: \{\} <br /> |
-| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.<br />Only set this for in-cluster Kubernetes deployments where traffic between<br />pods traverses a trusted network (e.g. the in-cluster service mesh).<br />Production deployments reachable outside the cluster MUST use https://.<br />On VirtualMCPServer: when false (the default), http:// issuers for non-localhost<br />hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.<br />On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is<br />structurally present but enforcement is deferred to pod startup via Config.Validate();<br />a misconfigured issuer will cause the pod to crash at startup rather than surface<br />as an operator condition.<br />One combination is rejected at admission on all three CRDs regardless of the<br />above: setting this field alongside confidential client registration or<br />delegate clients, which would issue or use client secrets in cleartext over<br />an unauthenticated endpoint (see the XValidation rule on<br />EmbeddedAuthServerConfig). | false | Optional: \{\} <br /> |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.<br />Only set this for in-cluster Kubernetes deployments where traffic between<br />pods traverses a trusted network (e.g. the in-cluster service mesh).<br />Production deployments reachable outside the cluster MUST use https://.<br />On VirtualMCPServer: when false (the default), http:// issuers for non-localhost<br />hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.<br />On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is<br />structurally present but enforcement is deferred to pod startup via Config.Validate();<br />a misconfigured issuer will cause the pod to crash at startup rather than surface<br />as an operator condition.<br />One combination is rejected at admission on all three CRDs regardless of the<br />above: setting this field alongside confidential client registration or<br />delegate clients, or a SPIFFE association that has spiffe_jwt in methods and<br />client_credentials in grantTypes on the same association, which would issue<br />or use client secrets or JWT-SVIDs in cleartext over an unauthenticated<br />endpoint (see the XValidation rule on<br />EmbeddedAuthServerConfig). | false | Optional: \{\} <br /> |
 | `baselineClientScopes` _string array_ | BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be<br />included in every client registration. The embedded auth server unions these<br />scopes into the registered set returned by RFC 7591 Dynamic Client<br />Registration, so a client that narrows the `scope` field at /oauth/register<br />can still request the baseline scopes at /oauth/authorize. All values must<br />be present in the upstream-derived scopesSupported set; the auth server<br />fails to start if any value is missing.<br />Security: every client registered via /oauth/register will gain the<br />ability to request these scopes at /oauth/authorize, regardless of what<br />the client itself requested. Keep the baseline narrow (typically<br />"openid" and "offline_access"). Adding a privileged scope here — e.g.<br />"admin:read" — would grant it to every DCR-registered client, including<br />public clients like Claude Code, Cursor, and VS Code.<br />When cimd.enabled is true, every dynamically resolved CIMD client will<br />also gain the ability to request these scopes, including third-party<br />clients resolved from arbitrary HTTPS URLs. |  | MaxItems: 10 <br />items:MinLength: 1 <br />items:Pattern: `^[\x21\x23-\x5B\x5D-\x7E]+$` <br />Optional: \{\} <br /> |
 | `allowConfidentialClientRegistration` _boolean_ | AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client<br />Registration of confidential clients: when true, /oauth/register<br />accepts token_endpoint_auth_method values client_secret_basic and<br />client_secret_post in addition to "none" (still the default on<br />omission) and mints a client_secret returned exactly once.<br />Confidential registrations are restricted to https non-loopback<br />redirect URIs, and on the Redis storage backend all DCR-issued<br />registrations are evicted after 30 days of inactivity and must<br />re-register. This gates registration only: disabling it does not<br />revoke or reject already-minted secrets at the token endpoint.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint obtain a client credential.<br />Combining it with insecureAllowHTTP is rejected at validation. | false | Optional: \{\} <br /> |
 | `allowPrivateKeyJWTRegistration` _boolean_ | AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of<br />clients using private_key_jwt authentication. Registration behavior is<br />intentionally configured separately from confidential-client registration.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint register a private_key_jwt client.<br />Unlike allowConfidentialClientRegistration, this is NOT rejected when<br />combined with insecureAllowHTTP: registration never returns a secret<br />for a private_key_jwt client, so there is nothing for cleartext HTTP<br />to expose. | false | Optional: \{\} <br /> |
-| `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential<br />Dynamic Client Registration (DCR) and delegate clients when issuer is a<br />plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this<br />flag, that combination is rejected at reconcile time: a loopback http://<br />issuer is normally fine for local development since the traffic never<br />leaves the machine, but confidential clients send secrets over cleartext.<br />Forcing TLS onto every loopback deployment instead would just push<br />operators toward insecureAllowHTTP, which is worse: that also disables<br />the non-loopback host check. Has no effect when there are no confidential<br />clients or issuer is https.<br />private_key_jwt registration has no equivalent flag or transport<br />restriction: unlike confidential registration, it never returns a<br />client_secret (or any other secret) in the DCR response, so there is<br />nothing here for cleartext HTTP to expose. | false | Optional: \{\} <br /> |
+| `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential<br />Dynamic Client Registration (DCR), delegate clients and SPIFFE<br />associations that have spiffe_jwt in methods and client_credentials in<br />grantTypes on the same association, when issuer is a plain-HTTP loopback<br />URL (e.g. "http://localhost:8080"). Without this<br />flag, that combination is rejected at admission, and reconcile additionally<br />requires the issuer host to be loopback. A loopback http://<br />issuer is normally fine for local development since the traffic never<br />leaves the machine, but confidential clients send secrets over cleartext.<br />Forcing TLS onto every loopback deployment instead would just push<br />operators toward insecureAllowHTTP, which is worse: that also disables<br />the non-loopback host check. Has no effect when there are no confidential<br />clients or issuer is https.<br />private_key_jwt registration has no equivalent flag or transport<br />restriction: unlike confidential registration, it never returns a<br />client_secret (or any other secret) in the DCR response, so there is<br />nothing here for cleartext HTTP to expose. | false | Optional: \{\} <br /> |
 | `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret, redirect URI, or grant selection is accepted here. The<br />operator always supplies the token-exchange grant when it converts this<br />configuration to the runtime contract.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration.<br />This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
 | `trustedIssuers` _[api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig) array_ | TrustedIssuers configures external OIDC issuers whose tokens are<br />accepted as RFC 8693 subject tokens during token exchange, in addition<br />to self-issued subject tokens. Empty (the default) means only<br />self-issued subject tokens are accepted. See<br />docs/arch/17-token-exchange-delegation.md for the trust model. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
 | `forceConfidentialRedirectUris` _string array_ | ForceConfidentialRedirectURIs lists redirect URIs that must be<br />registered as confidential clients regardless of the<br />token_endpoint_auth_method the DCR request declares. A registration<br />whose redirectUris contains an EXACT match for one of these entries is<br />issued a real client_secret and reported back as<br />token_endpoint_auth_method "client_secret_post", even if the request<br />said "none" or omitted the field.<br />Intended for MCP clients that declare themselves public<br />(token_endpoint_auth_method: "none") per RFC 7591 but then refuse to<br />proceed because the response carries no client_secret — a<br />self-contradictory request. RFC 7591 §3.2.1 permits the server to<br />substitute client metadata, so this takes such a client at its word<br />that it wants a secret. Remove an entry once the client is fixed to<br />handle "none" registrations correctly.<br />Exact matching is deliberate: an attacker who registers with someone<br />else's callback URI is issued a secret for a client whose<br />authorization codes are delivered to that someone else's redirect<br />endpoint, not to the attacker, so this is not a way to obtain a usable<br />credential for another client.<br />Requires allowConfidentialClientRegistration to be true. Every entry<br />must be an https non-loopback URI — a loopback client is a public<br />client by construction (OAuth 2.1 §2.1) and must not be issued a<br />secret; this is enforced at reconcile time since CEL cannot express<br />the loopback-hostname check. |  | MaxItems: 10 <br />items:Pattern: `^https://[^\s?#]+$` <br />Optional: \{\} <br /> |
@@ -2262,7 +2274,8 @@ _Appears in:_
 
 
 ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
-The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
+The referenced MCPExternalAuthConfig must be in the same namespace as the
+resource containing the reference.
 
 
 
@@ -2297,7 +2310,7 @@ _Appears in:_
 | `embeddedAuthServer` | ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server<br />This enables running an embedded auth server that delegates to upstream IDPs<br /> |
 | `awsSts` | ExternalAuthTypeAWSSts is the type for AWS STS authentication<br /> |
 | `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IdP access token as the Authorization: Bearer header<br /> |
-| `obo` | ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.<br />This type requires a build with an OBO handler registered via<br />controllerutil.RegisterOBOHandler; an upstream-only build surfaces<br />status.conditions[Valid] = False with Reason: EnterpriseRequired<br />when an obo-typed MCPExternalAuthConfig is applied.<br /> |
+| `obo` | ExternalAuthTypeOBO is the type for Microsoft Entra on-behalf-of (OBO)<br />flows: the proxy exchanges the authenticated user's token for a<br />backend-scoped token issued for that same user.<br /> |
 | `xaa` | ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.<br />XAA performs a two-step token exchange to obtain access tokens for target services:<br />  - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT<br />  - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token<br /> |
 
 
@@ -2473,6 +2486,8 @@ _Appears in:_
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
+
+
 #### api.v1beta1.JWTBearerGrantConfig
 
 
@@ -2491,7 +2506,8 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
-| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, plain JWT-bearer assertions must name<br />the token endpoint, and ID-JAG assertions may name the token endpoint or<br />this server's issuer identifier, unless the issuer is also an allowed<br />resource audience. A configured list replaces these defaults. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAssertionTypes` _[api.v1beta1.JWTBearerAssertionType](#apiv1beta1jwtbearerassertiontype) array_ | AcceptedAssertionTypes selects which assertion form(s) this issuer's<br />jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"<br />are accepted, which is the behavior before this field existed. Set<br />["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a<br />Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot<br />be redeemed on the credential-free plain jwt-bearer path. Set<br />["jwt_bearer"] to refuse ID-JAG.<br />When "id_jag" is listed explicitly and acceptedAudiences is set, it must<br />include this AS's own issuer identifier (the ID-JAG's "aud" per<br />draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the<br />token endpoint URL. When acceptedAudiences is empty the issuer is<br />accepted by default, unless it is also listed as an allowed audience<br />(resource), which fails startup. Subject bindings are shared between both forms, so<br />each binding also authorizes a plain jwt-bearer assertion from that<br />subject whenever "jwt_bearer" is accepted. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [jwt_bearer id_jag] <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.JWTBearerInboundGrantConfig
@@ -2526,7 +2542,8 @@ _Appears in:_
 | `issuerRef` _string_ | IssuerRef references trustedIssuers[].name. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
-| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, plain JWT-bearer assertions must name<br />the token endpoint, and ID-JAG assertions may name the token endpoint or<br />this server's issuer identifier, unless the issuer is also an allowed<br />resource audience. A configured list replaces these defaults. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAssertionTypes` _[api.v1beta1.JWTBearerAssertionType](#apiv1beta1jwtbearerassertiontype) array_ | AcceptedAssertionTypes selects which assertion form(s) this issuer's<br />jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"<br />are accepted, which is the behavior before this field existed. Set<br />["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a<br />Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot<br />be redeemed on the credential-free plain jwt-bearer path. Set<br />["jwt_bearer"] to refuse ID-JAG.<br />When "id_jag" is listed explicitly and acceptedAudiences is set, it must<br />include this AS's own issuer identifier (the ID-JAG's "aud" per<br />draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the<br />token endpoint URL. When acceptedAudiences is empty the issuer is<br />accepted by default, unless it is also listed as an allowed audience<br />(resource), which fails startup. Subject bindings are shared between both forms, so<br />each binding also authorizes a plain jwt-bearer assertion from that<br />subject whenever "jwt_bearer" is accepted. |  | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [jwt_bearer id_jag] <br />Optional: \{\} <br /> |
 
 
 
@@ -2545,12 +2562,12 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `serviceAccount` _string_ | ServiceAccount is the name of the service account to validate tokens for.<br />If empty, uses the pod's service account. |  | Optional: \{\} <br /> |
-| `namespace` _string_ | Namespace is the namespace of the service account.<br />If empty, uses the MCPServer's namespace. |  | Optional: \{\} <br /> |
+| `serviceAccount` _string_ | ServiceAccount restricts accepted tokens to a single service account.<br />When set, the token's "sub" claim must equal<br />system:serviceaccount:<namespace>:<serviceAccount>, where <namespace> is<br />Namespace if set, otherwise the namespace of the workload referencing this config.<br />When empty, tokens are not restricted to a specific service account.<br />Must be a valid service account name (DNS-1123 subdomain). |  | MaxLength: 253 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` <br />Optional: \{\} <br /> |
+| `namespace` _string_ | Namespace is the namespace of the service account(s) whose tokens are accepted.<br />When set without ServiceAccount, any service account in this namespace is accepted<br />(the "sub" claim must start with system:serviceaccount:<namespace>:).<br />When set with ServiceAccount, it selects that service account's namespace.<br />When both ServiceAccount and Namespace are empty, no subject restriction is applied<br />and any token from the issuer with a matching audience is accepted.<br />Must be a valid namespace name (DNS-1123 label). |  | MaxLength: 63 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `issuer` _string_ | Issuer is the OIDC issuer URL. | https://kubernetes.default.svc | Optional: \{\} <br /> |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from.<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint.<br />If empty, OIDC discovery will be used to automatically determine the introspection URL. |  | Optional: \{\} <br /> |
-| `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.<br />Defaults to true if not specified. |  | Optional: \{\} <br /> |
+| `useClusterAuth` _boolean_ | UseClusterAuth controls use of the Kubernetes cluster's CA bundle and the<br />workload's own service account token when fetching the issuer's signing<br />keys (OIDC discovery and JWKS). The CA bundle is<br />/var/run/secrets/kubernetes.io/serviceaccount/ca.crt and the token is<br />/var/run/secrets/kubernetes.io/serviceaccount/token.<br />When unset (the default), the CA bundle is used, and the token is sent<br />only if the URL fetched is an https URL on the in-cluster API server<br />(kubernetes.default.svc or kubernetes.default.svc.cluster.local): jwksUrl<br />when it is set, otherwise the issuer. In that case it goes to the<br />in-cluster API server and the JWKS URL that server advertises.<br />When true, the token is always sent; set this for an issuer that requires<br />it but is not reachable under those names, such as a custom cluster domain.<br />When false, neither the CA bundle nor the token is used. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPAuthzConfig
@@ -2659,9 +2676,10 @@ _Appears in:_
 
 
 MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
-MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
-MCPServer resources within the same namespace. Cross-namespace references
-are not supported for security and isolation reasons.
+MCPExternalAuthConfig resources are namespace-scoped and may be referenced by
+MCPServer, MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer resources in
+the same namespace. Cross-namespace references are not supported for security
+and isolation reasons. Each consumer supports only a subset of authentication types.
 
 
 
@@ -2704,8 +2722,9 @@ MCPExternalAuthConfigList contains a list of MCPExternalAuthConfig
 
 
 MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
-MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
-MCPServer resources in the same namespace.
+MCPExternalAuthConfig resources are namespace-scoped and may be referenced by
+MCPServer, MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer resources in
+the same namespace. Each consumer supports only a subset of authentication types.
 
 
 
@@ -2714,14 +2733,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure.<br />When set to "obo", the cluster must run a build that has registered an<br />OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds<br />surface status.conditions[Valid] = False with Reason: EnterpriseRequired<br />for obo-typed configs. |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo xaa] <br />Required: \{\} <br /> |
+| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure.<br />Consumer support is as follows:<br />  - tokenExchange and unauthenticated: MCPServer, MCPRemoteProxy,<br />    MCPServerEntry, and VirtualMCPServer outgoing authentication.<br />  - headerInjection, upstreamInject, and xaa: MCPServerEntry and<br />    VirtualMCPServer outgoing authentication. An MCPServer or<br />    MCPRemoteProxy may reference them too, but does not apply them<br />    itself: they take effect when a VirtualMCPServer discovers that<br />    backend.<br />  - bearerToken: MCPRemoteProxy.<br />  - embeddedAuthServer: MCPServer and MCPRemoteProxy.<br />  - awsSts: MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer outgoing<br />    authentication.<br />  - obo: all four consumers. An MCPServer or MCPRemoteProxy that<br />    references an obo config must also set oidcConfigRef.<br />Unsupported consumer/type combinations are reported on the consuming<br />resource with Reason: UnsupportedAuthType. |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo xaa] <br />Required: \{\} <br /> |
 | `tokenExchange` _[api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  | Optional: \{\} <br /> |
 | `headerInjection` _[api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  | Optional: \{\} <br /> |
 | `bearerToken` _[api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  | Optional: \{\} <br /> |
 | `embeddedAuthServer` _[api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)_ | EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server<br />Only used when Type is "embeddedAuthServer" |  | Optional: \{\} <br /> |
 | `awsSts` _[api.v1beta1.AWSStsConfig](#apiv1beta1awsstsconfig)_ | AWSSts configures AWS STS authentication with SigV4 request signing<br />Only used when Type is "awsSts" |  | Optional: \{\} <br /> |
 | `upstreamInject` _[api.v1beta1.UpstreamInjectSpec](#apiv1beta1upstreaminjectspec)_ | UpstreamInject configures upstream token injection for backend requests.<br />Only used when Type is "upstreamInject". |  | Optional: \{\} <br /> |
-| `obo` _[api.v1beta1.OBOConfig](#apiv1beta1oboconfig)_ | OBO configures On-Behalf-Of (OBO) authentication.<br />Only used when Type is "obo". Setting this field on an upstream-only build<br />causes the MCPExternalAuthConfig to transition to<br />status.conditions[Valid] = False with Reason: EnterpriseRequired, because<br />no OBO handler is registered. See OBOConfig for the field-to-runtime<br />contract mapping. |  | Optional: \{\} <br /> |
+| `obo` _[api.v1beta1.OBOConfig](#apiv1beta1oboconfig)_ | OBO configures Microsoft Entra On-Behalf-Of (OBO) authentication.<br />Only used when Type is "obo". See OBOConfig for the field-to-runtime<br />contract mapping. |  | Optional: \{\} <br /> |
 | `xaa` _[api.v1beta1.XAASpec](#apiv1beta1xaaspec)_ | XAA configures XAA (Cross-Application Access) auth for backend requests.<br />Only used when Type is "xaa". |  | Optional: \{\} <br /> |
 
 
@@ -3176,7 +3195,7 @@ _Appears in:_
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
 | `oidcConfigRef` _[api.v1beta1.MCPOIDCConfigReference](#apiv1beta1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource.<br />SECURITY: if this field is omitted and no other authentication source is configured,<br />the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and<br />forwards it to the remote MCP server under a synthetic local-user identity, with no<br />token or credential check. Set this field to enforce identity-based access control<br />per request. |  | Optional: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  | Optional: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.<br />Supported types are tokenExchange, bearerToken, unauthenticated,<br />embeddedAuthServer, awsSts, and obo.<br />For new embedded authorization server configurations, prefer AuthServerRef.<br />headerInjection, upstreamInject, and xaa are accepted but not applied by the<br />MCPRemoteProxy: they take effect when a VirtualMCPServer discovers this<br />proxy as a backend.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  | Optional: \{\} <br /> |
 | `authServerRef` _[api.v1beta1.AuthServerRef](#apiv1beta1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
 | `headerForward` _[api.v1beta1.HeaderForwardConfig](#apiv1beta1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like X-Tenant-ID or correlation IDs. |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1beta1.AuthzConfigRef](#apiv1beta1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy.<br />AuthzConfig and AuthzConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
@@ -3184,7 +3203,7 @@ _Appears in:_
 | `audit` _[api.v1beta1.AuditConfig](#apiv1beta1auditconfig)_ | Audit defines audit logging configuration for the proxy |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1beta1.ToolConfigRef](#apiv1beta1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  | Optional: \{\} <br /> |
 | `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
-| `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  | Optional: \{\} <br /> |
+| `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines the resource requirements for the proxy container.<br />Unset fields fall back to defaults: requests of 50m CPU and 64Mi memory,<br />limits of 200m CPU and 256Mi memory. Resources set on the "toolhive"<br />container through podTemplateSpec take precedence over this field.<br />A limit set without a request, here or in podTemplateSpec, drops the<br />default request so Kubernetes copies the limit into the request as usual.<br />A request set without a limit raises the default limit to match if the<br />request is above it. Requests and limits the user sets explicitly are used as given. |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the proxy.<br />If not specified, a ServiceAccount will be created automatically and used by the proxy. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the MCPRemoteProxy<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the remote proxy runs in, you must specify<br />the `toolhive` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
@@ -3327,7 +3346,7 @@ _Appears in:_
 | `allowPrivateEndpoint` _boolean_ | AllowPrivateEndpoint permits RemoteURL to point at a private or<br />in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and<br />hostnames ending in "cluster.local". (Bare ".svc" hostnames are never<br />blocked, since no DNS resolution is performed.) Enable this to reach a<br />co-located in-cluster backend in-mesh so the backend's workload-identity<br />authorization policy still applies. Loopback, link-local, cloud-metadata,<br />and kubernetes.default endpoints remain blocked regardless of this<br />setting. | false | Optional: \{\} <br /> |
 | `transport` _string_ | Transport is the transport method for the remote server (sse or streamable-http).<br />No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external<br />servers the user doesn't control — requiring explicit transport avoids silent mismatches. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
 | `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | Required: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource when connecting<br />to the remote MCP server. Supported types are tokenExchange, headerInjection,<br />unauthenticated, awsSts, upstreamInject, xaa, and obo.<br />Unsupported types are reported in status.conditions with Reason:<br />UnsupportedAuthType. The referenced MCPExternalAuthConfig must exist in the same<br />namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
 | `headerForward` _[api.v1beta1.HeaderForwardConfig](#apiv1beta1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like API keys or correlation IDs. |  | Optional: \{\} <br /> |
 | `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing CA certificates for TLS verification<br />when connecting to the remote MCP server. |  | Optional: \{\} <br /> |
 
@@ -3423,7 +3442,7 @@ _Appears in:_
 | `authzConfigRef` _[api.v1beta1.MCPAuthzConfigReference](#apiv1beta1mcpauthzconfigreference)_ | AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.<br />The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.<br />Mutually exclusive with authzConfig. |  | Optional: \{\} <br /> |
 | `audit` _[api.v1beta1.AuditConfig](#apiv1beta1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1beta1.ToolConfigRef](#apiv1beta1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.<br />Supported types are tokenExchange, unauthenticated, embeddedAuthServer, and<br />obo. For new embedded authorization<br />server configurations, prefer AuthServerRef. headerInjection, upstreamInject,<br />and xaa are accepted but not applied by the MCPServer: they take effect when<br />a VirtualMCPServer discovers this server as a backend. Other types are<br />reported in status.conditions with Reason: UnsupportedAuthType.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
 | `webhookConfigRef` _[api.v1beta1.WebhookConfigRef](#apiv1beta1webhookconfigref)_ | WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.<br />The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
 | `authServerRef` _[api.v1beta1.AuthServerRef](#apiv1beta1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
 | `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
@@ -3792,7 +3811,7 @@ _Appears in:_
 | `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted and IdentityFromToken is also unset, the embedded auth server runs in<br />synthesis mode for this upstream: a non-PII subject derived from the access token, no<br />Name/Email. Use this shape for upstreams with no userinfo surface and no identity in<br />the token response (e.g., MCP authorization servers per the MCP spec). When<br />IdentityFromToken is set instead, identity is resolved from the token response body<br />(e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call<br />is skipped entirely. |  | Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.<br />Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained<br />at runtime via RFC 7591 Dynamic Client Registration and must be left empty. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
-| `tokenEndpointAuthMethod` _string_ | TokenEndpointAuthMethod selects how the client authenticates at the OAuth token<br />endpoint. When empty, credentials are sent in the request body (the historical<br />client_secret_post-shaped default). Set this to client_secret_basic explicitly<br />for providers that require HTTP Basic auth. Public clients without a secret use<br />the "none" method. |  | Enum: [none client_secret_basic client_secret_post] <br />Optional: \{\} <br /> |
+| `tokenEndpointAuthMethod` _string_ | TokenEndpointAuthMethod selects how the client authenticates at the OAuth token<br />endpoint. When empty, credentials are sent in the request body (the historical<br />client_secret_post-shaped default). Set this to client_secret_basic explicitly<br />for providers that require HTTP Basic auth. Public clients without a secret use<br />the "none" method.<br />With DCRConfig, it is the method the client registers with, in place of the one<br />ToolHive picks from the upstream's advertised methods (client_secret_basic, then<br />client_secret_post, then none). Set it for an upstream whose token endpoint does<br />not accept the method ToolHive picks. A cached registration made with another<br />method is replaced with a new one at the next start. |  | Enum: [none client_secret_basic client_secret_post] <br />Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IdP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config.<br />Its hostname must match the browser-facing authorization endpoint (`issuer`, or<br />`authorizationEndpointBaseUrl` when set): the callback is bound to the browser that<br />started the login by a host-only cookie, so a different host rejects every browser login. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IdP. |  | Optional: \{\} <br /> |
 | `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used.<br />For extracting user identity from the token response, see IdentityFromToken. |  | Optional: \{\} <br /> |
@@ -3813,27 +3832,25 @@ _Appears in:_
 OBOConfig holds configuration for the On-Behalf-Of (OBO) external auth type.
 Only used when Type is "obo".
 
-This is the user-facing CRD surface for the Microsoft Entra OBO flow. It is
-structurally valid in upstream (OSS) builds but inert: an upstream-only build
-returns obo.ErrEnterpriseRequired at reconcile (Valid=False, Reason:
-EnterpriseRequired) because no OBO handler is registered via
-controllerutil.RegisterOBOHandler. A build with the enterprise OBO handler
-translates these fields into the runtime wire contract obo.MiddlewareParameters,
-so the field names and semantics here track that contract rather than the
-upstream TokenExchangeConfig (which uses different names, e.g.
+This is the user-facing CRD surface for the Microsoft Entra OBO flow. The
+operator translates these fields into the runtime wire contract
+obo.MiddlewareParameters (MCPServer, MCPRemoteProxy) or the vMCP OBOConfig
+(VirtualMCPServer), so the field names and semantics here track that
+contract rather than TokenExchangeConfig (which uses different names, e.g.
 subjectProviderName / externalTokenHeaderName). In particular there is no
 externalTokenHeaderName: the OBO subject is sourced from the authenticated
-Identity, never from an inbound request header.
+Identity, never from an inbound request header. An MCPServer or
+MCPRemoteProxy that references an obo config must also set oidcConfigRef,
+so it has an authenticated user token to exchange.
 
-Field-to-contract mapping performed by the operator's OBO handler:
+Field-to-contract mapping performed by the operator:
   - tenantId (+ optional authority) → tokenUrl
     (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token, or the
     configured authority base joined with the tenant for sovereign clouds)
   - clientSecretRef → resolved into a pod env var; only the env var name
     travels in the contract, as clientSecretEnvVar
   - audience / scopes → collapsed to a single exchange target by
-    obo.MiddlewareParameters.ExchangeTarget() (space-joined scopes win,
-    otherwise audience)
+    exchange.Target (space-joined scopes win, otherwise <audience>/.default)
   - cacheSkew → the contract's integer-seconds cacheSkewSeconds
 
 Every field is optional at the CRD level, and the schema deliberately carries
@@ -3842,8 +3859,8 @@ placeholder ({}) in earlier releases, so adding a required field or an
 admission rule that rejects {} would be a backward-incompatible narrowing of
 an already-stored, round-trippable object. Presence and combination
 requirements — a tenant, a client-auth credential, and at least one of
-audience/scopes — are therefore enforced by the registered OBO handler at
-reconcile, which reports a violation as Valid=False / Reason=InvalidConfig.
+audience/scopes — are therefore enforced by the operator at reconcile, which
+reports a violation as Valid=False / Reason=InvalidConfig.
 The per-field patterns below still apply, but only to a value that is present.
 
 
@@ -3853,14 +3870,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `tenantId` _string_ | TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.<br />Optional at the CRD level (see the type doc); the operator enforces its<br />presence, since an OBO confidential-client exchange must target a specific<br />tenant. When set, it must be one of the two forms the Entra v2.0 token<br />endpoint addresses: a directory GUID, or a verified domain name (e.g.<br />contoso.onmicrosoft.com). Well-known aliases such as "common",<br />"organizations", and "consumers" are NOT accepted. The operator<br />interpolates it into the token endpoint<br />(<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to<br />the GUID/domain shape (no path metacharacters); the pattern and 253-char<br />cap mirror the enterprise exchanger's validateTenant, so any tenantId<br />admitted here is one the runtime can consume. |  | MaxLength: 253 <br />Pattern: `^([0-9a-fA-F]\{8\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{12\}\|([a-zA-Z0-9]([a-zA-Z0-9-]\{0,61\}[a-zA-Z0-9])?\.)+[a-zA-Z]\{2,\})$` <br />Optional: \{\} <br /> |
+| `tenantId` _string_ | TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.<br />Optional at the CRD level (see the type doc); the operator enforces its<br />presence, since an OBO confidential-client exchange must target a specific<br />tenant. When set, it must be one of the two forms the Entra v2.0 token<br />endpoint addresses: a directory GUID, or a verified domain name (e.g.<br />contoso.onmicrosoft.com). Well-known aliases such as "common",<br />"organizations", and "consumers" are NOT accepted. The operator<br />interpolates it into the token endpoint<br />(<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to<br />the GUID/domain shape (no path metacharacters); the pattern and 253-char<br />cap mirror the Entra exchanger's tenant validation, so any tenantId<br />admitted here is one the runtime can consume. |  | MaxLength: 253 <br />Pattern: `^([0-9a-fA-F]\{8\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{12\}\|([a-zA-Z0-9]([a-zA-Z0-9-]\{0,61\}[a-zA-Z0-9])?\.)+[a-zA-Z]\{2,\})$` <br />Optional: \{\} <br /> |
 | `authority` _string_ | Authority overrides the default Entra login host<br />(https://login.microsoftonline.com) for sovereign or national clouds, e.g.<br />https://login.microsoftonline.us (US Gov) or<br />https://login.partner.microsoftonline.cn (China). When set, the operator<br />builds the token endpoint by joining <authority>, <tenantId>, and the<br />v2.0 token path. Must be an HTTPS URL with no userinfo, query, fragment,<br />or trailing slash; a path IS permitted and is prefixed before the tenant<br />segment, as some sovereign / B2C / CIAM endpoints require. The OBO exchange<br />POSTs the client secret and the end-user assertion to this host, so it is a<br />credential trust boundary: HTTPS is required and userinfo (user@host) is<br />rejected to prevent host confusion (per RFC 3986 the real host follows the<br />"@", so https://login.microsoftonline.com@attacker.example targets<br />attacker.example). This is intentionally stricter than the downstream<br />exchanger's validateHTTPSURL, which also accepts http for loopback hosts<br />and tolerates a trailing slash — rejecting those at admission is the safe<br />direction. |  | Pattern: `^https://[^\s?#@]+[^/\s?#@]$` <br />Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the confidential client's application (client) ID registered<br />in Entra. Emitted verbatim as the runtime contract's clientId.<br />Optional at the CRD level so future client-authentication methods (e.g.<br />certificate or workload-identity credentials, planned fast-follows) can be<br />added without a breaking schema change. The operator enforces that clientId<br />and clientSecretRef are both present for the v1 shared-secret flow. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the confidential<br />client's secret. v1 supports a shared client secret only. The operator<br />injects the resolved value into the proxyrunner pod as an environment<br />variable and emits only that variable's name in the runtime contract, as<br />clientSecretEnvVar — the secret value never travels in the contract.<br />Optional at the CRD level for the same forward-compatibility reason as<br />clientId (a certificate/workload-identity flow needs no client secret);<br />the operator enforces presence for the v1 shared-secret flow. |  | Optional: \{\} <br /> |
-| `audience` _string_ | Audience is the backend target identifier requested in the exchanged<br />token. Used as the exchange target when Scopes is empty. At least one of<br />audience or scopes must be set; the operator enforces that at reconcile<br />(it is not an admission-time rule — see the type doc). |  | Optional: \{\} <br /> |
+| `audience` _string_ | Audience is the backend resource the exchanged token is for: its<br />Application ID URI (e.g. api://backend) or application (client) ID. Used<br />when Scopes is empty, as the scope <audience>/.default (a trailing "/" is<br />dropped, and a value already ending in /.default is sent as is), because<br />the Entra v2.0 endpoint accepts only scopes. To request specific delegated<br />permissions, use Scopes instead. At least one of audience or scopes must be<br />set; the operator enforces that at reconcile (it is not an admission-time<br />rule — see the type doc). |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the delegated scopes to request for the exchanged token, e.g.<br />["api://<backend>/.default"]. When non-empty they take precedence over<br />Audience. At least one of audience or scopes must be set; the operator<br />enforces that at reconcile. The MaxItems and per-item length caps are<br />defensive bounds on an otherwise unbounded list. |  | MaxItems: 20 <br />items:MaxLength: 256 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
-| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects the source of the OBO subject (assertion)<br />token from the request's authenticated Identity:<br />  - Omitted: use the inbound end-user token the client presented<br />    (Identity.Token) — the deployment with no embedded auth server, where<br />    the client holds an Entra token directly.<br />  - Set: use the named upstream provider's token<br />    (Identity.UpstreamTokens[<name>]) — the embedded-auth-server<br />    deployment, where the inbound token is the proxy's own session token.<br />    The value must match a configured upstream provider name.<br />The subject is always sourced from the authenticated Identity, never from<br />an inbound request header, so the upstream auth middleware must run first. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
-| `cacheSkew` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | CacheSkew overrides the OBO token cache's default expiry skew (the margin<br />by which a cached token is treated as expired before its real expiry),<br />e.g. "30s". The operator converts it to the runtime contract's<br />integer-seconds cacheSkewSeconds. Should not be negative, but the schema<br />does not enforce that — metav1.Duration carries no numeric minimum — and<br />upstream builds do not reject it. A negative value is rejected only by an<br />enterprise build's OBO handler once that handler validates the converted<br />parameters; it is not enforced at admission or in upstream-only builds.<br />When omitted, the cache default applies. |  | Optional: \{\} <br /> |
+| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects the source of the OBO subject (assertion)<br />token from the request's authenticated Identity:<br />  - Omitted, with no embedded auth server: use the inbound end-user token<br />    the client presented (Identity.Token), where the client holds an Entra<br />    token directly.<br />  - Omitted, behind an embedded auth server: defaults to its upstream<br />    provider, since the inbound token is then the proxy's own session<br />    token. A VirtualMCPServer whose embedded auth server has more than one<br />    upstream must set it explicitly.<br />  - Set: use the named upstream provider's token<br />    (Identity.UpstreamTokens[<name>]) — the embedded-auth-server<br />    deployment, where the inbound token is the proxy's own session token.<br />    The value must match a configured upstream provider name.<br />The subject is always sourced from the authenticated Identity, never from<br />an inbound request header, so the upstream auth middleware must run first. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
+| `cacheSkew` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | CacheSkew overrides the OBO token cache's default expiry skew (the margin<br />by which a cached token is treated as expired before its real expiry),<br />e.g. "30s". The operator converts it to the runtime contract's<br />integer-seconds cacheSkewSeconds (truncated toward zero). Must be between<br />zero and 2147483647 seconds (math.MaxInt32); metav1.Duration carries no<br />numeric bounds, so the operator rejects a negative or larger value at<br />reconcile (Valid=False, Reason: InvalidConfig) rather than at admission.<br />When omitted, the cache default applies. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.OIDCUpstreamConfig
@@ -3946,7 +3963,9 @@ _Appears in:_
 
 
 
-OutgoingAuthConfig configures authentication from Virtual MCP to backend MCPServers
+OutgoingAuthConfig configures authentication from Virtual MCP to backend resources.
+Referenced MCPExternalAuthConfig resources support tokenExchange, headerInjection,
+unauthenticated, awsSts, upstreamInject, xaa, and obo.
 
 
 
@@ -3955,7 +3974,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef<br />- inline: Explicit per-backend configuration in VirtualMCPServer | discovered | Enum: [discovered inline] <br />Optional: \{\} <br /> |
+| `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend MCPServer, MCPRemoteProxy,<br />  and MCPServerEntry externalAuthConfigRef fields<br />- inline: Explicit per-backend configuration in VirtualMCPServer | discovered | Enum: [discovered inline] <br />Optional: \{\} <br /> |
 | `default` _[api.v1beta1.BackendAuthConfig](#apiv1beta1backendauthconfig)_ | Default defines default behavior for backends without explicit auth config |  | Optional: \{\} <br /> |
 | `backends` _object (keys:string, values:[api.v1beta1.BackendAuthConfig](#apiv1beta1backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  | Optional: \{\} <br /> |
 
@@ -4300,9 +4319,9 @@ _Appears in:_
 
 
 SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
-determines which, and only which, source payload may be set. The file-bundle
-loader is implemented in isolation, but SPIFFE authentication is not wired
-to any bundle source; endpoint and Workload API loading are not implemented.
+determines which, and only which, source payload may be set. Only the file
+source has a loader in this build; bundle_endpoint and workload_api pass CRD
+validation but are rejected when the auth-server configuration is validated.
 
 
 
@@ -4342,14 +4361,10 @@ _Appears in:_
 
 SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
 trust domain with an explicit OAuth client identity and permissions.
-Configuration is not authentication: configured SPIFFE clients remain
-non-public OAuth clients without a secret until live SPIFFE credential
-validation is implemented (see SPIFFETrustDomainConfig's doc comment).
-
-GrantTypes is deliberately not exposed here: the runtime only accepts
-exactly the RFC 8693 token-exchange grant for a SPIFFE client
-(validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-always supplies it instead of letting it be configured.
+Declaring a client does not grant access by itself. SPIFFE clients
+authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
+Trust material comes from the declared bundle source (see
+SPIFFETrustDomainConfig's doc comment).
 
 
 
@@ -4362,9 +4377,10 @@ _Appears in:_
 | `principalPattern` _string_ | PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within<br />the declared trust domain. This pattern is a best-effort CRD-level<br />approximation; runtime parsing via spiffeid.FromString remains<br />authoritative. |  | MaxLength: 2048 <br />Pattern: `^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?\|/\*)$` <br />Required: \{\} <br /> |
 | `clientId` _string_ | ClientID is the explicit OAuth client_id. It is never derived from a<br />SPIFFE ID. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
 | `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods are the credential types this association may authenticate<br />with. Must be a subset of the referenced trust domain's methods. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
-| `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />allowlist membership is validated at reconcile time, not admission.<br />Shape (a well-formed absolute HTTP(S) URI) is independent of that<br />derived allowlist and is validated here. Distinct from Audiences: a<br />resource permission does not imply the same value is also a permitted<br />token audience, or vice versa. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^@#[:space:]]+$` <br />Optional: \{\} <br /> |
-| `audiences` _string array_ | Audiences are RFC 8693 token audiences this association may request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
+| `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />allowlist membership is validated at reconcile time, not admission.<br />Shape (a well-formed absolute HTTP(S) URI) is independent of that<br />derived allowlist and is validated here. Required, with at least one<br />entry, for every association: client_credentials and token exchange each<br />take exactly one resource per request and grant it as the token<br />audience. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^@#[:space:]]+$` <br />Optional: \{\} <br /> |
+| `audiences` _string array_ | Deprecated: ignored; use resources.<br />The field was required in earlier releases and is still accepted so<br />existing objects keep validating. A non-empty value is reported by the<br />DeprecatedInboundGrantConfiguration condition and has no effect on token<br />targeting. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
+| `grantTypes` _string array_ | GrantTypes contains the OAuth grants permitted for this association.<br />It defaults to the token-exchange grant when omitted, which is what the<br />operator configured before this field existed. List client_credentials<br />to opt in to the SPIFFE-bound client credentials grant. The list alone<br />decides which grants the association may use: client authentication does<br />not confer any grant, and there is no separate per-grant enable switch.<br />Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token<br />exchange. | [urn:ietf:params:oauth:grant-type:token-exchange] | MaxItems: 2 <br />MinItems: 1 <br />items:Enum: [client_credentials urn:ietf:params:oauth:grant-type:token-exchange] <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFEFileBundleSourceConfig
@@ -4391,12 +4407,8 @@ _Appears in:_
 
 
 SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-embedded authorization server. Configuration is not authentication: no
-live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-domain does not by itself let any workload authenticate — RunConfig.Validate
-(pkg/authserver/config.go) currently hard-rejects any non-empty
-spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-a deliberate placeholder until real SVID verification lands.
+embedded authorization server. A declared domain becomes usable only after
+the configured source supplies trust material during auth-server startup.
 
 
 
@@ -4408,7 +4420,7 @@ _Appears in:_
 | `name` _string_ | Name uniquely identifies this declaration and is referenced by<br />inboundGrants.spiffeClientAuth[].trustDomainRef. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
 | `trustDomain` _string_ | TrustDomain is the SPIFFE trust domain accepted by this declaration.<br />This pattern is a best-effort CRD-level approximation of the SPIFFE<br />trust-domain grammar; runtime parsing via<br />spiffeid.TrustDomainFromString remains authoritative. |  | MaxLength: 255 <br />MinLength: 1 <br />Pattern: `^([a-z0-9_]\|[a-z0-9_]([a-z0-9_-]\|\.[a-z0-9_-])*[a-z0-9_])$` <br />Required: \{\} <br /> |
 | `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods explicitly enables the supported credential types for this<br />trust domain. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
-| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one trust-bundle source and is validated for<br />shape here. The standalone file loader exists, but is not wired into SPIFFE<br />authentication. |  | Required: \{\} <br /> |
+| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one trust-bundle source and is validated for<br />shape here. Only the file source is loaded in this build; bundle_endpoint<br />and workload_api are rejected when the auth-server configuration is<br />validated. |  | Required: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig
@@ -4450,6 +4462,7 @@ _Appears in:_
 - [api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)
 - [api.v1beta1.SensitiveHeader](#apiv1beta1sensitiveheader)
 - [api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)
+- [api.v1beta1.TLSListenerConfig](#apiv1beta1tlslistenerconfig)
 - [api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)
 - [api.v1beta1.WebhookSpec](#apiv1beta1webhookspec)
 - [api.v1beta1.WebhookTLSConfig](#apiv1beta1webhooktlsconfig)
@@ -4540,6 +4553,24 @@ _Appears in:_
 | `tls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | TLS enables TLS for the Redis session storage connection and, when rate<br />limiting is configured, for the rate-limit connection to the same Redis.<br />When omitted, the connections are plaintext and the Redis password and<br />session data cross the network unencrypted. An empty object enables TLS<br />with server certificate verification against the system root CAs; set<br />caCertSecretRef for a private CA. A failed handshake never falls back to<br />plaintext. Only used when provider is redis. |  | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.TLSListenerConfig
+
+
+
+TLSListenerConfig configures the certificate served by the embedded auth
+server's TLS listener. Both secret references are required.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `certificateSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CertificateSecretRef references the PEM-encoded TLS certificate. |  | Required: \{\} <br /> |
+| `privateKeySecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PrivateKeySecretRef references the PEM-encoded TLS private key. |  | Required: \{\} <br /> |
+
+
 #### api.v1beta1.TokenExchangeConfig
 
 
@@ -4547,7 +4578,7 @@ _Appears in:_
 TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 This configuration is used to exchange incoming authentication tokens for tokens
 that can be used with external services.
-The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
+The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
 
 
 
@@ -5096,7 +5127,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `incomingAuth` _[api.v1beta1.IncomingAuthConfig](#apiv1beta1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server.<br />Must be explicitly set - use "anonymous" type when no authentication is required.<br />This field takes precedence over config.IncomingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Required: \{\} <br /> |
-| `outgoingAuth` _[api.v1beta1.OutgoingAuthConfig](#apiv1beta1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Optional: \{\} <br /> |
+| `outgoingAuth` _[api.v1beta1.OutgoingAuthConfig](#apiv1beta1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend resources.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config.<br />Referenced MCPExternalAuthConfig types supported by VirtualMCPServer are tokenExchange,<br />headerInjection, unauthenticated, awsSts, upstreamInject, xaa, and obo.<br />Unsupported types are reported per backend in<br />status.conditions with Reason: UnsupportedAuthType. |  | Optional: \{\} <br /> |
 | `passthroughHeaders` _string array_ | PassthroughHeaders is an allowlist of incoming client request header names<br />forwarded verbatim to all backends (e.g. an API key the backend resolves to<br />a user). Takes precedence over config.PassthroughHeaders. Names must not be<br />restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are<br />attacker-influenceable unless a trusted upstream sets them. |  | Optional: \{\} <br /> |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br />Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
@@ -5342,6 +5373,16 @@ This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.Di
 | `circuitLastChanged` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | CircuitLastChanged is the timestamp when the circuit breaker state last changed.<br />Empty when circuit breaker is disabled or has never changed state. |  | Optional: \{\} <br /> |
 | `consecutiveFailures` _integer_ | ConsecutiveFailures is the current count of consecutive health check failures.<br />Resets to 0 when the backend becomes healthy again. |  | Optional: \{\} <br /> |
 | `mcpRevision` _string_ | MCPRevision is the backend's negotiated MCP protocol revision<br />("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed. |  | Optional: \{\} <br /> |
+
+
+
+
+
+
+
+
+
+
 
 
 

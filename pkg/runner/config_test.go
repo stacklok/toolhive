@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -29,6 +29,7 @@ import (
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -2348,7 +2349,8 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 							Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
 							Scopes:           []string{"openid"},
 							Audiences:        []string{"https://mcp.example.com"},
-							GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+							Resources:        []string{"https://mcp.example.com"},
+							GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
 						},
 						{
 							TrustDomainRef:   "development",
@@ -2357,7 +2359,8 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 							Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT},
 							Scopes:           []string{"profile"},
 							Audiences:        []string{"https://api.example.com"},
-							GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+							Resources:        []string{"https://api.example.com"},
+							GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
 						},
 					},
 				},

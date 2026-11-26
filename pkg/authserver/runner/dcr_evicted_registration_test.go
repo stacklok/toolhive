@@ -48,10 +48,6 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 	// Redis, which survives a downstream restart.
 	downstreamRedis := miniredis.RunT(t)
 	downstream := newIndirectServer(t)
-	const (
-		sessionClientID = "session-client"
-		sessionCallback = "https://client.example.com/callback"
-	)
 	downstreamConfig := func() *authserver.RunConfig {
 		return &authserver.RunConfig{
 			SchemaVersion:    authserver.CurrentSchemaVersion,
@@ -76,6 +72,7 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 		t.Helper()
 		store := storage.NewRedisStorageWithClient(
 			redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:")
+		t.Cleanup(func() { require.NoError(t, store.Close()) })
 		if registerSessionClient {
 			client, err := registration.New(registration.Config{
 				ID:                      sessionClientID,
@@ -92,68 +89,19 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 		}
 		as, err := NewEmbeddedAuthServerWithStorage(ctx, downstreamConfig(), store)
 		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, as.Close()) })
 		downstream.set(as.Handler())
 		return as
 	}
 
-	// authorize starts a session authorization on the downstream, approves the
-	// consent page, and follows the downstream's redirect to the upstream,
-	// returning the upstream's response and the client_id the downstream
-	// presented there.
-	consentHandle := regexp.MustCompile(`name="handle" value="([^"]+)"`)
 	authorize := func() (*http.Response, string) {
 		t.Helper()
-		jar, err := cookiejar.New(nil)
-		require.NoError(t, err)
-		noRedirect := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		}}
-		challenge := sha256.Sum256([]byte("session-code-verifier-0123456789abcdefghijklmnop"))
-		query := url.Values{
-			"client_id":             {sessionClientID},
-			"redirect_uri":          {sessionCallback},
-			"response_type":         {"code"},
-			"scope":                 {"openid offline_access"},
-			"state":                 {"session-state-0123456789"},
-			"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
-			"code_challenge_method": {"S256"},
-		}
-		consentPage, err := noRedirect.Get(downstream.URL + "/oauth/authorize?" + query.Encode())
-		require.NoError(t, err)
-		page, _ := io.ReadAll(consentPage.Body)
-		_ = consentPage.Body.Close()
-		require.Equal(t, http.StatusOK, consentPage.StatusCode, "downstream must accept its own session client: %s", page)
-		match := consentHandle.FindSubmatch(page)
-		require.Len(t, match, 2, "downstream must render its consent page")
-
-		approve, err := http.NewRequestWithContext(ctx, http.MethodPost, downstream.URL+"/oauth/consent",
-			strings.NewReader(url.Values{"handle": {html.UnescapeString(string(match[1]))}, "decision": {"approve"}}.Encode()))
-		require.NoError(t, err)
-		approve.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		approve.Header.Set("Origin", downstream.URL)
-		toDownstream, err := noRedirect.Do(approve)
-		require.NoError(t, err)
-		approved, _ := io.ReadAll(toDownstream.Body)
-		_ = toDownstream.Body.Close()
-		require.Equal(t, http.StatusSeeOther, toDownstream.StatusCode, "downstream must redirect upstream after consent: %s", approved)
-		location := toDownstream.Header.Get("Location")
-		require.True(t, strings.HasPrefix(location, upstream.URL+"/oauth/authorize?"),
-			"downstream must redirect to the upstream, got %q", location)
-		parsed, err := url.Parse(location)
-		require.NoError(t, err)
-
-		toUpstream, err := noRedirect.Get(location)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = toUpstream.Body.Close() })
-		return toUpstream, parsed.Query().Get("client_id")
+		resp, presented, _ := authorizeThroughDownstream(t, downstream.URL, upstream.URL+"/oauth/authorize")
+		return resp, presented
 	}
-	// The upstream accepts a known client by rendering its own consent page;
-	// an unknown client is refused with invalid_client before consent.
 	requireUpstreamAccepted := func(resp *http.Response, msg string) {
 		t.Helper()
-		body, _ := io.ReadAll(resp.Body)
-		require.Equal(t, http.StatusOK, resp.StatusCode, "%s; upstream answered %d: %s", msg, resp.StatusCode, body)
-		require.Regexp(t, consentHandle, string(body), "%s; upstream must render its consent page", msg)
+		requireUpstreamAcceptedClient(t, resp, msg)
 	}
 
 	// First boot: the downstream registers on the upstream and the upstream
@@ -172,8 +120,7 @@ func TestEmbeddedAuthServer_ChainedDCRRecoversFromEvictedRegistration(t *testing
 
 	// The downstream restarts against the same persistent Redis. Its next
 	// authorization must reach the upstream with a client the upstream knows.
-	second := bootDownstream(false)
-	t.Cleanup(func() { _ = second.Close() })
+	bootDownstream(false)
 	resp, presented := authorize()
 	requireUpstreamAccepted(resp, "after the upstream evicted client "+registered+
 		", the restarted downstream presented client "+presented)
@@ -192,8 +139,10 @@ func TestDCRResolver_PublicClientRecoversFromEvictedRegistration(t *testing.T) {
 	upstream, upstreamRedis, upstreamStore := newDCRUpstream(t)
 
 	downstreamRedis := miniredis.RunT(t)
-	cache := dcr.NewStorageBackedStore(storage.NewRedisStorageWithClient(
-		redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:"))
+	store := storage.NewRedisStorageWithClient(
+		redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:")
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	cache := dcr.NewStorageBackedStore(store)
 	req := &dcr.Request{
 		Issuer:       "https://downstream.example.com",
 		Scopes:       []string{"openid", "offline_access"},
@@ -224,6 +173,81 @@ func TestDCRResolver_PublicClientRecoversFromEvictedRegistration(t *testing.T) {
 	require.NoError(t, err, "the upstream must know the replacement client")
 }
 
+// The downstream's own session client, registered in its storage so a test
+// can start authorizations on it.
+const (
+	sessionClientID = "session-client"
+	sessionCallback = "https://client.example.com/callback"
+)
+
+// consentHandle finds the handle on a ToolHive auth server's consent page.
+var consentHandle = regexp.MustCompile(`name="handle" value="([^"]+)"`)
+
+// authorizeThroughDownstream starts a session authorization on the
+// downstream, approves the consent page, and follows the downstream's
+// redirect to the upstream's authorization endpoint, returning the
+// upstream's response, the client_id the downstream presented there, and the
+// browser (cookie jar included) for following the flow further.
+func authorizeThroughDownstream(
+	t *testing.T, downstreamURL, upstreamAuthorizeURL string,
+) (*http.Response, string, *http.Client) {
+	t.Helper()
+	ctx := context.Background()
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	noRedirect := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	challenge := sha256.Sum256([]byte("session-code-verifier-0123456789abcdefghijklmnop"))
+	query := url.Values{
+		"client_id":             {sessionClientID},
+		"redirect_uri":          {sessionCallback},
+		"response_type":         {"code"},
+		"scope":                 {"openid offline_access"},
+		"state":                 {"session-state-0123456789"},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
+		"code_challenge_method": {"S256"},
+	}
+	consentPage, err := noRedirect.Get(downstreamURL + "/oauth/authorize?" + query.Encode())
+	require.NoError(t, err)
+	page, _ := io.ReadAll(consentPage.Body)
+	_ = consentPage.Body.Close()
+	require.Equal(t, http.StatusOK, consentPage.StatusCode, "downstream must accept its own session client: %s", page)
+	match := consentHandle.FindSubmatch(page)
+	require.Len(t, match, 2, "downstream must render its consent page")
+
+	approve, err := http.NewRequestWithContext(ctx, http.MethodPost, downstreamURL+"/oauth/consent",
+		strings.NewReader(url.Values{"handle": {html.UnescapeString(string(match[1]))}, "decision": {"approve"}}.Encode()))
+	require.NoError(t, err)
+	approve.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	approve.Header.Set("Origin", downstreamURL)
+	toDownstream, err := noRedirect.Do(approve)
+	require.NoError(t, err)
+	approved, _ := io.ReadAll(toDownstream.Body)
+	_ = toDownstream.Body.Close()
+	require.Equal(t, http.StatusSeeOther, toDownstream.StatusCode, "downstream must redirect upstream after consent: %s", approved)
+	location := toDownstream.Header.Get("Location")
+	require.True(t, strings.HasPrefix(location, upstreamAuthorizeURL+"?"),
+		"downstream must redirect to the upstream, got %q", location)
+	parsed, err := url.Parse(location)
+	require.NoError(t, err)
+
+	toUpstream, err := noRedirect.Get(location)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = toUpstream.Body.Close() })
+	return toUpstream, parsed.Query().Get("client_id"), noRedirect
+}
+
+// requireUpstreamAcceptedClient asserts the upstream accepted the presented
+// client: a known client gets the upstream's own consent page, an unknown
+// one is refused with invalid_client before consent.
+func requireUpstreamAcceptedClient(t *testing.T, resp *http.Response, msg string) {
+	t.Helper()
+	body, _ := io.ReadAll(resp.Body)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "%s; upstream answered %d: %s", msg, resp.StatusCode, body)
+	require.Regexp(t, consentHandle, string(body), "%s; upstream must render its consent page", msg)
+}
+
 // newDCRUpstream starts a ToolHive auth server that accepts dynamic client
 // registration and stores its clients in its own miniredis, so a test can
 // fast-forward past DefaultDCRClientTTL. Its own upstream IdP is never
@@ -235,6 +259,7 @@ func newDCRUpstream(t *testing.T) (*indirectServer, *miniredis.Miniredis, *stora
 	upstreamRedis := miniredis.RunT(t)
 	upstreamStore := storage.NewRedisStorageWithClient(
 		redis.NewClient(&redis.Options{Addr: upstreamRedis.Addr()}), "upstream:")
+	t.Cleanup(func() { require.NoError(t, upstreamStore.Close()) })
 	upstream := newIndirectServer(t)
 	upstreamAS, err := NewEmbeddedAuthServerWithStorage(context.Background(), &authserver.RunConfig{
 		SchemaVersion:    authserver.CurrentSchemaVersion,

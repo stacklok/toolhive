@@ -15,7 +15,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -56,7 +55,6 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 
 		AfterEach(func() {
 			// Clean up in reverse order
-			// Note: Workload cleanup handled by suite-level CLI cleanup
 			unregisterClientFromGroup(apiServer, string(testClientName), groupName)
 			deleteGroup(apiServer, groupName)
 		})
@@ -73,17 +71,10 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 				workloadResp := createWorkload(apiServer, workloadReq)
 				workloadResp.Body.Close()
 				Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				// Wait for workload to be running
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second,
 					"Workload should be running before client registration")
 
 				By("Registering client with default group")
@@ -148,17 +139,10 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 				workloadResp := createWorkload(apiServer, workloadReq)
 				workloadResp.Body.Close()
 				Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				// Wait for workload to be running
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Registering client with the custom group")
 				registerReq := map[string]interface{}{
@@ -230,7 +214,6 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 		})
 
 		AfterEach(func() {
-			// Note: Workload cleanup handled by suite-level CLI cleanup
 			deleteGroup(apiServer, groupName)
 		})
 
@@ -261,16 +244,9 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 				workloadResp := createWorkload(apiServer, workloadReq)
 				workloadResp.Body.Close()
 				Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Registering client with the group")
 				registerReq := map[string]interface{}{
@@ -321,7 +297,6 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 		})
 
 		AfterEach(func() {
-			// Note: Workload cleanup handled by suite-level CLI cleanup
 			// Unregister clients from group
 			for _, name := range testClientNames {
 				unregisterClientFromGroup(apiServer, string(name), groupName)
@@ -356,16 +331,9 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 				workloadResp := createWorkload(apiServer, workloadReq)
 				workloadResp.Body.Close()
 				Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Bulk registering clients with group")
 				bulkReq := map[string]interface{}{
@@ -430,7 +398,6 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 		})
 
 		AfterEach(func() {
-			// Note: Workload cleanup handled by suite-level CLI cleanup
 			deleteGroup(apiServer, groupName)
 		})
 
@@ -460,16 +427,9 @@ var _ = Describe("Clients API", Label("api", "api-clients", "clients", "e2e"), f
 				workloadResp := createWorkload(apiServer, workloadReq)
 				workloadResp.Body.Close()
 				Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Bulk registering clients")
 				bulkRegReq := map[string]interface{}{

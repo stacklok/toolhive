@@ -20,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -195,7 +194,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 						Args:            args,
 						Env:             env,
 						VolumeMounts:    volumeMounts,
-						Ports:           r.buildContainerPortsForVmcp(vmcp),
+						Ports:           ctrlutil.ProxyContainerPorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
 						LivenessProbe: ctrlutil.BuildHealthProbe(
 							"/health", "http",
 							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
@@ -278,7 +277,7 @@ func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 	}
 
-	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(vmcp.Spec.SessionStorage)
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumesWithDefault(vmcp.Spec.SessionStorage, r.DefaultRedisConfig)
 	volumes = append(volumes, sessionTLSVolumes...)
 	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 
@@ -520,8 +519,9 @@ func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1beta1.Virtua
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
 // sessionStorage.provider == "redis" and passwordRef is set, or when
-// TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set via the global default.
-func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+// session storage is absent and the injected global default references a password
+// Secret. Explicit storage never inherits a global password.
+func (r *VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
 	if vmcp.Spec.SessionStorage != nil {
 		if vmcp.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
 			vmcp.Spec.SessionStorage.PasswordRef != nil {
@@ -542,7 +542,7 @@ func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.Vir
 		return nil
 	}
 
-	def := ctrlutil.ReadDefaultRedisConfig()
+	def := r.DefaultRedisConfig
 	if def == nil || def.SecretName == "" {
 		return nil
 	}
@@ -571,11 +571,13 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 		return env
 	}
 
-	// Mount secrets from discovered ExternalAuthConfigs (discovered mode)
-	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
-		discoveredSecrets := r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)
-		env = append(env, discoveredSecrets...)
-	}
+	// Mount secrets for ExternalAuthConfigs referenced by workloads in the group.
+	// Runs in BOTH source modes, mirroring buildOutgoingAuthConfig, which embeds
+	// workload-referenced auth into the config in both. In inline mode that strategy
+	// still reaches the ConfigMap and names the secret env var the vMCP reads at
+	// startup, so gating this on discovered mode left the env var unmounted and
+	// crash-looped the pod (#6837).
+	env = append(env, r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)...)
 
 	// Mount secrets from inline ExternalAuthConfigRefs
 	if vmcp.Spec.OutgoingAuth.Backends != nil {
@@ -745,8 +747,15 @@ func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (strin
 	return string(out), nil
 }
 
-// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group
-// and returns environment variables for their client secrets. This is used for discovered mode.
+// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs referenced by
+// workloads in the group (via spec.externalAuthConfigRef) and returns environment
+// variables for their secrets.
+//
+// This mirrors discoverExternalAuthConfigs, which embeds those workload-referenced
+// strategies into the vMCP config in BOTH source modes — including the skip for
+// backends that carry an inline override, whose strategy (and therefore whose
+// secret env var) wins instead. A backend is skipped per workload rather than per
+// config, so a config shared with a non-overridden workload is still mounted.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -781,6 +790,16 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 			workloadInfo, mcpServerMap, mcpRemoteProxyMap, mcpServerEntryMap)
 		if configName == "" {
 			continue
+		}
+
+		// Skip backends overridden inline — discoverExternalAuthConfigs leaves the
+		// workload-referenced strategy out of the config for those, so its secret
+		// would be mounted for a strategy that never runs. Checked before seenConfigs
+		// so a config another, non-overridden workload references is still mounted.
+		if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
+			if _, overridden := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]; overridden {
+				continue
+			}
 		}
 
 		// Skip if we've already processed this ExternalAuthConfig
@@ -857,15 +876,10 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 }
 
 // getExternalAuthConfigSecretEnvVars returns the environment variables for
-// secrets from an ExternalAuthConfig (token exchange client secrets, header
-// injection values, or — for obo — whatever the registered OBO handler asks
-// for). Generates unique env var names per ExternalAuthConfig to avoid conflicts
-// when multiple configs of the same type reference different secrets.
-//
-// The obo arm forwards every env var the handler returns (matching MCPServer and
-// MCPRemoteProxy) and propagates obo.ErrEnterpriseRequired so the wired-but-
-// disabled state is not masked as a no-op (see #5328); callers log-and-continue
-// on error.
+// secrets from an ExternalAuthConfig (token exchange, OBO, and XAA client
+// secrets, or header injection values). Generates unique env var names per
+// ExternalAuthConfig to avoid conflicts when multiple configs of the same type
+// reference different secrets; callers log-and-continue on error.
 func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 	ctx context.Context,
 	namespace string,
@@ -927,13 +941,12 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 		return nil, nil
 
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// Dispatch through the registered OBO handler, forwarding every env var
-		// it returns. OBOSecretEnvVars propagates obo.ErrEnterpriseRequired in
-		// upstream-only builds (unlike ctrlutil.AddOBOSecretEnvVars, which
-		// swallows it for MCPServer/MCPRemoteProxy builder/drift symmetry); vMCP
-		// must propagate it per #5328 so the wired-but-disabled state is not
-		// masked as a no-op.
-		return ctrlutil.OBOSecretEnvVars(externalAuthConfig)
+		// Per-config name (unlike the proxyrunner pod's fixed
+		// obo.ClientSecretEnvVar): one vMCP can front several OBO backends.
+		// Deliberately bypasses a handler registered through the deprecated
+		// ctrlutil.RegisterOBOHandler: its SecretEnvVars yields one fixed name,
+		// which would collide across OBO backends in this pod.
+		return ctrlutil.OBOVMCPSecretEnvVars(externalAuthConfig)
 
 	case mcpv1beta1.ExternalAuthTypeXAA:
 		return xaaSecretEnvVars(externalAuthConfig, externalAuthConfigName), nil
@@ -1058,7 +1071,7 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
 	if caBundleChecksum != "" {
-		templateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caBundleChecksum
+		templateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caBundleChecksum
 	}
 
 	return templateLabels, templateAnnotations
@@ -1081,17 +1094,6 @@ func (r *VirtualMCPServerReconciler) buildSecurityContextsForVmcp(
 
 	securityBuilder := kubernetes.NewSecurityContextBuilder(detectedPlatform)
 	return securityBuilder.BuildPodSecurityContext(), securityBuilder.BuildContainerSecurityContext()
-}
-
-// buildContainerPortsForVmcp builds container port configuration
-func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
-	_ *mcpv1beta1.VirtualMCPServer,
-) []corev1.ContainerPort {
-	return []corev1.ContainerPort{{
-		ContainerPort: vmcpDefaultPort,
-		Name:          "http",
-		Protocol:      corev1.ProtocolTCP,
-	}}
 }
 
 // serviceForVirtualMCPServer returns a VirtualMCPServer Service object
@@ -1129,12 +1131,7 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 			Type:            serviceType,
 			Selector:        ls,
 			SessionAffinity: sessionAffinity,
-			Ports: []corev1.ServicePort{{
-				Port:       vmcpDefaultPort,
-				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
+			Ports:           ctrlutil.ProxyServicePorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
 		},
 	}
 

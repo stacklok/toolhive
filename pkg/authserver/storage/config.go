@@ -43,6 +43,9 @@ const (
 	// registration.DCRIssued marker expire; pre-provisioned confidential
 	// clients are stored without a TTL. RenewClientTTL sets it on every
 	// successful token exchange.
+	// It is also the age bound of the CIMD persisted-row fallback on
+	// /oauth/token: CIMD rows are not renewed on token success
+	// (CIMDStorageDecorator.RenewClientTTL), so changing it changes that bound.
 	DefaultDCRClientTTL = 30 * 24 * time.Hour // 30 days
 
 	// DefaultUnusedDCRClientTTL is the TTL a client gets when /oauth/register

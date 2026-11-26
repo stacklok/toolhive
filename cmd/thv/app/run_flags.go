@@ -110,6 +110,9 @@ type RunFlags struct {
 	IsolateNetwork     bool
 	AllowDockerGateway bool
 
+	// Container hardening
+	ReadOnlyRootfs bool
+
 	// Proxy headers
 	TrustProxyHeaders bool
 
@@ -180,7 +183,9 @@ type RunFlags struct {
 
 // AddRunFlags adds all the run flags to a command
 func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
-	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
+	cmd.Flags().StringVar(&config.Transport, "transport", "",
+		"Transport mode (sse, streamable-http or stdio); defaults to the registry's transport, "+
+			"else stdio for uvx:// packages (unless --target-port or --stateless is set), else streamable-http")
 	cmd.Flags().StringVar(&config.ProxyMode,
 		"proxy-mode",
 		"streamable-http",
@@ -302,6 +307,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", true,
 		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
 			"Not enforced with --network host or --network none (isolation requires bridge networking).")
+	cmd.Flags().BoolVar(&config.ReadOnlyRootfs, "read-only-rootfs", false,
+		"Mount the MCP server container's root filesystem as read-only (Docker/Podman only). "+
+			"/tmp, /var/tmp and /run get a 64 MiB noexec tmpfs unless a volume already targets them; "+
+			"servers that write anywhere else outside their mounted volumes will fail.")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
 		"Allow outbound connections to Docker/Podman host addresses (all daemon bridge gateways, runtime host-alias IPs, "+
 			"host.docker.internal, gateway.docker.internal, and host.containers.internal). Only applies when --isolate-network is set. "+
@@ -411,8 +420,8 @@ func BuildRunnerConfig(
 
 	if runFlags.RemoteURL != "" {
 		slog.Debug(fmt.Sprintf("Attempting to run remote MCP server: %s", runFlags.RemoteURL))
-		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
-			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig,
+		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, serverOrImage,
+			nil, nil, envVarValidator, oidcConfig, telemetryConfig, appConfig,
 			runner.WithNetworkIsolationExplicit(isolateExplicit))
 	}
 
@@ -438,8 +447,8 @@ func BuildRunnerConfig(
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	// Build the runner config
-	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
-		envVars, envVarValidator, oidcConfig, telemetryConfig, appConfig,
+	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverOrImage,
+		serverMetadata, envVars, envVarValidator, oidcConfig, telemetryConfig, appConfig,
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(regServerName),
 		runner.WithNetworkIsolationExplicit(isolateExplicit))
@@ -475,7 +484,8 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 	}
 
 	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP, oidcScopes), nil
+		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile,
+		runFlags.JWKSAllowPrivateIP, runFlags.InsecureAllowHTTP, oidcScopes), nil
 }
 
 // resolveMetricsOnTransportPort turns the bound bool into a tri-state. Only an
@@ -591,7 +601,14 @@ func validateAndSetupProxyMode(runFlags *RunFlags) error {
 // resolveTransportType selects the appropriate transport type based on flags and metadata.
 // Uses a type assertion with nil check to guard against typed nil pointers wrapped
 // in a non-nil interface (e.g., nil *ImageMetadata returned as ServerMetadata).
-func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata) string {
+//
+// When neither the flag nor the metadata sets a transport, uvx:// packages default
+// to stdio: Python MCP servers run through uvx are almost always stdio servers, and
+// the streamable-http default starts their container without stdin, so they exit
+// at once and get restarted in a loop. The stdio default is skipped when an
+// HTTP-only flag (--target-port, --stateless) says the server speaks HTTP, since
+// stdio would silently drop --target-port and fail at startup with --stateless.
+func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata, serverOrImage string) string {
 	if runFlags.Transport != "" {
 		return runFlags.Transport
 	}
@@ -600,7 +617,19 @@ func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMeta
 			return t
 		}
 	}
+	if strings.HasPrefix(serverOrImage, runner.UVXScheme) && !hasHTTPOnlyFlags(runFlags) {
+		slog.Warn("no --transport given for a uvx:// package, using stdio; "+
+			"pass --transport streamable-http or --transport sse if the server speaks HTTP",
+			"package", serverOrImage)
+		return types.TransportTypeStdio.String()
+	}
 	return defaultTransportType
+}
+
+// hasHTTPOnlyFlags reports whether the run flags include an option that only
+// applies to the SSE or streamable-http transports.
+func hasHTTPOnlyFlags(runFlags *RunFlags) bool {
+	return runFlags.TargetPort != 0 || runFlags.Stateless
 }
 
 // resolveServerName resolves the server name for telemetry from flags or metadata
@@ -702,6 +731,7 @@ func buildRunnerConfig(
 	validatedHost string,
 	rt runtime.Deployer,
 	imageURL string,
+	serverOrImage string,
 	serverMetadata regtypes.ServerMetadata,
 	envVars map[string]string,
 	envVarValidator runner.EnvVarValidator,
@@ -710,7 +740,7 @@ func buildRunnerConfig(
 	appConfig *cfg.Config,
 	extraOpts ...runner.RunConfigBuilderOption,
 ) (*runner.RunConfig, error) {
-	transportType := resolveTransportType(runFlags, serverMetadata)
+	transportType := resolveTransportType(runFlags, serverMetadata, serverOrImage)
 	serverName := resolveServerName(runFlags, serverMetadata)
 
 	// Use type assertion with nil check to guard against typed nil pointers
@@ -745,6 +775,7 @@ func buildRunnerConfig(
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
+		runner.WithReadOnlyRootfs(runFlags.ReadOnlyRootfs),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
 		runner.WithStrictProtocolValidation(runFlags.StrictProtocolValidation),
 		runner.WithStateless(runFlags.Stateless),
@@ -1229,19 +1260,23 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
 func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool, scopes []string) *auth.TokenValidatorConfig {
+	oidcClientID, oidcClientSecret, resourceURL, caCertPath, authTokenFile string,
+	allowPrivateIP, insecureAllowHTTP bool, scopes []string) *auth.TokenValidatorConfig {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" {
 		return &auth.TokenValidatorConfig{
-			Issuer:           oidcIssuer,
-			Audience:         oidcAudience,
-			JWKSURL:          oidcJwksURL,
-			IntrospectionURL: oidcIntrospectionURL,
-			ClientID:         oidcClientID,
-			ClientSecret:     oidcClientSecret,
-			ResourceURL:      resourceURL,
-			AllowPrivateIP:   allowPrivateIP,
-			Scopes:           scopes,
+			Issuer:            oidcIssuer,
+			Audience:          oidcAudience,
+			JWKSURL:           oidcJwksURL,
+			IntrospectionURL:  oidcIntrospectionURL,
+			ClientID:          oidcClientID,
+			ClientSecret:      oidcClientSecret,
+			ResourceURL:       resourceURL,
+			CACertPath:        caCertPath,
+			AuthTokenFile:     authTokenFile,
+			AllowPrivateIP:    allowPrivateIP,
+			InsecureAllowHTTP: insecureAllowHTTP,
+			Scopes:            scopes,
 		}
 	}
 	return nil

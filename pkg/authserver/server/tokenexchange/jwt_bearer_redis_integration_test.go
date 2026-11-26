@@ -5,12 +5,14 @@ package tokenexchange
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -55,16 +57,10 @@ func TestJWTBearerHandler_RedisBacked(t *testing.T) {
 	}})
 	require.NoError(t, err)
 
-	handler, err := newJWTBearerIssuanceHandler(
-		validator,
-		testTokenEndpoint,
-		stor,
-		&fosite.Config{AccessTokenLifespan: time.Hour},
-		&mockAccessTokenStrategy{},
-		stor,
-		resolvedIssuers,
-	)
-	require.NoError(t, err)
+	deps := testIssuanceDeps(validator, resolvedIssuers)
+	deps.consumer = stor
+	deps.tokenStorage = stor
+	handler := newTestJWTBearerHandler(t, deps)
 
 	// The stub validator ignores the raw assertion and always returns these
 	// claims, so the JWT content itself doesn't need to be a real signed
@@ -102,4 +98,38 @@ func TestJWTBearerHandler_RedisBacked(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, retrieved.GetClient(), "synthetic client must survive Redis serialization")
 	require.True(t, storage.IsSyntheticClientID(retrieved.GetClient().GetID()))
+}
+
+// TestIDJAGHandler_RedisBackedDetails pins that the issued token's
+// authorization_details claim survives a Redis round trip unchanged: a
+// session read back holds the same raw bytes, so an integer above 2^53 keeps
+// every digit.
+func TestIDJAGHandler_RedisBackedDetails(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	stor := storage.NewRedisStorageWithClient(redisClient, "test:id-jag:")
+	t.Cleanup(func() { _ = stor.Close() })
+
+	deps := testIssuanceDeps(&testJWTBearerAssertionValidator{claims: detailsClaims(t, "["+bigEntry+"]")},
+		idJAGResolvedIssuers(t))
+	deps.consumer = stor
+	deps.tokenStorage = stor
+	handler := newTestIDJAGHandler(t, deps)
+	handler.detailsRegistry = newCallDetailsRegistry(t, singleEntryHook(nil))
+
+	ctx := context.Background()
+	req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+	require.NoError(t, stor.RegisterClient(ctx, req.Client))
+	require.NoError(t, handler.HandleTokenEndpointRequest(ctx, req))
+	require.NoError(t, handler.PopulateTokenEndpointResponse(ctx, req, fosite.NewAccessResponse()))
+
+	retrieved, err := stor.GetAccessTokenSession(ctx, "test-signature", &session.Session{})
+	require.NoError(t, err)
+	stored, ok := retrieved.GetSession().(*session.Session)
+	require.True(t, ok)
+	details, ok := stored.JWTClaims.Extra[authorizationDetailsParam].(json.RawMessage)
+	require.True(t, ok, "a stored session holds the claim as raw JSON")
+	assert.Equal(t, `[{"type":"`+testCallType+`","note":"big","limit":9007199254740993}]`, string(details))
 }

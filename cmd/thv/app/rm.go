@@ -19,10 +19,10 @@ var rmCmd = &cobra.Command{
 	Long: `Remove one or more MCP servers managed by ToolHive. 
 Examples:
   # Remove a single MCP server
-  thv rm filesystem
+  thv rm fetch
 
   # Remove multiple MCP servers
-  thv rm filesystem github slack
+  thv rm fetch github slack
 
   # Remove all workloads
   thv rm --all

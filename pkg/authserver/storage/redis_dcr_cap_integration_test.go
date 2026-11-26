@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,7 @@ func TestIntegration_DCRCap(t *testing.T) {
 			for i := range 3 {
 				require.NoError(t, s.RegisterClient(ctx, newDCRClient(t, fmt.Sprintf("dcr-%d", i), "none", "")))
 			}
-			require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured"}))
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured"}))
 
 			err := s.RegisterClient(ctx, newDCRClient(t, "dcr-rejected", "none", ""))
 			require.ErrorIs(t, err, ErrClientCapacity)

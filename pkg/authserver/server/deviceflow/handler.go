@@ -145,6 +145,7 @@ func (h *Handler) attachSession(
 		Name:  device.ResolvedUserName,
 		Email: device.ResolvedUserEmail,
 	})
+	sess.VerifiedUpstream = device.VerifiedUpstream
 	requester.SetSession(sess)
 
 	for _, scope := range device.Scopes {

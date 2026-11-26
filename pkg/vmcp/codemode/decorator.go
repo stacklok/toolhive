@@ -5,12 +5,18 @@ package codemode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -203,48 +209,12 @@ func (d *decorator) CallTool(
 		return d.VMCP.CallTool(ctx, identity, name, args, meta)
 	}
 
-	src, ok := args["script"].(string)
-	if !ok || src == "" {
-		return errorResult(fmt.Sprintf("%s requires a non-empty 'script' string argument",
-			script.ExecuteToolScriptName)), nil
-	}
-
-	// Record that a script ran, without logging its body (which may carry sensitive
-	// arguments). Length + principal give post-incident investigation a foothold; richer
-	// auditing is tracked separately under the code mode observability story.
-	slog.DebugContext(ctx, "codemode: executing script",
-		"principal", principalOf(identity), "script_len", len(src))
-
-	data, err := extractData(args)
-	if err != nil {
-		return errorResult(err.Error()), nil
-	}
-
-	// Bind the script to the identity's admission-filtered tool set. Each inner call
-	// re-enters inner.CallTool, so admission is enforced per call by the real tool name.
-	// innerTools fails loud on a reserved-name collision, so a shadowing backend tool
-	// surfaces as a transport error here rather than silently binding under the wrong
-	// admission (#5845).
-	tools, err := d.innerTools(ctx, identity)
-	if err != nil {
-		return nil, fmt.Errorf("codemode: list tools for script execution: %w", err)
-	}
-
-	// Bound the total wall-clock time of the whole script. This deadline is inherited by
-	// the inner tool calls (they derive their context from execCtx), so it caps both a
-	// single slow call and a long sequence of fast ones.
-	execCtx, cancel := context.WithTimeout(ctx, defaultScriptTimeout)
-	defer cancel()
-
-	exec := script.New(d.bindTools(identity, tools), d.cfg.scriptConfig())
-	result, err := exec.Execute(execCtx, src, data)
-	if err != nil {
-		// The engine already produces descriptive messages (runtime errors, step-limit
-		// and tool-timeout failures); surface them verbatim as an IsError result so the
-		// calling agent can correct the script rather than seeing a transport error.
-		return errorResult(err.Error()), nil
-	}
-	return fromMCPResult(result), nil
+	start := time.Now()
+	run := &scriptRun{sessionID: sessionIDOf(ctx)}
+	ctx, span := d.cfg.Telemetry.startScript(ctx)
+	res, err := d.runScript(ctx, identity, args, run)
+	d.finishScript(ctx, span, run, err, time.Since(start))
+	return res, err
 }
 
 // CheckToolCall admits execute_tool_script without consulting inner admission and
@@ -263,6 +233,130 @@ func (d *decorator) CheckToolCall(
 		return nil
 	}
 	return d.VMCP.CheckToolCall(ctx, identity, name, args)
+}
+
+// scriptRun tracks what one script execution did, for logs, telemetry and the
+// observer. Its counters are atomic because parallel() runs tool calls
+// concurrently; the engine has joined them all by the time runScript returns.
+type scriptRun struct {
+	toolCalls atomic.Int64
+	timedOut  atomic.Bool
+	sessionID string
+	// hash identifies the script body without carrying it; empty if the call
+	// failed before a script was read.
+	hash string
+	// engine is what the engine reported; zero if the script never ran.
+	engine script.Stats
+	// failure is why the call did not succeed: an argument error, the engine's
+	// error, or a transport error. Nil on success.
+	failure error
+	// execCtx is the script's deadline-bound context, nil if it never ran.
+	execCtx context.Context
+}
+
+// outcome classifies how the call ended. Every path that fails before the
+// engine runs (invalid arguments, a failed tool listing) is an error.
+func (r *scriptRun) outcome() ScriptOutcome {
+	if r.failure == nil {
+		return OutcomeSuccess
+	}
+	if r.execCtx == nil {
+		return OutcomeError
+	}
+	return classifyOutcome(r.execCtx, r.failure, r.timedOut.Load())
+}
+
+// runScript validates the arguments and executes the script. It returns the
+// tool result and transport error exactly as CallTool does, and fills run.
+func (d *decorator) runScript(
+	ctx context.Context, identity *auth.Identity, args map[string]any, run *scriptRun,
+) (*vmcp.ToolCallResult, error) {
+	src, ok := args["script"].(string)
+	if !ok || src == "" {
+		msg := fmt.Sprintf("%s requires a non-empty 'script' string argument", script.ExecuteToolScriptName)
+		run.failure = errors.New(msg)
+		return errorResult(msg), nil
+	}
+	run.hash = scriptHash(src)
+
+	// Record that a script started, without logging its body (which may carry
+	// sensitive arguments): the hash correlates repeated runs of one script.
+	slog.DebugContext(ctx, "codemode: script started",
+		"script_hash", run.hash, "session_id", run.sessionID,
+		"principal", principalOf(identity), "script_len", len(src))
+
+	data, err := extractData(args)
+	if err != nil {
+		run.failure = err
+		return errorResult(err.Error()), nil
+	}
+
+	// Bind the script to the identity's admission-filtered tool set. Each inner call
+	// re-enters inner.CallTool, so admission is enforced per call by the real tool name.
+	// innerTools fails loud on a reserved-name collision, so a shadowing backend tool
+	// surfaces as a transport error here rather than silently binding under the wrong
+	// admission (#5845).
+	tools, err := d.innerTools(ctx, identity)
+	if err != nil {
+		run.failure = fmt.Errorf("codemode: list tools for script execution: %w", err)
+		return nil, run.failure
+	}
+
+	// Bound the total wall-clock time of the whole script. This deadline is inherited by
+	// the inner tool calls (they derive their context from execCtx), so it caps both a
+	// single slow call and a long sequence of fast ones. execCtx carries the script
+	// span, so every inner call span, including those under parallel(), is its child.
+	execCtx, cancel := context.WithTimeout(ctx, defaultScriptTimeout)
+	defer cancel()
+
+	cfg := d.cfg.scriptConfig()
+	// OnStats runs on this goroutine before Execute returns, so no lock is needed.
+	cfg.OnStats = func(s script.Stats) { run.engine = s }
+	exec := script.New(d.bindTools(identity, tools, run), cfg)
+	result, err := exec.Execute(execCtx, src, data)
+	run.execCtx, run.failure = execCtx, err
+	if err != nil {
+		// The engine already produces descriptive messages (runtime errors, step-limit
+		// and tool-timeout failures); surface them verbatim as an IsError result so the
+		// calling agent can correct the script rather than seeing a transport error.
+		return errorResult(err.Error()), nil
+	}
+	return fromMCPResult(result), nil
+}
+
+// finishScript logs the end of a script, records its telemetry and notifies the
+// observer. None of these can change the tool result.
+func (d *decorator) finishScript(
+	ctx context.Context, span trace.Span, run *scriptRun, callErr error, elapsed time.Duration,
+) {
+	if callErr != nil && run.failure == nil {
+		run.failure = callErr
+	}
+	stats := ScriptStats{
+		ToolCalls:     int(run.toolCalls.Load()),
+		Outcome:       run.outcome(),
+		Duration:      elapsed,
+		Steps:         run.engine.Steps,
+		ParallelCalls: run.engine.ParallelCalls,
+		ParallelTasks: run.engine.ParallelTasks,
+	}
+
+	// A failed script is the caller's error, triggered at request rate, so it
+	// stays at DEBUG; toolhive_vmcp_script_executions{status} is the operator
+	// signal. The error text is what the caller already received.
+	logArgs := []any{
+		"script_hash", run.hash, "session_id", run.sessionID,
+		"status", string(stats.Outcome), "duration", elapsed,
+		"tool_calls", stats.ToolCalls, "steps", stats.Steps,
+		"parallel_calls", stats.ParallelCalls, "parallel_tasks", stats.ParallelTasks,
+	}
+	if run.failure != nil {
+		logArgs = append(logArgs, "error", run.failure.Error())
+	}
+	slog.DebugContext(ctx, "codemode: script finished", logArgs...)
+
+	d.cfg.Telemetry.finishScript(ctx, span, run.hash, stats)
+	notify(ctx, d.cfg.OnScript, stats)
 }
 
 // virtualTool builds the execute_tool_script definition whose description enumerates the
@@ -286,8 +380,10 @@ func virtualTool(innerTools []vmcp.Tool) vmcp.Tool {
 // values. Each Call closure routes through inner.CallTool with the captured identity, so
 // the inner target is admission-checked, and applies the configured per-call timeout (the
 // engine itself imposes none — see the [script.Tool].Call contract). The virtual tool is
-// never bound, so a script cannot recurse into execute_tool_script.
-func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []script.Tool {
+// never bound, so a script cannot recurse into execute_tool_script. Every call,
+// including one that fails or is denied, is counted on run, and runs in its own
+// child span of the script span.
+func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool, run *scriptRun) []script.Tool {
 	out := make([]script.Tool, 0, len(tools))
 	for _, t := range tools {
 		if t.Name == script.ExecuteToolScriptName {
@@ -298,6 +394,8 @@ func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []scri
 			Name:        name,
 			Description: t.Description,
 			Call: func(callCtx context.Context, arguments map[string]any) (*mcp.CallToolResult, error) {
+				run.toolCalls.Add(1)
+				callCtx, span := d.cfg.Telemetry.startToolCall(callCtx, name)
 				if d.cfg.ToolCallTimeout > 0 {
 					var cancel context.CancelFunc
 					callCtx, cancel = context.WithTimeout(callCtx, d.cfg.ToolCallTimeout)
@@ -306,7 +404,11 @@ func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []scri
 				// Inner calls carry no client _meta: the script originates them, so there is
 				// no protocol metadata to forward.
 				res, err := d.VMCP.CallTool(callCtx, identity, name, arguments, nil)
+				endToolCall(span, err != nil || (res != nil && res.IsError))
 				if err != nil {
+					if errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+						run.timedOut.Store(true)
+					}
 					// Don't echo the denied tool name back into the script result: a generic
 					// message keeps code mode from becoming a probe for which tools exist vs.
 					// which are denied. (The admission filter already excludes denied tools
@@ -321,6 +423,25 @@ func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []scri
 		})
 	}
 	return out
+}
+
+// scriptHash returns a short, stable identifier for a script body: the first
+// 16 hex characters of its SHA-256. It lets logs and spans correlate runs of
+// the same script without carrying the body.
+func scriptHash(src string) string {
+	sum := sha256.Sum256([]byte(src))
+	return hex.EncodeToString(sum[:8])
+}
+
+// sessionIDOf returns the MCP session ID of the request ctx belongs to, or ""
+// for a request without one (a Modern stateless request, or a direct call).
+// It reads the session the SDK put on ctx; core.VMCP.CallTool has no session
+// parameter, and this is for logs only.
+func sessionIDOf(ctx context.Context) string {
+	if session := server.ClientSessionFromContext(ctx); session != nil {
+		return session.SessionID()
+	}
+	return ""
 }
 
 // principalOf returns a log-safe principal identifier for identity, or "anonymous" when
@@ -357,25 +478,24 @@ func errorResult(msg string) *vmcp.ToolCallResult {
 // toMCPResult converts a core [vmcp.ToolCallResult] into the mcp-go result the script
 // engine consumes for an inner tool call.
 //
-// StructuredContent is assigned only when non-nil: a nil map[string]any placed in the
-// mcp-go `any` field would be a non-nil interface wrapping a typed nil, which the
-// engine's result parser treats as present and prefers over the text content — silently
-// dropping it. The Serve-path adapter in pkg/vmcp/server/serve_handlers.go can assign it
-// unconditionally because its consumer (the SDK JSON encoder, `omitempty`) is not
-// sensitive to the typed-nil distinction; this consumer is.
+// StructuredContent goes through conversion.ToMCPStructuredContent: a nil map[string]any
+// placed in the mcp-go `any` field directly would be a non-nil interface wrapping a typed
+// nil, which the engine's result parser treats as present and prefers over the text
+// content — silently dropping it.
+//
+// vMCP no longer synthesizes StructuredContent from Content, so an inner result without
+// structuredContent and without a text item (for example only an image or a blob
+// resource) reaches the script as None: binary payloads are not passed into scripts.
 func toMCPResult(r *vmcp.ToolCallResult) *mcp.CallToolResult {
 	if r == nil {
 		return nil
 	}
-	out := &mcp.CallToolResult{
-		Result:  mcp.Result{Meta: conversion.ToMCPMeta(r.Meta)},
-		Content: conversion.ToMCPContents(r.Content),
-		IsError: r.IsError,
+	return &mcp.CallToolResult{
+		Result:            mcp.Result{Meta: conversion.ToMCPMeta(r.Meta)},
+		Content:           conversion.ToMCPContents(r.Content),
+		StructuredContent: conversion.ToMCPStructuredContent(r.StructuredContent),
+		IsError:           r.IsError,
 	}
-	if r.StructuredContent != nil {
-		out.StructuredContent = r.StructuredContent
-	}
-	return out
 }
 
 // fromMCPResult converts the engine's mcp-go script result back into a core

@@ -8,10 +8,12 @@ import (
 	"errors"
 	"maps"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -86,6 +88,9 @@ func newMockFactoryWithError(t *testing.T, ctrl *gomock.Controller, err error) *
 type alwaysFailDataStorage struct{}
 
 func (alwaysFailDataStorage) Load(_ context.Context, _ string) (map[string]string, error) {
+	return nil, transportsession.ErrSessionNotFound
+}
+func (alwaysFailDataStorage) LoadMetadata(_ context.Context, _ string) (map[string]string, error) {
 	return nil, transportsession.ErrSessionNotFound
 }
 func (alwaysFailDataStorage) Create(_ context.Context, _ string, _ map[string]string) (bool, error) {
@@ -435,17 +440,32 @@ func TestSessionManager_CreateSession(t *testing.T) {
 
 		ctrl := gomock.NewController(t)
 
-		// We need a session that expects Close() to be called exactly once
-		// (the second terminated check closes the session)
-		var createdSess *sessionmocks.MockMultiSession
+		// entered signals that CreateSession is inside MakeSessionWithID (past the
+		// first terminated check); the factory then blocks until release is closed.
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseFactory := func() { releaseOnce.Do(func() { close(release) }) }
+
+		// Release the factory and wait for the CreateSession goroutine to exit, so a
+		// failed assertion cannot leave it running after gomock has finished.
+		t.Cleanup(func() {
+			releaseFactory()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("timed out waiting for CreateSession goroutine to exit")
+			}
+		})
+
 		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 		factory.EXPECT().
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
-				// Sleep to simulate slow backend initialization, creating a window
-				// where the client can terminate the session after the first check passes.
-				time.Sleep(50 * time.Millisecond)
-				createdSess = newMockSession(t, ctrl, id, []vmcp.Tool{{Name: "tool-a"}})
+				close(entered)
+				<-release
+				createdSess := newMockSession(t, ctrl, id, []vmcp.Tool{{Name: "tool-a"}})
 				// Close() will be called exactly once when the second terminated check fails
 				createdSess.EXPECT().Close().Return(nil).Times(1)
 				return createdSess, nil
@@ -459,26 +479,36 @@ func TestSessionManager_CreateSession(t *testing.T) {
 		require.NotEmpty(t, sessionID)
 
 		// Start CreateSession in a goroutine — it will pass the first terminated
-		// check and then sleep during MakeSessionWithID.
+		// check and then block in MakeSessionWithID until released.
 		errChan := make(chan error, 1)
 		go func() {
+			defer close(done)
 			_, err := sm.CreateSession(context.Background(), sessionID, nil)
 			errChan <- err
 		}()
 
-		// Give the goroutine time to pass the first check and enter MakeSessionWithID.
-		time.Sleep(10 * time.Millisecond)
+		// Wait until the goroutine has passed the first check and entered MakeSessionWithID.
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for CreateSession to enter MakeSessionWithID")
+		}
 
 		// Terminate the session while MakeSessionWithID is running. This sets
 		// terminated=true on the placeholder (does not delete it).
 		_, terminateErr := sm.Terminate(sessionID)
 		require.NoError(t, terminateErr)
+		releaseFactory()
 
 		// Wait for CreateSession to complete. The second terminated check (after
 		// MakeSessionWithID) should detect terminated=true and fail.
-		createErr := <-errChan
-		require.Error(t, createErr)
-		assert.ErrorContains(t, createErr, "was terminated during backend init")
+		select {
+		case createErr := <-errChan:
+			require.Error(t, createErr)
+			assert.ErrorContains(t, createErr, "was terminated during backend init")
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for CreateSession to return")
+		}
 	})
 }
 
@@ -2134,4 +2164,325 @@ func TestSessionManager_EvictStaleSessions_NoStale(t *testing.T) {
 
 	assert.Zero(t, sm.EvictStaleSessions(context.Background()))
 	assert.Equal(t, 2, sm.sessions.Len())
+}
+
+func TestSessionManager_SweepExpiredSessions(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	storage := newTestSessionDataStorage(t)
+	swept := &sweptRecorder{}
+	sm := newSweepTestManager(t, storage, -1, WithSweptSessionHook(swept.record))
+
+	// Live: a storage record exists and is not terminated -> kept.
+	sm.sessions.Set("s-live", newEvictionTestSession(t, ctrl, "", 0))
+	_, err := storage.Create(context.Background(), "s-live", map[string]string{
+		vmcpsession.MetadataKeyIdentityBinding: "unauthenticated",
+	})
+	require.NoError(t, err)
+
+	// Terminated: the storage record is marked terminated -> evicted.
+	sm.sessions.Set("s-terminated", newEvictionTestSession(t, ctrl, "", 1))
+	_, err = storage.Create(context.Background(), "s-terminated", map[string]string{
+		MetadataKeyTerminated: MetadataValTrue,
+	})
+	require.NoError(t, err)
+
+	// Gone: cached but no storage record (deleted by a DELETE on another
+	// replica) -> evicted.
+	sm.sessions.Set("s-gone", newEvictionTestSession(t, ctrl, "", 1))
+
+	assert.Equal(t, 2, sm.sweepExpiredSessions(t.Context()))
+	assert.Equal(t, 1, sm.sessions.Len())
+	assert.ElementsMatch(t, []string{"s-terminated", "s-gone"}, swept.ids(),
+		"the hook must receive exactly the evicted sessions")
+}
+
+// TestSessionManager_SweepDoesNotExtendSessionLifetime checks that sweeping a
+// live session does not refresh its TTL: swept far more often than the TTL,
+// the session still expires on schedule and the sweep then reclaims it.
+func TestSessionManager_SweepDoesNotExtendSessionLifetime(t *testing.T) {
+	t.Parallel()
+
+	const ttl = 300 * time.Millisecond
+	storage, err := transportsession.NewLocalSessionDataStorage(ttl)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Close() })
+
+	ctrl := gomock.NewController(t)
+	swept := &sweptRecorder{}
+	sm := newSweepTestManager(t, storage, -1, WithSweptSessionHook(swept.record))
+
+	_, err = storage.Create(context.Background(), "s-idle", map[string]string{
+		vmcpsession.MetadataKeyIdentityBinding: "unauthenticated",
+	})
+	require.NoError(t, err)
+	sm.sessions.Set("s-idle", newEvictionTestSession(t, ctrl, "", 1))
+
+	require.Eventually(t, func() bool {
+		sm.sweepExpiredSessions(t.Context())
+		return sm.sessions.Len() == 0
+	}, 10*ttl, ttl/10, "sweeping must not keep an idle session alive")
+	assert.Equal(t, []string{"s-idle"}, swept.ids())
+}
+
+func TestResolveSweepInterval(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured time.Duration
+		want       time.Duration
+	}{
+		{name: "zero selects the default", configured: 0, want: defaultSweepInterval},
+		{name: "negative disables the sweep", configured: -1, want: -1},
+		{name: "positive is used as is", configured: 5 * time.Second, want: 5 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, resolveSweepInterval(tt.configured))
+		})
+	}
+}
+
+// TestSessionManager_SweepLoop runs the background sweep New starts and checks
+// that cleanup stops it.
+func TestSessionManager_SweepLoop(t *testing.T) {
+	t.Parallel()
+
+	t.Run("evicts gone sessions until cleanup", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		swept := &sweptRecorder{}
+		sm, cleanup, err := New(newTestSessionDataStorage(t),
+			&FactoryConfig{Base: newMockFactory(t, ctrl, nil), SweepInterval: 10 * time.Millisecond},
+			newFakeRegistry(), WithSweptSessionHook(swept.record))
+		require.NoError(t, err)
+
+		sm.sessions.Set("s-gone", newEvictionTestSession(t, ctrl, "", 1))
+		require.Eventually(t, func() bool { return sm.sessions.Len() == 0 },
+			5*time.Second, 10*time.Millisecond, "the background sweep must evict a gone session")
+		require.Eventually(t, func() bool { return len(swept.ids()) == 1 },
+			5*time.Second, 10*time.Millisecond, "the hook must receive the swept session")
+
+		require.NoError(t, cleanup(t.Context()))
+		select {
+		case <-sm.sweepDone:
+		default:
+			t.Fatal("cleanup returned before the sweep loop stopped")
+		}
+		require.NoError(t, cleanup(t.Context()), "cleanup must be safe to call twice")
+	})
+
+	t.Run("negative interval disables the sweep", func(t *testing.T) {
+		t.Parallel()
+
+		sm := newSweepTestManager(t, newTestSessionDataStorage(t), -1)
+		assert.Nil(t, sm.sweepDone, "no sweep loop must be started")
+	})
+
+	t.Run("cleanup cancels a sweep in flight", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		storage := &blockingMetadataStorage{
+			DataStorage: newTestSessionDataStorage(t),
+			entered:     make(chan struct{}, 1),
+		}
+		sm, cleanup, err := New(storage,
+			&FactoryConfig{Base: newMockFactory(t, ctrl, nil), SweepInterval: 10 * time.Millisecond},
+			newFakeRegistry())
+		require.NoError(t, err)
+		sm.sessions.Set("s-1", newEvictionTestSession(t, ctrl, "", 0))
+
+		select {
+		case <-storage.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for the sweep to read storage")
+		}
+
+		// Shorter than restoreStorageTimeout, so only cancellation (not the
+		// per-read timeout) can unblock the read in time.
+		ctx, cancel := context.WithTimeout(t.Context(), restoreStorageTimeout/3)
+		defer cancel()
+		require.NoError(t, cleanup(ctx), "cleanup must cancel the blocked read and wait for the loop")
+		assert.Equal(t, 1, sm.sessions.Len(), "a cancelled read must not evict the session")
+	})
+
+	t.Run("cleanup reports a sweep that outlives its ctx", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		storage := &blockingMetadataStorage{
+			DataStorage: newTestSessionDataStorage(t),
+			entered:     make(chan struct{}, 1),
+			release:     make(chan struct{}),
+		}
+		sm, cleanup, err := New(storage,
+			&FactoryConfig{Base: newMockFactory(t, ctrl, nil), SweepInterval: 10 * time.Millisecond},
+			newFakeRegistry())
+		require.NoError(t, err)
+		sm.sessions.Set("s-1", newEvictionTestSession(t, ctrl, "", 0))
+
+		select {
+		case <-storage.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for the sweep to read storage")
+		}
+
+		// The read ignores cancellation, so the loop cannot stop before ctx ends.
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.ErrorIs(t, cleanup(ctx), context.Canceled)
+
+		close(storage.release)
+		select {
+		case <-sm.sweepDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for the sweep loop to stop after the read returned")
+		}
+	})
+}
+
+// newSweepTestManager builds a Manager over storage with the given sweep
+// interval and registers its cleanup.
+func newSweepTestManager(
+	t *testing.T, storage transportsession.DataStorage, sweepInterval time.Duration, opts ...Option,
+) *Manager {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	sm, cleanup, err := New(storage,
+		&FactoryConfig{Base: newMockFactory(t, ctrl, nil), SweepInterval: sweepInterval},
+		newFakeRegistry(), opts...)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cleanup(context.Background()) })
+	return sm
+}
+
+// sweptRecorder collects the IDs passed to a WithSweptSessionHook hook.
+type sweptRecorder struct {
+	mu  sync.Mutex
+	got []string
+}
+
+func (r *sweptRecorder) record(sessionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = append(r.got, sessionID)
+}
+
+func (r *sweptRecorder) ids() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.got...)
+}
+
+// blockingMetadataStorage is a DataStorage whose LoadMetadata blocks, as a hung
+// Redis read does. It signals entered on each call. With a nil release it
+// returns once its context ends; otherwise it ignores the context and returns
+// only when release is closed.
+type blockingMetadataStorage struct {
+	transportsession.DataStorage
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingMetadataStorage) LoadMetadata(ctx context.Context, _ string) (map[string]string, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	if s.release != nil {
+		<-s.release
+		return nil, errors.New("storage unavailable")
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// loadFailDataStorage is a DataStorage whose metadata reads always fail with a
+// storage error, as an unreachable Redis does.
+type loadFailDataStorage struct{ alwaysFailDataStorage }
+
+func (loadFailDataStorage) LoadMetadata(context.Context, string) (map[string]string, error) {
+	return nil, errors.New("storage unavailable")
+}
+
+func TestSessionManager_LookupOwner(t *testing.T) {
+	t.Parallel()
+
+	const owner = "https://issuer.example.com\x00alice"
+	tests := []struct {
+		name         string
+		stored       map[string]string // nil: no record
+		storage      transportsession.DataStorage
+		wantOwner    string
+		wantNotFound bool
+		wantStoreErr bool
+	}{
+		{name: "absent session", wantNotFound: true},
+		{name: "placeholder has no owner yet", stored: map[string]string{}},
+		{
+			name:         "terminated placeholder",
+			stored:       map[string]string{MetadataKeyTerminated: MetadataValTrue},
+			wantNotFound: true,
+		},
+		{
+			name:      "bound session",
+			stored:    map[string]string{sessiontypes.MetadataKeyIdentityBinding: owner},
+			wantOwner: owner,
+		},
+		{name: "storage failure", storage: loadFailDataStorage{}, wantStoreErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			storage := tc.storage
+			if storage == nil {
+				storage = newTestSessionDataStorage(t)
+			}
+			if tc.stored != nil {
+				created, err := storage.Create(context.Background(), "sess-1", tc.stored)
+				require.NoError(t, err)
+				require.True(t, created)
+			}
+			sm := &Manager{storage: storage}
+
+			got, err := sm.LookupOwner(context.Background(), "sess-1")
+			switch {
+			case tc.wantStoreErr:
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, transportsession.ErrSessionNotFound)
+			case tc.wantNotFound:
+				assert.ErrorIs(t, err, transportsession.ErrSessionNotFound)
+			default:
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantOwner, got)
+		})
+	}
+
+	t.Run("does not renew the session TTL", func(t *testing.T) {
+		t.Parallel()
+		mr := miniredis.RunT(t)
+		storage := newSharedRedisStorageWithTTL(t, mr, 30*time.Minute)
+		created, err := storage.Create(context.Background(), "sess-ttl",
+			map[string]string{sessiontypes.MetadataKeyIdentityBinding: owner})
+		require.NoError(t, err)
+		require.True(t, created)
+		sm := &Manager{storage: storage}
+
+		mr.FastForward(29 * time.Minute)
+		got, err := sm.LookupOwner(context.Background(), "sess-ttl")
+		require.NoError(t, err)
+		assert.Equal(t, owner, got)
+
+		// Past the original TTL: a renewing read would have kept the key alive.
+		mr.FastForward(2 * time.Minute)
+		_, err = sm.LookupOwner(context.Background(), "sess-ttl")
+		assert.ErrorIs(t, err, transportsession.ErrSessionNotFound,
+			"an ownership lookup must not keep the session alive")
+	})
 }

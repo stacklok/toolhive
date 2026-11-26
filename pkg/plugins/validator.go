@@ -29,9 +29,11 @@ var CheckFilesystem = skills.CheckFilesystem
 //  5. For each manifest.Skills entry, reuse skills.ValidateSkillDir on the
 //     bundled skill at <pluginDir>/<path-without-leading-./> — this reuses the
 //     pkg/skills validator for bundled skills rather than duplicating it.
+//     Both errors and warnings of bundled skills are reported.
 //
 // I/O errors are returned as error; validation issues are returned in
-// ValidationResult.
+// ValidationResult, both as legacy strings and as Findings whose File is
+// relative to path.
 func ValidatePluginDir(path string) (*ValidationResult, error) {
 	// Defense-in-depth: sanitize and validate the path before any filesystem
 	// access. The caller (pluginsvc.Validate) also validates via
@@ -42,58 +44,65 @@ func ValidatePluginDir(path string) (*ValidationResult, error) {
 		return nil, fmt.Errorf("path must be absolute, got %q", path)
 	}
 
-	var errs []string
+	res := &ValidationResult{}
 
 	// Check for symlinks and path traversal in a single walk.
-	if err := CheckFilesystem(path); err != nil {
-		errs = append(errs, err.Error())
-	}
+	res.AddFilesystemError(CheckFilesystem(path))
 
 	// Parse the manifest.
 	manifest, err := ParsePluginManifest(path)
 	if err != nil {
-		errs = append(errs, fmt.Sprintf("invalid plugin manifest: %v", err))
-		return &ValidationResult{
-			Valid:  false,
-			Errors: errs,
-		}, nil
+		res.AddFinding(manifestError(skills.RuleManifestInvalid,
+			fmt.Sprintf("invalid plugin manifest: %v", err)))
+		return res, nil
 	}
 
 	// Validate name + match directory basename.
 	dirName := filepath.Base(path)
 	if manifest.Name == "" {
-		errs = append(errs, "plugin name is required in manifest")
+		res.AddFinding(manifestError(skills.RuleNameRequired, "plugin name is required in manifest"))
 	} else {
 		if err := ValidatePluginName(manifest.Name); err != nil {
-			errs = append(errs, err.Error())
+			res.AddFinding(manifestError(skills.RuleNameInvalid, err.Error()))
 		}
 		if manifest.Name != dirName {
-			errs = append(errs,
-				fmt.Sprintf("plugin name %q must match directory name %q", manifest.Name, dirName))
+			res.AddFinding(manifestError(skills.RuleNameDirMismatch,
+				fmt.Sprintf("plugin name %q must match directory name %q", manifest.Name, dirName)))
 		}
 	}
 
 	// Reuse pkg/skills.Validator for bundled skills. Each manifest.Skills entry
 	// is a relative "./..." path; strip the leading "./" to resolve it under
-	// the plugin directory.
+	// the plugin directory. WithPluginRoot contains references by the plugin
+	// directory and skips the script-direct-exec check, because the whole
+	// plugin tree is installed with executable bits kept. Bundled findings
+	// (errors and warnings) are reported with File relative to the plugin
+	// directory and with the legacy strings prefixed by the bundled skill path.
 	for _, skillPath := range manifest.Skills {
-		bundledPath := filepath.Join(path, strings.TrimPrefix(skillPath, "./"))
-		skillResult, skillErr := skills.ValidateSkillDir(bundledPath)
+		relDir := strings.TrimPrefix(skillPath, "./")
+		bundledPath := filepath.Join(path, relDir)
+		prefix := fmt.Sprintf("bundled skill %q: ", skillPath)
+		skillResult, skillErr := skills.ValidateSkillDir(bundledPath, skills.WithPluginRoot(path))
 		if skillErr != nil {
 			// I/O error (e.g. bundled path missing) — surface as a validation error,
 			// not a hard error, so the caller still gets a ValidationResult.
-			errs = append(errs, fmt.Sprintf("bundled skill %q: %v", skillPath, skillErr))
+			res.AddPrefixedFindings(&ValidationResult{Findings: []skills.Finding{{
+				Severity: skills.SeverityError,
+				Rule:     skills.RuleBundledSkillUnreadable,
+				File:     ".",
+				Message:  skillErr.Error(),
+			}}}, relDir, prefix)
 			continue
 		}
-		if skillResult != nil && !skillResult.Valid {
-			for _, e := range skillResult.Errors {
-				errs = append(errs, fmt.Sprintf("bundled skill %q: %s", skillPath, e))
-			}
-		}
+		// WithPluginRoot already reports File relative to the plugin directory.
+		res.AddPrefixedFindings(skillResult, "", prefix)
 	}
 
-	return &ValidationResult{
-		Valid:  len(errs) == 0,
-		Errors: errs,
-	}, nil
+	res.Valid = len(res.Errors) == 0
+	return res, nil
+}
+
+// manifestError returns an error finding located in the plugin manifest.
+func manifestError(rule, msg string) skills.Finding {
+	return skills.Finding{Severity: skills.SeverityError, Rule: rule, File: ManifestPath, Message: msg}
 }

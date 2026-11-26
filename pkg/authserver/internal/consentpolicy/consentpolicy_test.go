@@ -29,6 +29,12 @@ func TestIsBackChannelOnlyClient(t *testing.T) {
 			},
 		},
 		{
+			name: "delegate-shaped client with authorization_code and token exchange",
+			client: &fosite.DefaultClient{
+				GrantTypes: fosite.Arguments{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeTokenExchange},
+			},
+		},
+		{
 			name: "no response types",
 			client: noResponseClient{DefaultClient: &fosite.DefaultClient{
 				GrantTypes: fosite.Arguments{oauthproto.GrantTypeAuthorizationCode},
@@ -39,6 +45,13 @@ func TestIsBackChannelOnlyClient(t *testing.T) {
 			name: "token exchange only",
 			client: &fosite.DefaultClient{
 				GrantTypes: fosite.Arguments{oauthproto.GrantTypeTokenExchange},
+			},
+			want: true,
+		},
+		{
+			name: "token exchange and jwt-bearer without authorization_code",
+			client: &fosite.DefaultClient{
+				GrantTypes: fosite.Arguments{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
 			},
 			want: true,
 		},

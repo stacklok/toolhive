@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -167,7 +168,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errContains: "unsupported external auth type",
+			errContains: "is not supported by MCPServer",
 		},
 		{
 			name: "valid embedded auth server configuration",
@@ -499,7 +500,11 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 			ctx := t.Context()
 			var options []runner.RunConfigBuilderOption
 
-			err := ctrlutil.AddExternalAuthConfigOptions(ctx, reconciler.Client, tt.mcpServer.Namespace, tt.mcpServer.Name, tt.mcpServer.Spec.ExternalAuthConfigRef, tt.oidcConfig, &options)
+			err := ctrlutil.AddExternalAuthConfigOptions(
+				ctx, reconciler.Client, tt.mcpServer.Namespace, tt.mcpServer.Name,
+				externalauthsupport.ConsumerMCPServer,
+				tt.mcpServer.Spec.ExternalAuthConfigRef, tt.oidcConfig, &options,
+			)
 
 			if tt.expectError {
 				assert.Error(t, err)

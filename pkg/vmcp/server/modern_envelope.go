@@ -17,28 +17,32 @@ import (
 )
 
 // This file hand-rolls the MCP 2026-07-28 ("Modern") stateless response
-// envelope: the wire shape go-sdk@v1.7.0-pre.3 produces for a single-shot
+// envelope: the wire shape go-sdk produces for a single-shot
 // tools/list, resources/list, resources/templates/list, prompts/list,
-// tools/call, resources/read, and prompts/get. Even in that version -- the one
-// mcpcompat (ToolHive's go-sdk import path) now depends on -- these Modern
-// types remain unexported, so this is a durable parallel serializer, not a
-// stopgap: resultType and _meta.serverInfo are set by unexported SDK functions
-// (setCompleteResultType, annotateServerInfo) that run inside the exact
+// tools/call, resources/read, and prompts/get. In the current go-sdk, these Modern
+// annotations still depend on unexported SDK functions (resultType,
+// setCompleteResultType, annotateServerInfo) that run inside the exact
 // ServerSession dispatch this package bypasses for Modern stateless requests.
 // A future go-sdk bump cannot just delete these structs and marshal SDK result
 // types directly -- the Modern annotations would vanish with them.
 //
-// modernResultTypeComplete is the sole value dispatchModern ever needs: this
-// package only performs single-shot dispatch, never the elicitation retry
-// loop (resultType "input_required"), so every result built here is
-// unconditionally "complete". Do not add Legacy-conditional branching to
+// The file also writes the SEP-2322 input_required result
+// (writeModernInputRequired). Do not add Legacy-conditional branching to
 // these structs -- this file is reached only for Modern requests.
+//
+// modernResultTypeComplete is the resultType of every single-shot success
+// result built here.
 const modernResultTypeComplete = "complete"
 
-// modernServerInfoKey is the go-sdk's MetaKeyServerInfo
-// (protocol.go:2367 in go-sdk@v1.7.0-pre.3), reproduced by hand since
-// mcpcompat/mcp (ToolHive's mcp import) does not re-export it, even though
-// go-sdk itself does.
+// modernResultTypeInputRequired is the SEP-2322 multi-round resultType,
+// written only by writeModernInputRequired. dispatchModern keeps no state
+// between rounds, so an input_required result asks the client to fulfil
+// inputRequests and send a fresh request.
+const modernResultTypeInputRequired = "input_required"
+
+// modernServerInfoKey is the go-sdk's MetaKeyServerInfo (protocol.go),
+// reproduced by hand since mcpcompat/mcp (ToolHive's mcp import) does not
+// re-export it, even though go-sdk itself does.
 const modernServerInfoKey = "io.modelcontextprotocol/serverInfo"
 
 // modernServerInfo mirrors the go-sdk's Implementation type.
@@ -173,10 +177,9 @@ type modernGetPromptResult struct {
 	Meta        map[string]any      `json:"_meta"`
 }
 
-// modernCompletionDetails mirrors the go-sdk's CompletionResultDetails
-// (protocol.go:653 in go-sdk@v1.7.0-pre.3): Values has no omitempty tag
-// there, so it doesn't here either -- an empty result still marshals
-// "values":[] rather than omitting the field.
+// modernCompletionDetails mirrors go-sdk's CompletionResultDetails:
+// Values has no omitempty tag there, so it doesn't here either -- an empty
+// result still marshals "values":[] rather than omitting the field.
 type modernCompletionDetails struct {
 	Values  []string `json:"values"`
 	Total   int      `json:"total,omitempty"`
@@ -554,6 +557,72 @@ func writeModernResult(w http.ResponseWriter, id, result any) {
 	})
 }
 
+// modernInputRequiredResult is the SEP-2322 InputRequiredResult wire result.
+// InputRequests values are relayed as opaque raw request objects, and
+// RequestState is omitted when nil: client requirement 2 says a client MUST
+// NOT echo a requestState the result did not carry.
+type modernInputRequiredResult struct {
+	ResultType    string                     `json:"resultType"`
+	InputRequests map[string]json.RawMessage `json:"inputRequests,omitempty"`
+	RequestState  *string                    `json:"requestState,omitempty"`
+	Meta          modernMeta                 `json:"_meta"`
+}
+
+// writeModernInputRequired writes result as a resultType "input_required"
+// success envelope at HTTP 200 under the request's own id, in the same single
+// application/json response as every other Modern result: no SSE stream, no
+// session, and no vMCP-side state. The client fulfils inputRequests and
+// retries with a fresh request.
+//
+// It takes the domain vmcp.InputRequiredResult so every producer shares one
+// writer: today the URL elicitation answer (converted by
+// inputRequiredFromURLElicitation), and later the backend rounds that
+// docs/arch/16-vmcp-mrtr.md slice 2 relays.
+func writeModernInputRequired(
+	w http.ResponseWriter, id any, result *vmcp.InputRequiredResult, serverName, serverVersion string,
+) {
+	writeModernResult(w, id, modernInputRequiredResult{
+		ResultType:    modernResultTypeInputRequired,
+		InputRequests: result.InputRequests,
+		RequestState:  result.RequestState,
+		Meta:          newModernMeta(serverName, serverVersion),
+	})
+}
+
+// modernURLElicitRequest is one InputRequest entry for a URL elicitation:
+// {method: "elicitation/create", params: {mode: "url", message, url}}. The
+// 2026-07-28 URL-mode params carry no elicitationId; the elicitation ID is the
+// inputRequests key instead.
+type modernURLElicitRequest struct {
+	Method string                `json:"method"`
+	Params modernURLElicitParams `json:"params"`
+}
+
+type modernURLElicitParams struct {
+	Mode    string `json:"mode"`
+	Message string `json:"message"`
+	URL     string `json:"url"`
+}
+
+// inputRequiredFromURLElicitation converts the URL elicitation answer into the
+// domain InputRequiredResult writeModernInputRequired renders, keyed by
+// elicitation ID, with no requestState (vMCP holds no round state, and the
+// retry is an ordinary tools/call).
+func inputRequiredFromURLElicitation(answer *vmcp.URLElicitationRequiredError) *vmcp.InputRequiredResult {
+	elicitations := answer.Elicitations()
+	requests := make(map[string]json.RawMessage, len(elicitations))
+	for _, e := range elicitations {
+		// The struct holds three strings, which always marshal; the error is
+		// ignored for that reason.
+		raw, _ := json.Marshal(modernURLElicitRequest{
+			Method: string(mcp.MethodElicitationCreate),
+			Params: modernURLElicitParams{Mode: elicitationModeURL, Message: e.Message(), URL: e.URL()},
+		})
+		requests[e.ElicitationID()] = raw
+	}
+	return &vmcp.InputRequiredResult{InputRequests: requests}
+}
+
 // writeModernError writes a JSON-RPC error envelope, deriving the HTTP
 // status from the JSON-RPC code -- mirroring go-sdk's extractErrorStatus
 // (streamable.go:1033-1061):
@@ -601,15 +670,11 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 // conversion.CodedErrorResult, the Legacy seam's rendering of the same
 // errors).
 //
-// Status is HTTP 200 deliberately: go-sdk's streamable client
-// (v1.7.0-pre.3) rejects a non-200 POST response in checkResponse BEFORE
-// decoding its body, so on any 4xx the JSON-RPC error object below —
-// including data.retryAfterSeconds on the rate limiter's 429 — would be
-// discarded unread. 200 is the only status on which the client surfaces the
-// coded error to the caller. The request was accepted and processed; the
-// failure is an application-level JSON-RPC error riding the transport.
-// (writeModernMissingCapability in modern_dispatch.go documents a related
-// but distinct 200-over-4xx deviation for -32021.)
+// Status follows the Modern protocol's required mappings: -32601 -> 404, and
+// -32602, -32020, -32021, and -32022 -> 400. Other coded errors stay at HTTP
+// 200 and keep their data, for example data.retryAfterSeconds on the rate
+// limiter's error. The go-sdk streamable client decodes non-2xx JSON-RPC
+// bodies by default, so the 4xx protocol rejections stay visible to callers.
 //
 // id follows writeModernError: absent (via transportsession.HasJSONRPCID) is
 // encoded by omitting the "id" key, never as null.
@@ -628,7 +693,17 @@ func writeModernCodedError(w http.ResponseWriter, id any, err error, coded mcppa
 	if transportsession.HasJSONRPCID(id) {
 		envelope["id"] = id
 	}
-	writeModernEnvelope(w, http.StatusOK, envelope)
+	status := http.StatusOK
+	switch coded.Code() {
+	case jsonRPCCodeMethodNotFound:
+		status = http.StatusNotFound
+	case jsonRPCCodeInvalidParams,
+		mcpparser.CodeHeaderMismatch,
+		mcpparser.CodeMissingClientCapability,
+		mcpparser.CodeUnsupportedProtocolVersion:
+		status = http.StatusBadRequest
+	}
+	writeModernEnvelope(w, status, envelope)
 }
 
 // writeModernDenied writes a JSON-RPC error envelope at HTTP 403 with

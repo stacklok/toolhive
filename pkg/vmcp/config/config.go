@@ -124,6 +124,7 @@ type Config struct {
 	// OutgoingAuth configures how the virtual MCP server authenticates to backends.
 	// When using the Kubernetes operator, this is populated by the converter from
 	// VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded.
+	// See VirtualMCPServerSpec.OutgoingAuth for supported MCPExternalAuthConfig types.
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty" yaml:"outgoingAuth,omitempty"`
 
@@ -196,10 +197,14 @@ type Config struct {
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty" yaml:"rateLimiting,omitempty"`
 
 	// PassthroughHeaders is an allowlist of incoming client request header names
-	// forwarded verbatim to all backends. Captured at the vMCP incoming edge by
-	// headerforward.CaptureMiddleware and consumed once at session creation
-	// when the per-session backend client's HeaderForwardConfig is built. Names
-	// must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+	// forwarded verbatim to all backends. Captured per request at the vMCP
+	// incoming edge by headerforward.CaptureMiddleware: tool calls, resource
+	// reads and prompt gets carry the values from the request that triggered
+	// them, and a header absent on that request is not forwarded. Session-scoped
+	// work (the session's backend connections, its advertised capability list,
+	// and background capability resyncs) uses the values from the request that
+	// created the session. Names must not be in the restricted set (Host,
+	// hop-by-hop, X-Forwarded-*, etc.).
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
@@ -247,6 +252,18 @@ type OIDCConfig struct {
 	// Audience is the required token audience.
 	Audience string `json:"audience" yaml:"audience"`
 
+	// RequiredSubject, when set, requires the token's "sub" claim to equal this value exactly.
+	// Tokens with a missing or empty "sub" claim are rejected.
+	// If RequiredSubjectPrefix is also set, both checks must pass.
+	// +optional
+	RequiredSubject string `json:"requiredSubject,omitempty" yaml:"requiredSubject,omitempty"`
+
+	// RequiredSubjectPrefix, when set, requires the token's "sub" claim to start with this value.
+	// Tokens with a missing or empty "sub" claim are rejected.
+	// If RequiredSubject is also set, both checks must pass.
+	// +optional
+	RequiredSubjectPrefix string `json:"requiredSubjectPrefix,omitempty" yaml:"requiredSubjectPrefix,omitempty"`
+
 	// Resource is the OAuth 2.0 resource indicator (RFC 8707).
 	// Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).
 	// If not specified, defaults to Audience.
@@ -289,6 +306,15 @@ type OIDCConfig struct {
 	// service-account CA when using Kubernetes service-account auth.
 	// +optional
 	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
+
+	// JWKSAuthTokenPath is the absolute file path to a bearer token that the
+	// OIDC middleware sends with OIDC discovery and JWKS requests to the issuer.
+	// Needed when the issuer requires authentication for those endpoints, such
+	// as the Kubernetes API server. Typically populated by the Kubernetes
+	// operator from MCPOIDCConfig.spec.inline.jwksAuthTokenPath or with the
+	// pod's service-account token when using Kubernetes service-account auth.
+	// +optional
+	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty" yaml:"jwksAuthTokenPath,omitempty"`
 }
 
 // AuthzConfig configures authorization.
@@ -397,7 +423,8 @@ type StaticBackendConfig struct {
 type OutgoingAuthConfig struct {
 	// Source defines how to discover backend auth: "inline", "discovered"
 	// - inline: Explicit configuration in OutgoingAuth
-	// - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
+	// - discovered: Auto-discover from backend MCPServer, MCPRemoteProxy, and
+	//   MCPServerEntry externalAuthConfigRef fields (Kubernetes only)
 	Source string `json:"source" yaml:"source"`
 
 	// Default is the default auth strategy for backends without explicit config.

@@ -1316,3 +1316,16 @@ func TestBuildOutputPropertySchema(t *testing.T) {
 		})
 	}
 }
+
+// TestConvertWorkflowDefsToToolsHaveNoBackend pins that a composite tool has
+// no BackendID: the vMCP refuses a call-bound token for a tool without a
+// single backend (pkg/vmcp/server call binding), and a composite dispatches
+// further calls.
+func TestConvertWorkflowDefsToToolsHaveNoBackend(t *testing.T) {
+	t.Parallel()
+	tools := ConvertWorkflowDefsToTools(map[string]*composer.WorkflowDefinition{
+		"flow": {Name: "flow", Description: "a composite"},
+	}, nil)
+	require.Len(t, tools, 1)
+	assert.Empty(t, tools[0].BackendID)
+}

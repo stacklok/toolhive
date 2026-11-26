@@ -18,7 +18,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tailscale/hujson"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -314,6 +314,11 @@ type clientAppConfig struct {
 	// the client's local config. Setup warns when detected. Empty when the client
 	// has no managed-profile surface.
 	LLMManagedProfileDomain string
+	// LLMManagedSettingsRelPath is the path segments, under /etc, of the Linux
+	// managed settings file (e.g. claude-desktop/managed-settings.json) that,
+	// when present, overrides the client's local config. Setup warns when
+	// detected. Empty when the client has no Linux managed-settings surface.
+	LLMManagedSettingsRelPath []string
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -572,7 +577,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			// Bedrock-compat keys (written only with --bedrock-compat). Bedrock rejects
 			// Claude Code's experimental anthropic-beta headers, so betas are disabled;
 			// the per-tier model IDs pin Bedrock inference-profile IDs. All use
-			// ClearWhenEmpty so a non-Bedrock setup removes any stale keys.
+			// ClearWhenEmpty so a non-Bedrock setup removes the keys a previous
+			// Bedrock setup wrote (ApplyConfig.ClearBedrockKeys); without one they
+			// are left as the user set them.
 			{
 				JSONPointer:    "/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
 				ValueField:     "BedrockDisableExperimentalBetas",
@@ -1111,6 +1118,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMSettingsPlatformPrefix: map[Platform][]string{
 			PlatformDarwin:  {"Library", "Application Support"},
 			PlatformWindows: {"AppData", "Local"},
+			PlatformLinux:   {".config"},
 		},
 		// Detect via the app's user-data directory, which exists once Claude
 		// Desktop has run — the configLibrary directory above does not exist
@@ -1119,8 +1127,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMDetectPlatformPrefix: map[Platform][]string{
 			PlatformDarwin:  {"Library", "Application Support"},
 			PlatformWindows: {"AppData", "Roaming"},
+			PlatformLinux:   {".config"},
 		},
-		LLMManagedProfileDomain: "com.anthropic.claudefordesktop.plist",
+		LLMManagedProfileDomain:   "com.anthropic.claudefordesktop.plist",
+		LLMManagedSettingsRelPath: []string{"claude-desktop", "managed-settings.json"},
 	},
 }
 

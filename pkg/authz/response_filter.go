@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -36,6 +35,31 @@ type ResponseFilteringWriter struct {
 	statusCode       int
 	annotationCache  *AnnotationCache
 	passThroughTools map[string]struct{}
+	// contentEncoding latches the backend's Content-Encoding value the first
+	// time any method observes one, because the header is rewritten before
+	// FlushAndFilter runs. Empty means the backend declared no encoding.
+	contentEncoding string
+	// rejected records that an encoded response was replaced by an error, so
+	// the rewrite and its log line happen once whether Flush or FlushAndFilter
+	// reaches it first.
+	rejected bool
+	// streamWarn makes errorResponseBody log at WARN instead of ERROR. Only the
+	// GET event-stream writer sets it: a stream error is caused by upstream
+	// content, not by a server fault, and the POST path keeps its ERROR level.
+	streamWarn bool
+	// selectMethod, set only by the event-stream writer, names the list filter for a
+	// clean response from its result shape when method is "". Nil on the POST path.
+	selectMethod func(result json.RawMessage) (string, error)
+}
+
+// responseMethod returns the list filter for a clean response. A writer with a fixed
+// method answers that method. A writer without one asks selectMethod, so the shape
+// rules are supplied by the caller that set it and applied in one place.
+func (rfw *ResponseFilteringWriter) responseMethod(response *jsonrpc2.Response) (string, error) {
+	if rfw.method != "" || rfw.selectMethod == nil {
+		return rfw.method, nil
+	}
+	return rfw.selectMethod(response.Result)
 }
 
 // NewResponseFilteringWriter creates a new response filtering writer.
@@ -61,12 +85,16 @@ func NewResponseFilteringWriter(
 
 // Write captures the response body for filtering
 func (rfw *ResponseFilteringWriter) Write(data []byte) (int, error) {
+	// A handler may call Write without WriteHeader, which Go treats as an
+	// implicit 200, so the encoding must be observed here too.
+	rfw.recordContentEncoding()
 	return rfw.buffer.Write(data)
 }
 
 // WriteHeader captures the status code
 func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 	rfw.statusCode = statusCode
+	rfw.recordContentEncoding()
 }
 
 // FlushAndFilter processes the captured response and applies filtering if needed.
@@ -82,6 +110,17 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	}
 
 	rawResponse := rfw.buffer.Bytes()
+
+	// A body still carrying a Content-Encoding is opaque to every decode and
+	// sniff below, which would pass it through unfiltered. Callers withhold the
+	// client's Accept-Encoding from the backend so Go's transport decodes gzip
+	// itself, but a backend can compress unprompted. Fail closed rather than
+	// forward bytes that cannot be filtered. If Flush already committed the
+	// rejection's headers, the error body is owed even when nothing was buffered.
+	if rfw.shouldRejectEncoded() && (len(rawResponse) > 0 || rfw.rejected) {
+		rfw.rejectEncodedResponse()
+		return rfw.writeRejectionBody(rfw.requestID())
+	}
 
 	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
 	// before parsing, so strip it here too. Otherwise a BOM-prefixed list
@@ -130,17 +169,30 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		// result, process it exactly as if it had been labeled correctly
 		// (which filters clean frames and fails closed on dirty ones). Only a
 		// body carrying no result under either shape passes through.
-		if carriesResult(rawResponse) {
+		action := classifyUnlabeledBody(rawResponse)
+		switch action {
+		case sniffFilterJSON, sniffRejectJSON:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as JSON",
 				"method", rfw.method, "contentType", contentType)
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processJSONResponse(rawResponse)
-		}
-		if sseCarriesResult(rawResponse) {
+		case sniffFilterSSE:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as SSE",
 				"method", rfw.method, "contentType", contentType)
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processSSEResponse(rawResponse)
+		case sniffRejectNamed:
+			slog.Warn("response with unrecognized media type names a result that could not be decoded; dropping",
+				"method", rfw.method, "contentType", contentType)
+			// Answer with the request id. If none is on the request, use the body's own id.
+			id := rfw.requestID()
+			if id == (jsonrpc2.ID{}) {
+				id = topLevelID(rawResponse)
+			}
+			return rfw.writeErrorResponse(id,
+				errors.New("dropped a frame carrying a result outside a clean Response"))
+		case sniffPassThrough:
+			// Falls through to the unchanged write below.
 		}
 		// The leading BOM was removed above, so the backend's Content-Length
 		// is now three bytes too large even though this fallback doesn't filter
@@ -150,6 +202,49 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
 	}
+}
+
+// recordContentEncoding latches the backend's Content-Encoding value. It never
+// clears the latch: later header rewrites must not hide an encoding already seen.
+func (rfw *ResponseFilteringWriter) recordContentEncoding() {
+	if rfw.contentEncoding == "" && mcpparser.HasContentEncoding(rfw.Header()) {
+		rfw.contentEncoding = strings.Join(rfw.Header().Values("Content-Encoding"), ", ")
+	}
+}
+
+// shouldRejectEncoded reports whether the buffered response must be replaced by
+// an error because it carries an encoding this filter cannot read.
+//
+// Only a 2xx response can carry a list, so an encoded non-2xx (a 404 from a
+// backend whose session expired, say) is forwarded untouched: replacing it with
+// an opaque 500 would cost the client the signal it needs to start a new
+// session, and there is no list in it to leak. Once a rejection is latched the
+// status has already been rewritten to 500, so the latch answers instead of the
+// status check.
+func (rfw *ResponseFilteringWriter) shouldRejectEncoded() bool {
+	if rfw.rejected {
+		return true
+	}
+	rfw.recordContentEncoding()
+	return rfw.contentEncoding != "" &&
+		rfw.statusCode >= http.StatusOK && rfw.statusCode < http.StatusMultipleChoices
+}
+
+// rejectEncodedResponse rewrites the response head for the plain JSON error that
+// replaces an encoded body: status 500, JSON media type, and none of the
+// backend's entity headers. It must run before the headers are committed, which
+// is why Flush calls it as well as FlushAndFilter. It is idempotent.
+func (rfw *ResponseFilteringWriter) rejectEncodedResponse() {
+	if rfw.rejected {
+		return
+	}
+	rfw.rejected = true
+	slog.Warn("dropping content-encoded response to a filtered method; its body cannot be filtered",
+		"method", rfw.method, "contentEncoding", truncateForLog(rfw.contentEncoding),
+		"backendStatus", rfw.statusCode)
+	mcpparser.DeleteEntityHeaders(rfw.Header())
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	rfw.statusCode = http.StatusInternalServerError
 }
 
 // Flush implements http.Flusher if the underlying ResponseWriter supports it.
@@ -171,6 +266,12 @@ func (rfw *ResponseFilteringWriter) Flush() {
 	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
 		rfw.applyResponseCachePolicy()
 		rfw.ResponseWriter.Header().Del("Content-Length")
+		// An encoded body to a filtered method is replaced by FlushAndFilter with
+		// a plain error, and headers cannot change once committed here, so the
+		// error's status and headers are fixed before the commit.
+		if requiresResponseFiltering(rfw.method) && rfw.shouldRejectEncoded() {
+			rfw.rejectEncodedResponse()
+		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		flusher.Flush()
 	}
@@ -199,7 +300,9 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 		// transport-independent, so apply the same check here as on the SSE
 		// path: if a non-Response, undecodable, or batch frame still carries a
 		// result, fail closed rather than passing the smuggled list through.
-		if carriesResult(rawResponse) {
+		// mayCarryResult also catches a result nested past encoding/json's depth cap,
+		// which carriesResult cannot see. The GET stream fails the same case closed.
+		if mayCarryResult(rawResponse, [][]byte{rawResponse}, err) {
 			slog.Warn("JSON response carried a result outside a clean Response frame; dropping as a protocol violation",
 				"method", rfw.method)
 			// A batch is replaced wholesale by this single error envelope
@@ -209,7 +312,11 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 			// already rejects batch requests outright (see #5745), so a
 			// batch response on this path is already off-spec traffic.
 			// Fail-closed is the right side to err on regardless.
-			return rfw.writeErrorResponse(rfw.requestID(),
+			id := rfw.requestID()
+			if id == (jsonrpc2.ID{}) {
+				id = topLevelID(rawResponse)
+			}
+			return rfw.writeErrorResponse(id,
 				errors.New("dropped a frame carrying a result outside a clean Response"))
 		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
@@ -252,21 +359,11 @@ type sseLine struct {
 // single payload, and a blank line is structural — it dispatches the event
 // rather than being emittable content in its own right.
 //
-// Lines are split on LF only, matching the client that actually consumes
-// these streams (github.com/modelcontextprotocol/go-sdk's mcp/event.go,
-// which ReadBytes('\n')s and never treats a lone CR as a line terminator) --
-// not the WHATWG EventSource grammar, which additionally splits on a bare CR.
-// The two disagree on a body containing an interior "\r" (e.g. inside a
-// data: payload): WHATWG would cut the line there, but the client reads it as
-// one line and parses through. Following the WHATWG grammar here decoded a
-// SUPERSET of what the client would treat as one line, letting the shorter,
-// wrongly-split pieces slip past filtering undetected -- a real regression,
-// not a hypothetical one. Splitting on LF only means we parse a superset of
-// what a stricter reader would call one line, so we decode and filter *more*
-// than before, never less: worst case for a client that does honor a lone CR
-// (e.g. a browser EventSource) is a payload it mis-frames identically to how
-// it would mis-frame the backend's raw bytes directly, since output stays
-// byte-preserving -- denial, never disclosure.
+// Lines are split on LF only, matching the go-sdk client (mcp/event.go), which
+// never treats a lone CR as a line terminator. A client that honours a lone CR
+// (WHATWG) can read data this split cannot see, so an event with a lone CR whose
+// data carries a result, read that way, fails closed (eventHasLoneCR). Splitting
+// on CR too caused an earlier regression with the go-sdk client.
 //
 // Every line is re-emitted with the same terminator it was scanned with, so
 // the output is structurally identical to the input (minus a leading UTF-8
@@ -288,38 +385,10 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	// unfiltered.
 	rawResponse = bytes.TrimPrefix(rawResponse, mcpparser.UTF8BOM)
 
-	var outputLines []sseLine
-	var event []sseLine
-	for len(rawResponse) > 0 {
-		idx := bytes.IndexByte(rawResponse, '\n')
-		var line, term []byte
-		if idx == -1 {
-			line, term, rawResponse = rawResponse, nil, nil
-		} else {
-			line, term, rawResponse = rawResponse[:idx], rawResponse[idx:idx+1], rawResponse[idx+1:]
-		}
-
-		// A line is structurally blank once its trailing CR (left over from
-		// a "\r\n" terminator the LF-only split doesn't consume) is ignored;
-		// without this a CRLF-terminated blank line would scan as the
-		// single byte "\r" and never be recognised as the event separator.
-		// The blank line's own bytes (that "\r", if present) are preserved
-		// in the output below rather than dropped, so structure stays
-		// byte-identical to the input.
-		if len(bytes.TrimRight(line, "\r")) == 0 {
-			outputLines = append(outputLines, rfw.resolveSSEEvent(event)...)
-			outputLines = append(outputLines, sseLine{text: line, term: term})
-			event = nil
-			continue
-		}
-		event = append(event, sseLine{text: line, term: term})
-	}
-	// A trailing event with no closing blank line: the go-sdk client (see
-	// mcp/event.go's yieldEvent, called once more after its read loop hits
-	// EOF) does still dispatch whatever is buffered at that point, so this
-	// is filtered like any other event, not dropped. We write these bytes
-	// (filtered) without fabricating a terminator the backend didn't send.
-	outputLines = append(outputLines, rfw.resolveSSEEvent(event)...)
+	// A trailing event with no closing blank line is filtered like any other:
+	// processSSELines resolves it too. Its bytes are written without a
+	// terminator the backend did not send.
+	outputLines := processSSELines(parseSSELines(rawResponse), rfw.resolveSSEEvent)
 
 	for _, l := range outputLines {
 		if _, err := rfw.ResponseWriter.Write(l.text); err != nil {
@@ -341,21 +410,41 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 	if len(event) == 0 {
 		return nil
 	}
-
-	dataValues := eventDataValues(event)
-	if len(dataValues) == 0 {
+	dataValues, assembled, loneCR := assembleSSEEvent(event)
+	if loneCR {
+		body := rfw.errorResponseBody(rfw.requestID(), errors.New("event carries a bare CR line break that the filter cannot split"))
+		return errorEventLines(body)
+	}
+	if len(assembled) == 0 {
+		// No data field, or an empty data buffer: a client never dispatches an empty
+		// data buffer, so there is nothing to classify or fail closed on.
 		return event
 	}
+	return rfw.resolveAssembled(event, dataValues, assembled)
+}
 
+// assembleSSEEvent joins the data: values of one SSE event. loneCR reports an
+// event with a bare CR line break, which a client that honours CR would split,
+// so the filter cannot read it as written. assembled is empty when the event has
+// no data: field or an empty payload.
+func assembleSSEEvent(event []sseLine) (dataValues [][]byte, assembled []byte, loneCR bool) {
+	if eventHasLoneCR(event) {
+		return nil, nil, true
+	}
+	dataValues = eventDataValues(event)
+	if len(dataValues) == 0 {
+		return nil, nil, false
+	}
 	// No whole-buffer trim needed here: the per-value trim in eventDataValues
 	// already leaves nothing but JSON-significant bytes at either edge of the join.
-	assembled := bytes.Join(dataValues, []byte("\n"))
-	if len(assembled) == 0 {
-		// A client never dispatches an empty data buffer, so there's nothing
-		// to classify or fail closed on.
-		return event
-	}
+	return dataValues, bytes.Join(dataValues, []byte("\n")), false
+}
 
+// resolveAssembled filters an event whose lone-CR check and data join were already
+// done by the caller. dataValues and assembled are that join: assembled is non-empty.
+// The GET stream's filterEvent calls it for frames that are not a clean Response, so
+// those checks run once per event.
+func (rfw *ResponseFilteringWriter) resolveAssembled(event []sseLine, dataValues [][]byte, assembled []byte) []sseLine {
 	replacement, failedClosed := rfw.filterSSEEventData(assembled)
 	if replacement == nil {
 		replacement, failedClosed = rfw.probeValuesForSmuggledResult(dataValues)
@@ -364,6 +453,92 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 		return event
 	}
 	return rebuildEventWithPayload(event, replacement, failedClosed)
+}
+
+// resolveDecodedResponse is resolveAssembled for an event whose payload the caller
+// already decoded as a clean Response with a list or find_tool result. It filters
+// that response directly, so the payload is not decoded a second time. The failure
+// is logged once here, and the client gets the generic error body.
+func (rfw *ResponseFilteringWriter) resolveDecodedResponse(event []sseLine, response *jsonrpc2.Response) []sseLine {
+	filteredData, ferr := rfw.filterAndEncode(response)
+	if ferr != nil {
+		slog.Warn("emitting a JSON-RPC error in place of an SSE frame that failed to filter",
+			"method", rfw.method, "error", ferr)
+		return rebuildEventWithPayload(event, encodeErrorBody(response.ID), true)
+	}
+	return rebuildEventWithPayload(event, filteredData, false)
+}
+
+// errorEventLines replaces a whole event with one `data:` line carrying body. It is
+// used when the event's data cannot be located line by line, as with a lone CR.
+func errorEventLines(body []byte) []sseLine {
+	return []sseLine{{text: append([]byte("data: "), body...), term: []byte("\n")}}
+}
+
+// eventHasLoneCR reports whether an event has a bare CR that a spec client reads
+// as a line break, and whose data, read that way, carries a result. The LF-only
+// split cannot see such data, so the caller fails the event closed. A CR at the
+// end of a line is the first half of a CRLF terminator and is not lone. The LF
+// split stays as it is: splitting on CR too caused an earlier regression with the
+// go-sdk client.
+func eventHasLoneCR(event []sseLine) bool {
+	var raw []byte
+	lone := false
+	for _, l := range event {
+		if i := bytes.IndexByte(l.text, '\r'); i != -1 && i != len(l.text)-1 {
+			lone = true
+		}
+		raw = append(raw, l.text...)
+		raw = append(raw, l.term...)
+	}
+	if !lone {
+		return false
+	}
+	// Read the event as a CR-honouring client does: CRLF, CR and LF all end a line.
+	view := bytes.ReplaceAll(bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n")), []byte("\r"), []byte("\n"))
+	// A CR-honouring client also ends an event at a blank line inside this LF event,
+	// so each such event is checked on its own. Joining across them would let a
+	// junk event hide a result in the next one.
+	for _, ev := range splitOnBlankLines(parseSSELines(view)) {
+		var evRaw []byte
+		for _, l := range ev {
+			evRaw = append(evRaw, l.text...)
+			evRaw = append(evRaw, l.term...)
+		}
+		values := eventDataValues(ev)
+		joined := bytes.Join(values, []byte("\n"))
+		// mayCarryResult also catches a result nested past the depth cap in this piece.
+		_, decodeErr := jsonrpc2.DecodeMessage(joined)
+		if mayCarryResult(joined, values, decodeErr) || sseCarriesResult(evRaw) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitOnBlankLines groups lines into events, each ending at a blank line.
+func splitOnBlankLines(lines []sseLine) [][]sseLine {
+	var events [][]sseLine
+	var cur []sseLine
+	for _, l := range lines {
+		if len(bytes.TrimRight(l.text, "\r")) == 0 {
+			if len(cur) > 0 {
+				events = append(events, cur)
+			}
+			cur = nil
+			continue
+		}
+		cur = append(cur, l)
+	}
+	if len(cur) > 0 {
+		events = append(events, cur)
+	}
+	return events
+}
+
+// hasDataLine reports whether body has at least one SSE data field.
+func hasDataLine(body []byte) bool {
+	return len(eventDataValues(parseSSELines(body))) > 0
 }
 
 // eventDataValues extracts one event's `data:` field values, in order, each
@@ -513,9 +688,16 @@ func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) (replacement
 			"method", rfw.method)
 		return rfw.errorResponseBody(rfw.requestID(),
 			errors.New("dropped a frame carrying a result outside a clean Response")), true
+	case decodeErr != nil && namesResultKey(data):
+		// Undecodable, but it names "result": a result nested past the JSON depth cap is
+		// invisible to carriesResult, so it is failed closed like a smuggled one.
+		slog.Warn("SSE event named a result but could not be decoded; failing closed",
+			"method", rfw.method)
+		return rfw.errorResponseBody(rfw.requestID(),
+			errors.New("dropped a frame carrying a result outside a clean Response")), true
 	case decodeErr != nil:
 		// Genuinely undecodable and no smuggled result. Pass through unfiltered.
-		slog.Warn("SSE event data could not be decoded as JSON-RPC; passing through unfiltered",
+		slog.Debug("SSE event data could not be decoded as JSON-RPC; passing through unfiltered",
 			"method", rfw.method, "error", decodeErr)
 		return nil, false
 	default:
@@ -544,23 +726,33 @@ const (
 // its response filter. Keeping eligibility and dispatch behind this one mapping
 // prevents a protected list method from being intercepted but passed through
 // because it was added to only one of two method lists.
+// listKind is one list result: the member that names it in a result, the method
+// whose response it answers, and the filter that scrubs it. listKinds is the only
+// table that lists them; the GET stream's member map is derived from it.
+type listKind struct {
+	member string
+	method string
+	kind   responseFilterKind
+}
+
+var listKinds = []listKind{
+	{member: "tools", method: string(mcp.MethodToolsList), kind: responseFilterTools},
+	{member: "prompts", method: string(mcp.MethodPromptsList), kind: responseFilterPrompts},
+	{member: "resources", method: string(mcp.MethodResourcesList), kind: responseFilterResources},
+	{member: "resourceTemplates", method: string(mcp.MethodResourcesTemplatesList), kind: responseFilterResourceTemplates},
+	{member: "skills", method: "skills/list", kind: responseFilterSkills},
+}
+
 func responseFilterForMethod(method string) responseFilterKind {
-	switch method {
-	case string(mcp.MethodToolsList):
-		return responseFilterTools
-	case string(mcp.MethodPromptsList):
-		return responseFilterPrompts
-	case string(mcp.MethodResourcesList):
-		return responseFilterResources
-	case string(mcp.MethodResourcesTemplatesList):
-		return responseFilterResourceTemplates
-	case "skills/list":
-		return responseFilterSkills
-	case optimizerdec.FindToolName:
-		return responseFilterFindTool
-	default:
-		return responseFilterNone
+	for _, lk := range listKinds {
+		if lk.method == method {
+			return lk.kind
+		}
 	}
+	if method == optimizerdec.FindToolName {
+		return responseFilterFindTool
+	}
+	return responseFilterNone
 }
 
 // requiresResponseFiltering reports whether the method needs response filtering.
@@ -634,7 +826,8 @@ func valueCarriesResult(value json.RawMessage) bool {
 // whose payload carries a JSON-RPC result. It is a lightweight detector, used
 // only to decide whether a body with an unrecognized media type needs the
 // full SSE processing path (which applies its own event-based filtering and
-// fail-closed rules); it mirrors sniffSSEToolsList in pkg/mcp/tool_filter.go.
+// fail-closed rules). The tool filter's counterpart is
+// eventStreamMayCarryToolsList in pkg/mcp/tools_list_response.go.
 func sseCarriesResult(rawResponse []byte) bool {
 	normalized := bytes.ReplaceAll(rawResponse, []byte("\r\n"), []byte("\n"))
 	normalized = bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
@@ -644,6 +837,31 @@ func sseCarriesResult(rawResponse []byte) bool {
 		}
 	}
 	return false
+}
+
+// bodyShape is the framing a body with an unrecognized media type carries a
+// JSON-RPC result in.
+type bodyShape int
+
+const (
+	bodyShapeNone bodyShape = iota
+	bodyShapeJSON
+	bodyShapeSSE
+)
+
+// sniffBodyShape reports which framing body carries a JSON-RPC result in. JSON is
+// checked first, then SSE. A body carrying no result in either is bodyShapeNone.
+// Both the buffered FlushAndFilter path and the SSE stream writer call it, so the
+// rules for mislabeled bodies live in one place. body must have its BOM removed.
+func sniffBodyShape(body []byte) bodyShape {
+	switch {
+	case carriesResult(body):
+		return bodyShapeJSON
+	case sseCarriesResult(body):
+		return bodyShapeSSE
+	default:
+		return bodyShapeNone
+	}
 }
 
 // objectCarriesResult reports whether a trimmed JSON object value has a
@@ -656,6 +874,78 @@ func objectCarriesResult(trimmedObject json.RawMessage) bool {
 		Result json.RawMessage `json:"result"`
 	}
 	return json.Unmarshal(trimmedObject, &probe) == nil && probe.Result != nil
+}
+
+// noShapeAction is what to do with a sniffed body that has no JSON-RPC or SSE result shape.
+type noShapeAction int
+
+const (
+	// noShapePassThrough writes the body unchanged.
+	noShapePassThrough noShapeAction = iota
+	// noShapeFilterSSE filters the body per event, because it has data lines.
+	noShapeFilterSSE
+	// noShapeReject answers the body with an error that carries the request id.
+	noShapeReject
+)
+
+// decideNoShapeBody is the one place that decides a body with no recognised shape.
+// Both the POST path and the GET stream call it. A body with data lines is filtered per
+// event, so a result split across data lines is still seen. Any other body that names
+// "result" is rejected when rejectNamed is set. The POST path sets it only when the body
+// does not decode, because a clean Response with a null result is still answered as is.
+func decideNoShapeBody(body []byte, rejectNamed bool) noShapeAction {
+	if hasDataLine(body) {
+		return noShapeFilterSSE
+	}
+	if rejectNamed && namesResultKey(body) {
+		return noShapeReject
+	}
+	return noShapePassThrough
+}
+
+// sniffAction is the decision for a 2xx body whose media type is neither
+// application/json nor text/event-stream. classifyUnlabeledBody makes it once, for
+// both the POST path and the GET stream. Each caller then acts on it with its own
+// writer and request id.
+type sniffAction int
+
+const (
+	// sniffFilterJSON: a clean JSON-RPC Response, filtered as one.
+	sniffFilterJSON sniffAction = iota
+	// sniffRejectJSON: a JSON body carries a result that is not a clean Response.
+	sniffRejectJSON
+	// sniffFilterSSE: the body is filtered per event.
+	sniffFilterSSE
+	// sniffRejectNamed: the body names a result that cannot be decoded.
+	sniffRejectNamed
+	// sniffPassThrough: no result in either shape, so the body is written unchanged.
+	sniffPassThrough
+)
+
+// classifyUnlabeledBody picks the action for such a body. It checks the shape first,
+// in the order the POST path always used.
+func classifyUnlabeledBody(body []byte) sniffAction {
+	switch sniffBodyShape(body) {
+	case bodyShapeJSON:
+		message, _ := jsonrpc2.DecodeMessage(body)
+		if _, ok := message.(*jsonrpc2.Response); ok {
+			return sniffFilterJSON
+		}
+		return sniffRejectJSON
+	case bodyShapeSSE:
+		return sniffFilterSSE
+	case bodyShapeNone:
+	}
+	_, derr := jsonrpc2.DecodeMessage(body)
+	switch decideNoShapeBody(body, derr != nil) {
+	case noShapeFilterSSE:
+		return sniffFilterSSE
+	case noShapeReject:
+		return sniffRejectNamed
+	case noShapePassThrough:
+		return sniffPassThrough
+	}
+	return sniffPassThrough
 }
 
 // filterListResponse filters the list response based on authorization policies
@@ -871,13 +1161,13 @@ var cachingHintMembers = []string{"cacheScope", "ttlMs"}
 func decodeFilterableListResult(
 	data json.RawMessage,
 	listField, identifierField string,
-) ([]jsonObjectMember, []json.RawMessage, error) {
+) ([]mcpparser.JSONObjectMember, []json.RawMessage, error) {
 	members, items, err := decodeListResult(data, listField, identifierField)
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, hint := range cachingHintMembers {
-		if _, _, err := uniqueCanonicalMember(members, hint); err != nil {
+		if _, _, err := mcpparser.UniqueCanonicalMember(members, hint); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -896,23 +1186,23 @@ var toolAnnotationMembers = jsonMemberNames(reflect.TypeFor[mcp.ToolAnnotation](
 // from those in the raw descriptor a filter forwards to the client.
 func validateToolAnnotations(rawTools []json.RawMessage) error {
 	for i, rawTool := range rawTools {
-		toolMembers, err := decodeJSONObjectMembers(rawTool)
+		toolMembers, err := mcpparser.DecodeJSONObjectMembers(rawTool)
 		if err != nil {
 			return fmt.Errorf("decoding tools item at index %d: %w", i, err)
 		}
-		rawAnnotations, ok, err := uniqueCanonicalMember(toolMembers, "annotations")
+		rawAnnotations, ok, err := mcpparser.UniqueCanonicalMember(toolMembers, "annotations")
 		if err != nil {
 			return fmt.Errorf("tools item at index %d: %w", i, err)
 		}
 		if !ok || isJSONNull(rawAnnotations) {
 			continue
 		}
-		annotationMembers, err := decodeJSONObjectMembers(rawAnnotations)
+		annotationMembers, err := mcpparser.DecodeJSONObjectMembers(rawAnnotations)
 		if err != nil {
 			return fmt.Errorf("decoding annotations of tools item at index %d: %w", i, err)
 		}
 		for _, name := range toolAnnotationMembers {
-			if _, _, err := uniqueCanonicalMember(annotationMembers, name); err != nil {
+			if _, _, err := mcpparser.UniqueCanonicalMember(annotationMembers, name); err != nil {
 				return fmt.Errorf("annotations of tools item at index %d: %w", i, err)
 			}
 		}
@@ -931,17 +1221,17 @@ func validateToolAnnotations(rawTools []json.RawMessage) error {
 // extension) is kept exactly as the backend sent it.
 func filteredListResponse(
 	id jsonrpc2.ID,
-	members []jsonObjectMember,
+	members []mcpparser.JSONObjectMember,
 	listField string,
 	permitted []json.RawMessage,
 ) (*jsonrpc2.Response, error) {
 	replacements := map[string]json.RawMessage{
-		listField:    encodeJSONArrayValues(permitted),
+		listField:    mcpparser.EncodeJSONArrayValues(nil, permitted),
 		"cacheScope": json.RawMessage(`"private"`),
 		"ttlMs":      json.RawMessage(`0`),
 	}
 
-	filteredResult, err := encodeJSONObjectMembers(members, replacements)
+	filteredResult, err := mcpparser.EncodeJSONObjectMembers(nil, members, replacements)
 	if err != nil {
 		return nil, err
 	}
@@ -1015,26 +1305,26 @@ func (rfw *ResponseFilteringWriter) filterResourceTemplatesResponse(
 func decodeResourceTemplatesListResult(
 	data json.RawMessage,
 ) (map[string]json.RawMessage, []json.RawMessage, []string, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("decoding resource templates list response: %w", err)
 	}
 	result := make(map[string]json.RawMessage, len(members)+2)
 	for _, member := range members {
-		result[member.name] = member.value
+		result[member.Name] = member.Value
 	}
 
-	rawTemplates, ok, err := uniqueCanonicalMember(members, "resourceTemplates")
+	rawTemplates, ok, err := mcpparser.UniqueCanonicalMember(members, "resourceTemplates")
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if !ok {
 		return nil, nil, nil, errors.New("resource templates list result is missing resourceTemplates")
 	}
-	if _, _, err := uniqueCanonicalMember(members, "cacheScope"); err != nil {
+	if _, _, err := mcpparser.UniqueCanonicalMember(members, "cacheScope"); err != nil {
 		return nil, nil, nil, err
 	}
-	if _, _, err := uniqueCanonicalMember(members, "ttlMs"); err != nil {
+	if _, _, err := mcpparser.UniqueCanonicalMember(members, "ttlMs"); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -1068,12 +1358,12 @@ func validateListResult(data json.RawMessage, listField, identifierField string)
 func decodeListResult(
 	data json.RawMessage,
 	listField, identifierField string,
-) ([]jsonObjectMember, []json.RawMessage, error) {
-	members, err := decodeJSONObjectMembers(data)
+) ([]mcpparser.JSONObjectMember, []json.RawMessage, error) {
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, nil, err
 	}
-	rawItems, ok, err := uniqueCanonicalMember(members, listField)
+	rawItems, ok, err := mcpparser.UniqueCanonicalMember(members, listField)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1089,11 +1379,11 @@ func decodeListResult(
 		return nil, nil, fmt.Errorf("field %q must be an array", listField)
 	}
 	for i, item := range items {
-		itemMembers, err := decodeJSONObjectMembers(item)
+		itemMembers, err := mcpparser.DecodeJSONObjectMembers(item)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decoding %s item at index %d: %w", listField, i, err)
 		}
-		rawIdentifier, ok, err := uniqueCanonicalMember(itemMembers, identifierField)
+		rawIdentifier, ok, err := mcpparser.UniqueCanonicalMember(itemMembers, identifierField)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s item at index %d: %w", listField, i, err)
 		}
@@ -1117,11 +1407,11 @@ func decodeListResult(
 func decodeResourceTemplateURIs(resourceTemplates []json.RawMessage) ([]string, error) {
 	uriTemplates := make([]string, len(resourceTemplates))
 	for i, rawTemplate := range resourceTemplates {
-		descriptorMembers, err := decodeJSONObjectMembers(rawTemplate)
+		descriptorMembers, err := mcpparser.DecodeJSONObjectMembers(rawTemplate)
 		if err != nil {
 			return nil, fmt.Errorf("decoding resource template at index %d: %w", i, err)
 		}
-		rawURITemplate, ok, err := uniqueCanonicalMember(descriptorMembers, "uriTemplate")
+		rawURITemplate, ok, err := mcpparser.UniqueCanonicalMember(descriptorMembers, "uriTemplate")
 		if err != nil {
 			return nil, fmt.Errorf("resource template at index %d: %w", i, err)
 		}
@@ -1138,84 +1428,6 @@ func decodeResourceTemplateURIs(resourceTemplates []json.RawMessage) ([]string, 
 		uriTemplates[i] = *uriTemplate
 	}
 	return uriTemplates, nil
-}
-
-type jsonObjectMember struct {
-	name  string
-	value json.RawMessage
-}
-
-// decodeJSONObjectMembers retains object member order and duplicates so
-// security-sensitive keys can be validated before encoding/json's usual
-// case-insensitive matching or last-value-wins behavior can hide them.
-func decodeJSONObjectMembers(data []byte) ([]jsonObjectMember, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	opening, err := decoder.Token()
-	if err != nil {
-		return nil, err
-	}
-	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
-		return nil, errors.New("value must be an object")
-	}
-
-	members := make([]jsonObjectMember, 0)
-	for decoder.More() {
-		nameToken, err := decoder.Token()
-		if err != nil {
-			return nil, err
-		}
-		name, ok := nameToken.(string)
-		if !ok {
-			return nil, errors.New("object member name must be a string")
-		}
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return nil, err
-		}
-		members = append(members, jsonObjectMember{name: name, value: value})
-	}
-
-	closing, err := decoder.Token()
-	if err != nil {
-		return nil, err
-	}
-	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
-		return nil, errors.New("unterminated object")
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("unexpected data after object")
-		}
-		return nil, err
-	}
-	return members, nil
-}
-
-// uniqueCanonicalMember returns the value of canonical when it occurs exactly
-// once. Case-folded aliases are rejected because common Go JSON decoders may
-// treat them as the canonical field and select a different value than the one
-// used for authorization or filtering.
-func uniqueCanonicalMember(
-	members []jsonObjectMember,
-	canonical string,
-) (json.RawMessage, bool, error) {
-	var value json.RawMessage
-	found := false
-	for _, member := range members {
-		if !strings.EqualFold(member.name, canonical) {
-			continue
-		}
-		if member.name != canonical {
-			return nil, false, fmt.Errorf("field %q has non-canonical alias %q", canonical, member.name)
-		}
-		if found {
-			return nil, false, fmt.Errorf("field %q occurs more than once", canonical)
-		}
-		value = member.value
-		found = true
-	}
-	return value, found, nil
 }
 
 // jsonMemberNames returns the object member names that encoding/json matches
@@ -1312,7 +1524,18 @@ func (rfw *ResponseFilteringWriter) filterSkillsResponse(response *jsonrpc2.Resp
 // their body here, so neither can leak it. id is echoed so the client can
 // correlate the error with its request.
 func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error) []byte {
-	slog.Error("error filtering response", "method", rfw.method, "error", err)
+	if rfw.streamWarn {
+		slog.Warn("error filtering response", "method", rfw.method, "error", err)
+	} else {
+		slog.Error("error filtering response", "method", rfw.method, "error", err)
+	}
+	return encodeErrorBody(id)
+}
+
+// encodeErrorBody encodes the generic JSON-RPC internal error without logging.
+// Callers that have already reported the reason themselves use this, so one
+// rejection does not produce two log lines describing it.
+func encodeErrorBody(id jsonrpc2.ID) []byte {
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
 		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, "internal error"),
@@ -1340,6 +1563,20 @@ func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error)
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
 	_, writeErr := rfw.ResponseWriter.Write(rfw.errorResponseBody(id, err))
+	return writeErr
+}
+
+// writeRejectionBody writes the JSON-RPC error that replaces a content-encoded
+// body the filter refused. rejectEncodedResponse has already logged the reason
+// at WARN and named the encoding, so nothing is logged again here.
+//
+// Unlike writeErrorResponse this is safe to reach after Flush() has committed
+// the headers, which is the case for a flushed event stream: Flush calls
+// rejectEncodedResponse first, so the head it commits is already the 500 with
+// the JSON media type, and the WriteHeader below is the no-op it should be.
+func (rfw *ResponseFilteringWriter) writeRejectionBody(id jsonrpc2.ID) error {
+	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
+	_, writeErr := rfw.ResponseWriter.Write(encodeErrorBody(id))
 	return writeErr
 }
 
@@ -1414,15 +1651,15 @@ func (rfw *ResponseFilteringWriter) filterFindToolResponse(response *jsonrpc2.Re
 
 type findToolOutputCarrier struct {
 	contentIndex   int
-	contentMembers []jsonObjectMember
+	contentMembers []mcpparser.JSONObjectMember
 	rawOutput      json.RawMessage
-	outputMembers  []jsonObjectMember
+	outputMembers  []mcpparser.JSONObjectMember
 	rawTools       []json.RawMessage
 	output         optimizer.FindToolOutput
 }
 
 type decodedFindToolCallResult struct {
-	members           []jsonObjectMember
+	members           []mcpparser.JSONObjectMember
 	content           []json.RawMessage
 	isError           bool
 	outputs           []findToolOutputCarrier
@@ -1430,7 +1667,7 @@ type decodedFindToolCallResult struct {
 }
 
 type findToolCallResultEnvelope struct {
-	members       []jsonObjectMember
+	members       []mcpparser.JSONObjectMember
 	content       []json.RawMessage
 	isError       bool
 	rawStructured json.RawMessage
@@ -1479,23 +1716,23 @@ func decodeFindToolCallResult(data json.RawMessage) (*decodedFindToolCallResult,
 }
 
 func decodeFindToolCallResultEnvelope(data json.RawMessage) (*findToolCallResultEnvelope, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, err
 	}
 
-	rawContent, ok, err := uniqueCanonicalMember(members, "content")
+	rawContent, ok, err := mcpparser.UniqueCanonicalMember(members, "content")
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, errors.New("find_tool result is missing content")
 	}
-	rawIsError, hasIsError, err := uniqueCanonicalMember(members, "isError")
+	rawIsError, hasIsError, err := mcpparser.UniqueCanonicalMember(members, "isError")
 	if err != nil {
 		return nil, err
 	}
-	rawStructured, hasStructured, err := uniqueCanonicalMember(members, "structuredContent")
+	rawStructured, hasStructured, err := mcpparser.UniqueCanonicalMember(members, "structuredContent")
 	if err != nil {
 		return nil, err
 	}
@@ -1530,11 +1767,11 @@ func decodeFindToolCallResultEnvelope(data json.RawMessage) (*findToolCallResult
 }
 
 func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutputCarrier, bool, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		return nil, false, fmt.Errorf("decoding find_tool content at index %d: %w", index, err)
 	}
-	rawType, ok, err := uniqueCanonicalMember(members, "type")
+	rawType, ok, err := mcpparser.UniqueCanonicalMember(members, "type")
 	if err != nil {
 		return nil, false, fmt.Errorf("find_tool content at index %d: %w", index, err)
 	}
@@ -1549,7 +1786,7 @@ func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutput
 		return nil, false, nil
 	}
 
-	rawText, ok, err := uniqueCanonicalMember(members, "text")
+	rawText, ok, err := mcpparser.UniqueCanonicalMember(members, "text")
 	if err != nil {
 		return nil, false, fmt.Errorf("find_tool text content at index %d: %w", index, err)
 	}
@@ -1577,14 +1814,14 @@ func decodeFindToolTextContent(index int, data json.RawMessage) (*findToolOutput
 // object or does not contain a tools member. A tools-bearing object is always
 // validated strictly and decoded into the concrete output type.
 func decodeFindToolOutput(data json.RawMessage) (*findToolOutputCarrier, bool, error) {
-	members, err := decodeJSONObjectMembers(data)
+	members, err := mcpparser.DecodeJSONObjectMembers(data)
 	if err != nil {
 		if trimmed := bytes.TrimSpace(data); len(trimmed) != 0 && trimmed[0] == '{' {
 			return nil, false, fmt.Errorf("decoding tools-bearing object: %w", err)
 		}
 		return nil, false, nil
 	}
-	rawToolsValue, ok, err := uniqueCanonicalMember(members, "tools")
+	rawToolsValue, ok, err := mcpparser.UniqueCanonicalMember(members, "tools")
 	if err != nil {
 		return nil, false, err
 	}
@@ -1640,7 +1877,8 @@ func (result *decodedFindToolCallResult) withFilteredToolIndexes(indexes []int) 
 	if err != nil {
 		return nil, err
 	}
-	filteredTextContent, err := encodeJSONObjectMembers(
+	filteredTextContent, err := mcpparser.EncodeJSONObjectMembers(
+		nil,
 		textCarrier.contentMembers,
 		map[string]json.RawMessage{"text": textValue},
 	)
@@ -1661,7 +1899,7 @@ func (result *decodedFindToolCallResult) withFilteredToolIndexes(indexes []int) 
 		}
 		replacements["structuredContent"] = filteredStructuredOutput
 	}
-	return encodeJSONObjectMembers(result.members, replacements)
+	return mcpparser.EncodeJSONObjectMembers(nil, result.members, replacements)
 }
 
 func (carrier *findToolOutputCarrier) withFilteredToolIndexes(indexes []int) ([]byte, error) {
@@ -1672,48 +1910,168 @@ func (carrier *findToolOutputCarrier) withFilteredToolIndexes(indexes []int) ([]
 		}
 		filteredTools = append(filteredTools, carrier.rawTools[index])
 	}
-	return encodeJSONObjectMembers(
+	return mcpparser.EncodeJSONObjectMembers(
+		nil,
 		carrier.outputMembers,
-		map[string]json.RawMessage{"tools": encodeJSONArrayValues(filteredTools)},
+		map[string]json.RawMessage{"tools": mcpparser.EncodeJSONArrayValues(nil, filteredTools)},
 	)
 }
 
-func encodeJSONArrayValues(values []json.RawMessage) json.RawMessage {
-	var encoded bytes.Buffer
-	encoded.WriteByte('[')
-	for i, value := range values {
-		if i != 0 {
-			encoded.WriteByte(',')
+// processSSELines is the one place that splits lines into events. It hands each
+// event's lines to resolve and keeps the blank separators. A line is blank once
+// its trailing CR is ignored, so a CRLF blank line still separates events.
+// Both the GET stream and the POST path use it.
+func processSSELines(lines []sseLine, resolve func([]sseLine) []sseLine) []sseLine {
+	var out []sseLine
+	var event []sseLine
+	for _, l := range lines {
+		if len(bytes.TrimRight(l.text, "\r")) == 0 {
+			out = append(out, resolve(event)...)
+			out = append(out, l)
+			event = nil
+			continue
 		}
-		encoded.Write(value)
+		event = append(event, l)
 	}
-	encoded.WriteByte(']')
-	return encoded.Bytes()
+	// A trailing event with no closing blank line is still dispatched by the
+	// go-sdk client (see mcp/event.go's yieldEvent, called once more after its
+	// read loop hits EOF), so it is resolved too.
+	return append(out, resolve(event)...)
 }
 
-// encodeJSONObjectMembers replaces canonical values while retaining raw extensions.
-func encodeJSONObjectMembers(
-	members []jsonObjectMember,
-	replacements map[string]json.RawMessage,
-) ([]byte, error) {
-	var encoded bytes.Buffer
-	encoded.WriteByte('{')
-	for i, member := range members {
-		if i != 0 {
-			encoded.WriteByte(',')
-		}
-		name, err := json.Marshal(member.name)
-		if err != nil {
-			return nil, err
-		}
-		encoded.Write(name)
-		encoded.WriteByte(':')
-		value := member.value
-		if replacement, ok := replacements[member.name]; ok {
-			value = replacement
-		}
-		encoded.Write(value)
+// mayCarryResult reports whether a payload that is not a clean Response may still
+// carry a result. carriesResult reads JSON values with encoding/json, which stops at
+// its nesting cap, so a result nested deeper is invisible to it. An undecodable
+// payload that names "result" anywhere is therefore treated as carrying one.
+func mayCarryResult(payload []byte, dataValues [][]byte, decodeErr error) bool {
+	if carriesResult(payload) || anyValueCarriesResult(dataValues) {
+		return true
 	}
-	encoded.WriteByte('}')
-	return encoded.Bytes(), nil
+	return decodeErr != nil && namesResultKey(payload)
+}
+
+// namesResultKey reports whether an object key in payload is "result" in any spelling,
+// including JSON escapes such as "result". It reads keys without parsing values, so
+// it still works on a payload the JSON decoder cannot read, such as one nested past its
+// depth cap.
+func namesResultKey(payload []byte) bool {
+	for i := 0; i < len(payload); i++ {
+		if payload[i] != '"' {
+			continue
+		}
+		end := closingQuote(payload, i)
+		if end < 0 {
+			return false
+		}
+		if key, ok := decodedKey(payload[i : end+1]); ok && strings.EqualFold(key, "result") &&
+			bytes.HasPrefix(bytes.TrimLeft(payload[end+1:], " \t\r\n"), []byte(":")) {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+// decodedKey returns the text of a JSON string token, with its escapes decoded.
+func decodedKey(token []byte) (string, bool) {
+	var s string
+	if json.Unmarshal(token, &s) != nil {
+		return "", false
+	}
+	return s, true
+}
+
+// anyValueCarriesResult reports whether any single data value carries a result.
+func anyValueCarriesResult(dataValues [][]byte) bool {
+	for _, v := range dataValues {
+		if carriesResult(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseSSELines splits raw on LF, keeping each line's terminator.
+func parseSSELines(raw []byte) []sseLine {
+	var lines []sseLine
+	for len(raw) > 0 {
+		idx := bytes.IndexByte(raw, '\n')
+		if idx == -1 {
+			lines = append(lines, sseLine{text: raw})
+			break
+		}
+		lines = append(lines, sseLine{text: raw[:idx], term: raw[idx : idx+1]})
+		raw = raw[idx+1:]
+	}
+	return lines
+}
+
+// topLevelID reads the "id" member of the top-level JSON object in payload, for a frame
+// that encoding/json cannot decode (for example one nested past its depth cap). It skips
+// nested values and strings without parsing them, and returns an empty id when no scalar
+// id is found.
+func topLevelID(payload []byte) jsonrpc2.ID {
+	depth := 0
+	for i := 0; i < len(payload); i++ {
+		switch payload[i] {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		case '"':
+			end := closingQuote(payload, i)
+			if end < 0 {
+				return jsonrpc2.ID{}
+			}
+			if key, ok := decodedKey(payload[i : end+1]); ok && depth == 1 && key == "id" {
+				if id, ok := idValue(payload[end+1:]); ok {
+					return id
+				}
+			}
+			i = end
+		}
+	}
+	return jsonrpc2.ID{}
+}
+
+// closingQuote returns the index of the quote that closes the string opened at start, or -1.
+func closingQuote(b []byte, start int) int {
+	for i := start + 1; i < len(b); i++ {
+		switch b[i] {
+		case '\\':
+			i++
+		case '"':
+			return i
+		}
+	}
+	return -1
+}
+
+// idValue parses the scalar id that follows an "id" key: a colon, then a string or number.
+func idValue(rest []byte) (jsonrpc2.ID, bool) {
+	rest = bytes.TrimLeft(rest, " \t\r\n")
+	if len(rest) == 0 || rest[0] != ':' {
+		return jsonrpc2.ID{}, false
+	}
+	value := bytes.TrimLeft(rest[1:], " \t\r\n")
+	if len(value) == 0 || (value[0] != '"' && value[0] != '-' && (value[0] < '0' || value[0] > '9')) {
+		return jsonrpc2.ID{}, false
+	}
+	var raw json.RawMessage
+	if json.NewDecoder(bytes.NewReader(value)).Decode(&raw) != nil {
+		return jsonrpc2.ID{}, false
+	}
+	// jsonrpc2.ID has no exported fields, so build it from the decoded scalar.
+	if value[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return jsonrpc2.ID{}, false
+		}
+		return jsonrpc2.StringID(s), true
+	}
+	var n int64
+	if json.Unmarshal(raw, &n) != nil {
+		return jsonrpc2.ID{}, false
+	}
+	return jsonrpc2.Int64ID(n), true
 }

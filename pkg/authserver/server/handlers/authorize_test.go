@@ -4,8 +4,11 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,8 +20,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/time/rate"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -179,6 +182,115 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "invalid_client")
 }
 
+func TestAuthorizeHandler_RejectsUnsafeRequestObject(t *testing.T) {
+	t.Parallel()
+
+	enc := base64.RawURLEncoding
+	compact := func(header, payload string) string {
+		return enc.EncodeToString([]byte(header)) + "." + enc.EncodeToString([]byte(payload)) + ".c2ln"
+	}
+	// One level past encoding/json's limit of 10000, and far below the depth
+	// that overflows go-jose v3, so a regression fails instead of crashing.
+	nestedClaims := `{"sub":"c1","x":` + strings.Repeat("[", 10000) + strings.Repeat("]", 10000) + `}`
+	queryWith := func(requestObject string) string {
+		return url.Values{
+			"client_id":     {testAuthClientID},
+			"redirect_uri":  {testAuthRedirectURI},
+			"response_type": {oauthproto.ResponseTypeCode},
+			"scope":         {"openid"},
+			"request":       {requestObject},
+		}.Encode()
+	}
+	embeddedJWK := queryWith(compact(`{"alg":"RS256","jwk":{"kty":"RSA"}}`, `{}`))
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "embedded jwk", query: embeddedJWK},
+		// ParseForm returns an error for the bad escape but keeps the pairs
+		// that parsed, and fosite later reads them from req.Form.
+		{name: "embedded jwk with a malformed pair elsewhere in the query", query: embeddedJWK + "&x=%zz"},
+		{name: "deeply nested claims", query: queryWith(compact(`{"alg":"RS256","kid":"k1"}`, nestedClaims))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, state, _ := handlerTestSetup(t)
+			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+tt.query, nil)
+			rec := httptest.NewRecorder()
+
+			handler.AuthorizeHandler(rec, req)
+
+			// The request is answered directly rather than redirected: nothing
+			// about the client or redirect_uri has been validated yet.
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Empty(t, rec.Header().Get("Location"))
+			assert.Contains(t, rec.Body.String(), "invalid_request_object")
+			// fosite looks the client up before it parses a request object, so
+			// no lookup means fosite's go-jose v3 parser never saw the token.
+			assert.Zero(t, state.getClientCalls)
+		})
+	}
+}
+
+func TestAuthorizeRoutes_RejectsMultipartCIMDRequestBeforeLookup(t *testing.T) {
+	t.Parallel()
+
+	handler, state, _ := handlerTestSetup(t)
+
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, multipartAuthorizeRequest(t, "https://client.example.com/metadata"))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "multipart request bodies are not supported\n", rec.Body.String())
+	assert.Zero(t, state.getClientCalls, "multipart CIMD request must be rejected before client lookup")
+}
+
+func TestAuthorizeRoutes_MultipartBackChannelOnlyAndUnknownClientsMatch(t *testing.T) {
+	t.Parallel()
+
+	handler, state, _ := handlerTestSetup(t)
+	client := spiffetest.Client(t)
+	state.clients[client.GetID()] = client
+
+	configured := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(configured, multipartAuthorizeRequest(t, client.GetID()))
+	unknown := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(unknown, multipartAuthorizeRequest(t, "unknown-client"))
+
+	assert.Equal(t, http.StatusBadRequest, configured.Code)
+	assert.Equal(t, unknown.Code, configured.Code)
+	assert.Equal(t, unknown.Body.String(), configured.Body.String())
+}
+
+func TestAuthorizeRoutes_QueryParametersStillWork(t *testing.T) {
+	t.Parallel()
+
+	handler, _, _ := handlerTestSetup(t)
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id="+testAuthClientID+"&redirect_uri=http://evil.example/callback", nil)
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_request")
+}
+
+func multipartAuthorizeRequest(t *testing.T, clientID string) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("client_id", clientID))
+	require.NoError(t, writer.WriteField("redirect_uri", "https://invalid.example/callback"))
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
+}
+
 func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T) {
 	t.Parallel()
 
@@ -191,14 +303,7 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			name: "SPIFFE client",
 			client: func(t *testing.T) fosite.Client {
 				t.Helper()
-				client, err := registration.NewSPIFFEClient(
-					"spiffe-client",
-					[]string{"openid"},
-					[]string{"https://mcp.example.com"},
-					nil,
-				)
-				require.NoError(t, err)
-				return client
+				return spiffetest.Client(t)
 			},
 			explicitMarker: true,
 		},
@@ -249,6 +354,19 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			assert.Equal(t, missing.Code, configured.Code)
 			assert.Equal(t, missing.Body.String(), configured.Body.String())
 			assert.Contains(t, configured.Body.String(), "invalid_client")
+
+			// A malformed request object must not distinguish the two either.
+			const badRequestObject = "&request=not-a-jws"
+			missingBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(missingBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			configuredBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(configuredBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id="+client.GetID()+"&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			assert.Equal(t, missingBadRequest.Code, configuredBadRequest.Code)
+			assert.Equal(t, missingBadRequest.Body.String(), configuredBadRequest.Body.String())
 		})
 	}
 }
@@ -378,10 +496,13 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name      string
-		allowed   []string
-		resources []string
-		want      string
+		name            string
+		allowed         []string
+		clientAudiences []string // nil means the client holds the same list as allowed
+		resources       []string
+		strategy        fosite.AudienceMatchingStrategy // nil keeps the handler's default
+		want            string
+		wantDescription string
 	}{
 		{name: "sole default", allowed: []string{"https://api.example.com"}, want: "https://api.example.com"},
 		{name: "explicit", allowed: []string{"https://api.example.com", "https://other.example.com"}, resources: []string{"https://other.example.com"}, want: "https://other.example.com"},
@@ -391,11 +512,62 @@ func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 		{name: "empty", allowed: []string{"https://api.example.com"}, resources: []string{""}},
 		{name: "unknown", allowed: []string{"https://api.example.com"}, resources: []string{"https://other.example.com"}},
 		{name: "malformed", allowed: []string{"https://api.example.com", "relative"}, resources: []string{"relative"}},
+		{
+			name:            "outside client audiences",
+			allowed:         []string{"https://api.example.com", "https://other.example.com"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://other.example.com"},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "path below the client audience",
+			allowed:         []string{"https://api.example.com/v1"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://api.example.com/v1"},
+			want:            "https://api.example.com/v1",
+		},
+		{
+			name:            "sibling of the client audience path",
+			allowed:         []string{"https://api.example.com/v1x"},
+			clientAudiences: []string{"https://api.example.com/v1"},
+			resources:       []string{"https://api.example.com/v1x"},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "client without audiences",
+			allowed:         []string{"https://api.example.com"},
+			clientAudiences: []string{},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			// The default path-prefix strategy accepts this resource (see "path below
+			// the client audience"); exact matching does not.
+			name:            "configured audience strategy is applied",
+			allowed:         []string{"https://api.example.com/v1"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://api.example.com/v1"},
+			strategy:        fosite.ExactAudienceMatchingStrategy,
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "defaulted resource outside client",
+			allowed:         []string{"https://api.example.com"},
+			clientAudiences: []string{"https://other.example.com"},
+			wantDescription: "not permitted to request resource",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			handler, state, upstream := handlerTestSetup(t)
 			handler.config.AllowedAudiences = tt.allowed
+			if tt.strategy != nil {
+				handler.config.AudienceMatchingStrategy = tt.strategy
+			}
+			clientAudiences := tt.clientAudiences
+			if clientAudiences == nil {
+				clientAudiences = tt.allowed
+			}
+			state.clients[testAuthClientID].(*fosite.DefaultClient).Audience = clientAudiences
 			params := url.Values{
 				"client_id": {testAuthClientID}, "redirect_uri": {testAuthRedirectURI},
 				"response_type": {"code"}, "state": {"client-state"},
@@ -409,6 +581,11 @@ func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 			if tt.want == "" {
 				assert.Equal(t, http.StatusSeeOther, rec.Code)
 				assert.Contains(t, rec.Header().Get("Location"), "error=invalid_target")
+				if tt.wantDescription != "" {
+					location, err := url.Parse(rec.Header().Get("Location"))
+					require.NoError(t, err)
+					assert.Contains(t, location.Query().Get("error_description"), tt.wantDescription)
+				}
 				assert.Empty(t, upstream.capturedState)
 				assert.Empty(t, state.pendingAuths)
 				return
@@ -841,93 +1018,21 @@ func TestLoopbackAuthorizeRequester_IsRedirectURIValid(t *testing.T) {
 	}
 }
 
-// --- rateLimitCIMDAuthorize (P1: /oauth/authorize CIMD rate limiting) ---
-
-// TestRateLimitCIMDAuthorize_BurstThen429 exercises the reviewer's exact
-// scenario: a flood of distinct CIMD-URL client_id values must be bounded by
-// the limiter, exhausting the burst before the gate starts returning 429,
-// entirely independent of fosite or the CIMD decorator — this test only
-// exercises the gate itself.
-func TestRateLimitCIMDAuthorize_BurstThen429(t *testing.T) {
+// TestAuthorizeHandler_CIMDRateLimited also proves the early back-channel-only
+// client lookup falls through to fosite when the limiter refuses it, so the 429
+// comes from the NewAuthorizeRequest mapping. The loopback rewrite lookup is not
+// exercised: the 127.0.0.1 redirect_uri returns before any GetClient call.
+func TestAuthorizeHandler_CIMDRateLimited(t *testing.T) {
 	t.Parallel()
+	handler, _, _ := handlerTestSetup(t,
+		withGetClientErrorAfterCalls(0, fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)))
 
-	var nextCalls int
-	h := &Handler{cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5)}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	// Burst of 5 must all be allowed through to next.
-	for i := 0; i < 5; i++ {
-		req := httptest.NewRequest(http.MethodGet,
-			"/oauth/authorize?client_id=https://evil.test/"+string(rune('a'+i))+".json", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code, "burst request %d must not be rate limited", i)
-	}
-	assert.Equal(t, 5, nextCalls, "all 5 burst requests must reach next")
-
-	// The 6th CIMD-URL request in the same instant must be rejected with 429.
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=https://evil.test/f.json", nil)
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id=https://client.example.com/metadata&redirect_uri=http://127.0.0.1:8080/callback", nil)
 	rec := httptest.NewRecorder()
-	gated(rec, req)
-	assert.Equal(t, http.StatusTooManyRequests, rec.Code, "request past the burst must be rate limited")
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
 	assert.Equal(t, "1", rec.Header().Get("Retry-After"))
-	assert.Equal(t, 5, nextCalls, "the rate-limited request must not reach next")
-}
-
-// TestRateLimitCIMDAuthorize_NonURLClientIDUnaffected verifies that ordinary
-// DCR (opaque, non-URL) client_id values never consult or exhaust the CIMD
-// limiter: a flood of such requests must all reach next, and must not affect
-// the limiter's state for a later CIMD-URL request.
-func TestRateLimitCIMDAuthorize_NonURLClientIDUnaffected(t *testing.T) {
-	t.Parallel()
-
-	var nextCalls int
-	h := &Handler{cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5)}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	// Far more than the burst size, all with an opaque DCR-style client_id.
-	for i := 0; i < 20; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=opaque-dcr-client-id", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code,
-			"a non-URL client_id must never be rate limited by the CIMD gate")
-	}
-	assert.Equal(t, 20, nextCalls)
-
-	// The limiter's full burst must still be available to a CIMD-URL request,
-	// proving the DCR traffic above never touched cimdAuthorizeLimiter's state.
-	for i := 0; i < 5; i++ {
-		req := httptest.NewRequest(http.MethodGet,
-			"/oauth/authorize?client_id=https://example.test/"+string(rune('a'+i))+".json", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code, "CIMD burst request %d must not be rate limited", i)
-	}
-	assert.Equal(t, 25, nextCalls)
-}
-
-// TestRateLimitCIMDAuthorize_NilLimiterAllowsThrough matches the documented
-// contract of registerLimiter's nil case: a Handler constructed without going
-// through NewHandler (as several existing tests in this package do) leaves
-// cimdAuthorizeLimiter nil, and the gate must tolerate that by always calling
-// next.
-func TestRateLimitCIMDAuthorize_NilLimiterAllowsThrough(t *testing.T) {
-	t.Parallel()
-
-	var nextCalls int
-	h := &Handler{}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=https://evil.test/a.json", nil)
-	rec := httptest.NewRecorder()
-	gated(rec, req)
-	assert.NotEqual(t, http.StatusTooManyRequests, rec.Code)
-	assert.Equal(t, 1, nextCalls)
 }

@@ -47,13 +47,13 @@ thv tui [flags]
 ### Options
 
 ```
-  -h, --help   help for tui
+  -h, --help[=true|false]   help for tui
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

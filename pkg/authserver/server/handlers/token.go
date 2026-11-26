@@ -5,26 +5,34 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // logAccessError logs a token-endpoint failure from fosite's access
 // request/response flow at a level determined by the error's HTTP status:
 // Debug for 4xx (the only class an unauthenticated caller can trigger, so
 // logging every one at Error would let a caller flood the log stream) and
-// Error for 5xx (a storage outage or signing-key failure, which must not be
-// silent at default log level). RFC6749Error.Error() returns only the error
-// code, so the diagnostic fields are read individually.
+// Error for 5xx (a storage outage or server failure, which must not be
+// silent at default log level). The exception is the 503 issuer-unavailable
+// refusal: an unauthenticated caller can trigger it on every request while an
+// issuer is down, so it logs at Debug here, and the validator logs the cause
+// once per backoff window at Error. RFC6749Error.Error() returns only the
+// error code, so the diagnostic fields are read individually.
 func logAccessError(ctx context.Context, msg string, err error) {
 	rfcErr := fosite.ErrorToRFC6749Error(err)
 	lvl := slog.LevelDebug
-	if rfcErr.CodeField >= http.StatusInternalServerError {
+	if rfcErr.CodeField >= http.StatusInternalServerError && !isIssuerUnavailable(rfcErr) {
 		lvl = slog.LevelError
 	}
 	//nolint:gosec // G706: error is request-derived (form parsing, client auth);
@@ -34,6 +42,15 @@ func logAccessError(ctx context.Context, msg string, err error) {
 		"debug", rfcErr.DebugField,
 		"status", rfcErr.CodeField,
 	)
+}
+
+// isIssuerUnavailable reports whether rfcErr is the 503 issuer-unavailable
+// refusal the redemption grants return when an issuer's signing keys cannot
+// be obtained. No other token-endpoint path returns temporarily_unavailable,
+// so matching on the code and status is enough here.
+func isIssuerUnavailable(rfcErr *fosite.RFC6749Error) bool {
+	return rfcErr.ErrorField == fosite.ErrTemporarilyUnavailable.ErrorField &&
+		rfcErr.CodeField == http.StatusServiceUnavailable
 }
 
 // TokenHandler handles POST /oauth/token requests.
@@ -49,9 +66,17 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// This session object is only used as a deserialization template.
 	sess := session.New("", "", "", session.UserClaims{})
 
+	// Token endpoint only: lets the CIMD decorator use the persisted client
+	// row when its fetch limiter refuses.
+	ctx = storage.WithPersistedClientFallback(ctx)
+
 	// Parse and validate the access request
 	accessRequest, err := h.provider.NewAccessRequest(ctx, req, sess)
 	if err != nil {
+		if errors.Is(err, storage.ErrCIMDRateLimited) {
+			writeCIMDRateLimitedOAuth(w)
+			return
+		}
 		// RFC6749Error.Error() returns only the error code, so a bare "error"
 		// field carries no diagnostic detail; logAccessError reads CodeField,
 		// DebugField, and DescriptionField instead. Client errors (4xx, the
@@ -63,9 +88,26 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if h.applyResourceAudience(ctx, w, accessRequest) {
+	ownsResource := server.OwnsResourceParameter(accessRequest)
+	if ownsResource {
+		// DPoP-bound ID-JAGs are unsupported: the server cannot bind a cnf claim
+		// yet, and ignoring the proof would issue an unbound token. The handler's
+		// own phase-1 refusals come first, in NewAccessRequest.
+		if len(req.Header.Values("DPoP")) > 0 {
+			slog.Warn("DPoP-bound ID-JAGs are not supported; request refused",
+				"client_id", accessRequest.GetClient().GetID(),
+			)
+			h.provider.WriteAccessError(ctx, w, accessRequest, &fosite.RFC6749Error{
+				ErrorField:       fosite.ErrInvalidRequest.ErrorField,
+				DescriptionField: server.ReasonDPoPNotSupported,
+				CodeField:        http.StatusBadRequest,
+			})
+			return
+		}
+	} else if h.applyResourceAudience(ctx, w, accessRequest) {
 		return
 	}
+	h.applySubjectIdentifier(accessRequest)
 
 	// Generate the access response (tokens)
 	response, err := h.provider.NewAccessResponse(ctx, accessRequest)
@@ -78,6 +120,20 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Only a server defect can reach this: a handler claimed the request without
+	// owning the resource. Its side effects are not undone, but nothing is sent.
+	if ownsResource && (response.GetExtra(oauthproto.ParamIssuedTokenType) != oauthproto.TokenTypeIDJAG ||
+		len(accessRequest.GetGrantedAudience()) > 0) {
+		slog.Error("token response for an ID-JAG request is not a bare ID-JAG; request refused",
+			"client_id", accessRequest.GetClient().GetID(),
+			"issued_token_type", fmt.Sprint(response.GetExtra(oauthproto.ParamIssuedTokenType)),
+			"granted_audience_count", len(accessRequest.GetGrantedAudience()),
+		)
+		h.provider.WriteAccessError(ctx, w, accessRequest,
+			fosite.ErrServerError.WithHint("The token could not be issued."))
+		return
+	}
+
 	// Renew the registration TTL for DCR-issued clients (public or confidential) on a
 	// successful token exchange/refresh. This is the proven-use signal — unlike the
 	// unauthenticated /oauth/authorize client read — so an actively-used client does
@@ -85,7 +141,8 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// raises a newly registered client from DefaultUnusedDCRClientTTL to
 	// DefaultDCRClientTTL. Best-effort: a renewal failure must not fail the token that
 	// was just issued. Storage is a no-op for pre-provisioned/static clients, which
-	// carry no DCRIssued marker.
+	// carry no DCRIssued marker, and the CIMD decorator skips CIMD rows (each
+	// successful fetch already renews them).
 	if client := accessRequest.GetClient(); client != nil {
 		if err := h.storage.RenewClientTTL(ctx, client); err != nil {
 			slog.Warn("failed to renew client registration TTL",
@@ -97,6 +154,56 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Write the token response
 	h.provider.WriteAccessResponse(ctx, w, accessRequest, response)
+}
+
+// applySubjectIdentifier removes stale sub_id and upstream subject claims from
+// every grant, then adds both claims only when the current runtime policy
+// permits the final login-token audience.
+func (h *Handler) applySubjectIdentifier(request fosite.AccessRequester) {
+	stored := request.GetSession()
+	if stored == nil {
+		return
+	}
+	// Clone is the copy-before-mutate step: the stored session must not be modified in place.
+	cloned := stored.Clone()
+	sess, ok := cloned.(*session.Session)
+	if !ok {
+		return
+	}
+	request.SetSession(cloned)
+	sess.ClearSubjectIdentifier()
+
+	loginGrant := request.GetGrantTypes().HasOneOf(
+		oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken, oauthproto.GrantTypeDeviceCode)
+	if !loginGrant || !sess.VerifiedUpstream.IsComplete() {
+		return
+	}
+
+	// On authorization_code redemption fosite copies the authorized granted audience
+	// only inside NewAccessResponse, after this runs, and applyResourceAudience only
+	// validates a matching resource without granting it, so the granted audience is
+	// usually still empty here. writeAuthorizationResponse sets requested and granted
+	// audience to the same pending.Resource, so the requested audience is equivalent.
+	// Only authorization_code may fall back: for device_code the requested audience is
+	// the caller's unvalidated audience form field, and refresh copies it forward from
+	// the original request. Those grants already carry their granted audience here.
+	audiences := request.GetGrantedAudience()
+	if len(audiences) == 0 && request.GetGrantTypes().ExactOne(oauthproto.GrantTypeAuthorizationCode) {
+		audiences = request.GetRequestedAudience()
+	}
+	if len(audiences) == 0 {
+		return
+	}
+	for _, audience := range audiences {
+		if !subjectIdentifierAudienceEnabled(h.config.SubjectIdentifierAudiences, audience) {
+			return
+		}
+	}
+	sess.SetSubjectIdentifier(sess.VerifiedUpstream)
+}
+
+func subjectIdentifierAudienceEnabled(configured []string, audience string) bool {
+	return audience != "" && slices.Contains(configured, audience)
 }
 
 // applyResourceAudience applies the RFC 8707 resource parameter to the access

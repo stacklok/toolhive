@@ -58,7 +58,9 @@ ToolHive supports five ways to run an MCP server:
    Automatically generates a container that runs the specified package
    using either uvx (Python with uv package manager), npx (Node.js),
    or go (Golang). For Go, you can also specify local paths starting
-   with './' or '../' to build and run local Go projects.
+   with './' or '../' to build and run local Go projects. Without
+   --transport or a registry entry, uvx:// packages use the stdio
+   transport, unless --target-port or --stateless is set.
 
 4. From an exported configuration:
 
@@ -98,7 +100,7 @@ The --network flag accepts any Docker-compatible network mode.
 
 Examples:
   # Run a server from the registry
-  thv run filesystem
+  thv run fetch
 
   # Run a server with custom arguments and toolsets
   thv run github -- --toolsets repos
@@ -113,7 +115,7 @@ Examples:
   thv run npx://@modelcontextprotocol/server-everything
 
   # Run a server in a specific group
-  thv run filesystem --group production
+  thv run fetch --group production
 
 # Run a remote GitHub MCP server with authentication
 thv run github-remote --remote-auth \

@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -533,7 +535,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, result)
-			assert.ElementsMatch(t, tt.wantFailed, failed)
+			assert.ElementsMatch(t, tt.wantFailed, slices.Collect(maps.Keys(failed)))
 		})
 	}
 }
@@ -565,7 +567,8 @@ func TestInProcessService_GetAllUpstreamCredentials_NilRefresher(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, map[string]UpstreamCredential{}, result)
-	assert.Equal(t, []string{"github"}, failed)
+	require.Len(t, failed, 1)
+	assert.ErrorIs(t, failed["github"], ErrNoRefreshToken)
 }
 
 // TestInProcessService_RefreshOnExpiredIDToken covers the ID-token staleness
@@ -838,7 +841,7 @@ func TestInProcessService_IDTokenRefreshFailure(t *testing.T) {
 
 			svc := NewInProcessService(mockStorage, mockRefresher)
 			before := time.Now()
-			cred, err := svc.refreshForIDToken(ctx, "session-1", "entra", row)
+			cred, err := svc.refreshForIDToken(ctx, "session-1", "entra", row, true, "")
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -891,7 +894,8 @@ func TestInProcessService_GetAllUpstreamCredentials_IDTokenRefreshRemovedRow(t *
 
 	require.NoError(t, err)
 	assert.Empty(t, creds)
-	assert.Equal(t, []string{"entra"}, failed)
+	require.Len(t, failed, 1)
+	assert.ErrorIs(t, failed["entra"], ErrRefreshFailed)
 }
 
 func TestIDTokenExpired(t *testing.T) {
@@ -1045,4 +1049,37 @@ func TestInProcessService_ConcurrentIDTokenRefresh(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for concurrent reads")
 	}
+}
+
+// Pins today's session-path parity; the owner check moves into the refresher
+// with the user-keyed option.
+func TestInProcessService_GetAllUpstreamCredentials_DoesNotCheckRefreshedRowOwner(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	row := &storage.UpstreamTokens{
+		ProviderID:   "entra",
+		AccessToken:  "expired-access-token",
+		RefreshToken: "refresh-token",
+		UserID:       "user-1",
+		ExpiresAt:    time.Now().Add(-time.Hour),
+	}
+	refreshed := &storage.UpstreamTokens{
+		ProviderID:  "entra",
+		AccessToken: "new-access-token",
+		UserID:      "user-2",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}
+	mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+	mockStorage.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-1").
+		Return(map[string]*storage.UpstreamTokens{"entra": row}, nil)
+	mockRefresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+	mockRefresher.EXPECT().RefreshAndStore(gomock.Any(), "session-1", row).Return(refreshed, nil)
+
+	creds, failed, err := NewInProcessService(mockStorage, mockRefresher).
+		GetAllUpstreamCredentials(context.Background(), "session-1")
+
+	require.NoError(t, err)
+	assert.Empty(t, failed)
+	assert.Equal(t, "new-access-token", creds["entra"].AccessToken)
 }

@@ -24,7 +24,7 @@ thv skill uninstall [skill-name] [flags]
 ### Options
 
 ```
-  -h, --help                  help for uninstall
+  -h, --help[=true|false]     help for uninstall
       --project-root string   Project root path for project-scoped skills
       --scope string          Scope to uninstall from (user, project) (default "user")
 ```
@@ -32,7 +32,7 @@ thv skill uninstall [skill-name] [flags]
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

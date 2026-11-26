@@ -22,6 +22,7 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
@@ -107,7 +108,7 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		Issuer: issuer,
 
 		// RECOMMENDED
-		TokenEndpoint:   issuer + "/oauth/token",
+		TokenEndpoint:   issuer + server.TokenEndpointPath,
 		JWKSURI:         issuer + "/.well-known/jwks.json",
 		ScopesSupported: h.config.ScopesSupported,
 
@@ -139,37 +140,59 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 
 // tokenEndpointAuthMethodsSupported returns the token_endpoint_auth_methods_supported
 // list for discovery, derived from config. "none" is always first — the public-client
-// default. When confidential DCR is enabled or static delegate clients are configured,
-// the two client_secret_* methods are appended. Static clients need these methods even
-// though DCR itself remains public-only. RFC 8414 defines no ordering semantics, so
-// "none"-first is a readability convention, not a security control.
+// default. When confidential DCR is enabled or a configured delegate client authenticates
+// with a secret, the two client_secret_* methods are appended. Static secret clients need
+// these methods even though DCR itself remains public-only. private_key_jwt and then the
+// SPIFFE methods follow when a client can use them. RFC 8414 defines no ordering semantics,
+// so this ordering is a readability convention, not a security control.
 func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
-	if h.config.AllowConfidentialClientRegistration || h.config.HasStaticDelegateClients {
+	if h.advertisesClientSecret() {
 		methods = append(methods,
 			sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
 			sharedobauth.TokenEndpointAuthMethodClientSecretPost,
 		)
 	}
-	if h.config.AllowPrivateKeyJWTRegistration {
+	if h.advertisesPrivateKeyJWT() {
 		methods = append(methods, sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT)
 	}
+	if h.config.SupportsSPIFFEX509ClientAuthentication {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEX509)
+	}
+	if h.config.SupportsSPIFFEJWTClientAuthentication {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT)
+	}
 	return methods
+}
+
+// advertisesClientSecret reports whether any client, registered dynamically or
+// configured at startup, can authenticate with a client secret.
+func (h *Handler) advertisesClientSecret() bool {
+	return h.config.AllowConfidentialClientRegistration || h.config.HasStaticSecretClients
+}
+
+// advertisesPrivateKeyJWT reports whether any client, registered dynamically or
+// configured at startup, can authenticate with private_key_jwt.
+func (h *Handler) advertisesPrivateKeyJWT() bool {
+	return h.config.AllowPrivateKeyJWTRegistration || h.config.HasStaticPrivateKeyJWTClients
 }
 
 // tokenEndpointAuthSigningAlgorithms returns the signing algorithms advertised
 // for private_key_jwt client assertions. The list is shared with DCR validation
 // so discovery cannot claim support for an algorithm registration rejects.
 func (h *Handler) tokenEndpointAuthSigningAlgorithms() []string {
-	if !h.config.AllowPrivateKeyJWTRegistration {
+	if !h.advertisesPrivateKeyJWT() {
 		return nil
 	}
 	return registration.SupportedSigningAlgorithms()
 }
 
-// grantTypesSupported returns only grant families registered with fosite.
+// grantTypesSupported returns the grant families the server advertises. It is
+// driven by configuration flags, not by the fosite handler set; the
+// client_credentials flag also decides whether its handler is registered, so the
+// two cannot differ.
 func (h *Handler) grantTypesSupported() []string {
-	grantTypes := make([]string, 0, 4)
+	grantTypes := make([]string, 0, 5)
 	if h.config.TokenExchangeEnabled {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeTokenExchange)
 	}
@@ -184,6 +207,9 @@ func (h *Handler) grantTypesSupported() []string {
 	}
 	if h.config.DeviceFlowEnabled {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeDeviceCode)
+	}
+	if h.config.SupportsSPIFFEClientCredentialsGrant {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeClientCredentials)
 	}
 	return grantTypes
 }

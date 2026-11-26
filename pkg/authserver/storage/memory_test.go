@@ -20,6 +20,7 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"errors"
 	"fmt"
@@ -31,11 +32,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	authsession "github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -168,6 +172,19 @@ func requireNotFoundError(t *testing.T, err error) {
 	assert.ErrorIs(t, err, fosite.ErrNotFound, "should match fosite.ErrNotFound")
 }
 
+// requireStampedCopy asserts got is the configured-stamped read-back of want,
+// and that the value held in s.clients is want itself, never a wrapper.
+func requireStampedCopy(t *testing.T, s *MemoryStorage, want, got fosite.Client) {
+	t.Helper()
+	s.mu.RLock()
+	assert.Same(t, want, s.clients[want.GetID()])
+	s.mu.RUnlock()
+	require.True(t, registration.IsConfigured(got))
+	assert.Equal(t, want.GetID(), got.GetID())
+	assert.Equal(t, want.GetScopes(), got.GetScopes())
+	assert.Equal(t, want.IsPublic(), got.IsPublic())
+}
+
 func testClient() *mockClient { return &mockClient{id: "test-client"} }
 
 // --- Basic Tests ---
@@ -267,7 +284,7 @@ func storedPrivateKeyJWTClient(id string, keys []jose.JSONWebKey) *fosite.Defaul
 		DefaultClient:                     &fosite.DefaultClient{ID: id},
 		TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		TokenEndpointAuthSigningAlgorithm: "RS256",
-		JSONWebKeys:                       &jose.JSONWebKeySet{Keys: keys},
+		JSONWebKeys:                       fositejose.ToFositeKeySet(&jose.JSONWebKeySet{Keys: keys}),
 	}
 }
 
@@ -351,17 +368,112 @@ func TestMemoryStorage_RegisterClient_AlwaysCreateOnly(t *testing.T) {
 	}
 }
 
+// newConfiguredPrivateKeyJWTClient builds a pre-provisioned private_key_jwt
+// client holding a fresh public key.
+func newConfiguredPrivateKeyJWTClient(t *testing.T, id string) fosite.Client {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	client, err := registration.NewStaticDelegateClient(registration.Config{
+		ID:                      id,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		JSONWebKeys: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: &key.PublicKey, KeyID: "k", Use: "sig", Algorithm: string(jose.RS256),
+		}}},
+		Scopes:   []string{"openid"},
+		Audience: []string{"https://mcp.example"},
+	})
+	require.NoError(t, err)
+	return client
+}
+
+// requireKeyRotationOverwrites reconciles two private_key_jwt clients with the
+// same ID but different keys and checks the second replaces the first.
+func requireKeyRotationOverwrites(t *testing.T, s Storage) {
+	t.Helper()
+	ctx := t.Context()
+	first := newConfiguredPrivateKeyJWTClient(t, "broker")
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, first))
+	rotated := newConfiguredPrivateKeyJWTClient(t, "broker")
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, rotated))
+
+	got, err := s.GetClient(ctx, "broker")
+	require.NoError(t, err)
+	assert.False(t, registration.DCRIssued(got))
+	oidc, ok := got.(fosite.OpenIDConnectClient)
+	require.True(t, ok)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
+	assert.Equal(t, rotated.(fosite.OpenIDConnectClient).GetJSONWebKeys().Keys[0].Key, oidc.GetJSONWebKeys().Keys[0].Key)
+}
+
+// requireSecretClientShapes round-trips an unpinned and a client_secret_post
+// pinned delegate client, then reconciles the same ID from unpinned to pinned
+// and checks the stored row switches shape.
+func requireSecretClientShapes(t *testing.T, s Storage) {
+	t.Helper()
+	ctx := t.Context()
+	build := func(id, method string) fosite.Client {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID:                      id,
+			Secret:                  "a-delegate-secret-of-sufficient-length",
+			TokenEndpointAuthMethod: method,
+			Scopes:                  []string{"openid"},
+			Audience:                []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		return client
+	}
+
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("unpinned", "")))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("pinned", oauthproto.TokenEndpointAuthMethodClientSecretPost)))
+
+	unpinned, err := s.GetClient(ctx, "unpinned")
+	require.NoError(t, err)
+	assert.NotImplements(t, (*fosite.OpenIDConnectClient)(nil), unpinned)
+	assert.NotEmpty(t, unpinned.GetHashedSecret())
+	assert.False(t, registration.DCRIssued(unpinned))
+
+	pinned, err := s.GetClient(ctx, "pinned")
+	require.NoError(t, err)
+	assert.Implements(t, (*fosite.OpenIDConnectClient)(nil), pinned)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		pinned.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+	assert.NotEmpty(t, pinned.GetHashedSecret())
+	assert.False(t, registration.DCRIssued(pinned))
+
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("unpinned", oauthproto.TokenEndpointAuthMethodClientSecretPost)))
+	switched, err := s.GetClient(ctx, "unpinned")
+	require.NoError(t, err)
+	assert.Implements(t, (*fosite.OpenIDConnectClient)(nil), switched)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		switched.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+	assert.NotEmpty(t, switched.GetHashedSecret())
+}
+
+func TestMemoryStorage_ReconcileConfiguredSecretClientShapes(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	defer s.Close()
+	requireSecretClientShapes(t, s)
+}
+
+func TestMemoryStorage_ReconcileConfiguredPrivateKeyJWTClient(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	defer s.Close()
+	requireKeyRotationOverwrites(t, s)
+}
+
 // TestMemoryStorage_ReconcileConfiguredClient covers the create/idempotent/
 // reject matrix ReconcileConfiguredClient must implement: create when
-// absent, no-op (replace with an equivalent record) when the existing record
-// is itself configured and fingerprint-equal, and refuse with
-// ErrAlreadyExists when the existing record is DCR-issued or a different
-// configured client.
+// absent, no-op on an equivalent record, and refuse with ErrAlreadyExists
+// when the existing record is DCR-issued. Replacing a configured client is
+// covered by TestReconcileConfiguredClient_SharedBehaviour.
 func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 	t.Parallel()
 
 	newConfigured := func(id string, scopes []string) fosite.Client {
-		return &mockClient{id: id, scopes: scopes, public: false}
+		return &fosite.DefaultClient{ID: id, Scopes: scopes, Public: false}
 	}
 
 	t.Run("creates when absent", func(t *testing.T) {
@@ -375,7 +487,7 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 
 		retrieved, err := s.GetClient(ctx, "configured")
 		require.NoError(t, err)
-		assert.Equal(t, client, retrieved)
+		requireStampedCopy(t, s, client, retrieved)
 	})
 
 	t.Run("idempotent on matching fingerprint", func(t *testing.T) {
@@ -394,7 +506,7 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 
 		retrieved, err := s.GetClient(ctx, "configured")
 		require.NoError(t, err)
-		assert.Equal(t, second, retrieved)
+		requireStampedCopy(t, s, second, retrieved)
 	})
 
 	t.Run("refuses to overwrite a DCR-issued client", func(t *testing.T) {
@@ -407,25 +519,6 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 
 		err := s.ReconcileConfiguredClient(ctx, newConfigured("configured", []string{"openid"}))
 		require.ErrorIs(t, err, ErrAlreadyExists)
-	})
-
-	t.Run("refuses a different configured client at the same ID", func(t *testing.T) {
-		t.Parallel()
-		ctx := t.Context()
-		s := NewMemoryStorage()
-		defer s.Close()
-
-		first := newConfigured("configured", []string{"openid"})
-		require.NoError(t, s.ReconcileConfiguredClient(ctx, first))
-
-		different := newConfigured("configured", []string{"profile"})
-		err := s.ReconcileConfiguredClient(ctx, different)
-		require.ErrorIs(t, err, ErrAlreadyExists)
-
-		// The original registration must be untouched.
-		retrieved, err := s.GetClient(ctx, "configured")
-		require.NoError(t, err)
-		assert.Equal(t, first, retrieved)
 	})
 
 	t.Run("rejects a client carrying the DCR-issued marker", func(t *testing.T) {
@@ -505,7 +598,7 @@ func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
 		s := NewMemoryStorage()
 		defer s.Close()
 
-		configured := &mockClient{id: "https://cimd.example/configured.json", public: false}
+		configured := &fosite.DefaultClient{ID: "https://cimd.example/configured.json", Public: false}
 		require.NoError(t, s.ReconcileConfiguredClient(ctx, configured))
 
 		err := s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/configured.json"))
@@ -514,7 +607,7 @@ func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
 		// The original registration must be untouched.
 		retrieved, err := s.GetClient(ctx, "https://cimd.example/configured.json")
 		require.NoError(t, err)
-		assert.Equal(t, configured, retrieved)
+		requireStampedCopy(t, s, configured, retrieved)
 	})
 
 	t.Run("rejects a client not carrying the DCR-issued marker", func(t *testing.T) {
@@ -609,7 +702,7 @@ func TestMemoryStorage_RegisterClient_CapIgnoresUncountedClients(t *testing.T) {
 	ctx := t.Context()
 	s, _ := newClockedMemoryStorage(t, 2)
 
-	require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured-1"}))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured-1"}))
 	require.NoError(t, s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/client.json")))
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-1")))
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-2")),
@@ -617,7 +710,7 @@ func TestMemoryStorage_RegisterClient_CapIgnoresUncountedClients(t *testing.T) {
 	require.ErrorIs(t, s.RegisterClient(ctx, dcrClient(t, "dcr-3")), ErrClientCapacity)
 
 	// At the cap, uncounted clients are still accepted.
-	require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured-2"}))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured-2"}))
 	require.NoError(t, s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/other.json")))
 
 	count, err := s.CountDCRClients(ctx)
@@ -787,7 +880,7 @@ func TestMemoryStorage_ClientExpiry(t *testing.T) {
 		ctx := t.Context()
 		s, clock := newClockedMemoryStorage(t, 0)
 
-		require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "permanent"}))
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "permanent"}))
 		clock.Advance(10 * DefaultDCRClientTTL)
 		_, err := s.GetClient(ctx, "permanent")
 		require.NoError(t, err)
@@ -799,7 +892,7 @@ func TestMemoryStorage_ClientExpiry(t *testing.T) {
 		s, clock := newClockedMemoryStorage(t, 0)
 
 		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "expiring")))
-		require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "permanent"}))
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "permanent"}))
 		clock.Advance(DefaultUnusedDCRClientTTL)
 		s.cleanupExpired()
 
@@ -822,7 +915,7 @@ func TestMemoryStorage_CountDCRClients(t *testing.T) {
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-1")))
 	clock.Advance(time.Hour)
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-2")))
-	require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured"}))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured"}))
 
 	count, err := s.CountDCRClients(ctx)
 	require.NoError(t, err)
@@ -875,8 +968,21 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 		{"known JTI is invalid", func(ctx context.Context, s *MemoryStorage) {
 			_ = s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute))
 		}, "test-jti", fosite.ErrJTIKnown},
-		{"expired JTI is valid", func(ctx context.Context, s *MemoryStorage) {
-			_ = s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour))
+		{"refused past deadline leaves jti reserved", func(ctx context.Context, s *MemoryStorage) {
+			_ = s.ClientAssertionJWTValid(ctx, "past-jti")
+			_ = s.SetClientAssertionJWT(ctx, "past-jti", time.Now().Add(-time.Hour)) // refused
+		}, "past-jti", fosite.ErrJTIKnown},
+		{"deadline just in the past is refused and leaves jti reserved", func(ctx context.Context, s *MemoryStorage) {
+			_ = s.ClientAssertionJWTValid(ctx, "edge-jti")
+			_ = s.SetClientAssertionJWT(ctx, "edge-jti", time.Now().Add(-time.Second)) // refused
+		}, "edge-jti", fosite.ErrJTIKnown},
+		{"JTI stays known until a deadline that is about to pass", func(ctx context.Context, s *MemoryStorage) {
+			_ = s.SetClientAssertionJWT(ctx, "grace-jti", time.Now().Add(5*time.Second))
+		}, "grace-jti", fosite.ErrJTIKnown},
+		{"expired marker is valid", func(_ context.Context, s *MemoryStorage) {
+			s.mu.Lock()
+			s.clientAssertionJWTs["expired-jti"] = time.Now().Add(-time.Hour)
+			s.mu.Unlock()
 		}, "expired-jti", nil},
 	}
 
@@ -895,6 +1001,57 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("excessive lifetime is invalid_client", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+		})
+	})
+
+	t.Run("deadline in the past is invalid_client and writes no marker", func(t *testing.T) {
+		withStorage(t, func(_ context.Context, s *MemoryStorage) {
+			err := s.SetClientAssertionJWT(context.Background(), "bad-jti", time.Now().Add(-time.Hour))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.HintField, "has expired or has no 'exp'")
+			s.mu.RLock()
+			_, exists := s.clientAssertionJWTs["bad-jti"]
+			s.mu.RUnlock()
+			assert.False(t, exists)
+		})
+	})
+
+	t.Run("the deadline it is given is stored exactly", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			deadline := time.Now().Add(2 * time.Minute)
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "exact-jti", deadline))
+
+			s.mu.RLock()
+			stored := s.clientAssertionJWTs["exact-jti"]
+			s.mu.RUnlock()
+			assert.True(t, deadline.Equal(stored), "the backend must not add retention of its own")
+		})
+	})
+
+	t.Run("deadline cap allows the retention extra", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			maxDeadline := server.ClientAssertionMaxMarkerAhead
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "cap-ok-jti", time.Now().Add(maxDeadline-5*time.Second)))
+
+			err := s.SetClientAssertionJWT(ctx, "cap-over-jti", time.Now().Add(maxDeadline+5*time.Second))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.HintField, "must be at most")
+		})
+	})
 
 	t.Run("cleanup expired JTIs on valid check", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
@@ -1114,6 +1271,12 @@ func TestMemoryStorage_TokenSessions(t *testing.T) {
 	}
 }
 
+// testVerifiedUpstream is a complete verified upstream identity shared by the
+// memory and Redis storage tests.
+var testVerifiedUpstream = authsession.UpstreamSubject{
+	Issuer: "https://idp.example.com", Subject: "upstream-sub", StableClaim: "oid", StableValue: "upstream-oid",
+}
+
 func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 	t.Parallel()
 
@@ -1123,6 +1286,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 				client := &mockClient{id: "client-1", scopes: []string{"openid"}}
 				expires := time.Now().Add(time.Hour)
 				sess := authsession.New("subject", "upstream-1", client.id, authsession.UserClaims{})
+				sess.VerifiedUpstream = testVerifiedUpstream
 				sess.SetExpiresAt(tc.tokenType, expires)
 				sess.JWTClaims.Extra["profile"] = map[string]any{"roles": []string{"reader"}}
 				sess.JWTHeader.Extra["metadata"] = map[string]any{"tags": []string{"original"}}
@@ -1154,7 +1318,8 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 					storedSession := got.GetSession().(*authsession.Session)
 					assert.Equal(t, expires, storedSession.ExpiresAt[tc.tokenType])
 					assert.Equal(t, "upstream-1", storedSession.GetIDPSessionID())
-					assert.Equal(t, "upstream-1", storedSession.JWTClaims.Extra[authsession.TokenSessionIDClaimKey])
+					assert.Equal(t, testVerifiedUpstream, storedSession.VerifiedUpstream)
+					assert.Equal(t, "upstream-1", storedSession.JWTClaims.Extra[claimnames.TokenSessionIDKey])
 					assert.Equal(t, map[string]any{"roles": []string{"reader"}}, storedSession.JWTClaims.Extra["profile"])
 					assert.Equal(t, map[string]any{"tags": []string{"original"}}, storedSession.GetJWTHeader().Extra["metadata"])
 				}
@@ -1168,6 +1333,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 				request.Form.Set("new", "value")
 				sess.SetExpiresAt(tc.tokenType, expires.Add(time.Hour))
 				sess.SetIDPSessionID("changed-source")
+				sess.VerifiedUpstream.StableValue = "changed-source"
 				sess.JWTClaims.Extra["profile"].(map[string]any)["roles"].([]string)[0] = "changed"
 				sess.GetJWTHeader().Extra["metadata"].(map[string]any)["tags"].([]string)[0] = "changed"
 
@@ -1185,6 +1351,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 				returnedSession := first.GetSession().(*authsession.Session)
 				returnedSession.SetExpiresAt(tc.tokenType, expires.Add(2*time.Hour))
 				returnedSession.SetIDPSessionID("changed-returned")
+				returnedSession.VerifiedUpstream.StableValue = "changed-returned"
 				returnedSession.JWTClaims.Extra["profile"].(map[string]any)["roles"].([]string)[0] = "changed"
 				returnedSession.GetJWTHeader().Extra["metadata"].(map[string]any)["tags"].([]string)[0] = "changed"
 
@@ -1928,7 +2095,8 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
 			BrowserBindingHash: "binding-hash",
 			SingleLeg:          true, ChainUpstreams: []string{"provider-1", "provider-2"},
-			CreatedAt: time.Now(),
+			VerifiedUpstream: testVerifiedUpstream,
+			CreatedAt:        time.Now(),
 		}
 	}
 
@@ -1947,6 +2115,7 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
+			assert.Equal(t, pending.VerifiedUpstream, retrieved.VerifiedUpstream)
 		})
 	})
 
@@ -2091,7 +2260,9 @@ func TestMemoryStorage_PendingDeviceConfirmation(t *testing.T) {
 		return &PendingDeviceConfirmation{
 			DeviceCode: "device-code", UserCode: "USER-CODE",
 			ResolvedUserID: "user-1", ResolvedUserName: "Ada Lovelace",
-			ResolvedUserEmail: "ada@example.com", CreatedAt: time.Now(),
+			ResolvedUserEmail: "ada@example.com",
+			VerifiedUpstream:  testVerifiedUpstream,
+			CreatedAt:         time.Now(),
 		}
 	}
 
@@ -2107,6 +2278,7 @@ func TestMemoryStorage_PendingDeviceConfirmation(t *testing.T) {
 			assert.Equal(t, pending.ResolvedUserID, retrieved.ResolvedUserID)
 			assert.Equal(t, pending.ResolvedUserName, retrieved.ResolvedUserName)
 			assert.Equal(t, pending.ResolvedUserEmail, retrieved.ResolvedUserEmail)
+			assert.Equal(t, pending.VerifiedUpstream, retrieved.VerifiedUpstream)
 		})
 	})
 
@@ -2235,7 +2407,10 @@ func TestMemoryStorage_DeviceCode(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-auth", "USER-AUTH")))
 
-			require.NoError(t, s.MarkDeviceRequestAuthorized(ctx, "device-auth", "user-1", "Alice", "alice@example.com", "session-1"))
+			require.NoError(t, s.MarkDeviceRequestAuthorized(ctx, "device-auth", DeviceAuthorization{
+				UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+				VerifiedUpstream: testVerifiedUpstream,
+			}))
 
 			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-auth")
 			require.NoError(t, err)
@@ -2244,8 +2419,11 @@ func TestMemoryStorage_DeviceCode(t *testing.T) {
 			assert.Equal(t, "Alice", retrieved.ResolvedUserName)
 			assert.Equal(t, "alice@example.com", retrieved.ResolvedUserEmail)
 			assert.Equal(t, "session-1", retrieved.SessionID)
+			assert.Equal(t, testVerifiedUpstream, retrieved.VerifiedUpstream)
 
-			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", "user-2", "Bob", "bob@example.com", "session-2")
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", DeviceAuthorization{
+				UserID: "user-2", UserName: "Bob", UserEmail: "bob@example.com", SessionID: "session-2",
+			})
 			require.ErrorIs(t, err, ErrInvalidState)
 
 			err = s.MarkDeviceRequestDenied(ctx, "device-auth")
@@ -2263,7 +2441,9 @@ func TestMemoryStorage_DeviceCode(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, DeviceRequestStatusDenied, retrieved.Status)
 
-			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", "user-1", "Alice", "alice@example.com", "session-1")
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", DeviceAuthorization{
+				UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+			})
 			require.ErrorIs(t, err, ErrInvalidState)
 		})
 	})
@@ -3976,4 +4156,87 @@ func TestScopesHash_DistinctForDistinctScopes(t *testing.T) {
 	assert.NotEqual(t, b, c)
 	assert.NotEqual(t, a, d)
 	assert.Equal(t, d, e)
+}
+
+func TestMemoryStorage_ExchangeGrantContract(t *testing.T) {
+	t.Parallel()
+	runExchangeGrantStorageContract(t, func(t *testing.T) (ExchangeGrantStorage, func(time.Duration)) {
+		t.Helper()
+		clock := &manualClock{now: contractEpoch}
+		s := NewMemoryStorage(withClientClock(clock.Now))
+		t.Cleanup(func() { _ = s.Close() })
+		return s, clock.Advance
+	})
+}
+
+func TestMemoryStorage_UserIdentityContract(t *testing.T) {
+	t.Parallel()
+	runUserIdentityStorageContract(t, func(t *testing.T) UserStorage {
+		t.Helper()
+		s := NewMemoryStorage()
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+func TestMemoryStorage_ExchangeGrantCleanup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := &manualClock{now: contractEpoch}
+	s := NewMemoryStorage(withClientClock(clock.Now))
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.CreateExchangeGrant(ctx, contractGrant("sig-1")))
+
+	// The marker (10m + margin) ends before the record (1h).
+	clock.Advance(11*time.Minute + ExchangeGrantMarkerMargin)
+	s.cleanupExpired()
+	s.mu.RLock()
+	assert.Len(t, s.exchangeGrants, 1)
+	assert.Empty(t, s.exchangeGrantJTIs)
+	s.mu.RUnlock()
+
+	clock.Advance(time.Hour)
+	s.cleanupExpired()
+	s.mu.RLock()
+	assert.Empty(t, s.exchangeGrants)
+	s.mu.RUnlock()
+}
+
+func TestMemoryStorage_ExchangeGrantMarkerHoldsSignature(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	t.Cleanup(func() { _ = s.Close() })
+	g := contractGrant("sig-1")
+	g.SourceExpiresAt = time.Now().Add(time.Hour)
+	g.ExpiresAt = time.Now().Add(time.Hour)
+	require.NoError(t, s.CreateExchangeGrant(context.Background(), g))
+
+	key := assertionJWTKey{purpose: "exchange-grant", issuer: g.SourceIssuer, jti: g.SourceJTI}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	assert.Equal(t, "sig-1", s.exchangeGrantJTIs[key].signature)
+	assert.Empty(t, s.assertionJWTs, "ConsumeAssertionJWT state must stay untouched")
+}
+
+func TestMemoryStorage_ExchangeGrantChildrenWriteNoMarker(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewMemoryStorage(withClientClock(newManualClock().Now))
+	t.Cleanup(func() { _ = s.Close() })
+
+	parent := contractGrant("parent")
+	parent.SourceExpiresAt = newManualClock().Now().Add(10 * time.Minute)
+	parent.ExpiresAt = newManualClock().Now().Add(time.Hour)
+	require.NoError(t, s.CreateExchangeGrant(ctx, parent))
+	for _, sig := range []string{"child-1", "child-2"} {
+		c := contractChild(sig)
+		c.ExpiresAt = parent.ExpiresAt
+		require.NoError(t, s.CreateExchangeGrant(ctx, c))
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	assert.Len(t, s.exchangeGrants, 3)
+	assert.Len(t, s.exchangeGrantJTIs, 1)
 }

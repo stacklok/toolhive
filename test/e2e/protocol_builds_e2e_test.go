@@ -244,6 +244,46 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "mcp-protocol", "protocols"
 			})
 		})
 
+		Context("when starting a uvx:// stdio server without --transport", func() {
+			var serverName string
+
+			BeforeEach(func() {
+				serverName = generateUniqueProtocolServerName("uvx-default-transport-test")
+			})
+
+			AfterEach(func() {
+				if config.CleanupAfter {
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
+				}
+			})
+
+			It("should default to stdio and keep the server running [Serial]", func() {
+				By("Starting the Time MCP server using uvx:// without --transport")
+				// mcp-server-time is a Python stdio server that exits on stdin EOF.
+				// With the streamable-http default its container started without
+				// stdin and was restarted in a loop (#6634). The version is pinned
+				// and --build-with keeps the Python mcp SDK below 2.0, which this
+				// server can't import (see TimeMCPServerImage in images.go).
+				stdout, stderr := e2e.NewTHVCommand(config, "run",
+					"--name", serverName,
+					"--build-with", "mcp<2",
+					"uvx://mcp-server-time@2026.7.10").ExpectSuccess()
+
+				output := stdout + stderr
+				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
+
+				By("Waiting for the server to be running")
+				err := e2e.WaitForMCPServer(config, serverName, 120*time.Second) // Longer timeout for protocol builds
+				Expect(err).ToNot(HaveOccurred(), "Server should be running within 120 seconds")
+
+				By("Listing tools and verifying time tools exist")
+				stdout, _ = e2e.NewTHVCommand(config, "mcp", "list", "tools", "--server", serverName, "--timeout", "60s").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring("get_current_time"), "Should find get_current_time tool")
+				Expect(stdout).To(ContainSubstring("convert_time"), "Should find convert_time tool")
+			})
+		})
+
 		Context("when testing uvx error conditions", func() {
 			var serverName string
 

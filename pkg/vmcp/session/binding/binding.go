@@ -8,10 +8,9 @@
 //
 // # Format
 //
-// A bound identity is encoded as iss + "\x00" + sub. NUL is rejected from
-// either half by Format and Parse: OIDC Core does not formally forbid NUL in
-// sub, but no real-world issuer emits one, and accepting it would let a
-// corrupted or adversarial value re-split during Parse.
+// Standard bindings have two NUL-separated fields: iss and sub. Delegated bindings
+// add the route tag "delegated" and client_id, followed by act.iss and act.sub
+// when an actor is present. Every encoded field is nonempty and contains no NUL.
 //
 // Sessions created before any auth middleware ran use the literal
 // "unauthenticated" sentinel. The sentinel must not contain '\x00' so it
@@ -23,8 +22,8 @@
 // Bindings are stored plaintext at rest. They are PII but not credentials —
 // they identify but do not authenticate. They carry no freshness signal (no
 // exp, no nonce) and are NOT a substitute for token validation: callers must
-// only compare a stored binding against a freshly-validated (iss, sub) pair
-// from the current request's token.
+// only compare a stored binding against the full binding from the current
+// request's freshly validated identity.
 package binding
 
 import "github.com/stacklok/toolhive/pkg/auth/sessionbinding"
@@ -45,11 +44,10 @@ func Format(iss, sub string) (string, error) {
 	return sessionbinding.Format(iss, sub)
 }
 
-// Parse splits an on-the-wire binding into its (iss, sub) components.
-// Returns ok=true only when s contains exactly one NUL and both halves are
-// non-empty. Returns ok=false for the unauthenticated sentinel, for malformed
-// input, and for empty strings. Callers must check ok; the empty-string
-// return values are not meaningful when ok=false.
+// Parse validates a standard or delegated binding and returns its (iss, sub)
+// prefix. It rejects malformed values and the unauthenticated sentinel. For
+// delegated bindings, passing these fields to Format loses ownership data; use
+// sessionbinding.Validate to compare full bindings instead.
 func Parse(s string) (iss, sub string, ok bool) {
 	return sessionbinding.Parse(s)
 }

@@ -12,9 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -280,6 +281,36 @@ func TestUpdateConfigAtPath_CallbackError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://original.example.com", config.RegistryUrl,
 		"config should not be written to disk when the callback returns an error")
+}
+
+// TestUpdateConfigAtPath_PreservesContainerRuntime guards against a config
+// write dropping the hand-edited container_runtime block, which the Docker SDK
+// client reads directly from the same file.
+func TestUpdateConfigAtPath_PreservesContainerRuntime(t *testing.T) {
+	t.Parallel()
+
+	_, configPath := SetupTestConfig(t, nil)
+	raw := []byte(`registry_url: https://original.example.com
+container_runtime:
+  docker_socket: /run/user/1000/docker.sock
+  podman_socket: /run/user/1000/podman/podman.sock
+  colima_socket: /home/user/.colima/custom/docker.sock
+`)
+	require.NoError(t, os.WriteFile(configPath, raw, 0600))
+
+	require.NoError(t, UpdateConfigAtPath(configPath, func(c *Config) error {
+		c.RegistryUrl = "https://updated.example.com"
+		return nil
+	}))
+
+	config, err := LoadOrCreateConfigWithPath(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "https://updated.example.com", config.RegistryUrl)
+	assert.Equal(t, runtime.SocketConfig{
+		DockerSocket: "/run/user/1000/docker.sock",
+		PodmanSocket: "/run/user/1000/podman/podman.sock",
+		ColimaSocket: "/home/user/.colima/custom/docker.sock",
+	}, config.ContainerRuntime)
 }
 
 // TestLoadFromPath_BackwardCompatMigrationStaysOnPath guards the test-isolation

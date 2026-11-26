@@ -47,6 +47,7 @@ import (
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/useragent"
 )
 
 const (
@@ -606,8 +607,10 @@ func (*httpBackendClient) newSSEClient(
 // shared by every backend transport (streamable-HTTP, SSE, and the raw Modern
 // shim). Outermost to innermost, in request execution order:
 //
-//	trace propagation → identity propagation → header-forward → authentication → TLS/HTTP
+//	trace propagation → identity propagation → header-forward → User-Agent → authentication → TLS/HTTP
 //
+// The User-Agent stage sits inside header-forward so a User-Agent an operator
+// forwards (passthroughHeaders or headerForward) wins over the vMCP default.
 // The nesting order is load-bearing: identity MUST wrap auth so the fresh
 // per-request identity is on the context before an auth strategy reads it (#5323).
 // The transport is isolated per call so each client gets its own connection pool,
@@ -657,6 +660,10 @@ func (h *httpBackendClient) buildBackendRoundTripper(
 	// runs on every backend call, so forwarding is per-request: each call reflects the current
 	// incoming header value. Restricted names and static-config collisions are rejected by
 	// MergeForwardedHeaders.
+	// Identify vMCP to the backend unless header-forward (outer) already set a
+	// User-Agent; see buildBackendRoundTripper's doc comment for the ordering.
+	baseTransport = useragent.NewRoundTripper(baseTransport)
+
 	mergedHeaderForward, mergeErr := headerforward.MergeForwardedHeaders(
 		target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx),
 	)
@@ -1905,7 +1912,7 @@ func (h *httpBackendClient) modernCallTool(
 	); err != nil {
 		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
-	return toolResultFromMCP(&result, toolName, target.WorkloadID), nil
+	return toolResultFromMCP(slog.Default(), &result, toolName, target.WorkloadID), nil
 }
 
 // legacyCallTool is the initialize + SDK CallTool path (unchanged behavior).
@@ -1974,18 +1981,28 @@ func (h *httpBackendClient) legacyCallTool(
 	// dropped. See drainServerToClientNotifications for the lost-notification race.
 	h.drainServerToClientNotifications(ctx, c)
 
-	return toolResultFromMCP(result, toolName, target.WorkloadID), nil
+	return toolResultFromMCP(slog.Default(), result, toolName, target.WorkloadID), nil
 }
 
 // toolResultFromMCP converts an mcp.CallToolResult into the vmcp domain result,
 // shared by the Legacy and Modern tools/call paths so both handle IsError
 // logging, structuredContent, and _meta forwarding identically.
-func toolResultFromMCP(result *mcp.CallToolResult, toolName, backendID string) *vmcp.ToolCallResult {
+//
+// logger receives the IsError line. Callers pass slog.Default(); tests pass
+// their own logger, so they assert on that line without swapping the
+// process-global slog default.
+func toolResultFromMCP(
+	logger *slog.Logger, result *mcp.CallToolResult, toolName, backendID string,
+) *vmcp.ToolCallResult {
 	// Extract _meta field from backend response
 	responseMeta := conversion.FromMCPMeta(result.Meta)
 
-	// Log if tool returned IsError=true (MCP protocol-level error, not a transport error)
-	// We still return the full result to preserve metadata and error details for the client
+	// Log if tool returned IsError=true (MCP protocol-level error, not a transport error).
+	// The full result, error text included, still goes back to the client below.
+	// A caller can trigger this on every call, and the error text often repeats the
+	// call's arguments (a query the backend could not parse, an identifier, a file
+	// name), so the line is Debug only. Operators count these results with
+	// toolhive_vmcp_backend_tool_errors, recorded by the backend telemetry decorator.
 	if result.IsError {
 		var errorMsg string
 		if len(result.Content) > 0 {
@@ -1999,10 +2016,10 @@ func toolResultFromMCP(result *mcp.CallToolResult, toolName, backendID string) *
 
 		// Log with metadata for distributed tracing
 		if responseMeta != nil {
-			slog.Warn("tool returned IsError=true",
+			logger.Debug("tool returned IsError=true",
 				"tool", toolName, "backend", backendID, "error", errorMsg, "meta", responseMeta)
 		} else {
-			slog.Warn("tool returned IsError=true",
+			logger.Debug("tool returned IsError=true",
 				"tool", toolName, "backend", backendID, "error", errorMsg)
 		}
 		// Continue processing - we return the result with IsError flag and metadata preserved
@@ -2011,26 +2028,20 @@ func toolResultFromMCP(result *mcp.CallToolResult, toolName, backendID string) *
 	// Convert MCP content to vmcp.Content array.
 	contentArray := conversion.ConvertMCPContents(result.Content)
 
-	// Check for structured content first (preferred for composite tool step chaining).
-	// StructuredContent allows templates to access nested fields directly via {{.steps.stepID.output.field}}.
-	// Note: StructuredContent must be an object (map). Arrays or primitives are not supported.
+	// Keep structuredContent only when the backend sent one, and only when it is an
+	// object (the spec requires one; vmcp.ToolCallResult.StructuredContent is a map).
+	// Nothing is synthesized from Content here: this result also reaches clients on
+	// plain pass-through calls, and composite workflows build their own step-output
+	// map from Content when StructuredContent is nil.
 	var structuredContent map[string]any
 	if result.StructuredContent != nil {
 		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
-			slog.Debug("using structured content from tool", "tool", toolName, "backend", backendID)
+			logger.Debug("using structured content from tool", "tool", toolName, "backend", backendID)
 			structuredContent = structuredMap
 		} else {
-			// StructuredContent is not an object - fall through to Content processing
-			slog.Debug("structuredContent is not an object, falling back to Content",
+			logger.Debug("dropping structuredContent that is not an object",
 				"tool", toolName, "backend", backendID)
 		}
-	}
-
-	// If no structured content, convert result contents to a map for backward compatibility.
-	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.).
-	// Text content is stored under "text" key, accessible via {{.steps.stepID.output.text}}.
-	if structuredContent == nil {
-		structuredContent = conversion.ContentArrayToMap(contentArray)
 	}
 
 	return &vmcp.ToolCallResult{

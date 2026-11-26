@@ -79,7 +79,7 @@ func TestMiddleware(t *testing.T) {
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
-			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
+			`permit(principal, action == Action::"read_resource", resource == Resource::"harness://static/data");`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
@@ -158,7 +158,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Authorized resource read",
 			method: "resources/read",
 			params: map[string]interface{}{
-				"uri": "data",
+				"uri": "harness://static/data",
 			},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -171,7 +171,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Unauthorized resource read",
 			method: "resources/read",
 			params: map[string]interface{}{
-				"uri": "secret",
+				"uri": "harness://static/secret",
 			},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -251,7 +251,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Resources subscribe requires authorization",
 			method: "resources/subscribe",
 			params: map[string]interface{}{
-				"uri": "data",
+				"uri": "harness://static/data",
 			},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -264,7 +264,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Resources unsubscribe requires authorization",
 			method: "resources/unsubscribe",
 			params: map[string]interface{}{
-				"uri": "secret",
+				"uri": "harness://static/secret",
 			},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -339,7 +339,7 @@ func TestMiddleware(t *testing.T) {
 			params: map[string]interface{}{
 				"ref": map[string]interface{}{
 					"type": "ref/resource",
-					"uri":  "data",
+					"uri":  "harness://static/data",
 				},
 				"argument": map[string]interface{}{
 					"name":  "name",
@@ -358,7 +358,7 @@ func TestMiddleware(t *testing.T) {
 			method: "subscriptions/listen",
 			params: map[string]interface{}{
 				"notifications": map[string]interface{}{
-					"resourceSubscriptions": []interface{}{"data"},
+					"resourceSubscriptions": []interface{}{"harness://static/data"},
 				},
 			},
 			claims: jwt.MapClaims{
@@ -373,7 +373,7 @@ func TestMiddleware(t *testing.T) {
 			method: "subscriptions/listen",
 			params: map[string]interface{}{
 				"notifications": map[string]interface{}{
-					"resourceSubscriptions": []interface{}{"data", "secret"},
+					"resourceSubscriptions": []interface{}{"harness://static/data", "harness://static/secret"},
 				},
 			},
 			claims: jwt.MapClaims{
@@ -1624,7 +1624,7 @@ func TestHandleUnauthorizedScrubsAuthorizerError(t *testing.T) {
 	})
 	middleware := mcpparser.ParsingMiddleware(Middleware(stub, handler, nil))
 
-	reqBody := `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"data"}}`
+	reqBody := `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"harness://static/data"}}`
 	req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(reqBody))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -1639,6 +1639,7 @@ func TestHandleUnauthorizedScrubsAuthorizerError(t *testing.T) {
 	middleware.ServeHTTP(rr, req)
 
 	require.Equal(t, http.StatusForbidden, rr.Code)
+	require.Equal(t, 1, stub.calls, "the request must reach the authorizer, not be refused earlier")
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"error":{"code":403,"message":"Unauthorized"}}`, rr.Body.String())
 	assert.NotContains(t, rr.Body.String(), "secret-backend-url",
 		"authorizer error text must not leak to the client")

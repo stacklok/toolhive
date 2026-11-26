@@ -219,7 +219,9 @@ func TestAuthorizedFlow_IssuesTokensAndIsSingleUse(t *testing.T) {
 		Status: authstorage.DeviceRequestStatusPending, CreatedAt: time.Now(),
 	}))
 	require.NoError(t, coreStorage.MarkDeviceRequestAuthorized(
-		context.Background(), "dc-1", "user-1", "Ada Lovelace", "ada@example.com", "session-1"))
+		context.Background(), "dc-1", authstorage.DeviceAuthorization{
+			UserID: "user-1", UserName: "Ada Lovelace", UserEmail: "ada@example.com", SessionID: "session-1",
+		}))
 
 	h := &Handler{
 		DeviceStorage: coreStorage,
@@ -260,7 +262,7 @@ func TestAuthorizedFlow_NoRefreshTokenWithoutGrant(t *testing.T) {
 		Status: authstorage.DeviceRequestStatusPending, CreatedAt: time.Now(),
 	}))
 	require.NoError(t, coreStorage.MarkDeviceRequestAuthorized(
-		context.Background(), "dc-1", "user-1", "", "", "session-1"))
+		context.Background(), "dc-1", authstorage.DeviceAuthorization{UserID: "user-1", SessionID: "session-1"}))
 
 	h := &Handler{
 		DeviceStorage: coreStorage,

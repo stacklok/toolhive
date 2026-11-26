@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -572,6 +572,43 @@ func TestValidateDCRRequest(t *testing.T) {
 
 				// Verify software_id is preserved
 				assert.Equal(t, tt.request.SoftwareID, result.SoftwareID)
+			}
+		})
+	}
+}
+
+func TestValidateClientName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		client  string
+		wantErr bool
+	}{
+		{name: "empty name is valid (selects the default)", client: ""},
+		{name: "plain name is valid", client: "ToolHive MCP Client (ibkr)"},
+		{name: "internal space is valid", client: "My Application"},
+		{name: "whitespace-only name is rejected", client: "   ", wantErr: true},
+		{name: "leading whitespace is rejected", client: " lead", wantErr: true},
+		{name: "trailing whitespace is rejected", client: "trail ", wantErr: true},
+		{name: "newline is rejected", client: "line\nbreak", wantErr: true},
+		{name: "NUL is rejected", client: "nul\x00byte", wantErr: true},
+		{name: "bidi override is rejected", client: "a\u202eb", wantErr: true},
+		{name: "zero-width space is rejected", client: "a\u200bb", wantErr: true},
+		{name: "256 ASCII runes are accepted", client: strings.Repeat("a", MaxClientNameLength)},
+		{name: "257 ASCII runes are rejected", client: strings.Repeat("a", MaxClientNameLength+1), wantErr: true},
+		{name: "256 multibyte runes are accepted", client: strings.Repeat("あ", MaxClientNameLength)},
+		{name: "257 multibyte runes are rejected", client: strings.Repeat("あ", MaxClientNameLength+1), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateClientName(tt.client)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

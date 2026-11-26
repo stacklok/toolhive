@@ -29,12 +29,16 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 const (
@@ -314,9 +318,14 @@ var _ OAuth2Provider = (*BaseOAuth2Provider)(nil)
 // This can be used standalone for OAuth 2.0 providers without OIDC support,
 // or embedded by OIDCProvider to share common OAuth 2.0 logic.
 type BaseOAuth2Provider struct {
-	config       *OAuth2Config
-	oauth2Config *oauth2.Config
-	httpClient   *http.Client
+	config *OAuth2Config
+	// client is what the provider presents to the upstream. It is replaced
+	// whole by UpdateClientCredentials, and each request loads it once, so
+	// one request never mixes two clients.
+	client atomic.Pointer[clientState]
+	// credentialsMu serializes UpdateClientCredentials' read-modify-write.
+	credentialsMu sync.Mutex
+	httpClient    *http.Client
 	// ownsHTTPClient is true only when the provider built httpClient itself;
 	// see CloseIdleConnections.
 	ownsHTTPClient bool
@@ -328,6 +337,28 @@ type BaseOAuth2Provider struct {
 // trust, so the bundle could never take effect; failing loudly keeps a
 // trust-anchor misconfiguration a boot-time error rather than a silent no-op.
 var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined with an injected HTTP client")
+
+// ErrGrantRejected is wrapped by a token request error when the upstream
+// authorization server rejected the grant with the OAuth 2.0 invalid_grant
+// error code (RFC 6749 Section 5.2). The classification is
+// oautherr.IsRejectedRefreshGrant, shared with the client-side token source:
+// invalid_grant on any response except a 5xx or 429, which are treated as
+// transient, and a response with no HTTP status is not counted. It applies to
+// both token requests a provider makes: on the authorization code exchange it
+// means the code or PKCE verifier was rejected, and on refresh it means the
+// presented upstream refresh token is expired, revoked or otherwise no longer
+// valid, so retrying it cannot succeed. Network failures, 5xx responses and
+// other error codes do not wrap it, so callers can tell a rejection from a
+// transient failure with errors.Is. It is distinct from fosite.ErrInvalidGrant,
+// which is the error the embedded auth server itself returns to its clients.
+//
+// A rejected refresh token does not always mean the session's upstream
+// credential is dead. With a provider that rotates refresh tokens, the
+// replica that loses a cross-process refresh race presents an already-rotated
+// token and gets invalid_grant while the winner holds valid tokens. The auth
+// server's refresher re-reads storage before surfacing the error, which
+// resolves the race once the winner's write has landed, but not before.
+var ErrGrantRejected = errors.New("invalid_grant")
 
 // IdleConnectionCloser is an optional capability an OAuth2Provider may implement
 // to release the idle keep-alive connections held by its HTTP client. It is the
@@ -420,7 +451,7 @@ func newBaseOAuth2Provider(
 	}
 
 	// Create the oauth2.Config for use with golang.org/x/oauth2 library.
-	p.oauth2Config = &oauth2.Config{
+	p.client.Store(&clientState{oauth2: &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
 		RedirectURL:  config.RedirectURI,
@@ -430,9 +461,89 @@ func newBaseOAuth2Provider(
 			TokenURL:  config.TokenEndpoint,
 			AuthStyle: authStyle,
 		},
-	}
+	}})
 
 	return p, nil
+}
+
+// clientState is what one request presents to the upstream and checks the ID
+// token against; it is replaced whole.
+type clientState struct {
+	oauth2   *oauth2.Config
+	verifier *oidc.IDTokenVerifier // nil for plain OAuth2
+}
+
+// ClientCredentials is the client registration a provider presents to its
+// upstream: the client_id, its secret (empty for a public client), the RFC
+// 7591 token_endpoint_auth_method that decides how the secret is sent, and
+// optionally the endpoints the registration was resolved against.
+type ClientCredentials struct {
+	ClientID                string
+	ClientSecret            string
+	TokenEndpointAuthMethod string
+	// AuthorizationEndpoint and TokenEndpoint, when set, replace the
+	// provider's endpoints; empty keeps them. OIDC providers keep the
+	// endpoints from their discovery document and ignore both.
+	AuthorizationEndpoint string
+	TokenEndpoint         string
+}
+
+// ClientCredentialsUpdater is implemented by providers whose client
+// registration can be replaced while they serve requests. The embedded
+// authserver uses it when a periodically re-checked DCR registration changes
+// (see authserver.DCRUpstreamConfig.RegistrationProbeInterval).
+type ClientCredentialsUpdater interface {
+	UpdateClientCredentials(creds ClientCredentials) error
+}
+
+var _ ClientCredentialsUpdater = (*BaseOAuth2Provider)(nil)
+
+// UpdateClientCredentials replaces the client the provider presents to the
+// upstream. A request that already loaded the previous client finishes with
+// it; an authorization started under the previous client_id and completed
+// after the swap redeems its code with the new one, which an upstream that
+// binds codes to the client rejects once. Upstream refresh tokens bound to
+// the previous client stop refreshing the same way.
+func (p *BaseOAuth2Provider) UpdateClientCredentials(creds ClientCredentials) error {
+	authStyle, err := authStyleFromMethod(creds.TokenEndpointAuthMethod)
+	if err != nil {
+		return err
+	}
+	return p.swapClient(creds, authStyle, true, nil)
+}
+
+// swapClient installs creds with the given auth style on a copy of the
+// current client and stores it whole. withEndpoints applies creds'
+// non-empty endpoints; newVerifier, when set, builds the ID token verifier
+// for the new client_id.
+func (p *BaseOAuth2Provider) swapClient(
+	creds ClientCredentials,
+	authStyle oauth2.AuthStyle,
+	withEndpoints bool,
+	newVerifier func(clientID string) *oidc.IDTokenVerifier,
+) error {
+	if creds.ClientID == "" {
+		return errors.New("client_id is required")
+	}
+	p.credentialsMu.Lock()
+	defer p.credentialsMu.Unlock()
+	current := p.client.Load()
+	next := *current.oauth2
+	next.ClientID = creds.ClientID
+	next.ClientSecret = creds.ClientSecret
+	next.Endpoint.AuthStyle = authStyle
+	if withEndpoints && creds.AuthorizationEndpoint != "" {
+		next.Endpoint.AuthURL = creds.AuthorizationEndpoint
+	}
+	if withEndpoints && creds.TokenEndpoint != "" {
+		next.Endpoint.TokenURL = creds.TokenEndpoint
+	}
+	state := &clientState{oauth2: &next, verifier: current.verifier}
+	if newVerifier != nil {
+		state.verifier = newVerifier(creds.ClientID)
+	}
+	p.client.Store(state)
+	return nil
 }
 
 // CloseIdleConnections releases the idle keep-alive connections pooled by the
@@ -511,7 +622,9 @@ func authStyleFromMethod(method string) (oauth2.AuthStyle, error) {
 // NewOAuth2Provider creates a new pure OAuth 2.0 provider.
 // Use this for providers that don't support OIDC discovery.
 // The config must include AuthorizationEndpoint and TokenEndpoint.
+// Identity-extraction modifiers are registered automatically, including for standalone use.
 func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*BaseOAuth2Provider, error) {
+	RegisterModifiers()
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -555,7 +668,7 @@ func (*BaseOAuth2Provider) Type() ProviderType {
 
 // authorizationEndpoint returns the authorization endpoint URL.
 func (p *BaseOAuth2Provider) authorizationEndpoint() string {
-	return p.config.AuthorizationEndpoint
+	return p.client.Load().oauth2.Endpoint.AuthURL
 }
 
 // AuthorizationURL builds the URL to redirect the user to the upstream IDP.
@@ -578,7 +691,8 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 	codeChallenge string,
 	opts ...AuthorizationOption,
 ) (string, error) {
-	if p.oauth2Config.Endpoint.AuthURL == "" {
+	client := p.client.Load().oauth2
+	if client.Endpoint.AuthURL == "" {
 		return "", errors.New("authorization endpoint is required")
 	}
 	if state == "" {
@@ -609,7 +723,7 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 		oauth2Opts = append(oauth2Opts, oauth2.SetAuthURLParam(k, v))
 	}
 
-	return p.oauth2Config.AuthCodeURL(state, oauth2Opts...), nil
+	return client.AuthCodeURL(state, oauth2Opts...), nil
 }
 
 // ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
@@ -767,12 +881,22 @@ type tokenExchangeResult struct {
 func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 	ctx context.Context, code, codeVerifier string,
 ) (*tokenExchangeResult, error) {
+	return p.exchangeCodeForTokensWith(ctx, p.client.Load(), code, codeVerifier)
+}
+
+// exchangeCodeForTokensWith is exchangeCodeForTokens with the client the
+// caller loaded, so a caller that also checks the ID token uses one client
+// for both.
+func (p *BaseOAuth2Provider) exchangeCodeForTokensWith(
+	ctx context.Context, client *clientState, code, codeVerifier string,
+) (*tokenExchangeResult, error) {
 	if code == "" {
 		return nil, errors.New("authorization code is required")
 	}
+	tokenURL := client.oauth2.Endpoint.TokenURL
 
 	slog.Debug("exchanging authorization code for tokens",
-		"token_endpoint", p.config.TokenEndpoint,
+		"token_endpoint", tokenURL,
 		"has_pkce_verifier", codeVerifier != "",
 	)
 
@@ -781,7 +905,7 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 	// identityCfg (identity extraction) may be active together. Keep a reference to
 	// the rewriter so we can read extractedIdentity and extractionErr after Exchange returns.
 	httpClient, rewriter := wrapHTTPClientForTokenExchange(
-		p.httpClient, p.config.TokenResponseMapping, p.config.IdentityFromToken, p.config.TokenEndpoint,
+		p.httpClient, p.config.TokenResponseMapping, p.config.IdentityFromToken, tokenURL,
 	)
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
@@ -797,9 +921,9 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 		opts = append(opts, oauth2.SetAuthURLParam(k, v))
 	}
 
-	token, err := p.oauth2Config.Exchange(ctx, code, opts...)
+	token, err := client.oauth2.Exchange(ctx, code, opts...)
 	if err != nil {
-		return nil, formatOAuth2Error(err, "token request failed")
+		return nil, formatOAuth2Error(err)
 	}
 
 	tokens, err := convertOAuth2Token(token)
@@ -838,13 +962,20 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 // library's TokenSource refresh path doesn't expose a way to inject scope.
 // The empty code= side-effect is tolerated — ASes dispatch on grant_type first.
 func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ string) (*Tokens, error) {
+	return p.refreshTokensWith(ctx, p.client.Load(), refreshToken)
+}
+
+// refreshTokensWith is RefreshTokens with the client the caller loaded; see
+// exchangeCodeForTokensWith.
+func (p *BaseOAuth2Provider) refreshTokensWith(ctx context.Context, state *clientState, refreshToken string) (*Tokens, error) {
 	if refreshToken == "" {
 		return nil, errors.New("refresh token is required")
 	}
 
+	client := state.oauth2
 	slog.Debug("refreshing tokens",
-		"token_endpoint", p.config.TokenEndpoint,
-		"scope_count", len(p.oauth2Config.Scopes),
+		"token_endpoint", client.Endpoint.TokenURL,
+		"scope_count", len(client.Scopes),
 	)
 
 	// Wrap HTTP client with token response rewriter if mapping is configured.
@@ -853,15 +984,15 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 	// in the initial auth-code response and is omitted on refresh. Identity is
 	// cached at auth-code time and read from session storage on subsequent requests.
 	// The rewriter is discarded because refresh does not produce identity.
-	httpClient, _ := wrapHTTPClientForTokenExchange(p.httpClient, p.config.TokenResponseMapping, nil, p.config.TokenEndpoint)
+	httpClient, _ := wrapHTTPClientForTokenExchange(p.httpClient, p.config.TokenResponseMapping, nil, client.Endpoint.TokenURL)
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	opts := []oauth2.AuthCodeOption{
 		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
 		oauth2.SetAuthURLParam("refresh_token", refreshToken),
 	}
-	if len(p.oauth2Config.Scopes) > 0 && !p.config.OmitScopeOnRefresh {
-		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(p.oauth2Config.Scopes, " ")))
+	if len(client.Scopes) > 0 && !p.config.OmitScopeOnRefresh {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(client.Scopes, " ")))
 	}
 	// Same rationale as in exchangeCodeForTokens: ASes that enforce
 	// RFC 8707 on token requests require these on refresh as well.
@@ -869,9 +1000,9 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		opts = append(opts, oauth2.SetAuthURLParam(k, v))
 	}
 
-	token, err := p.oauth2Config.Exchange(ctx, "", opts...)
+	token, err := client.Exchange(ctx, "", opts...)
 	if err != nil {
-		return nil, formatOAuth2Error(err, "token request failed")
+		return nil, formatOAuth2Error(err)
 	}
 
 	tokens, err := convertOAuth2Token(token)
@@ -997,22 +1128,69 @@ func (p *BaseOAuth2Provider) fetchUserInfo(ctx context.Context, accessToken stri
 }
 
 // formatOAuth2Error extracts error details from oauth2.RetrieveError for better error messages.
-func formatOAuth2Error(err error, prefix string) error {
+// A token endpoint answer comes back as a *tokenRequestError, so the
+// RetrieveError stays reachable through errors.As for the oautherr predicates.
+func formatOAuth2Error(err error) error {
+	const prefix = "token request failed"
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) {
 		// RetrieveError contains the OAuth error response
+		if oautherr.IsRejectedRefreshGrant(retrieveErr) {
+			return newTokenRequestError(
+				fmt.Errorf("%s: %w - %s", prefix, ErrGrantRejected, retrieveErr.ErrorDescription), retrieveErr)
+		}
 		if retrieveErr.ErrorCode != "" {
-			return fmt.Errorf("%s: %s - %s", prefix, retrieveErr.ErrorCode, retrieveErr.ErrorDescription)
+			return newTokenRequestError(
+				fmt.Errorf("%s: %s - %s", prefix, retrieveErr.ErrorCode, retrieveErr.ErrorDescription), retrieveErr)
 		}
 		// Log full response for debugging, but return sanitized error to prevent information disclosure
 		slog.Debug("token request failed",
 			"status", retrieveErr.Response.StatusCode,
 			"body", string(retrieveErr.Body))
-		return fmt.Errorf("%s with status %d", prefix, retrieveErr.Response.StatusCode)
+		return newTokenRequestError(
+			fmt.Errorf("%s with status %d", prefix, retrieveErr.Response.StatusCode), retrieveErr)
 	}
 	// For other errors (network errors, etc.), wrap with context
 	return fmt.Errorf("request failed: %w", err)
 }
+
+// tokenRequestError is a token endpoint failure whose message is the sanitized
+// text built by formatOAuth2Error, while errors.As can still reach the
+// *oauth2.RetrieveError so callers can classify the failure with the
+// pkg/oauthproto/oautherr predicates.
+//
+// The RetrieveError in the chain is a scrubbed copy, unlike tokenexchange and
+// jwtbearer, which clear Body on the caller's error in place. Body is cleared
+// because RetrieveError.Error() embeds it when ErrorCode is empty, and the raw
+// response is untrusted and can echo back bearer material. Response is reduced
+// to its status code and status, the only fields the oautherr predicates read:
+// the original also links the outgoing request, whose Authorization header and
+// form body carry the client secret, refresh token, code and PKCE verifier, so
+// a caller that dumps the unwrapped cause cannot leak them.
+//
+// Unwrap returns two errors because neither error can wrap the other: msg may
+// wrap ErrGrantRejected, and adding the RetrieveError to it as a second %w
+// would change Error().
+type tokenRequestError struct {
+	// msg is the sanitized error; it may itself wrap ErrGrantRejected.
+	msg   error
+	cause *oauth2.RetrieveError
+}
+
+func newTokenRequestError(msg error, retrieveErr *oauth2.RetrieveError) *tokenRequestError {
+	scrubbed := *retrieveErr
+	scrubbed.Body = nil
+	if r := retrieveErr.Response; r != nil {
+		scrubbed.Response = &http.Response{StatusCode: r.StatusCode, Status: r.Status}
+	}
+	return &tokenRequestError{msg: msg, cause: &scrubbed}
+}
+
+func (e *tokenRequestError) Error() string { return e.msg.Error() }
+
+// Unwrap exposes both the sanitized error (and any sentinel it wraps) and the
+// *oauth2.RetrieveError to errors.Is / errors.As.
+func (e *tokenRequestError) Unwrap() []error { return []error{e.msg, e.cause} }
 
 // newHTTPClientForHost creates an HTTP client configured for the given host.
 // It enables HTTP and private IPs only for localhost (development/testing),

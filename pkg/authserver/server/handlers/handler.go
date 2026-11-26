@@ -19,10 +19,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -31,19 +33,21 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/time/rate"
 
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 )
 
 // NamedUpstream pairs a logical provider name with its OAuth2Provider implementation.
 // The name is used as the storage key and must be unique within the upstream slice.
 type NamedUpstream struct {
-	Name     string
-	Provider upstream.OAuth2Provider
+	Name string
+	// DisplayName is an optional human-readable label shown on the consent page.
+	// It is display-only: never compared, stored, or used to route.
+	DisplayName string
+	Provider    upstream.OAuth2Provider
 }
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
@@ -52,6 +56,12 @@ type Handler struct {
 	config    *server.AuthorizationServerConfig
 	storage   storage.Storage
 	upstreams []NamedUpstream
+	// continuationFallback is the client store below the CIMD decorator (the
+	// client-admission layer when present, else the innermost store; see
+	// storage.ClientStoreBelowCIMD), selected once at construction.
+	// callbackClient reads it only when the CIMD fetch limiter refuses the
+	// ordinary lookup.
+	continuationFallback fosite.ClientManager
 	// tokenOnly is derived at construction from the absence of upstreams and is
 	// the single source of truth for token-only capability behavior.
 	tokenOnly    bool
@@ -63,7 +73,7 @@ type Handler struct {
 	// filter, when set, narrows the authorization chain to a subset of the
 	// configured upstreams once the first leg resolves. Nil when no filter is
 	// configured; the chain then walks all configured upstreams as before.
-	filter UpstreamFilter
+	filter upstreamfilter.UpstreamFilter
 	// consentExemptClientIDs is populated by WithConsentExemptClientIDs until
 	// constructor validation builds consentExemptClientIDSet.
 	consentExemptClientIDs   []string
@@ -91,21 +101,6 @@ type Handler struct {
 	// tests that construct Handler directly; its methods tolerate a nil
 	// receiver.
 	capacityWarner *capacityWarner
-	// cimdAuthorizeLimiter bounds unauthenticated /oauth/authorize requests
-	// whose client_id is a CIMD URL (see oauthproto.IsClientIDMetadataDocumentURL).
-	// Resolving such a client_id — via the CIMD storage decorator's GetClient,
-	// invoked from fosite's NewAuthorizeRequest — now write-through persists a
-	// row with a multi-day TTL (see CIMDStorageDecorator.fetch), so this
-	// endpoint mints persisted state exactly like /oauth/register and needs
-	// the same protection: without it, a flood of distinct CIMD client_id
-	// values (e.g. one host serving generated documents on a wildcard route)
-	// could mint rows as fast as the AS can complete the outbound document
-	// fetches. DCR (non-URL) client_id values are unaffected — they hit
-	// neither this limiter nor the write-through path. Same shape as
-	// registerLimiter: per-process, not per-IP, for the identical reasons.
-	// Nil in tests that construct Handler directly; OAuthRoutes tolerates nil
-	// by skipping the gate.
-	cimdAuthorizeLimiter *rate.Limiter
 	// deviceAuthorizationLimiter bounds the unauthenticated
 	// /oauth/device_authorization endpoint, which mints persisted state
 	// (a device_code/user_code pair) on every call, exactly like
@@ -174,50 +169,9 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 	}
 }
 
-// UpstreamFilter narrows the authorization chain to a subset of the configured
-// upstreams, keyed on the identity established by the first upstream. It is
-// consulted exactly once per authorization, in the callback handler, after the
-// first upstream (upstreams[0]) resolves. The first upstream is always required:
-// it is never passed to the filter and cannot be removed by it.
-//
-// FilterUpstreams receives, in order:
-//   - ctx: the request context of the first leg's callback.
-//   - principal: the upstream-derived identity for authorization decisions. Its
-//     PlatformUserID is the canonical ToolHive user ID (the stable internal
-//     identifier); Subject is the claim-mapped upstream subject (OIDC SubjectClaim,
-//     or "sub"); Claims carries the ID-token/userinfo claims; Name and Email are
-//     populated when the upstream provides them. It carries NO tokens — it is the
-//     credential-free auth.PrincipalInfo projection. The filter MUST treat
-//     principal (including its Claims map) as read-only.
-//   - configured: the names of the non-first configured upstreams, in configured
-//     order.
-//
-// Claims contract: values are untyped and come straight from the upstream IdP, so
-// implementations MUST assert types defensively (e.g. comma-ok on map/slice
-// access) — a malformed IdP response must not be able to panic the filter. Claims
-// is nil not only for OAuth2 identityFromToken / synthetic upstreams (which resolve
-// no structured claim set) but also on a transient OIDC claims-extraction failure,
-// so a security-relevant filter MUST treat nil/absent claims as fail-closed. Note
-// that the `aud` claim, when present, is the upstream IdP's client_id — not this
-// authorization server.
-//
-// It returns the subset to keep. The handler preserves configured order and
-// ignores any returned name that is not one of the non-first configured upstreams,
-// so the filter cannot reorder the chain or introduce unknown providers. A
-// returned error fails the authorization with a server error — the handler never
-// falls back to walking every upstream on error.
-//
-// The "first-leg identity" guarantee holds even across a rolling upgrade of a
-// persistent backend: a subsequent-leg pending that lacks a computed chain (e.g.
-// one written before this feature existed) is rejected and forces a fresh
-// authorization, rather than re-running the filter against a later leg.
-type UpstreamFilter interface {
-	FilterUpstreams(
-		ctx context.Context,
-		principal auth.PrincipalInfo,
-		configured []string,
-	) ([]string, error)
-}
+// UpstreamFilter is a compatibility alias for upstreamfilter.UpstreamFilter.
+// See that interface for the first-leg lifecycle and filtering contract.
+type UpstreamFilter = upstreamfilter.UpstreamFilter
 
 // Option configures optional Handler behavior at construction time.
 type Option func(*Handler)
@@ -236,7 +190,7 @@ func WithUpstreamRefresher(r storage.UpstreamTokenRefresher) Option {
 // subset of the configured upstreams once the first leg resolves. When unset, the
 // handler walks all configured upstreams — the behavior before this option
 // existed. See UpstreamFilter for the contract.
-func WithUpstreamFilter(f UpstreamFilter) Option {
+func WithUpstreamFilter(f upstreamfilter.UpstreamFilter) Option {
 	return func(h *Handler) {
 		h.filter = f
 	}
@@ -295,18 +249,15 @@ func NewHandler(
 		seen[u.Name] = struct{}{}
 	}
 	h := &Handler{
-		provider:        provider,
-		config:          config,
-		storage:         stor,
-		upstreams:       upstreams,
-		tokenOnly:       len(upstreams) == 0,
-		userResolver:    NewUserResolver(stor),
-		registerLimiter: rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
-		meterProvider:   otel.GetMeterProvider(),
-		// Same rate as registerLimiter's default: this gate protects the same kind of
-		// unauthenticated persisted-state minting, just reached through
-		// /oauth/authorize instead of /oauth/register.
-		cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5),
+		provider:             provider,
+		config:               config,
+		storage:              stor,
+		upstreams:            upstreams,
+		tokenOnly:            len(upstreams) == 0,
+		userResolver:         newUserResolver(stor, upstreams),
+		continuationFallback: storage.ClientStoreBelowCIMD(stor),
+		registerLimiter:      rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
+		meterProvider:        otel.GetMeterProvider(),
 		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
 	}
 	if config.DeviceFlowEnabled {
@@ -367,8 +318,10 @@ func deviceCodeInterval(configured time.Duration) time.Duration {
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.
-func (h *Handler) Routes() http.Handler {
+// Optional middleware is installed before registering routes.
+func (h *Handler) Routes(middlewares ...func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
+	r.Use(middlewares...)
 	h.OAuthRoutes(r)
 	h.WellKnownRoutes(r)
 	return r
@@ -378,7 +331,7 @@ func (h *Handler) Routes() http.Handler {
 // and the device flow's device_authorization/verification routes when enabled)
 // on the provided router.
 func (h *Handler) OAuthRoutes(r chi.Router) {
-	r.Get("/oauth/authorize", h.rateLimitCIMDAuthorize(h.AuthorizeHandler))
+	r.Get("/oauth/authorize", rejectMultipartAuthorizeBody(h.AuthorizeHandler))
 	r.Post("/oauth/consent", h.ConsentHandler)
 	// /oauth/callback is shared by the OAuth-client authorization_code flow
 	// and (when device flow is enabled) the verification page's upstream
@@ -390,7 +343,7 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 	// /oauth/authorize set, so it must be served on the same host (see
 	// browser_binding.go).
 	r.Get("/oauth/callback", h.CallbackHandler)
-	r.Post("/oauth/token", h.TokenHandler)
+	r.Post(server.TokenEndpointPath, h.TokenHandler)
 	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))
 	if h.config.DeviceFlowEnabled {
 		r.Post("/oauth/device_authorization", h.rateLimitDeviceAuthorization(h.DeviceAuthorizationHandler))
@@ -446,6 +399,17 @@ func (h *Handler) initConsentExemptions() error {
 	return nil
 }
 
+// newUserResolver builds the resolver for the configured upstreams. Only the
+// first upstream creates users. Every login chain starts there, and later
+// upstreams carry the user it resolved, so a later upstream's identity may resolve
+// through an existing link but never creates a user or link.
+func newUserResolver(stor storage.UserStorage, upstreams []NamedUpstream) *UserResolver {
+	if len(upstreams) == 0 {
+		return NewUserResolver(stor)
+	}
+	return NewUserResolver(stor, WithCreateOnlyFor(upstreams[0].Name))
+}
+
 // limiterRetryAfterSeconds returns the Retry-After value for a request l
 // refused: 1/rate seconds, the longest the limiter can take to refill one
 // token, rounded up and at least 1. A partly refilled bucket frees a token
@@ -457,31 +421,46 @@ func limiterRetryAfterSeconds(l *rate.Limiter) int {
 	return int(min(max(math.Ceil(1/float64(l.Limit())), 1), math.MaxInt32))
 }
 
-// rateLimitCIMDAuthorize gates /oauth/authorize requests whose client_id is a
-// CIMD URL, before next (and therefore before fosite's NewAuthorizeRequest,
-// which is what triggers GetClient and the CIMD write-through) ever runs.
-// Over the limit it returns 429 with a Retry-After hint, mirroring
-// rateLimitRegister. A request whose client_id is empty, missing, or not
-// URL-shaped (an ordinary DCR client_id) is never gated here — it falls
-// straight through to next, unaffected by this limiter's state.
-//
-// req.Form is parsed (not req.URL.Query()) so this reads the same client_id
-// fosite itself will see, including a form-encoded body on this GET-only
-// route; ParseForm is idempotent, so a later parse inside next re-reads
-// exactly the same values.
-func (h *Handler) rateLimitCIMDAuthorize(next http.HandlerFunc) http.HandlerFunc {
+// rejectMultipartAuthorizeBody prevents Fosite from accepting multipart GET
+// bodies on /oauth/authorize. The endpoint's parameters must come from the query
+// string; otherwise client_id could bypass the client-hiding checks that use
+// ParseForm, which do not read multipart GET bodies.
+func rejectMultipartAuthorizeBody(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if h.cimdAuthorizeLimiter != nil {
-			_ = req.ParseForm()
-			clientID := req.Form.Get("client_id")
-			if oauthproto.IsClientIDMetadataDocumentURL(clientID) && !h.cimdAuthorizeLimiter.Allow() {
-				w.Header().Set("Retry-After", "1")
-				http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
-				return
-			}
+		mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+		if err == nil && strings.HasPrefix(mediaType, "multipart/") {
+			// WARN on purpose although a caller can trigger it: this is a
+			// request-shape rejection and the operator-visible signal. Only the
+			// media type and path are logged, never client_id or other input.
+			slog.WarnContext(req.Context(), "rejected multipart request body on authorize endpoint",
+				"media_type", mediaType, "path", req.URL.Path)
+			http.Error(w, "multipart request bodies are not supported", http.StatusBadRequest)
+			return
 		}
 		next(w, req)
 	}
+}
+
+// writeCIMDRateLimited writes the plain-text 429 for a client lookup refused by
+// the CIMD storage decorator's fetch limiter, matching rateLimitRegister's
+// response. It is used only by the authorize endpoint: the client is unresolved
+// there, so its redirect_uri cannot be trusted (RFC 6749 section 4.1.2.1) and
+// no OAuth error can be redirected to it.
+func writeCIMDRateLimited(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+}
+
+// writeCIMDRateLimitedOAuth writes the 429 for a CIMD client lookup refused by
+// the fetch limiter as an RFC 6749 section 5.2 JSON error. It is used by the
+// token and device authorization endpoints only. The status stays 429 and the
+// code is temporarily_unavailable: section 5.2 has no rate-limit code and
+// defines temporarily_unavailable only for the authorization endpoint, so this
+// is an extension that clients tolerate (fosite defines the same code).
+func writeCIMDRateLimitedOAuth(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	writeOAuthError(w, http.StatusTooManyRequests, "temporarily_unavailable",
+		"client metadata fetch rate limit exceeded, retry later")
 }
 
 // rateLimitDeviceAuthorization gates the unauthenticated
@@ -551,12 +530,20 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 // succeeds. If refresh is impossible or fails, the leg is reported as missing so
 // the user is re-prompted up front, rather than the stale token surfacing as a
 // runtime auth error later at MCP-request token-swap time.
-func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, chain []string) (string, error) {
+//
+// skipped names legs that failed earlier in this walk and were skipped under
+// NonFatalSecondaryLegs (see PendingAuthorization.SkippedUpstreams). They are
+// never returned, so a skipped leg is not prompted again in the same walk even
+// though it still has no satisfying token.
+func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, chain, skipped []string) (string, error) {
 	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}
 	for _, name := range chain {
+		if slices.Contains(skipped, name) {
+			continue
+		}
 		tokens, ok := stored[name]
 		if !ok || tokens == nil {
 			// No token stored for this leg — prompt.
@@ -589,7 +576,7 @@ func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, cha
 //
 // principal is the first upstream's resolved identity, passed through to the filter
 // (see UpstreamFilter); it is unused when no filter is configured.
-func (h *Handler) computeChain(ctx context.Context, principal auth.PrincipalInfo) ([]string, error) {
+func (h *Handler) computeChain(ctx context.Context, principal FilterPrincipal) ([]string, error) {
 	chain := []string{h.upstreams[0].Name}
 	rest := h.upstreams[1:]
 	if len(rest) == 0 {
@@ -642,12 +629,19 @@ func (h *Handler) computeChain(ctx context.Context, principal auth.PrincipalInfo
 // principal is the identity resolved by the leg that just completed; it is passed
 // to computeChain (and thus the filter) only on the first leg, where it reflects
 // the identity provider. Subsequent legs reuse the stored chain and ignore it.
+//
+// A first leg carries neither a chain nor skipped legs, so a pending that names
+// either is stale or tampered and is rejected. A subsequent leg's skipped set is
+// validated against the chain it carries (see validateSkipped).
 func (h *Handler) resolveChain(
 	ctx context.Context,
 	pending *storage.PendingAuthorization,
-	principal auth.PrincipalInfo,
+	principal FilterPrincipal,
 ) ([]string, error) {
 	if pending.ResolvedUserID == "" {
+		if len(pending.ChainUpstreams) > 0 || len(pending.SkippedUpstreams) > 0 {
+			return nil, fmt.Errorf("first chain leg carries a chain or skipped upstreams (stale or tampered pending authorization)")
+		}
 		// True first leg — compute with this (the first) leg's request context.
 		return h.computeChain(ctx, principal)
 	}
@@ -657,7 +651,35 @@ func (h *Handler) resolveChain(
 	if err := h.validateChain(pending.ChainUpstreams); err != nil {
 		return nil, fmt.Errorf("stored upstream chain is invalid: %w", err)
 	}
+	if err := validateSkipped(pending.ChainUpstreams, pending.SkippedUpstreams); err != nil {
+		return nil, fmt.Errorf("stored skipped upstreams are invalid: %w", err)
+	}
 	return pending.ChainUpstreams, nil
+}
+
+// validateSkipped rejects a skipped-leg set loaded from storage that the chain
+// does not admit: every entry must be a member of chain other than its first
+// (identity) upstream, with no duplicates. A pending that breaks this is stale or
+// tampered; honouring it could skip the identity leg.
+func validateSkipped(chain, skipped []string) error {
+	if len(skipped) == 0 {
+		return nil
+	}
+	if len(chain) == 0 {
+		return fmt.Errorf("skipped upstreams set on an empty chain")
+	}
+	for i, name := range skipped {
+		if name == chain[0] {
+			return fmt.Errorf("the first upstream %q cannot be skipped", name)
+		}
+		if !slices.Contains(chain[1:], name) {
+			return fmt.Errorf("skipped upstream %q is not a non-first member of the chain", name)
+		}
+		if slices.Contains(skipped[:i], name) {
+			return fmt.Errorf("skipped upstream %q is duplicated", name)
+		}
+	}
+	return nil
 }
 
 // validateChain rejects an upstream chain loaded from storage that does not agree

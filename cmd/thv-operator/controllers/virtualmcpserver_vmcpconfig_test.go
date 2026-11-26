@@ -7,6 +7,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -14,22 +15,30 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
 	vmcpconfigconv "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
@@ -45,11 +54,11 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 }
 
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
-func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfigconv.Converter {
+func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver, options ...vmcpconfigconv.ConverterOption) *vmcpconfigconv.Converter {
 	t.Helper()
 	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient)
+	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient, options...)
 	require.NoError(t, err)
 	return converter
 }
@@ -920,20 +929,20 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				{
 					Context:     "default",
 					BackendName: "",
-					Error:       fmt.Errorf("on-behalf-of (OBO) external auth type requires an enterprise build"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 				{
 					Context:     "discovered:discovered-backend",
 					BackendName: "discovered-backend",
-					Error:       fmt.Errorf("obo enterprise required"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 				{
 					Context:     "backend:inline-backend",
 					BackendName: "inline-backend",
-					Error:       fmt.Errorf("obo enterprise required"),
-					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+					Error:       fmt.Errorf("%s", testSourceInvalidMessage),
+					Reason:      testSourceInvalidReason,
 				},
 			},
 			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
@@ -947,7 +956,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"DefaultAuthConfig",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).
@@ -955,7 +964,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"DiscoveredAuthConfig-discovered-backend",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).
@@ -963,7 +972,7 @@ func TestSetAuthConfigConditions(t *testing.T) {
 				mock.EXPECT().
 					SetAuthConfigCondition(
 						"BackendAuthConfig-inline-backend",
-						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						testSourceInvalidReason,
 						gomock.Any(),
 						metav1.ConditionFalse,
 					).
@@ -1728,6 +1737,140 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	t.Log("Static mode ConfigMap contains both auth configs, backend URLs/transports, and metadata")
 }
 
+// TestConfigMapContent_StaticMode_BackendChanges distinguishes transient health
+// changes from configuration changes that must still trigger gateway rollouts.
+func TestConfigMapContent_StaticMode_BackendChanges(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	scheme := testutil.NewScheme(t)
+	group := &mcpv1beta1.MCPGroup{ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"}}
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithMCPGroupRef(group.Name),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady, URL: "http://server:8080/sse",
+		}),
+	)
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default",
+		v1beta1test.WithRemoteProxyGroupRef(group.Name),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady, URL: "http://proxy:8080/mcp",
+		}),
+	)
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef(group.Name),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{Source: "inline"}),
+	)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(vmcpServer, group, server, proxy).
+		WithStatusSubresource(server, proxy).Build()
+	reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
+	discoverer := workloads.NewK8SDiscovererWithClient(fakeClient, "default")
+
+	generateConfig := func(t *testing.T, backendCount int) *corev1.ConfigMap {
+		t.Helper()
+		typedWorkloads, err := discoverer.ListWorkloadsInGroup(ctx, group.Name)
+		require.NoError(t, err)
+		require.NoError(t, reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, typedWorkloads, nil,
+			virtualmcpserverstatus.NewStatusManager(vmcpServer)))
+		cm := &corev1.ConfigMap{}
+		require.NoError(t, fakeClient.Get(ctx, client.ObjectKey{
+			Name: vmcpConfigMapName(vmcpServer.Name), Namespace: vmcpServer.Namespace,
+		}, cm))
+		var config vmcpconfig.Config
+		require.NoError(t, yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &config))
+		require.Len(t, config.Backends, backendCount)
+		for _, backend := range config.Backends {
+			assert.NotContains(t, backend.Metadata, "workload_status")
+		}
+		return cm
+	}
+	setServerStatus := func(t *testing.T, phase mcpv1beta1.MCPServerPhase, url string) {
+		t.Helper()
+		require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(server), server))
+		require.NoError(t, ctrlutil.MutateAndPatchStatus(ctx, fakeClient, server, func(s *mcpv1beta1.MCPServer) {
+			s.Status.Phase, s.Status.URL = phase, url
+		}))
+	}
+	baseline := generateConfig(t, 2)
+	baselineChecksum := baseline.Annotations[checksum.ContentChecksumAnnotation]
+	require.NotEmpty(t, baselineChecksum)
+	labels, annotations := reconciler.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcpServer.Name), vmcpServer, baselineChecksum, "")
+	deployment := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},
+	}}}
+
+	for _, step := range []struct {
+		name        string
+		serverPhase mcpv1beta1.MCPServerPhase
+		proxyPhase  mcpv1beta1.MCPRemoteProxyPhase
+	}{
+		{"server pending", mcpv1beta1.MCPServerPhasePending, mcpv1beta1.MCPRemoteProxyPhaseReady},
+		{"server recovered", mcpv1beta1.MCPServerPhaseReady, mcpv1beta1.MCPRemoteProxyPhaseReady},
+		{"proxy pending", mcpv1beta1.MCPServerPhaseReady, mcpv1beta1.MCPRemoteProxyPhasePending},
+		{"proxy recovered", mcpv1beta1.MCPServerPhaseReady, mcpv1beta1.MCPRemoteProxyPhaseReady},
+	} {
+		t.Log(step.name)
+		setServerStatus(t, step.serverPhase, server.Status.URL)
+		require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(proxy), proxy))
+		require.NoError(t, ctrlutil.MutateAndPatchStatus(ctx, fakeClient, proxy, func(p *mcpv1beta1.MCPRemoteProxy) {
+			p.Status.Phase = step.proxyPhase
+		}))
+		current := generateConfig(t, 2)
+		assert.Equal(t, baseline.Data, current.Data, "%s: phase-only changes must preserve static configuration", step.name)
+		currentChecksum := current.Annotations[checksum.ContentChecksumAnnotation]
+		assert.Equal(t, baselineChecksum, currentChecksum, step.name)
+		assert.False(t, reconciler.podTemplateMetadataNeedsUpdate(deployment, vmcpServer, currentChecksum, ""), step.name)
+	}
+
+	extraServer := v1beta1test.NewMCPServer("extra", "default",
+		v1beta1test.WithMCPGroupRef(group.Name), v1beta1test.WithTransport("sse"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady, URL: "http://extra:8080/sse",
+		}),
+	)
+	previous := baseline
+	for _, step := range []struct {
+		name         string
+		mutate       func(*testing.T)
+		backendCount int
+	}{
+		{"endpoint changed", func(t *testing.T) {
+			t.Helper()
+			setServerStatus(t, mcpv1beta1.MCPServerPhaseReady, "http://replacement:8080/sse")
+		}, 2},
+		{"transport changed", func(t *testing.T) {
+			t.Helper()
+			require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(server), server))
+			require.NoError(t, ctrlutil.MutateAndPatchSpec(ctx, fakeClient, server, func(s *mcpv1beta1.MCPServer) {
+				s.Spec.Transport = "streamable-http"
+			}))
+		}, 2},
+		{"member added", func(t *testing.T) {
+			t.Helper()
+			require.NoError(t, fakeClient.Create(ctx, extraServer))
+		}, 3},
+		{"member removed", func(t *testing.T) {
+			t.Helper()
+			require.NoError(t, fakeClient.Delete(ctx, extraServer))
+		}, 2},
+	} {
+		t.Log(step.name)
+		step.mutate(t)
+		current := generateConfig(t, step.backendCount)
+		assert.NotEqual(t, previous.Data, current.Data, "%s: real configuration changes must update static configuration", step.name)
+		assert.NotEqual(t, previous.Annotations[checksum.ContentChecksumAnnotation],
+			current.Annotations[checksum.ContentChecksumAnnotation], step.name)
+		assert.True(t, reconciler.podTemplateMetadataNeedsUpdate(deployment, vmcpServer,
+			current.Annotations[checksum.ContentChecksumAnnotation], ""), step.name)
+		previous = current
+	}
+}
+
 // TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth is a regression test for the
 // fail-open bug where a backend whose outgoing auth strategy failed to build (here, an xaa
 // strategy with an empty SubjectProviderName made ambiguous by 2 configured upstreams) was
@@ -2090,6 +2233,45 @@ func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
 	assert.Equal(t, "value", result[0].Metadata["key"])
 }
 
+func TestConvertBackendsToStaticBackends_Metadata(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		metadata map[string]string
+		expected map[string]string
+	}{
+		{name: "nil metadata"},
+		{name: "stable metadata", metadata: map[string]string{"env": "prod"}, expected: map[string]string{"env": "prod"}},
+		{
+			name: "transient phase omitted",
+			metadata: map[string]string{
+				"workload_status": "Pending", "group": "test-group", "tool_type": "mcp",
+				"workload_type": "mcp_server", "namespace": "default", "env": "prod",
+			},
+			expected: map[string]string{
+				"group": "test-group", "tool_type": "mcp", "workload_type": "mcp_server",
+				"namespace": "default", "env": "prod",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			original := maps.Clone(tt.metadata)
+			backends := []vmcp.Backend{{Name: "backend", BaseURL: "http://backend:8080", Metadata: tt.metadata}}
+			result := convertBackendsToStaticBackends(context.Background(), backends,
+				map[string]string{"backend": "sse"}, nil, nil)
+			require.Len(t, result, 1)
+			assert.Equal(t, tt.expected, result[0].Metadata)
+			assert.Equal(t, original, backends[0].Metadata, "conversion must not mutate discovered metadata")
+			if result[0].Metadata != nil {
+				result[0].Metadata["env"] = "changed"
+				assert.Equal(t, original, backends[0].Metadata, "static metadata must not alias discovered metadata")
+			}
+		})
+	}
+}
+
 // TestConvertBackendsToStaticBackends_ExcludesFailedAuthBackends verifies that a backend
 // named in excludedBackends is dropped from the served set even though it otherwise has a
 // valid URL and transport. This is the fix for the fail-open bug where a backend whose
@@ -2180,7 +2362,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			name: "ref without optimizer auto-populates optimizer with defaults",
 			vmcp: v1beta1test.NewVirtualMCPServer("my-vmcp", testNamespace,
 				v1beta1test.WithVMCPGroupRef(testGroup),
-				// No Optimizer — validation auto-populates it when ref is set
+				// No Optimizer: the controller defaults it before validation when the ref is set.
 				v1beta1test.WithVMCPEmbeddingServerRef("shared-embedding"),
 			),
 			esName:      "shared-embedding",
@@ -2237,12 +2419,11 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testGroup)
 			require.NoError(t, err)
 
-			// Run validation (mirrors controller flow: validateSpec → ensureVmcpConfigConfigMap).
-			// Validate() may auto-populate optimizer defaults when embeddingServerRef is set.
-			err = tt.vmcp.Validate()
+			// Exercise controller-side defaulting and validation before generating the ConfigMap.
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err = reconciler.validateSpec(ctx, tt.vmcp, statusManager)
 			require.NoError(t, err)
 
-			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
 			err = reconciler.ensureVmcpConfigConfigMap(ctx, tt.vmcp, workloadNames, nil, statusManager)
 			require.NoError(t, err)
 
@@ -2268,7 +2449,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 }
 
 // TestConfigMapContent_SessionStorage tests that ensureVmcpConfigConfigMap correctly
-// populates the sessionStorage section in the ConfigMap YAML based on spec.sessionStorage.
+// populates sessionStorage in ConfigMap YAML from the spec or injected global defaults.
 func TestConfigMapContent_SessionStorage(t *testing.T) {
 	t.Parallel()
 
@@ -2280,6 +2461,7 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 	tests := []struct {
 		name            string
 		sessionStorage  *mcpv1beta1.SessionStorageConfig
+		defaultRedis    *ctrlutil.DefaultRedisConfig
 		expectedStorage *vmcpconfig.SessionStorageConfig
 		// noLeakStrings are substrings that must NOT appear in config.yaml (secret leakage check).
 		noLeakStrings []string
@@ -2303,6 +2485,49 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			name:            "nil sessionStorage produces no sessionStorage section",
 			sessionStorage:  nil,
 			expectedStorage: nil,
+		},
+		{
+			name:         "injected global Redis address reaches ConfigMap YAML",
+			defaultRedis: &ctrlutil.DefaultRedisConfig{Addr: "global-redis.default.svc:6379"},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "global-redis.default.svc:6379",
+			},
+		},
+		{
+			name: "injected global Redis TLS reaches ConfigMap YAML without Secret references",
+			defaultRedis: &ctrlutil.DefaultRedisConfig{
+				Addr:       "global-redis.default.svc:6380",
+				SecretName: "global-redis-password",
+				SecretKey:  "password-value",
+				TLS: &mcpv1beta1.RedisTLSConfig{
+					CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "global-redis-ca", Key: "bundle.pem"},
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "global-redis.default.svc:6380",
+				TLS:      &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"},
+			},
+			noLeakStrings: []string{"global-redis-password", "password-value", "global-redis-ca", "bundle.pem"},
+		},
+		{
+			name: "explicit plaintext Redis overrides injected global TLS in ConfigMap YAML",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "local-redis.default.svc:6379",
+			},
+			defaultRedis: &ctrlutil.DefaultRedisConfig{
+				Addr: "global-redis.default.svc:6380",
+				TLS: &mcpv1beta1.RedisTLSConfig{
+					CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "global-redis-ca", Key: "bundle.pem"},
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "local-redis.default.svc:6379",
+			},
+			noLeakStrings: []string{"global-redis.default.svc", "global-redis-ca", "bundle.pem"},
 		},
 		{
 			name:            "memory provider produces no sessionStorage section",
@@ -2357,7 +2582,11 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 				WithObjects(vmcpServer, mcpGroup).
 				Build()
 
-			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+			reconciler := &VirtualMCPServerReconciler{
+				Client:             fakeClient,
+				Scheme:             testScheme,
+				DefaultRedisConfig: tt.defaultRedis,
+			}
 
 			workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testNamespace)
 			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testGroup)
@@ -2496,6 +2725,68 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 	assert.Contains(t, specErr.Message, "invalid auth server integration")
 }
 
+// TestEnsureVmcpConfigConfigMap_InvalidOIDCFilePath verifies that a relative
+// jwksAuthTokenPath from an inline MCPOIDCConfig is reported as a terminal spec
+// error on the VirtualMCPServer status and never written to the ConfigMap.
+func TestEnsureVmcpConfigConfigMap_InvalidOIDCFilePath(t *testing.T) {
+	t.Parallel()
+
+	testVmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type:          "oidc",
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "vmcp"},
+		}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) { v.Generation = 4 }),
+	)
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+	}
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+				Issuer:            "https://issuer.example.com",
+				JWKSAuthTokenPath: "token",
+			},
+		},
+	}
+
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(testVmcp, mcpGroup, oidcConfig).
+		Build()
+	r := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
+
+	mockCtrl := gomock.NewController(t)
+	mockStatus := statusmocks.NewMockStatusManager(mockCtrl)
+	mockStatus.EXPECT().SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed).Times(1)
+	mockStatus.EXPECT().SetMessage(gomock.Any()).Times(1).Do(func(message string) {
+		assert.Contains(t, message, "jwksAuthTokenPath must be an absolute path")
+	})
+	mockStatus.EXPECT().SetAuthConfiguredCondition(
+		mcpv1beta1.ConditionReasonAuthInvalid,
+		gomock.Any(),
+		metav1.ConditionFalse,
+	).Times(1)
+	mockStatus.EXPECT().SetObservedGeneration(testVmcp.Generation).Times(1)
+
+	ctx := context.Background()
+	err := r.ensureVmcpConfigConfigMap(ctx, testVmcp, nil, nil, mockStatus)
+
+	var specErr *SpecValidationError
+	require.True(t, stderrors.As(err, &specErr), "expected a *SpecValidationError, got %T: %v", err, err)
+	assert.Contains(t, specErr.Message, "jwksAuthTokenPath must be an absolute path")
+
+	configMap := &corev1.ConfigMap{}
+	getErr := fakeClient.Get(ctx, types.NamespacedName{
+		Name: vmcpConfigMapName(testVmcp.Name), Namespace: testVmcp.Namespace,
+	}, configMap)
+	require.Error(t, getErr, "ConfigMap must not be written for an invalid OIDC file path")
+}
+
 func TestEnsureVmcpConfigConfigMap_DelegateClientValidationError(t *testing.T) {
 	t.Parallel()
 
@@ -2549,6 +2840,377 @@ func TestEnsureVmcpConfigConfigMap_DelegateClientValidationError(t *testing.T) {
 	var specErr *SpecValidationError
 	require.ErrorAs(t, err, &specErr)
 	assert.Contains(t, specErr.Message, "invalid delegate clients")
+}
+
+// declaredOutgoingAuthFixtures returns the objects the unresolved-outgoing-auth
+// tests share: a ready group, a token exchange config that vMCP supports, and a
+// bearer token config that it does not. bearerToken is valid for MCPRemoteProxy
+// but has no vMCP converter, so a VirtualMCPServer cannot use it for a backend.
+func declaredOutgoingAuthFixtures() (*mcpv1beta1.MCPGroup, *mcpv1beta1.MCPExternalAuthConfig, *mcpv1beta1.MCPExternalAuthConfig) {
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+	}
+	supported := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "te-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+			},
+		},
+	}
+	unsupported := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "bearer-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+			BearerToken: &mcpv1beta1.BearerTokenConfig{
+				TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token-secret", Key: "token"},
+			},
+		},
+	}
+	return mcpGroup, supported, unsupported
+}
+
+// externalAuthRef builds a BackendAuthConfig that references the named
+// MCPExternalAuthConfig.
+func externalAuthRef(name string) mcpv1beta1.BackendAuthConfig {
+	return mcpv1beta1.BackendAuthConfig{
+		Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+		ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: name},
+	}
+}
+
+// TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth covers the auth
+// entries declared in spec.outgoingAuth (default and backends). When one of
+// them cannot be resolved, no config may be published: a config written without
+// the entry would let a backend that relies on it fall back to another
+// credential, or to no auth at all. The failing entry must still be named in
+// status, so the refusal is visible on the resource and not only in the
+// operator log. When every failing entry references an unsupported type, the
+// failure is terminal: the resource reports Failed with Ready=False and the
+// reconcile is not retried. Any other failure is returned for a retry.
+func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuth(t *testing.T) {
+	t.Parallel()
+
+	const (
+		defaultCondition = "DefaultAuthConfig"
+		backendCondition = "BackendAuthConfig-b1"
+	)
+	defaultRef := func(name string) *mcpv1beta1.BackendAuthConfig {
+		ref := externalAuthRef(name)
+		return &ref
+	}
+
+	tests := []struct {
+		name         string
+		outgoingAuth *mcpv1beta1.OutgoingAuthConfig
+		// wantFailed is the condition that must name the unresolved entry.
+		wantFailed string
+		wantReason string
+		// wantValid lists the entries that did resolve. They are reported True
+		// next to the failing one, so the status says exactly what is wrong.
+		wantValid []string
+		// wantTerminal is set when the failure can only heal through a spec or
+		// referenced config change, and must be reported as a SpecValidationError.
+		wantTerminal bool
+	}{
+		{
+			name: "discovered mode, default of an unsupported type",
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
+				Source:  "discovered",
+				Default: defaultRef("bearer-auth"),
+			},
+			wantFailed:   defaultCondition,
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantTerminal: true,
+		},
+		{
+			name: "discovered mode, declared backend of an unsupported type",
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
+				Source:   "discovered",
+				Default:  defaultRef("te-auth"),
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{"b1": externalAuthRef("bearer-auth")},
+			},
+			wantFailed:   backendCondition,
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantValid:    []string{defaultCondition},
+			wantTerminal: true,
+		},
+		{
+			name: "discovered mode, default references a missing config",
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
+				Source:  "discovered",
+				Default: defaultRef("does-not-exist"),
+			},
+			wantFailed: defaultCondition,
+			wantReason: "ConversionFailed",
+		},
+		{
+			name: "inline mode, default of an unsupported type",
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
+				Source:  "inline",
+				Default: defaultRef("bearer-auth"),
+			},
+			wantFailed:   defaultCondition,
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantTerminal: true,
+		},
+		{
+			name: "inline mode, declared backend of an unsupported type",
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
+				Source:   "inline",
+				Default:  defaultRef("te-auth"),
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{"b1": externalAuthRef("bearer-auth")},
+			},
+			wantFailed:   backendCondition,
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantValid:    []string{defaultCondition},
+			wantTerminal: true,
+		},
+		{
+			// One unsupported entry next to one that may still appear: the
+			// missing config can heal without a spec change, so keep retrying.
+			name: "inline mode, unsupported default and a backend referencing a missing config",
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
+				Source:   "inline",
+				Default:  defaultRef("bearer-auth"),
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{"b1": externalAuthRef("does-not-exist")},
+			},
+			wantFailed: defaultCondition,
+			wantReason: mcpv1beta1.ConditionReasonUnsupportedAuthType,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			testScheme := testutil.NewScheme(t)
+			mcpGroup, supported, unsupported := declaredOutgoingAuthFixtures()
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				v1beta1test.WithVMCPOutgoingAuth(tt.outgoingAuth),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 2
+				}),
+			)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(vmcpServer, mcpGroup, supported, unsupported).
+				Build()
+			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+
+			workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
+			require.NoError(t, err)
+
+			statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+			err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
+			require.Error(t, err, "an unresolved declared entry must fail the config build")
+			var specErr *SpecValidationError
+			require.Equal(t, tt.wantTerminal, stderrors.As(err, &specErr),
+				"terminal failures must be a SpecValidationError and others must not, got %T: %v", err, err)
+
+			configMap := &corev1.ConfigMap{}
+			err = fakeClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpConfigMapName("test-vmcp"),
+				Namespace: "default",
+			}, configMap)
+			require.True(t, apierrors.IsNotFound(err),
+				"no config may be published while a declared entry is unresolved, got: %v", err)
+
+			_ = statusCollector.UpdateStatus(ctx, &vmcpServer.Status)
+			failed := meta.FindStatusCondition(vmcpServer.Status.Conditions, tt.wantFailed)
+			require.NotNil(t, failed, "the unresolved entry must be reported in status")
+			assert.Equal(t, metav1.ConditionFalse, failed.Status)
+			assert.Equal(t, tt.wantReason, failed.Reason)
+			for _, conditionType := range tt.wantValid {
+				valid := meta.FindStatusCondition(vmcpServer.Status.Conditions, conditionType)
+				require.NotNil(t, valid, "%s resolved and must be reported", conditionType)
+				assert.Equal(t, metav1.ConditionTrue, valid.Status)
+			}
+
+			ready := meta.FindStatusCondition(vmcpServer.Status.Conditions, mcpv1beta1.ConditionTypeVirtualMCPServerReady)
+			if !tt.wantTerminal {
+				assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcpServer.Status.Phase,
+					"a retryable failure must not be reported as terminal")
+				return
+			}
+			assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcpServer.Status.Phase)
+			assert.Equal(t, specErr.Message, vmcpServer.Status.Message)
+			assert.Contains(t, vmcpServer.Status.Message, "bearerToken")
+			assert.Equal(t, int64(2), vmcpServer.Status.ObservedGeneration)
+			require.NotNil(t, ready, "a terminal failure must be reflected in Ready")
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, ready.Reason)
+		})
+	}
+}
+
+// TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuthKeepsPublishedConfig
+// covers the same refusal for a VirtualMCPServer that is already serving. When
+// its declared default stops resolving, the published config must stay exactly
+// as it was: rewriting it without the default would silently downgrade every
+// backend that relies on it.
+func TestEnsureVmcpConfigConfigMap_UnresolvedDeclaredOutgoingAuthKeepsPublishedConfig(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	testScheme := testutil.NewScheme(t)
+	mcpGroup, supported, _ := declaredOutgoingAuthFixtures()
+	defaultRef := externalAuthRef(supported.Name)
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source:  "discovered",
+			Default: &defaultRef,
+		}),
+	)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup, supported).
+		Build()
+	reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
+	require.NoError(t, err)
+	configMapKey := types.NamespacedName{Name: vmcpConfigMapName("test-vmcp"), Namespace: "default"}
+
+	// The default resolves: the config is published with it.
+	require.NoError(t, reconciler.ensureVmcpConfigConfigMap(
+		ctx, vmcpServer, workloadNames, nil, virtualmcpserverstatus.NewStatusManager(vmcpServer)))
+	published := &corev1.ConfigMap{}
+	require.NoError(t, fakeClient.Get(ctx, configMapKey, published))
+	var publishedConfig vmcpconfig.Config
+	require.NoError(t, yaml.Unmarshal([]byte(published.Data["config.yaml"]), &publishedConfig))
+	require.NotNil(t, publishedConfig.OutgoingAuth)
+	require.NotNil(t, publishedConfig.OutgoingAuth.Default)
+	require.Equal(t, "token_exchange", publishedConfig.OutgoingAuth.Default.Type)
+
+	// The referenced config is then edited to a type vMCP cannot use.
+	edited := &mcpv1beta1.MCPExternalAuthConfig{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(supported), edited))
+	edited.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{
+		Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+		BearerToken: &mcpv1beta1.BearerTokenConfig{
+			TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token-secret", Key: "token"},
+		},
+	}
+	require.NoError(t, fakeClient.Update(ctx, edited))
+
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
+	var specErr *SpecValidationError
+	require.ErrorAs(t, err, &specErr, "an unsupported default is terminal and must not be retried")
+
+	current := &corev1.ConfigMap{}
+	require.NoError(t, fakeClient.Get(ctx, configMapKey, current))
+	assert.Equal(t, published.ResourceVersion, current.ResourceVersion,
+		"the published config must not be rewritten")
+	assert.Equal(t, published.Data, current.Data,
+		"the published config must keep the default it was serving with")
+	assert.Equal(t, published.Annotations[checksum.ContentChecksumAnnotation],
+		current.Annotations[checksum.ContentChecksumAnnotation],
+		"an unchanged checksum means no rollout is triggered")
+
+	_ = statusCollector.UpdateStatus(ctx, &vmcpServer.Status)
+	failed := meta.FindStatusCondition(vmcpServer.Status.Conditions, "DefaultAuthConfig")
+	require.NotNil(t, failed, "the unresolved default must be reported in status")
+	assert.Equal(t, metav1.ConditionFalse, failed.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, failed.Reason)
+	assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcpServer.Status.Phase,
+		"the resource must not claim to serve the new generation while the old config is published")
+}
+
+// TestUnsupportedDeclaredAuthMessage covers which outgoing auth failures make
+// the config build terminal: only declared entries count, and every one of
+// them must reference an unsupported type.
+func TestUnsupportedDeclaredAuthMessage(t *testing.T) {
+	t.Parallel()
+
+	unsupported := func(authType mcpv1beta1.ExternalAuthType) error {
+		return fmt.Errorf("failed to convert backend auth config: %w",
+			&externalauthsupport.UnsupportedTypeError{
+				Consumer: externalauthsupport.ConsumerVirtualMCPServer,
+				AuthType: authType,
+			})
+	}
+	defaultErr := func(err error) AuthConfigError {
+		return AuthConfigError{Context: authContextDefault, Error: err}
+	}
+	backendErr := func(name string, err error) AuthConfigError {
+		return AuthConfigError{Context: authContextBackendPrefix + name, BackendName: name, Error: err}
+	}
+	discoveredErr := func(name string, err error) AuthConfigError {
+		return AuthConfigError{Context: authContextDiscoveredPrefix + name, BackendName: name, Error: err}
+	}
+	missing := stderrors.New("failed to get MCPExternalAuthConfig default/missing: not found")
+
+	tests := []struct {
+		name       string
+		authErrors []AuthConfigError
+		// wantEntries is empty when the failure is not terminal.
+		wantEntries string
+	}{
+		{
+			name: "no failures",
+		},
+		{
+			name:        "unsupported default",
+			authErrors:  []AuthConfigError{defaultErr(unsupported(mcpv1beta1.ExternalAuthTypeBearerToken))},
+			wantEntries: "default (bearerToken)",
+		},
+		{
+			name: "unsupported default and backends are listed in a stable order",
+			authErrors: []AuthConfigError{
+				defaultErr(unsupported(mcpv1beta1.ExternalAuthTypeBearerToken)),
+				backendErr("zeta", unsupported(mcpv1beta1.ExternalAuthTypeBearerToken)),
+				backendErr("alpha", unsupported(mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer)),
+			},
+			wantEntries: "backends.alpha (embeddedAuthServer), backends.zeta (bearerToken), default (bearerToken)",
+		},
+		{
+			name:       "declared failure with another cause",
+			authErrors: []AuthConfigError{defaultErr(missing)},
+		},
+		{
+			name: "unsupported entry next to a failure with another cause",
+			authErrors: []AuthConfigError{
+				defaultErr(unsupported(mcpv1beta1.ExternalAuthTypeBearerToken)),
+				backendErr("b1", missing),
+			},
+		},
+		{
+			name:       "only discovered failures",
+			authErrors: []AuthConfigError{discoveredErr("b1", unsupported(mcpv1beta1.ExternalAuthTypeBearerToken))},
+		},
+		{
+			name: "discovered failure with another cause does not block a terminal declared one",
+			authErrors: []AuthConfigError{
+				backendErr("b1", unsupported(mcpv1beta1.ExternalAuthTypeBearerToken)),
+				discoveredErr("b2", missing),
+			},
+			wantEntries: "backends.b1 (bearerToken)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			message := unsupportedDeclaredAuthMessage(tt.authErrors)
+			if tt.wantEntries == "" {
+				assert.Empty(t, message)
+				return
+			}
+			assert.Contains(t, message, ": "+tt.wantEntries+";")
+		})
+	}
 }
 
 // TestConvertBackendsToStaticBackends_WithCABundlePathMap tests that CA bundle paths
@@ -2807,6 +3469,93 @@ func TestBuildCABundlePathMap(t *testing.T) {
 			result, err := r.buildCABundlePathMap(t.Context(), "default", tt.typedWorkloads)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedMap, result)
+		})
+	}
+}
+
+// The ConfigMap is rebuilt on every reconcile, so embedding-service warnings
+// must fire once per spec change rather than once per loop.
+func TestEmbeddingServiceWarningsEmitOncePerGeneration(t *testing.T) {
+	t.Parallel()
+
+	const (
+		namespace = "default"
+		manualURL = "http://manual-embedding.default.svc.cluster.local:8080"
+		refName   = "shared-embedding"
+		refURL    = "http://shared-embedding.default.svc.cluster.local:9090"
+	)
+
+	drainEvents := func(recorder *events.FakeRecorder) []string {
+		var emitted []string
+		for {
+			select {
+			case event := <-recorder.Events:
+				emitted = append(emitted, event)
+			default:
+				return emitted
+			}
+		}
+	}
+
+	tests := []struct {
+		name    string
+		vmcp    *mcpv1beta1.VirtualMCPServer
+		objects []client.Object
+		config  *vmcpconfig.Config
+		reason  string
+	}{
+		{
+			name: "manual embedding service without a ref",
+			vmcp: v1beta1test.NewVirtualMCPServer("manual-embedding", namespace),
+			config: &vmcpconfig.Config{
+				Optimizer: &vmcpconfig.OptimizerConfig{EmbeddingService: manualURL},
+			},
+			reason: "EmbeddingServiceManual",
+		},
+		{
+			name: "ref overrides a manual embedding service",
+			vmcp: v1beta1test.NewVirtualMCPServer("ref-embedding", namespace,
+				v1beta1test.WithVMCPEmbeddingServerRef(refName)),
+			objects: []client.Object{
+				v1beta1test.NewEmbeddingServer(refName, namespace,
+					v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{URL: refURL}),
+				),
+			},
+			config: &vmcpconfig.Config{
+				Optimizer: &vmcpconfig.OptimizerConfig{EmbeddingService: manualURL},
+			},
+			reason: "EmbeddingServiceOverridden",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// The spec changed since the last observed generation.
+			tt.vmcp.Generation = 2
+			tt.vmcp.Status.ObservedGeneration = 1
+
+			recorder := events.NewFakeRecorder(10)
+			r, _ := newTestVirtualMCPServerReconciler(t, tt.objects...)
+			r.Recorder = recorder
+
+			require.NoError(t, r.populateOptimizerEmbeddingService(t.Context(), tt.vmcp, tt.config))
+			emitted := drainEvents(recorder)
+			require.Len(t, emitted, 1, "a spec change should warn once")
+			assert.Contains(t, emitted[0], tt.reason)
+
+			// The reconcile applies status, so a rebuild of the same ConfigMap
+			// at the same generation must stay silent.
+			tt.vmcp.Status.ObservedGeneration = tt.vmcp.Generation
+			require.NoError(t, r.populateOptimizerEmbeddingService(t.Context(), tt.vmcp, tt.config))
+			assert.Empty(t, drainEvents(recorder), "an unchanged spec must not warn again")
+
+			// A later spec change bumps the generation, so the warning is news
+			// again.
+			tt.vmcp.Generation++
+			require.NoError(t, r.populateOptimizerEmbeddingService(t.Context(), tt.vmcp, tt.config))
+			assert.Len(t, drainEvents(recorder), 1)
 		})
 	}
 }

@@ -18,13 +18,13 @@ import (
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authz"
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/webhook"
 )
@@ -1728,6 +1728,60 @@ func TestWithSessionTTL(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedTTL, builder.config.SessionTTL)
+		})
+	}
+}
+
+func TestWithOIDCRequiredSubject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		existing   *auth.TokenValidatorConfig
+		subject    string
+		prefix     string
+		expectErr  bool
+		wantConfig *auth.TokenValidatorConfig
+	}{
+		{
+			name:       "sets exact subject on existing OIDC config",
+			existing:   &auth.TokenValidatorConfig{Issuer: "https://issuer"},
+			subject:    "system:serviceaccount:ns:sa",
+			wantConfig: &auth.TokenValidatorConfig{Issuer: "https://issuer", RequiredSubject: "system:serviceaccount:ns:sa"},
+		},
+		{
+			name:     "sets subject prefix on existing OIDC config",
+			existing: &auth.TokenValidatorConfig{Issuer: "https://issuer"},
+			prefix:   "system:serviceaccount:ns:",
+			wantConfig: &auth.TokenValidatorConfig{
+				Issuer: "https://issuer", RequiredSubjectPrefix: "system:serviceaccount:ns:",
+			},
+		},
+		{
+			name:       "empty restriction without OIDC config is a no-op",
+			wantConfig: nil,
+		},
+		{
+			name:      "restriction without OIDC config is an error",
+			subject:   "system:serviceaccount:ns:sa",
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			builder.config.OIDCConfig = tt.existing
+			err := WithOIDCRequiredSubject(tt.subject, tt.prefix)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantConfig, builder.config.OIDCConfig)
 		})
 	}
 }

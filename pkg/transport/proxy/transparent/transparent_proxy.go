@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strconv"
@@ -108,11 +109,15 @@ type TransparentProxy struct {
 	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
 
-	// stripConsentCookie prevents the embedded AS session from reaching the backend.
+	// stripConsentCookie prevents remembered-consent cookies (__Host-thv_consent_*) from reaching the backend.
 	stripConsentCookie bool
 
-	// Callback when health check fails (for remote servers)
+	// Callback when the health check failure threshold is reached
 	onHealthCheckFailed types.HealthCheckFailedCallback
+
+	// Callback when a remote server passes a health check after onHealthCheckFailed fired;
+	// called again on later passing checks until it returns nil
+	onHealthCheckRecovered types.HealthCheckRecoveredCallback
 
 	// Callback when 401 Unauthorized response is received (for bearer token authentication)
 	onUnauthorizedResponse types.UnauthorizedResponseCallback
@@ -149,7 +154,8 @@ type TransparentProxy struct {
 	// Health check ping timeout (default: 5 seconds)
 	healthCheckPingTimeout time.Duration
 
-	// Health check failure threshold: consecutive failures before shutdown (default: 5)
+	// Health check failure threshold: consecutive failures before a local proxy shuts
+	// down or a remote one is reported unhealthy (default: 5)
 	healthCheckFailureThreshold int
 
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
@@ -203,11 +209,12 @@ const (
 	HealthCheckRetryDelayEnvVar = "TOOLHIVE_HEALTH_CHECK_RETRY_DELAY"
 
 	// HealthCheckFailureThresholdEnvVar is the environment variable name for configuring
-	// the number of consecutive health check failures before shutdown.
+	// the number of consecutive health check failures before a local proxy shuts down
+	// or a remote one is reported unhealthy.
 	HealthCheckFailureThresholdEnvVar = "TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD"
 
 	// DefaultHealthCheckFailureThreshold is the default number of consecutive health check
-	// failures before the proxy initiates shutdown.
+	// failures before a local proxy initiates shutdown or a remote one is reported unhealthy.
 	DefaultHealthCheckFailureThreshold = 5
 
 	// maxRedirects is the maximum number of HTTP redirects to follow when
@@ -263,8 +270,9 @@ func WithRemoteRawQuery(rawQuery string) Option {
 	}
 }
 
-// WithStripConsentCookie removes the entire embedded auth server browser session
-// cookie family from outbound backend requests. Enable only when that server is mounted.
+// WithStripConsentCookie removes the embedded auth server's remembered-consent
+// cookie family (__Host-thv_consent_*) from outbound backend requests, not all
+// auth server browser cookies. Enable only when that server is mounted.
 func WithStripConsentCookie() Option {
 	return func(p *TransparentProxy) {
 		p.stripConsentCookie = true
@@ -291,7 +299,8 @@ func withHealthCheckPingTimeout(timeout time.Duration) Option {
 	}
 }
 
-// withHealthCheckFailureThreshold sets the consecutive failure count before shutdown.
+// withHealthCheckFailureThreshold sets the consecutive failure count that triggers
+// onHealthCheckFailed.
 // This is primarily useful for testing with lower thresholds.
 // Ignores non-positive values; default will be used.
 func withHealthCheckFailureThreshold(threshold int) Option {
@@ -380,6 +389,7 @@ func NewTransparentProxy(
 		isRemote,
 		transportType,
 		onHealthCheckFailed,
+		nil, // onHealthCheckRecovered
 		onUnauthorizedResponse,
 		endpointPrefix,
 		trustProxyHeaders,
@@ -459,6 +469,7 @@ func NewTransparentProxyWithOptions(
 	isRemote bool,
 	transportType string,
 	onHealthCheckFailed types.HealthCheckFailedCallback,
+	onHealthCheckRecovered types.HealthCheckRecoveredCallback,
 	onUnauthorizedResponse types.UnauthorizedResponseCallback,
 	endpointPrefix string,
 	trustProxyHeaders bool,
@@ -479,6 +490,7 @@ func NewTransparentProxyWithOptions(
 		isRemote:                    isRemote,
 		transportType:               transportType,
 		onHealthCheckFailed:         onHealthCheckFailed,
+		onHealthCheckRecovered:      onHealthCheckRecovered,
 		onUnauthorizedResponse:      onUnauthorizedResponse,
 		endpointPrefix:              endpointPrefix,
 		trustProxyHeaders:           trustProxyHeaders,
@@ -512,14 +524,19 @@ func NewTransparentProxyWithOptions(
 
 	// Create health checker always for Kubernetes probes
 	var mcpPinger healthcheck.MCPPinger
+	var healthCheckerOpts []healthcheck.Option
 	if enableHealthCheck {
+		healthCheckURL := proxy.healthCheckURL()
 		if proxy.stateless {
-			mcpPinger = NewStatelessMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
+			mcpPinger = NewStatelessMCPPingerWithTimeout(healthCheckURL, proxy.healthCheckPingTimeout)
 		} else {
-			mcpPinger = NewMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
+			mcpPinger = NewMCPPingerWithTimeout(healthCheckURL, proxy.healthCheckPingTimeout)
 		}
+		// monitorHealth pings the backend on its own schedule, and /health answers
+		// from its last result, so a slow backend cannot hold a probe past its timeout.
+		healthCheckerOpts = append(healthCheckerOpts, healthcheck.WithLastResult())
 	}
-	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
+	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger, healthCheckerOpts...)
 
 	return proxy
 }
@@ -602,9 +619,14 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	sawInitialize := false
 	revision := mcp.RevisionLegacy
-	// Only ID-bearing requests are classified and supply an ID for local errors.
-	// Notifications, client responses and bodiless GET/DELETE leave it absent.
-	var requestID any
+	// Only ID-bearing requests are classified, supply an ID for local errors,
+	// and have their upstream response validated. Notifications, client
+	// responses and bodiless GET/DELETE leave them absent.
+	var (
+		requestID any
+		rpcID     jsonrpc2.ID
+		rpcMethod string
+	)
 
 	if req.Method == http.MethodPost {
 		msg, err := mcp.DecodeMessage(reqBody)
@@ -615,6 +637,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			sawInitialize = rpcRequest.Method == "initialize"
 			if rpcRequest.ID.IsValid() {
 				requestID = rpcRequest.ID.Raw()
+				rpcID, rpcMethod = rpcRequest.ID, rpcRequest.Method
 				meta := mcp.ExtractMeta(rpcRequest.Params)
 				rev, cerr := mcp.ClassifyRevision(rpcRequest.Method, meta, req.Header.Get("MCP-Protocol-Version"))
 				if cerr != nil {
@@ -627,6 +650,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	//nolint:gosec // G706: logging target URI from config
 	slog.Debug("classified request revision", "modern", revision == mcp.RevisionModern, "target", t.p.targetURI)
+
+	// The response to an id-bearing request is validated below, which needs its
+	// bytes in the clear. Without the client's Accept-Encoding, Go's transport
+	// asks for gzip itself and decodes it (as mcp.WithoutAcceptEncoding does for
+	// the filters). req is the outbound clone httputil.ReverseProxy owns, and the
+	// redirect and recovery paths derive their requests from it.
+	if requestID != nil {
+		req.Header.Del("Accept-Encoding")
+	}
 
 	// Transparent requests forward backend session authority even for Modern MCP.
 	clientSID, carrierErr := requestSessionID(req)
@@ -757,6 +789,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
+	// Validate before the response can register a session or mark the server
+	// initialized: a malformed initialize response must do neither. Responses
+	// returned by the recovery replay paths above are not validated.
+	if requestID != nil {
+		if rejected := t.validateUpstreamResponse(req, resp, rpcID, rpcMethod); rejected != nil {
+			return rejected, nil
+		}
+	}
+
 	if resp.StatusCode == http.StatusOK {
 		// check if we saw a valid mcp header
 		ct := resp.Header.Get("Mcp-Session-Id")
@@ -785,8 +826,8 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 		// Modern (2026-07-28, stateless) has no initialize handshake, so use the
 		// first successful (HTTP 200) Modern request as the readiness signal: it
-		// lets the background health monitor begin probing this backend, which
-		// otherwise never starts for a pure-Modern server. See #5831.
+		// lets the background health monitor's failures count toward shutdown,
+		// which otherwise never happens for a pure-Modern server. See #5831.
 		if revision == mcp.RevisionModern && !t.p.serverInitialized() {
 			t.p.setServerInitialized()
 		}
@@ -1172,8 +1213,9 @@ func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest, upstr
 	}
 }
 
-// stripConsentCookie removes the embedded AS cookie family, retaining other cookie
-// pairs across all Cookie header lines. The caller supplies the outbound header.
+// stripConsentCookie removes only remembered-consent cookies (__Host-thv_consent_*),
+// retaining other cookie pairs across all Cookie header lines.
+// The caller supplies the outbound header.
 func stripConsentCookie(header http.Header) {
 	var kept []string
 	removed := false
@@ -1338,7 +1380,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// 5. Catch-all proxy handler (least specific - ServeMux routing handles precedence)
 	// Note: No manual path checking needed - ServeMux longest-match routing ensures
 	// more specific paths registered above take precedence over this catch-all.
-	finalHandler = p.methodGate(finalHandler)
+	finalHandler = rejectConnectionNamedHeaders(p.methodGate(finalHandler))
 	mux.Handle("/", finalHandler)
 
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
@@ -1419,13 +1461,49 @@ func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
 	}
 }
 
-// handleHealthCheckFailure handles a failed health check, including retry logic and shutdown.
-// Returns (updatedFailureCount, shouldContinue) - true if monitoring should continue, false if it should stop.
+// healthCheckURL returns the URL the health checker pings. A remote workload's
+// targetURI holds only the scheme and host, so the remote URL's path and query are
+// added back; otherwise the check would reach the host's root, which on a shared
+// host can answer while the MCP endpoint fails.
+func (p *TransparentProxy) healthCheckURL() string {
+	if p.remoteBasePath == "" && p.remoteRawQuery == "" {
+		return p.targetURI
+	}
+	u, err := url.Parse(p.targetURI)
+	if err != nil {
+		return p.targetURI
+	}
+	if p.remoteBasePath != "" {
+		u.Path = p.remoteBasePath
+	}
+	u.RawQuery = p.remoteRawQuery
+	return u.String()
+}
+
+// healthFailureOutcome is what handleHealthCheckFailure decided about a failed check.
+type healthFailureOutcome int
+
+const (
+	// failureCounted means the failure is below the threshold; monitoring continues.
+	failureCounted healthFailureOutcome = iota
+	// failureReported means a remote server reached the threshold and
+	// onHealthCheckFailed was called; monitoring continues so recovery is seen.
+	failureReported
+	// failureStop means monitoring must stop: a local server reached the threshold
+	// and the proxy was stopped, or the proxy is shutting down.
+	failureStop
+)
+
+// handleHealthCheckFailure handles a failed health check, including retry logic.
+// Once failures reach the threshold it fires onHealthCheckFailed. A local proxy
+// then stops, because ToolHive owns the container lifecycle. A remote proxy keeps
+// running so monitorHealth can see the server come back.
+// Returns the updated failure count and what monitorHealth should do next.
 func (p *TransparentProxy) handleHealthCheckFailure(
 	ctx context.Context,
 	consecutiveFailures int,
 	status healthcheck.HealthStatus,
-) (int, bool) {
+) (int, healthFailureOutcome) {
 	consecutiveFailures++
 	//nolint:gosec // G706: logging target URI from config and health status
 	slog.Warn("health check failed",
@@ -1436,9 +1514,27 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 
 	if consecutiveFailures < p.healthCheckFailureThreshold {
 		if p.performHealthCheckRetry(ctx) {
-			consecutiveFailures = 0
+			return 0, failureCounted
 		}
-		return consecutiveFailures, true
+		// A retry cut short by shutdown, or failed because of it, says nothing
+		// about the server; stop before the next tick can count it.
+		if p.shuttingDown(ctx) {
+			return consecutiveFailures, failureStop
+		}
+		return consecutiveFailures, failureCounted
+	}
+
+	if p.isRemote {
+		// ToolHive does not own a remote server's lifecycle, and it may come back
+		// (for example a scale-to-zero backend after a cold start), so keep
+		// monitoring instead of stopping.
+		//nolint:gosec // G706: logging target URI from config
+		slog.Warn("remote server failed consecutive health checks; marking unhealthy and monitoring for recovery",
+			"target", p.targetURI, "attempts", p.healthCheckFailureThreshold)
+		if p.onHealthCheckFailed != nil {
+			p.onHealthCheckFailed()
+		}
+		return consecutiveFailures, failureReported
 	}
 
 	// All retries exhausted, initiate shutdown
@@ -1452,14 +1548,63 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 		slog.Error("failed to stop proxy",
 			"target", p.targetURI, "error", err)
 	}
-	return consecutiveFailures, false
+	return consecutiveFailures, failureStop
+}
+
+// notifyHealthCheckRecovered calls onHealthCheckRecovered and reports whether the
+// recovery is handled. A nil callback counts as handled; an error leaves it pending
+// so the next passing check calls the callback again.
+func (p *TransparentProxy) notifyHealthCheckRecovered() bool {
+	if p.onHealthCheckRecovered == nil {
+		return true
+	}
+	if err := p.onHealthCheckRecovered(); err != nil {
+		//nolint:gosec // G706: logging target URI from config
+		slog.Warn("failed to report remote server recovery; retrying on the next passing health check",
+			"target", p.targetURI, "error", err)
+		return false
+	}
+	return true
+}
+
+// shuttingDown reports whether the health monitor's context is cancelled or Stop
+// has been called. A check that was in flight when shutdown began fails for that
+// reason alone, so its result must not reach the status callbacks.
+func (p *TransparentProxy) shuttingDown(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	select {
+	case <-p.shutdownCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// healthMonitorState is what monitorHealth carries between checks. Only the
+// monitorHealth goroutine uses it.
+type healthMonitorState struct {
+	consecutiveFailures int
+	// reportedUnhealthy is set once a remote server reaches the failure threshold
+	// and onHealthCheckFailed has been called. Only a remote proxy keeps monitoring
+	// past that point.
+	reportedUnhealthy bool
+	// recoveryPending is set when a remote server reported unhealthy passes a check,
+	// and stays set until onHealthCheckRecovered reports the recovery handled, so a
+	// failed status write is retried on the next passing check.
+	recoveryPending bool
 }
 
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	ticker := time.NewTicker(p.healthCheckInterval)
 	defer ticker.Stop()
 
-	consecutiveFailures := 0
+	// With health checks enabled, each check records the result /health answers
+	// from, so check once before the first tick.
+	p.healthChecker.CheckHealth(parentCtx)
+
+	var state healthMonitorState
 
 	for {
 		select {
@@ -1472,31 +1617,91 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			slog.Debug("shutdown initiated, stopping health monitor", "target", p.targetURI)
 			return
 		case <-ticker.C:
-			if !p.serverInitialized() {
-				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("mcp server not initialized yet, skipping health check",
-					"target", p.targetURI)
-				continue
-			}
-
 			alive := p.healthChecker.CheckHealth(parentCtx)
-			if alive.Status != healthcheck.StatusHealthy {
-				var shouldContinue bool
-				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)
-				if !shouldContinue {
-					return
-				}
+
+			// The check can run for up to the ping timeout. If shutdown began
+			// meanwhile, its result is not the server's, and a callback now would
+			// overwrite the status the shutdown path writes.
+			if p.shuttingDown(parentCtx) {
+				//nolint:gosec // G706: logging target URI from config
+				slog.Debug("shutdown began during health check, stopping health monitor", "target", p.targetURI)
+				return
+			}
+
+			// A local server's failures count toward shutdown only once it is
+			// initialized, so a slow container start is not mistaken for a failure.
+			// A remote server that keeps failing never initializes, so its failures
+			// always count.
+			if !p.isRemote && !p.serverInitialized() {
+				//nolint:gosec // G706: logging target URI from config
+				slog.Debug("mcp server not initialized yet, not counting health check",
+					"target", p.targetURI, "status", alive.Status)
 				continue
 			}
 
-			// Reset failure count on successful health check
-			if consecutiveFailures > 0 {
-				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("health check recovered",
-					"target", p.targetURI, "previous_failures", consecutiveFailures)
+			if alive.Status == healthcheck.StatusHealthy {
+				p.recordHealthCheckPass(&state)
+				continue
 			}
-			consecutiveFailures = 0
+			if !p.recordHealthCheckFailure(parentCtx, &state, alive.Status) {
+				return
+			}
 		}
+	}
+}
+
+// recordHealthCheckFailure updates state for a failed check and reports whether
+// monitoring should continue.
+func (p *TransparentProxy) recordHealthCheckFailure(
+	ctx context.Context,
+	state *healthMonitorState,
+	status healthcheck.HealthStatus,
+) bool {
+	if state.reportedUnhealthy {
+		// Already reported unhealthy. Notify again, skipping the warning and the
+		// retry path, so a status write that failed, or another writer's status,
+		// is put right; the callback writes only when the status is not already
+		// unhealthy.
+		//nolint:gosec // G706: logging target URI from config and health status
+		slog.Debug("remote server still unhealthy", "target", p.targetURI, "status", status)
+		if p.onHealthCheckFailed != nil {
+			p.onHealthCheckFailed()
+		}
+		return true
+	}
+
+	var outcome healthFailureOutcome
+	state.consecutiveFailures, outcome = p.handleHealthCheckFailure(ctx, state.consecutiveFailures, status)
+	switch outcome {
+	case failureStop:
+		return false
+	case failureReported:
+		// A fresh unhealthy report supersedes a recovery not yet reported.
+		state.reportedUnhealthy = true
+		state.recoveryPending = false
+	case failureCounted:
+		// Below the threshold; a pending recovery stays pending.
+	}
+	return true
+}
+
+// recordHealthCheckPass updates state for a passing check, and reports a
+// recovery to onHealthCheckRecovered while one is pending.
+func (p *TransparentProxy) recordHealthCheckPass(state *healthMonitorState) {
+	if state.reportedUnhealthy {
+		//nolint:gosec // G706: logging target URI from config
+		slog.Debug("remote server recovered from unhealthy", "target", p.targetURI)
+		state.reportedUnhealthy = false
+		state.recoveryPending = true
+	} else if state.consecutiveFailures > 0 {
+		//nolint:gosec // G706: logging target URI from config
+		slog.Debug("health check recovered",
+			"target", p.targetURI, "previous_failures", state.consecutiveFailures)
+	}
+	state.consecutiveFailures = 0
+
+	if state.recoveryPending {
+		state.recoveryPending = !p.notifyHealthCheckRecovered()
 	}
 }
 
@@ -1593,6 +1798,75 @@ func (*TransparentProxy) SendMessageToDestination(_ jsonrpc2.Message) error {
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
 func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.Message) error {
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
+}
+
+// connectionHopByHopTokens are the only values a client may list in its
+// Connection header: "close" and the standard hop-by-hop header names
+// (RFC 9110 §7.6.1, plus HTTP2-Settings for h2c upgrades). Keys are in
+// canonical form (http.CanonicalHeaderKey).
+var connectionHopByHopTokens = map[string]bool{
+	"Close":               true,
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Http2-Settings":      true,
+}
+
+// maxLoggedConnectionToken caps how much of a rejected Connection token is
+// written to the log.
+const maxLoggedConnectionToken = 64
+
+// rejectConnectionNamedHeaders rejects with 400 any request whose Connection
+// header names something other than a hop-by-hop header.
+//
+// httputil.ReverseProxy removes every header named in Connection from the
+// outbound request, after the middleware chain has run. Middlewares that
+// inject headers (the upstream token, operator-configured headers) set them
+// on the inbound request, so a client sending "Connection: X-Tenant-ID" or
+// "Connection: Authorization" could otherwise have those injected headers
+// removed before the request reaches the upstream.
+//
+// Rejecting is used instead of removing the named headers before the chain
+// runs, because removal would also hide headers from middlewares that
+// validate them only when present: "Origin: <disallowed>" together with
+// "Connection: Origin" would then pass Origin validation. MCP clients and
+// common intermediaries do not name end-to-end headers in Connection. Header
+// forwarding cannot inject any of the allowed names (see
+// middleware.RestrictedHeaders).
+//
+// This runs outermost, before any middleware.
+func rejectConnectionNamedHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, value := range r.Header["Connection"] {
+			for token := range strings.SplitSeq(value, ",") {
+				token = textproto.TrimString(token)
+				if token == "" || connectionHopByHopTokens[http.CanonicalHeaderKey(token)] {
+					continue
+				}
+				// The token is caller-controlled and can be up to the
+				// server's header size limit, so cap what is logged.
+				logged := token
+				if len(logged) > maxLoggedConnectionToken {
+					logged = logged[:maxLoggedConnectionToken] + "..."
+				}
+				slog.Warn("rejecting request that names an end-to-end header in Connection",
+					"header", logged,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"remote", r.RemoteAddr,
+				)
+				http.Error(w, "Connection header may only name hop-by-hop headers", http.StatusBadRequest)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // methodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405

@@ -13,12 +13,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive-core/env"
@@ -29,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -37,6 +39,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -160,10 +163,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
 	}
 
-	// Construct embedded authorization server if configured.
+	// Construct the embedded authorization server if configured, and start its
+	// TLS listener when the auth server config enables one.
 	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 	if authServerRC != nil {
-		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, authServerRC)
+		if err := validateAuthServerListenerPorts(cfg.Port, vmcpCfg.Telemetry, authServerRC); err != nil {
+			return err
+		}
+		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(
+			ctx, authServerRC, authserverrunner.WithListenerHost(authServerListenerHost(cfg.Host)),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
@@ -172,6 +181,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 				slog.Error(fmt.Sprintf("failed to close embedded auth server: %v", closeErr))
 			}
 		}()
+		if err := embeddedAuthServer.Start(); err != nil {
+			return fmt.Errorf("failed to start auth server TLS listener: %w", err)
+		}
 		slog.Info("embedded authorization server initialized")
 	}
 
@@ -414,6 +426,22 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}()
 	}
 
+	// Anonymous usage metrics; nil when disabled. The aggregator is wrapped so the
+	// reported tool count follows each aggregation.
+	usage := startUsageMetrics(backendRegistry, usageFacts{
+		authMode: vmcpAuthMode(vmcpCfg.IncomingAuth, embeddedAuthServer != nil),
+		authz:    authzConfig != nil,
+		features: vmcpFeatures(optCfg != nil, vmcpCfg.CodeMode, len(vmcpCfg.CompositeTools), vmcpCfg.OutgoingAuth),
+	})
+	var usageMiddleware func(http.Handler) http.Handler
+	codeModeCfg := codemode.FromConfig(vmcpCfg.CodeMode)
+	if usage != nil {
+		defer usage.shutdown()
+		agg = usage.observe(agg)
+		usageMiddleware = usage.middleware(optCfg != nil)
+		codeModeCfg = usage.codeModeConfig(codeModeCfg)
+	}
+
 	// Resolve transport defaults once here at the composition root: the
 	// vMCP config edge is the single place flags/CRD/YAML become a fully-resolved
 	// Config, so server.New, Serve, and the derive* helpers downstream are pure
@@ -433,15 +461,19 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		RateLimiter:             rateLimiter,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,
+		UsageMetricsMiddleware:  usageMiddleware,
 		AuditConfig:             vmcpCfg.Audit,
 		HealthMonitorConfig:     healthMonitorConfig,
 		StatusReportingInterval: getStatusReportingInterval(vmcpCfg),
 		Watcher:                 nil, // set below if backendWatcher is non-nil
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
-		CodeModeConfig:          codemode.FromConfig(vmcpCfg.CodeMode),
+		CodeModeConfig:          codeModeCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		// Call binding answers a refused call-bound token with the same
+		// challenge parameters as the token validator.
+		CallBinding: callbinding.Config{Challenge: authfactory.IncomingBearerChallenge(vmcpCfg.IncomingAuth)},
 		// Core collaborators: server.New routes through core.New + Serve, so the core
 		// is the single aggregator and authorizer. The aggregator is the same instance
 		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).
@@ -662,6 +694,34 @@ func vmcpNamespace() string {
 		return "local"
 	}
 	return namespace
+}
+
+// authServerListenerHost returns the host the embedded auth server's TLS
+// listener binds: the same host as the MCP listener, resolved through
+// vmcpserver.WithDefaults so the two cannot drift apart.
+func authServerListenerHost(host string) string {
+	return vmcpserver.WithDefaults(&vmcpserver.Config{Host: host}).Host
+}
+
+// validateAuthServerListenerPorts rejects a vMCP or diagnostics port that
+// collides with the embedded auth server's fixed TLS listener port. The port
+// is part of the issuer URL, so a clash is an error rather than a reason to
+// pick another port.
+// Keep in sync with Runner.startEmbeddedAuthServerListener in pkg/runner.
+func validateAuthServerListenerPorts(
+	port int, telemetryCfg *telemetry.Config, authServerRC *authserverconfig.RunConfig,
+) error {
+	if authServerRC == nil || authServerRC.TLSListener == nil {
+		return nil
+	}
+	if port == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("vMCP port %d conflicts with the auth server TLS listener port", port)
+	}
+	if telemetryCfg != nil && telemetryCfg.EnablePrometheusMetricsPath &&
+		diagnostics.ResolvePort(telemetryCfg.PrometheusPort) == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("diagnostics port %d conflicts with the auth server TLS listener port", authserverrunner.TLSListenerPort)
+	}
+	return nil
 }
 
 // loadAuthServerConfig loads the auth server RunConfig from a sibling file

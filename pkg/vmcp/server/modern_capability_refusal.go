@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// Client capability names as they appear in the draft schema's
+// Client capability names as they appear in the final 2026-07-28 schema's
 // ClientCapabilities object — the keys a Modern client declares under
 // _meta's io.modelcontextprotocol/clientCapabilities and the keys a
 // MissingRequiredClientCapabilityError reports back in
@@ -33,14 +33,36 @@ func modernClientDeclaredCapability(meta map[string]any, capability string) bool
 	return ok
 }
 
+// elicitationModeURL names URL-mode elicitation. It is both the
+// ElicitationCapabilities key a client declares to accept URL mode and the
+// elicitation/create params "mode" value. An elicitation object without the
+// key means form mode only, so a bare elicitation: {} does not declare URL
+// mode.
+const elicitationModeURL = "url"
+
+// modernClientDeclaredURLElicitation reports whether the request's _meta
+// declared clientCapabilities.elicitation.url. MCP 2026-07-28 says servers
+// MUST NOT send elicitation requests with modes the client does not support.
+//
+// Unlike modernClientDeclaredCapability, presence of the key is not enough:
+// the value must be an object. A typed client decodes url: null as "not
+// supported", and false or a string is not a capabilities object, so sending
+// the URL on any of those would send a mode the client did not declare.
+func modernClientDeclaredURLElicitation(meta map[string]any) bool {
+	caps, _ := meta[modernClientCapabilitiesKey].(map[string]any)
+	elicitation, _ := caps[capabilityElicitation].(map[string]any)
+	urlCaps, ok := elicitation[elicitationModeURL].(map[string]any)
+	return ok && urlCaps != nil
+}
+
 // capabilityRefusalRecorder captures, in-process, which client capability a
 // backend's mid-call server-initiated request needed when there was no
 // downstream session to forward it to (Modern ingress). dispatchModern's call
 // verbs install one before dispatching; the SDK requester adapters
 // (sdk_elicitation_adapter.go, sdk_sampling_adapter.go) record into it at the
 // exact point of refusal (mcpcompat's ErrNoActiveSession); the dispatcher
-// reads it after a failed call to classify the failure as the draft schema's
-// MissingRequiredClientCapabilityError (-32021) when the client did not
+// reads it after a failed call to classify the failure as the final 2026-07-28
+// schema's MissingRequiredClientCapabilityError (-32021) when the client did not
 // declare the capability.
 //
 // Why this rides the context rather than a parameter or the error chain: the

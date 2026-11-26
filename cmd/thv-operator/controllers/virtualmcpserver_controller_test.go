@@ -15,6 +15,7 @@
 package controllers
 
 import (
+	"cmp"
 	"context"
 	stderrors "errors"
 	"maps"
@@ -712,7 +713,10 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			Type:            corev1.ServiceTypeClusterIP,
 			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
-				Port: vmcpDefaultPort,
+				Name:       "http",
+				Port:       vmcpDefaultPort,
+				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),
+				Protocol:   corev1.ProtocolTCP,
 			}},
 		},
 	}
@@ -1563,7 +1567,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: "old-image:v1",
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
@@ -1611,7 +1615,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: []corev1.EnvVar{
 										{Name: "OLD_VAR", Value: "old-value"},
@@ -1637,7 +1641,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -1662,7 +1666,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -1695,7 +1699,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483", "--debug"},
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -1720,7 +1724,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2156,7 +2160,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
@@ -2189,7 +2193,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
@@ -2220,7 +2224,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: "old-image:v1",
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2252,7 +2256,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2284,7 +2288,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args: reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:  mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2316,7 +2320,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Args:         reconciler.buildContainerArgsForVmcp(vmcp),
 									Env:          mustBuildEnvVarsForVmcp(reconciler, vmcp),
@@ -2511,6 +2515,108 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 
 	// Verify conditions were set
 	assert.NotEmpty(t, updatedVMCP.Status.Conditions)
+}
+
+// TestVirtualMCPServerReconcile_UnresolvedDeclaredOutgoingAuthIsReported runs
+// a full reconcile for a VirtualMCPServer whose declared default cannot be
+// resolved. The reconcile must publish nothing, and the reason has to reach the
+// stored status: a condition that is only set on the in-memory status manager
+// is lost when the reconcile returns. An unsupported auth type can only heal
+// through a spec or referenced config change, so the resource is reported
+// Failed with Ready=False and the reconcile is not retried. A missing config may
+// still appear, so that failure is returned for a retry.
+func TestVirtualMCPServerReconcile_UnresolvedDeclaredOutgoingAuthIsReported(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		defaultRef   string
+		wantReason   string
+		wantTerminal bool
+	}{
+		{
+			name:         "unsupported auth type is terminal",
+			defaultRef:   "bearer-auth",
+			wantReason:   mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			wantTerminal: true,
+		},
+		{
+			name:       "missing auth config is retried",
+			defaultRef: "does-not-exist",
+			wantReason: "ConversionFailed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef(testGroupName),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "inline",
+					Default: &mcpv1beta1.BackendAuthConfig{
+						Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: tt.defaultRef},
+					},
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			)
+			mcpGroup := &mcpv1beta1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
+				Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+			}
+			// bearerToken is valid for MCPRemoteProxy but has no vMCP converter.
+			bearerAuth := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "bearer-auth", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token-secret", Key: "token"},
+					},
+				},
+			}
+
+			reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp, mcpGroup, bearerAuth)
+			key := types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}
+
+			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+			if tt.wantTerminal {
+				require.NoError(t, err, "a terminal failure must not be retried")
+			} else {
+				require.Error(t, err, "a failure that may heal on its own must be retried")
+			}
+			assert.Equal(t, ctrl.Result{}, result)
+
+			configMap := &corev1.ConfigMap{}
+			err = k8sClient.Get(context.Background(), types.NamespacedName{
+				Name:      vmcpConfigMapName(vmcp.Name),
+				Namespace: vmcp.Namespace,
+			}, configMap)
+			require.True(t, apierrors.IsNotFound(err), "no config may be published, got: %v", err)
+
+			updated := &mcpv1beta1.VirtualMCPServer{}
+			require.NoError(t, k8sClient.Get(context.Background(), key, updated))
+			condition := meta.FindStatusCondition(updated.Status.Conditions, "DefaultAuthConfig")
+			require.NotNil(t, condition, "the unresolved default must be reported in the stored status")
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, tt.wantReason, condition.Reason)
+			if !tt.wantTerminal {
+				return
+			}
+
+			assert.Contains(t, condition.Message, "bearerToken")
+			assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, updated.Status.Phase)
+			assert.Contains(t, updated.Status.Message, "default (bearerToken)")
+			assert.Equal(t, vmcp.Generation, updated.Status.ObservedGeneration)
+			ready := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeVirtualMCPServerReady)
+			require.NotNil(t, ready, "a terminal failure must be reflected in Ready")
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, ready.Reason)
+		})
+	}
 }
 
 func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
@@ -2842,7 +2948,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 							Name:  "vmcp",
 							Image: getVmcpImage(),
 							Ports: []corev1.ContainerPort{
-								{ContainerPort: 4483},
+								{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 							},
 							Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 						},
@@ -3100,7 +3206,7 @@ func TestVirtualMCPServerEnsureDeployment_RemovesStaleHashAnnotation(t *testing.
 									Name:  "vmcp",
 									Image: getVmcpImage(),
 									Ports: []corev1.ContainerPort{
-										{ContainerPort: 4483},
+										{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 									},
 									Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
 								},
@@ -3592,7 +3698,7 @@ func vmcpContainerDeployment(args []string, env []corev1.EnvVar, serviceAccount 
 							Name:  "vmcp",
 							Image: getVmcpImage(),
 							Ports: []corev1.ContainerPort{
-								{ContainerPort: 4483},
+								{Name: "http", ContainerPort: 4483, Protocol: corev1.ProtocolTCP},
 							},
 							Args: args,
 							Env:  env,
@@ -4799,6 +4905,105 @@ func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T
 	}
 }
 
+// TestVirtualMCPServerValidateAuthServerConfig_TLSListener exercises the
+// tlsListener rules enforced through EmbeddedAuthServerConfig.ValidateTLSListener.
+func TestVirtualMCPServerValidateAuthServerConfig_TLSListener(t *testing.T) {
+	t.Parallel()
+
+	listener := &mcpv1beta1.TLSListenerConfig{
+		CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+		PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+	}
+	x509Grants := &mcpv1beta1.InboundGrantsConfig{SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+		TrustDomainRef:   "example",
+		PrincipalPattern: "spiffe://example.org/ns/default/agent",
+		ClientID:         "spiffe-client",
+		Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+		Audiences:        []string{"https://mcp.example.com"},
+		Resources:        []string{"https://mcp.example.com"},
+		Scopes:           []string{"openid"},
+		GrantTypes:       []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+	}}}
+
+	tests := []struct {
+		name        string
+		listener    *mcpv1beta1.TLSListenerConfig
+		issuer      string
+		source      *mcpv1beta1.SPIFFEBundleSourceConfig
+		wantMessage string
+	}{
+		{
+			name:        "x509 association without listener",
+			wantMessage: "spec.authServerConfig: tlsListener is required when SPIFFE X.509 client authentication is configured",
+		},
+		{name: "x509 association with listener", listener: listener},
+		{
+			name:        "x509 association with an http issuer",
+			listener:    listener,
+			issuer:      "http://authserver.example.com",
+			wantMessage: "spec.authServerConfig: SPIFFE X.509 authentication requires an https issuer",
+		},
+		{
+			name:     "workload_api bundle source is not supported by this build",
+			listener: listener,
+			source: &mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+			},
+			wantMessage: `spec.authServerConfig: spiffeTrustDomains[0].bundleSource: type "workload_api" is not supported by this build; only "file" is supported`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			bundleSource := mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+				File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+			}
+			if tt.source != nil {
+				bundleSource = *tt.source
+			}
+			issuer := cmp.Or(tt.issuer, "https://authserver.example.com")
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer: issuer,
+					SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
+						Name: "example", TrustDomain: "example.org",
+						Methods:      []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						BundleSource: bundleSource,
+					}},
+					InboundGrants: x509Grants,
+					TLSListener:   tt.listener,
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			)
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := r.validateAuthServerConfig(vmcp, statusManager)
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, cond, "AuthServerConfigValidated condition must be set")
+			if tt.wantMessage == "" {
+				require.NoError(t, err)
+				assert.Equal(t, metav1.ConditionTrue, cond.Status)
+				assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+				return
+			}
+			require.EqualError(t, err, tt.wantMessage)
+			assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, cond.Reason)
+			assert.Equal(t, tt.wantMessage, cond.Message)
+		})
+	}
+}
+
 func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *testing.T) {
 	t.Parallel()
 
@@ -4833,6 +5038,33 @@ func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *te
 					IssuerURL:      "https://issuer.example.com",
 					JWTBearerGrant: jwtGrant,
 				}},
+			},
+		},
+		{
+			name: "SPIFFE client associations",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TLSListener: &mcpv1beta1.TLSListenerConfig{
+					CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+					BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+						Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+						File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+					},
+				}},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+						TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+						ClientID:  "spiffe-client",
+						Methods:   []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					}},
+				},
 			},
 		},
 		{
@@ -4901,6 +5133,69 @@ func TestVirtualMCPServerValidateAuthServerConfig_CanonicalTrustedIssuer(t *test
 	condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+}
+
+func TestVirtualMCPServerValidateAuthServerConfig_SPIFFEAssociationRequiresResources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		resources  []string
+		grantTypes []string
+		wantErr    string
+	}{
+		{
+			name:       "missing resources",
+			grantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			wantErr:    "inboundGrants.spiffeClientAuth[0].resources is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer: "https://auth.example.com",
+					TLSListener: &mcpv1beta1.TLSListenerConfig{
+						CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+						PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+					},
+					SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
+						Name: "example", TrustDomain: "example.org",
+						Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+							Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+							File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+						},
+					}},
+					InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+						SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+							TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+							ClientID:   "spiffe-client",
+							Methods:    []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+							Resources:  tt.resources,
+							Scopes:     []string{"openid"},
+							GrantTypes: tt.grantTypes,
+						}},
+					},
+				}),
+			)
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+			err := (&VirtualMCPServerReconciler{}).validateAuthServerConfig(vmcp, statusManager)
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			require.ErrorContains(t, err, tt.wantErr)
+			condition := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, condition.Reason)
+			assert.Contains(t, condition.Message, tt.wantErr)
+		})
+	}
 }
 
 func TestVirtualMCPServerValidateAuthServerConfig_TrustedIssuerEndpointRecovery(t *testing.T) {

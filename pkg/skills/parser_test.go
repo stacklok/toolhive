@@ -10,7 +10,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
+
+	"github.com/stacklok/toolhive/pkg/yamlutil"
 )
 
 func TestParseSkillMD(t *testing.T) {
@@ -187,6 +189,13 @@ toolhive.requires: |
 		{
 			name:    "invalid yaml",
 			content: "---\n: : invalid\n---\n",
+			wantErr: "invalid frontmatter",
+		},
+		{
+			// OSS-Fuzz 4870994700075008: a merge key next to a mapping-valued
+			// key panicked gopkg.in/yaml.v3 with "hash of unhashable type".
+			name:    "merge key beside unhashable mapping key",
+			content: "---\n? {a: b}\n: c\n<<: {name: x}\n---\n",
 			wantErr: "invalid frontmatter",
 		},
 		{
@@ -377,4 +386,72 @@ func TestStringOrSlice_UnmarshalYAML(t *testing.T) {
 			assert.Equal(t, StringOrSlice(tt.want), target.Tools)
 		})
 	}
+}
+
+func TestParseSkillMD_DuplicateKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		fm      string
+		wantErr string
+	}{
+		{
+			name:    "duplicate top-level key",
+			fm:      "name: a\ndescription: d\nname: b\n",
+			wantErr: `line 3: mapping key "name" already defined at line 1`,
+		},
+		{
+			name:    "duplicate key in nested mapping",
+			fm:      "name: a\nmetadata:\n  k: v\n  k: w\n",
+			wantErr: `line 4: mapping key "k" already defined at line 3`,
+		},
+		{
+			name:    "duplicate key in unknown field",
+			fm:      "name: a\nextra: {x: 1, x: 2}\n",
+			wantErr: `mapping key "x" already defined`,
+		},
+		{
+			name:    "duplicate key in anchored mapping",
+			fm:      "base: &b {x: 1, x: 2}\nmetadata: *b\n",
+			wantErr: `mapping key "x" already defined`,
+		},
+		{
+			// A frontmatter of nothing but repeated keys used to take tens of
+			// seconds (quadratic duplicate-key reporting in the yaml decoder).
+			name:    "many repeated top-level keys under key cap",
+			fm:      strings.Repeat("a: \n", yamlutil.MaxMappingKeys),
+			wantErr: `mapping key "a" already defined`,
+		},
+		{
+			name:    "many repeated top-level keys at size limit",
+			fm:      strings.Repeat("a: \n", (MaxFrontmatterSize-8)/4),
+			wantErr: fmt.Sprintf("mapping has more than %d keys", yamlutil.MaxMappingKeys),
+		},
+		{
+			name:    "many repeated flow keys at size limit",
+			fm:      "metadata: {" + strings.Repeat("a: ,", (MaxFrontmatterSize-16)/4) + "}\n",
+			wantErr: fmt.Sprintf("mapping has more than %d keys", yamlutil.MaxMappingKeys),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := ParseSkillMD([]byte("---\n" + tt.fm + "---\n"))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidFrontmatter)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestParseSkillMD_MergeKeysStillWork(t *testing.T) {
+	t.Parallel()
+
+	content := "---\nbase: &b {author: x, team: y}\nname: s\ndescription: d\nmetadata:\n  <<: *b\n  team: z\n---\n"
+	result, err := ParseSkillMD([]byte(content))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"author": "x", "team": "z"}, result.Metadata)
 }

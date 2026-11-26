@@ -393,15 +393,8 @@ func TestIntegration_ClientAssertionJWT(t *testing.T) {
 
 	t.Run("known JTI is invalid", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "int-jti", time.Now().Add(time.Hour)))
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "int-jti", time.Now().Add(time.Minute)))
 			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "int-jti"), fosite.ErrJTIKnown)
-		})
-	})
-
-	t.Run("expired JTI not stored", func(t *testing.T) {
-		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "exp-jti", time.Now().Add(-time.Hour)))
-			require.NoError(t, s.ClientAssertionJWTValid(ctx, "exp-jti"))
 		})
 	})
 }
@@ -1112,6 +1105,19 @@ func TestIntegration_RealTTLExpiration(t *testing.T) {
 		})
 	})
 
+	t.Run("deadline in the past is refused and stays reserved", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "refused-jti"))
+
+			err := s.SetClientAssertionJWT(ctx, "refused-jti", time.Now().Add(-time.Hour))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "refused-jti"), fosite.ErrJTIKnown)
+		})
+	})
+
 	t.Run("TTL matches session expiration", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			client := testClient()
@@ -1744,5 +1750,64 @@ func TestIntegration_DCRCredentials_ConcurrentAccess(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			runDCRConcurrentAccess(ctx, t, s, dcrConcurrentDisjointKeys, 30*time.Second)
 		})
+	})
+}
+
+// --- Storage Interface: Exchange Grants ---
+
+func TestIntegration_ExchangeGrantConcurrentCreateOneJTI(t *testing.T) {
+	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+		const workers = 20
+		now := time.Now()
+
+		var ready, done sync.WaitGroup
+		start := make(chan struct{})
+		errs := make([]error, workers)
+		ready.Add(workers)
+		done.Add(workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				defer done.Done()
+				g := &ExchangeGrant{
+					Signature:          fmt.Sprintf("sig-%d", i),
+					ClientID:           "client-a",
+					Subject:            "user-1",
+					SourceIssuer:       "https://issuer.example",
+					SourceJTI:          "shared-jti",
+					SourceExpiresAt:    now.Add(10 * time.Minute),
+					IssuableTokenTypes: []string{"urn:ietf:params:oauth:token-type:refresh_token"},
+					CreatedAt:          now,
+					ExpiresAt:          now.Add(time.Hour),
+				}
+				ready.Done()
+				<-start
+				errs[i] = s.CreateExchangeGrant(ctx, g)
+			}()
+		}
+		ready.Wait()
+		close(start)
+		done.Wait()
+
+		var created []string
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				created = append(created, fmt.Sprintf("sig-%d", i))
+			case errors.Is(err, fosite.ErrJTIKnown):
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		}
+		require.Len(t, created, 1, "exactly one create must win the jti")
+
+		for i := 0; i < workers; i++ {
+			sig := fmt.Sprintf("sig-%d", i)
+			_, err := s.GetExchangeGrant(ctx, sig)
+			if sig == created[0] {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, ErrNotFound, sig)
+			}
+		}
 	})
 }

@@ -9,9 +9,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/auth"
 )
+
+// filterTestPrincipal supplies claims to exercise the public filter contract.
+type filterTestPrincipal struct {
+	claims map[string]any
+}
+
+func (filterTestPrincipal) GetSubject() string          { return "" }
+func (filterTestPrincipal) GetCanonicalUserID() string  { return "" }
+func (filterTestPrincipal) GetName() string             { return "" }
+func (filterTestPrincipal) GetEmail() string            { return "" }
+func (p filterTestPrincipal) GetClaims() map[string]any { return p.claims }
+
+var _ FilterPrincipal = filterTestPrincipal{}
 
 // configuredUpstreams used across tests. Index 0 is the mandatory first
 // upstream (okta), indices 1+ are the non-first upstreams filters may select.
@@ -224,6 +235,18 @@ func TestFilterUpstreams(t *testing.T) {
 			errSubs: "nil",
 		},
 		{
+			name:    "typed nil []string claim fails closed",
+			claims:  map[string]any{"groups": []string(nil)},
+			wantErr: true,
+			errSubs: "nil",
+		},
+		{
+			name:    "typed nil []any claim fails closed",
+			claims:  map[string]any{"groups": []any(nil)},
+			wantErr: true,
+			errSubs: "nil",
+		},
+		{
 			name:    "claim value is wrong type (string) fails closed",
 			claims:  map[string]any{"groups": "engineering"},
 			wantErr: true,
@@ -290,7 +313,7 @@ func TestFilterUpstreams(t *testing.T) {
 
 			got, err := f.FilterUpstreams(
 				context.Background(),
-				auth.PrincipalInfo{Claims: tc.claims},
+				filterTestPrincipal{claims: tc.claims},
 				testConfigured[1:],
 			)
 			if tc.wantErr {
@@ -343,7 +366,7 @@ func TestFilterUpstreams_MultiGroupRuleMatchesAnyGroup(t *testing.T) {
 
 			got, err := f.FilterUpstreams(
 				context.Background(),
-				auth.PrincipalInfo{Claims: map[string]any{"groups": tc.groups}},
+				filterTestPrincipal{claims: map[string]any{"groups": tc.groups}},
 				testConfigured[1:],
 			)
 			require.NoError(t, err)
@@ -366,7 +389,7 @@ func TestFilterUpstreams_CustomClaimName(t *testing.T) {
 
 	got, err := f.FilterUpstreams(
 		context.Background(),
-		auth.PrincipalInfo{Claims: map[string]any{"cognito:groups": []any{"engineering"}}},
+		filterTestPrincipal{claims: map[string]any{"cognito:groups": []any{"engineering"}}},
 		testConfigured[1:],
 	)
 	require.NoError(t, err)
@@ -388,7 +411,7 @@ func TestFilterUpstreams_EmptyDefaultsReturnsEmpty(t *testing.T) {
 
 	got, err := f.FilterUpstreams(
 		context.Background(),
-		auth.PrincipalInfo{Claims: map[string]any{"groups": []any{"finance"}}},
+		filterTestPrincipal{claims: map[string]any{"groups": []any{"finance"}}},
 		testConfigured[1:],
 	)
 	require.NoError(t, err)
@@ -411,7 +434,7 @@ func TestFilterUpstreams_DoesNotMutatePrincipalClaims(t *testing.T) {
 	originalGroups := []any{"engineering", "sales"}
 	claims := map[string]any{"groups": originalGroups}
 
-	_, err = f.FilterUpstreams(context.Background(), auth.PrincipalInfo{Claims: claims}, testConfigured[1:])
+	_, err = f.FilterUpstreams(context.Background(), filterTestPrincipal{claims: claims}, testConfigured[1:])
 	require.NoError(t, err)
 
 	// The underlying slice must be unchanged.

@@ -31,6 +31,7 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
@@ -831,14 +832,15 @@ func TestPopulateScalingConfigForRemoteProxy(t *testing.T) {
 			proxy := v1beta1test.NewMCPRemoteProxy("", "",
 				v1beta1test.WithRemoteProxySessionStorage(tt.storage),
 			)
-			populateScalingConfigForRemoteProxy(runConfig, proxy)
+			populateScalingConfigForRemoteProxy(runConfig, proxy, nil)
 			tt.expected(t, runConfig.ScalingConfig)
 		})
 	}
 }
 
 func TestPopulateScalingConfigForRemoteProxy_GlobalDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	proxy := &mcpv1beta1.MCPRemoteProxy{
 		Spec: mcpv1beta1.MCPRemoteProxySpec{
@@ -848,14 +850,15 @@ func TestPopulateScalingConfigForRemoteProxy_GlobalDefault(t *testing.T) {
 	runConfig := &runner.RunConfig{
 		ScalingConfig: &runner.ScalingConfig{},
 	}
-	populateScalingConfigForRemoteProxy(runConfig, proxy)
+	populateScalingConfigForRemoteProxy(runConfig, proxy, defaults)
 
 	require.NotNil(t, runConfig.ScalingConfig.SessionRedis)
 	assert.Equal(t, "global-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
 }
 
 func TestPopulateScalingConfigForRemoteProxy_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	proxy := &mcpv1beta1.MCPRemoteProxy{
 		Spec: mcpv1beta1.MCPRemoteProxySpec{
@@ -865,12 +868,13 @@ func TestPopulateScalingConfigForRemoteProxy_NonRedisProviderNotOverriddenByGlob
 		},
 	}
 	runConfig := &runner.RunConfig{ScalingConfig: &runner.ScalingConfig{}}
-	populateScalingConfigForRemoteProxy(runConfig, proxy)
+	populateScalingConfigForRemoteProxy(runConfig, proxy, defaults)
 	assert.Nil(t, runConfig.ScalingConfig.SessionRedis, "non-Redis provider should not be overridden by global default")
 }
 
 func TestPopulateScalingConfigForRemoteProxy_SpecTakesPrecedence(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	proxy := &mcpv1beta1.MCPRemoteProxy{
 		Spec: mcpv1beta1.MCPRemoteProxySpec{
@@ -881,7 +885,7 @@ func TestPopulateScalingConfigForRemoteProxy_SpecTakesPrecedence(t *testing.T) {
 		},
 	}
 	runConfig := &runner.RunConfig{ScalingConfig: &runner.ScalingConfig{}}
-	populateScalingConfigForRemoteProxy(runConfig, proxy)
+	populateScalingConfigForRemoteProxy(runConfig, proxy, defaults)
 
 	assert.Equal(t, "local-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
 }

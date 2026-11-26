@@ -43,7 +43,8 @@ type ParsedMCPRequest struct {
 	// such as progress tokens, trace IDs, or custom namespaced metadata
 	Meta map[string]interface{}
 	// MCPMethodHeader is the value of the Modern (stateless MCP) "Mcp-Method"
-	// request header, if present. Mandatory on every Modern POST per the draft spec.
+	// request header, if present. Mandatory on every Modern POST per the final
+	// 2026-07-28 MCP specification.
 	MCPMethodHeader string
 	// MCPNameHeader is the raw, as-received value of the Modern (stateless MCP)
 	// "Mcp-Name" request header, if present. Required for tools/call,
@@ -96,6 +97,20 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 
 		// Check if we should parse this request
 		if !shouldParseMCPRequest(r) {
+			// Only a POST body is parsed as an MCP message. Rather than forward a
+			// body the chain has not inspected, reject any non-POST request that
+			// carries one. A bodyless GET (SSE stream), DELETE (session
+			// termination) or OPTIONS (CORS preflight) passes through unchanged;
+			// the method itself may be legitimate, so this is a 400 for the
+			// unexpected body, not a 405. Method-specific 405/Allow responses are
+			// left to the transport handlers, which know the methods their
+			// endpoint serves. Method names are case-sensitive (RFC 9110 §9.1).
+			if requestCarriesBody(r) {
+				slog.WarnContext(r.Context(), "rejected request body on a non-POST method",
+					"method", r.Method)
+				http.Error(w, "request body is only accepted on POST", http.StatusBadRequest)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -222,14 +237,20 @@ func ParsedRequestHolderFromContext(ctx context.Context) (*ParsedRequestHolder, 
 // authzDenialMarkerContextKey is the context key for AuthzDenialMarker.
 type authzDenialMarkerContextKey struct{}
 
-// AuthzDenialMarker is a mutable carrier that lets the authorization
-// middleware (pkg/authz), which runs INSIDE the audit middleware, flag a
-// request it refused before message-level authorization could run, such as a
-// client response or a POST reaching authz without parsing middleware. It follows the same
-// propagation pattern as ParsedRequestHolder: the audit wrapper injects an
-// empty marker via WithAuthzDenialMarker, the inner middleware fills it, and
-// the wrapper reads it back after the inner chain returns so the refusal is
-// audited as a denial rather than a generic 400 failure. The type lives in
+// AuthzDenialMarker is a mutable carrier that lets a check running INSIDE the
+// audit middleware flag a request it refused, so the audit middleware records
+// it as a denial. Two checks write it:
+//   - the authorization middleware (pkg/authz), for a request it refuses with
+//     400 before message-level authorization could run, such as a client
+//     response or a POST reaching authz without parsing middleware; without
+//     the marker that 400 would be audited as a generic failure;
+//   - the vMCP's call binding (pkg/vmcp/server), for a request it refuses
+//     after parsing with 401 or 403; it also sets Reason.
+//
+// It follows the same propagation pattern as ParsedRequestHolder: the audit
+// wrapper injects an empty marker via WithAuthzDenialMarker, the inner
+// middleware fills it, and the wrapper reads it back after the inner chain
+// returns (or, for a stream open, when the response starts). The type lives in
 // this package because pkg/authz already depends on pkg/audit transitively,
 // so the carrier cannot live in either of those two packages.
 //
@@ -237,6 +258,10 @@ type authzDenialMarkerContextKey struct{}
 // request goroutine, so no synchronization is needed.
 type AuthzDenialMarker struct {
 	Denied bool
+	// Reason optionally names why the request was refused, as a fixed string
+	// that carries no request data. The audit middleware records it as
+	// denial_reason.
+	Reason string
 }
 
 // WithAuthzDenialMarker returns a new context carrying the given marker.
@@ -284,8 +309,33 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 // ToolHive's proxies forward as given. Any POST may carry an MCP message,
 // regardless of Content-Type (not mandated by all supported MCP revisions).
 // Path or media-type gates would bypass downstream request-level controls.
+// ParsingMiddleware rejects a body sent with any other method instead of
+// forwarding it unparsed (see requestCarriesBody).
 func shouldParseMCPRequest(r *http.Request) bool {
 	return r.Method == http.MethodPost
+}
+
+// requestCarriesBody reports whether r has a non-empty body. When the length
+// is unknown (chunked) it reads one byte and puts it back, so the body
+// forwarded downstream is unchanged. A read error other than EOF counts as a
+// body: the request is rejected rather than forwarded unexamined.
+func requestCarriesBody(r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
+		return false
+	}
+	if r.ContentLength > 0 {
+		return true
+	}
+	var first [1]byte
+	n, err := io.ReadFull(r.Body, first[:])
+	if n > 0 {
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(first[:n]), r.Body), r.Body}
+		return true
+	}
+	return !errors.Is(err, io.EOF)
 }
 
 // parsedMCPMessage returns nil, nil for responses. Request params that do not

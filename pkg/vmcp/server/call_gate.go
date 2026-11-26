@@ -17,7 +17,9 @@ import (
 
 // authzCallGate builds the pre-dispatch CallGate consulted once per POST on the
 // Streamable HTTP transport, BEFORE session validation and BEFORE the message
-// reaches the SDK. It re-runs the core admission decision for the gated methods so
+// reaches the SDK, but AFTER the session-ownership check (session_ownership.go),
+// so a call on a session the caller does not own is answered 404 before the gate.
+// It re-runs the core admission decision for the gated methods so
 // a Cedar-denied direct tools/call, resources/read, or prompts/get is rejected on
 // the wire as HTTP 403 + JSON-RPC error code 403 — instead of the SDK's 200/"not
 // found" (a filtered tool) or the tool-result 200/IsError fallback.

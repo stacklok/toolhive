@@ -20,6 +20,7 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
@@ -1113,12 +1114,12 @@ func TestMCPServerBuildRedisPasswordEnvVar(t *testing.T) {
 }
 
 func TestMCPServerBuildRedisPasswordEnvVar_GlobalDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-redis-secret")
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_KEY", "redis-password")
+	t.Parallel()
 
 	m := v1beta1test.NewMCPServer("test-mcp", "default")
-	r := &MCPServerReconciler{}
+	r := &MCPServerReconciler{DefaultRedisConfig: &ctrlutil.DefaultRedisConfig{
+		Addr: "global-redis:6379", SecretName: "global-redis-secret", SecretKey: "redis-password",
+	}}
 	got := r.buildRedisPasswordEnvVar(m)
 
 	require.Len(t, got, 1)
@@ -1131,21 +1132,22 @@ func TestMCPServerBuildRedisPasswordEnvVar_GlobalDefault(t *testing.T) {
 }
 
 func TestMCPServerBuildRedisPasswordEnvVar_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-secret")
+	t.Parallel()
 
 	m := v1beta1test.NewMCPServer("test-mcp", "default",
 		v1beta1test.WithSessionStorage(&mcpv1beta1.SessionStorageConfig{Provider: "memory"}))
-	r := &MCPServerReconciler{}
+	r := &MCPServerReconciler{DefaultRedisConfig: &ctrlutil.DefaultRedisConfig{
+		Addr: "global-redis:6379", SecretName: "global-secret", SecretKey: "redis-password",
+	}}
 	got := r.buildRedisPasswordEnvVar(m)
 	assert.Empty(t, got, "non-Redis provider should not receive global Redis password env var")
 }
 
 func TestMCPServerBuildRedisPasswordEnvVar_PasswordlessGlobalDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
 
 	m := v1beta1test.NewMCPServer("test-mcp", "default")
-	r := &MCPServerReconciler{}
+	r := &MCPServerReconciler{DefaultRedisConfig: &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}}
 	got := r.buildRedisPasswordEnvVar(m)
 	assert.Empty(t, got, "global default without a secret name must not inject a password env var")
 }

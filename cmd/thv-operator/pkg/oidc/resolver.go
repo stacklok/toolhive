@@ -7,6 +7,8 @@ package oidc
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -20,6 +22,10 @@ const (
 	defaultK8sCABundlePath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 	defaultK8sTokenPath    = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec
 	defaultK8sIssuer       = "https://kubernetes.default.svc"
+
+	// serviceAccountSubjectPrefix is the prefix of the "sub" claim in Kubernetes
+	// service account tokens: system:serviceaccount:<namespace>:<name>.
+	serviceAccountSubjectPrefix = "system:serviceaccount:"
 )
 
 // OIDCConfig represents the resolved OIDC configuration values
@@ -37,6 +43,10 @@ type OIDCConfig struct { //nolint:revive // Keeping OIDCConfig name for backward
 	ProtectedResourceAllowPrivateIP bool
 	InsecureAllowHTTP               bool
 	Scopes                          []string
+	// RequiredSubject, when non-empty, is the exact "sub" claim a token must carry.
+	RequiredSubject string
+	// RequiredSubjectPrefix, when non-empty, is a prefix the token's "sub" claim must start with.
+	RequiredSubjectPrefix string
 }
 
 //go:generate mockgen -destination=mocks/mock_resolver.go -package=mocks -source=resolver.go Resolver
@@ -89,7 +99,7 @@ func (r *resolver) ResolveFromConfigRef(
 
 	switch oidcCfg.Spec.Type {
 	case mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount:
-		return r.resolveFromK8sServiceAccountConfig(ctx, oidcCfg.Spec.KubernetesServiceAccount, ref, resourceURL)
+		return r.resolveFromK8sServiceAccountConfig(ctx, oidcCfg.Spec.KubernetesServiceAccount, ref, resourceURL, namespace)
 	case mcpv1beta1.MCPOIDCConfigTypeInline:
 		return r.resolveFromInlineSharedConfig(oidcCfg.Spec.Inline, ref, resourceURL)
 	default:
@@ -99,19 +109,19 @@ func (r *resolver) ResolveFromConfigRef(
 
 // resolveFromK8sServiceAccountConfig resolves OIDC config from a shared KubernetesServiceAccount config
 // with per-server audience override from the MCPOIDCConfigReference.
+// workloadNamespace is the namespace of the workload referencing the config; it is
+// used as the service account namespace when ServiceAccount is set without Namespace.
 func (*resolver) resolveFromK8sServiceAccountConfig(
 	ctx context.Context,
 	config *mcpv1beta1.KubernetesServiceAccountOIDCConfig,
 	ref *mcpv1beta1.MCPOIDCConfigReference,
 	resourceURL string,
+	workloadNamespace string,
 ) (*OIDCConfig, error) {
 	if config == nil {
 		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Info("KubernetesServiceAccount OIDCConfig is nil, using defaults")
-		defaultUseClusterAuth := true
-		config = &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
-			UseClusterAuth: &defaultUseClusterAuth,
-		}
+		config = &mcpv1beta1.KubernetesServiceAccountOIDCConfig{}
 	}
 
 	useClusterAuth := true
@@ -136,11 +146,82 @@ func (*resolver) resolveFromK8sServiceAccountConfig(
 
 	if useClusterAuth {
 		result.ThvCABundlePath = defaultK8sCABundlePath
-		result.JWKSAuthTokenPath = defaultK8sTokenPath
 		result.JWKSAllowPrivateIP = true
+		if sendServiceAccountToken(config.UseClusterAuth, result.Issuer, result.JWKSURL) {
+			result.JWKSAuthTokenPath = defaultK8sTokenPath
+		}
 	}
 
+	result.RequiredSubject, result.RequiredSubjectPrefix = serviceAccountSubjectRestriction(
+		config.ServiceAccount, config.Namespace, workloadNamespace)
+
 	return result, nil
+}
+
+// inClusterAPIServerHosts are the hostnames that always name the in-cluster
+// Kubernetes API server from inside a pod. The match is exact: a prefix match
+// on "kubernetes.default.svc." would also accept a name such as
+// "kubernetes.default.svc.example.com", which cluster DNS forwards upstream.
+// Clusters with a custom cluster domain opt in with useClusterAuth: true.
+var inClusterAPIServerHosts = map[string]struct{}{
+	"kubernetes.default.svc":               {},
+	"kubernetes.default.svc.cluster.local": {},
+}
+
+// sendServiceAccountToken reports whether the workload's own service account
+// token is attached to the requests that fetch the issuer's signing keys.
+//
+// The token authenticates the workload to the Kubernetes API server, which
+// serves the service account issuer's discovery and JWKS endpoints. Sending it
+// anywhere else hands a credential for the workload's RBAC (for example the
+// proxy runner's or vMCP's Role) to a third party. So when useClusterAuth is
+// left at its default, the token is sent only if the URL actually fetched is
+// the in-cluster API server: jwksUrl when it is set (the validator then skips
+// discovery and never contacts the issuer), otherwise the issuer used for
+// discovery. Introspection is not considered: a kubernetesServiceAccount
+// config has no client credentials, so the validator's introspection client
+// never carries the token. An explicit useClusterAuth: true sends it
+// unconditionally, and false never sends it.
+func sendServiceAccountToken(useClusterAuth *bool, issuer, jwksURL string) bool {
+	if useClusterAuth != nil {
+		return *useClusterAuth
+	}
+	if jwksURL != "" {
+		return isInClusterAPIServerURL(jwksURL)
+	}
+	return isInClusterAPIServerURL(issuer)
+}
+
+// isInClusterAPIServerURL reports whether rawURL is an https URL whose host is
+// one of inClusterAPIServerHosts.
+func isInClusterAPIServerURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.User != nil {
+		return false
+	}
+	_, ok := inClusterAPIServerHosts[strings.ToLower(u.Hostname())]
+	return ok
+}
+
+// serviceAccountSubjectRestriction computes the "sub" claim restriction for a
+// kubernetesServiceAccount config. Only what is set is enforced:
+//   - serviceAccount set: exact subject system:serviceaccount:<ns>:<serviceAccount>,
+//     where <ns> is namespace if set, otherwise workloadNamespace.
+//   - only namespace set: prefix system:serviceaccount:<namespace>: (any SA in it).
+//   - neither set: no restriction.
+func serviceAccountSubjectRestriction(serviceAccount, namespace, workloadNamespace string) (exact, prefix string) {
+	switch {
+	case serviceAccount != "":
+		ns := namespace
+		if ns == "" {
+			ns = workloadNamespace
+		}
+		return serviceAccountSubjectPrefix + ns + ":" + serviceAccount, ""
+	case namespace != "":
+		return "", serviceAccountSubjectPrefix + namespace + ":"
+	default:
+		return "", ""
+	}
 }
 
 // resolveFromInlineSharedConfig resolves OIDC config from a shared inline config

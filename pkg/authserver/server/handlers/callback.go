@@ -10,11 +10,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/ory/fosite"
 
-	"github.com/stacklok/toolhive/pkg/auth"
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -74,8 +75,9 @@ const (
 //
 // The bool return is false whenever a response has already been written
 // (either the device-login completion, a storage error, a browser-binding
-// failure, or a not-found/corrupted error) and the caller must return
-// immediately without doing anything further.
+// failure, a not-found/corrupted error, or a failed lookup of the pending
+// authorization's client) and the caller must return immediately without doing
+// anything further.
 func (h *Handler) loadPendingOrCompleteDeviceLogin(
 	ctx context.Context, w http.ResponseWriter, req *http.Request, internalState, code string,
 ) (*storage.PendingAuthorization, fosite.AuthorizeRequester, bool) {
@@ -103,7 +105,11 @@ func (h *Handler) loadPendingOrCompleteDeviceLogin(
 		return nil, nil, false
 	}
 
-	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
+	ar, err := h.buildAuthorizeRequesterFromPending(ctx, pending)
+	if err != nil {
+		writePendingClientError(w, pending.ClientID, err)
+		return nil, nil, false
+	}
 	if ar == nil {
 		// Stored redirect URI was corrupt - cannot redirect, show error page
 		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
@@ -222,6 +228,15 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This ensures OIDC nonce validation cannot be accidentally skipped.
 	result, err := upstreamProvider.ExchangeCodeForIdentity(ctx, code, pending.UpstreamPKCEVerifier, pending.UpstreamNonce)
 	if err != nil {
+		if h.canSkipCallbackLeg(pending) {
+			// The detail may echo the upstream's response, so it stays at DEBUG; the
+			// skip itself is the operator-visible WARN, and its failure class says
+			// whether the token request or the identity check failed.
+			slog.Debug("skippable chain leg failed to exchange code or resolve identity",
+				"provider", pending.UpstreamProviderName, "error", err)
+			h.skipFailedCallbackLeg(ctx, w, req, ar, pending, exchangeFailureClass(err))
+			return
+		}
 		slog.Error("failed to exchange code or resolve identity",
 			"error", err,
 		)
@@ -256,18 +271,8 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		if result.Synthetic {
 			subject = result.Subject
 		} else {
-			user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
-			if err != nil {
-				slog.Error("failed to resolve user", "error", err)
-				// A UserStorage that deliberately refuses to auto-provision this
-				// identity (e.g. SCIM-only provisioning) is a client-facing denial,
-				// not a server fault — every other resolution failure keeps the
-				// generic server_error mapping.
-				resolveErr := fosite.ErrServerError.WithHint("failed to resolve user")
-				if errors.Is(err, storage.ErrUserNotProvisioned) {
-					resolveErr = fosite.ErrAccessDenied.WithHint("user not provisioned")
-				}
-				h.provider.WriteAuthorizeError(ctx, w, ar, resolveErr)
+			user, ok := h.resolveFirstLegUser(ctx, w, ar, providerID, providerSubject)
+			if !ok {
 				return
 			}
 			subject = user.ID
@@ -290,14 +295,17 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Capture provenance only on the callback that establishes the local ToolHive user.
+	pending = carryFirstUpstreamIdentity(pending, h.recordedUpstreamIdentity(result))
+
 	// Place the resolved canonical user in the request context so callback storage
 	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
 	// consistency, DeleteUpstreamTokensForProvider on cleanup — can resolve the user
-	// from context. We use WithPlatformUser, not WithIdentity: no ToolHive bearer has
-	// been issued at the callback, so there is no authenticated identity to assert —
+	// from context. The authserver-owned helper does not create a ToolHive identity:
+	// no bearer has been issued, so there is no authenticated identity to assert —
 	// only the canonical user for storage keying. (StoreUpstreamTokens does not need
 	// this; it keys off tokens.UserID below.)
-	ctx = auth.WithPlatformUser(ctx, subject)
+	ctx = serveridentity.WithCanonicalUser(ctx, subject)
 
 	// Convert IDP tokens to storage tokens with binding fields.
 	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
@@ -339,15 +347,15 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// upstream subject; subject is the canonical ToolHive user ID. On subsequent legs
 	// the filter is not consulted, so this only drives filtering for upstreams[0].
 	// result.Claims carries the ID-token/userinfo claims (nil for synthetic upstreams).
-	principal := auth.PrincipalInfo{
-		Subject:        providerSubject,
-		PlatformUserID: subject,
-		Name:           userName,
-		Email:          userEmail,
-		Claims:         result.Claims,
+	principal := filterPrincipal{
+		subject:         providerSubject,
+		canonicalUserID: subject,
+		name:            userName,
+		email:           userEmail,
+		claims:          result.Claims,
 	}
 
-	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal)
+	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal, nil)
 }
 
 // rememberedIdentityRejected checks that a remembered approval still resolves to
@@ -449,6 +457,135 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 	}
 }
 
+// callbackClient resolves the client for /oauth/callback, the consent step
+// (which reaches it through buildAuthorizeRequesterFromPending), the
+// upstream-error branch (handleUpstreamError) and device verification. If the
+// CIMD fetch limiter refuses the lookup (ErrCIMDRateLimited means no cached
+// entry within the decorator's MaxStale could be served, e.g. a cold cache
+// after a restart or an LRU eviction), it reads the persisted row through
+// h.continuationFallback instead. That fallback is the storage below the CIMD
+// decorator (behind client admission when the chain has it), selected once by
+// NewHandler and kept on the handler, so request handling does not walk the
+// decorators. The pending authorization was already consumed, so a 429 here
+// would make the login unrecoverable.
+//
+// This is safe because the base row was written by the same fetch that
+// /oauth/authorize validated against, and the pending authorization lives at
+// most DefaultPendingAuthorizationTTL. /oauth/authorize may itself have been
+// served a stale cache entry, so the snapshot is bounded by that lifetime plus
+// the CIMD cache TTL plus the decorator's MaxStale, and does not depend on the
+// row's own TTL.
+//
+// Device verification callers use the lookup only as a yes/no gate, because the
+// resolved client is not used to issue anything. At device submit nothing has
+// been consumed yet, but at login completion and at confirm the single-use
+// pending record is already deleted, so, as on the callback, a 429 there would
+// make the flow unrecoverable.
+//
+// The device request was created only after /oauth/device_authorization resolved
+// the client, so the stale-row window there is bounded by the device code
+// lifetime plus the CIMD cache TTL plus MaxStale.
+//
+// The base-row fallback is still needed even with stale serving, which only
+// covers entries already cached in this process (not a cold cache). The shape
+// guard used when CIMD is disabled returns plain not-found and never
+// ErrCIMDRateLimited, so it cannot be bypassed this way. The base lookup's
+// error is returned as-is.
+func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client, error) {
+	client, err := h.storage.GetClient(ctx, id)
+	if errors.Is(err, storage.ErrCIMDRateLimited) {
+		return h.continuationFallback.GetClient(ctx, id)
+	}
+	return client, err
+}
+
+// resolveFirstLegUser resolves the local user for the first-leg login through
+// providerID. On failure it writes the authorize error and returns false.
+//
+// Only the first upstream creates users and identity links (see WithCreateOnlyFor).
+// A pending authorization that reaches user resolution through any other upstream,
+// for example a SingleLeg authorization against a later upstream, still resolves
+// through an existing link. With no link it is refused, because creating one would
+// give one person a second user.
+func (h *Handler) resolveFirstLegUser(
+	ctx context.Context,
+	w http.ResponseWriter,
+	ar fosite.AuthorizeRequester,
+	providerID, providerSubject string,
+) (*storage.User, bool) {
+	user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
+	if err != nil {
+		// A refused later upstream is a deliberate denial, not a server fault.
+		if errors.Is(err, ErrUpstreamCannotCreateUsers) {
+			slog.Warn("refused user creation through a later upstream", "error", err)
+		} else {
+			slog.Error("failed to resolve user", "error", err)
+		}
+		// A UserStorage that deliberately refuses to auto-provision this
+		// identity (e.g. SCIM-only provisioning), or a later upstream that may
+		// not create users, is a client-facing denial, not a server fault —
+		// every other resolution failure keeps the generic server_error mapping.
+		resolveErr := fosite.ErrServerError.WithHint("failed to resolve user")
+		switch {
+		case errors.Is(err, storage.ErrUserNotProvisioned):
+			resolveErr = fosite.ErrAccessDenied.WithHint("user not provisioned")
+		case errors.Is(err, ErrUpstreamCannotCreateUsers):
+			resolveErr = fosite.ErrAccessDenied.WithHint("this upstream cannot create users")
+		}
+		h.provider.WriteAuthorizeError(ctx, w, ar, resolveErr)
+		return nil, false
+	}
+	return user, true
+}
+
+// carryFirstUpstreamIdentity stores provenance only when this callback establishes the local user.
+// SingleLeg authorizations connect one backend and never establish the user, so the
+// upstream they authenticate against must not become the token's sub_id source.
+func carryFirstUpstreamIdentity(
+	pending *storage.PendingAuthorization,
+	verified session.UpstreamSubject,
+) *storage.PendingAuthorization {
+	if pending.ResolvedUserID != "" || pending.SingleLeg {
+		return pending
+	}
+	if !verified.IsComplete() {
+		return pending
+	}
+	clone := *pending
+	clone.VerifiedUpstream = verified
+	return &clone
+}
+
+// recordedUpstreamIdentity returns the identity a login stores for later sub_id
+// disclosure, or the zero value when SubjectIdentifierAudiences is empty. It decides
+// whether the login records the identity at all: that needs only a non-empty list,
+// while token.go still requires every audience of a token to be listed before it
+// discloses. Do not share a predicate with token.go's per-audience check.
+func (h *Handler) recordedUpstreamIdentity(result *upstream.Identity) session.UpstreamSubject {
+	if len(h.config.SubjectIdentifierAudiences) == 0 {
+		return session.UpstreamSubject{}
+	}
+	return verifiedUpstreamIdentity(result)
+}
+
+// verifiedUpstreamIdentity returns the validated upstream identity, or the zero
+// value when the identity is synthetic or any member is missing.
+func verifiedUpstreamIdentity(identity *upstream.Identity) session.UpstreamSubject {
+	if identity.Synthetic {
+		return session.UpstreamSubject{}
+	}
+	verified := session.UpstreamSubject{
+		Issuer:      identity.VerifiedIssuer,
+		Subject:     identity.VerifiedSubject,
+		StableClaim: identity.VerifiedStableClaim,
+		StableValue: identity.VerifiedStableValue,
+	}
+	if !verified.IsComplete() {
+		return session.UpstreamSubject{}
+	}
+	return verified
+}
+
 // writeAuthorizationResponse generates an authorization code and writes the redirect response.
 // This uses fosite's WriteAuthorizeResponse for RFC 6749 compliant redirects with proper
 // status codes (303 See Other) and cache headers.
@@ -465,7 +602,7 @@ func (h *Handler) writeAuthorizationResponse(
 		return errors.New("authorization has not been approved")
 	}
 	// Get the client from storage
-	fositeClient, err := h.storage.GetClient(ctx, pending.ClientID)
+	fositeClient, err := h.callbackClient(ctx, pending.ClientID)
 	if err != nil {
 		return err
 	}
@@ -475,6 +612,7 @@ func (h *Handler) writeAuthorizationResponse(
 		Name:  name,
 		Email: email,
 	})
+	sess.VerifiedUpstream = pending.VerifiedUpstream
 
 	// Set expiration times
 	now := time.Now()
@@ -541,13 +679,42 @@ func (h *Handler) writeAuthorizationResponse(
 	return nil
 }
 
-// buildAuthorizeRequesterFromPending creates a minimal AuthorizeRequester for error responses.
-// This allows using fosite's WriteAuthorizeError for consistent RFC 6749 error handling.
-// Returns nil if the stored redirect URI cannot be parsed (indicates storage corruption).
+// isUnresolvedClient reports whether a client lookup failed because the client
+// could not be resolved, as opposed to a storage or transport failure. A
+// transient CIMD fetch failure also surfaces as fosite.ErrNotFound, so this does
+// not mean the client was removed.
+func isUnresolvedClient(err error) bool {
+	return errors.Is(err, storage.ErrNotFound) || errors.Is(err, fosite.ErrNotFound) ||
+		errors.Is(err, fosite.ErrInvalidClient)
+}
+
+// writePendingClientError answers a failed client lookup for a pending
+// authorization: invalid_client for an unresolved client, 500 otherwise.
+// This is a browser-facing endpoint, so the body is plain text rather than the
+// JSON used on the token endpoints.
+func writePendingClientError(w http.ResponseWriter, clientID string, err error) {
+	if isUnresolvedClient(err) {
+		slog.Debug("client for pending authorization could not be resolved", "client_id", clientID, "error", err)
+		http.Error(w, "invalid_client: the client could not be resolved", http.StatusBadRequest)
+		return
+	}
+	slog.Error("failed to resolve client for pending authorization", "client_id", clientID, "error", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// buildAuthorizeRequesterFromPending creates the AuthorizeRequester for a pending
+// authorization, used for error responses and to continue the authorization.
+// It fails with the client lookup error instead of falling back to an empty
+// client, so a removed client cannot go on to an upstream exchange. A nil
+// requester with a nil error means the stored redirect URI is corrupt.
 func (h *Handler) buildAuthorizeRequesterFromPending(
 	ctx context.Context,
 	pending *storage.PendingAuthorization,
-) fosite.AuthorizeRequester {
+) (fosite.AuthorizeRequester, error) {
+	client, err := h.callbackClient(ctx, pending.ClientID)
+	if err != nil {
+		return nil, err
+	}
 	ar := fosite.NewAuthorizeRequest()
 	ar.State = pending.State
 
@@ -559,13 +726,11 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 			"redirect_uri", pending.RedirectURI,
 			"error", err,
 		)
-		return nil
+		return nil, nil
 	}
 	ar.RedirectURI = redirectURI
 
-	if client, err := h.storage.GetClient(ctx, pending.ClientID); err == nil {
-		ar.Client = client
-	}
+	ar.Client = client
 
 	// ar.RedirectURI keeps the real dynamic-port URI from pending.RedirectURI.
 	// fosite's own IsRedirectURIValid can't recognize "localhost" as loopback
@@ -575,13 +740,17 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 	// validity (see loopbackAuthorizeRequester.IsRedirectURIValid), so a
 	// non-loopback or confidential client keeps exactly the validity fosite
 	// would have given it.
-	return wrapLoopbackErrorRequester(ar, pending.RedirectURI)
+	return wrapLoopbackErrorRequester(ar, pending.RedirectURI), nil
 }
 
 // handleUpstreamError handles error responses from the upstream IDP.
-// It attempts to redirect the error to the client if possible, otherwise
-// falls back to completing a pending device-flow login as denied (see
-// tryDenyDeviceLoginOnUpstreamError), otherwise shows an error page.
+// When the pending belongs to a non-first chain leg that canSkipCallbackLeg
+// allows skipping (NonFatalSecondaryLegs), it records the leg as skipped and
+// continues the walk (skipFailedCallbackLeg), which redirects to the next
+// upstream or issues the authorization code. Otherwise it attempts to redirect
+// the error to the client if possible, otherwise falls back to completing a
+// pending device-flow login as denied (see tryDenyDeviceLoginOnUpstreamError),
+// otherwise shows an error page.
 func (h *Handler) handleUpstreamError(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -610,7 +779,15 @@ func (h *Handler) handleUpstreamError(
 			if !h.validateAndConsumePending(ctx, w, req, internalState, pending, storage.ConsentStageApproved) {
 				return
 			}
-			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
+			ar, clientErr := h.buildAuthorizeRequesterFromPending(ctx, pending)
+			if clientErr != nil {
+				writePendingClientError(w, pending.ClientID, clientErr)
+				return
+			}
+			if ar != nil && h.canSkipCallbackLeg(pending) {
+				h.skipFailedCallbackLeg(ctx, w, req, ar, pending, legFailureIdPError)
+				return
+			}
 			if ar != nil {
 				// Use generic error hint to avoid exposing upstream IDP details to clients.
 				// Detailed error information is logged above for server-side diagnostics.
@@ -687,7 +864,13 @@ func (h *Handler) cleanupUpstreamTokens(ctx context.Context, sessionID string, p
 // continueChainOrComplete checks whether all upstream providers in the authorization
 // chain have been satisfied. If so, it issues the authorization code and redirects
 // to the client. If not, it redirects to the next upstream provider to continue
-// the chain. Called after StoreUpstreamTokens succeeds for each leg.
+// the chain. Called after StoreUpstreamTokens succeeds for each leg, and, under
+// NonFatalSecondaryLegs, after a non-first leg fails and is skipped (see
+// skipFailedCallbackLeg). Legs in pending.SkippedUpstreams count as done.
+//
+// skip is non-nil only when the caller has just added a failed leg to
+// pending.SkippedUpstreams; the skip is logged once the chain has validated, so a
+// pending that is rejected leaves no skip record behind.
 func (h *Handler) continueChainOrComplete(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -695,14 +878,15 @@ func (h *Handler) continueChainOrComplete(
 	ar fosite.AuthorizeRequester,
 	pending *storage.PendingAuthorization,
 	sessionID string,
-	principal auth.PrincipalInfo,
+	principal FilterPrincipal,
+	skip *skippedLeg,
 ) {
 	// subject is the canonical ToolHive user ID used for chain state, token keying,
-	// and the cross-leg identity check. Note this is principal.PlatformUserID, NOT
-	// principal.Subject (which is the upstream provider's subject).
-	subject := principal.PlatformUserID
-	name := principal.Name
-	email := principal.Email
+	// and the cross-leg identity check. Note this is principal.GetCanonicalUserID(), NOT
+	// principal.GetSubject() (which is the upstream provider's subject).
+	subject := principal.GetCanonicalUserID()
+	name := principal.GetName()
+	email := principal.GetEmail()
 
 	// SingleLeg authorizations intentionally bypass chain continuation: the caller
 	// scoped this flow to one specific upstream (e.g. a UI-initiated "connect one
@@ -738,45 +922,106 @@ func (h *Handler) continueChainOrComplete(
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to determine authorization chain"))
 		return
 	}
-
-	nextProvider, err := h.nextMissingUpstream(ctx, sessionID, chain)
-	if err != nil {
-		slog.Error("failed to determine next upstream", "error", err)
-		// Preserve upstream tokens: a transient chain-state read failure does not
-		// invalidate the credentials collected so far. Fail authorization without deleting.
-		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to check authorization chain state"))
-		return
+	if skip != nil {
+		logSkippedLeg(skip.provider, skip.failureClass)
 	}
 
-	if nextProvider == "" {
-		if err := h.verifyChainIdentity(ctx, sessionID, chain, subject); err != nil {
-			// verifyChainIdentity already logged the specific cause. It fails for two very
-			// different reasons, and only one warrants deleting tokens:
-			//   - a CONFIRMED identity mismatch: the session's stored state is no longer
-			//     trustworthy, so fail closed and tear down the whole chain. This is the
-			//     ONLY path in the callback that deletes upstream tokens.
-			//   - a transient GetAllUpstreamTokens read failure: nothing is proven wrong,
-			//     so preserve every credential and just fail this authorization.
-			if errors.Is(err, errChainIdentityMismatch) {
-				h.cleanupUpstreamTokens(ctx, sessionID, chain)
-			}
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
+	// Walk to the next missing leg. A leg whose authorization URL cannot be built is
+	// skipped when canSkipLeg allows it, and the walk moves on to the leg after it;
+	// skipped only grows by distinct chain members, so the loop ends.
+	skipped := slices.Clone(pending.SkippedUpstreams)
+	for {
+		nextProvider, err := h.nextMissingUpstream(ctx, sessionID, chain, skipped)
+		if err != nil {
+			slog.Error("failed to determine next upstream", "error", err)
+			// Preserve upstream tokens: a transient chain-state read failure does not
+			// invalidate the credentials collected so far. Fail authorization without deleting.
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to check authorization chain state"))
 			return
 		}
-
-		// All upstreams satisfied — issue authorization code
-		if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
-			slog.Error("failed to create authorization response", "error", err)
-			// Preserve upstream tokens: the chain is complete and identity-verified, so the
-			// credentials are valid. Only the downstream response write failed (client
-			// lookup / redirect parse / code generation), which does not invalidate them —
-			// matching the SingleLeg branch, which preserves tokens for this same class.
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
+		if nextProvider == "" {
+			h.completeChain(ctx, w, ar, pending, sessionID, chain, subject, name, email)
+			return
 		}
+		if h.redirectToNextLeg(ctx, w, req, ar, pending, nextLeg{
+			provider:  nextProvider,
+			sessionID: sessionID,
+			chain:     chain,
+			skipped:   skipped,
+			subject:   subject,
+			name:      name,
+			email:     email,
+		}) {
+			return
+		}
+		logSkippedLeg(nextProvider, legFailureAuthorizationURL)
+		skipped = append(skipped, nextProvider)
+	}
+}
+
+// completeChain runs once every leg of the chain is satisfied or skipped: it
+// cross-checks the first leg's identity and issues the authorization code.
+func (h *Handler) completeChain(
+	ctx context.Context,
+	w http.ResponseWriter,
+	ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization,
+	sessionID string,
+	chain []string,
+	subject, name, email string,
+) {
+	if err := h.verifyChainIdentity(ctx, sessionID, chain, subject); err != nil {
+		// verifyChainIdentity already logged the specific cause. It fails for two very
+		// different reasons, and only one warrants deleting tokens:
+		//   - a CONFIRMED identity mismatch: the session's stored state is no longer
+		//     trustworthy, so fail closed and tear down the whole chain. This is the
+		//     ONLY path in the callback that deletes upstream tokens.
+		//   - a transient GetAllUpstreamTokens read failure: nothing is proven wrong,
+		//     so preserve every credential and just fail this authorization.
+		if errors.Is(err, errChainIdentityMismatch) {
+			h.cleanupUpstreamTokens(ctx, sessionID, chain)
+		}
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
 		return
 	}
 
-	// Chain continues — redirect to next upstream.
+	// Every leg is satisfied or skipped — issue authorization code
+	if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
+		slog.Error("failed to create authorization response", "error", err)
+		// Preserve upstream tokens: every leg is satisfied or skipped and the chain is
+		// identity-verified, so the stored credentials are valid. Only the downstream
+		// response write failed (client lookup / redirect parse / code generation),
+		// which does not invalidate them —
+		// matching the SingleLeg branch, which preserves tokens for this same class.
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
+	}
+}
+
+// nextLeg is the chain state redirectToNextLeg carries into the next leg's
+// pending authorization.
+type nextLeg struct {
+	provider  string
+	sessionID string
+	chain     []string
+	skipped   []string
+	subject   string
+	name      string
+	email     string
+}
+
+// redirectToNextLeg stores the pending authorization for next.provider and
+// redirects the browser to that upstream. It returns true when it has written a
+// response, either the redirect or an error. It returns false, having written
+// nothing and left no pending behind, only when the leg's authorization URL could
+// not be built and canSkipLeg allows skipping it; the caller then moves on.
+func (h *Handler) redirectToNextLeg(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req *http.Request,
+	ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization,
+	next nextLeg,
+) bool {
 	// TODO: If the user abandons the flow here (closes browser), upstream tokens from
 	// completed legs remain in storage until their TTL expires. Add cascading cleanup
 	// when pending authorizations expire to also delete associated upstream tokens.
@@ -803,15 +1048,18 @@ func (h *Handler) continueChainOrComplete(
 		UpstreamNonce:        secrets.Nonce,
 		BrowserBindingHash:   binding.hash,
 		// Chain state
-		UpstreamProviderName: nextProvider,
-		SessionID:            sessionID,
+		UpstreamProviderName: next.provider,
+		SessionID:            next.sessionID,
 		// Carry the effective chain forward so the filter is computed once, on the
 		// first leg, and reused for every subsequent leg.
-		ChainUpstreams: chain,
+		ChainUpstreams: next.chain,
+		// Carry the legs skipped so far so they are not prompted again.
+		SkippedUpstreams: slices.Clone(next.skipped),
 		// Carry resolved identity from first leg
-		ResolvedUserID:    subject,
-		ResolvedUserName:  name,
-		ResolvedUserEmail: email,
+		ResolvedUserID:    next.subject,
+		ResolvedUserName:  next.name,
+		ResolvedUserEmail: next.email,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		CreatedAt:         pending.CreatedAt,
 	}
 
@@ -820,7 +1068,7 @@ func (h *Handler) continueChainOrComplete(
 		// Preserve upstream tokens: failing to persist the next leg's pending does not
 		// invalidate the credentials collected so far. Fail authorization without deleting.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to continue authorization chain"))
-		return
+		return true
 	}
 
 	// Build authorization URL for next upstream
@@ -828,23 +1076,32 @@ func (h *Handler) continueChainOrComplete(
 	if secrets.Nonce != "" {
 		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
 	}
-	nextUpstream, ok := h.upstreamByName(nextProvider)
+	nextUpstream, ok := h.upstreamByName(next.provider)
 	if !ok {
-		slog.Error("next upstream provider not found", "provider", nextProvider)
+		// Stays fatal on purpose: the chain names a provider that is not configured,
+		// a chain/config inconsistency rather than a failure of the leg itself.
+		slog.Error("next upstream provider not found", "provider", next.provider)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
 		// Preserve upstream tokens: a next-provider configuration error does not invalidate
 		// the credentials collected so far. Fail authorization without deleting.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider configuration error"))
-		return
+		return true
 	}
 	nextURL, err := nextUpstream.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
-		slog.Error("failed to build next upstream authorization URL", "error", err)
+		// Best effort: the pending is unreachable without the URL that carries its
+		// state, and storage expires it at its TTL if this delete fails.
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
+		if h.canSkipLeg(pending, next.provider) {
+			slog.Debug("skippable chain leg failed to build its authorization URL",
+				"provider", next.provider, "error", err)
+			return false
+		}
+		slog.Error("failed to build next upstream authorization URL", "error", err)
 		// Preserve upstream tokens: failing to build the next leg's authorization URL does
 		// not invalidate the credentials collected so far. Fail authorization without deleting.
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to build authorization URL"))
-		return
+		return true
 	}
 
 	// Fresh binding for the fresh state: the same browser must also complete
@@ -853,6 +1110,87 @@ func (h *Handler) continueChainOrComplete(
 	// left to expire.
 	h.setBrowserBindingCookie(w, secrets.State, binding.value)
 	http.Redirect(w, req, nextURL, http.StatusFound)
+	return true
+}
+
+// Failure classes logged when a non-first chain leg is skipped under
+// NonFatalSecondaryLegs.
+const (
+	// legFailureIdPError is an error the upstream IdP returned in place of a code.
+	legFailureIdPError = "idp_error"
+	// legFailureCodeExchange is a failed token request at the leg's callback.
+	legFailureCodeExchange = "code_exchange"
+	// legFailureIdentityResolution is a token response whose identity could not
+	// be resolved or validated (for example an ID-token nonce or signature failure).
+	legFailureIdentityResolution = "identity_resolution"
+	// legFailureAuthorizationURL is a failure to build the leg's authorization URL.
+	legFailureAuthorizationURL = "authorization_url"
+)
+
+// exchangeFailureClass names the failure class of an ExchangeCodeForIdentity
+// error, telling a failed token request apart from a failed identity check.
+func exchangeFailureClass(err error) string {
+	if errors.Is(err, upstream.ErrIdentityResolutionFailed) {
+		return legFailureIdentityResolution
+	}
+	return legFailureCodeExchange
+}
+
+// canSkipLeg reports whether a failure of provider may be skipped in the walk
+// pending belongs to: NonFatalSecondaryLegs is set, the authorization is a chain
+// walk rather than a SingleLeg one, and provider is not the first (identity)
+// upstream. Checks that tie a callback to its browser run before any caller asks.
+func (h *Handler) canSkipLeg(pending *storage.PendingAuthorization, provider string) bool {
+	return h.config.NonFatalSecondaryLegs && !pending.SingleLeg &&
+		len(h.upstreams) > 1 && provider != h.upstreams[0].Name
+}
+
+// canSkipCallbackLeg reports whether a failure on the callback for pending's own
+// leg may be skipped. On top of canSkipLeg, the pending must belong to a
+// subsequent leg (the first leg has resolved the user), so a callback that would
+// establish the user is always fatal.
+func (h *Handler) canSkipCallbackLeg(pending *storage.PendingAuthorization) bool {
+	return pending.ResolvedUserID != "" && h.canSkipLeg(pending, pending.UpstreamProviderName)
+}
+
+// skipFailedCallbackLeg records pending's own leg as skipped and continues the
+// walk from it, as a successful callback for that leg would, minus the token. The
+// pending has already been loaded, bound to this browser, and consumed.
+func (h *Handler) skipFailedCallbackLeg(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req *http.Request,
+	ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization,
+	failureClass string,
+) {
+	next := *pending
+	next.SkippedUpstreams = append(slices.Clone(pending.SkippedUpstreams), pending.UpstreamProviderName)
+	// Mirror CallbackHandler: chain-state storage reads resolve the user from context.
+	ctx = serveridentity.WithCanonicalUser(ctx, pending.ResolvedUserID)
+	h.continueChainOrComplete(ctx, w, req, ar, &next, pending.SessionID, filterPrincipal{
+		canonicalUserID: pending.ResolvedUserID,
+		name:            pending.ResolvedUserName,
+		email:           pending.ResolvedUserEmail,
+	}, &skippedLeg{provider: pending.UpstreamProviderName, failureClass: failureClass})
+}
+
+// skippedLeg names a leg skipped by skipFailedCallbackLeg and why, for the WARN
+// continueChainOrComplete logs once the chain has validated.
+type skippedLeg struct {
+	provider     string
+	failureClass string
+}
+
+// logSkippedLeg is the WARN line recording a skipped leg, logged once per leg. It
+// names the provider and the failure class only: never a token, code, or user
+// value. An IdP-error skip is also preceded by handleUpstreamError's existing
+// "upstream IDP returned error" WARN, which runs before the pending is loaded.
+func logSkippedLeg(provider, failureClass string) {
+	slog.Warn("skipping failed upstream chain leg", //nolint:gosec // G706 - provider name from server-side chain state
+		"provider", provider,
+		"failure_class", failureClass,
+	)
 }
 
 // errChainIdentityMismatch marks the defense-in-depth failure where a chain's first

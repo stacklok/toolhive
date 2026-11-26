@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/useragent"
 )
 
 const (
@@ -394,14 +395,12 @@ func (c *mcpSession) CallTool(
 
 	contentArray := conversion.ConvertMCPContents(result.Content)
 
-	var structuredContent map[string]any
-	if result.StructuredContent != nil {
-		if m, ok := result.StructuredContent.(map[string]any); ok {
-			structuredContent = m
-		}
-	}
-	if structuredContent == nil {
-		structuredContent = conversion.ContentArrayToMap(contentArray)
+	// Keep structuredContent only when the backend sent an object; nothing is
+	// synthesized from Content (see toolResultFromMCP in pkg/vmcp/client).
+	structuredContent, ok := result.StructuredContent.(map[string]any)
+	if !ok && result.StructuredContent != nil {
+		slog.Debug("dropping structuredContent that is not an object",
+			"tool", toolName, "backend", c.target.WorkloadID)
 	}
 
 	return &vmcp.ToolCallResult{
@@ -622,7 +621,7 @@ func createMCPClient(
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
 	// Build shared transport chain (innermost first → outermost):
-	//   backendBaseTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	//   backendBaseTransport → authRoundTripper → identityRoundTripper → User-Agent → headerForwardRoundTripper
 	// The innermost stage is http.DefaultTransport unless a dial-control hook was
 	// resolved for this backend (see WithDialControlResolver), in which case it is
 	// a cloned transport carrying that hook on its dialer.
@@ -647,10 +646,17 @@ func createMCPClient(
 	// refreshed identity placed on the request context by
 	// auth.TokenValidator.Middleware (see issue #5323).
 	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
+	// Identify vMCP to the backend unless header-forward (outer) already set a
+	// User-Agent, so an operator-forwarded User-Agent wins over the default.
+	base = useragent.NewRoundTripper(base)
 	// Forwarded headers ride the request context (set by headerforward.CaptureMiddleware
 	// at the vMCP server's incoming edge) and are merged into the per-session backend
-	// header-forward config here. The session is created once per request, so the
-	// captured headers are stable for the session's lifetime.
+	// header-forward config here. This connection is built once, from the request
+	// that creates the session, so it carries that request's headers for its whole
+	// lifetime, including the requests it makes when the session is torn down. On
+	// the vMCP server's Serve path, tool calls, resource reads and prompt gets go
+	// through the per-request backend client (pkg/vmcp/client) instead, which reads
+	// each request's own headers.
 	mergedHeaderForward, err := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: %w", target.WorkloadID, err)

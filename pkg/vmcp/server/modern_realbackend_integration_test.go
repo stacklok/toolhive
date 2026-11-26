@@ -10,9 +10,12 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,13 +26,14 @@ import (
 
 // postModern sends a single Modern (2026-07-28) stateless JSON-RPC request to
 // baseURL+"/mcp", hand-rolled per pkg/mcp/revision.go's wire contract rather
-// than through go-sdk (importing it here would force an MVS bump): the
-// MCP-Protocol-Version and Mcp-Method headers are mandatory on every Modern
-// POST, Mcp-Name is set when non-empty (required only for tools/call,
-// resources/read, prompts/get -- see nameRequiredMethods in revision.go), and
-// _meta carries the reserved io.modelcontextprotocol/protocolVersion and
-// clientCapabilities keys ClassifyRevision requires to admit the request as
-// Modern in the first place.
+// than through a go-sdk client, so tests control and observe the exact wire
+// shape. The MCP-Protocol-Version and Mcp-Method headers are mandatory on
+// every Modern POST, Mcp-Name is set when non-empty (required only for
+// tools/call, resources/read, prompts/get -- see nameRequiredMethods in
+// revision.go), and _meta carries the reserved
+// io.modelcontextprotocol/protocolVersion and clientCapabilities keys
+// ClassifyRevision requires to admit the request as Modern in the first
+// place.
 //
 // id == nil sends a notification: the "id" key is omitted from the body
 // entirely (not set to JSON null), matching how parseMCPRequest distinguishes
@@ -109,6 +113,19 @@ func postModern(
 		_ = json.Unmarshal(respBody, &decoded)
 	}
 	return resp, decoded
+}
+
+type modernStatusRecordingRoundTripper struct {
+	base   http.RoundTripper
+	status atomic.Int32
+}
+
+func (rt *modernStatusRecordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.base.RoundTrip(req)
+	if resp != nil {
+		rt.status.Store(int32(resp.StatusCode))
+	}
+	return resp, err
 }
 
 // ---------------------------------------------------------------------------
@@ -272,8 +289,8 @@ func TestIntegration_Modern_RealBackend_Notification(t *testing.T) {
 
 // TestIntegration_Modern_RealBackend_UnknownMethod verifies a syntactically
 // well-formed Modern request naming a method dispatchModern does not
-// recognize is rejected with 404 + JSON-RPC -32601, per the draft spec's
-// MUST-404-unimplemented-method rule (writeModernError).
+// recognize is rejected with 404 + JSON-RPC -32601, per the final
+// 2026-07-28 spec's MUST-404-unimplemented-method rule (writeModernError).
 func TestIntegration_Modern_RealBackend_UnknownMethod(t *testing.T) {
 	t.Parallel()
 
@@ -295,18 +312,14 @@ func TestIntegration_Modern_RealBackend_UnknownMethod(t *testing.T) {
 // call MUST resolve promptly (postModern is deadline-bounded) to an explicit
 // JSON-RPC error — never a hang, never a fabricated success, and never a
 // resultType "input_required" envelope, which this dispatcher does not emit
-// (client-polled multi-round retrieval, SEP-2322, is unimplemented;
-// modernResultTypeComplete is the only resultType modern_envelope.go builds).
+// for a backend's mid-call request (relaying a backend round, SEP-2322, is
+// unimplemented; vMCP emits input_required only for the in-process URL
+// elicitation answer).
 //
-// Deliberately NOT pinned: the specific error code. Today it is -32603, but
-// the spec MUSTs -32021 MissingRequiredClientCapability for the undeclared
-// case (at HTTP 400, which go-sdk's client escalates to permanent session
-// death — the follow-up therefore plans -32021 at HTTP 200 as a documented
-// deviation; see the "unavailable to Modern clients" section of
-// docs/arch/10-virtual-mcp-architecture.md). Pinning -32603 here would make
-// that spec-correcting follow-up look like a regression. TODO(follow-up):
-// once the two-path capability-error contract lands, assert -32021 +
-// data.requiredCapabilities for the undeclared case.
+// Deliberately NOT pinned here: the specific error code and status. This
+// request declares no capability, so it gets -32021 at HTTP 400;
+// TestIntegration_Modern_RealBackend_MidCallCapabilityContract pins the code,
+// status, and message for both the undeclared and the declared case.
 //
 // This is the honest-unsupported contract for the surface the 2026-07-28
 // revision removed: server-initiated requests need a live session, Modern
@@ -333,24 +346,57 @@ func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) 
 			resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{"name": tc.tool}, 1, tc.tool)
 			defer resp.Body.Close()
 
-			// Both today's -32603 and the follow-up's -32021 (documented HTTP
-			// 200 deviation) ride HTTP 200, so this holds across the fix.
-			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
+			// Both fixtures require an undeclared capability, so each returns the
+			// spec-required -32021 JSON-RPC error with HTTP 400.
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode, "decoded: %+v", decoded)
 			require.NotContains(t, decoded, "result",
 				"must not fabricate a success or an input_required envelope: %+v", decoded)
 			_, ok := decoded["error"].(map[string]any)
 			require.True(t, ok, "the failure must be an explicit JSON-RPC error: %+v", decoded)
 
-			// Nothing about the MESSAGE is asserted, deliberately. The refused
-			// request's name (elicitation/create etc.) reaches it only via
-			// go-sdk's "calling %q" error wrapping — a dependency's string
-			// (testing.md, test scope) — and the message also carries the
-			// pre-existing backend-workload-ID leak, which the follow-up
-			// capability-error contract fixes with vMCP-owned messages. Both
-			// message properties (names our string, no backend ID) are asserted
-			// THERE, where vMCP owns the text.
+			// The two-path contract test asserts the ToolHive-owned message and
+			// required-capability payload for this refusal.
 		})
 	}
+}
+
+// TestIntegration_Modern_RealBackend_GoSDKClientErrorRecovery verifies a real
+// go-sdk client receives the JSON-RPC -32021 body from a 400 response
+// and can continue using the same session for a later request.
+func TestIntegration_Modern_RealBackend_GoSDKClientErrorRecovery(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startForwardingBackend(t)
+	ts := newRealTestServer(t, backendURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	rt := &modernStatusRecordingRoundTripper{base: http.DefaultTransport}
+	client := mcp.NewClient(&mcp.Implementation{Name: "toolhive-test", Version: "1.0.0"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   ts.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: rt},
+	}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, session.Close()) })
+
+	tools, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, tools.Tools)
+
+	_, err = session.CallTool(ctx, &mcp.CallToolParams{Name: fwdElicitTool})
+	require.Error(t, err)
+	var rpcErr *jsonrpc.Error
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, int64(-32021), rpcErr.Code)
+	assert.Equal(t, int32(http.StatusBadRequest), rt.status.Load(), "the JSON-RPC error must arrive over HTTP 400")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: fwdProgressTool})
+	require.NoError(t, err, "the 400 rejection must not break the go-sdk client session")
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Equal(t, int32(http.StatusOK), rt.status.Load(), "the follow-up call must reach the server")
 }
 
 // TestIntegration_Modern_RealBackend_ProgressDropped pins today's Modern
@@ -402,12 +448,12 @@ func TestIntegration_Modern_RealBackend_ProgressDropped(t *testing.T) {
 //   - A WELL-FORMED Modern logging/setLevel is an unknown method to
 //     dispatchModern: 404 + -32601, matching go-sdk's own server ("method
 //     removed in the new protocol").
-//   - The request go-sdk v1.7.x ACTUALLY sends is malformed — its
+//   - The request go-sdk sends is malformed — its
 //     SetLoggingLevel omits the per-request _meta injection, producing a Modern
 //     header with no _meta protocolVersion — and vMCP's classifier CORRECTLY
 //     rejects that shape with 400 + -32020 (HeaderMismatch). Loosening this to
 //     accept the malformed request would be worse than the failing upstream
-//     call. This malformed shape is a permanent go-sdk v1.7.x fixture:
+//     call. This malformed shape is still present in go-sdk:
 //     modelcontextprotocol/go-sdk#1116 was closed wont-fix-by-design (the RPC
 //     is removed on Modern), so -32020 is the standing contract for any caller
 //     still using the removed RPC on a Modern session, not a temporary bug
@@ -496,12 +542,11 @@ func TestIntegration_Modern_RealBackend_MalformedArguments(t *testing.T) {
 // elicitation/sampling during a Modern client's tools/call
 // (writeModernCallFailure):
 //
-//   - capability NOT declared in _meta clientCapabilities: the draft schema's
+//   - capability NOT declared in _meta clientCapabilities: the
 //     MissingRequiredClientCapabilityError — code -32021 with
-//     data.requiredCapabilities typed as a ClientCapabilities object — served
-//     at HTTP 200, a deliberate, documented deviation from the spec-mandated
-//     400 (go-sdk treats a non-transient 4xx as permanent connection death;
-//     see writeModernMissingCapability and go-sdk#1117).
+//     data.requiredCapabilities typed as a ClientCapabilities object — at
+//     HTTP 400, as the spec requires (see writeModernMissingCapabilityError).
+//     The declared case's -32603 rides HTTP 200, per writeModernError.
 //   - capability DECLARED: -32021 would wrongly blame the client, and the
 //     2026-07-28 vocabulary has no "operation not supported" code, so it is
 //     an explicit -32603 whose vMCP-owned message names the real cause:
@@ -542,9 +587,13 @@ func TestIntegration_Modern_RealBackend_MidCallCapabilityContract(t *testing.T) 
 			resp, decoded := postModern(t, ts.URL, "tools/call", params, 1, tc.tool)
 			defer resp.Body.Close()
 
-			// Both paths ride HTTP 200: -32603 per writeModernError's mapping,
-			// -32021 per writeModernMissingCapability's documented deviation.
-			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
+			// -32603 rides HTTP 200 per writeModernError's mapping; -32021
+			// rides HTTP 400 per writeModernMissingCapabilityError.
+			wantStatus := http.StatusOK
+			if !tc.declared {
+				wantStatus = http.StatusBadRequest
+			}
+			require.Equal(t, wantStatus, resp.StatusCode, "decoded: %+v", decoded)
 			require.NotContains(t, decoded, "result",
 				"must not fabricate a success or an input_required envelope: %+v", decoded)
 			errObj, ok := decoded["error"].(map[string]any)

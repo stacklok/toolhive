@@ -20,7 +20,8 @@ The middleware chain consists of the following components:
 8. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
 9. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
 10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
-11. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
+11. **On-Behalf-Of (OBO) Middleware**: Exchanges the user's token for a backend-scoped Microsoft Entra token and replaces `Authorization` (optional, operator-configured)
+12. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
 ## Dynamic webhook middleware
 
@@ -47,7 +48,7 @@ Multiple webhook definitions of the same type run in configuration order. When m
 
 Configuration files may be written in YAML or JSON. Duration values such as `timeout` accept strings like `5s`, and omitted timeouts default to `10s`.
 
-When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation` field on the principal object, with the same shape as the `delegation` field documented under [Audit Middleware](#9-audit-middleware) below.
+When the caller authenticated with an RFC 8693 delegated token, the request payload sent to webhook receivers includes a `delegation` field on the principal object, with the same shape as the `delegation` field documented under [Audit Middleware](#10-audit-middleware) below.
 
 Example:
 
@@ -167,10 +168,15 @@ sequenceDiagram
 
 **Responsibilities**:
 - Validate JWT token signature and expiration
+- Accept tokens signed with RS256, RS384, RS512, ES256, ES384, ES512 or EdDSA, and return 401 Unauthorized for any other `alg` (including `none`, HMAC and RSA-PSS). The key found for the token's `kid`, whether in-process from the embedded auth server or from a JWKS, must match the algorithm: an RSA key for RS*, an ECDSA key for ES*, an Ed25519 (OKP) key for EdDSA. So EdDSA tokens from the embedded auth server with an Ed25519 signing key, and from external identity providers that publish OKP keys, are accepted
+- Return 401 Unauthorized for a token whose JOSE `typ` header is `oauth-id-jag+jwt` (compared case-insensitively, with or without the `application/` prefix), even when its signature and claims are valid. This applies to tokens from every configured issuer, including external identity providers, and to vMCP incoming authentication. An ID-JAG is not an access token. An issuer that signs ID-JAGs with the same key as its access tokens (an external identity provider, or the embedded auth server) would otherwise have them accepted in place of access tokens (RFC 8725 Section 3.12). Configuring an expected audience is the main defence against one token type being used in place of another; this check is a backup for deployments without one.
 - Extract JWT claims (sub, name, roles, etc.)
 - Add claims to request context for downstream middleware
+- When the validator is bound to the embedded auth server's issuer, return HTTP 401 `invalid_token` in the Bearer challenge and JSON body if validated claims carry the delegated-access marker but do not qualify for [delegated admission](arch/17-token-exchange-delegation.md#delegated-access-marker). These requests no longer fall back to ordinary admission and are rejected before upstream credentials are loaded. Unmarked tokens and validators not bound to the embedded issuer retain their existing behavior.
 - With the embedded auth server, load the token session's upstream provider credentials (the `tsid` claim) into `Identity.UpstreamTokens` and `Identity.UpstreamIDTokens`, refreshing expired access tokens
-- Return 401 Unauthorized with a `WWW-Authenticate: Bearer error="invalid_token"` challenge when a provider's access token can no longer be refreshed, or when the token session holds no usable upstream access token at all (every stored row has expired or been deleted), so the client signs in again instead of receiving a policy denial from a later middleware; the answer does not depend on whether a later middleware reads the credential
+- Return 401 Unauthorized with a `WWW-Authenticate: Bearer error="invalid_token"` challenge when a provider's access token can no longer be refreshed, or when the token session holds no usable upstream access token at all (every stored row has expired or been deleted), so the client signs in again instead of receiving a policy denial from a later middleware; the answer does not depend on whether a later middleware reads the credential. A client that answers this 401 by redeeming its refresh token gets HTTP 400 `invalid_grant` from the embedded auth server when the upstream credential is definitively dead (for example, no row is stored or the IdP rejected its refresh; see [Upstream refresh guard](arch/11-auth-server-storage.md#upstream-refresh-guard) for the full list), which sends it to a full authorization instead of looping on refresh
+
+  The embedded auth server remembers a refresh token its IdP rejected with `invalid_grant` for up to 5 minutes. After an administrator clears an IdP-side block (a disabled account or a Conditional Access block, for example), bearer requests on the same replica can keep getting 401 for up to 5 minutes. A refresh grant asks the IdP again instead of using that memory, so a client that answers the 401 with a refresh grant recovers as soon as the IdP accepts. Only if the IdP still rejects does the server drop the session's upstream data (400 `invalid_grant`), and only then is a new sign-in needed.
 
 **Context Data Added**:
 - JWT claims with `claim_` prefix (e.g., `claim_sub`, `claim_name`)
@@ -253,7 +259,7 @@ This order is critical because:
 - Extract resource IDs and arguments based on method type
 - Store parsed data in request context
 
-**POST compatibility**: Every transparent proxy POST routed to the backend-forwarding MCP handler requires an MCP envelope, regardless of path or Content-Type. Locally handled routes sit outside that handler's MCP admission and middleware chain and retain their own method, body, and authentication behavior. See [POST compatibility in the transport architecture](arch/03-transport-architecture.md#post-compatibility) for the full contract and local route scope.
+**POST compatibility**: Every transparent proxy POST routed to the backend-forwarding MCP handler requires an MCP envelope, regardless of path or Content-Type. Locally handled routes sit outside that handler's MCP admission and middleware chain and retain their own method, body, and authentication behavior. See [POST compatibility in the transport architecture](arch/03-transport-architecture.md#post-compatibility) for the full contract and local route scope. Where it forwards to the backend (innermost, so the middleware see the result), the transparent proxy also checks the backend's `200 application/json` answer to an id-bearing request and replaces a structurally invalid one with `502 Bad Gateway` and a JSON-RPC error; see [Upstream response validation](arch/03-transport-architecture.md#upstream-response-validation).
 
 **Context Data Added**:
 - `ParsedMCPRequest` containing:
@@ -284,6 +290,18 @@ This order is critical because:
 - Allow or deny the request based on policy evaluation
 - Filter list responses based on user permissions
 
+**Response compression**: filtering requires reading the response body, so for the
+methods whose responses are filtered (the list methods and `find_tool`) this
+middleware forwards the request without the client's `Accept-Encoding` and lets
+Go's transport negotiate and decode `gzip` itself. Those responses reach the
+client uncompressed; all other traffic, `features/list` included, keeps
+end-to-end compression. Every `GET` is treated as the event stream, so every
+`GET` loses the client's `Accept-Encoding` and its responses reach the client
+uncompressed. A 2xx response that still arrives content-encoded cannot be
+filtered and is replaced with an HTTP 500 JSON-RPC internal error rather than
+forwarded. On the `GET` stream the same case gets HTTP 502 Bad Gateway instead,
+before any event is sent. See [Authorization framework](authz.md) for the user-facing detail.
+
 **Dependencies**:
 - Requires JWT claims from Authentication middleware
 - Requires parsed MCP data from MCP Parsing middleware
@@ -309,6 +327,26 @@ These features are implemented through two complementary middleware components t
 
 Both components must be in place for the features to work correctly, as they ensure consistency between tool discovery and tool execution.
 
+The component that handles tool lists recognizes a tools list by the shape of the response rather than by the request it answers, because on the SSE transport the list arrives on the shared event stream. It reads a response the way clients do:
+
+- The component drops every byte order mark a body starts with, however many there are, in either form: the three-byte UTF-8 mark, and the six bytes it becomes when a program decodes it as Latin-1 and encodes it as UTF-8 again, which some clients drop from the start of an event stream too. It reads the body the way a client that drops them all reads it, and forwards it without them.
+- A JSON body is read once it is a complete JSON value.
+- An event stream is read event by event: the data lines of an event are one payload, and an event is forwarded once the blank line that ends it arrives. Only a blank line that ends in LF, with or without a CR before it, ends an event for all clients: clients that split lines at LF only read past a blank line that ends in a bare CR, and some split lines at VT, FF, FS, GS, RS, NEL, U+2028 and U+2029 as well, as Python's `str.splitlines()` does. The component holds the events of a stream whose lines end in a bare CR or in one of those characters alone until the response ends.
+- A body at any 2xx status with a missing or unrecognized `Content-Type` is held until the response ends and then read as either format, so the client receives none of it before then, even an event stream. The component passes such a body at any other status through unread.
+- When clients could read the `Content-Type` as either format, because the response carries more than one or its one value names `application/json` or `text/event-stream` besides its own media type (as in `application/json; x=text/event-stream` or `application/json-seq`), the component holds the body until the response ends and then reads it as either format, at any status. The client then receives an event stream only once it ends, not event by event.
+
+Because the component reads the bytes of the body, it forwards the request without the client's `Accept-Encoding`: the HTTP transport that carries the request to the backend then asks for gzip on its own and decodes what it asked for, so the component reads the body in the clear whether or not the backend compresses it. A body that still arrives with a content coding, as with a coding the transport does not decode (`br`, `zstd`), is withheld and logged as a warning whenever the component would have had to read it, and the client receives an error in its place. A response that declares a content coding but carries no body (a 204, a 304, the answer to a HEAD request, an empty 202) is forwarded as it is: there is nothing to read. The request the component received keeps the client's `Accept-Encoding` for the middleware around it.
+
+The component reads the bytes of a body as UTF-8, as MCP clients do. A body whose `Content-Type` declares another charset (`charset=utf-16le`, for example), which a client that decodes by the declared charset reads as different text, is withheld the same way whenever the component would have had to read it, and so is a body whose `Content-Type` names a charset the component cannot parse; `utf-8` and `us-ascii` are read as they are, and a response that declares another charset but carries no body is forwarded as it is.
+
+The component holds at most 16 MiB of an event stream it cannot read yet, an event that has not ended or a stream it holds until the response ends, and at most 100 MiB of any other body it cannot read yet: a JSON body that is not complete, or a body it holds until the response ends because its `Content-Type` is missing or ambiguous. Neither bound is configurable: no command-line flag, Helm value, or custom-resource field sets them. Before it counts what it holds, the component forwards what it can read already: the complete events of a stream, and a body it passes through unread. When a response would still make it hold more, the component logs a warning and sends the client an error. On an event stream whose status it has forwarded, only the event that would make it hold more is withheld: an error event takes that event's place at once when the component can name the request it answers, from the start of the withheld event, when that start names exactly one id beside a result or an error and no method, or else from the request that opened the stream, and otherwise the event is dropped without a replacement; the events after it reach the client, so a stream the backend holds open stays open. Any other response is withheld from then on, and the error takes the place of the rest; the client keeps what the component already forwarded.
+
+The component fails closed. A response that is, or that a client could read as, a tools list but that does not resolve to one unambiguous list is withheld and logged as a warning. That covers, for example, a tool that is not an object, `tools` that is not an array, a case-variant or duplicate spelling of `result`, `tools`, or a tool's `name` or `description`, and an event stream whose line endings clients split differently. The component also withholds a JSON body, a body read as JSON, or event data that starts with `{` or `[` after any leading byte order marks and white space but is not one valid JSON value, whatever request the response answers, and whatever the status: a non-2xx `application/json` body that is not one valid JSON value is answered with the error under HTTP 500 in place of the backend's status and body, while a non-2xx body whose `Content-Type` names neither format passes through unread, and on a non-2xx event stream the backend's status is forwarded and only the event is replaced. Such data may hold values that more lenient clients parse and the component does not, such as `NaN` or deeper nesting, and it includes a truncated JSON body. In an event stream, only the event that fails is withheld, an error takes its place when the component can attribute it to a request (see below), and the events before and after it reach the client. When a line holds a bare CR, or one of VT, FF, FS, GS, RS, NEL, U+2028 and U+2029, clients split the bytes around it into different lines and events, so when any of those readings could carry a tools list the component withholds every complete event it has not forwarded yet when it reads that line, and one error takes their place when the stream answers a request with an id; on a stream a GET request opened they are dropped. A raw NEL, U+2028 or U+2029 inside a JSON string of an event is withheld with it. Every other response passes through unchanged.
+
+The error that takes the place of what the component withholds is a JSON-RPC error with code `-32603` and the message `internal error`, carrying the id of the request it answers. The component forwards the status and headers of an event stream as soon as the backend sends them, so in an event stream the error is an event, sent where the withheld event would have been, and the stream goes on; it carries the id of the withheld event when that event is a response with one, the id the client is waiting on, and otherwise the id of the request that opened the stream. An event the component cannot attribute to a request this way is dropped without a replacement, as is a withheld event the component reads in full and finds to be a request or a notification: an error with no id, or one that answers a request of the server, is read by clients as the answer to a request of their own or ends their session, so the component never writes one to a stream. It forwards the status and headers of any other response only once it has read the body and decided to forward it, so a withheld JSON body, a body without a supported or unambiguous `Content-Type`, and a compressed body are answered with the error alone, under HTTP 500 and `Content-Type: application/json`, carrying the id of the request when it has one and none otherwise, without the backend's status or `Content-Encoding`. That answer fails the one request and nothing else: the MCP client SDKs read the JSON-RPC error out of a non-2xx response and keep their session, so the client's next request goes through as usual. For the same reason the client receives nothing of a JSON reply, not even its status, until the backend has sent the last byte of it: the time to the first byte of a slow JSON reply is the time to its last. An event stream is forwarded event by event and is not delayed this way. Middleware outside the component records the status it sends and middleware inside it records the status the backend sent: for a withheld JSON body the audit middleware, which runs outside the component, records the HTTP 500 and the outcome `error`, while the telemetry middleware, which runs inside it, records the backend's 200. The component forwards informational (1xx) responses as they arrive, and they change nothing: it reads a response by its final status and the headers sent with it, and forwards those headers, so a field the backend sends later as a trailer never becomes a response header.
+
+Filtering a list removes the tools the filter hides and applies the overrides, and nothing else: the other members of the response and its result (such as `id`, `nextCursor`, and `_meta`) and of each remaining tool reach the client as the backend sent them.
+
 **Configuration**:
 - `FilterTools`: List of tool names to expose to clients
 - `ToolsOverride`: Map of tool name overrides and description changes
@@ -322,16 +360,45 @@ Both components must be in place for the features to work correctly, as they ens
 **Location**: `pkg/usagemetrics/middleware.go`
 
 **Responsibilities**:
-- Count `tools/call` requests by examining parsed MCP data
-- Aggregate counts in-memory with atomic operations
+- Count `tools/call` requests by examining parsed MCP data, and separately the ones that call the vMCP code mode tool `execute_tool_script`, directly or through the optimizer's `call_tool`
+- Attribute each call to the MCP client that made it
+- Aggregate counts in-memory
 - Flush metrics to API endpoint periodically (every 15 minutes)
 - Reset counts daily at midnight UTC
 - Manage background flush goroutine lifecycle
+
+**What each report contains**:
+
+Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. When it stops, it sends a final report only if it counted tool calls, including tool calls from code mode scripts. Outside Kubernetes it needs an anonymous ID first: until the first update check creates one, nothing is sent. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
+
+| Field | Values |
+|-------|--------|
+| `count` | Tool calls so far today (UTC) |
+| `calls_by_client` | `count` split by MCP client: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `vscode`, `cline`, `roo-code`, `continue`, `zed`, `goose`, `codex`, `gemini-cli`, `jetbrains`, `mcp-inspector`, `toolhive`, `vmcp`, `other`, `unknown` |
+| `transport` | `stdio`, `sse`, `streamable-http`, `other` |
+| `server_kind` | `container`, `remote` |
+| `registry_source` | Where the server definition came from: a registry (`builtin`, `custom_remote`, `custom_api`, `custom_local`), a package `thv` built into an image (`package_uvx`, `package_npx`, `package_go`; the package name is not sent), or `none` (a plain image or URL, and every Kubernetes workload). An image built with `thv build --tag` and run by that name counts as `none` |
+| `catalog_server` | The entry name, only for servers from the registry built into ToolHive; `custom` for servers from any other registry; omitted for package builds and `none` |
+| `runtime` | `docker`, `podman`, `colima`, `kubernetes`, `none`, `other` |
+| `auth_mode` | `none`, `oidc`, `local`, `embedded`, `other` |
+| `authz` | `on`, `off` |
+| `backend_count` | vMCP only: number of backends |
+| `tool_count` | vMCP only: number of backend tools in the most recent aggregation, after conflict resolution and per-backend filters. Excludes composite and optimizer tools and is not filtered per user; it can differ between callers when backends return different tools per user |
+| `features` | vMCP only: any of `optimizer`, `code_mode`, `composite_tools`, `outgoing_auth` |
+| `code_mode_calls` | vMCP only: how many of the calls in `count` were `execute_tool_script` (code mode) calls. A subset of `count`, not added to it; omitted when zero. Counts a `tools/call` named `execute_tool_script` and, when the optimizer is on, a `call_tool` call whose `tool_name` is `execute_tool_script` |
+| `code_mode_tool_calls` | vMCP only: tool calls made from inside code mode scripts so far today. Those calls never reach this middleware, so they are not part of `count` or `calls_by_client`; omitted when zero |
+
+The client is taken from `clientInfo.name`: from `_meta` on each request for stateless (2026-07-28) requests, or from the `initialize` request for session-based connections (tracked per session ID, in memory only). When neither applies, because the server never assigns a session ID (stateless streamable HTTP servers, including many remote servers) or the proxy no longer remembers the session (after a restart, on another replica, or once more than 4096 sessions are tracked), the call is attributed to the client the request's `User-Agent` header names, if it is one of the clients listed above. Any other `User-Agent`, such as a generic HTTP library agent (`node`, `python-httpx`, `Go-http-client`), leaves the call `unknown`, never `other`. Only the normalized value is reported; the raw `clientInfo.name` and `User-Agent` are not. vMCP reports each call under the client that made it, and the backend proxy it forwards the call to reports it again under the client `vmcp`, including on a session-less Legacy backend, because vMCP's backend requests carry a `User-Agent` of the form `toolhive/vmcp <version> <build type> (<os>/<arch>)`. If `passthroughHeaders` or a backend's `headerForward` forwards a `User-Agent`, that value is sent instead and the session-less call is attributed to the client it names. To rank clients across proxies and vMCP, exclude `vmcp`.
+
+Server names, image references, URLs, hostnames, namespaces, tool, prompt and resource names, raw client names and error messages are never sent. A server from a custom registry is reported as `catalog_server: custom` even if its entry has a name. The one exception is a local registry file entry that reuses the name of a built-in entry: it cannot be told apart from the built-in entry, so it is reported as `registry_source: builtin` with that name, which is already public. `catalog_server` is only reported by servers that `thv` runs; Kubernetes workloads and vMCP never send it.
+
+**vMCP and the operator**: vMCP reports with the `vmcp` component and the same opt-outs. As in `thv`, its version check has its own opt-out (`TOOLHIVE_SKIP_UPDATE_CHECK=true`, or CI), so turning usage metrics off does not stop it. vMCP only reads the thv config file for the opt-out: it never creates or rewrites it, a missing file means no opt-out, and a file it cannot read or parse means it sends no usage reports. The operator passes its instance ID to the workloads it deploys (`TOOLHIVE_ANONYMOUS_ID`), so reports from one installation share an anonymous ID. The ID is read from the operator's telemetry ConfigMap at startup and does not change workload pod templates on later restarts. Errors that may be transient are retried for about 15 seconds; if they persist, the operator exits and its pod restarts, so that no replica runs without the ID and later rolls every workload when it becomes the leader. An error a retry cannot fix (forbidden, unauthorized, invalid) is not retried: the operator starts without the ID, which rolls out every workload that carries it. The ID stored in the ConfigMap is never replaced; if the ConfigMap is deleted, the leader stores the same ID again. Opting the operator out opts the workloads it deploys out as well. Instead of the ID it passes the same setting: `TOOLHIVE_SKIP_UPDATE_CHECK=true` stops their update checks and usage reports, and `TOOLHIVE_USAGE_METRICS_ENABLED=false` stops their usage reports only. Turning either on or off rolls out those workloads once. A value set on the workload itself wins.
 
 **Configuration**:
 - Enabled by default
 - Can be disabled via config: `thv config usage-metrics disable`
 - Can be disabled via environment variable: `TOOLHIVE_USAGE_METRICS_ENABLED=false`
+- Disabled, together with update checks, by `TOOLHIVE_SKIP_UPDATE_CHECK=true`
 - Automatically disabled in CI environments
 
 **Dependencies**:
@@ -339,7 +406,7 @@ Both components must be in place for the features to work correctly, as they ens
 
 **Opting Out**:
 
-Users can opt out of anonymous usage metrics in two ways:
+Users can opt out of anonymous usage metrics in three ways:
 
 ```bash
 # Via config (persistent)
@@ -347,6 +414,9 @@ thv config usage-metrics disable
 
 # Via environment variable (session-only)
 export TOOLHIVE_USAGE_METRICS_ENABLED=false
+
+# Turn off update checks as well (session-only)
+export TOOLHIVE_SKIP_UPDATE_CHECK=true
 ```
 
 To re-enable:
@@ -380,7 +450,29 @@ thv config usage-metrics enable
 
 **Purpose**: Exchanges incoming JWT tokens for external service tokens using OAuth 2.0 Token Exchange (RFC 8693).
 
-**Location**: `pkg/oauthproto/tokenexchange/middleware.go`
+**Location**: `pkg/auth/tokenexchange/middleware.go` (runtime and configuration)
+and `pkg/auth/tokenexchange/factory.go` (runner factory and lifecycle).
+
+**Go API migration (OWN-05)**: Host middleware moved from
+`github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange` to
+`github.com/stacklok/toolhive/pkg/auth/tokenexchange`. Update imports for these symbols:
+
+- `Config`, `MiddlewareParams`, `Middleware` (including `Handler` and `Close`)
+- `MiddlewareType`, `HeaderStrategyReplace`, `HeaderStrategyCustom`, `EnvClientSecret`
+- `SubjectTokenProvider`
+- `CreateMiddleware`, `CreateMiddlewareFromHeader`, `CreateMiddlewareFromTokenSource`
+
+`ExchangeConfig` (including `Validate` and `TokenSource`) and `NormalizeTokenType`
+remain in `pkg/oauthproto/tokenexchange`. Code using both layers should import
+that package with an alias such as `exchange`, and the host package as
+`tokenexchange`. There is no compatibility wrapper from the reusable package
+back to the host. This is an import/ownership migration, not a runtime feature
+change: configuration keys, defaults, environment variables, authentication,
+headers, errors, and token-source lifetime remain unchanged.
+
+The runner explicitly maps `tokenexchange.MiddlewareType` to the host
+`CreateMiddleware` in `GetSupportedMiddlewareFactories`; neither package relies
+on `init()` registration. Direct proxy callers use the two host constructors.
 
 **Responsibilities**:
 - Extract claims from authenticated JWT tokens
@@ -400,7 +492,89 @@ thv config usage-metrics enable
 
 **Note**: This middleware is registered in `pkg/runner/middleware.go` and can be configured through the standard middleware configuration system or used directly via the proxy command.
 
-### 9. Audit Middleware
+### 9. On-Behalf-Of (OBO) Middleware
+
+**Purpose**: Exchanges the authenticated user's token for a backend-scoped
+token with the Microsoft Entra on-behalf-of flow (RFC 7523 `jwt-bearer` grant
+with `requested_token_use=on_behalf_of`), so the backend sees a token issued
+for the signed-in user.
+
+**Location**: `pkg/auth/obo/middleware.go` (factory and handler),
+`pkg/auth/obo/entra` (Entra exchanger), `pkg/auth/obo/cache` (token cache),
+and `pkg/auth/obo/exchange` (provider-agnostic contract). These packages do not
+link Kubernetes code; a test in `pkg/auth/obo` enforces that.
+
+**Configuration**: the operator builds an `obo`-typed middleware config from an
+`MCPExternalAuthConfig` of type `obo` and injects it through
+`AdditionalMiddlewareConfigs`, after authentication and before recovery. Its
+parameters are `obo.MiddlewareParameters`: `tokenUrl`, `clientId`, `audience`,
+`scopes` (space-joined scopes win over audience; an audience is a resource
+identifier and is sent as `<audience>/.default`), `clientSecretEnvVar` (the
+name of the env var the operator mounts the client secret under,
+`TOOLHIVE_OBO_CLIENT_SECRET`), optional `subjectTokenProviderName`, and
+optional `cacheSkewSeconds`. The factory fails at startup if the parameters are
+invalid or the secret env var is empty. There are no `thv run` flags for OBO
+yet; a RunConfig carrying the middleware config works.
+
+**Subject token**: `Identity.Token` (the token the client presented) by
+default, or `Identity.UpstreamTokens[subjectTokenProviderName]` when an
+embedded auth server fronts the proxy. With an embedded auth server and no
+`subjectTokenProviderName`, the runner defaults it to the upstream that the
+upstream swap middleware uses, because the inbound token is then ToolHive's own
+session token, which Entra rejects. With several upstreams the runner takes
+the first, as the upstream swap middleware does; the operator admits only one
+upstream for an MCPServer or MCPRemoteProxy, so this does not arise through
+it. vMCP applies the same default but rejects an omitted value when the
+embedded auth server has more than one upstream
+(`ErrAmbiguousSubjectProvider`), since its backends would otherwise silently
+get a token from an upstream nobody chose. The authentication middleware must run
+first, so an MCPServer or MCPRemoteProxy that references an `obo` config must
+also set `oidcConfigRef`; the operator rejects it with
+`ExternalAuthConfigValidated=False / Reason=InvalidConfig` otherwise.
+
+**Behavior**: on success the middleware replaces `Authorization` with
+`Bearer <backend token>`, so the raw user token never reaches the backend.
+Exchanged tokens are cached per (hash of the user token, exchange target)
+until 60 seconds (or `cacheSkewSeconds`) before they expire; concurrent
+identical exchanges share one request. Failures short-circuit with a generic
+body that does not disclose the provider error:
+
+| Condition | Status |
+|---|---|
+| No authenticated identity or no subject token | 401 with `WWW-Authenticate: Bearer error="invalid_token"` |
+| Named upstream provider token missing | 401 with `WWW-Authenticate: Bearer error="invalid_token"` and a re-authentication `error_description` |
+| Entra `invalid_grant` (subject token rejected), subject is the inbound token | 401 with `WWW-Authenticate: Bearer error="invalid_token"` |
+| Entra `invalid_grant` (subject token rejected), subject is a named upstream provider's token | 401 with `WWW-Authenticate: Bearer error="invalid_token"` and the re-authentication `error_description` |
+| Conditional access, MFA, or claims challenge (`interaction_required`, a `claims` value, AADSTS50076/50079) | 403, plus an `obo_token_exchange` audit event with outcome `denied` |
+| Entra HTTP 5xx, 429 or 408, whatever the body says (transient) | 502 |
+| Entra `temporarily_unavailable` on another status, unless the reply is also a claims challenge (transient) | 502 |
+| Token endpoint unreachable or timed out (transient) | 502 |
+| Entra `invalid_client` (the proxy's client credential was rejected), or an unclassified failure | 502 |
+| Client cancelled the request | no response |
+
+Throttling is reported as a plain 502: Entra's `Retry-After` header is not
+forwarded to the client.
+
+Entra returns `invalid_grant` both for an expired or malformed subject token
+and for one the user has not consented to use with this backend. The proxy
+cannot tell these apart without parsing Entra's description, so in
+upstream-provider mode both get the re-authentication challenge. That cures
+expiry, the common cause; for missing consent the client re-authenticates and
+fails the same way until the consent is granted.
+
+The 401 challenges carry no `resource_metadata` parameter, unlike the
+authentication middleware's, because that value is built by the token
+validator, which this middleware does not have.
+
+The 403 on a conditional-access or claims challenge deliberately departs from
+Microsoft's guidance for a web API, which is to return 401 with a
+`WWW-Authenticate` challenge carrying `error="insufficient_claims"` and the
+`claims` value so the client can step up. The proxy does not pass the claims
+challenge through: an MCP client cannot run Entra's interactive step-up, and
+the claims value would disclose the tenant's conditional-access policy. The
+request fails with 403 and the decision is audited.
+
+### 10. Audit Middleware
 
 **Purpose**: Logs request events for compliance, monitoring, and debugging.
 
@@ -542,6 +716,8 @@ Audit events are logged as structured JSON objects:
   - `user`: User display name (from `name` claim, `preferred_username`, or `email`)
   - `client_name`: MCP client name (from JWT claims)
   - `client_version`: MCP client version (from JWT claims)
+  - Additional keys from a subject enricher, when a vMCP embedder sets one
+    (see [Embedder-supplied subjects](#embedder-supplied-subjects) below)
 - `delegation`: RFC 8693 delegation chain (toolhive-core's canonical schema),
   present only when the caller authenticated with a delegated token (i.e. the
   JWT carries an `act` claim)
@@ -580,9 +756,52 @@ Audit events are logged as structured JSON objects:
   - `duration_ms`: Request duration in milliseconds
   - `transport`: Transport type (`sse`, `streamable-http`, `http`)
   - `response_size_bytes`: Response body size (when capturing response data)
+  - `trace_id`, `span_id`: W3C trace and span IDs of the request (present only when the request carries a valid span context, such as an inbound `traceparent` with tracing enabled)
+  - `denial_reason`: Why an inner check refused the request, when it names a reason (for example a vMCP call-binding refusal: `token_reused` or `token_expired`, answered with 401, or `arguments_mismatch`, answered with 403). A fixed string that never carries request data. Present only on denied events, including the `sse_connection` event of a refused stream-opening GET
 - `data`: Captured request/response data (only present if enabled)
   - `request`: Request body (parsed as JSON if possible, otherwise string)
   - `response`: Response body (parsed as JSON if possible, otherwise string)
+
+#### Embedder-supplied subjects
+
+A program that embeds vMCP can add its own caller attributes to `subjects`
+by setting `AuditSubjectEnricher` (an `audit.SubjectEnricher`) on
+`server.Config`, or on both `server.ServerConfig` and `core.Config` when it
+calls `core.New` and `server.Serve` directly. Typical keys are the OAuth
+client id the token was issued to (`client_id` per RFC 9068, `cid` on Okta,
+`azp` on Entra), a workload-versus-user marker, or an internal user id.
+
+```go
+cfg.AuditSubjectEnricher = func(ctx context.Context) map[string]string {
+	id, ok := auth.IdentityFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	cid, _ := id.Claims["azp"].(string)
+	return map[string]string{"client_id": cid}
+}
+```
+
+- It is set from Go only. It has no key in the audit configuration file.
+- It applies to the per-request MCP events and to the composite-tool
+  workflow events.
+- It runs only when `AuditConfig` is set, once per event that passes the
+  event-type filter.
+- It reads the caller with `auth.IdentityFromContext(ctx)`, which returns
+  false when the caller is unauthenticated. The auditor attaches the identity
+  to `ctx` itself, so this works even though the audit middleware runs outside
+  the auth middleware. On composite-tool workflow events the caller is the
+  identity passed to `core.VMCP.CallTool`, even when `ctx` carries none or a
+  different one.
+- It must be fast, must not block, and must be safe for concurrent use:
+  composite-tool workflow steps call it from parallel goroutines. A panic is
+  recovered and logged at ERROR with the event type and a stack trace, and
+  the event is still written without the enricher's subjects.
+- Returned keys are added to `subjects`. Empty keys and values are dropped.
+  The keys the auditor writes itself (`user`, `user_id`, `client_name`,
+  `client_version`) are reserved: the enricher can neither overwrite nor
+  supply them.
+- With no enricher set, events are unchanged.
 
 #### CLI Usage
 
@@ -608,7 +827,7 @@ thv run --transport sse --name my-server --audit-config <(echo '{"component":"my
 }
 ```
 
-### 10. Recovery Middleware
+### 11. Recovery Middleware
 
 **Purpose**: Catches panics in HTTP handlers and returns a clean HTTP 500 error response.
 
@@ -631,7 +850,7 @@ thv run --transport sse --name my-server --audit-config <(echo '{"component":"my
 
 **Note**: Recovery middleware has no cleanup requirements (`Close()` is a no-op).
 
-### 11. Header Forward Middleware
+### 12. Header Forward Middleware
 
 **Purpose**: Injects custom headers into requests before they are forwarded to remote MCP servers.
 
@@ -654,7 +873,7 @@ The following headers cannot be configured for forwarding due to security concer
 | Category | Headers |
 |----------|---------|
 | Routing manipulation | `Host` |
-| Hop-by-hop (RFC 7230, 7540) | `Connection`, `Keep-Alive`, `Te`, `Trailer`, `Upgrade`, `Http2-Settings` |
+| Hop-by-hop (RFC 7230, 7540) | `Connection`, `Keep-Alive`, `Te`, `Trailer`, `Upgrade`, `Http2-Settings`, `Close` |
 | Proxy headers | `Proxy-Authorization`, `Proxy-Authenticate`, `Proxy-Connection` |
 | Request smuggling vectors | `Transfer-Encoding`, `Content-Length` |
 | Identity spoofing | `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-Ip` |
@@ -664,6 +883,8 @@ The following headers cannot be configured for forwarding due to security concer
 - Logs configured header names at startup (never logs values for security)
 - Warns if `Authorization` header is configured (ensure value is appropriate for target)
 - Returns error if any restricted header is configured
+
+A client cannot remove injected headers by naming them in its `Connection` header; see [Client `Connection` header](#client-connection-header).
 
 **CLI Usage**:
 
@@ -1070,7 +1291,8 @@ The middleware chain execution order is critical and controlled by the order in 
 12. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
 13. **Authorization Middleware** (if enabled) - Cedar policy evaluation
 14. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
-15. **Recovery Middleware** (always present) - Catches panics
+15. **On-Behalf-Of (OBO) Middleware** (if an `obo` external auth config is referenced) - Exchanges the user's token at Entra and replaces `Authorization`; spliced in from `AdditionalMiddlewareConfigs`
+16. **Recovery Middleware** (always present) - Catches panics
 
 **Important Ordering Rules**:
 - Audit wraps the whole chain (directly inside the body-size limit): every request that passes the size cap produces an audit event no matter which middleware rejects it. It does not need to run inside auth or the parser — those publish the identity and parsed MCP data back to it via `auth.IdentityHolder` and `mcp.ParsedRequestHolder`.
@@ -1085,9 +1307,18 @@ The middleware chain execution order is critical and controlled by the order in 
 - Mutating webhooks must come before Validating webhooks and before Authorization, so policy evaluation sees the patched request
 - Middleware that rewrites the request body must republish the parsed request via `mcp.RepublishParsedMCPRequest` and refresh `r.ContentLength` — `ParsingMiddleware` deliberately parses only once, so downstream consumers read the refreshed context while outer audit and telemetry wrappers read the refreshed `mcp.ParsedRequestHolder` after the inner chain returns
 - Header Forward executes close to the backend handler (innermost position)
+- OBO comes after Header Forward and before Recovery, so it has the final say on the outbound `Authorization` header; it needs the identity the Authentication Middleware publishes, which is why the operator requires `oidcConfigRef` alongside an `obo` config
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
-- Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. Their rejections (413/403) are the only ones not audited.
-- The list above (steps 1-15) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
+- Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. The transparent proxy's `Connection` header check (see [Client `Connection` header](#client-connection-header)) runs before all of them. Their rejections (400/413/403) are the only ones not audited.
+- The list above (steps 1-16) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
+
+### Client `Connection` header
+
+This applies to the transparent proxy (`pkg/transport/proxy/transparent`), which serves remote MCP servers and container servers that use the SSE or streamable HTTP transport. The stdio proxies build their own requests and are not affected.
+
+Before any middleware runs, the transparent proxy rejects with `400 Bad Request` any request whose `Connection` header names something other than `close` or a standard hop-by-hop header (`Keep-Alive`, `Upgrade`, `Te`, `Trailer`, `Transfer-Encoding`, `Proxy-Connection`, `Proxy-Authenticate`, `Proxy-Authorization`, `HTTP2-Settings`). It logs each rejection at WARN with the header name. Requests such as `Connection: keep-alive` or `Connection: Upgrade` pass unchanged, so WebSocket upgrades still work.
+
+The reverse proxy removes every header named in `Connection` (RFC 9110 §7.6.1), and it does so after the middlewares have run. Without this check, a client could send `Connection: X-Tenant-ID` or `Connection: Authorization` and have a header or token injected by a middleware (Header Forward, token injection, Token Exchange, Upstream Token Swap) removed before the request reached the upstream. The proxy rejects these requests instead of removing the named headers itself, because removing them would also hide them from middlewares that check a header only when it is present. For example, `Origin: <disallowed>` together with `Connection: Origin` would then pass Origin validation.
 
 ### Custom Authorization Policies
 

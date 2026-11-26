@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package security provides the session-hijack-prevention decorator for
-// vMCP sessions. It binds a session to a stable identity tuple (iss, sub)
-// extracted from the OIDC identity that created the session, and validates
-// that every subsequent request comes from the same identity.
+// vMCP sessions. It binds a session to the identity that created it: issuer
+// and subject, plus route, client_id and actor for delegated identities. It
+// validates that every subsequent request comes from the same identity.
 //
 // Session bindings are stored as plaintext at rest in the session metadata
 // (see pkg/vmcp/session/binding for the format and trust-boundary statement).
@@ -20,6 +20,7 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -30,10 +31,11 @@ import (
 // the same identity that created the session.
 //
 // The decorator is applied by BindSession to ALL sessions (both authenticated
-// and anonymous). For authenticated sessions, it validates the caller's (iss, sub)
+// and anonymous). For authenticated sessions, it validates the caller's full
 // identity binding matches the creator's binding. For anonymous sessions
 // (allowAnonymous=true), it allows nil callers and prevents session upgrade
-// attacks by rejecting any token presentation.
+// attacks by rejecting any token presentation or any admission route other
+// than unspecified or interactive.
 //
 // The decorator embeds MultiSession and only overrides the methods that require
 // validation (CallTool, ReadResource, GetPrompt). All other methods are
@@ -47,7 +49,7 @@ type sessionBindingDecorator struct {
 	// For sessions allowed to be anonymous, boundIdentity is
 	// binding.UnauthenticatedSentinel.
 	// For sessions bound to an authenticated identity, boundIdentity is the
-	// output of binding.Format(iss, sub).
+	// output of sessionbinding.FromIdentity.
 	boundIdentity string
 
 	// allowAnonymous tracks whether the session was created without a bound
@@ -57,15 +59,18 @@ type sessionBindingDecorator struct {
 }
 
 // extractBindingID derives the canonical identity-binding string from the
-// given auth identity's OIDC claims. It reads "iss" and "sub" from
-// identity.Claims (not identity.Subject) so that JWT-validation and
-// introspection paths canonicalize against the same source.
+// given auth identity via sessionbinding.FromIdentity, which reads "iss" and
+// "sub" from identity.Claims (not identity.Subject) so that JWT-validation and
+// introspection paths canonicalize against the same source. A delegated
+// identity also binds its route, client_id and outermost actor.
 //
 // Returns ("", error) when:
 //   - identity is nil.
-//   - identity.Claims is missing "iss" or "sub".
-//   - either claim is present but not a string.
-//   - binding.Format rejects the (iss, sub) pair (empty halves or stray NULs).
+//   - sessionbinding.FromIdentity rejects the identity: missing or non-string
+//     iss or sub, empty halves, stray NULs, or an invalid delegated
+//     client_id, actor or admission route.
+//
+// Errors do not include claim values because caller validation logs them.
 //
 // Callers MUST treat a non-nil error as "no identifying claims available"
 // and fail closed (do not silently fall through to anonymous).
@@ -77,28 +82,9 @@ func extractBindingID(identity *auth.Identity) (string, error) {
 	if identity == nil {
 		return "", fmt.Errorf("auth identity is nil")
 	}
-
-	issRaw, issPresent := identity.Claims["iss"]
-	if !issPresent {
-		return "", fmt.Errorf("auth identity is missing iss claim")
-	}
-	iss, issIsString := issRaw.(string)
-	if !issIsString {
-		return "", fmt.Errorf("auth identity has non-string iss claim")
-	}
-
-	subRaw, subPresent := identity.Claims["sub"]
-	if !subPresent {
-		return "", fmt.Errorf("auth identity is missing sub claim")
-	}
-	sub, subIsString := subRaw.(string)
-	if !subIsString {
-		return "", fmt.Errorf("auth identity has non-string sub claim")
-	}
-
-	b, err := binding.Format(iss, sub)
+	b, err := sessionbinding.FromIdentity(identity)
 	if err != nil {
-		return "", fmt.Errorf("auth identity (iss, sub) pair is invalid: %w", err)
+		return "", fmt.Errorf("cannot derive identity binding: %w", err)
 	}
 	return b, nil
 }
@@ -119,8 +105,8 @@ func (d sessionBindingDecorator) validateCaller(caller *auth.Identity) error {
 //
 // allowAnonymous is derived from storedBinding: an anonymous session stores the
 // UnauthenticatedSentinel, so IsUnauthenticated(storedBinding) is exactly the
-// allowAnonymous flag BindSession recorded (BindSession writes the sentinel iff
-// ShouldAllowAnonymous(identity)).
+// allowAnonymous flag BindSession recorded (ResolveBinding decides whether the
+// session is anonymous, and BindSession writes the value it resolved).
 func ValidateCaller(storedBinding string, caller *auth.Identity) error {
 	return validateCallerBinding(storedBinding, binding.IsUnauthenticated(storedBinding), caller)
 }
@@ -132,15 +118,24 @@ func ValidateCaller(storedBinding string, caller *auth.Identity) error {
 //     is present (programming error / corrupted metadata).
 //   - ErrNilCaller when a bound session receives nil.
 //   - ErrUnauthorizedCaller when:
-//   - an anonymous session receives a caller presenting a token (upgrade attack),
-//   - the caller's identity binding does not match the session's bound identity.
+//   - an anonymous session receives a caller presenting a token or carrying an
+//     admission route other than unspecified or interactive (upgrade attack),
+//   - the caller's full identity binding does not match the session's bound identity.
 func validateCallerBinding(boundIdentity string, allowAnonymous bool, caller *auth.Identity) error {
 	// Anonymous path: sessions that were created without a bound identity.
 	if allowAnonymous && binding.IsUnauthenticated(boundIdentity) {
 		// Prevent session upgrade attack: anonymous sessions cannot accept tokens.
+		// Only the unspecified and interactive routes may be tokenless; the route
+		// check also rejects synthetic tokenless callers on delegated or unknown routes.
 		if caller != nil && caller.Token != "" {
 			slog.Warn("identity binding validation failed: session upgrade attack prevented",
 				"reason", "token_presented_to_anonymous_session",
+			)
+			return sessiontypes.ErrUnauthorizedCaller
+		}
+		if caller != nil && !anonymousRoute(caller.AdmissionRoute) {
+			slog.Warn("identity binding validation failed: session upgrade attack prevented",
+				"reason", "non_anonymous_route_on_anonymous_session",
 			)
 			return sessiontypes.ErrUnauthorizedCaller
 		}
@@ -233,55 +228,55 @@ func (d sessionBindingDecorator) GetPrompt(
 	return d.MultiSession.GetPrompt(ctx, caller, name, arguments)
 }
 
+// ResolveBinding determines the metadata binding for a new session. It returns
+// binding.UnauthenticatedSentinel for anonymous identities, so a result equal to
+// the sentinel means the session is anonymous, and an error if a required
+// binding cannot be derived. Call it once per session and pass the result to
+// BindSession.
+func ResolveBinding(identity *auth.Identity) (string, error) {
+	if sessiontypes.ShouldAllowAnonymous(identity) {
+		if identity != nil {
+			slog.Warn("identity carries no token and no valid string iss and sub claims, " +
+				"so the session is bound as unauthenticated; behind vMCP's HTTP handler, follow-up " +
+				"requests carrying this identity will be rejected by the session ownership check; " +
+				"the auth middleware must set string iss and sub claims")
+		}
+		return binding.UnauthenticatedSentinel, nil
+	}
+	return extractBindingID(identity)
+}
+
 // BindSession wraps a session with identity-binding validation. It writes
-// the canonical binding into session metadata under MetadataKeyIdentityBinding
-// and returns a decorator that validates the caller on every operation.
+// bindingID, as returned by ResolveBinding, into session metadata under
+// MetadataKeyIdentityBinding and returns a decorator that validates the caller
+// on every operation.
 //
-// Whether the session is anonymous is derived from the identity via
-// types.ShouldAllowAnonymous.
-//
-// For bound sessions, the (iss, sub) tuple is extracted from identity.Claims.
-// If the tuple cannot be extracted (missing claims, non-string claims, or
-// invalid format), BindSession returns an error BEFORE writing anything to
-// the session metadata — preserving the invariant that a session always has
-// a valid MetadataKeyIdentityBinding value once written.
-//
-// Returns an error if session is nil, or if a bound identity is required
-// but no valid (iss, sub) binding can be produced.
+// Returns an error BEFORE writing anything to the session metadata if session
+// is nil or bindingID is neither the unauthenticated sentinel nor a valid
+// binding — preserving the invariant that a session always has a valid
+// MetadataKeyIdentityBinding value once written.
 func BindSession(
 	session sessiontypes.MultiSession,
-	identity *auth.Identity,
+	bindingID string,
 ) (sessiontypes.MultiSession, error) {
 	if session == nil {
 		return nil, fmt.Errorf("session must not be nil")
 	}
 
-	allowAnonymous := sessiontypes.ShouldAllowAnonymous(identity)
-
-	// Determine the binding value to write. For bound sessions, extract the
-	// (iss, sub) binding before touching session metadata — if extraction fails,
-	// we must not leave a partial or sentinel value in the session.
-	bid, err := func() (string, error) {
-		if allowAnonymous {
-			return binding.UnauthenticatedSentinel, nil
+	allowAnonymous := binding.IsUnauthenticated(bindingID)
+	if !allowAnonymous {
+		if _, _, ok := binding.Parse(bindingID); !ok {
+			return nil, fmt.Errorf("BindSession: %w", binding.ErrInvalidBinding)
 		}
-		b, err := extractBindingID(identity)
-		if err != nil {
-			return "", fmt.Errorf("BindSession: cannot derive identity binding: %w", err)
-		}
-		return b, nil
-	}()
-	if err != nil {
-		return nil, err
 	}
 
 	// Write the resolved binding. This is the only metadata key written here;
 	// backend IDs and per-backend session keys are written by makeBaseSession.
-	session.SetMetadata(sessiontypes.MetadataKeyIdentityBinding, bid)
+	session.SetMetadata(sessiontypes.MetadataKeyIdentityBinding, bindingID)
 
 	return &sessionBindingDecorator{
 		MultiSession:   session,
-		boundIdentity:  bid,
+		boundIdentity:  bindingID,
 		allowAnonymous: allowAnonymous,
 	}, nil
 }
@@ -297,7 +292,7 @@ func BindSession(
 //
 // storedBinding must be either:
 //   - binding.UnauthenticatedSentinel (the session was anonymous), or
-//   - a valid bound binding (binding.Parse returns ok).
+//   - a valid bound binding (binding.Parse returns ok), including the delegated forms.
 //
 // Anything else (empty string, malformed value) is rejected as corrupted
 // metadata.
@@ -317,9 +312,9 @@ func RestoreSessionBinding(
 		}, nil
 	}
 
-	// Validate the stored binding is parsable. We do not use iss/sub here —
-	// the factory calls binding.Parse separately when it needs them to
-	// reconstruct identity. This call is purely a validation gate.
+	// Validate the stored binding is parsable. This call is purely a validation
+	// gate: Parse returns only the iss/sub prefix of a delegated binding, and
+	// nothing rebuilds an identity from it. The full stored value is kept.
 	if _, _, ok := binding.Parse(storedBinding); !ok {
 		return nil, fmt.Errorf("RestoreSessionBinding: stored binding is neither the unauthenticated sentinel " +
 			"nor a valid bound binding (corrupted metadata)")
@@ -330,4 +325,12 @@ func RestoreSessionBinding(
 		boundIdentity:  storedBinding,
 		allowAnonymous: false,
 	}, nil
+}
+
+// anonymousRoute reports whether a tokenless caller on route r may use an
+// anonymous session. It mirrors the routes sessionbinding.FromIdentity accepts
+// for a user-only binding, so delegated and unknown routes never fall through
+// to anonymous access.
+func anonymousRoute(r auth.AdmissionRoute) bool {
+	return r == auth.AdmissionRouteUnspecified || r == auth.AdmissionRouteInteractive
 }

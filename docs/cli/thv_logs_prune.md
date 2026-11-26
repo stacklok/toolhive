@@ -25,13 +25,13 @@ thv logs prune [flags]
 ### Options
 
 ```
-  -h, --help   help for prune
+  -h, --help[=true|false]   help for prune
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -66,7 +66,8 @@ type coreVMCP struct {
 	// admission enforces the authorization decision for List* (filter) and
 	// Call/Read/Get (deny) from one source. Never nil: New installs an allow-all
 	// seam when authz is unconfigured.
-	admission Admission
+	admission          Admission
+	scopeAuthorization *vmcp.ScopeAuthorizationConfig
 
 	// workflowDefs holds the validated composite-tool workflow definitions keyed
 	// by advertised tool name.
@@ -138,7 +139,8 @@ func New(cfg *Config) (VMCP, error) {
 			return nil, fmt.Errorf("invalid audit configuration: %w", err)
 		}
 		var err error
-		workflowAuditor, err = audit.NewWorkflowAuditor(cfg.AuditConfig)
+		workflowAuditor, err = audit.NewWorkflowAuditor(
+			cfg.AuditConfig, audit.WithSubjectEnricher(cfg.AuditSubjectEnricher))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
 		}
@@ -232,16 +234,17 @@ func New(cfg *Config) (VMCP, error) {
 	}
 
 	return &coreVMCP{
-		aggregator:      cfg.Aggregator,
-		backendRegistry: cfg.BackendRegistry,
-		backendClient:   backendClient,
-		health:          healthProvider,
-		healthMonitor:   healthMonitor,
-		admission:       admission,
-		workflowDefs:    workflowDefs,
-		workflowAuditor: workflowAuditor,
-		composerFactory: composerFactory,
-		stopStore:       stopStore,
+		aggregator:         cfg.Aggregator,
+		backendRegistry:    cfg.BackendRegistry,
+		backendClient:      backendClient,
+		health:             healthProvider,
+		healthMonitor:      healthMonitor,
+		admission:          admission,
+		scopeAuthorization: cfg.ScopeAuthorization.DeepCopy(),
+		workflowDefs:       workflowDefs,
+		workflowAuditor:    workflowAuditor,
+		composerFactory:    composerFactory,
+		stopStore:          stopStore,
 	}, nil
 }
 
@@ -297,6 +300,8 @@ func (c *coreVMCP) BackendHealth() health.Reporter {
 // (ErrNilCaller/ErrUnauthorizedCaller) lives in the Serve session layer, not
 // here. identity is never logged.
 func (c *coreVMCP) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -307,6 +312,8 @@ func (c *coreVMCP) ListTools(ctx context.Context, identity *auth.Identity) ([]vm
 // ListResources health-filters the registry, aggregates resources on demand, and
 // returns only those identity is admitted to read.
 func (c *coreVMCP) ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -324,6 +331,8 @@ func (c *coreVMCP) ListResources(ctx context.Context, identity *auth.Identity) (
 func (c *coreVMCP) ListResourceTemplates(
 	ctx context.Context, identity *auth.Identity,
 ) ([]vmcp.ResourceTemplate, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -365,6 +374,8 @@ func (c *coreVMCP) filterResourceTemplates(
 // ListPrompts health-filters the registry, aggregates prompts on demand, and
 // returns only those identity is admitted to get.
 func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -381,6 +392,8 @@ func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]
 // filtering -- is what guarantees a flag can never drift from what the
 // corresponding List* verb would show for the same identity.
 func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (DiscoverCapabilities, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return DiscoverCapabilities{}, err
@@ -416,6 +429,8 @@ func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (Disco
 // same health/advertising AND admission view: a name that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound (a denied tool is never resolved).
 func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Tool, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	tools, err := c.ListTools(ctx, identity)
 	if err != nil {
 		return nil, err
@@ -445,6 +460,8 @@ func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name
 // subscribe's admission aligned with read: any URI ReadResource would serve is a
 // valid subscription target.
 func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.Resource, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	resources, err := c.ListResources(ctx, identity)
 	if err != nil {
 		return nil, err
@@ -518,6 +535,8 @@ func templateMatches(tmplStr, uri string) bool {
 // retrieving it. Delegates to ListPrompts, so a name that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound.
 func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Prompt, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	prompts, err := c.ListPrompts(ctx, identity)
 	if err != nil {
 		return nil, err
@@ -539,6 +558,8 @@ func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, na
 func (c *coreVMCP) ListBackends(
 	ctx context.Context, identity *auth.Identity, filterUnauthorized bool,
 ) ([]vmcp.Backend, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	all := c.backendRegistry.List(ctx)
 	if !filterUnauthorized {
 		return all, nil
@@ -562,6 +583,8 @@ func (c *coreVMCP) ListBackends(
 func (c *coreVMCP) LookupBackend(
 	ctx context.Context, identity *auth.Identity, backendID string,
 ) (*vmcp.Backend, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	backends, err := c.ListBackends(ctx, identity, true)
 	if err != nil {
 		return nil, err
@@ -806,6 +829,12 @@ func validateConfig(cfg *Config) error {
 	if cfg.Elicitation == nil && workflowsRequireElicitation(cfg.WorkflowDefs) {
 		return fmt.Errorf(
 			"%w: Elicitation is required when a workflow contains an elicitation step", vmcp.ErrInvalidConfig)
+	}
+	if err := cfg.ScopeAuthorization.Validate(); err != nil {
+		return fmt.Errorf("%w: scope authorization: %w", vmcp.ErrInvalidConfig, err)
+	}
+	if cfg.ScopeAuthorization != nil && len(cfg.WorkflowDefs) != 0 {
+		return fmt.Errorf("%w: scope authorization does not support composite workflows", vmcp.ErrInvalidConfig)
 	}
 	return nil
 }

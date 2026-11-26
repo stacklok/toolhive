@@ -101,6 +101,10 @@ func (h *Handler) DeviceAuthorizationHandler(w http.ResponseWriter, req *http.Re
 	}
 	client, err := authenticator.AuthenticateClient(ctx, req, req.PostForm)
 	if err != nil {
+		if errors.Is(err, storage.ErrCIMDRateLimited) {
+			writeCIMDRateLimitedOAuth(w)
+			return
+		}
 		rfcErr := fosite.ErrorToRFC6749Error(err)
 		slog.Debug("device authorization: client authentication failed", "client_id", clientID, "error", err)
 		writeOAuthError(w, rfcErr.CodeField, rfcErr.ErrorField, rfcErr.GetDescription())
@@ -235,12 +239,14 @@ func generateUserCode() (string, error) {
 
 // writeOAuthError writes a bare RFC 6749-shaped JSON error body. Unlike
 // writeDCRError (registration.DCRError, RFC 7591 Section 3.2.2's dedicated
-// shape), this endpoint has no fosite.AccessRequester to hand to
-// h.provider.WriteAccessError/WriteAuthorizeError, so it mirrors their JSON
-// shape directly.
+// shape), it is for responses written without a fosite.AccessRequester to hand
+// to h.provider.WriteAccessError/WriteAuthorizeError (the device authorization
+// endpoint, and the token endpoint's CIMD rate-limit response through
+// writeCIMDRateLimitedOAuth), so it mirrors their JSON shape directly.
 func writeOAuthError(w http.ResponseWriter, statusCode int, errorCode, description string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(statusCode)
 	body := struct {
 		Error            string `json:"error"`

@@ -118,6 +118,8 @@ func TestResponseFilteringWriter_ContentEncodedListFailsClosed(t *testing.T) {
 				return
 			}
 
+			assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 			assert.Empty(t, resp.Header.Get("Content-Encoding"),
 				"the replacement error body is plain JSON and must not carry the backend's encoding")
 			assert.NotContains(t, string(body), "admin_tool")
@@ -129,7 +131,8 @@ func TestResponseFilteringWriter_ContentEncodedListFailsClosed(t *testing.T) {
 
 // TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy covers writers
 // that reach the filter by paths httputil.ReverseProxy never takes: a Write with
-// no WriteHeader, and a Flush that commits headers before FlushAndFilter runs.
+// no WriteHeader, and a Flush before or after the body, which must leave the
+// head for FlushAndFilter to rewrite.
 func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T) {
 	t.Parallel()
 
@@ -174,7 +177,7 @@ func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T)
 			wantRejected: true,
 		},
 		{
-			name:   "flushed event stream commits the rejection head",
+			name:   "flushed event stream is still rejected",
 			method: string(mcp.MethodToolsList),
 			drive: func(rfw *ResponseFilteringWriter) {
 				backendHeaders(rfw.Header(), "text/event-stream")

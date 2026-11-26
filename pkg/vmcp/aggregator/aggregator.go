@@ -42,6 +42,8 @@ type Aggregator interface {
 
 	// QueryAllCapabilities queries all backends for their capabilities in parallel.
 	// Handles backend failures gracefully (logs and continues with remaining backends).
+	// When no backend's capabilities could be queried, it returns an error
+	// wrapping ErrNoBackendCapabilities.
 	QueryAllCapabilities(ctx context.Context, backends []vmcp.Backend) (map[string]*BackendCapabilities, error)
 
 	// ResolveConflicts applies conflict resolution strategy to handle
@@ -60,6 +62,10 @@ type Aggregator interface {
 	// 1. Query all backends
 	// 2. Resolve conflicts
 	// 3. Merge into final view
+	// When no backend's capabilities could be queried, it returns an error
+	// wrapping ErrNoBackendCapabilities; the core answers a backend's list
+	// call as not found on that error, as it answers a backend that failed
+	// discovery.
 	AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error)
 }
 

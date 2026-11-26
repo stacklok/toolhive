@@ -196,7 +196,7 @@ func (s *Server) callBindingListItems(
 		return nil, err
 	}
 	if slices.Contains(caps.UnavailableLists, method) {
-		return nil, fmt.Errorf("call binding: the list call's server could not list %s now", method)
+		return nil, fmt.Errorf("call binding: the list call's server %q could not list %s now", server, method)
 	}
 	switch method {
 	case "tools/list":

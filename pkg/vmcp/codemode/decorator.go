@@ -112,6 +112,7 @@ func virtualToolInputSchema() map[string]any {
 // its Cedar admission. The decorator refuses that collision fail-loud via innerTools:
 // ListTools, LookupTool, and the CallTool script-binding path all error with
 // ErrReservedToolName rather than serve the shadowed set (#5845).
+// LookupBackendCapabilities refuses the shadowing backend the same way.
 //
 // The decorator is stateless and safe for concurrent use: a fresh [script.Executor] is
 // built per execution from the inner core's identity-filtered tool set, so two callers
@@ -119,10 +120,12 @@ func virtualToolInputSchema() map[string]any {
 type decorator struct {
 	// core.VMCP is embedded, so any method the decorator does not override is promoted
 	// straight to the inner core. The reserved-name collision guard (#5845) lives only in
-	// the overrides that read the inner tool set via innerTools (ListTools, LookupTool, and
-	// CallTool's script path). If core.VMCP ever grows another tool-set-reading method, it
-	// will auto-promote and bypass that guard — reintroducing the silent execute_tool_script
-	// shadow. Any such new method MUST be overridden here to funnel through innerTools.
+	// the overrides that read the inner tool set: via innerTools (ListTools, LookupTool,
+	// and CallTool's script path), and in LookupBackendCapabilities, which returns one
+	// backend's tools and so checks only those. If core.VMCP ever grows another
+	// tool-set-reading method, it will auto-promote and bypass that guard — reintroducing
+	// the silent execute_tool_script shadow. Any such new method MUST be overridden here
+	// to refuse a tool set that holds the reserved name.
 	core.VMCP
 	cfg Config
 }
@@ -203,7 +206,7 @@ func (d *decorator) LookupTool(ctx context.Context, identity *auth.Identity, nam
 // aggregate the whole tool set again.
 func (d *decorator) LookupBackendCapabilities(
 	ctx context.Context, identity *auth.Identity, backendID string,
-) (*core.BackendCapabilities, error) {
+) (*core.AdmittedBackendCapabilities, error) {
 	caps, err := d.VMCP.LookupBackendCapabilities(ctx, identity, backendID)
 	if err != nil {
 		return nil, err

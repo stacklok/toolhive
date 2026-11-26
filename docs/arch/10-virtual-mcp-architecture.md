@@ -1476,7 +1476,8 @@ policies are configured:
   name to the inner core. A backend that advertised a tool named `execute_tool_script`
   would be silently shadowed by the virtual tool and skip its own Cedar admission, so the
   decorator fails **loud** (`ErrReservedToolName`) on that collision — `ListTools`,
-  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it.
+  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it,
+  and `LookupBackendCapabilities` refuses the backend that advertises it.
 
 The `Call*` methods keep their internal admission checks as defense-in-depth for other
 embedders and misconfigured gates.
@@ -1562,8 +1563,10 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   whether a backend the caller cannot see exists. A backend in the caller's view that
   the core's lists leave out for its health status (unhealthy, unknown or
   unauthenticated, even while it still answers) gets 503; a degraded one stays in the
-  lists and is listed. A backend whose list of the method's items failed transiently
-  (a Modern backend's optional list, which the lists report as empty) also gets 503.
+  lists and is listed. A backend in the caller's view whose list of the method's
+  items failed transiently (a Modern backend's optional list, which the lists report
+  as empty) also gets 503; one the caller could see only through that list is not
+  known to be in view, so it gets 403.
   The check and the items come from one aggregation
   (`core.LookupBackendCapabilities`), so they cannot disagree. A list call that
   carries a cursor is refused with `invalid_params`. A `tools/call` or another list

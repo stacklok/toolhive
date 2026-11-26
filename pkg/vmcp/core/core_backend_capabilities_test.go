@@ -98,11 +98,27 @@ func TestLookupBackendCapabilities_OneAggregation(t *testing.T) {
 		"admission runs over the backend's own items only")
 }
 
+// recordAggregations makes m's aggregator answer view and err, and returns the
+// backend IDs of every aggregation it is asked for, in order.
+func recordAggregations(m *coreMocks, view *aggregator.AggregatedCapabilities, err error) *[][]string {
+	var sets [][]string
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, backends []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
+			sets = append(sets, backendIDs(backends))
+			return view, err
+		}).AnyTimes()
+	return &sets
+}
+
 // TestLookupBackendCapabilities_NotFound proves that an unknown backend, one
-// that offers identity nothing, one with no items, and one whose discovery
-// fails all get vmcp.ErrNotFound, and nothing else.
+// that offers identity nothing, one with no items, one whose discovery fails,
+// and a hidden one the lists leave out for its health all get vmcp.ErrNotFound,
+// after the same aggregations: the backends the lists include, then the whole
+// registry. So the time an answer takes does not tell them apart either.
 func TestLookupBackendCapabilities_NotFound(t *testing.T) {
 	t.Parallel()
+	view := twoBackendView()
+	view.Tools = append(view.Tools, toolOn("t3", "b3"))
 	failed := fmt.Errorf("failed to query backends: %w", aggregator.ErrNoBackendCapabilities)
 	for _, tc := range []struct {
 		name      string
@@ -111,46 +127,73 @@ func TestLookupBackendCapabilities_NotFound(t *testing.T) {
 		aggErr    error
 		allowed   []string
 	}{
-		{name: "unknown", backendID: "missing"},
-		{name: "empty id", backendID: ""},
-		{name: "nothing admitted", backendID: "b1", view: twoBackendView(), allowed: []string{"t2"}},
+		{name: "unknown", backendID: "missing", view: view, allowed: []string{"t1", "t2"}},
+		{name: "empty id", backendID: "", view: view, allowed: []string{"t1", "t2", "backendless"}},
+		{name: "nothing admitted", backendID: "b1", view: view, allowed: []string{"t2"}},
 		{name: "failed discovery", backendID: "b1", view: &aggregator.AggregatedCapabilities{
 			Tools: []vmcp.Tool{toolOn("t2", "b2")},
 		}, allowed: []string{"t1", "t2"}},
 		{name: "every backend failed discovery", backendID: "b1", aggErr: failed},
+		{name: "hidden and unhealthy", backendID: "b3", view: view, allowed: []string{"t1", "t2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			c, m, _ := newBackendCapabilitiesCore(t, []vmcp.Backend{{ID: "b1"}, {ID: "b2"}}, tc.allowed...)
-			if tc.view != nil || tc.aggErr != nil {
-				m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(tc.view, tc.aggErr)
-			}
+			c, m, _ := newBackendCapabilitiesCore(t, []vmcp.Backend{
+				{ID: "b1"}, {ID: "b2"}, {ID: "b3", HealthStatus: vmcp.BackendUnhealthy},
+			}, tc.allowed...)
+			sets := recordAggregations(m, tc.view, tc.aggErr)
 			_, err := c.LookupBackendCapabilities(context.Background(), cedarIdentity(), tc.backendID)
 			require.ErrorIs(t, err, vmcp.ErrNotFound)
 			assert.NotErrorIs(t, err, vmcp.ErrBackendUnavailable)
+			assert.Equal(t, [][]string{{"b1", "b2"}, {"b1", "b2", "b3"}}, *sets,
+				"the lists' backends, then the whole registry")
 		})
 	}
 }
 
-// TestLookupBackendCapabilities_AggregationError proves an aggregation failure
-// other than every backend failing discovery is returned as it is, not as
+// TestLookupBackendCapabilities_Errors proves that an aggregation failure other
+// than every backend failing discovery is returned as it is, for a known
+// backend and an unknown name alike, and that once the request's context has
+// ended, an aggregation in which no backend answered is an error too: the
+// backends did not fail discovery, the request went away. None is
 // vmcp.ErrNotFound.
-func TestLookupBackendCapabilities_AggregationError(t *testing.T) {
+func TestLookupBackendCapabilities_Errors(t *testing.T) {
 	t.Parallel()
-	c, m, _ := newBackendCapabilitiesCore(t, []vmcp.Backend{{ID: "b1"}}, "t1")
 	boom := errors.New("boom")
-	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(nil, boom)
-	_, err := c.LookupBackendCapabilities(context.Background(), cedarIdentity(), "b1")
-	require.ErrorIs(t, err, boom)
-	assert.NotErrorIs(t, err, vmcp.ErrNotFound)
+	for _, tc := range []struct {
+		name      string
+		backendID string
+		aggErr    error
+		cancelled bool
+		want      error
+	}{
+		{name: "aggregation fails, known backend", backendID: "b1", aggErr: boom, want: boom},
+		{name: "aggregation fails, unknown name", backendID: "missing", aggErr: boom, want: boom},
+		{name: "no backend answered a cancelled request", backendID: "b1", cancelled: true,
+			aggErr: fmt.Errorf("x: %w", aggregator.ErrNoBackendCapabilities), want: aggregator.ErrNoBackendCapabilities},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, m, _ := newBackendCapabilitiesCore(t, []vmcp.Backend{{ID: "b1"}}, "t1")
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			if tc.cancelled {
+				cancel()
+			}
+			m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(nil, tc.aggErr).Times(1)
+			_, err := c.LookupBackendCapabilities(ctx, cedarIdentity(), tc.backendID)
+			require.ErrorIs(t, err, tc.want)
+			assert.NotErrorIs(t, err, vmcp.ErrNotFound)
+		})
+	}
 }
 
-// TestLookupBackendCapabilities_LeftOutForHealth proves that for a backend the
-// lists leave out for its health status the whole registry is aggregated, as
-// ListBackends aggregates it, so conflict resolution decides its items as it
-// does there: in identity's view, by any kind of item including resource
-// templates, it gets vmcp.ErrBackendUnavailable; out of it, or unreachable,
-// vmcp.ErrNotFound.
+// TestLookupBackendCapabilities_LeftOutForHealth proves that a backend the
+// lists leave out for its health status is decided from an aggregation of the
+// whole registry, as ListBackends aggregates it, so conflict resolution decides
+// its items as it does there: in identity's view, by any kind of item including
+// resource templates, it gets vmcp.ErrBackendUnavailable; out of it, or
+// unreachable, vmcp.ErrNotFound.
 func TestLookupBackendCapabilities_LeftOutForHealth(t *testing.T) {
 	t.Parallel()
 	templatesOnly := &aggregator.AggregatedCapabilities{
@@ -170,37 +213,19 @@ func TestLookupBackendCapabilities_LeftOutForHealth(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			// b3 is unhealthy too, so the whole registry differs from the
+			// backends the lists include plus b2.
 			c, m, _ := newBackendCapabilitiesCore(t, []vmcp.Backend{
 				{ID: "b1", HealthStatus: vmcp.BackendHealthy},
 				{ID: "b2", HealthStatus: vmcp.BackendUnhealthy},
+				{ID: "b3", HealthStatus: vmcp.BackendUnhealthy},
 			}, tc.allowed...)
-			var aggregated []vmcp.Backend
-			m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).DoAndReturn(
-				func(_ context.Context, backends []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
-					aggregated = backends
-					return tc.view, tc.aggErr
-				}).Times(1)
+			sets := recordAggregations(m, tc.view, tc.aggErr)
 			_, err := c.LookupBackendCapabilities(context.Background(), cedarIdentity(), "b2")
 			require.ErrorIs(t, err, tc.want)
-			assert.Equal(t, []string{"b1", "b2"}, backendIDs(aggregated), "the whole registry is aggregated")
+			assert.Equal(t, [][]string{{"b1"}, {"b1", "b2", "b3"}}, *sets, "the lists' backends, then the whole registry")
 		})
 	}
-}
-
-// TestLookupBackendCapabilities_CancelledIsNotNotFound proves that when the
-// request's context has ended, an aggregation in which no backend answered is
-// returned as an error, not as vmcp.ErrNotFound: the backends did not fail
-// discovery, the request went away.
-func TestLookupBackendCapabilities_CancelledIsNotNotFound(t *testing.T) {
-	t.Parallel()
-	c, m, _ := newBackendCapabilitiesCore(t, []vmcp.Backend{{ID: "b1"}}, "t1")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).
-		Return(nil, fmt.Errorf("x: %w", aggregator.ErrNoBackendCapabilities))
-	_, err := c.LookupBackendCapabilities(ctx, cedarIdentity(), "b1")
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, vmcp.ErrNotFound)
 }
 
 // TestLookupBackendCapabilities_MonitorDecides proves the health monitor's
@@ -213,7 +238,7 @@ func TestLookupBackendCapabilities_MonitorDecides(t *testing.T) {
 		{ID: "b2", HealthStatus: vmcp.BackendUnhealthy},
 	}, "t1", "t2")
 	c.health = fakeStatusProvider{"b1": vmcp.BackendUnhealthy, "b2": vmcp.BackendDegraded}
-	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(twoBackendView(), nil).Times(2)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(twoBackendView(), nil).Times(3)
 
 	_, err := c.LookupBackendCapabilities(context.Background(), cedarIdentity(), "b1")
 	require.ErrorIs(t, err, vmcp.ErrBackendUnavailable, "the monitor says unhealthy, whatever the registry says")

@@ -33,12 +33,12 @@ type fakeCore struct {
 // LookupBackendCapabilities answers with the listed tools of backendID.
 func (f *fakeCore) LookupBackendCapabilities(
 	ctx context.Context, id *auth.Identity, backendID string,
-) (*core.BackendCapabilities, error) {
+) (*core.AdmittedBackendCapabilities, error) {
 	tools, err := f.listTools(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	caps := &core.BackendCapabilities{}
+	caps := &core.AdmittedBackendCapabilities{}
 	for _, t := range tools {
 		if t.BackendID == backendID {
 			caps.Tools = append(caps.Tools, t)

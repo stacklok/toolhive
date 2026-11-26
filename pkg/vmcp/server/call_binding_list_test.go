@@ -254,8 +254,11 @@ func TestCallBinding_ListCallUnavailableList(t *testing.T) {
 
 	other := s.tokens.add("other", claimsFor(cbClient, "jti-2", []any{listEntry(cbServer, "tools/list")}))
 	otherBody, otherHeaders := cbModernList(3, "tools/list")
+	before := fc.listToolsCalls.Load()
 	resp := s.send(t, http.MethodPost, other, "", otherBody, otherHeaders)
 	require.Equal(t, http.StatusOK, resp.status, "the server's other lists are answered: %s", resp.body)
+	assert.Equal(t, int32(1), fc.listToolsCalls.Load()-before,
+		"the answer comes from the server's own lookup: only the usual handler lists every tool")
 
 	fc.setUnavailableLists(cbServer)
 	resp = s.send(t, http.MethodPost, token, "", modernBody, modernHeaders)
@@ -489,7 +492,7 @@ type listErrCore struct {
 
 func (l *listErrCore) LookupBackendCapabilities(
 	ctx context.Context, identity *auth.Identity, id string,
-) (*core.BackendCapabilities, error) {
+) (*core.AdmittedBackendCapabilities, error) {
 	l.mu.Lock()
 	err := l.err
 	l.mu.Unlock()

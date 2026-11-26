@@ -307,23 +307,6 @@ func (s *lcServer) list(tb testing.TB, token, method string) (int, string) {
 	return resp.StatusCode, string(raw)
 }
 
-// lcNames returns the names (or URI templates) a list response lists under member.
-func lcNames(tb testing.TB, body, member, key string) []string {
-	tb.Helper()
-	var resp struct {
-		Result map[string]json.RawMessage `json:"result"`
-	}
-	require.NoError(tb, json.Unmarshal([]byte(body), &resp), "body: %s", body)
-	var items []map[string]any
-	require.NoError(tb, json.Unmarshal(resp.Result[member], &items), "body: %s", body)
-	names := []string{}
-	for _, item := range items {
-		name, _ := item[key].(string)
-		names = append(names, name)
-	}
-	return names
-}
-
 // TestCallBindingReal_ListCallOneAggregation checks, against the real core,
 // that a list call's server check and items come from one aggregation. The
 // backend drops out of every aggregation after the first. With the check and
@@ -346,7 +329,7 @@ func TestCallBindingReal_ListCallOneAggregation(t *testing.T) {
 	before := s.agg.calls.Load()
 	status, body := s.list(t, s.listToken("beta", "tools/list"), "tools/list")
 	require.Equal(t, http.StatusOK, status, "body: %s", body)
-	assert.Equal(t, []string{"beta_tool"}, lcNames(t, body, "tools", "name"))
+	assert.Equal(t, []string{"beta_tool"}, chainListItems(t, "tools/list", body))
 	assert.Equal(t, int32(1), s.agg.calls.Load()-before, "one aggregation answers the list call")
 }
 
@@ -354,12 +337,22 @@ func TestCallBindingReal_ListCallOneAggregation(t *testing.T) {
 // that a list call whose method's list failed transiently on the bound
 // backend gets 503 and keeps the token, rather than being answered with the
 // empty list the failure was reported as. The backend's other lists are
-// still answered.
+// still answered. A backend the caller could see only through the list that
+// failed is not known to be in its view, so it gets 403 server_not_found, as
+// an unknown server does: a 503 would tell that it exists.
 func TestCallBindingReal_ListCallTransientList(t *testing.T) {
 	t.Parallel()
 	backend := &lcModernBackend{tools: []string{"alpha_tool"}, prompts: []string{"alpha_prompt"}}
 	backend.failPrompts.Store(true)
-	s := newLCServer(t, map[string]*lcModernBackend{"alpha": backend})
+	promptsOnly := &lcModernBackend{prompts: []string{"beta_prompt"}}
+	promptsOnly.failPrompts.Store(true)
+	s := newLCServer(t, map[string]*lcModernBackend{"alpha": backend, "beta": promptsOnly})
+
+	unknownStatus, unknownBody := s.list(t, s.listToken("no-such-backend", "prompts/list"), "prompts/list")
+	status, body := s.list(t, s.listToken("beta", "prompts/list"), "prompts/list")
+	assert.Equal(t, http.StatusForbidden, status, "body: %s", body)
+	assert.Equal(t, unknownStatus, status)
+	assert.Equal(t, unknownBody, body)
 
 	token := s.listToken("alpha", "prompts/list")
 	for range 2 {
@@ -368,9 +361,9 @@ func TestCallBindingReal_ListCallTransientList(t *testing.T) {
 		assert.NotContains(t, body, "token_reused")
 	}
 
-	status, body := s.list(t, s.listToken("alpha", "tools/list"), "tools/list")
+	status, body = s.list(t, s.listToken("alpha", "tools/list"), "tools/list")
 	require.Equal(t, http.StatusOK, status, "body: %s", body)
-	assert.Equal(t, []string{"alpha_tool"}, lcNames(t, body, "tools", "name"))
+	assert.Equal(t, []string{"alpha_tool"}, chainListItems(t, "tools/list", body))
 }
 
 // TestCallBindingReal_ListCallTemplatesOnlyUnhealthy checks, against the real
@@ -394,29 +387,35 @@ func TestCallBindingReal_ListCallTemplatesOnlyUnhealthy(t *testing.T) {
 	s.registry.setStatus("tmpl", vmcp.BackendHealthy)
 	status, body = s.list(t, token, "resources/templates/list")
 	require.Equal(t, http.StatusOK, status, "body: %s", body)
-	assert.Equal(t, []string{"file:///docs/{path}"}, lcNames(t, body, "resourceTemplates", "uriTemplate"))
+	assert.Equal(t, []string{"file:///docs/{path}"}, chainListItems(t, "resources/templates/list", body))
 }
 
 // TestCallBindingReal_ListCallHiddenUnhealthy checks, against the real core,
 // that an unhealthy backend the caller is admitted to nothing on gets the
 // same 403 server_not_found as an unknown server, not the 503 that would tell
-// it exists. "shadow" offers only a tool named as alpha's, which the priority
-// strategy drops from it whenever alpha is aggregated too; were shadow
-// aggregated alone, its tool would be kept and admitted.
+// it exists. "shadow" offers only a tool named as healthy alpha's, and "zeta"
+// only a tool named as unhealthy beta's; the priority strategy (backends in
+// name order) drops each from it whenever the whole registry is aggregated,
+// as ListBackends aggregates it. Aggregated alone, or with only the healthy
+// backends, their tools would be kept and admitted.
 func TestCallBindingReal_ListCallHiddenUnhealthy(t *testing.T) {
 	t.Parallel()
 	s := newLCServer(t, map[string]*lcModernBackend{
 		"alpha":  {tools: []string{"alpha_tool"}},
+		"beta":   {tools: []string{"shared_tool"}},
 		"hidden": {tools: []string{"hidden_tool"}},
 		"shadow": {tools: []string{"alpha_tool"}},
-	}, `permit(principal, action == Action::"call_tool", resource == Tool::"alpha_tool");`)
-	s.registry.setStatus("hidden", vmcp.BackendUnhealthy)
-	s.registry.setStatus("shadow", vmcp.BackendUnhealthy)
+		"zeta":   {tools: []string{"shared_tool"}},
+	}, `permit(principal, action == Action::"call_tool", resource == Tool::"alpha_tool");`,
+		`permit(principal, action == Action::"call_tool", resource == Tool::"shared_tool");`)
+	for _, id := range []string{"beta", "hidden", "shadow", "zeta"} {
+		s.registry.setStatus(id, vmcp.BackendUnhealthy)
+	}
 
 	unknownStatus, unknownBody := s.list(t, s.listToken("no-such-backend", "tools/list"), "tools/list")
 	assert.Equal(t, http.StatusForbidden, unknownStatus, "body: %s", unknownBody)
 	assert.Contains(t, unknownBody, "(server_not_found)")
-	for _, backend := range []string{"hidden", "shadow"} {
+	for _, backend := range []string{"hidden", "shadow", "zeta"} {
 		status, body := s.list(t, s.listToken(backend, "tools/list"), "tools/list")
 		assert.Equal(t, unknownStatus, status, "%s: %s", backend, body)
 		assert.Equal(t, unknownBody, body, backend)

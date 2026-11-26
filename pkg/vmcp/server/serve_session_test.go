@@ -149,7 +149,7 @@ type fakeCore struct {
 	// backendStatus is the registry health status of a configured backend,
 	// set with setBackendStatus; absent means none (healthy). unavailableLists
 	// maps a backend to the list methods whose listing failed transiently on
-	// it (core.BackendCapabilities.UnavailableLists), set with
+	// it (core.AdmittedBackendCapabilities.UnavailableLists), set with
 	// setUnavailableLists. backendStatusMu guards both.
 	backendStatusMu  sync.Mutex
 	backendStatus    map[string]vmcp.BackendHealthStatus
@@ -512,7 +512,7 @@ func (f *fakeCore) LookupBackend(_ context.Context, identity *auth.Identity, id 
 // vmcp.ErrBackendUnavailable, and every other backend vmcp.ErrNotFound.
 func (f *fakeCore) LookupBackendCapabilities(
 	ctx context.Context, identity *auth.Identity, id string,
-) (*core.BackendCapabilities, error) {
+) (*core.AdmittedBackendCapabilities, error) {
 	backends, err := f.ListBackends(ctx, identity, false)
 	if err != nil {
 		return nil, err
@@ -525,7 +525,7 @@ func (f *fakeCore) LookupBackendCapabilities(
 	f.backendStatusMu.Lock()
 	unavailable := slices.Clone(f.unavailableLists[id])
 	f.backendStatusMu.Unlock()
-	caps := &core.BackendCapabilities{
+	caps := &core.AdmittedBackendCapabilities{
 		Tools:             slices.DeleteFunc(slices.Clone(lists.tools), func(t vmcp.Tool) bool { return t.BackendID != id }),
 		Resources:         slices.DeleteFunc(slices.Clone(lists.resources), func(r vmcp.Resource) bool { return r.BackendID != id }),
 		ResourceTemplates: slices.DeleteFunc(slices.Clone(lists.resourceTemplates), func(t vmcp.ResourceTemplate) bool { return t.BackendID != id }),

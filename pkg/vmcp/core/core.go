@@ -43,10 +43,11 @@ type DiscoverCapabilities struct {
 	HasPrompts           bool
 }
 
-// BackendCapabilities is one backend's part of an identity's view: the items of
-// that backend the identity is admitted to, from one aggregation (see
-// [VMCP.LookupBackendCapabilities]).
-type BackendCapabilities struct {
+// AdmittedBackendCapabilities is one backend's part of an identity's view: the
+// items of that backend the identity is admitted to, from one aggregation (see
+// [VMCP.LookupBackendCapabilities]). Unlike [aggregator.BackendCapabilities], a
+// backend's raw query result, it holds only what admission let through.
+type AdmittedBackendCapabilities struct {
 	Tools             []vmcp.Tool
 	Resources         []vmcp.Resource
 	ResourceTemplates []vmcp.ResourceTemplate
@@ -74,6 +75,8 @@ type BackendCapabilities struct {
 //     mirrors the list-filter/call-deny pairing in pkg/authz/tool_filter.go, and
 //     applies to backends too: a decorator may drop entries from ListBackends
 //     output or refuse a LookupBackend, but never surface a backend inner withheld.
+//     LookupBackendCapabilities returns list items, so a decorator that filters
+//     a list must filter or refuse its items there too.
 //   - args/meta maps are treated as read-only; the core copies before mutating
 //     (go-style: copy before mutating caller input).
 //   - ReadResource results: Meta may be nil — the mcp-go resources/read handler
@@ -248,7 +251,11 @@ type VMCP interface {
 	// are run through admission.
 	//
 	// The backend is in identity's view when identity is admitted to at least
-	// one of its tools, resources, resource templates or prompts. It returns:
+	// one of its tools, resources, resource templates or prompts. Resource
+	// templates count here, unlike for ListBackends and LookupBackend, because
+	// a list call can list a backend's templates: a backend that offers
+	// identity only templates is resolved here though ListBackends omits it.
+	// It returns:
 	//   - an error wrapping vmcp.ErrNotFound when the backend is unknown or
 	//     out of group, offers identity nothing (every item is denied, or it has
 	//     none), or contributes nothing (its discovery fails). These are not
@@ -259,13 +266,14 @@ type VMCP interface {
 	//     (health.ShouldAdvertise is false: unhealthy, unknown, unauthenticated);
 	//   - any other error when the view cannot be built now.
 	//
-	// A backend the lists include is aggregated with every other backend they
-	// include, so conflict resolution matches the lists. For a backend they
-	// leave out for its health, the whole registry is aggregated, as
-	// ListBackends aggregates it, to decide its visibility only.
+	// The backend is looked up first in one aggregation of the backends the
+	// lists include, so conflict resolution matches the lists, and a backend
+	// found there is answered from it alone. Any other outcome is decided from
+	// an aggregation of the whole registry, as ListBackends aggregates it, so
+	// every refusal does the same work whatever the reason.
 	LookupBackendCapabilities(
 		ctx context.Context, identity *auth.Identity, backendID string,
-	) (*BackendCapabilities, error)
+	) (*AdmittedBackendCapabilities, error)
 
 	// Discover returns identity's capability-presence flags -- whether it is
 	// admitted to at least one tool, resource, resource template, and prompt --

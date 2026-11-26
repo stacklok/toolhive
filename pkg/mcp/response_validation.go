@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 )
 
 // ValidateResponse reports whether body is a single, structurally valid MCP
@@ -13,9 +14,10 @@ import (
 // a leading UTF-8 BOM and JSON whitespace are accepted, ids must be strings or
 // signed int64 integers, an error response may omit its id (MCP permits one),
 // and exactly one of result or error must be present with a well-formed error
-// object. It rejects invalid JSON (including an empty body), batches, requests
-// and notifications, null or fractional ids, and envelopes that repeat a
-// member or alias a reserved one by case.
+// object; an explicit null for the unused member is treated as absent (see
+// withoutNullAbsentMember). It rejects invalid JSON (including an empty body),
+// batches, requests and notifications, null or fractional ids, and envelopes
+// that repeat a member or alias a reserved one by case.
 //
 // Unlike DecodeMessage, it checks the envelope only. Member names inside
 // result and error.data are not checked for case-fold collisions: a result is
@@ -43,13 +45,37 @@ func ValidateResponse(body []byte) error {
 		return errNotAResponse
 	}
 	if reservedMemberAlias(envelope, "jsonrpc", "id", "method", "params", "result", "error") ||
-		hasDuplicateEnvelopeMembers(body) || !validMessageEnvelope(envelope) {
+		hasDuplicateEnvelopeMembers(body) || !validMessageEnvelope(withoutNullAbsentMember(envelope)) {
 		return errInvalidResponse
 	}
 	if _, err := decodeMessageID(envelope["id"]); err != nil {
 		return errInvalidResponse
 	}
 	return nil
+}
+
+// withoutNullAbsentMember returns envelope without a result or error member
+// that is an explicit null standing in for the absent one. Serializers that do
+// not omit nulls emit {"result":{},"error":null}, or "result":null beside an
+// error, and lenient clients accept both. JSON-RPC requires the unused member
+// to be absent, but these responses are unambiguous, so they are accepted
+// rather than rejected. A null error is never a valid error object, so it is
+// always dropped; a null result is a valid result, so it is dropped only when
+// an error is present. envelope itself is not modified.
+func withoutNullAbsentMember(envelope map[string]json.RawMessage) map[string]json.RawMessage {
+	isNull := func(raw json.RawMessage) bool { return raw != nil && string(raw) == "null" }
+	dropError := isNull(envelope["error"])
+	dropResult := !dropError && envelope["error"] != nil && isNull(envelope["result"])
+	if !dropError && !dropResult {
+		return envelope
+	}
+	out := maps.Clone(envelope)
+	if dropError {
+		delete(out, "error")
+	} else {
+		delete(out, "result")
+	}
+	return out
 }
 
 // responseValidationError is a fixed, non-reflective rejection reason.

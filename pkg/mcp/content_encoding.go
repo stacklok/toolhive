@@ -22,15 +22,16 @@ func HasContentEncoding(h http.Header) bool {
 	return false
 }
 
-// staleEntityHeaders describe a backend's body, not a plain JSON error that
-// replaces it, so a client or cache must not see them on the replacement.
+// staleEntityHeaders describe a backend's body, not a body a filter writes in
+// its place, so a client or cache must not see them on the replacement.
 var staleEntityHeaders = []string{
 	"Content-Encoding", "Content-Length", "Content-MD5", "Content-Range",
 	"Content-Digest", "Repr-Digest", "Digest", "ETag", "Last-Modified",
 }
 
 // DeleteEntityHeaders removes the headers that describe the backend's body.
-// Filters call it when they replace a body they cannot filter with an error.
+// The authz response filter calls it for every response it may rewrite, before
+// committing the head.
 func DeleteEntityHeaders(h http.Header) {
 	for _, name := range staleEntityHeaders {
 		h.Del(name)

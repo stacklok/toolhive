@@ -4,6 +4,9 @@
 package authz
 
 import (
+	"bytes"
+	"cmp"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -161,25 +164,33 @@ func postMCP(t *testing.T, baseURL, method string) *http.Response {
 // a filtered method behind the transparent proxy. The proxy flushes after every
 // body write. If that flush committed the head, the client would get a 200 with
 // the backend's Content-Type and ETag even when the filter then failed closed, and
-// the 500 it wrote would be dropped as a superfluous WriteHeader.
+// the 500 it wrote would be dropped as a superfluous WriteHeader. Whatever the
+// filter writes, the backend's entity headers describe the backend's bytes, so
+// none of them reaches the client.
 func TestMiddlewareBehindReverseProxyCommitsFilteredHead(t *testing.T) {
 	t.Parallel()
 
 	const tools = `{"tools":[` +
 		`{"name":"weather","inputSchema":{"type":"object"}},` +
 		`{"name":"admin_tool","inputSchema":{"type":"object"}}]}`
+	const list = `{"jsonrpc":"2.0","id":7,"result":` + tools + `}`
 	deep := strings.Repeat("[", 10001) + strings.Repeat("]", 10001)
 	deepResult := `{"jsonrpc":"2.0","id":7,"result":{"tools":[{"name":"admin_tool","inputSchema":{"x":` + deep + `}}]}}`
+	gzippedList := gzipString(t, list)
 
 	tests := []struct {
-		name            string
-		contentType     string
+		name        string
+		contentType string
+		// contentEncoding labels the body's coding. Go's transport decodes a body
+		// only when it is labeled exactly "gzip", so a backend that labels gzip
+		// bytes with the "x-gzip" alias, which clients decode (RFC 9110 section
+		// 8.4.1.3), reaches the filter still encoded.
+		contentEncoding string
+		// backendStatus is the backend's status. Zero means 200.
+		backendStatus   int
 		body            string
 		wantStatus      int
 		wantContentType string
-		// wantNoETag expects the backend's entity tag dropped from a body the
-		// filter wrote in place of the backend's.
-		wantNoETag bool
 	}{
 		{
 			name:            "mislabeled result past the depth cap fails closed",
@@ -187,15 +198,20 @@ func TestMiddlewareBehindReverseProxyCommitsFilteredHead(t *testing.T) {
 			body:            deepResult,
 			wantStatus:      http.StatusInternalServerError,
 			wantContentType: "application/json",
-			wantNoETag:      true,
 		},
 		{
 			name:            "mislabeled clean list is filtered and relabeled",
 			contentType:     "text/plain",
-			body:            `{"jsonrpc":"2.0","id":7,"result":` + tools + `}`,
+			body:            list,
 			wantStatus:      http.StatusOK,
 			wantContentType: "application/json",
-			wantNoETag:      true,
+		},
+		{
+			name:            "labeled clean list is filtered",
+			contentType:     "application/json",
+			body:            list,
+			wantStatus:      http.StatusOK,
+			wantContentType: "application/json",
 		},
 		{
 			name:            "labeled result past the depth cap fails closed",
@@ -203,7 +219,6 @@ func TestMiddlewareBehindReverseProxyCommitsFilteredHead(t *testing.T) {
 			body:            deepResult,
 			wantStatus:      http.StatusInternalServerError,
 			wantContentType: "application/json",
-			wantNoETag:      true,
 		},
 		{
 			name:            "labeled notification smuggling a result fails closed",
@@ -211,14 +226,40 @@ func TestMiddlewareBehindReverseProxyCommitsFilteredHead(t *testing.T) {
 			body:            `{"jsonrpc":"2.0","method":"notifications/message","result":` + tools + `}`,
 			wantStatus:      http.StatusInternalServerError,
 			wantContentType: "application/json",
-			wantNoETag:      true,
 		},
 		{
 			name:            "event stream list is filtered",
 			contentType:     "text/event-stream",
-			body:            "data: " + `{"jsonrpc":"2.0","id":7,"result":` + tools + `}` + "\n\n",
+			body:            "data: " + list + "\n\n",
 			wantStatus:      http.StatusOK,
 			wantContentType: "text/event-stream",
+		},
+		{
+			name:            "encoded 2xx list fails closed",
+			contentType:     "application/json",
+			contentEncoding: "x-gzip",
+			body:            gzippedList,
+			wantStatus:      http.StatusInternalServerError,
+			wantContentType: "application/json",
+		},
+		{
+			name:            "encoded 500 list keeps the status and loses the body",
+			contentType:     "application/json",
+			contentEncoding: "x-gzip",
+			backendStatus:   http.StatusInternalServerError,
+			body:            gzippedList,
+			wantStatus:      http.StatusInternalServerError,
+			wantContentType: "application/json",
+		},
+		{
+			// A client whose session expired still sees the 404 it needs to act on.
+			name:            "encoded 404 list keeps the status and loses the body",
+			contentType:     "application/json",
+			contentEncoding: "x-gzip",
+			backendStatus:   http.StatusNotFound,
+			body:            gzippedList,
+			wantStatus:      http.StatusNotFound,
+			wantContentType: "application/json",
 		},
 	}
 
@@ -228,8 +269,14 @@ func TestMiddlewareBehindReverseProxyCommitsFilteredHead(t *testing.T) {
 
 			frontend := newProxiedMiddleware(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", tt.contentType)
+				if tt.contentEncoding != "" {
+					w.Header().Set("Content-Encoding", tt.contentEncoding)
+				}
 				w.Header().Set("Content-Length", strconv.Itoa(len(tt.body)))
 				w.Header().Set("ETag", `"backend"`)
+				w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+				w.Header().Set("Repr-Digest", "sha-256=:YmFja2VuZA==:")
+				w.WriteHeader(cmp.Or(tt.backendStatus, http.StatusOK))
 				_, _ = io.WriteString(w, tt.body)
 			}))
 
@@ -240,10 +287,16 @@ func TestMiddlewareBehindReverseProxyCommitsFilteredHead(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, resp.StatusCode)
 			assert.Equal(t, tt.wantContentType, resp.Header.Get("Content-Type"))
 			assert.Equal(t, "private, no-store", resp.Header.Get("Cache-Control"))
-			if tt.wantNoETag {
-				assert.Empty(t, resp.Header.Get("ETag"), "the backend's entity tag must not describe the replacement")
+			for _, name := range []string{"Content-Encoding", "ETag", "Last-Modified", "Repr-Digest"} {
+				assert.Emptyf(t, resp.Header.Get(name), "the backend's %s must not describe the body the filter wrote", name)
 			}
-			assert.NotContains(t, string(body), "admin_tool")
+			// A client decodes the x-gzip alias, so check what it would read.
+			readable := body
+			if zr, zerr := gzip.NewReader(bytes.NewReader(body)); zerr == nil {
+				readable, err = io.ReadAll(zr)
+				require.NoError(t, err)
+			}
+			assert.NotContains(t, string(readable), "admin_tool")
 
 			payload := body
 			if tt.contentType == "text/event-stream" {
@@ -264,6 +317,17 @@ func TestMiddlewareBehindReverseProxyCommitsFilteredHead(t *testing.T) {
 			}
 		})
 	}
+}
+
+// gzipString returns s compressed with gzip.
+func gzipString(t *testing.T, s string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, err := io.WriteString(gw, s)
+	require.NoError(t, err)
+	require.NoError(t, gw.Close())
+	return buf.String()
 }
 
 // TestMiddlewareBehindReverseProxyFlushesUnfilteredHead pins the other side: a
@@ -355,7 +419,7 @@ func TestMiddlewareBehindReverseProxyFilteredFraming(t *testing.T) {
 		},
 		{
 			// An empty body has nothing to filter, so it is not rejected for its
-			// encoding and passes through as the backend sent it.
+			// encoding.
 			name: "empty gzip body passes through",
 			backend: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")

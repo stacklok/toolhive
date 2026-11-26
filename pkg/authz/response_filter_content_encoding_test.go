@@ -151,10 +151,10 @@ func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T)
 		// method the filter was built for.
 		method string
 		drive  func(rfw *ResponseFilteringWriter)
-		// wantRejected expects the 500 JSON-RPC error in place of the body.
+		// wantRejected expects the JSON-RPC error in place of the body.
 		wantRejected bool
-		// wantStatus is the forwarded status when the response is not rejected.
-		// Zero means 200.
+		// wantStatus is the status the client sees. Zero means 500 for a
+		// rejected response and 200 otherwise.
 		wantStatus int
 	}{
 		{
@@ -208,17 +208,18 @@ func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T)
 			},
 		},
 		{
-			// Only a 2xx can carry a list, so an encoded error status is
-			// forwarded intact rather than replaced by an opaque 500 -- a client
-			// whose session expired still sees the 404 it needs to act on.
-			name:   "encoded non-2xx keeps the backend status",
+			// A non-2xx body can carry a list too, so it is replaced like any
+			// other, but its status is kept: a client whose session expired
+			// still sees the 404 it needs to act on.
+			name:   "encoded non-2xx keeps the backend status and loses the body",
 			method: string(mcp.MethodToolsList),
 			drive: func(rfw *ResponseFilteringWriter) {
 				backendHeaders(rfw.Header(), "application/json")
 				rfw.WriteHeader(http.StatusNotFound)
 				_, _ = rfw.Write(opaque)
 			},
-			wantStatus: http.StatusNotFound,
+			wantRejected: true,
+			wantStatus:   http.StatusNotFound,
 		},
 	}
 
@@ -239,14 +240,13 @@ func TestResponseFilteringWriter_ContentEncodedWithoutReverseProxy(t *testing.T)
 			require.NoError(t, err)
 
 			if !tt.wantRejected {
-				wantStatus := cmp.Or(tt.wantStatus, http.StatusOK)
-				assert.Equal(t, wantStatus, resp.StatusCode)
+				assert.Equal(t, cmp.Or(tt.wantStatus, http.StatusOK), resp.StatusCode)
 				assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
 				assert.Equal(t, opaque, body)
 				return
 			}
 
-			assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			assert.Equal(t, cmp.Or(tt.wantStatus, http.StatusInternalServerError), resp.StatusCode)
 			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 			for _, h := range []string{"Content-Encoding", "Content-Length", "ETag", "Content-MD5", "Content-Range"} {
 				assert.Empty(t, resp.Header.Get(h), "%s describes the backend body, not the error", h)

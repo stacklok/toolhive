@@ -283,7 +283,11 @@ func TestNewRefusesInvalidInput(t *testing.T) {
 		{"nil store", map[string]subjectresolver.Provider{idpIssuer: valid}, nil, nil},
 		{"no providers", nil, store, nil},
 		{"empty issuer", map[string]subjectresolver.Provider{"": valid}, store, nil},
-		{"empty name", map[string]subjectresolver.Provider{idpIssuer: {SubjectClaim: "sub", RowIssuer: idpIssuer, RowSubjectClaim: "sub"}}, store, nil},
+		{
+			"empty name",
+			map[string]subjectresolver.Provider{idpIssuer: {SubjectClaim: "sub", RowIssuer: idpIssuer, RowSubjectClaim: "sub"}},
+			store, nil,
+		},
 		{
 			"empty subject claim",
 			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", RowIssuer: idpIssuer, RowSubjectClaim: "sub"}},
@@ -301,12 +305,16 @@ func TestNewRefusesInvalidInput(t *testing.T) {
 		},
 		{
 			"mutable email claim",
-			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", SubjectClaim: "email", RowIssuer: idpIssuer, RowSubjectClaim: "email"}},
+			map[string]subjectresolver.Provider{idpIssuer: {
+				Name: "okta", SubjectClaim: "email", RowIssuer: idpIssuer, RowSubjectClaim: "email",
+			}},
 			store, subject.ErrInvalidBindingClaim,
 		},
 		{
 			"mutable preferred_username claim",
-			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", SubjectClaim: "preferred_username", RowIssuer: idpIssuer, RowSubjectClaim: "preferred_username"}},
+			map[string]subjectresolver.Provider{idpIssuer: {
+				Name: "okta", SubjectClaim: "preferred_username", RowIssuer: idpIssuer, RowSubjectClaim: "preferred_username",
+			}},
 			store, subject.ErrInvalidBindingClaim,
 		},
 	}

@@ -55,9 +55,9 @@ type Provider struct {
 
 // Resolver resolves a subject.Ref to a local user ID.
 type Resolver struct {
-	providers         map[string]Provider
-	store             IdentityStore
-	unstampedWarnOnce sync.Once
+	providers        map[string]Provider
+	store            IdentityStore
+	unstampedLogOnce sync.Once
 }
 
 var _ subject.Resolver = (*Resolver)(nil)
@@ -138,7 +138,7 @@ func (r *Resolver) Resolve(ctx context.Context, ref subject.Ref) (string, error)
 		return "", subject.ErrUnknown
 	}
 	if unstamped {
-		r.unstampedWarnOnce.Do(func() {
+		r.unstampedLogOnce.Do(func() {
 			slog.Warn(
 				"resolved legacy unstamped provider identity without issuer and subject claim; "+
 					"row accepted read-only; sign-in stamps it when the storage supports compare-and-swap",

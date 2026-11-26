@@ -193,8 +193,49 @@ func TestRegister_GrantTypes(t *testing.T) {
 	Register(types)
 	require.Contains(t, types, Type)
 	assert.ElementsMatch(t,
-		[]string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+		[]string{oauthproto.GrantTypeTokenExchange, authorizationdetails.IDJAGIssuance, oauthproto.GrantTypeJWTBearer},
 		types[Type].GrantTypes)
+}
+
+// TestRegister_IDJAGPath proves the registration covers both sides of an
+// ID-JAG through the registry, as the authorization server calls it, for a
+// tool call and a list call alike: AS-1 parses the parameter with
+// ParseIDJAGIssuance and keeps the entry through GrantSubset, and AS-2 parses
+// the signed claim for the JWT-bearer grant and keeps it the same way.
+func TestRegister_IDJAGPath(t *testing.T) {
+	t.Parallel()
+	registry := newRegistry(t)
+	exchange := authorizationdetails.Request{
+		Exchange: &authorizationdetails.ExchangeContext{RequestedTokenType: oauthproto.TokenTypeIDJAG},
+	}
+	redemption := authorizationdetails.Request{Redemption: &authorizationdetails.RedemptionContext{}}
+
+	for _, entry := range []string{toolCall, listCall} {
+		pending, err := registry.ParseIDJAGIssuance("[" + entry + "]")
+		require.NoError(t, err)
+		minted, err := pending.GrantSubset(context.Background(), exchange)
+		require.NoError(t, err)
+		assert.Equal(t, "["+entry+"]", string(minted.Entries))
+
+		pending, err = registry.Parse(string(minted.Entries), oauthproto.GrantTypeJWTBearer)
+		require.NoError(t, err)
+		redeemed, err := pending.GrantSubset(context.Background(), redemption)
+		require.NoError(t, err)
+		assert.Equal(t, minted.Entries, redeemed.Entries)
+	}
+}
+
+// TestIsListMethod checks that IsListMethod accepts exactly the methods a
+// list-call entry may name.
+func TestIsListMethod(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{
+		"tools/list", "prompts/list", "resources/list", "resources/templates/list",
+		"tools/call", "Tools/list", "tools/list ", "resources/templates/list/", "completion/complete", "",
+	} {
+		_, err := ParseEntry(json.RawMessage(replace(listCall, "tools/list", method)))
+		assert.Equal(t, err == nil, IsListMethod(method), "%q", method)
+	}
 }
 
 func TestParseEntry(t *testing.T) {

@@ -173,8 +173,11 @@ sequenceDiagram
 - Return 401 Unauthorized for a token whose JOSE `typ` header is `oauth-id-jag+jwt` (compared case-insensitively, with or without the `application/` prefix), even when its signature and claims are valid. This applies to tokens from every configured issuer, including external identity providers, and to vMCP incoming authentication. An ID-JAG is not an access token. An issuer that signs ID-JAGs with the same key as its access tokens (an external identity provider, or the embedded auth server) would otherwise have them accepted in place of access tokens (RFC 8725 Section 3.12). Configuring an expected audience is the main defence against one token type being used in place of another; this check is a backup for deployments without one.
 - Extract JWT claims (sub, name, roles, etc.)
 - Add claims to request context for downstream middleware
+- When the validator is bound to the embedded auth server's issuer, return HTTP 401 `invalid_token` in the Bearer challenge and JSON body if validated claims carry the delegated-access marker but do not qualify for [delegated admission](arch/17-token-exchange-delegation.md#delegated-access-marker). These requests no longer fall back to ordinary admission and are rejected before upstream credentials are loaded. Unmarked tokens and validators not bound to the embedded issuer retain their existing behavior.
 - With the embedded auth server, load the token session's upstream provider credentials (the `tsid` claim) into `Identity.UpstreamTokens` and `Identity.UpstreamIDTokens`, refreshing expired access tokens
 - Return 401 Unauthorized with a `WWW-Authenticate: Bearer error="invalid_token"` challenge when a provider's access token can no longer be refreshed, or when the token session holds no usable upstream access token at all (every stored row has expired or been deleted), so the client signs in again instead of receiving a policy denial from a later middleware; the answer does not depend on whether a later middleware reads the credential. A client that answers this 401 by redeeming its refresh token gets HTTP 400 `invalid_grant` from the embedded auth server when the upstream credential is definitively dead (for example, no row is stored or the IdP rejected its refresh; see [Upstream refresh guard](arch/11-auth-server-storage.md#upstream-refresh-guard) for the full list), which sends it to a full authorization instead of looping on refresh
+
+  The embedded auth server remembers a refresh token its IdP rejected with `invalid_grant` for up to 5 minutes. After an administrator clears an IdP-side block (a disabled account or a Conditional Access block, for example), bearer requests on the same replica can keep getting 401 for up to 5 minutes. A refresh grant asks the IdP again instead of using that memory, so a client that answers the 401 with a refresh grant recovers as soon as the IdP accepts. Only if the IdP still rejects does the server drop the session's upstream data (400 `invalid_grant`), and only then is a new sign-in needed.
 
 **Context Data Added**:
 - JWT claims with `claim_` prefix (e.g., `claim_sub`, `claim_name`)
@@ -257,7 +260,7 @@ This order is critical because:
 - Extract resource IDs and arguments based on method type
 - Store parsed data in request context
 
-**POST compatibility**: Every transparent proxy POST routed to the backend-forwarding MCP handler requires an MCP envelope, regardless of path or Content-Type. Locally handled routes sit outside that handler's MCP admission and middleware chain and retain their own method, body, and authentication behavior. See [POST compatibility in the transport architecture](arch/03-transport-architecture.md#post-compatibility) for the full contract and local route scope.
+**POST compatibility**: Every transparent proxy POST routed to the backend-forwarding MCP handler requires an MCP envelope, regardless of path or Content-Type. Locally handled routes sit outside that handler's MCP admission and middleware chain and retain their own method, body, and authentication behavior. See [POST compatibility in the transport architecture](arch/03-transport-architecture.md#post-compatibility) for the full contract and local route scope. Where it forwards to the backend (innermost, so the middleware see the result), the transparent proxy also checks the backend's `200 application/json` answer to an id-bearing request and replaces a structurally invalid one with `502 Bad Gateway` and a JSON-RPC error; see [Upstream response validation](arch/03-transport-architecture.md#upstream-response-validation).
 
 **Context Data Added**:
 - `ParsedMCPRequest` containing:
@@ -293,9 +296,12 @@ methods whose responses are filtered (the list methods and `find_tool`) this
 middleware forwards the request without the client's `Accept-Encoding` and lets
 Go's transport negotiate and decode `gzip` itself. Those responses reach the
 client uncompressed; all other traffic, `features/list` included, keeps
-end-to-end compression. A 2xx response that still arrives content-encoded cannot
-be filtered and is replaced with an HTTP 500 JSON-RPC internal error rather than
-forwarded. See [Authorization framework](authz.md) for the user-facing detail.
+end-to-end compression. Every `GET` is treated as the event stream, so every
+`GET` loses the client's `Accept-Encoding` and its responses reach the client
+uncompressed. A 2xx response that still arrives content-encoded cannot be
+filtered and is replaced with an HTTP 500 JSON-RPC internal error rather than
+forwarded. On the `GET` stream the same case gets HTTP 502 Bad Gateway instead,
+before any event is sent. See [Authorization framework](authz.md) for the user-facing detail.
 
 **Dependencies**:
 - Requires JWT claims from Authentication middleware

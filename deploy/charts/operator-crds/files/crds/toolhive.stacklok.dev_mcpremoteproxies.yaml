@@ -241,8 +241,13 @@ spec:
                 type: string
               externalAuthConfigRef:
                 description: |-
-                  ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
-                  When specified, the proxy will exchange validated incoming tokens for remote service tokens.
+                  ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
+                  Supported types are tokenExchange, bearerToken, unauthenticated,
+                  embeddedAuthServer, awsSts, and obo.
+                  For new embedded authorization server configurations, prefer AuthServerRef.
+                  headerInjection, upstreamInject, and xaa are accepted but not applied by the
+                  MCPRemoteProxy: they take effect when a VirtualMCPServer discovers this
+                  proxy as a backend.
                   The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
                 properties:
                   name:
@@ -2059,8 +2064,13 @@ spec:
                 type: string
               externalAuthConfigRef:
                 description: |-
-                  ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
-                  When specified, the proxy will exchange validated incoming tokens for remote service tokens.
+                  ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
+                  Supported types are tokenExchange, bearerToken, unauthenticated,
+                  embeddedAuthServer, awsSts, and obo.
+                  For new embedded authorization server configurations, prefer AuthServerRef.
+                  headerInjection, upstreamInject, and xaa are accepted but not applied by the
+                  MCPRemoteProxy: they take effect when a VirtualMCPServer discovers this
+                  proxy as a backend.
                   The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
                 properties:
                   name:

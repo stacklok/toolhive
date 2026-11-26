@@ -57,6 +57,10 @@ type fakeBackend struct {
 	// backend connector follows pagination cursors (#5844).
 	toolsPageSize int
 
+	// toolCallResult, when non-nil, is returned as the tools/call result instead
+	// of the default single "ok" text block.
+	toolCallResult map[string]any
+
 	// methodCalls counts how many times each method was invoked, so tests can
 	// assert that (e.g.) tools/list was reached after a recoverable
 	// resources/list failure.
@@ -218,6 +222,10 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 		// Minimal CallToolResult with a single text content. Tests that exercise
 		// the post-initialize transport chain (e.g. HeaderForward) need a method
 		// they can invoke after Initialize completes; tools/call is the cheapest.
+		if f.toolCallResult != nil {
+			f.writeResult(w, msg.ID, f.toolCallResult)
+			return
+		}
 		f.writeResult(w, msg.ID, map[string]any{
 			"content": []map[string]any{
 				{"type": "text", "text": "ok"},

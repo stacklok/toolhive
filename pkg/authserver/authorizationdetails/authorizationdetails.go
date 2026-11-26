@@ -13,7 +13,8 @@
 // expensive checks, and rejects malformed input. Pending.Grant or
 // Pending.GrantSubset runs late, after the request is otherwise accepted, and
 // calls the hooks: Grant when the hooks decide the granted entries, and
-// GrantSubset when they may only keep or drop entries someone else signed.
+// GrantSubset when they may only keep or drop entries that go into a signed
+// token with their bytes unchanged.
 package authorizationdetails
 
 import (
@@ -34,26 +35,54 @@ const (
 	maxDepth = 64
 )
 
+// IDJAGIssuance is the key a Type lists in GrantTypes to be accepted on an
+// RFC 8693 token exchange that mints an ID-JAG, and so to be signed into the
+// ID-JAG's authorization_details claim. It is not a grant type: its value is
+// the ID-JAG token-type URN, the requested_token_type of such a request, which
+// no grant type can equal. Listing the token-exchange grant type alone does not
+// opt a type in, so a type written for exchanged access tokens is never signed
+// into an ID-JAG that another authorization server trusts unless its author
+// says so. Use Registry.ParseIDJAGIssuance for such a request.
+const IDJAGIssuance = "urn:ietf:params:oauth:token-type:id-jag"
+
+// grantTypeTokenExchange is the RFC 8693 grant type, which an ID-JAG issuance
+// request rides.
+//
+//nolint:gosec // G101: a grant type URN, not a credential
+const grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+
 // Type registers one authorization-details type.
 type Type struct {
-	// GrantTypes lists the grant types this type is accepted on. It is required
-	// and must be non-empty. An entry of this type on any other grant type is
-	// rejected as invalid.
+	// GrantTypes lists the grant types this type is accepted on, and may list
+	// IDJAGIssuance. It is required and must be non-empty. An entry of this
+	// type on any other grant type is rejected as invalid.
 	//
 	// On ToolHive's authorization server, listing the JWT-bearer grant type
 	// (urn:ietf:params:oauth:grant-type:jwt-bearer) opts the type into ID-JAG
 	// redemption only: the server processes the authorization_details claim
 	// of an ID-JAG and refuses a plain RFC 7523 assertion that carries one.
+	//
+	// Listing the token-exchange grant type
+	// (urn:ietf:params:oauth:grant-type:token-exchange) opts the type into a
+	// token exchange for an access token, which only echoes the granted
+	// entries. Listing IDJAGIssuance opts it into a token exchange for an
+	// ID-JAG, which signs the entries the hook keeps into the ID-JAG under
+	// Pending.GrantSubset's rules; without it, an entry of the type on such a
+	// request is refused as an unknown type. The two are independent.
 	GrantTypes []string
 
 	// Grant decides what to grant for all of this type's entries in a request.
-	// It is called at most once per request, after the other checks passed,
-	// with every entry of the type in request order. What it may return
+	// It is called after the other checks passed, with every entry of the type
+	// in request order: once per request, except on a token exchange for an
+	// ID-JAG, which decides in both of the token endpoint's handler phases and
+	// so calls it twice. What it may return
 	// depends on how the server asks: see Pending.Grant (token exchange) and
-	// Pending.GrantSubset (ID-JAG redemption).
+	// Pending.GrantSubset (a token exchange that mints an ID-JAG, and ID-JAG
+	// redemption).
 	//
 	// Grant is decide-only: it may read state but must not commit it, because
-	// token issuance can still fail after it returns. On ID-JAG redemption the
+	// token issuance can still fail after it returns, and it may be called
+	// again for the same request. On ID-JAG redemption the
 	// ID-JAG is consumed only after the hooks ran, so a hook can run again for
 	// the same ID-JAG when a redemption of it is later refused as a replay.
 	// Returning Error rejects the request with that code and reason; any other
@@ -98,7 +127,10 @@ type Request struct {
 // ExchangeContext is the part of a Request only RFC 8693 token exchange has.
 type ExchangeContext struct {
 	// Actor is the resolved actor. Without an actor_token it equals the
-	// client ID, or the verified SPIFFE ID for a SPIFFE client.
+	// client ID, or the verified SPIFFE ID for a SPIFFE client. On a token
+	// exchange that mints an ID-JAG for a client with an actor profile, the
+	// actor token is validated only after the hooks run, so Actor is empty
+	// and ActorTokenPresent is true.
 	Actor string
 	// ActorTokenPresent reports whether the request carried an actor_token.
 	ActorTokenPresent bool
@@ -118,6 +150,13 @@ type RedemptionContext struct {
 
 // Subject describes a validated token: the subject_token on token exchange,
 // the ID-JAG on ID-JAG redemption.
+//
+// On a token exchange that mints an ID-JAG, the subject_token is the opaque
+// refresh token of an exchange grant, so Subject describes the grant: Issuer
+// is this server, Subject is the user the grant acts for (the ID-JAG's sub),
+// ClientID is the client that holds the grant, IssuedAt is the grant's
+// creation, Expiry is the earliest bound the grant still mints under, and the
+// other fields are empty.
 type Subject struct {
 	Issuer string
 	// Subject is the token's sub claim, on every grant. It is never replaced by
@@ -189,6 +228,20 @@ func New(types map[string]Type) (*Registry, error) {
 // a non-empty string "type" but some type is not registered for grantType, the
 // error is ErrUnknownType, which wraps ErrInvalid.
 func (r *Registry) Parse(raw, grantType string) (*Pending, error) {
+	return r.parse(raw, grantType, grantType)
+}
+
+// ParseIDJAGIssuance is Parse for an RFC 8693 token exchange that mints an
+// ID-JAG: every type must list IDJAGIssuance, and a type that lists only the
+// token-exchange grant type is ErrUnknownType. The hooks still see the
+// token-exchange grant type in Request.GrantType.
+func (r *Registry) ParseIDJAGIssuance(raw string) (*Pending, error) {
+	return r.parse(raw, IDJAGIssuance, grantTypeTokenExchange)
+}
+
+// parse checks raw against the types that list key, and records grantType for
+// the hooks' Request.GrantType.
+func (r *Registry) parse(raw, key, grantType string) (*Pending, error) {
 	data := []byte(raw)
 	if len(data) > maxSize || !utf8.Valid(data) || !validArray(data) {
 		return nil, ErrInvalid
@@ -215,7 +268,7 @@ func (r *Registry) Parse(raw, grantType string) (*Pending, error) {
 	}
 	for i, name := range names {
 		t, registered := r.types[name]
-		if !registered || !slices.Contains(t.GrantTypes, grantType) {
+		if !registered || !slices.Contains(t.GrantTypes, key) {
 			return nil, ErrUnknownType
 		}
 		if _, seen := pending.entries[name]; !seen {
@@ -295,10 +348,13 @@ type Subset struct {
 
 // GrantSubset calls each type's hook once, in the order the types first
 // appear in the parsed value, and keeps the entries the hooks returned. It is
-// for a value whose entries a third party signed: a hook may only keep or
+// for entries that go into a signed token unchanged: a hook may only keep or
 // drop whole entries, and the result carries the parsed bytes of each kept
-// entry, never the hook's. The package fills req.Entries and req.GrantType;
-// each hook gets its own copy of its entries.
+// entry, never the hook's. ToolHive's authorization server uses it on both
+// sides of an ID-JAG: when it mints one, for the entries the client asked to
+// have signed, and when it redeems one, for the entries the issuer signed. The
+// package fills req.Entries and req.GrantType; each hook gets its own copy of
+// its entries.
 //
 // Every entry a hook returns must equal a distinct one of its type's entries
 // as a JSON value, with object members in any order and numbers compared as

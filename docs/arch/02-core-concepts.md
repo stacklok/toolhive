@@ -103,7 +103,7 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 - Apply middleware chain
 - Handle sessions
 - Forward requests/responses
-- Health checking (for containers)
+- Health checking (always for containers; on by default for remote servers)
 - Expose telemetry and auth info endpoints
 
 **Implementation:**

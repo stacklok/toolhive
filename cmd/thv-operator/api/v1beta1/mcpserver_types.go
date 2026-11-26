@@ -356,7 +356,13 @@ type MCPServerSpec struct {
 	// +optional
 	Instructions *instructions.Config `json:"instructions,omitempty"`
 
-	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
+	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource for external authentication.
+	// Supported types are tokenExchange, unauthenticated, embeddedAuthServer, and
+	// obo. For new embedded authorization
+	// server configurations, prefer AuthServerRef. headerInjection, upstreamInject,
+	// and xaa are accepted but not applied by the MCPServer: they take effect when
+	// a VirtualMCPServer discovers this server as a backend. Other types are
+	// reported in status.conditions with Reason: UnsupportedAuthType.
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
@@ -830,7 +836,8 @@ type ConfigMapAuthzRef struct {
 }
 
 // ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
-// The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
+// The referenced MCPExternalAuthConfig must be in the same namespace as the
+// resource containing the reference.
 type ExternalAuthConfigRef struct {
 	// Name is the name of the MCPExternalAuthConfig resource
 	// +kubebuilder:validation:Required

@@ -8,6 +8,11 @@ nodes:
         apiServer:
           extraArgs:
             service-node-port-range: "30000-30020"
+            # OwnerReferencesPermissionEnforcement mirrors OpenShift: setting
+            # blockOwnerDeletion on an ownerReference requires update on the
+            # owner's <resource>/finalizers, so missing RBAC fails here too.
+            # This flag replaces kubeadm's default list, so keep NodeRestriction.
+            enable-admission-plugins: "NodeRestriction,OwnerReferencesPermissionEnforcement"
     extraPortMappings:
       # Port range for MCP servers - NodePort services will be accessible on localhost
       # Mapping ports 30000-30020 to enable NodePort connectivity from host

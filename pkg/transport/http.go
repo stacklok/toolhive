@@ -70,6 +70,10 @@ type HTTPTransport struct {
 	// onHealthCheckFailed is called when a health check fails for remote servers
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
+	// onHealthCheckRecovered is called when a health check recovers after failures,
+	// and again on later passing checks until it returns nil
+	onHealthCheckRecovered types.HealthCheckRecoveredCallback
+
 	// onUnauthorizedResponse is called when a 401 Unauthorized response is received
 	onUnauthorizedResponse types.UnauthorizedResponseCallback
 
@@ -166,6 +170,11 @@ func (t *HTTPTransport) SetOnHealthCheckFailed(callback types.HealthCheckFailedC
 	t.onHealthCheckFailed = callback
 }
 
+// SetOnHealthCheckRecovered sets the callback for health check recovery after failures
+func (t *HTTPTransport) SetOnHealthCheckRecovered(callback types.HealthCheckRecoveredCallback) {
+	t.onHealthCheckRecovered = callback
+}
+
 // SetStateless configures the transport for a stateless server.
 func (t *HTTPTransport) SetStateless(stateless bool) {
 	t.stateless = stateless
@@ -220,18 +229,20 @@ func hasTokenInjectingMiddleware(middlewares []types.NamedMiddleware) bool {
 	return false
 }
 
-// shouldEnableHealthCheck determines whether health checks should be enabled based on workload type.
-// For local workloads, health checks are always enabled.
-// For remote workloads, health checks are only enabled if explicitly opted in via the
-// TOOLHIVE_REMOTE_HEALTHCHECKS environment variable (set to "true" or "1").
+// remoteHealthChecksEnvVar turns off health checks for remote workloads when set
+// to "false" or "0".
+const remoteHealthChecksEnvVar = "TOOLHIVE_REMOTE_HEALTHCHECKS"
+
+// shouldEnableHealthCheck reports whether health checks run for a workload. They
+// always run for local workloads. They run for remote workloads too, unless
+// TOOLHIVE_REMOTE_HEALTHCHECKS is "false" or "0", for remote servers that answer
+// the health check badly while serving MCP requests normally.
 func shouldEnableHealthCheck(isRemote bool) bool {
 	if !isRemote {
-		// Always enable health checks for local workloads
 		return true
 	}
-	// For remote workloads, only enable if explicitly opted in via environment variable
-	envVal := os.Getenv("TOOLHIVE_REMOTE_HEALTHCHECKS")
-	return strings.ToLower(envVal) == "true" || envVal == "1"
+	envVal := strings.ToLower(os.Getenv(remoteHealthChecksEnvVar))
+	return envVal != "false" && envVal != "0"
 }
 
 // Mode returns the transport mode.
@@ -302,9 +313,11 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 
 		remoteRawQuery = remoteURL.RawQuery
 
-		//nolint:gosec // G706: logging proxy port and remote URL from config
+		// The path and query can carry secrets, so only their presence is logged.
+		//nolint:gosec // G706: logging proxy port and remote scheme and host from config
 		slog.Debug("setting up transparent proxy to forward to remote URL",
-			"port", t.proxyPort, "target", targetURI, "base_path", remoteBasePath, "raw_query", remoteRawQuery)
+			"port", t.proxyPort, "target", targetURI,
+			"has_base_path", remoteBasePath != "", "has_query", remoteRawQuery != "")
 	} else {
 		if t.containerName == "" {
 			return transporterrors.ErrContainerNameNotSet
@@ -338,7 +351,6 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		})
 	}
 
-	// Determine whether to enable health checks based on workload type
 	enableHealthCheck := shouldEnableHealthCheck(isRemote)
 
 	// Build proxy options
@@ -356,6 +368,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		isRemote,
 		string(t.transportType),
 		t.onHealthCheckFailed,
+		t.onHealthCheckRecovered,
 		t.onUnauthorizedResponse,
 		t.endpointPrefix,
 		t.trustProxyHeaders,

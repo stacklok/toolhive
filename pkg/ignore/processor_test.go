@@ -403,6 +403,8 @@ func TestGetOverlayMountsConfinedToMount(t *testing.T) {
 	require.NoError(t, os.MkdirAll(outside, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(ws, "sub", "secret"), nil, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), nil, 0o600))
+	// A regular file whose name also matches s*; wildcard directory patterns must skip it.
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "subfile"), nil, 0o600))
 	require.NoError(t, os.Symlink("sub", filepath.Join(ws, "alias")))
 	require.NoError(t, os.Symlink(outside, filepath.Join(ws, "link")))
 	require.NoError(t, os.Symlink("missing", filepath.Join(ws, "dangling")))
@@ -422,6 +424,10 @@ func TestGetOverlayMountsConfinedToMount(t *testing.T) {
 		{name: "file beyond the mount", pattern: "../outside/secret", expected: nil},
 		{name: "directory pattern beyond the mount", pattern: "../outside/", expected: nil},
 		{name: "glob beyond the mount", pattern: "../out*", expected: nil},
+		{name: "wildcard directory pattern skips files", pattern: "s*/", expected: []string{"/app/sub"}},
+		{name: "wildcard directory pattern through a symlink inside the mount", pattern: "ali*/", expected: []string{"/app/sub"}},
+		{name: "wildcard directory pattern through a symlink leaving the mount", pattern: "lin*/", expected: nil},
+		{name: "wildcard directory pattern beyond the mount", pattern: "../out*/", expected: nil},
 		{name: "deep traversal clamped at root", pattern: "../../../../../../../../../../../../" + outside, expected: nil},
 		{name: "symlink leaving the mount", pattern: "link", expected: nil},
 		{name: "path through a symlink leaving the mount", pattern: "link/secret", expected: nil},

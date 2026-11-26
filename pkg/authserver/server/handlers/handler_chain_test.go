@@ -241,7 +241,7 @@ func TestNextMissingUpstream_RespectsChainSubset(t *testing.T) {
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
 
-	got, err := handler.nextMissingUpstream(context.Background(), "test-session", []string{"provider-1"})
+	got, err := handler.nextMissingUpstream(context.Background(), "test-session", []string{"provider-1"}, nil)
 	require.NoError(t, err)
 	assert.Empty(t, got, "provider-2 is not in the chain, so it must not be prompted")
 }
@@ -296,7 +296,7 @@ func TestNextMissingUpstream(t *testing.T) {
 			handler, storState, _, _ := multiUpstreamTestSetup(t)
 			tt.setupTokens(storState)
 
-			got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
+			got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -389,7 +389,7 @@ func TestNextMissingUpstream_RefreshExpired(t *testing.T) {
 			handler, storState, _, _ := multiUpstreamTestSetup(t, opts...)
 			tt.setupTokens(storState)
 
-			got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
+			got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -459,7 +459,7 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
+	got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "failed to check upstream token state")
 	assert.ErrorIs(t, err, storageErr)

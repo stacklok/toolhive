@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,7 +22,9 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpratelimit "github.com/stacklok/toolhive/pkg/vmcp/ratelimit"
@@ -220,6 +223,72 @@ func TestServeOptimizerAdvertisesOnlyFindAndCallTool(t *testing.T) {
 	// The advertised set came from the core's single aggregation at registration.
 	assert.Equal(t, int32(1), fc.listToolsCalls.Load(),
 		"the optimizer must be built over the core's single registration-time aggregation")
+}
+
+// TestServeOptimizerAdvertisesFindToolAnnotations proves the behavioral hints
+// declared on the optimizer meta-tools survive the Serve path: tools/list must
+// advertise find_tool as read-only, non-destructive, idempotent, and closed-world,
+// while call_tool asserts none of those because it can proxy arbitrary side effects.
+func TestServeOptimizerAdvertisesFindToolAnnotations(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "tool-a", Description: "first"}}}
+	_, sessionID, baseURL, _ := registerServeOptimizerSession(t, fc, fc.tools)
+
+	require.Eventually(t, func() bool {
+		return slices.Contains(serveToolNames(t, baseURL, sessionID), optimizerdec.FindToolName)
+	}, 2*time.Second, 20*time.Millisecond, "find_tool should appear once the optimizer tools are injected")
+
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      100,
+		"method":  "tools/list",
+		"params":  map[string]any{},
+	}, sessionID)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Annotations struct {
+					ReadOnlyHint    *bool `json:"readOnlyHint"`
+					DestructiveHint *bool `json:"destructiveHint"`
+					IdempotentHint  *bool `json:"idempotentHint"`
+					OpenWorldHint   *bool `json:"openWorldHint"`
+				} `json:"annotations"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Len(t, body.Result.Tools, 2)
+
+	for _, tool := range body.Result.Tools {
+		ann := tool.Annotations
+		switch tool.Name {
+		case optimizerdec.FindToolName:
+			require.NotNil(t, ann.ReadOnlyHint)
+			require.NotNil(t, ann.DestructiveHint)
+			require.NotNil(t, ann.IdempotentHint)
+			require.NotNil(t, ann.OpenWorldHint)
+			assert.True(t, *ann.ReadOnlyHint)
+			assert.False(t, *ann.DestructiveHint)
+			assert.True(t, *ann.IdempotentHint)
+			assert.False(t, *ann.OpenWorldHint)
+		case optimizerdec.CallToolName:
+			// go-sdk always serializes readOnlyHint and idempotentHint as plain
+			// bools, so an unannotated tool surfaces them as false rather than
+			// omitting them. The pointer hints stay absent, so clients apply the
+			// spec defaults (destructive, open-world).
+			assert.False(t, ann.ReadOnlyHint != nil && *ann.ReadOnlyHint)
+			assert.False(t, ann.IdempotentHint != nil && *ann.IdempotentHint)
+			assert.Nil(t, ann.DestructiveHint)
+			assert.Nil(t, ann.OpenWorldHint)
+		default:
+			t.Fatalf("unexpected tool advertised in optimizer mode: %s", tool.Name)
+		}
+	}
 }
 
 // TestServeOptimizerFindToolReturnsCoreTools proves find_tool searches the core's
@@ -484,4 +553,66 @@ func TestServeOptimizerLazyInjectsForRehydratedSession(t *testing.T) {
 		"re-injection must re-derive from a fresh core.ListTools, not a cached set")
 	assert.Equal(t, buildsBefore+1, optFactory.calls.Load(),
 		"re-injection must rebuild the optimizer over the freshly aggregated set")
+}
+
+// TestWithSharedEmbeddings pins when Serve shares optimizer embeddings through
+// the session-storage Redis: only for an optimizer built from config over Redis
+// session storage, and never by modifying the caller's config.
+func TestWithSharedEmbeddings(t *testing.T) {
+	t.Parallel()
+
+	redisStorage := &vmcpconfig.SessionStorageConfig{Provider: "redis", Address: "127.0.0.1:6379"}
+	fromConfig := func() *sessionmanager.FactoryConfig {
+		return &sessionmanager.FactoryConfig{OptimizerConfig: &optimizer.Config{}}
+	}
+
+	for _, tc := range []struct {
+		name       string
+		storage    *vmcpconfig.SessionStorageConfig
+		smCfg      *sessionmanager.FactoryConfig
+		wantShared bool
+		wantErr    string
+	}{
+		{name: "redis session storage", storage: redisStorage, smCfg: fromConfig(), wantShared: true},
+		{name: "in-process session storage", storage: &vmcpconfig.SessionStorageConfig{Provider: "memory"}, smCfg: fromConfig()},
+		{name: "no session storage", smCfg: fromConfig()},
+		{name: "optimizer disabled", storage: redisStorage, smCfg: &sessionmanager.FactoryConfig{}},
+		{
+			name:    "pre-built optimizer factory",
+			storage: redisStorage,
+			smCfg: &sessionmanager.FactoryConfig{
+				OptimizerConfig: &optimizer.Config{},
+				OptimizerFactory: func(context.Context, []server.ServerTool) (optimizer.Optimizer, error) {
+					return nil, nil
+				},
+			},
+		},
+		{
+			name: "unreadable TLS CA",
+			storage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis", Address: "127.0.0.1:6379",
+				TLS: &redisconfig.TLSConfig{CACertFile: "/nonexistent/ca.pem"},
+			},
+			smCfg:   fromConfig(),
+			wantErr: "redis session storage TLS configuration",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := withSharedEmbeddings(tc.storage, tc.smCfg)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if !tc.wantShared {
+				assert.Same(t, tc.smCfg, got, "the config is used as is")
+				return
+			}
+			assert.NotSame(t, tc.smCfg, got, "the caller's config must not be modified")
+			assert.Empty(t, tc.smCfg.OptimizerOptions, "the caller's options must not be modified")
+			assert.Len(t, got.OptimizerOptions, 1, "the shared-embeddings option is added")
+		})
+	}
 }

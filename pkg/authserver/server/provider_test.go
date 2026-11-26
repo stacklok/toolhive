@@ -109,6 +109,7 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 		hasStaticPrivateKeyJWT bool
 		disableTokenExchange   bool
 		jwtBearerGrantEnabled  bool
+		nonFatalSecondaryLegs  bool
 	}{
 		{name: "public only", allowConfidential: false, hasStaticConfidential: false},
 		{name: "confidential DCR", allowConfidential: true, hasStaticConfidential: false},
@@ -118,6 +119,7 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 		{name: "mixed static delegate clients", hasStaticConfidential: true, hasStaticSecret: true,
 			hasStaticPrivateKeyJWT: true},
 		{name: "JWT bearer without token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
+		{name: "non-fatal secondary legs", nonFatalSecondaryLegs: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -138,6 +140,7 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 				HasStaticPrivateKeyJWTClients:       tt.hasStaticPrivateKeyJWT,
 				DisableTokenExchange:                tt.disableTokenExchange,
 				JWTBearerGrantEnabled:               tt.jwtBearerGrantEnabled,
+				NonFatalSecondaryLegs:               tt.nonFatalSecondaryLegs,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tt.allowConfidential, config.AllowConfidentialClientRegistration)
@@ -147,6 +150,7 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 			assert.Equal(t, tt.hasStaticPrivateKeyJWT, config.HasStaticPrivateKeyJWTClients)
 			assert.Equal(t, !tt.disableTokenExchange, config.TokenExchangeEnabled)
 			assert.Equal(t, tt.jwtBearerGrantEnabled, config.JWTBearerGrantEnabled)
+			assert.Equal(t, tt.nonFatalSecondaryLegs, config.NonFatalSecondaryLegs)
 		})
 	}
 }

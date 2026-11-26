@@ -68,7 +68,8 @@ type embeddedAuthServerOptions struct {
 }
 
 // WithAuthorizationDetailsRegistry configures the embedded authorization server
-// to pass the registry to its RFC 8693 token-exchange handler and to its
+// to pass the registry to its RFC 8693 token-exchange handlers, including the
+// one that mints ID-JAGs and signs the granted entries into them, and to its
 // ID-JAG redemption handler, which processes an ID-JAG's signed
 // authorization_details claim with it.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) EmbeddedAuthServerOption {

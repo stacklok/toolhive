@@ -1318,3 +1318,30 @@ func TestResourceLinkRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestToMCPStructuredContent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		structured map[string]any
+		wantNil    bool
+	}{
+		{name: "nil map becomes an untyped nil", structured: nil, wantNil: true},
+		{name: "empty map is kept", structured: map[string]any{}},
+		{name: "object is kept", structured: map[string]any{"k": "v"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := conversion.ToMCPStructuredContent(tc.structured)
+
+			// Compare with == nil: assert.Nil treats a typed nil map as nil.
+			require.Equal(t, tc.wantNil, got == nil, "got %#v", got)
+			if !tc.wantNil {
+				assert.Equal(t, tc.structured, got)
+			}
+		})
+	}
+}

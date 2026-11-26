@@ -1729,6 +1729,7 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 		VerifiedUpstream:        pending.VerifiedUpstream,
 		SingleLeg:               pending.SingleLeg,
 		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		SkippedUpstreams:        slices.Clone(pending.SkippedUpstreams),
 		CreatedAt:               pending.CreatedAt,
 	}
 
@@ -1789,6 +1790,7 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		VerifiedUpstream:        pending.VerifiedUpstream,
 		SingleLeg:               pending.SingleLeg,
 		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		SkippedUpstreams:        slices.Clone(pending.SkippedUpstreams),
 		CreatedAt:               pending.CreatedAt,
 	}, nil
 }

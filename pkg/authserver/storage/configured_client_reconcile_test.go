@@ -342,6 +342,25 @@ func (c *capturedLogs) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
+// recordsAt returns the attributes of every record at the given level.
+func (c *capturedLogs) recordsAt(level slog.Level) []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []map[string]any
+	for _, r := range c.records {
+		if r.Level != level {
+			continue
+		}
+		attrs := map[string]any{}
+		r.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.Any()
+			return true
+		})
+		out = append(out, attrs)
+	}
+	return out
+}
+
 // warnsFor returns the attributes of every WARN record keyed on clientID.
 func (c *capturedLogs) warnsFor(clientID string) []map[string]any {
 	c.mu.Lock()

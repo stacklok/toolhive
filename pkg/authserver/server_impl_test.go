@@ -135,6 +135,15 @@ func TestAuthorizationServerParams_HasStaticConfidentialClients(t *testing.T) {
 	}
 }
 
+func TestAuthorizationServerParams_NonFatalSecondaryLegs(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []bool{false, true} {
+		params := authorizationServerParams(Config{NonFatalSecondaryLegs: want}, &keys.SigningKeyData{}, nil, nil, nil)
+		assert.Equal(t, want, params.NonFatalSecondaryLegs)
+	}
+}
+
 func TestDelegateAccessTokenLifespans(t *testing.T) {
 	t.Parallel()
 

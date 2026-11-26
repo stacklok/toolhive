@@ -210,6 +210,18 @@ func ToMCPContents(contents []vmcp.Content) []mcp.Content {
 	return result
 }
 
+// ToMCPStructuredContent returns structured as the value for the `any`-typed
+// mcp.CallToolResult.StructuredContent field, or an untyped nil when structured
+// is nil. Assigning a nil map[string]any to that field directly stores a
+// non-nil interface, which the result's JSON encoding writes as
+// "structuredContent": null instead of omitting the member.
+func ToMCPStructuredContent(structured map[string]any) any {
+	if structured == nil {
+		return nil
+	}
+	return structured
+}
+
 // ConvertMCPResourceContents converts []mcp.ResourceContents to []vmcp.ResourceContent,
 // preserving the text vs blob distinction and per-item metadata.
 func ConvertMCPResourceContents(contents []mcp.ResourceContents) []vmcp.ResourceContent {
@@ -369,7 +381,8 @@ func ToMCPToolAnnotations(annotations *vmcp.ToolAnnotations) mcp.ToolAnnotation 
 }
 
 // ContentArrayToMap converts a vmcp.Content array to a map for template variable substitution.
-// This is used by composite tool workflows and backend result handling.
+// It is used only inside composite tool workflows (step output when the backend sent no
+// structuredContent, and the .content template context); the result is never sent to clients.
 //
 // Conversion rules:
 //   - First text content: key="text"
@@ -380,8 +393,6 @@ func ToMCPToolAnnotations(annotations *vmcp.ToolAnnotations) mcp.ToolAnnotation 
 //   - Audio content: ignored (not supported for template substitution)
 //   - Resource links: ignored (not supported for template substitution)
 //   - Unknown content types: ignored (warnings logged at conversion boundaries)
-//
-// This ensures consistent behavior between client response handling and workflow step output processing.
 func ContentArrayToMap(content []vmcp.Content) map[string]any {
 	result := make(map[string]any)
 	if len(content) == 0 {

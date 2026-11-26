@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -71,6 +72,26 @@ type upstreamTokenRefresher struct {
 	storage              storage.UpstreamTokenStorage
 	refreshTokenLifespan time.Duration
 	sfGroup              singleflight.Group
+	// rejected remembers refresh tokens the IdP rejected; see redeem. It may be nil.
+	rejected *rejectedRefreshes
+	// clientGeneration counts client registration switches; see
+	// bumpClientGeneration. The zero value is usable.
+	clientGeneration atomic.Uint64
+}
+
+// bumpClientGeneration makes every rejection remembered so far stop matching.
+// server.UpdateUpstreamClientCredentials calls it once a provider has swapped
+// its client registration, because an IdP may answer invalid_grant for a
+// refresh token issued to another client (RFC 6749 section 5.2).
+//
+// redeem reads the generation before it calls the IdP and uses that value for
+// both the lookup and the add. Bumping after the swap therefore files a call
+// that raced the swap under the old generation, which costs at most one extra
+// IdP call later, and never files a rejection from the old client under the
+// new generation. One counter serves all providers: switches are rare, and a
+// switch costs the other providers one IdP call each.
+func (r *upstreamTokenRefresher) bumpClientGeneration() {
+	r.clientGeneration.Add(1)
 }
 
 // Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
@@ -127,12 +148,12 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 			if !authoritative.IsExpired(time.Now()) && rowChanged(expired, authoritative) {
 				return authoritative, nil
 			}
-			return r.refreshAndStore(refreshCtx, sessionID, authoritative)
+			return r.redeem(refreshCtx, sessionID, rowID, authoritative)
 		}
 		if !errors.Is(readErr, storage.ErrExpired) || authoritative == nil {
 			return nil, readErr
 		}
-		return r.refreshAndStore(refreshCtx, sessionID, authoritative)
+		return r.redeem(refreshCtx, sessionID, rowID, authoritative)
 	})
 	if err != nil {
 		return nil, err
@@ -143,6 +164,51 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	}
 	refreshedCopy := *refreshed
 	return &refreshedCopy, nil
+}
+
+// redeem refreshes row through refreshAndStore, except that a refresh token the
+// IdP already rejected from this process is not sent again: a new error
+// describing the remembered rejection is returned instead. The memory holds
+// ErrGrantRejected results for which rotatedElsewhere did not return a
+// successor (it also returns nil on a failed re-read, ErrNotFound, or an
+// expired successor), so transient and non-invalid_grant failures are always
+// retried. An entry is keyed on the row, the client registration generation
+// read before the IdP call, and a digest of the row's refresh token, access
+// token and access token expiry. It runs inside the singleflight group for
+// rowID, so the check and the add do not race within a process. The row is
+// never written on a rejection.
+//
+// A ctx marked with withoutRememberedRejections skips the lookup and asks the
+// IdP, and a fresh rejection is still remembered. A marked caller that joins a
+// singleflight call already in flight for the row gets that call's result,
+// which may be a remembered rejection; callers that act on a rejection must
+// check isRememberedRejection, as the refresh grant guard does. See
+// skipRememberedRejectionsKey.
+func (r *upstreamTokenRefresher) redeem(
+	ctx context.Context,
+	sessionID string,
+	rowID storage.UpstreamTokenRowID,
+	row *storage.UpstreamTokens,
+) (*storage.UpstreamTokens, error) {
+	if row.RefreshToken == "" {
+		return r.refreshAndStore(ctx, sessionID, row)
+	}
+	generation := r.clientGeneration.Load()
+	if !skipsRememberedRejections(ctx) {
+		if rejection := r.rejected.lookup(generation, rowID, row); rejection != nil {
+			// session_id is credential-adjacent, so it is logged at DEBUG only.
+			slog.Debug("upstream refresh token already rejected; not calling the provider again",
+				"provider_id", row.ProviderID,
+				"session_id", sessionID,
+			)
+			return nil, rejection
+		}
+	}
+	refreshed, err := r.refreshAndStore(ctx, sessionID, row)
+	if err != nil && errors.Is(err, upstream.ErrGrantRejected) {
+		r.rejected.add(generation, rowID, row, err)
+	}
+	return refreshed, err
 }
 
 // refreshAndStore performs the actual token refresh and storage write.
@@ -273,10 +339,17 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 			)
 			// Log session_id at DEBUG only; it is credential-adjacent.
 			slog.Debug("stale upstream token row delete failure session", "session_id", sessionID)
+			return nil, fmt.Errorf(
+				"failed to persist rotated upstream refresh token for provider %q: %w",
+				expired.ProviderID, err,
+			)
 		}
+		// The row is gone, so the error also matches storage.ErrNotFound: callers
+		// that classify by cause can tell "connection removed, authorize again"
+		// from a transient failure on a row that still exists.
 		return nil, fmt.Errorf(
-			"failed to persist rotated upstream refresh token for provider %q: %w",
-			expired.ProviderID, err,
+			"failed to persist rotated upstream refresh token for provider %q; row deleted: %w: %w",
+			expired.ProviderID, storage.ErrNotFound, err,
 		)
 	}
 

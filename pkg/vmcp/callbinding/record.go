@@ -15,10 +15,12 @@ type Call struct {
 	// SessionID is the Mcp-Session-Id the call was sent on. It is empty for a
 	// sessionless (Modern) request.
 	SessionID string
-	// RequestID is the JSON-RPC ID of the tools/call, as its JSON encoding:
-	// 7 and "7" are different IDs.
+	// RequestID is the JSON-RPC ID of the request that started the call (a
+	// tools/call or a list call), as its JSON encoding: 7 and "7" are
+	// different IDs.
 	RequestID string
-	// Started is when the vMCP admitted the call.
+	// Started is when the vMCP admitted the call. A list call is recorded
+	// once its answer is ready and ended at once.
 	Started time.Time
 	// Ended reports that the request that started the call has returned.
 	Ended bool

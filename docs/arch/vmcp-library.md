@@ -112,8 +112,10 @@ ToolHive under opt-outs that product's users have not been told about.
 ### Call-bound access tokens
 
 The vMCP always enforces an access token that carries an `authorization_details`
-entry of type `https://toolhive.dev/mcp_tool_call`: such a token may start only the
-one `tools/call` its entry names, once; a retried call needs a fresh token.
+entry of type `https://toolhive.dev/mcp_tool_call`: with a tool-call entry it may
+start only the one `tools/call` the entry names, once (a retried call needs a fresh
+token); with a list-call entry it may send only the list method the entry names, once,
+answered with only that backend's items.
 `server.Config.CallBinding` (a `callbinding.Config`) adds the clients whose tokens
 must carry an entry (matched on `client_id`, or `azp` when `client_id` is absent),
 the maximum call duration, the single-use record, and the `realm`,
@@ -145,7 +147,7 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/status` | Stable | `StatusReporter` interface; CLI and K8s reporter implementations |
 | `pkg/vmcp/optimizer` | Experimental | Optimizer interface and TEI integration; tier API may evolve |
 | `pkg/vmcp/cli` | Experimental | New in Phase 4; `Serve`, `Init`, `Validate` entry points may change before stabilisation |
-| `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, the `Record` interface and `MemoryRecord`, `FromClaims` and `Token`, the refusal reasons. `ArgumentsSHA256` is a wire contract shared with the clients that request these tokens: it changes only with a new entry type |
+| `pkg/vmcp/callbinding` | Experimental | Call-bound access tokens: `Config`, the `Record` interface and `MemoryRecord`, `FromClaims` and `Token`, `ReadListResponse`, `ListResponse` and `ListParamsCarryCursor`, the refusal reasons. `ArgumentsSHA256` is a wire contract shared with the clients that request these tokens: it changes only with a new entry type |
 | `pkg/vmcp/composer` | Experimental | Composite tool DAG executor; workflow API not yet stable |
 | `pkg/vmcp/cache` | Internal | Token cache; not intended for external use |
 | `pkg/vmcp/conversion` | Internal | CRD-to-config conversion; K8s-specific, not for local embedding |

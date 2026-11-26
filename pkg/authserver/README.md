@@ -213,6 +213,14 @@ session, narrowed per user with an optional `UpstreamFilter`. A built-in
 consent page supports remembered consent and pre-authorized consent-exempt
 clients (pre-registered clients only, not dynamically registered ones).
 
+By default any failed leg ends the authorization. With the opt-in
+`Config.NonFatalSecondaryLegs`, a failed leg after the first (the user cancels
+consent, the IdP errors, the code exchange or identity resolution fails, or the
+leg's authorization URL cannot be built) is skipped, logged at WARN with the
+provider and failure class, and the authorization code is issued without it.
+First-leg failures, `SingleLeg` authorizations, browser-binding or state
+failures, and storage failures always stay fatal.
+
 ### Keys and tokens
 
 Access tokens are asymmetrically signed JWTs verified offline via

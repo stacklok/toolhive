@@ -478,25 +478,24 @@ func errorResult(msg string) *vmcp.ToolCallResult {
 // toMCPResult converts a core [vmcp.ToolCallResult] into the mcp-go result the script
 // engine consumes for an inner tool call.
 //
-// StructuredContent is assigned only when non-nil: a nil map[string]any placed in the
-// mcp-go `any` field would be a non-nil interface wrapping a typed nil, which the
-// engine's result parser treats as present and prefers over the text content — silently
-// dropping it. The Serve-path adapter in pkg/vmcp/server/serve_handlers.go can assign it
-// unconditionally because its consumer (the SDK JSON encoder, `omitempty`) is not
-// sensitive to the typed-nil distinction; this consumer is.
+// StructuredContent goes through conversion.ToMCPStructuredContent: a nil map[string]any
+// placed in the mcp-go `any` field directly would be a non-nil interface wrapping a typed
+// nil, which the engine's result parser treats as present and prefers over the text
+// content — silently dropping it.
+//
+// vMCP no longer synthesizes StructuredContent from Content, so an inner result without
+// structuredContent and without a text item (for example only an image or a blob
+// resource) reaches the script as None: binary payloads are not passed into scripts.
 func toMCPResult(r *vmcp.ToolCallResult) *mcp.CallToolResult {
 	if r == nil {
 		return nil
 	}
-	out := &mcp.CallToolResult{
-		Result:  mcp.Result{Meta: conversion.ToMCPMeta(r.Meta)},
-		Content: conversion.ToMCPContents(r.Content),
-		IsError: r.IsError,
+	return &mcp.CallToolResult{
+		Result:            mcp.Result{Meta: conversion.ToMCPMeta(r.Meta)},
+		Content:           conversion.ToMCPContents(r.Content),
+		StructuredContent: conversion.ToMCPStructuredContent(r.StructuredContent),
+		IsError:           r.IsError,
 	}
-	if r.StructuredContent != nil {
-		out.StructuredContent = r.StructuredContent
-	}
-	return out
 }
 
 // fromMCPResult converts the engine's mcp-go script result back into a core

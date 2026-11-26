@@ -630,9 +630,36 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 | Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | Legacy edge. vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated`. A URI over 2048 bytes that does not exactly match a concrete resource or template string is rejected with not found; exact matches still pass — see the limitation below |
 | Subscriptions (`subscriptions/listen`) | Ack-level only | Modern (2026-07-28) edge, the revision's only server→client push channel. Answered with an SSE stream carrying the mandatory `notifications/subscriptions/acknowledged` and then a terminating result, both tagged `io.modelcontextprotocol/subscriptionId` and keyed by the listen request's JSON-RPC id (Modern has no sessions). The honored set is intersected against the advertised capabilities, all of whose push flags are false, so it is always **empty** and the stream closes immediately rather than idling — see below |
 
-The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) **paginate**, emitting `nextCursor` while items remain and capping a page at 1000 items to match the page size the SDK applies on the Legacy path. See [Client-facing list pagination](#client-facing-list-pagination).
+The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) **paginate**, emitting `nextCursor` while items remain and capping a page at 1000 items to match the page size the SDK applies on the Legacy path. See [Client-facing list pagination](#client-facing-list-pagination). A list answered for a list-call token is the exception: it comes whole, without `nextCursor` (see [Call-bound access tokens](#call-bound-access-tokens)).
 
 The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.
+
+### Tool call results: `structuredContent` passthrough
+
+A backend tool call result reaches the client with the backend's `content`
+array and, only when the backend sent one, its `structuredContent` object, on
+both the Legacy and the Modern edge. vMCP does not synthesize
+`structuredContent` from `content`: a result without it is returned without
+it, and the member is omitted rather than sent as `null`. A `structuredContent`
+that is not a JSON object (the spec requires one) is dropped. The Modern edge
+also omits an empty object (`{}`); the Legacy edge forwards it. Clients therefore
+never see a shape the backend did not produce, such as `{"text": "<string>"}`
+for a text result or a second copy of a file's base64 payload. In code mode, an
+inner tool call that returns JSON text without `structuredContent` gives the
+script the parsed JSON, and one that returns no text content item (for example
+only an image or a blob resource) gives the script `None`; binary payloads are
+not passed into scripts.
+
+Composite tool workflows are unchanged. When a step's backend result has no
+`structuredContent`, the workflow engine builds the step output from `content`
+itself (`conversion.ContentArrayToMap`), so `{{.steps.<id>.output.text}}` and
+`{{.steps.<id>.content.text}}` keep working; that map stays internal to the
+workflow.
+
+**Implementation**: `pkg/vmcp/client/client.go` (`toolResultFromMCP`),
+`pkg/vmcp/session/internal/backend/mcp_session.go` (`CallTool`),
+`pkg/vmcp/conversion/content.go` (`ToMCPStructuredContent`),
+`pkg/vmcp/composer/workflow_engine.go` (step output fallback)
 
 ### Served MCP revisions: the Modern capability gate
 
@@ -1232,7 +1259,7 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 10 | MCP Parsing | Always | Validates every MCP POST regardless of `Content-Type`, including when auth is nil; publishes calls and notifications for downstream controls. A second application skips already-parsed requests. |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Loopback Host guard | Always | DNS-rebinding protection: on a connection that arrived over loopback, rejects a non-loopback `Host` header with 403 before classification, so Legacy and Modern requests are held to the same rule. Mirrors go-sdk's localhost protection, which covers only Legacy requests that reach `StreamableHTTPHandler`; Modern requests (`dispatchModern`) and cross-replica Legacy sessions rehydrated by toolhive-core's `mcpcompat` did not pass through it, and the guard covers all of them. mcpcompat also runs session cleanup for a Legacy DELETE around go-sdk's Host check, so without the guard a DELETE with a forged `Host` and a known session ID could end that session even though go-sdk answered 403; the guard runs first and stops this. Only the MCP route is guarded: `/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`, `/.well-known/` and the embedded auth server routes are deliberately left unguarded because they are unauthenticated by design and expose only operational metadata. Connections on a non-loopback local address (e.g. a pod IP) are unaffected; a loopback hop that preserves a non-loopback `Host` must rewrite it. See `pkg/vmcp/server/loopback_host_guard.go`. |
-| 13 | Call binding | Always | Before Modern/Legacy classification, so it covers both. Refuses a request whose access token carries an `authorization_details` entry of type `https://toolhive.dev/mcp_tool_call` unless the request is the one `tools/call` the entry names, once, or a message the token may send without starting a call. Runs whether or not Authorization is configured and can only refuse. See "Call-bound access tokens" below. |
+| 13 | Call binding | Always | Before Modern/Legacy classification, so it covers both. Refuses a request whose access token carries an `authorization_details` entry of type `https://toolhive.dev/mcp_tool_call` unless the request is the one `tools/call` the entry names, once, the one list call a list-call entry names (answered with only that backend's items), or a message the token may send without starting a call. Runs whether or not Authorization is configured and can only refuse or narrow. See "Call-bound access tokens" below. |
 | 14 | Session ownership | Always | After Modern/Legacy classification (Legacy only), rejects any request carrying the `Mcp-Session-Id` of a session the authenticated caller does not own with a non-disclosing plain-text 404, before the Streamable HTTP transport routes it. See "Session Ownership" below. |
 | 15 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport after the session-ownership check (row 14) and before the transport's session-existence validation and SDK dispatch, so a foreign or unknown session gets 404 before any Cedar 403 (only the loopback Host guard, row 12, and a call-binding refusal, row 13, come first). Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
@@ -1463,13 +1490,16 @@ An authorization server can narrow an access token to one MCP call with an RFC 9
 `authorization_details` entry of type `https://toolhive.dev/mcp_tool_call`
 (`pkg/mcp/toolcalldetails`). A tool-call entry names the backend (`server`), the
 tool as the client sends it in `params.name` (`tool`), the argument hash
-(`arguments_sha256`) and the operation (`operation_id`). The vMCP enforces such a
+(`arguments_sha256`) and the operation (`operation_id`); a list-call entry names the
+backend and a list method (`method`). The vMCP enforces such a
 token in an HTTP middleware (`pkg/vmcp/server/call_binding.go`) that runs after
 authentication and parsing and before classification, so it covers Legacy and Modern
 requests and runs before session ownership, the pre-dispatch gate and Cedar. It runs
-whether or not Authorization is configured, and it can only refuse. A request it
-refuses gets its 401 or 403 whatever session it names; a request it passes still gets
-the ownership 404 on a foreign session. The core repeats the backend check at dispatch
+whether or not Authorization is configured, and it can only refuse a request or
+narrow a list-call answer. A request it
+refuses gets its 401 or 403 whatever session it names, or a 503 when it cannot check
+the request, or, for a list call, a 500 when the handler's answer holds no list; a
+request it passes still gets the ownership 404 on a foreign session. The core repeats the backend check at dispatch
 (see below).
 
 Which tokens it checks:
@@ -1511,13 +1541,43 @@ another path that goes through the authenticated MCP chain is refused; `/health`
 - `tools/list`, for a tool-call entry. It is read-only and filtered by admission as
   usual, and it does not use up the token. MCP clients list tools around a call, for
   example to read a tool's output schema.
+- For a list-call entry, instead of any `tools/call` or `tools/list` above: the list
+  method the entry names, answered with all of the items whose backend is the entry's
+  `server`, in one response without `nextCursor` (a list request names no server, so
+  the binding narrows the answer). The items come from one admission-filtered core
+  list, each attributed by its own backend, so another backend's item with the same
+  name or URI is never answered; they are rendered as a Modern list renders them and
+  replace the items of the response the usual handler gives, after every later
+  check. Legacy lists are served from the SDK's per-session store, which offers no
+  filter hook, and both revisions cut pages whose cursor names the last unfiltered
+  item, so neither the handler's items nor its cursor reach the client. An item
+  without a single backend, such as a composite tool, or any tool on an
+  optimizer-enabled instance, is never listed. A Legacy session the SDK rehydrated
+  answers in `text/event-stream`; the list call is answered in JSON all the same. The
+  `server` must be a backend in the caller's view: one the caller is admitted to at
+  least one tool, resource, resource template or prompt of. A server that is unknown,
+  hidden by authorization, offers the caller nothing, or contributes nothing to the
+  view (its discovery fails) gets the same 403 `server_not_found`, as an unknown tool
+  gets `tool_not_found`: AS-1 signs any `server` name, so the answer must not tell
+  whether a backend the caller cannot see exists. A backend in the caller's view that
+  the core's lists leave out for its health status (unhealthy, unknown or
+  unauthenticated, even while it still answers) gets 503; a degraded one stays in the
+  lists and is listed. The check and the items come from separate aggregations, so a
+  backend that drops out of the view between the two is answered with an empty list
+  and the token is used. A list call that carries a cursor is refused with
+  `invalid_params`. A `tools/call` or another list method is refused with
+  `method_mismatch`. The list call is the token's one call, as a `tools/call` is for
+  a tool-call entry: it uses up the token. It is recorded only once its answer is
+  ready, and ended at once: of concurrent duplicates, each runs the handler, but only
+  the first to record is answered, and the others get `token_reused`.
 - GET and DELETE. The session-ownership check then limits them to sessions the
   token's principal owns. Once the token has started its call, they are limited to
   that call's session (`session_mismatch`); a Modern call has none. Neither uses up
   the token.
-- On the Legacy session of its call, while the call's request is open and younger
-  than the maximum call duration: a `notifications/cancelled` for the call's JSON-RPC
-  ID, and any JSON-RPC response (for example an in-band elicitation reply). The vMCP
+- On the Legacy session of its tool call, while the call's request is open and
+  younger than the maximum call duration: a `notifications/cancelled` for the call's
+  JSON-RPC ID, and any JSON-RPC response (for example an in-band elicitation reply).
+  A list call is never open, so it admits neither (`no_open_call`). The vMCP
   does not see which server-to-client requests the SDK is waiting on, so any response
   on that session is accepted. A Modern call has no session, whatever
   `Mcp-Session-Id` it sends, so it admits neither: a Modern client cancels by closing
@@ -1529,10 +1589,8 @@ another path that goes through the authenticated MCP chain is refused; `/health`
   call's request has already returned. Accepting messages for a call after its
   request returns, like accepting them after `exp`, is not implemented yet.
 
-Everything else is refused, including the other list methods. A token with a list-call
-entry may send only what needs no call (the handshake, `server/discover`, `ping`, GET
-and DELETE); any other method, `tools/list` included, is refused with
-`list_call_unsupported`. Single use means
+Everything else is refused, including list methods a tool-call entry does not allow.
+Single use means
 one token, one call: a retried `tools/call`, such as the retry after a URL elicitation
 (Legacy `-32042`, Modern `input_required`), is a second call and is refused with
 `token_reused`. The client needs a fresh call-bound token for the retry. After the
@@ -1544,9 +1602,15 @@ when the embedder's validator allows more. A stream opened before `exp` keeps ru
 a `callbinding.Record`, and stays recorded until `exp` or until the call has run for
 the maximum call duration (`CallBinding.MaxCallDuration`, 30 minutes by default),
 whichever is later, plus a one-minute margin for a record whose clock runs ahead of
-the replica's. A second `tools/call` with the same token is refused (`token_reused`).
-A refusal by this middleware does not use up the token; a later refusal, such as the
-session-ownership 404 or a Cedar 403, does. The default record is in memory, so it
+the replica's. Once the token has started its call, a `tools/call` or a list
+method is refused with `token_reused`, whatever it names, so the client learns it
+needs a new token; a tool-call token's `tools/list` stays allowed (see above). A refusal by this middleware does not use
+up the token; a later refusal of a `tools/call`, such as the session-ownership 404 or
+a Cedar 403, does. A list call that gives the client no list (a JSON-RPC error, a
+later refusal, a response that cannot be read, a handler that panics, or a client that
+went away before the answer reached it, even when the handler had answered) is not
+recorded, so the token stays unused; a call cancelled that way is answered, and
+audited, as a 503. The default record is in memory, so it
 covers one replica: a replay to another replica is accepted, and the vMCP warns at
 startup when sessions are stored in Redis without a shared `Record`. An embedder may
 supply another `Record`. When the call returns, the record marks it ended, with a
@@ -1571,12 +1635,14 @@ answers a Cedar denial: `insufficient_scope` is what MCP clients read as a step-
 hint, and no scope would make these requests acceptable. Both messages end with the
 reason. The refusal is audited like a Cedar denial (outcome `denied`), with the reason
 in `metadata.extra.denial_reason`, for a stream-opening GET too. Logs carry the `jti`,
-the client, the entry's server, tool and operation ID, and the reason; never the token
-or the arguments. When the record or the route lookup fails for a reason other than
-authorization, the vMCP answers 503 and the token stays unused.
+the client, the entry's server, tool, method and operation ID, and the reason; never
+the token or the arguments. When the record, the route lookup or a list-call token's
+list lookup fails for a reason other than authorization, or the list call's server is
+not in the current view, the vMCP answers 503 and the token stays unused.
 
 **Implementation**: `pkg/vmcp/server/call_binding.go`,
-`pkg/vmcp/server/call_binding_params.go`, `pkg/vmcp/callbinding`,
+`pkg/vmcp/server/call_binding_params.go`, `pkg/vmcp/callbinding` (list results:
+`list.go`),
 `pkg/vmcp/core/core_calls.go`
 
 ### Incoming scope authorization in the core

@@ -6,9 +6,11 @@ package transparent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,7 +21,10 @@ import (
 // MCPPinger implements healthcheck.MCPPinger for transparent proxies
 type MCPPinger struct {
 	targetURL string
-	client    *http.Client
+	// redactedTarget is targetURL reduced to scheme and host, for logs and
+	// returned errors. See redactTargetURL.
+	redactedTarget string
+	client         *http.Client
 }
 
 const (
@@ -47,7 +52,8 @@ func NewMCPPingerWithTimeout(targetURL string, timeout time.Duration) healthchec
 		timeout = DefaultPingerTimeout
 	}
 	return &MCPPinger{
-		targetURL: targetURL,
+		targetURL:      targetURL,
+		redactedTarget: redactTargetURL(targetURL),
 		client: &http.Client{
 			Timeout:       timeout,
 			CheckRedirect: redirectPolicy,
@@ -65,16 +71,16 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	// Create a simple GET request to check if the server is responding
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.targetURL, nil)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create HTTP request: %w", err)
+		return 0, fmt.Errorf("failed to create HTTP request: %w", redactURLError(err, p.redactedTarget))
 	}
 
-	//nolint:gosec // G706: logging target URL from config
-	slog.Debug("checking SSE server health", "target", p.targetURL)
+	//nolint:gosec // G706: logging redacted target URL from config
+	slog.Debug("checking SSE server health", "target", p.redactedTarget)
 
 	// Send the request
-	resp, err := p.client.Do(req) // #nosec G704 -- targetURL is the local MCP server health endpoint
+	resp, err := p.client.Do(req) // #nosec G704 -- targetURL is the configured MCP server health endpoint
 	if err != nil {
-		return time.Since(start), fmt.Errorf("failed to connect to SSE server: %w", err)
+		return time.Since(start), fmt.Errorf("failed to connect to SSE server: %w", redactURLError(err, p.redactedTarget))
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -104,7 +110,10 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 // Stateless servers don't support GET, so we send a minimal JSON-RPC ping instead.
 type StatelessMCPPinger struct {
 	targetURL string
-	client    *http.Client
+	// redactedTarget is targetURL reduced to scheme and host, for logs and
+	// returned errors. See redactTargetURL.
+	redactedTarget string
+	client         *http.Client
 }
 
 // NewStatelessMCPPinger creates a pinger for stateless streamable-HTTP servers.
@@ -125,7 +134,8 @@ func NewStatelessMCPPingerWithTimeout(targetURL string, timeout time.Duration) h
 		timeout = DefaultPingerTimeout
 	}
 	return &StatelessMCPPinger{
-		targetURL: targetURL,
+		targetURL:      targetURL,
+		redactedTarget: redactTargetURL(targetURL),
 		client: &http.Client{
 			Timeout:       timeout,
 			CheckRedirect: redirectPolicy,
@@ -141,17 +151,17 @@ func (p *StatelessMCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	body := `{"jsonrpc":"2.0","id":0,"method":"ping","params":{}}`
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.targetURL, strings.NewReader(body))
 	if err != nil {
-		return 0, fmt.Errorf("failed to create stateless ping request: %w", err)
+		return 0, fmt.Errorf("failed to create stateless ping request: %w", redactURLError(err, p.redactedTarget))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
-	//nolint:gosec // G706: logging target URL from config
-	slog.Debug("checking stateless MCP server health via POST ping", "target", p.targetURL)
+	//nolint:gosec // G706: logging redacted target URL from config
+	slog.Debug("checking stateless MCP server health via POST ping", "target", p.redactedTarget)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return time.Since(start), fmt.Errorf("stateless ping failed to connect: %w", err)
+		return time.Since(start), fmt.Errorf("stateless ping failed to connect: %w", redactURLError(err, p.redactedTarget))
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -171,4 +181,58 @@ func (p *StatelessMCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	}
 
 	return duration, fmt.Errorf("stateless ping returned status %d", resp.StatusCode)
+}
+
+// redactedTargetPlaceholder stands in for a target URL that does not parse to
+// a scheme and host. The raw string is never used in its place, since a URL
+// that fails to parse can still carry a secret.
+const redactedTargetPlaceholder = "<unparsable target URL>"
+
+// errUnparsableRedirectLocation replaces net/http's error for a redirect whose
+// Location header does not parse. That error's text quotes the raw Location,
+// which on a same-host canonicalization redirect commonly repeats the target's
+// path and query.
+var errUnparsableRedirectLocation = errors.New("failed to parse redirect Location header")
+
+// redactTargetURL reduces a pinger target to its scheme and host (including
+// any port), e.g. "https://host:8443".
+//
+// Remote MCP URLs often carry credentials in the path or query (an API key in
+// "?api_key=..."). Ping errors reach the unauthenticated /health endpoint via
+// healthcheck.MCPStatus.Error and are logged on every check, so neither may
+// include more of the target than this.
+func redactTargetURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return redactedTargetPlaceholder
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+}
+
+// redactURLError rebuilds the *url.Error that net/http returns from
+// http.NewRequest and http.Client.Do with redactedTarget in place of its URL.
+// net/http strips only a userinfo password from that URL, so the original
+// carries the target's full path and query; after a redirect it carries the
+// Location instead. The inner error is kept, so errors.Is still matches
+// context.DeadlineExceeded and networking.ErrRedirectRefused, and the result is
+// still a *url.Error, so its Timeout method keeps working.
+//
+// The inner error is kept verbatim except for net/http's Location-parse
+// failure, which quotes the raw Location. The other inner errors these pingers
+// can see do not include a path or query: transport and dial errors name at
+// most the host and port, and SameHostRedirectPolicy's refusals name only the
+// redirect host or scheme.
+func redactURLError(err error, redactedTarget string) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	inner := urlErr.Err
+	// net/http builds this error with fmt.Errorf("failed to parse Location
+	// header %q: %v", ...), so it has no chain to preserve and can only be
+	// recognized by its text.
+	if inner != nil && strings.HasPrefix(inner.Error(), "failed to parse Location header") {
+		inner = errUnparsableRedirectLocation
+	}
+	return &url.Error{Op: urlErr.Op, URL: redactedTarget, Err: inner}
 }

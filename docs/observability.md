@@ -350,7 +350,9 @@ not on the transport port, so a path-scoped route excludes it automatically — 
 adding it back by hand undoes that.
 
 `/health` deliberately stays on the transport port so Kubernetes liveness and
-readiness probes keep working. It exposes no version or build information.
+readiness probes keep working. It exposes no version or build information, and
+for a remote workload its health check error names the remote URL by scheme
+and host only, never its path or query.
 
 > **Cardinality warning.** Metric label values derived from client input (MCP
 > method, tool, and prompt names) are bounded in length, and the OpenTelemetry SDK

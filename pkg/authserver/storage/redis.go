@@ -2677,6 +2677,7 @@ type storedPendingAuthorization struct {
 	VerifiedUpstream        session.UpstreamSubject `json:"verified_upstream,omitzero"`
 	SingleLeg               bool                    `json:"single_leg,omitempty"`
 	ChainUpstreams          []string                `json:"chain_upstreams,omitempty"`
+	SkippedUpstreams        []string                `json:"skipped_upstreams,omitempty"`
 	CreatedAt               int64                   `json:"created_at"`
 	CreatedAtNano           int64                   `json:"created_at_nano,omitempty"`
 }
@@ -2718,6 +2719,7 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		VerifiedUpstream:        pending.VerifiedUpstream,
 		SingleLeg:               pending.SingleLeg,
 		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		SkippedUpstreams:        slices.Clone(pending.SkippedUpstreams),
 		CreatedAt:               pending.CreatedAt.Unix(),
 		CreatedAtNano:           pending.CreatedAt.UnixNano(),
 	}
@@ -2787,6 +2789,7 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 		VerifiedUpstream:        stored.VerifiedUpstream,
 		SingleLeg:               stored.SingleLeg,
 		ChainUpstreams:          slices.Clone(stored.ChainUpstreams),
+		SkippedUpstreams:        slices.Clone(stored.SkippedUpstreams),
 		CreatedAt:               createdAt,
 	}, nil
 }

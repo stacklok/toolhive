@@ -395,14 +395,12 @@ func (c *mcpSession) CallTool(
 
 	contentArray := conversion.ConvertMCPContents(result.Content)
 
-	var structuredContent map[string]any
-	if result.StructuredContent != nil {
-		if m, ok := result.StructuredContent.(map[string]any); ok {
-			structuredContent = m
-		}
-	}
-	if structuredContent == nil {
-		structuredContent = conversion.ContentArrayToMap(contentArray)
+	// Keep structuredContent only when the backend sent an object; nothing is
+	// synthesized from Content (see toolResultFromMCP in pkg/vmcp/client).
+	structuredContent, ok := result.StructuredContent.(map[string]any)
+	if !ok && result.StructuredContent != nil {
+		slog.Debug("dropping structuredContent that is not an object",
+			"tool", toolName, "backend", c.target.WorkloadID)
 	}
 
 	return &vmcp.ToolCallResult{

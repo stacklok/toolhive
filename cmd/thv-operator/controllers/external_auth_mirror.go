@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 )
 
 // Status Condition Parity machinery for #5347. The probe reads a referenced
@@ -84,6 +85,56 @@ func mirroredReasonFromError(err error) string {
 	return ""
 }
 
+// externalAuthReasonFromError returns a stable condition reason for typed
+// external-auth failures. Source-level invalidity keeps its mirrored reason;
+// consumer/type incompatibility uses the shared UnsupportedAuthType taxonomy.
+func externalAuthReasonFromError(err error) string {
+	if reason := mirroredReasonFromError(err); reason != "" {
+		return reason
+	}
+
+	var unsupported *externalauthsupport.UnsupportedTypeError
+	if stderrors.As(err, &unsupported) {
+		return mcpv1beta1.ConditionReasonUnsupportedAuthType
+	}
+	return ""
+}
+
+// isTerminalExternalAuthError reports whether err is a consumer/type
+// incompatibility: the referenced MCPExternalAuthConfig has a type the consumer
+// does not implement. That can only heal after the consumer spec or the
+// referenced config changes. Both are watched by the consumer controllers, so
+// rate-limited retries of the same generation add noise but cannot make
+// progress. A source that reports Valid=False is not covered here and keeps
+// returning its error to the caller.
+func isTerminalExternalAuthError(err error) bool {
+	var unsupported *externalauthsupport.UnsupportedTypeError
+	return stderrors.As(err, &unsupported)
+}
+
+// externalAuthValidCondition returns the reason and message of a True
+// ExternalAuthConfigValidated condition on a backend resource (MCPServer or
+// MCPRemoteProxy). validReason is the consumer's own "valid" reason.
+//
+// A type the backend accepts but does not apply itself gets a distinct reason
+// and a message that says so. The condition stays True, because the reference
+// is correct for a backend of a VirtualMCPServer and failing it would take
+// discovered mode down; but a backend that is used on its own would otherwise
+// read as protected by a config its proxy never applies.
+func externalAuthValidCondition(
+	consumer externalauthsupport.Consumer,
+	validReason, configName string,
+	authType mcpv1beta1.ExternalAuthType,
+) (reason, message string) {
+	if externalauthsupport.AppliedByVirtualMCPServer(consumer, authType) {
+		return mcpv1beta1.ConditionReasonAppliedByVirtualMCPServer, fmt.Sprintf(
+			"MCPExternalAuthConfig '%s' is valid, but %s does not apply type %q itself: "+
+				"it takes effect only when a VirtualMCPServer discovers this backend",
+			configName, consumer, authType)
+	}
+	return validReason, fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", configName)
+}
+
 // ownedByLocalValidation reports whether conditions' entry for conditionType
 // (if any) was set by this operator's own validation rather than mirrored from
 // the referenced MCPExternalAuthConfig. See isLocalValidationFailure.
@@ -92,7 +143,7 @@ func ownedByLocalValidation(conditions []metav1.Condition, conditionType string)
 }
 
 // isLocalValidationFailure reports whether cond is a False condition written by
-// this operator's own validation of the consumer. Three kinds of owner qualify,
+// this operator's own validation of the consumer. Four kinds of owner qualify,
 // each with a fixed Reason:
 //
 //   - ConditionReasonInvalidConfig: handleInvalidEmbeddedAuthServerConfig, set
@@ -105,6 +156,8 @@ func ownedByLocalValidation(conditions []metav1.Condition, conditionType string)
 //     ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream): the
 //     single-upstream check, set when an embedded auth server config lists
 //     more than one upstream.
+//   - ConditionReasonUnsupportedAuthType: the consumer/type check, set when the
+//     referenced config's type is not implemented by this consumer kind.
 //
 // These re-derive the same condition after the mirror runs, so clearing it in
 // the mirror would force a fresh LastTransitionTime on every reconcile.
@@ -124,7 +177,8 @@ func isLocalValidationFailure(cond *metav1.Condition) bool {
 	}
 	return cond.Reason == mcpv1beta1.ConditionReasonInvalidConfig ||
 		cond.Reason == mcpv1beta1.ConditionReasonInvalidCABundle ||
-		cond.Reason == mcpv1beta1.ConditionReasonExternalAuthConfigMultiUpstream
+		cond.Reason == mcpv1beta1.ConditionReasonExternalAuthConfigMultiUpstream ||
+		cond.Reason == mcpv1beta1.ConditionReasonUnsupportedAuthType
 }
 
 // clearStaleMirror removes conditions' entry for conditionType only when it is

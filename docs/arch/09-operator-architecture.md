@@ -102,7 +102,7 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 | **MCPServerEntry** | Zero-infrastructure declaration of a remote MCP endpoint |
 | **MCPGroup** | Logical grouping of workloads (status tracking only) |
 | **MCPToolConfig** | Tool filtering and renaming configuration |
-| **MCPExternalAuthConfig** | Token exchange / header injection configuration |
+| **MCPExternalAuthConfig** | Reusable, consumer-specific external authentication configuration |
 | **MCPOIDCConfig** | Shared OIDC provider settings referenced by workload CRDs |
 | **MCPTelemetryConfig** | Shared OpenTelemetry/Prometheus settings referenced by workload CRDs |
 | **MCPWebhookConfig** | Validating/mutating webhook middleware definitions referenced by MCPServer |
@@ -172,7 +172,7 @@ MCPServer resources support various transport types (stdio, SSE, streamable-http
 MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
 - `telemetryConfigRef` — references an MCPTelemetryConfig for shared telemetry settings
-- `externalAuthConfigRef` — references an MCPExternalAuthConfig for outgoing auth (token exchange, AWS STS, bearer token injection, etc.)
+- `externalAuthConfigRef` — references an MCPExternalAuthConfig for outgoing auth. MCPServer supports `tokenExchange`, `unauthenticated`, and `obo`; `embeddedAuthServer` remains supported on this field for backward compatibility. `headerInjection`, `upstreamInject`, and `xaa` are accepted but not applied by the MCPServer: they take effect when a VirtualMCPServer discovers the server as a backend.
 - `authServerRef` — references an MCPExternalAuthConfig of type `embeddedAuthServer` for incoming auth (the embedded OAuth 2.0/OIDC authorization server that authenticates MCP clients). This is the preferred path for configuring the embedded auth server, keeping incoming auth separate from `externalAuthConfigRef` which handles outgoing auth.
 
 **Backward compatibility**: Existing configurations using `externalAuthConfigRef` with `type: embeddedAuthServer` continue to work. The `authServerRef` field is optional and additive.
@@ -218,11 +218,19 @@ MCPToolConfig allows you to filter which tools are exposed by an MCP server and 
 
 ### MCPExternalAuthConfig
 
-Manages external authentication configurations that can be shared across multiple MCPServer resources.
+Manages reusable external authentication configurations. Each consumer supports
+a defined subset of auth types; incompatible references are reported with an
+`UnsupportedAuthType` condition rather than ignored. A backend (MCPServer or
+MCPRemoteProxy) also accepts the types that only a VirtualMCPServer applies,
+because discovered mode reads the reference from the backend resource. Its
+`ExternalAuthConfigValidated` condition stays `True` for those types but
+carries the reason `AppliedByVirtualMCPServer`, so a backend that no
+VirtualMCPServer discovers does not read as protected by a config its own
+proxy never applies.
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 
-MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. For an `embeddedAuthServer`, each entry in `embeddedAuthServer.upstreamProviders` can set `oidcConfig.caBundleRef` or `oauth2Config.caBundleRef`, and each entry in `embeddedAuthServer.trustedIssuers` can set `caBundleRef`, to reference a namespace-local ConfigMap containing PEM-encoded CA certificates. The ConfigMap key is required and is projected read-only for that provider or issuer, then added to the system trust pool; it does not replace public system roots. This allows different providers and issuers to use different private CAs without widening trust for other clients. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+MCPExternalAuthConfig allows you to define reusable authentication configurations referenced by MCPServer, MCPRemoteProxy, VirtualMCPServer, and MCPServerEntry resources. For an `embeddedAuthServer`, each entry in `embeddedAuthServer.upstreamProviders` can set `oidcConfig.caBundleRef` or `oauth2Config.caBundleRef`, and each entry in `embeddedAuthServer.trustedIssuers` can set `caBundleRef`, to reference a namespace-local ConfigMap containing PEM-encoded CA certificates. The ConfigMap key is required and is projected read-only for that provider or issuer, then added to the system trust pool; it does not replace public system roots. This allows different providers and issuers to use different private CAs without widening trust for other clients. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
 
 When the referenced CA data changes, the operator watches the ConfigMap, computes a checksum from the selected bundle bytes, and places that checksum on the proxyrunner pod template. A changed checksum causes a Deployment rollout so new pods use the updated trust material. The operator mounts the bundle for MCPServer and MCPRemoteProxy embedded auth servers; VirtualMCPServer uses the same configuration when constructing its auth-server deployment.
 
@@ -230,11 +238,25 @@ For a complete example, see [`examples/operator/external-auth/mcpexternalauthcon
 
 Because appending a certificate to a referenced ConfigMap makes that CA a trust anchor — for an upstream provider's login, or for a trusted issuer's subject-token validation — restrict write access to a `caBundleRef` ConfigMap with the same RBAC care as the auth server's signing-key Secret.
 
+VirtualMCPServer records a status condition for each outgoing auth entry that
+fails to convert, including references to types it does not support, which are
+reported with reason `UnsupportedAuthType`. A failure discovered on a backend's
+own `externalAuthConfigRef` leaves the remaining valid backends reconciling. A
+failure on an entry declared in `spec.outgoingAuth` (`default` or `backends`)
+is reported the same way and also stops the vMCP configuration from being
+published, so no backend falls back to a different credential or to no
+authentication; the previously published configuration stays in place. When
+every failing declared entry references an unsupported type, the
+VirtualMCPServer is set to phase `Failed` with `Ready=False / Reason=UnsupportedAuthType`
+and is not requeued, because only a change to its spec or to the referenced
+MCPExternalAuthConfig can fix it. Any other declared failure, such as a missing
+MCPExternalAuthConfig, is retried with backoff.
+
 MCPExternalAuthConfig resources can be referenced via two paths:
-- `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection, Entra on-behalf-of). This is the original reference path.
+- `externalAuthConfigRef` — for outgoing auth, including Entra on-behalf-of (`obo`). The supported type subset depends on whether the consumer is MCPServer, MCPRemoteProxy, VirtualMCPServer, or MCPServerEntry.
 - `authServerRef` — for the embedded auth server type (`embeddedAuthServer`) only. This dedicated reference path makes it possible to configure both incoming auth (embedded auth server) and outgoing auth (e.g., AWS STS) on the same workload resource.
 
-**Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
+**Referenced by MCPServer, MCPRemoteProxy, VirtualMCPServer, and MCPServerEntry** using `externalAuthConfigRef`. MCPServer and MCPRemoteProxy may also use `authServerRef` for `embeddedAuthServer`.
 
 **Entra on-behalf-of (`type: obo`)**: the MCPExternalAuthConfig reconciler validates what the schema cannot (a tenant, `clientId`, `clientSecretRef`, at least one of `audience`/`scopes`, a `cacheSkew` that is non-negative and at most MaxInt32 seconds, and a usable tenant/authority) and reports a violation as `Valid=False / Reason=InvalidConfig` without requeueing. For MCPServer and MCPRemoteProxy the operator (`cmd/thv-operator/pkg/controllerutil/obo.go`) appends an `obo` middleware config to the RunConfig and mounts the client secret into the proxyrunner pod as `TOOLHIVE_OBO_CLIENT_SECRET`; a workload that references an `obo` config without `oidcConfigRef` is rejected with `ExternalAuthConfigValidated=False / Reason=InvalidConfig`, because OBO needs an authenticated user token. VirtualMCPServer mounts each OBO backend's secret under a per-config name (`TOOLHIVE_OBO_CLIENT_SECRET_<CONFIG_NAME>_<HASH8>`, where `<HASH8>` is the first 8 hex characters of the SHA-256 of the config name, so `my-cfg` and `my.cfg` stay distinct) so several OBO backends in one pod do not collide. See [Virtual MCP outgoing authentication](10-virtual-mcp-architecture.md#outgoing-authentication) and the [OBO middleware](../middleware.md#9-on-behalf-of-obo-middleware).
 
@@ -328,7 +350,7 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 **Key fields:**
 - `remoteUrl` - URL of the remote MCP server to proxy
 - `oidcConfigRef` - Reference to shared MCPOIDCConfig (with per-server `audience`, `scopes`, and `resourceUrl`)
-- `externalAuthConfigRef` - Outgoing auth for remote service authentication (token exchange, AWS STS, bearer token injection)
+- `externalAuthConfigRef` - Outgoing auth for remote service authentication (`tokenExchange`, `bearerToken`, `unauthenticated`, `embeddedAuthServer`, `awsSts`, or `obo`). `headerInjection`, `upstreamInject`, and `xaa` are accepted but applied only by a VirtualMCPServer that discovers the proxy as a backend.
 - `authServerRef` - Incoming auth via the embedded OAuth 2.0/OIDC authorization server (references an MCPExternalAuthConfig of type `embeddedAuthServer`)
 - `authzConfig` - Authorization policies
 - `telemetryConfigRef` - Reference to shared MCPTelemetryConfig (replaces deprecated inline `telemetry`)
@@ -367,10 +389,10 @@ Declares a remote MCP endpoint as a zero-infrastructure catalog entry. Unlike MC
 **Key fields:**
 - `remoteUrl` - URL of the remote MCP server (required)
 - `groupRef` - MCPGroup membership for discovery by VirtualMCPServer
-- `externalAuthConfigRef` - Token exchange for remote service authentication
+- `externalAuthConfigRef` - Outgoing auth for vMCP connections (`tokenExchange`, `headerInjection`, `unauthenticated`, `awsSts`, `upstreamInject`, `obo`, or `xaa`)
 - `caBundleRef` - Reference to a ConfigMap containing CA certificate data for TLS verification
 
-The MCPServerEntry controller is validation-only: it validates that referenced resources (groupRef, externalAuthConfigRef, caBundleRef ConfigMap) exist and updates status conditions accordingly. It never probes the remote URL or creates infrastructure.
+The MCPServerEntry controller is validation-only: it validates that referenced resources (groupRef, externalAuthConfigRef, caBundleRef ConfigMap) exist, verifies that the referenced external-auth type is supported, and updates status conditions accordingly. It never probes the remote URL or creates infrastructure.
 
 MCPServerEntry backends are discovered by vMCP in both static mode (listed at startup) and dynamic mode (watched by the BackendReconciler). In dynamic mode, ConfigMap changes trigger re-reconciliation of affected MCPServerEntry backends via a field-indexed watch on `spec.caBundleRef.configMapRef.name`.
 

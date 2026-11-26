@@ -7,6 +7,8 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -50,20 +53,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	config, authServerRC, err := converter.Convert(ctx, vmcp, telemetryCfg)
 	r.emitInlineTelemetryIgnoredEvent(vmcp)
 	if err != nil {
-		var delegateErr *operatorvmcpconfig.DelegateClientConfigValidationError
-		if stderrors.As(err, &delegateErr) {
-			message := fmt.Sprintf("invalid delegate clients in spec.authServerConfig: %v", delegateErr)
-			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-			statusManager.SetMessage(message)
-			statusManager.SetAuthServerConfigValidatedCondition(
-				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-				message,
-				metav1.ConditionFalse,
-			)
-			statusManager.SetObservedGeneration(vmcp.Generation)
-			return &SpecValidationError{Message: message}
-		}
-		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
+		return r.handleConvertError(ctx, vmcp, typedWorkloads, statusManager, err)
 	}
 
 	// Reject invalid OIDC file paths (for example a relative jwksAuthTokenPath
@@ -163,6 +153,58 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	}
 
 	return nil
+}
+
+// handleConvertError records why the vmcp Config could not be built from vmcp
+// and returns a *SpecValidationError when only a spec or referenced config
+// change can fix it, or the wrapped error otherwise so the reconcile retries.
+func (r *VirtualMCPServerReconciler) handleConvertError(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	typedWorkloads []workloads.TypedWorkload,
+	statusManager virtualmcpserverstatus.StatusManager,
+	err error,
+) error {
+	var delegateErr *operatorvmcpconfig.DelegateClientConfigValidationError
+	if stderrors.As(err, &delegateErr) {
+		message := fmt.Sprintf("invalid delegate clients in spec.authServerConfig: %v", delegateErr)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return &SpecValidationError{Message: message}
+	}
+
+	// The converter resolves every auth entry declared in spec.outgoingAuth and
+	// fails as a whole when one cannot be resolved. That refusal is what keeps a
+	// config from being published with the entry missing, where a backend
+	// relying on it would fall back to another credential or to no auth.
+	// Record which entries failed before returning, so the refusal is explained
+	// on the resource and not only in the operator log.
+	_, authErrors := r.evaluateOutgoingAuth(ctx, vmcp, typedWorkloads, statusManager)
+
+	// An entry referencing a type VirtualMCPServer does not support only heals
+	// when the spec or the referenced MCPExternalAuthConfig changes, and both are
+	// watched, so retrying the same generation cannot make progress. Report it as
+	// terminal, so the resource stops reading Ready while the previously published
+	// config keeps serving. Any other failure (a missing config or Secret, an API
+	// error) may heal on its own and is returned for a retry.
+	if message := unsupportedDeclaredAuthMessage(authErrors); message != "" {
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetReadyCondition(
+			mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return &SpecValidationError{Message: message}
+	}
+	return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 }
 
 // populateOptimizerEmbeddingService wires the EmbeddingServer URL into the optimizer
@@ -449,6 +491,75 @@ func determineValidInlineBackends(authConfig *vmcpconfig.OutgoingAuthConfig, inl
 	return valid
 }
 
+// evaluateOutgoingAuth builds the outgoing auth config for vmcp and records a
+// status condition for every auth entry: the default, the backends declared in
+// spec.outgoingAuth, and the backends discovered from workloads. A condition is
+// True when its entry resolved and False, with the failure, when it did not.
+// It publishes nothing; the caller decides what to do with the returned config
+// and errors.
+func (r *VirtualMCPServerReconciler) evaluateOutgoingAuth(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	typedWorkloads []workloads.TypedWorkload,
+	statusManager virtualmcpserverstatus.StatusManager,
+) (*vmcpconfig.OutgoingAuthConfig, []AuthConfigError) {
+	// Build auth config and collect all errors (default, backend-specific, discovered)
+	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+
+	// Extract inline backend names and determine valid auth configs
+	inlineBackendNames := extractInlineBackendNames(vmcp)
+	hasValidDefaultAuth := authConfig != nil && authConfig.Default != nil
+	validInlineBackends := determineValidInlineBackends(authConfig, inlineBackendNames)
+
+	// Set conditions for all auth config types (default, backend-specific, discovered)
+	// True for success, False for errors
+	setAuthConfigConditions(
+		statusManager,
+		backendsWithAuthConfig,
+		inlineBackendNames,
+		hasValidDefaultAuth,
+		validInlineBackends,
+		allAuthErrors,
+	)
+
+	return authConfig, allAuthErrors
+}
+
+// unsupportedDeclaredAuthMessage returns a status message naming the entries
+// declared in spec.outgoingAuth that failed, when every one of them failed
+// because it references an external auth type VirtualMCPServer does not
+// support. It returns "" when no declared entry failed or when any of them
+// failed for another reason. Discovered entries are ignored: they never fail
+// the config build.
+func unsupportedDeclaredAuthMessage(authErrors []AuthConfigError) string {
+	var entries []string
+	for _, authErr := range authErrors {
+		var entry string
+		switch {
+		case authErr.Context == authContextDefault:
+			entry = "default"
+		case strings.HasPrefix(authErr.Context, authContextBackendPrefix):
+			entry = "backends." + authErr.BackendName
+		default:
+			continue
+		}
+		var unsupported *externalauthsupport.UnsupportedTypeError
+		if !stderrors.As(authErr.Error, &unsupported) {
+			return ""
+		}
+		entries = append(entries, fmt.Sprintf("%s (%s)", entry, unsupported.AuthType))
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	// Backends come from a map; sort so the message, and so the status, is stable.
+	slices.Sort(entries)
+	return fmt.Sprintf(
+		"spec.outgoingAuth references external auth types VirtualMCPServer does not support: %s; "+
+			"the vmcp configuration was not updated",
+		strings.Join(entries, ", "))
+}
+
 // processOutgoingAuth processes outgoing auth configuration for both inline and discovered modes.
 // It builds auth configs, sets status conditions for all auth config types, and configures static backends for inline mode.
 func (r *VirtualMCPServerReconciler) processOutgoingAuth(
@@ -473,9 +584,9 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 		return nil
 	}
 
-	// Build auth config and collect all errors (default, backend-specific, discovered)
+	// Build the auth config and set a condition for every auth entry.
 	// All errors are non-fatal - the system continues in degraded mode with partial auth config
-	authConfig, backendsWithAuthConfig, allAuthErrors := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
+	authConfig, allAuthErrors := r.evaluateOutgoingAuth(ctx, vmcp, typedWorkloads, statusManager)
 
 	// Backends whose auth strategy failed to build must be excluded from the served
 	// set entirely — see backendsWithFailedAuth for why omission from
@@ -485,22 +596,6 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 		resolvedBackends = authConfig.Backends
 	}
 	excludedBackends := backendsWithFailedAuth(allAuthErrors, resolvedBackends)
-
-	// Extract inline backend names and determine valid auth configs
-	inlineBackendNames := extractInlineBackendNames(vmcp)
-	hasValidDefaultAuth := authConfig != nil && authConfig.Default != nil
-	validInlineBackends := determineValidInlineBackends(authConfig, inlineBackendNames)
-
-	// Set conditions for all auth config types (default, backend-specific, discovered)
-	// True for success, False for errors
-	setAuthConfigConditions(
-		statusManager,
-		backendsWithAuthConfig,
-		inlineBackendNames,
-		hasValidDefaultAuth,
-		validInlineBackends,
-		allAuthErrors,
-	)
 
 	// Static mode (inline): Embed full backend details in ConfigMap
 	if isInlineMode {

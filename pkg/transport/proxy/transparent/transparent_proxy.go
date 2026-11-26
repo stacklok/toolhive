@@ -115,7 +115,8 @@ type TransparentProxy struct {
 	// Callback when the health check failure threshold is reached
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
-	// Callback when a remote server passes a health check after onHealthCheckFailed fired
+	// Callback when a remote server passes a health check after onHealthCheckFailed fired;
+	// called again on later passing checks until it returns nil
 	onHealthCheckRecovered types.HealthCheckRecoveredCallback
 
 	// Callback when 401 Unauthorized response is received (for bearer token authentication)
@@ -153,7 +154,8 @@ type TransparentProxy struct {
 	// Health check ping timeout (default: 5 seconds)
 	healthCheckPingTimeout time.Duration
 
-	// Health check failure threshold: consecutive failures before shutdown (default: 5)
+	// Health check failure threshold: consecutive failures before a local proxy shuts
+	// down or a remote one is reported unhealthy (default: 5)
 	healthCheckFailureThreshold int
 
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
@@ -207,11 +209,12 @@ const (
 	HealthCheckRetryDelayEnvVar = "TOOLHIVE_HEALTH_CHECK_RETRY_DELAY"
 
 	// HealthCheckFailureThresholdEnvVar is the environment variable name for configuring
-	// the number of consecutive health check failures before shutdown.
+	// the number of consecutive health check failures before a local proxy shuts down
+	// or a remote one is reported unhealthy.
 	HealthCheckFailureThresholdEnvVar = "TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD"
 
 	// DefaultHealthCheckFailureThreshold is the default number of consecutive health check
-	// failures before the proxy initiates shutdown.
+	// failures before a local proxy initiates shutdown or a remote one is reported unhealthy.
 	DefaultHealthCheckFailureThreshold = 5
 
 	// maxRedirects is the maximum number of HTTP redirects to follow when
@@ -296,7 +299,8 @@ func withHealthCheckPingTimeout(timeout time.Duration) Option {
 	}
 }
 
-// withHealthCheckFailureThreshold sets the consecutive failure count before shutdown.
+// withHealthCheckFailureThreshold sets the consecutive failure count that triggers
+// onHealthCheckFailed.
 // This is primarily useful for testing with lower thresholds.
 // Ignores non-positive values; default will be used.
 func withHealthCheckFailureThreshold(threshold int) Option {
@@ -1476,16 +1480,30 @@ func (p *TransparentProxy) healthCheckURL() string {
 	return u.String()
 }
 
+// healthFailureOutcome is what handleHealthCheckFailure decided about a failed check.
+type healthFailureOutcome int
+
+const (
+	// failureCounted means the failure is below the threshold; monitoring continues.
+	failureCounted healthFailureOutcome = iota
+	// failureReported means a remote server reached the threshold and
+	// onHealthCheckFailed was called; monitoring continues so recovery is seen.
+	failureReported
+	// failureStop means monitoring must stop: a local server reached the threshold
+	// and the proxy was stopped, or the proxy is shutting down.
+	failureStop
+)
+
 // handleHealthCheckFailure handles a failed health check, including retry logic.
 // Once failures reach the threshold it fires onHealthCheckFailed. A local proxy
 // then stops, because ToolHive owns the container lifecycle. A remote proxy keeps
 // running so monitorHealth can see the server come back.
-// Returns (updatedFailureCount, shouldContinue) - true if monitoring should continue, false if it should stop.
+// Returns the updated failure count and what monitorHealth should do next.
 func (p *TransparentProxy) handleHealthCheckFailure(
 	ctx context.Context,
 	consecutiveFailures int,
 	status healthcheck.HealthStatus,
-) (int, bool) {
+) (int, healthFailureOutcome) {
 	consecutiveFailures++
 	//nolint:gosec // G706: logging target URI from config and health status
 	slog.Warn("health check failed",
@@ -1496,9 +1514,14 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 
 	if consecutiveFailures < p.healthCheckFailureThreshold {
 		if p.performHealthCheckRetry(ctx) {
-			consecutiveFailures = 0
+			return 0, failureCounted
 		}
-		return consecutiveFailures, true
+		// A retry cut short by shutdown, or failed because of it, says nothing
+		// about the server; stop before the next tick can count it.
+		if p.shuttingDown(ctx) {
+			return consecutiveFailures, failureStop
+		}
+		return consecutiveFailures, failureCounted
 	}
 
 	if p.isRemote {
@@ -1511,7 +1534,7 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 		if p.onHealthCheckFailed != nil {
 			p.onHealthCheckFailed()
 		}
-		return consecutiveFailures, true
+		return consecutiveFailures, failureReported
 	}
 
 	// All retries exhausted, initiate shutdown
@@ -1525,7 +1548,52 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 		slog.Error("failed to stop proxy",
 			"target", p.targetURI, "error", err)
 	}
-	return consecutiveFailures, false
+	return consecutiveFailures, failureStop
+}
+
+// notifyHealthCheckRecovered calls onHealthCheckRecovered and reports whether the
+// recovery is handled. A nil callback counts as handled; an error leaves it pending
+// so the next passing check calls the callback again.
+func (p *TransparentProxy) notifyHealthCheckRecovered() bool {
+	if p.onHealthCheckRecovered == nil {
+		return true
+	}
+	if err := p.onHealthCheckRecovered(); err != nil {
+		//nolint:gosec // G706: logging target URI from config
+		slog.Warn("failed to report remote server recovery; retrying on the next passing health check",
+			"target", p.targetURI, "error", err)
+		return false
+	}
+	return true
+}
+
+// shuttingDown reports whether the health monitor's context is cancelled or Stop
+// has been called. A check that was in flight when shutdown began fails for that
+// reason alone, so its result must not reach the status callbacks.
+func (p *TransparentProxy) shuttingDown(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	select {
+	case <-p.shutdownCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// healthMonitorState is what monitorHealth carries between checks. Only the
+// monitorHealth goroutine uses it.
+type healthMonitorState struct {
+	consecutiveFailures int
+	// reportedUnhealthy is set once a remote server reaches the failure threshold
+	// and onHealthCheckFailed has been called. Only a remote proxy keeps monitoring
+	// past that point.
+	reportedUnhealthy bool
+	// recoveryPending is set when a remote server reported unhealthy passes a check,
+	// and stays set until onHealthCheckRecovered reports the recovery handled, so a
+	// failed status write is retried on the next passing check.
+	recoveryPending bool
 }
 
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
@@ -1536,7 +1604,7 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	// from, so check once before the first tick.
 	p.healthChecker.CheckHealth(parentCtx)
 
-	consecutiveFailures := 0
+	var state healthMonitorState
 
 	for {
 		select {
@@ -1551,6 +1619,15 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 		case <-ticker.C:
 			alive := p.healthChecker.CheckHealth(parentCtx)
 
+			// The check can run for up to the ping timeout. If shutdown began
+			// meanwhile, its result is not the server's, and a callback now would
+			// overwrite the status the shutdown path writes.
+			if p.shuttingDown(parentCtx) {
+				//nolint:gosec // G706: logging target URI from config
+				slog.Debug("shutdown began during health check, stopping health monitor", "target", p.targetURI)
+				return
+			}
+
 			// A local server's failures count toward shutdown only once it is
 			// initialized, so a slow container start is not mistaken for a failure.
 			// A remote server that keeps failing never initializes, so its failures
@@ -1562,43 +1639,69 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 				continue
 			}
 
-			// Only a remote proxy keeps monitoring once the threshold is reached.
-			degraded := consecutiveFailures >= p.healthCheckFailureThreshold
-
-			if alive.Status != healthcheck.StatusHealthy {
-				if degraded {
-					// Already reported unhealthy. Notify again without logging, so a
-					// status write that failed, or another writer's status, is put right;
-					// the callback writes only when the status is not already unhealthy.
-					//nolint:gosec // G706: logging target URI from config and health status
-					slog.Debug("remote server still unhealthy", "target", p.targetURI, "status", alive.Status)
-					if p.onHealthCheckFailed != nil {
-						p.onHealthCheckFailed()
-					}
-					continue
-				}
-				var shouldContinue bool
-				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)
-				if !shouldContinue {
-					return
-				}
+			if alive.Status == healthcheck.StatusHealthy {
+				p.recordHealthCheckPass(&state)
 				continue
 			}
-
-			// Reset failure count on successful health check
-			if degraded {
-				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("remote server recovered from unhealthy", "target", p.targetURI)
-				if p.onHealthCheckRecovered != nil {
-					p.onHealthCheckRecovered()
-				}
-			} else if consecutiveFailures > 0 {
-				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("health check recovered",
-					"target", p.targetURI, "previous_failures", consecutiveFailures)
+			if !p.recordHealthCheckFailure(parentCtx, &state, alive.Status) {
+				return
 			}
-			consecutiveFailures = 0
 		}
+	}
+}
+
+// recordHealthCheckFailure updates state for a failed check and reports whether
+// monitoring should continue.
+func (p *TransparentProxy) recordHealthCheckFailure(
+	ctx context.Context,
+	state *healthMonitorState,
+	status healthcheck.HealthStatus,
+) bool {
+	if state.reportedUnhealthy {
+		// Already reported unhealthy. Notify again, skipping the warning and the
+		// retry path, so a status write that failed, or another writer's status,
+		// is put right; the callback writes only when the status is not already
+		// unhealthy.
+		//nolint:gosec // G706: logging target URI from config and health status
+		slog.Debug("remote server still unhealthy", "target", p.targetURI, "status", status)
+		if p.onHealthCheckFailed != nil {
+			p.onHealthCheckFailed()
+		}
+		return true
+	}
+
+	var outcome healthFailureOutcome
+	state.consecutiveFailures, outcome = p.handleHealthCheckFailure(ctx, state.consecutiveFailures, status)
+	switch outcome {
+	case failureStop:
+		return false
+	case failureReported:
+		// A fresh unhealthy report supersedes a recovery not yet reported.
+		state.reportedUnhealthy = true
+		state.recoveryPending = false
+	case failureCounted:
+		// Below the threshold; a pending recovery stays pending.
+	}
+	return true
+}
+
+// recordHealthCheckPass updates state for a passing check, and reports a
+// recovery to onHealthCheckRecovered while one is pending.
+func (p *TransparentProxy) recordHealthCheckPass(state *healthMonitorState) {
+	if state.reportedUnhealthy {
+		//nolint:gosec // G706: logging target URI from config
+		slog.Debug("remote server recovered from unhealthy", "target", p.targetURI)
+		state.reportedUnhealthy = false
+		state.recoveryPending = true
+	} else if state.consecutiveFailures > 0 {
+		//nolint:gosec // G706: logging target URI from config
+		slog.Debug("health check recovered",
+			"target", p.targetURI, "previous_failures", state.consecutiveFailures)
+	}
+	state.consecutiveFailures = 0
+
+	if state.recoveryPending {
+		state.recoveryPending = !p.notifyHealthCheckRecovered()
 	}
 }
 

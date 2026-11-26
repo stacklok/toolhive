@@ -41,6 +41,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -75,6 +76,11 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 		APIGroups: []string{"apps"},
 		Resources: []string{"statefulsets"},
 		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+	},
+	{
+		APIGroups: []string{"apps"},
+		Resources: []string{"statefulsets/finalizers"},
+		Verbs:     []string{"update"},
 	},
 	{
 		APIGroups: []string{""},
@@ -204,6 +210,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods/attach,verbs=create;get
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
@@ -273,14 +280,20 @@ func (r *MCPServerReconciler) handleInvalidCABundle(
 // Phase=Failed / Ready=False, alongside the ExternalAuthConfigValidated
 // condition the handler already set in memory. It keeps the full-object status
 // Update the other MCPServer config handlers use, so the in-memory conditions
-// are persisted with it.
+// are persisted with it. The write is skipped when the status is unchanged from
+// originalStatus, so a terminal failure that is not requeued does not rewrite
+// the same status on every reconcile.
 func (r *MCPServerReconciler) markExternalAuthConfigFailed(
 	ctx context.Context,
 	mcpServer *mcpv1beta1.MCPServer,
+	originalStatus mcpv1beta1.MCPServerStatus,
 	err error,
 ) error {
 	mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 	setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
+	if equality.Semantic.DeepEqual(originalStatus, mcpServer.Status) {
+		return nil
+	}
 	return r.Status().Update(ctx, mcpServer)
 }
 
@@ -305,6 +318,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ctxLogger.Error(err, "Failed to get MCPServer")
 		return ctrl.Result{}, err
 	}
+	originalStatus := mcpServer.DeepCopy().Status
 
 	// Check if the MCPServer instance is marked to be deleted — do this before
 	// any validation or external API calls to avoid unnecessary work during deletion
@@ -406,7 +420,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// retried.
 		var validationErr *obo.ValidationError
 		if stderrors.As(err, &validationErr) {
-			if statusErr := r.markExternalAuthConfigFailed(ctx, mcpServer, err); statusErr != nil {
+			if statusErr := r.markExternalAuthConfigFailed(ctx, mcpServer, originalStatus, err); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
 				return ctrl.Result{}, statusErr
 			}
@@ -414,8 +428,15 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 
 		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
-		if statusErr := r.markExternalAuthConfigFailed(ctx, mcpServer, err); statusErr != nil {
+		if statusErr := r.markExternalAuthConfigFailed(ctx, mcpServer, originalStatus, err); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
+			return ctrl.Result{}, statusErr
+		}
+		if isTerminalExternalAuthError(err) {
+			// A consumer/type incompatibility is a configuration error. A spec or
+			// referenced-config change will enqueue reconciliation; retrying the
+			// same generation cannot heal the resource.
+			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -2484,16 +2505,7 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 		return err
 	}
 
-	// OBO exchanges the authenticated user's token, so it needs incoming OIDC
-	// authentication. Terminal: the caller records it without requeueing.
-	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, m.Spec.OIDCConfigRef != nil); err != nil {
-		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
-			Message:            err.Error(),
-			ObservedGeneration: m.Generation,
-		})
+	if err := validateMCPServerExternalAuthConsumer(m, externalAuthConfig); err != nil {
 		return err
 	}
 
@@ -2534,7 +2546,8 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
 	}
 
-	setMCPServerExternalAuthConfigValidCondition(m, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash)
+	setMCPServerExternalAuthConfigValidCondition(
+		m, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash, externalAuthConfig.Spec.Type)
 
 	// Check if the MCPExternalAuthConfig hash has changed
 	if m.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
@@ -2557,6 +2570,43 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	return nil
 }
 
+// validateMCPServerExternalAuthConsumer checks that an MCPServer can consume
+// externalAuthConfig: the type must be one MCPServer supports, and obo needs
+// incoming OIDC authentication so there is a user token to exchange. A failure
+// is recorded on the ExternalAuthConfigValidated condition and returned; both
+// are terminal, and the caller records them without requeueing.
+func validateMCPServerExternalAuthConsumer(
+	m *mcpv1beta1.MCPServer,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) error {
+	if err := externalauthsupport.Validate(
+		externalauthsupport.ConsumerMCPServer,
+		externalAuthConfig.Spec.Type,
+	); err != nil {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonUnsupportedAuthType,
+			Message:            err.Error(),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", m.Namespace, externalAuthConfig.Name, err)
+	}
+
+	if err := ctrlutil.ValidateOBOIncomingAuth(externalAuthConfig, m.Spec.OIDCConfigRef != nil); err != nil {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+			Message:            err.Error(),
+			ObservedGeneration: m.Generation,
+		})
+		return err
+	}
+
+	return nil
+}
+
 // setMCPServerExternalAuthConfigValidCondition preserves a terminal RunConfig validation failure
 // until its referenced configuration or this resource generation changes.
 //
@@ -2571,9 +2621,14 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 // held either: it re-runs earlier in handleExternalAuthConfig and returns before the
 // stored hash advances, so a source that reverts from obo to its earlier spec
 // matches the stored hash, and holding it would keep a stale False.
+//
+// The True condition names a type the MCPServer accepts without applying it
+// (see externalAuthValidCondition), so a standalone MCPServer does not read as
+// protected by a config that only a VirtualMCPServer applies.
 func setMCPServerExternalAuthConfigValidCondition(
 	m *mcpv1beta1.MCPServer,
 	configName, configHash string,
+	authType mcpv1beta1.ExternalAuthType,
 ) {
 	previousCondition := meta.FindStatusCondition(
 		m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
@@ -2586,11 +2641,16 @@ func setMCPServerExternalAuthConfigValidCondition(
 		return
 	}
 
+	reason, message := externalAuthValidCondition(
+		externalauthsupport.ConsumerMCPServer,
+		mcpv1beta1.ConditionReasonExternalAuthConfigValid,
+		configName, authType,
+	)
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonExternalAuthConfigValid,
-		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", configName),
+		Reason:             reason,
+		Message:            message,
 		ObservedGeneration: m.Generation,
 	})
 }

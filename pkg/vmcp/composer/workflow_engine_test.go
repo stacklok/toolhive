@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
@@ -107,6 +108,49 @@ func TestWorkflowEngine_ExecuteWorkflow_WithRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, WorkflowStatusCompleted, result.Status)
 	assert.Equal(t, 1, result.Steps["flaky"].RetryCount)
+}
+
+func TestWorkflowEngine_ExecuteWorkflow_DoesNotRetryDelegatedCredentialErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantText string
+	}{
+		{"authorization required", authtypes.NewDelegatedAuthRequiredError("github", errors.New("private cause")),
+			`provider "github" requires upstream authorization`},
+		{"unavailable", authtypes.ErrDelegatedCredentialUnavailable, "upstream credential unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			te := newTestEngine(t)
+			step := toolStep("fetch", "test.tool", map[string]any{"p": "v"})
+			step.OnError = &ErrorHandler{Action: "retry", RetryCount: 2, RetryDelay: time.Millisecond}
+			target := &vmcp.BackendTarget{WorkloadID: "legacy-x", BaseURL: "http://backend.example:8401"}
+			te.Router.EXPECT().RouteTool(gomock.Any(), step.Tool).Return(target, nil)
+			var attempts atomic.Int32
+			te.Backend.EXPECT().CallTool(gomock.Any(), target, step.Tool, gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(
+					context.Context, *vmcp.BackendTarget, string, map[string]any, map[string]any, map[string]string,
+				) (*vmcp.ToolCallResult, error) {
+					attempts.Add(1)
+					return nil, tc.err
+				}).AnyTimes()
+
+			result, err := execute(t, te.Engine, simpleWorkflow("delegated", step), nil)
+
+			require.ErrorIs(t, err, tc.err)
+			assert.EqualValues(t, 1, attempts.Load())
+			assert.Contains(t, err.Error(), tc.wantText)
+			assert.NotContains(t, err.Error(), "private cause")
+			assert.NotContains(t, err.Error(), target.BaseURL)
+			assert.NotContains(t, err.Error(), target.WorkloadID)
+			assert.Equal(t, WorkflowStatusFailed, result.Status)
+			assert.Equal(t, StepStatusFailed, result.Steps[step.ID].Status)
+			assert.Zero(t, result.Steps[step.ID].RetryCount)
+		})
+	}
 }
 
 func TestWorkflowEngine_ExecuteWorkflow_IsErrorHandling(t *testing.T) {

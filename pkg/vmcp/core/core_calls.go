@@ -327,6 +327,12 @@ func emptyCompletion() *vmcp.CompletionResult {
 // transport error), mirroring the legacy compositeToolsDecorator
 // (internal/compositetools/decorator.go:76-114).
 //
+// The exception is a delegated credential failure that no authorization
+// denial or URL elicitation answer outranks (vmcp.DelegatedCredentialFailure):
+// it is returned as the bare delegated error, so the protocol renderers answer
+// it exactly as they answer a direct call, without workflow or step context.
+// A failure that also carries a denial or an answer is flattened as before.
+//
 // identity is the caller passed to CallTool; the workflow runs on a context
 // carrying it, per the identity rule on the VMCP interface. CallTool already
 // derives that context at entry; withExplicitIdentity here is idempotent and
@@ -341,6 +347,10 @@ func executeComposite(
 	ctx = withExplicitIdentity(ctx, identity)
 	result, err := engine.ExecuteWorkflow(ctx, def, params)
 	if err != nil {
+		if delegated := vmcp.DelegatedCredentialFailure(err); delegated != nil {
+			slog.Debug("workflow failed on a delegated credential", "tool", def.Name, "error", err)
+			return nil, delegated
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Warn("workflow execution timeout", "tool", def.Name, "error", err)
 			return compositeErrorResult("Workflow execution timeout exceeded"), nil
@@ -353,6 +363,10 @@ func executeComposite(
 		return compositeErrorResult("Workflow executor returned nil result"), nil
 	}
 	if result.Error != nil {
+		if delegated := vmcp.DelegatedCredentialFailure(result.Error); delegated != nil {
+			slog.Debug("workflow failed on a delegated credential", "tool", def.Name, "error", result.Error)
+			return nil, delegated
+		}
 		slog.Error("workflow completed with error", "tool", def.Name, "error", result.Error)
 		return compositeErrorResult(fmt.Sprintf("Workflow error: %v", result.Error)), nil
 	}

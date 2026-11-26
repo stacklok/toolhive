@@ -69,6 +69,74 @@ Error types with HTTP status codes are defined in:
 
 In general, define errors near the code that produces the error.
 
+## vMCP delegated credential failures
+
+An outgoing authentication strategy can fail to read a user's delegated
+credential for an upstream provider in two ways, and vMCP answers each one
+differently:
+
+- **The user must authorize the provider.** `tools/call` returns an `isError`
+  tool result that names the provider, for example
+  `provider "github" requires upstream authorization`, or
+  `upstream authorization required` if no provider is named.
+- **The credential is unavailable.** `tools/call` returns JSON-RPC `-32603`
+  with the fixed message `upstream credential unavailable`.
+
+Both revisions (Legacy 2025-11-25 and Modern 2026-07-28) answer the same way,
+for a direct call, through the Legacy optimizer's `call_tool`, and for a
+composite tool whose step fails on the credential. The response never carries
+the backend address, transport errors, or the workflow and step names.
+
+`resources/read` and `prompts/get` have no `isError` result. For them, an
+unavailable credential returns `-32603` with the same fixed message on both
+revisions. When the user must authorize the provider, they return a JSON-RPC
+error whose message is the same text that names the provider: `-32603` on
+Modern, and the SDK's generic error code on Legacy.
+
+### Precedence
+
+When one `tools/call` failure carries several causes, vMCP answers with the
+first one that applies:
+
+1. An authorization denial by vMCP's own policy, which keeps its existing
+   response.
+2. A URL elicitation answer, which keeps its existing rendering (see
+   [Answering a call with a URL elicitation](arch/10-virtual-mcp-architecture.md#answering-a-call-with-a-url-elicitation)).
+3. The user must authorize the provider.
+4. The credential is unavailable.
+
+A URL elicitation answer outranks the authorization requirement because it can
+carry a link the user follows to connect the provider. The plain `isError`
+text is the answer when no such link exists, and it must not hide one.
+
+`resources/read` and `prompts/get` do not follow this list. They have no
+URL elicitation answer, so an unavailable credential there renders the fixed
+`-32603` message even when a URL elicitation answer is also on the error chain.
+
+If a `forEach` iteration in a composite tool times out, the call reports the
+workflow timeout, because `forEach` keeps the iteration's error as the cause
+instead of flattening it to text.
+
+### Retries and fallbacks
+
+Composite workflow steps do not retry these failures. If a revision probe
+fails on the credential, vMCP does not fall back to Legacy and read the
+credential again; the call returns the failure. The same holds when vMCP
+re-probes a backend whose cached revision turned out to be wrong.
+
+### Limitations
+
+These errors appear only when the backend's capabilities were listed
+successfully and the credential read failed on a later call. If the credential
+read fails while vMCP lists a backend's capabilities, vMCP leaves that backend
+out of the tool list, so a call to one of its tools reports that the tool was
+not found. On a Modern backend, when the read fails on an optional list
+(resources, resource templates, or prompts) after the tool list succeeded,
+that list is empty and vMCP logs a warning that names the credential failure.
+
+These rules do not change how a missing token on the non-delegated path is
+classified, and do not enable delegated credential reads by themselves.
+
 ## Error Wrapping Guidelines
 
 ### Use `%w` for Preserving Error Chains with fmt.Errorf

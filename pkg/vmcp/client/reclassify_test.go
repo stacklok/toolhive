@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -136,6 +137,78 @@ func TestDispatch_ReclassifyAndRetry(t *testing.T) {
 
 	rev, _ := h.cachedRevision(target.WorkloadID)
 	assert.Equal(t, mcpparser.RevisionModern, rev, "cache updated to the corrected revision")
+}
+
+func TestDispatch_DelegatedCredentialErrorOnRetry(t *testing.T) {
+	t.Parallel()
+
+	for name, want := range delegatedCredentialTestErrors() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv := modernDiscoverServer(t)
+			h := newProbeClient(t)
+			target := &vmcp.BackendTarget{WorkloadID: "legacy-x", BaseURL: srv.URL, TransportType: "streamable-http"}
+			h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
+			var attempts []mcpparser.Revision
+			err := h.dispatch(t.Context(), target, func(_ context.Context, rev mcpparser.Revision) error {
+				attempts = append(attempts, rev)
+				if rev == mcpparser.RevisionLegacy {
+					return fmt.Errorf("%w: %w", errLegacyInitFailed, transport.ErrLegacySSEServer)
+				}
+				return fmt.Errorf("calling %s at %s: %w", target.WorkloadID, target.BaseURL, want)
+			})
+			assert.Equal(t, []mcpparser.Revision{mcpparser.RevisionLegacy, mcpparser.RevisionModern}, attempts)
+			assertBareDelegatedCredentialError(t, err, want, target.BaseURL, target.WorkloadID)
+		})
+	}
+}
+
+// TestDispatch_DelegatedCredentialErrorOnReprobe pins that a re-probe after a
+// cached revision mismatch that fails on a delegated credential surfaces that
+// failure instead of the mismatch, without retrying the call or changing the
+// cached revision.
+func TestDispatch_DelegatedCredentialErrorOnReprobe(t *testing.T) {
+	t.Parallel()
+
+	for name, want := range delegatedCredentialTestErrors() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newDelegatedFailureClient(t, want)
+			target := &vmcp.BackendTarget{
+				WorkloadID: "legacy-x", BaseURL: "http://backend.example:8401/mcp", TransportType: "streamable-http",
+			}
+			h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
+			var attempts []mcpparser.Revision
+			err := h.dispatch(t.Context(), target, func(_ context.Context, rev mcpparser.Revision) error {
+				attempts = append(attempts, rev)
+				return fmt.Errorf("%w: %w", errLegacyInitFailed, transport.ErrLegacySSEServer)
+			})
+			assert.Equal(t, []mcpparser.Revision{mcpparser.RevisionLegacy}, attempts, "no retry after a failed re-probe")
+			assertBareDelegatedCredentialError(t, err, want, target.BaseURL, target.WorkloadID)
+			rev, cached := h.cachedRevision(target.WorkloadID)
+			assert.True(t, cached)
+			assert.Equal(t, mcpparser.RevisionLegacy, rev, "a failed re-probe must not change the cached revision")
+		})
+	}
+}
+
+// TestDispatch_DenialOutranksDelegatedCredentialError pins that dispatch does
+// not reduce a call failure carrying both an authorization denial and a
+// delegated credential error to the bare delegated error.
+func TestDispatch_DenialOutranksDelegatedCredentialError(t *testing.T) {
+	t.Parallel()
+
+	h := newProbeClient(t)
+	target := &vmcp.BackendTarget{WorkloadID: "legacy-x", BaseURL: "http://backend.example", TransportType: "sse"}
+	h.setRevision(target.WorkloadID, mcpparser.RevisionLegacy)
+
+	err := h.dispatch(t.Context(), target, func(context.Context, mcpparser.Revision) error {
+		return fmt.Errorf("calling legacy-x: %w",
+			errors.Join(vmcp.ErrAuthorizationFailed, authtypes.ErrDelegatedCredentialUnavailable))
+	})
+	assert.ErrorIs(t, err, vmcp.ErrAuthorizationFailed)
 }
 
 // TestDispatch_NoRetryOnDataPlaneMethodNotFound: a genuine method-not-found on a
@@ -292,13 +365,15 @@ func TestReclassify_WarnsOnlyOnActualChange(t *testing.T) {
 	target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
 
 	// prev=Legacy -> re-probe Modern: change, must WARN.
-	got := h.reclassify(context.Background(), target, mcpparser.RevisionLegacy)
+	got, err := h.reclassify(context.Background(), target, mcpparser.RevisionLegacy)
+	require.NoError(t, err)
 	assert.Equal(t, mcpparser.RevisionModern, got)
 	assert.Contains(t, buf.String(), "reclassified", "a real change must WARN")
 
 	// prev=Modern -> re-probe Modern: no change, must be silent.
 	buf.Reset()
-	got = h.reclassify(context.Background(), target, mcpparser.RevisionModern)
+	got, err = h.reclassify(context.Background(), target, mcpparser.RevisionModern)
+	require.NoError(t, err)
 	assert.Equal(t, mcpparser.RevisionModern, got)
 	assert.Empty(t, buf.String(), "a no-op re-probe must not WARN")
 }

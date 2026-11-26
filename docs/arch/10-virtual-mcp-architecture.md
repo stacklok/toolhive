@@ -329,6 +329,16 @@ A probe that fails inconclusively falls back to Legacy for that one call
 **without caching it**, so a transient outage can never pin a backend to the
 wrong revision.
 
+The exception is a probe that fails because the outgoing authentication
+strategy could not read the user's delegated credential (the user must
+authorize the provider, or the credential is unavailable). That failure ends
+the call instead: vMCP does not try Legacy, which would read the same
+credential again, and returns the credential failure to the client as
+[error handling](../error-handling.md#vmcp-delegated-credential-failures)
+describes. The same applies to the re-probe after a revision mismatch on a
+cached backend: the call returns the credential failure, is not retried, and
+the cached revision stays as it was.
+
 ### The cache, and its asymmetric self-healing
 
 `dispatch` wraps every backend verb: it resolves the revision (probing on a
@@ -525,11 +535,22 @@ capabilities. Callers get no capability query (vmcp-anti-patterns #1 and #8).
 
 The renderers are `writeModernToolCallFailure` (`pkg/vmcp/server`; its writers
 `writeModernInputRequired` and `writeModernURLElicitationUnsupported`) and
-`legacyToolCallError` for Legacy, which renders the `-32042` and passes
-everything else to `conversion.ErrorToToolResult`. Each has the same
-precedence: an authorization denial outranks the answer, so an error carrying
-both renders as the denial: the 403 on Modern, the denial `isError` result on
-Legacy.
+`legacyToolCallError` for Legacy, which renders the `-32042`, renders an
+unavailable delegated credential as a bare `-32603`, and passes everything
+else to `conversion.ErrorToToolResult`. Each uses the same precedence when one
+error carries several causes:
+
+1. An authorization denial: the 403 on Modern, the denial `isError` result on
+   Legacy.
+2. The URL elicitation answer, rendered as in the table above.
+3. A delegated authorization requirement: an `isError` result naming the
+   provider.
+4. An unavailable delegated credential: `-32603` with a fixed message.
+
+The answer outranks a delegated authorization requirement so that an answer
+carrying a connect link is never hidden behind the plain `isError` text. See
+[error handling](../error-handling.md#vmcp-delegated-credential-failures) for
+the delegated credential failures.
 
 A Legacy session gets `-32042` only when the mcpcompat session accessors
 (`SessionWithProtocolVersion`, `SessionWithClientCapabilities`) report the

@@ -28,6 +28,44 @@ func TestURLElicitationRequired(t *testing.T) {
 	assert.JSONEq(t, string(data), string(wireErr.Data))
 }
 
+func TestInternalError(t *testing.T) {
+	t.Parallel()
+
+	err := InternalError("upstream credential unavailable")
+	wireErr, ok := err.(*jsonrpc.Error)
+	require.True(t, ok, "expected a bare *jsonrpc.Error, got %T", err)
+	assert.EqualValues(t, -32603, wireErr.Code)
+	assert.Equal(t, "upstream credential unavailable", wireErr.Message)
+	assert.Empty(t, wireErr.Data)
+}
+
+func TestFindInternalError_DelegatedCredentialUnavailable(t *testing.T) {
+	t.Parallel()
+
+	bare := InternalError("upstream credential unavailable")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "bare", err: bare, want: bare},
+		{name: "wrapped", err: fmt.Errorf("call_tool: %w", bare), want: bare},
+		{name: "other JSON-RPC code", err: URLElicitationRequired(nil)},
+		{name: "plain error", err: errors.New("backend unavailable")},
+		{name: "nil"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := FindInternalError(tc.err)
+			if tc.want == nil {
+				assert.NoError(t, got)
+				return
+			}
+			assert.Same(t, tc.want, got)
+		})
+	}
+}
+
 func TestFindURLElicitationRequired(t *testing.T) {
 	t.Parallel()
 

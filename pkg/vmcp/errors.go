@@ -6,6 +6,8 @@ package vmcp
 import (
 	"errors"
 	"strings"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // Common domain errors used across vmcp subpackages.
@@ -205,4 +207,20 @@ func IsConnectionError(err error) bool {
 	}
 
 	return false
+}
+
+// DelegatedCredentialFailure returns the bare delegated credential error in
+// err's chain (authtypes.DelegatedCredentialError) when err carries neither an
+// authorization denial (ErrAuthorizationFailed) nor a URL elicitation answer.
+// Those two outrank a delegated credential failure when a call failure is
+// rendered, so it returns nil for them, as it does when err carries no
+// delegated credential error.
+func DelegatedCredentialFailure(err error) error {
+	if errors.Is(err, ErrAuthorizationFailed) {
+		return nil
+	}
+	if _, ok := URLElicitationFromError(err); ok {
+		return nil
+	}
+	return authtypes.DelegatedCredentialError(err)
 }

@@ -1205,10 +1205,19 @@ func registerServeSessionWithRegistry(
 	t *testing.T, fc *fakeCore, reg vmcp.BackendRegistry,
 ) (*Server, string, string) {
 	t.Helper()
-	ctrl := gomock.NewController(t)
-	factory, _ := newToolSessionFactory(t, ctrl, fc.tools)
+	return registerServeSessionWithCore(t, fc, fc.tools, reg)
+}
 
-	srv, err := Serve(context.Background(), fc, &ServerConfig{
+// registerServeSessionWithCore is registerServeSessionWithRegistry over any
+// core.VMCP, so a test can drive the Serve handlers through a real core.
+func registerServeSessionWithCore(
+	t *testing.T, vmcpCore core.VMCP, tools []vmcp.Tool, reg vmcp.BackendRegistry,
+) (*Server, string, string) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	factory, _ := newToolSessionFactory(t, ctrl, tools)
+
+	srv, err := Serve(context.Background(), vmcpCore, &ServerConfig{
 		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      reg,

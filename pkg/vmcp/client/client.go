@@ -777,13 +777,40 @@ func (h *httpBackendClient) defaultClientFactory(
 }
 
 // isAuthorizationRequired reports whether err is one of the mcp-go authorization-required
-// sentinels. Extracted to keep wrapBackendError within the cyclomatic complexity limit.
+// sentinels. classifyBackendError uses it to identify backend authorization failures.
 func isAuthorizationRequired(err error) bool {
 	return errors.Is(err, transport.ErrAuthorizationRequired) ||
 		errors.Is(err, transport.ErrOAuthAuthorizationRequired)
 }
 
-// wrapBackendError wraps an error with the appropriate sentinel error based on error type.
+// wrapBackendError preserves per-user credential failures before backend
+// error classification can discard the cause or expose transport details.
+func wrapBackendError(err error, backendID string, operation string) error {
+	if surfaced := delegatedFailure(err); surfaced != nil {
+		return surfaced
+	}
+	return classifyBackendError(err, backendID, operation)
+}
+
+// delegatedFailure returns the error to surface for a failure whose chain
+// carries a delegated credential error, and nil for any other failure.
+//
+// It is the bare delegated error, so transport details never reach the
+// client, unless the chain also carries an authorization denial or a URL
+// elicitation answer. Those outrank the delegated error when the failure is
+// rendered, so the chain is then returned unchanged and unclassified:
+// classifyBackendError formats most causes with %v and would drop them.
+func delegatedFailure(err error) error {
+	if authtypes.DelegatedCredentialError(err) == nil {
+		return nil
+	}
+	if bare := vmcp.DelegatedCredentialFailure(err); bare != nil {
+		return bare
+	}
+	return err
+}
+
+// classifyBackendError wraps an error with the appropriate sentinel error based on error type.
 // This enables type-safe error checking with errors.Is() instead of string matching.
 //
 // Error detection strategy (in order of preference):
@@ -798,7 +825,7 @@ func isAuthorizationRequired(err error) bool {
 // This is a deliberate trade-off due to Go's limitation of one %w per fmt.Errorf call.
 // If access to the underlying error type is needed in the future, consider implementing
 // a custom error type with multiple Unwrap() methods (Go 1.20+).
-func wrapBackendError(err error, backendID string, operation string) error {
+func classifyBackendError(err error, backendID string, operation string) error {
 	if err == nil {
 		return nil
 	}
@@ -1178,11 +1205,10 @@ func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint s
 //     leaving it unprobed lets the next call re-probe once the outage clears.
 //
 // A hard error is also returned when the backend transport cannot be built at all
-// (e.g. invalid auth/CA config); that is a genuine misconfiguration. Note that
-// dispatch, the sole caller, does not distinguish these error classes — it falls
-// back to Legacy uncached on any error this function returns. A "sse" target
-// (see below) returns before that check runs, so its transport is first
-// validated on the Legacy call path instead.
+// (e.g. invalid auth/CA config). dispatch returns a delegated credential failure
+// from the probe directly (delegatedFailure) and, on an uncached lookup, falls back
+// to Legacy uncached for other probe errors. An "sse" target (see below) skips the
+// probe, so its transport is first validated on the Legacy call path instead.
 // The resolved capabilities are intentionally not returned: callers that need
 // them (ListCapabilities) re-fetch via modernDiscover, so probeRevision only
 // classifies and caches the revision.
@@ -1328,7 +1354,11 @@ func (h *httpBackendClient) modernEnumerate(
 //   - a transient failure (errModernTransient: HTTP 408/429/5xx, a mid-stream
 //     read failure, or a transport/network error), after the mandatory
 //     tools/list has already succeeded, yields an empty list with a WARN, and
-//     unavailable is true: the items are unknown, not absent;
+//     unavailable is true: the items are unknown, not absent. A delegated
+//     credential read that fails while sending the request also arrives as a
+//     transport error; it degrades the same way, but its WARN names the
+//     credential failure, so an empty list is not mistaken for a backend
+//     outage;
 //   - a -32601 not-implemented (mcp.ErrMethodNotFound) yields an empty list
 //     when degradeNotFound is set. This is used for optional resource and
 //     prompt surfaces so a backend's remaining capabilities can still aggregate.
@@ -1339,6 +1369,10 @@ func modernListOptional[T any](
 ) (items []T, unavailable bool, err error) {
 	items, err = modernListAll[T](ctx, hc, endpoint, method, itemsField, backend)
 	switch {
+	case errors.Is(err, errModernTransient) && authtypes.DelegatedCredentialError(err) != nil:
+		slog.Warn(method+" failed on a delegated credential read; degrading to empty list",
+			"backend", backend, "error", authtypes.DelegatedCredentialError(err))
+		return nil, true, nil
 	case errors.Is(err, errModernTransient):
 		slog.Warn(method+" transiently unavailable; degrading to empty list",
 			"backend", backend, "error", err)
@@ -1728,10 +1762,12 @@ func (h *httpBackendClient) hintRefuted(backendID string) bool {
 // and runs fn with it. Every call verb AND ListCapabilities route through this
 // seam so revision selection — and self-correction — lives in one place.
 //
-// A probeRevision error of any kind (inconclusive probe or transport-build
-// failure) falls back to Legacy — the pre-dual-era default — WITHOUT caching,
-// so a genuinely Modern backend re-probes on the next call instead of being
-// pinned to Legacy by one bad probe.
+// A delegated credential failure (delegatedFailure), from the probe, from fn,
+// or from the re-probe after a mismatch, ends dispatch without a Legacy
+// fallback, retry, or change to the cached revision. Other probe errors fall
+// back to Legacy — the pre-dual-era default — without caching, so a genuinely
+// Modern backend re-probes on the next call instead of being pinned to Legacy
+// by one bad probe.
 //
 // On a revision mismatch (isRevisionMismatch), dispatch always re-probes
 // authoritatively and flips the cache so future calls use the corrected
@@ -1754,6 +1790,9 @@ func (h *httpBackendClient) dispatch(
 	if !cached {
 		probed, err := h.probeRevision(ctx, target)
 		if err != nil {
+			if surfaced := delegatedFailure(err); surfaced != nil {
+				return surfaced
+			}
 			// A failed probe (auth blip / transient 5xx / timeout / connection
 			// refused, or a transport that could not be built) says nothing about
 			// the revision and must NOT fail a backend that is reachable on the
@@ -1770,6 +1809,9 @@ func (h *httpBackendClient) dispatch(
 	}
 
 	err := fn(ctx, rev)
+	if surfaced := delegatedFailure(err); surfaced != nil {
+		return surfaced
+	}
 	if err == nil || !isRevisionMismatch(rev, err) {
 		return err
 	}
@@ -1779,7 +1821,10 @@ func (h *httpBackendClient) dispatch(
 		return err
 	}
 
-	corrected := h.reclassify(ctx, target, rev)
+	corrected, probeErr := h.reclassify(ctx, target, rev)
+	if probeErr != nil {
+		return probeErr
+	}
 	if corrected == rev {
 		// Re-probe agreed with the cache: the mismatch was not a revision problem.
 		return err
@@ -1789,27 +1834,39 @@ func (h *httpBackendClient) dispatch(
 		// already executed this request — do NOT re-run it (no double-execution).
 		return err
 	}
-	return fn(ctx, corrected)
+	err = fn(ctx, corrected)
+	if surfaced := delegatedFailure(err); surfaced != nil {
+		return surfaced
+	}
+	return err
 }
 
 // reclassify re-probes the backend authoritatively (overwriting the cached
 // revision via probeRevision) and returns the corrected revision. On an actual
 // era change it emits a WARN and increments the reclassification counter; a
 // same-era re-probe (or a re-probe that can't run) is silent and returns prev.
+//
+// A re-probe that fails on a delegated credential returns that failure
+// (delegatedFailure) instead, so the caller reports it rather than the
+// mismatch that triggered the re-probe. A failed probe does not touch the
+// cached revision.
 func (h *httpBackendClient) reclassify(
 	ctx context.Context, target *vmcp.BackendTarget, prev mcpparser.Revision,
-) mcpparser.Revision {
+) (mcpparser.Revision, error) {
 	corrected, err := h.probeRevision(ctx, target)
 	if err != nil {
-		// Transport couldn't even be built to re-probe; keep the prior revision.
-		return prev
+		if surfaced := delegatedFailure(err); surfaced != nil {
+			return prev, surfaced
+		}
+		// Inconclusive, or the transport couldn't be built; keep the prior revision.
+		return prev, nil
 	}
 	if corrected != prev {
 		slog.WarnContext(ctx, "backend MCP revision reclassified after mismatch",
 			"backend", target.WorkloadID, "old", prev.String(), "new", corrected.String())
 		backendtelemetry.RecordRevisionReclassification(ctx)
 	}
-	return corrected
+	return corrected, nil
 }
 
 // isRevisionMismatch reports whether err from an attempt made under rev signals

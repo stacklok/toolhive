@@ -15,6 +15,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestForEachStep_BasicIteration(t *testing.T) {
@@ -230,6 +231,69 @@ func TestForEachStep_ErrorContinue(t *testing.T) {
 	assert.Equal(t, 2, forEachResult.Output["count"])
 	assert.Equal(t, 1, forEachResult.Output["completed"])
 	assert.Equal(t, 1, forEachResult.Output["failed"])
+}
+
+// TestForEachStep_IterationErrorChain pins that a failed iteration keeps its
+// error value: under abort the step's error wraps it, so errors.Is/As still
+// find a delegated credential error, while continue still records the text in
+// the iteration output and completes the workflow.
+func TestForEachStep_IterationErrorChain(t *testing.T) {
+	t.Parallel()
+
+	for name, cause := range map[string]error{
+		"authorization required": authtypes.NewDelegatedAuthRequiredError("github", nil),
+		"unavailable":            authtypes.ErrDelegatedCredentialUnavailable,
+	} {
+		for _, continueOnError := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/continue=%t", name, continueOnError), func(t *testing.T) {
+				t.Parallel()
+				te := newTestEngine(t)
+				te.expectToolCallWithAnyArgsAndError("osv.query_vulnerability", cause)
+				te.expectToolCall("oci.get_image_config",
+					map[string]any{"image": "test:latest"},
+					map[string]any{"packages": json.RawMessage(`[{"name":"openssl"}]`)},
+				)
+
+				step := WorkflowStep{
+					ID:         "check_vulns",
+					Type:       StepTypeForEach,
+					Collection: "{{json .steps.get_packages.output.packages}}",
+					InnerStep: &WorkflowStep{
+						ID:        "inner",
+						Type:      StepTypeTool,
+						Tool:      "osv.query_vulnerability",
+						Arguments: map[string]any{"package_name": "{{.forEach.item.name}}"},
+					},
+					DependsOn: []string{"get_packages"},
+				}
+				if continueOnError {
+					step.OnError = &ErrorHandler{Action: "continue", ContinueOnError: true}
+				}
+				def := simpleWorkflow("test-foreach-chain",
+					toolStep("get_packages", "oci.get_image_config", map[string]any{"image": "test:latest"}),
+					step,
+				)
+
+				result, err := execute(t, te.Engine, def, map[string]any{})
+				if !continueOnError {
+					require.ErrorIs(t, err, cause)
+					assert.Equal(t, cause, authtypes.DelegatedCredentialError(err))
+					assert.Equal(t, WorkflowStatusFailed, result.Status)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, WorkflowStatusCompleted, result.Status)
+				output := result.Steps["check_vulns"].Output
+				assert.Equal(t, 1, output["failed"])
+				iterations, ok := output["iterations"].([]any)
+				require.True(t, ok)
+				require.Len(t, iterations, 1)
+				iteration, ok := iterations[0].(map[string]any)
+				require.True(t, ok)
+				assert.Contains(t, iteration["error"], cause.Error())
+			})
+		}
+	}
 }
 
 func TestForEachStep_MaxIterationsExceeded(t *testing.T) {

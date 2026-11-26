@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -347,6 +348,8 @@ func gateParsedArgs(ctx context.Context, toolName string) map[string]any {
 // The result-returning shape forwards the backend's non-reserved _meta (trace ids,
 // custom fields) onto the wire result — reserved io.modelcontextprotocol/* keys are
 // stripped by conversion.ToMCPMeta, matching every other Legacy egress (#5986).
+// An unavailable delegated credential returns a bare -32603 with a fixed message,
+// as Modern resources/read does; other errors keep the SDK's default rendering.
 func (s *Server) coreResourceHandler(
 	sessionID, uri, backendName string,
 ) server.ResourceResultHandlerFunc {
@@ -371,6 +374,9 @@ func (s *Server) coreResourceHandler(
 		if err != nil {
 			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 				return nil, errors.New(vmcp.DenyMessageResourceRead)
+			}
+			if authtypes.DelegatedCredentialError(err) == authtypes.ErrDelegatedCredentialUnavailable {
+				return nil, delegatedCredentialUnavailableError()
 			}
 			return nil, err
 		}
@@ -399,6 +405,7 @@ func (s *Server) coreResourceTemplateHandler(
 // coreResourceHandler: audit label, binding check, then core.GetPrompt with explicit
 // identity. The request's string-typed prompt arguments are widened to map[string]any
 // for the domain call, and the domain result is converted to *mcp.GetPromptResult.
+// Errors are rendered as in coreResourceHandler.
 func (s *Server) corePromptHandler(
 	sessionID, promptName, backendName string,
 ) server.PromptHandlerFunc {
@@ -428,6 +435,9 @@ func (s *Server) corePromptHandler(
 		if err != nil {
 			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 				return nil, errors.New(vmcp.DenyMessagePromptGet)
+			}
+			if authtypes.DelegatedCredentialError(err) == authtypes.ErrDelegatedCredentialUnavailable {
+				return nil, delegatedCredentialUnavailableError()
 			}
 			return nil, err
 		}

@@ -701,6 +701,21 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			eventContains:   "too large",
 		},
 		{
+			name: "multi-statement Cedar policy entry is rejected",
+			proxy: v1beta1test.NewMCPRemoteProxy("multi-stmt-cedar-proxy", "default",
+				v1beta1test.WithRemoteProxyAuthzConfig(&mcpv1beta1.AuthzConfigRef{
+					Type: mcpv1beta1.AuthzConfigTypeInline,
+					Inline: &mcpv1beta1.InlineAuthzConfig{
+						Policies: []string{"permit (principal, action, resource); forbid (principal, action, resource);"},
+					},
+				})),
+			expectError:     true,
+			errContains:     "more than one statement",
+			expectCondition: mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid,
+			conditionStatus: metav1.ConditionFalse,
+			eventContains:   "more than one statement",
+		},
+		{
 			name: "referenced authz ConfigMap not found is rejected",
 			proxy: v1beta1test.NewMCPRemoteProxy("missing-configmap-proxy", "default",
 				v1beta1test.WithRemoteProxyAuthzConfig(&mcpv1beta1.AuthzConfigRef{

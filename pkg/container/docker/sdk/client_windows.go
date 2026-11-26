@@ -63,7 +63,7 @@ func newPlatformClient(pipePath string) (*http.Client, []mobyclient.Opt) {
 // findPlatformContainerSocket finds container pipe paths on Windows. Returns
 // a slice for parity with the Unix implementation, but Windows only ever has
 // one candidate per runtime type (the well-known named pipe).
-func findPlatformContainerSocket(rt runtime.Type) ([]string, runtime.Type, error) {
+func findPlatformContainerSocket(rt runtime.Type, overrides runtime.SocketConfig) ([]string, runtime.Type, error) {
 	// First check for custom socket paths via environment variables
 	if customPipePath := os.Getenv(PodmanSocketEnv); customPipePath != "" {
 		//nolint:gosec // G706: pipe path from trusted environment variable
@@ -91,6 +91,24 @@ func findPlatformContainerSocket(rt runtime.Type) ([]string, runtime.Type, error
 		}
 		conn.Close()
 		return []string{customPipePath}, runtime.TypeDocker, nil
+	}
+
+	// Next, the config file override for this runtime. It only applies to its
+	// own runtime, so a stale podman_socket does not stop Docker discovery.
+	// Colima is not supported on Windows, so colima_socket is ignored.
+	if rt != runtime.TypeColima {
+		if configPipePath := overrides.SocketFor(rt); configPipePath != "" {
+			//nolint:gosec // G706: pipe path from the user's own config file
+			slog.Debug("using pipe from config", "runtime", rt, "path", configPipePath)
+			ctx, cancel := context.WithTimeout(context.Background(), pipeConnectionTimeout)
+			defer cancel()
+			conn, err := winio.DialPipeContext(ctx, configPipePath)
+			if err != nil {
+				return nil, rt, fmt.Errorf("invalid %s pipe path from config: %w", rt, err)
+			}
+			_ = conn.Close() // the dial only probes reachability; a close error is irrelevant
+			return []string{configPipePath}, rt, nil
+		}
 	}
 
 	if rt == runtime.TypePodman {

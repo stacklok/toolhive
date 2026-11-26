@@ -42,6 +42,8 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 		ClientID:         "client-abc",
 	}
 
+	errCASLost := errors.New("redis connection lost")
+
 	tests := []struct {
 		name           string
 		sessionID      string
@@ -50,6 +52,8 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 		setupStorage   func(*testing.T, *storagemocks.MockUpstreamTokenStorage)
 		wantErr        bool
 		wantErrContain string
+		wantErrIs      []error
+		wantNotErrIs   []error
 		checkResult    func(*testing.T, *storage.UpstreamTokens)
 	}{
 		{
@@ -274,12 +278,40 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
 				s.EXPECT().CompareAndSwapUpstreamTokens(gomock.Any(), "session-6", "github", "old-refresh", gomock.Any()).
 					Times(3).
-					Return(errors.New("redis connection lost"))
+					Return(errCASLost)
 				s.EXPECT().DeleteUpstreamTokensForProvider(gomock.Any(), "session-6", "github").
 					Return(nil)
 			},
 			wantErr:        true,
 			wantErrContain: "failed to persist rotated upstream refresh token",
+			wantErrIs:      []error{storage.ErrNotFound, errCASLost},
+		},
+		{
+			// The delete fails too, so the row still exists: the error must not
+			// claim it is gone.
+			name:      "rotated RT, storage fails and delete fails - row is not reported deleted",
+			sessionID: "session-6b",
+			expired:   baseExpired,
+			setupProvider: func(_ *testing.T, p *upstreammocks.MockOAuth2Provider) {
+				p.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "upstream-sub-456").
+					Return(&upstream.Tokens{
+						AccessToken:  "new-access",
+						RefreshToken: "new-refresh",
+						IDToken:      "new-id-token",
+						ExpiresAt:    newExpiry,
+					}, nil)
+			},
+			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().CompareAndSwapUpstreamTokens(gomock.Any(), "session-6b", "github", "old-refresh", gomock.Any()).
+					Times(3).
+					Return(errCASLost)
+				s.EXPECT().DeleteUpstreamTokensForProvider(gomock.Any(), "session-6b", "github").
+					Return(errors.New("delete failed"))
+			},
+			wantErr:        true,
+			wantErrContain: "failed to persist rotated upstream refresh token",
+			wantErrIs:      []error{errCASLost},
+			wantNotErrIs:   []error{storage.ErrNotFound},
 		},
 		{
 			// Not-rotated RT (provider returns empty RefreshToken → backfill) +
@@ -403,6 +435,12 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErrContain)
+				for _, want := range tt.wantErrIs {
+					assert.ErrorIs(t, err, want)
+				}
+				for _, unwanted := range tt.wantNotErrIs {
+					assert.NotErrorIs(t, err, unwanted)
+				}
 				assert.Nil(t, result)
 				return
 			}

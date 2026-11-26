@@ -4,15 +4,10 @@
 package tokenexchange
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // TestJWTBearerGrantFactories_RequireSharedValidator pins that both
@@ -47,15 +42,6 @@ func TestJWTBearerGrantFactories_RequireSharedValidator(t *testing.T) {
 func TestFactoryOptions_Refusals(t *testing.T) {
 	t.Parallel()
 
-	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
-		"read": {
-			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-			Grant: func(context.Context, authorizationdetails.Request) (authorizationdetails.Result, error) {
-				return authorizationdetails.Result{}, nil
-			},
-		},
-	})
-	require.NoError(t, err)
 	idJAG := func(option FactoryOption) func() (any, error) {
 		return func() (any, error) { return IDJAGIssuanceFactory(nil, nil, nil, nil, option) }
 	}
@@ -73,11 +59,6 @@ func TestFactoryOptions_Refusals(t *testing.T) {
 				return Factory(time.Hour, nil, nil, nil, lifespans("client", time.Minute))
 			},
 			wantErr: "per-client access token lifespans apply to ID-JAG redemption only",
-		},
-		{
-			name:    "ID-JAG refuses an authorization details registry",
-			build:   idJAG(WithAuthorizationDetailsRegistry(registry)),
-			wantErr: "ID-JAG redemption does not apply an authorization details registry",
 		},
 		{name: "ID-JAG refuses a zero lifespan", build: idJAG(lifespans("client", 0)), wantErr: "must be at least 2s"},
 		{name: "ID-JAG refuses a negative lifespan", build: idJAG(lifespans("client", -time.Second)), wantErr: "must be at least 2s"},

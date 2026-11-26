@@ -10,15 +10,20 @@
 // itself.
 //
 // Usage has two phases. Registry.Parse runs early and cheaply, before any
-// expensive checks, and rejects malformed input. Pending.Grant runs late, after
-// the request is otherwise accepted, and calls the hooks.
+// expensive checks, and rejects malformed input. Pending.Grant or
+// Pending.GrantSubset runs late, after the request is otherwise accepted, and
+// calls the hooks: Grant when the hooks decide the granted entries, and
+// GrantSubset when they may only keep or drop entries that go into a signed
+// token with their bytes unchanged.
 package authorizationdetails
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"time"
@@ -30,30 +35,73 @@ const (
 	maxDepth = 64
 )
 
+// IDJAGIssuance is the key a Type lists in GrantTypes to be accepted on an
+// RFC 8693 token exchange that mints an ID-JAG, and so to be signed into the
+// ID-JAG's authorization_details claim. It is not a grant type: its value is
+// the ID-JAG token-type URN, the requested_token_type of such a request, which
+// no grant type can equal. Listing the token-exchange grant type alone does not
+// opt a type in, so a type written for exchanged access tokens is never signed
+// into an ID-JAG that another authorization server trusts unless its author
+// says so. Use Registry.ParseIDJAGIssuance for such a request.
+const IDJAGIssuance = "urn:ietf:params:oauth:token-type:id-jag"
+
+// grantTypeTokenExchange is the RFC 8693 grant type, which an ID-JAG issuance
+// request rides.
+//
+//nolint:gosec // G101: a grant type URN, not a credential
+const grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+
 // Type registers one authorization-details type.
 type Type struct {
-	// GrantTypes lists the grant types this type is accepted on. It is required
-	// and must be non-empty. An entry of this type on any other grant type is
-	// rejected as invalid.
+	// GrantTypes lists the grant types this type is accepted on, and may list
+	// IDJAGIssuance. It is required and must be non-empty. An entry of this
+	// type on any other grant type is rejected as invalid.
+	//
+	// On ToolHive's authorization server, listing the JWT-bearer grant type
+	// (urn:ietf:params:oauth:grant-type:jwt-bearer) opts the type into ID-JAG
+	// redemption only: the server processes the authorization_details claim
+	// of an ID-JAG and refuses a plain RFC 7523 assertion that carries one.
+	//
+	// Listing the token-exchange grant type
+	// (urn:ietf:params:oauth:grant-type:token-exchange) opts the type into a
+	// token exchange for an access token, which only echoes the granted
+	// entries. Listing IDJAGIssuance opts it into a token exchange for an
+	// ID-JAG, which signs the entries the hook keeps into the ID-JAG under
+	// Pending.GrantSubset's rules; without it, an entry of the type on such a
+	// request is refused as an unknown type. The two are independent.
 	GrantTypes []string
 
 	// Grant decides what to grant for all of this type's entries in a request.
-	// It is called at most once per request, after the other checks passed,
-	// with every entry of the type in request order.
+	// It is called after the other checks passed, with every entry of the type
+	// in request order: once per request, except on a token exchange for an
+	// ID-JAG, which decides in both of the token endpoint's handler phases and
+	// so calls it twice. What it may return
+	// depends on how the server asks: see Pending.Grant (token exchange) and
+	// Pending.GrantSubset (a token exchange that mints an ID-JAG, and ID-JAG
+	// redemption).
 	//
 	// Grant is decide-only: it may read state but must not commit it, because
-	// token issuance can still fail after it returns. Returning Error rejects
-	// the request with that code and reason; any other error is an internal
-	// failure.
+	// token issuance can still fail after it returns, and it may be called
+	// again for the same request. On ID-JAG redemption the
+	// ID-JAG is consumed only after the hooks ran, so a hook can run again for
+	// the same ID-JAG when a redemption of it is later refused as a replay.
+	// Returning Error rejects the request with that code and reason; any other
+	// error is an internal failure.
 	Grant func(context.Context, Request) (Result, error)
 }
 
 // Request is the context a Grant hook receives. The caller supplies every
 // field except Entries and GrantType, which the package fills.
 //
-// All hooks of one request share the same Request values: the slices, Subject
-// and Subject.Claims are not copied per hook, so a hook must not modify them.
-// Only Entries is specific to the hook's type.
+// The fields every grant fills are at the top level. What only one grant has
+// is in its own part: Exchange on token exchange and Redemption on ID-JAG
+// redemption, each nil on the other grant. A hook reads a grant's fields only
+// after checking that its part is not nil, so an empty field is never mistaken
+// for one that does not apply.
+//
+// All hooks of one request share the same Request values: the slices, the
+// parts, Subject and Subject.Claims are not copied per hook, so a hook must not
+// modify them. Only Entries is specific to the hook's type.
 type Request struct {
 	// Entries holds this type's entries in request order.
 	Entries []json.RawMessage
@@ -61,8 +109,28 @@ type Request struct {
 	GrantType string
 	// ClientID is the authenticated client.
 	ClientID string
-	// Actor is the resolved actor. Without an actor_token it equals ClientID, or
-	// the verified SPIFFE ID for a SPIFFE client.
+	// GrantedAudience is the audience the server has already decided to grant:
+	// on token exchange the audience of the token being issued, and on ID-JAG
+	// redemption the one resource the issued token is for.
+	GrantedAudience []string
+	// Subject describes the validated token the request is about: the
+	// subject_token on token exchange, and the ID-JAG on ID-JAG redemption.
+	Subject Subject
+	// Exchange holds what only token exchange has. It is set on token exchange
+	// and nil otherwise.
+	Exchange *ExchangeContext
+	// Redemption holds what only ID-JAG redemption has. It is set on ID-JAG
+	// redemption, which rides the JWT-bearer grant, and nil otherwise.
+	Redemption *RedemptionContext
+}
+
+// ExchangeContext is the part of a Request only RFC 8693 token exchange has.
+type ExchangeContext struct {
+	// Actor is the resolved actor. Without an actor_token it equals the
+	// client ID, or the verified SPIFFE ID for a SPIFFE client. On a token
+	// exchange that mints an ID-JAG for a client with an actor profile, the
+	// actor token is validated only after the hooks run, so Actor is empty
+	// and ActorTokenPresent is true.
 	Actor string
 	// ActorTokenPresent reports whether the request carried an actor_token.
 	ActorTokenPresent bool
@@ -70,15 +138,29 @@ type Request struct {
 	RequestedTokenType string
 	// RequestedScopes are the scopes the client asked for.
 	RequestedScopes []string
-	// GrantedAudience is the audience the server has already decided to grant.
-	GrantedAudience []string
-	// Subject describes the validated subject token.
-	Subject Subject
 }
 
-// Subject describes a validated subject token.
+// RedemptionContext is the part of a Request only ID-JAG redemption has.
+type RedemptionContext struct {
+	// ResolvedUser is the local user the redemption resolved the ID-JAG's
+	// subject to. It is set for an issuer with subject_mode resolve and empty
+	// for a namespaced one, whose token subject is <issuer>#<sub>.
+	ResolvedUser string
+}
+
+// Subject describes a validated token: the subject_token on token exchange,
+// the ID-JAG on ID-JAG redemption.
+//
+// On a token exchange that mints an ID-JAG, the subject_token is the opaque
+// refresh token of an exchange grant, so Subject describes the grant: Issuer
+// is this server, Subject is the user the grant acts for (the ID-JAG's sub),
+// ClientID is the client that holds the grant, IssuedAt is the grant's
+// creation, Expiry is the earliest bound the grant still mints under, and the
+// other fields are empty.
 type Subject struct {
-	Issuer   string
+	Issuer string
+	// Subject is the token's sub claim, on every grant. It is never replaced by
+	// a resolved local user; see RedemptionContext.ResolvedUser.
 	Subject  string
 	ClientID string
 	JWTID    string
@@ -86,14 +168,19 @@ type Subject struct {
 	IssuedAt time.Time
 	Expiry   time.Time
 	External bool // validated through a trusted issuer
-	// Claims holds all verified claims, passed to hooks as given.
+	// Claims holds the verified claims, passed to hooks as given, except
+	// authorization_details: a hook reads the entries from Request.Entries,
+	// which keep every digit of a number.
 	Claims map[string]any
 }
 
 // Result is what a Grant hook decided.
 type Result struct {
-	// Entries are the granted entries. The list must be non-empty and every
-	// entry must be a JSON object whose "type" is the hook's own type.
+	// Entries are the granted entries. For Pending.Grant the list must be
+	// non-empty and every entry must be a JSON object whose "type" is the
+	// hook's own type. For Pending.GrantSubset every entry must be one of
+	// Request.Entries returned exactly as received, and an empty list drops
+	// all of the type's entries.
 	Entries []json.RawMessage
 }
 
@@ -137,8 +224,24 @@ func New(types map[string]Type) (*Registry, error) {
 // policy, not RFC 9396). Every entry needs a non-empty string "type" that is
 // registered for grantType. The empty array "[]" is valid.
 //
-// Any failure returns ErrInvalid.
+// Any failure returns ErrInvalid. When every entry is a well-formed object with
+// a non-empty string "type" but some type is not registered for grantType, the
+// error is ErrUnknownType, which wraps ErrInvalid.
 func (r *Registry) Parse(raw, grantType string) (*Pending, error) {
+	return r.parse(raw, grantType, grantType)
+}
+
+// ParseIDJAGIssuance is Parse for an RFC 8693 token exchange that mints an
+// ID-JAG: every type must list IDJAGIssuance, and a type that lists only the
+// token-exchange grant type is ErrUnknownType. The hooks still see the
+// token-exchange grant type in Request.GrantType.
+func (r *Registry) ParseIDJAGIssuance(raw string) (*Pending, error) {
+	return r.parse(raw, IDJAGIssuance, grantTypeTokenExchange)
+}
+
+// parse checks raw against the types that list key, and records grantType for
+// the hooks' Request.GrantType.
+func (r *Registry) parse(raw, key, grantType string) (*Pending, error) {
 	data := []byte(raw)
 	if len(data) > maxSize || !utf8.Valid(data) || !validArray(data) {
 		return nil, ErrInvalid
@@ -149,30 +252,35 @@ func (r *Registry) Parse(raw, grantType string) (*Pending, error) {
 		return nil, ErrInvalid
 	}
 
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		name, ok := entryType(entry)
+		if !ok {
+			return nil, ErrInvalid
+		}
+		names[i] = name
+	}
+
 	pending := &Pending{
 		grantType: grantType,
 		types:     r.types,
 		entries:   make(map[string][]json.RawMessage),
 	}
-	for _, entry := range entries {
-		name, ok := entryType(entry)
-		if !ok {
-			return nil, ErrInvalid
-		}
+	for i, name := range names {
 		t, registered := r.types[name]
-		if !registered || !slices.Contains(t.GrantTypes, grantType) {
-			return nil, ErrInvalid
+		if !registered || !slices.Contains(t.GrantTypes, key) {
+			return nil, ErrUnknownType
 		}
 		if _, seen := pending.entries[name]; !seen {
 			pending.order = append(pending.order, name)
 		}
-		pending.entries[name] = append(pending.entries[name], entry)
+		pending.entries[name] = append(pending.entries[name], entries[i])
 	}
 	return pending, nil
 }
 
 // Pending is a parsed, not yet granted authorization_details value. It is
-// single-use: call Grant at most once.
+// single-use: call Grant or GrantSubset at most once.
 type Pending struct {
 	grantType string
 	types     map[string]Type
@@ -186,10 +294,11 @@ type Pending struct {
 // the request held no entries). The package fills req.Entries and
 // req.GrantType.
 //
-// A hook must return at least one entry, and every entry is checked as
-// strictly as the request: valid UTF-8, within the size limit, no duplicate
-// member names, and an object of the hook's own type. The combined array must
-// also fit the size limit. The output is built with encoding/json, so entries
+// A hook must return at least one entry: a type whose hook returns none fails
+// the whole call as a hook defect, and no later hook runs. Every entry is
+// checked as strictly as the request: valid UTF-8, within the size limit, no
+// duplicate member names, and an object of the hook's own type. The combined
+// array must also fit the size limit. The output is built with encoding/json, so entries
 // are compacted and HTML-escaped (<, > and & become \u003c, \u003e and
 // \u0026): equal to the hook's output as JSON, not byte-identical.
 //
@@ -223,6 +332,146 @@ func (p *Pending) Grant(ctx context.Context, req Request) (json.RawMessage, erro
 		return nil, fmt.Errorf("combined hook output is not valid JSON or exceeds %d bytes: %w", maxSize, errInvalidHookResult)
 	}
 	return out, nil
+}
+
+// Subset is what GrantSubset kept of the parsed entries.
+type Subset struct {
+	// Entries is a JSON array of the kept entries, each with the exact bytes
+	// it had in the parsed value, nil when no hook kept any entry. Types are
+	// in the order they first appear in the parsed value, and each type's
+	// entries in their parsed order.
+	Entries json.RawMessage
+	// Dropped lists, in the same type order, the types whose hook kept none
+	// of their entries.
+	Dropped []string
+}
+
+// GrantSubset calls each type's hook once, in the order the types first
+// appear in the parsed value, and keeps the entries the hooks returned. It is
+// for entries that go into a signed token unchanged: a hook may only keep or
+// drop whole entries, and the result carries the parsed bytes of each kept
+// entry, never the hook's. ToolHive's authorization server uses it on both
+// sides of an ID-JAG: when it mints one, for the entries the client asked to
+// have signed, and when it redeems one, for the entries the issuer signed. The
+// package fills req.Entries and req.GrantType; each hook gets its own copy of
+// its entries.
+//
+// Every entry a hook returns must equal a distinct one of its type's entries
+// as a JSON value, with object members in any order and numbers compared as
+// written, so 1 and 1.0 differ. A hook that keeps an entry returns it exactly
+// as received in Request.Entries; re-encoding it can change a number's
+// spelling. A hook that returns no entry drops its type, which is reported in
+// Subset.Dropped and is not an error. Whether a result with no entry left is
+// acceptable is the caller's decision.
+//
+// Errors are as for Grant: Error is a hook rejection to pass to the client,
+// and any other error, including an entry that matches none of the type's
+// entries, is an internal failure.
+func (p *Pending) GrantSubset(ctx context.Context, req Request) (Subset, error) {
+	req.GrantType = p.grantType
+
+	var kept []json.RawMessage
+	var dropped []string
+	for _, name := range p.order {
+		parsed := p.entries[name]
+		typeReq := req
+		typeReq.Entries = cloneEntries(parsed)
+		result, err := p.types[name].Grant(ctx, typeReq)
+		if err != nil {
+			return Subset{}, hookError(name, err)
+		}
+		entries, err := keptEntries(name, parsed, result.Entries)
+		if err != nil {
+			return Subset{}, err
+		}
+		if len(entries) == 0 {
+			dropped = append(dropped, name)
+		}
+		kept = append(kept, entries...)
+	}
+	return Subset{Entries: joinEntries(kept), Dropped: dropped}, nil
+}
+
+// keptEntries returns the parsed entries a hook kept, in parsed order. Each
+// returned entry must equal a parsed entry not already matched, compared by
+// their canonical forms.
+func keptEntries(typeName string, parsed, returned []json.RawMessage) ([]json.RawMessage, error) {
+	if len(returned) == 0 {
+		return nil, nil
+	}
+	unmatched := make(map[string][]int, len(parsed))
+	for i, entry := range parsed {
+		key, err := canonicalJSON(entry)
+		if err != nil {
+			return nil, fmt.Errorf("type %q has an entry that cannot be compared: %w", typeName, errInvalidHookResult)
+		}
+		unmatched[key] = append(unmatched[key], i)
+	}
+	keep := make([]bool, len(parsed))
+	for _, entry := range returned {
+		var key string
+		var err error
+		if len(entry) <= maxSize {
+			key, err = canonicalJSON(entry)
+		}
+		indexes := unmatched[key]
+		if len(entry) > maxSize || err != nil || len(indexes) == 0 {
+			return nil, fmt.Errorf("type %q returned an entry that is not one of its entries as received: %w",
+				typeName, errInvalidHookResult)
+		}
+		keep[indexes[0]] = true
+		unmatched[key] = indexes[1:]
+	}
+	var kept []json.RawMessage
+	for i, entry := range parsed {
+		if keep[i] {
+			kept = append(kept, entry)
+		}
+	}
+	return kept, nil
+}
+
+// canonicalJSON re-encodes one JSON value with object members sorted and
+// numbers kept as written. Two values with the same canonical form are equal
+// as JSON values, numbers compared as written. Trailing data is refused.
+func canonicalJSON(raw json.RawMessage) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "", err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return "", errors.New("trailing data after JSON value")
+	}
+	canonical, err := json.Marshal(value)
+	return string(canonical), err
+}
+
+// cloneEntries copies entries and their bytes, so a hook that modifies what
+// it received cannot change the parsed value.
+func cloneEntries(entries []json.RawMessage) []json.RawMessage {
+	cloned := make([]json.RawMessage, len(entries))
+	for i, entry := range entries {
+		cloned[i] = slices.Clone(entry)
+	}
+	return cloned
+}
+
+// joinEntries writes entries as a JSON array with their bytes unchanged, nil
+// for no entry.
+func joinEntries(entries []json.RawMessage) json.RawMessage {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := []byte{'['}
+	for i, entry := range entries {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, entry...)
+	}
+	return append(out, ']')
 }
 
 func hookError(typeName string, err error) error {

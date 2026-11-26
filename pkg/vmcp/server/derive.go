@@ -94,6 +94,7 @@ func deriveServerConfig(
 		TelemetryProvider:    cfg.TelemetryProvider,
 		AuditConfig:          cfg.AuditConfig,
 		AuditSubjectEnricher: cfg.AuditSubjectEnricher,
+		CallBinding:          cfg.CallBinding,
 	}
 }
 

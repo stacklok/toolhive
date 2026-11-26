@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -140,6 +141,15 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err != nil {
 		return err
 	}
+	// The synthetic client is minted from the validated assertion, so the
+	// parameter refusal's log line names a server-minted client_id. The grant
+	// needs no client authentication and a refused assertion is not consumed,
+	// so the line is at Warn only the first time per (issuer, reason).
+	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
+	level := func(reason string) slog.Level { return h.redeemer.firstRefusalLevel(claims.Issuer, reason) }
+	if err := refuseDetailsParameter(ctx, requester.GetRequestForm(), clientID, level); err != nil {
+		return err
+	}
 	if err := checkAssertionMaxAge(claims, policy); err != nil {
 		return err
 	}
@@ -150,7 +160,6 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err := checkSubjectBinding(claims, policy, resource); err != nil {
 		return plainBindingRefusal(err)
 	}
-	clientID := jwtBearerClientID(claims.Issuer, claims.Subject)
 	purpose := jwtBearerReplayPurpose
 	if claims.JWTID == "" {
 		purpose = jwtBearerNoJTIReplayPurpose
@@ -511,8 +520,9 @@ func jwtBearerGrantFactory(
 // visible opportunity to intercept or audit assertion-JWT consumption, rather
 // than being silently skipped past. See CIMDStorageDecorator.ConsumeAssertionJWT
 // (and the shape guard that NewCIMDShapeGuardStorage returns when CIMD is
-// disabled), SPIFFEStorageDecorator.ConsumeAssertionJWT and
-// ClientAdmissionStorage.ConsumeAssertionJWT for the production decorators
+// disabled), SPIFFEStorageDecorator.ConsumeAssertionJWT,
+// ClientAdmissionStorage.ConsumeAssertionJWT and
+// UserKeyedUpstreamStorage.ConsumeAssertionJWT for the production decorators
 // that forward it today. A future decorator that omits this method
 // breaks visibly, right here, with an error naming the offending type -- not
 // silently, by having its ConsumeAssertionJWT logic (if any) never run.

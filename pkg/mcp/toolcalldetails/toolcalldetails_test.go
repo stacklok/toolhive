@@ -38,15 +38,22 @@ func replace(entry, old, replacement string) string {
 func TestRegister_Validation(t *testing.T) {
 	t.Parallel()
 	registry := newRegistry(t)
-	idJAG := authorizationdetails.Request{RequestedTokenType: oauthproto.TokenTypeIDJAG}
+	exchange := func(tokenType string) authorizationdetails.Request {
+		return authorizationdetails.Request{Exchange: &authorizationdetails.ExchangeContext{RequestedTokenType: tokenType}}
+	}
+	idJAG := exchange(oauthproto.TokenTypeIDJAG)
+	redemption := authorizationdetails.Request{Redemption: &authorizationdetails.RedemptionContext{}}
 
 	tests := []struct {
 		name      string
 		value     string
 		grantType string
-		req       authorizationdetails.Request
-		code      authorizationdetails.ErrorCode
-		reason    string
+		// req is the hook request; on JWT-bearer rows it defaults to an ID-JAG
+		// redemption unless bare is set.
+		req    authorizationdetails.Request
+		bare   bool
+		code   authorizationdetails.ErrorCode
+		reason string
 	}{
 		{name: "tool call on JWT-bearer", value: "[" + toolCall + "]"},
 		{name: "list call on JWT-bearer", value: "[" + listCall + "]"},
@@ -57,16 +64,18 @@ func TestRegister_Validation(t *testing.T) {
 			req:       idJAG,
 		},
 		{
+			// The vMCP does not accept list calls yet, so none is signed.
 			name:      "list call on ID-JAG token exchange",
 			value:     "[" + listCall + "]",
 			grantType: oauthproto.GrantTypeTokenExchange,
 			req:       idJAG,
+			reason:    ReasonListCallUnsupported,
 		},
 		{
 			name:      "token exchange for an access token",
 			value:     "[" + toolCall + "]",
 			grantType: oauthproto.GrantTypeTokenExchange,
-			req:       authorizationdetails.Request{RequestedTokenType: oauthproto.TokenTypeAccessToken},
+			req:       exchange(oauthproto.TokenTypeAccessToken),
 			code:      authorizationdetails.CodeInvalidRequest,
 			reason:    ReasonIDJAGRequired,
 		},
@@ -74,7 +83,7 @@ func TestRegister_Validation(t *testing.T) {
 			name:      "token exchange for a refresh token",
 			value:     "[" + listCall + "]",
 			grantType: oauthproto.GrantTypeTokenExchange,
-			req:       authorizationdetails.Request{RequestedTokenType: oauthproto.TokenTypeRefreshToken},
+			req:       exchange(oauthproto.TokenTypeRefreshToken),
 			code:      authorizationdetails.CodeInvalidRequest,
 			reason:    ReasonIDJAGRequired,
 		},
@@ -82,8 +91,23 @@ func TestRegister_Validation(t *testing.T) {
 			name:      "token exchange without requested_token_type",
 			value:     "[" + toolCall + "]",
 			grantType: oauthproto.GrantTypeTokenExchange,
+			req:       exchange(""),
 			code:      authorizationdetails.CodeInvalidRequest,
 			reason:    ReasonIDJAGRequired,
+		},
+		{
+			name:      "token exchange without its exchange part",
+			value:     "[" + toolCall + "]",
+			grantType: oauthproto.GrantTypeTokenExchange,
+			code:      authorizationdetails.CodeInvalidRequest,
+			reason:    ReasonIDJAGRequired,
+		},
+		{
+			name:   "JWT-bearer without its redemption part",
+			value:  "[" + toolCall + "]",
+			bare:   true,
+			code:   authorizationdetails.CodeInvalidRequest,
+			reason: ReasonIDJAGRequired,
 		},
 		{name: "second entry", value: "[" + listCall + "," + listCall + "]", reason: ReasonSingleEntry},
 		{
@@ -138,12 +162,16 @@ func TestRegister_Validation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			grantType := tt.grantType
+			req := tt.req
 			if grantType == "" {
 				grantType = oauthproto.GrantTypeJWTBearer
+				if !tt.bare {
+					req = redemption
+				}
 			}
 			pending, err := registry.Parse(tt.value, grantType)
 			require.NoError(t, err)
-			granted, err := pending.Grant(context.Background(), tt.req)
+			granted, err := pending.Grant(context.Background(), req)
 			if tt.reason == "" {
 				require.NoError(t, err)
 				assert.JSONEq(t, tt.value, string(granted), "the entry must be granted unchanged")
@@ -167,8 +195,42 @@ func TestRegister_GrantTypes(t *testing.T) {
 	Register(types)
 	require.Contains(t, types, Type)
 	assert.ElementsMatch(t,
-		[]string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+		[]string{oauthproto.GrantTypeTokenExchange, authorizationdetails.IDJAGIssuance, oauthproto.GrantTypeJWTBearer},
 		types[Type].GrantTypes)
+}
+
+// TestRegister_IDJAGPath proves the registration covers both sides of an
+// ID-JAG through the registry, as the authorization server calls it: AS-1
+// parses the parameter with ParseIDJAGIssuance and keeps the tool call through
+// GrantSubset, and AS-2 parses the signed claim for the JWT-bearer grant and
+// keeps it the same way. A list call is refused on the AS-1 side.
+func TestRegister_IDJAGPath(t *testing.T) {
+	t.Parallel()
+	registry := newRegistry(t)
+	exchange := authorizationdetails.Request{
+		Exchange: &authorizationdetails.ExchangeContext{RequestedTokenType: oauthproto.TokenTypeIDJAG},
+	}
+	redemption := authorizationdetails.Request{Redemption: &authorizationdetails.RedemptionContext{}}
+
+	pending, err := registry.ParseIDJAGIssuance("[" + toolCall + "]")
+	require.NoError(t, err)
+	minted, err := pending.GrantSubset(context.Background(), exchange)
+	require.NoError(t, err)
+	assert.Equal(t, "["+toolCall+"]", string(minted.Entries))
+
+	pending, err = registry.Parse(string(minted.Entries), oauthproto.GrantTypeJWTBearer)
+	require.NoError(t, err)
+	redeemed, err := pending.GrantSubset(context.Background(), redemption)
+	require.NoError(t, err)
+	assert.Equal(t, minted.Entries, redeemed.Entries)
+
+	pending, err = registry.ParseIDJAGIssuance("[" + listCall + "]")
+	require.NoError(t, err)
+	_, err = pending.GrantSubset(context.Background(), exchange)
+	var refusal authorizationdetails.Error
+	require.ErrorAs(t, err, &refusal)
+	assert.Equal(t, authorizationdetails.CodeInvalidAuthorizationDetails, refusal.Code)
+	assert.Equal(t, ReasonListCallUnsupported, refusal.Reason)
 }
 
 func TestParseEntry(t *testing.T) {

@@ -196,9 +196,9 @@ func (*Auditor) isMCPStreamOpenRequest(r *http.Request) bool {
 // inner chain returns: BackendInfo (backend routing), an auth.IdentityHolder
 // (identity attached by an auth middleware running INSIDE audit), an
 // mcp.ParsedRequestHolder (parsed MCP data from a parser running INSIDE
-// audit), and an mcp.AuthzDenialMarker (pre-parse refusals flagged by the
-// authz middleware running INSIDE audit). Each is only injected when absent
-// so nested auditors share carriers.
+// audit), and an mcp.AuthzDenialMarker (refusals flagged by a check running
+// INSIDE audit: the authz middleware, or the vMCP's call binding). Each is
+// only injected when absent so nested auditors share carriers.
 func ensureAuditContext(r *http.Request) *http.Request {
 	ctx := r.Context()
 	changed := false
@@ -299,13 +299,11 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	// Determine outcome based on status code
 	outcome := a.determineOutcome(rw.statusCode)
 
-	// A refusal by the authz middleware before message-level authorization
-	// could run (e.g. a client response or missing parsing middleware)
-	// writes a 400, which determineOutcome maps to a generic failure. The
-	// marker reclassifies it as a denial so blocked sweeps are alertable.
-	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {
-		outcome = OutcomeDenied
-	}
+	// A refusal flagged on the marker is a denial whatever its status: the
+	// authz middleware's 400 for a request it refuses before message-level
+	// authorization could run, which determineOutcome would map to a generic
+	// failure, or a vMCP call-binding refusal, which also names its reason.
+	outcome, denialReason := markedDenial(r, outcome)
 
 	// When HTTP status indicates success, check for JSON-RPC errors
 	// hidden inside HTTP 200 responses.
@@ -345,6 +343,9 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 
 	// Add metadata
 	a.addMetadata(event, r, duration, rw)
+	if denialReason != "" {
+		event.Metadata.Extra[MetadataExtraKeyDenialReason] = denialReason
+	}
 
 	// Attach JSON-RPC error details so operators can see the error code
 	// and message without enabling full response data capture.
@@ -851,8 +852,10 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 	// Determine component name
 	component := a.determineComponent(r)
 
-	// Create the audit event for SSE connection
-	event := NewAuditEvent(EventTypeSSEConnection, source, a.determineOutcome(statusCode), subjects, component)
+	// Create the audit event for SSE connection. A stream open refused by a
+	// check that marks its refusals is a denial with its reason.
+	outcome, denialReason := markedDenial(r, a.determineOutcome(statusCode))
+	event := NewAuditEvent(EventTypeSSEConnection, source, outcome, subjects, component)
 
 	// Attach the RFC 8693 delegation chain, if the caller used a delegated token
 	event.WithDelegationChain(a.extractDelegationChain(r))
@@ -870,8 +873,21 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 		"transport":  a.transportType,
 		"user_agent": r.Header.Get("User-Agent"),
 	}
+	if denialReason != "" {
+		event.Metadata.Extra[MetadataExtraKeyDenialReason] = denialReason
+	}
 	stampTraceContext(r.Context(), event)
 
 	// Log the event
 	event.LogTo(r.Context(), a.auditLogger, LevelAudit)
+}
+
+// markedDenial returns OutcomeDenied and the marked reason when a check inside
+// the audit middleware flagged the request as refused on its
+// mcp.AuthzDenialMarker, and outcome with no reason otherwise.
+func markedDenial(r *http.Request, outcome string) (string, string) {
+	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {
+		return OutcomeDenied, marker.Reason
+	}
+	return outcome, ""
 }

@@ -64,9 +64,15 @@ Method-specific attributes (added in addition to the above):
 
 #### `toolhive_vmcp_backend_errors` (Counter)
 
-Total number of errors from backend MCP servers.
+Total number of requests to backend MCP servers that failed with an error. A tool call the backend answers with an `isError` result is not counted here; it counts in `toolhive_vmcp_backend_tool_errors`.
 
 **Attributes**: Same as `toolhive_vmcp_backend_requests`.
+
+#### `toolhive_vmcp_backend_tool_errors` (Counter)
+
+Total number of tool calls a backend answered with an `isError` result, counted once per call. The Prometheus exporter adds the `_total` suffix.
+
+**Attributes**: Same as `toolhive_vmcp_backend_requests` for `call_tool`.
 
 #### `toolhive_vmcp_backend_requests_duration` (Histogram, seconds)
 
@@ -86,7 +92,7 @@ Duration of MCP client operations per the
 |-----------|------|-----------|-------------|
 | `mcp.method.name` | string | Always | MCP method name |
 | `network.transport` | string | Always | `"tcp"` or `"pipe"` |
-| `error.type` | string | On error | Go error type (e.g., `*url.Error`) |
+| `error.type` | string | On error | Go error type (e.g., `*url.Error`). Not set for an `isError` result |
 
 ### Workflow Metrics
 
@@ -302,6 +308,16 @@ trace context across the vMCP aggregation layer. The
 `InjectMetaTraceContext` function (`pkg/telemetry/propagation.go`) can inject
 W3C Trace Context (`traceparent`, `tracestate`) into the MCP `_meta` field for
 backends that support it.
+
+## Backend Tool Error Logs
+
+When a backend tool returns an `isError` result, the vMCP logs one line at DEBUG, so it is off by default. A caller can trigger it on every call, and the tool's error text often repeats the call's arguments, so it stays at DEBUG; alert on `toolhive_vmcp_backend_tool_errors` instead, which is recorded when telemetry is configured.
+
+| Message | Fields |
+|---------|--------|
+| `tool returned IsError=true` | `tool`, `backend`, `error`, `meta` (when the backend sent `_meta`) |
+
+`error` is the text of the result's first content block, or `tool execution error` when that block is missing or holds no text. The caller receives the full result either way. A composite tool workflow still logs a failed step's error text in its own WARN and ERROR lines.
 
 ## Code Mode Logs
 

@@ -33,8 +33,10 @@ func restrictionsOf(claims *ValidatedClaims) restrictions {
 		return restrictions{}
 	}
 	return restrictions{
-		DelegatedAccess:      hasClaim(claims, claimnames.DelegatedAccessKey),
-		AuthorizationDetails: hasClaim(claims, authorizationDetailsParam),
+		DelegatedAccess: hasClaim(claims, claimnames.DelegatedAccessKey),
+		// The raw member is what grantSignedDetails reads, so it counts on its
+		// own; a member present as null is the bytes "null" and counts too.
+		AuthorizationDetails: hasClaim(claims, authorizationDetailsParam) || claims.AuthorizationDetails != nil,
 		Confirmation:         hasClaim(claims, claimConfirmation),
 	}
 }

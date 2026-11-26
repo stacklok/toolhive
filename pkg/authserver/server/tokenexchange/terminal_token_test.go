@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"testing"
 	"time"
@@ -235,6 +236,12 @@ func TestRestrictionsOf(t *testing.T) {
 			want:   restrictions{AuthorizationDetails: true}},
 		{name: "authorization_details null in the extra claims only",
 			claims: &ValidatedClaims{Extra: map[string]any{authorizationDetailsParam: nil}},
+			want:   restrictions{AuthorizationDetails: true}},
+		{name: "authorization_details raw bytes only, nil maps",
+			claims: &ValidatedClaims{AuthorizationDetails: json.RawMessage(`[{"type":"t"}]`)},
+			want:   restrictions{AuthorizationDetails: true}},
+		{name: "authorization_details raw null only",
+			claims: &ValidatedClaims{AuthorizationDetails: json.RawMessage("null")},
 			want:   restrictions{AuthorizationDetails: true}},
 		{name: "cnf object in the extra claims only",
 			claims: &ValidatedClaims{Extra: map[string]any{claimConfirmation: map[string]any{"jkt": "t"}}},

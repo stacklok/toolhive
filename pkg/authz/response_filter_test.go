@@ -3461,6 +3461,32 @@ func TestResponseFilteringWriter_SSE_InteriorBareCRNotALineBreak(t *testing.T) {
 		"the authorized tool must survive filtering, proving the event was filtered rather than dropped")
 }
 
+// TestResponseFilteringWriter_SSE_LoneCRLineBreakFailsClosed pins the POST path's
+// fail-closed answer to an event whose lone CR a spec client would split on, so the
+// filter cannot read its data line. The list must not reach the client.
+func TestResponseFilteringWriter_SSE_LoneCRLineBreakFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	body := ": x\rdata: " +
+		`{"jsonrpc":"2.0","id":21,"result":{"tools":[{"name":"admin_tool","inputSchema":{"type":"object"}}]}}` +
+		"\n\n"
+
+	_, err := rfw.Write([]byte(body))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	out := rr.Body.String()
+	assert.NotContains(t, out, "admin_tool", "a lone CR must not hide a list from the filter")
+	assert.Contains(t, out, `"error"`)
+}
+
 // TestResponseFilteringWriter_SSE_InteriorExoticWhitespaceAcrossDataLines is a
 // regression test for a client-divergence bypass distinct from the leading-
 // whitespace case above: the go-sdk client TrimSpaces each data: value

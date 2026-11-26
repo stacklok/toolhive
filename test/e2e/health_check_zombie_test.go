@@ -4,6 +4,7 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -51,7 +52,7 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 
 	Describe("Transport detection of health check failure", func() {
 		Context("when a remote server's health checks fail", func() {
-			It("should detect the failure and attempt restart instead of becoming a zombie", func() {
+			It("should mark the remote server unhealthy and return it to running once health checks pass again", func() {
 				By("Starting a controllable mock HTTP server")
 				var err error
 				mockServer, err = newControllableMockServer()
@@ -66,7 +67,6 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 					"--name", serverName,
 					mockServerURL+"/mcp")
 				thvCmd.Env = append(os.Environ(),
-					"TOOLHIVE_REMOTE_HEALTHCHECKS=true",
 					"TOOLHIVE_HEALTH_CHECK_INTERVAL=1s",
 				)
 				thvCmd.Stdout = GinkgoWriter
@@ -94,8 +94,9 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 				Expect(proxyPort).ToNot(BeZero(), "Should be able to get proxy port")
 				GinkgoWriter.Printf("Proxy listening on port: %d\n", proxyPort)
 
-				By("Sending a request through the proxy to initialize it")
-				// This triggers serverInitialized() so health check failures count toward shutdown
+				By("Sending a request through the proxy")
+				// Remote health check failures count without initialization; this
+				// only confirms the proxy is serving.
 				proxyURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", proxyPort)
 				resp, err := http.Get(proxyURL)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to connect to proxy")
@@ -129,15 +130,74 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 					time.Sleep(1 * time.Second)
 				}
 
-				Expect(finalStatus).ToNot(Equal("running"),
-					"Server status should change from 'running' after health check failures")
+				Expect(finalStatus).To(Equal("unhealthy"),
+					"Server status should change from 'running' to 'unhealthy' after health check failures")
 
 				By("Verifying the server is still tracked (not a zombie)")
 				// The server should still be listed, indicating the runner detected
 				// the failure and is handling it (not hanging as a zombie)
-				stdout, _ := e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName),
-					"Server should still be tracked in the system")
+					"Unhealthy remote server should be listed without --all")
+				Expect(stdout).To(ContainSubstring("Remote server failed health checks"),
+					"thv list should show why the remote server is unhealthy")
+
+				By("Making the mock server healthy again")
+				mockServer.SetHealthy(true)
+
+				By("Waiting for the status to return to running without a restart")
+				Eventually(func() string {
+					return getServerStatus(config, serverName)
+				}, 30*time.Second, time.Second).Should(Equal("running"),
+					"Remote server should return to 'running' once health checks pass again")
+			})
+
+			It("should mark a remote server that fails from the start unhealthy instead of leaving it starting", func() {
+				By("Starting a controllable mock HTTP server that returns 500 errors")
+				var err error
+				mockServer, err = newControllableMockServer()
+				Expect(err).ToNot(HaveOccurred(), "Should be able to start mock server")
+				mockServer.SetHealthy(false)
+
+				By("Starting thv as a remote server with fast health checks")
+				thvCmd := exec.Command(config.THVBinary, "run",
+					"--name", serverName,
+					mockServer.URL()+"/mcp")
+				thvCmd.Env = append(os.Environ(),
+					"TOOLHIVE_HEALTH_CHECK_INTERVAL=1s",
+					"TOOLHIVE_HEALTH_CHECK_RETRY_DELAY=1s",
+				)
+				thvCmd.Stdout = GinkgoWriter
+				thvCmd.Stderr = GinkgoWriter
+				Expect(thvCmd.Start()).To(Succeed(), "Should be able to start thv")
+
+				thvPID := thvCmd.Process.Pid
+				defer func() {
+					if proc, err := os.FindProcess(thvPID); err == nil {
+						_ = proc.Kill()
+					}
+				}()
+
+				By("Waiting for the workload to be marked unhealthy without ever initializing")
+				Eventually(func() string {
+					return getServerStatus(config, serverName)
+				}, 60*time.Second, time.Second).Should(Equal("unhealthy"),
+					"A remote server failing from the start should be marked unhealthy, not left starting")
+
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring(serverName),
+					"Unhealthy remote server should be listed without --all")
+				Expect(stdout).To(ContainSubstring("Remote server failed health checks"),
+					"thv list should show why the remote server is unhealthy")
+
+				By("Making the mock server healthy")
+				mockServer.SetHealthy(true)
+
+				By("Waiting for the status to reach running")
+				Eventually(func() string {
+					return getServerStatus(config, serverName)
+				}, 60*time.Second, time.Second).Should(Equal("running"),
+					"Remote server should reach 'running' once health checks pass")
 			})
 		})
 	})
@@ -209,6 +269,19 @@ func (m *controllableMockServer) handleRequest(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Mcp-Session-Id", "test-session-123")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+
+	// Echo the id of a JSON-RPC request: the proxy rejects a 200
+	// application/json answer to an id-bearing request unless it is a valid
+	// JSON-RPC response. Traffic without an id (the test's bodiless GET,
+	// notifications) is not validated and keeps the id-less body.
+	var rpcRequest struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if r.Method == http.MethodPost && json.NewDecoder(r.Body).Decode(&rpcRequest) == nil &&
+		len(rpcRequest.ID) > 0 && string(rpcRequest.ID) != "null" {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(rpcRequest.ID) + `,"result":{}}`))
+		return
+	}
 	_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{}}`))
 }
 

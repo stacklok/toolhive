@@ -158,9 +158,10 @@ ToolHive uses two different proxy implementations:
 - Uses Go's `httputil.ReverseProxy`
 - Validates every POST routed to the backend-forwarding MCP handler with shared MCP message admission, regardless of path or Content-Type
 - Forwards admitted body bytes and headers without reserializing the envelope.
-  The one exception is `Accept-Encoding`, which the authorization middleware
-  (on requests whose response it filters) and the tool filter (on every request)
-  withhold, so that Go's
+  The one exception is `Accept-Encoding`, which the proxy itself withholds on
+  every id-bearing request (see [Upstream response validation](#upstream-response-validation)),
+  and which the authorization middleware (on requests whose response it filters)
+  and the tool filter (on every request) also withhold, so that Go's
   transport negotiates and decodes the encoding itself (see
   [Middleware Architecture](../middleware.md))
 - Applies the MCP middleware chain only to traffic routed to the backend-forwarding handler
@@ -185,6 +186,54 @@ Current admission is stricter than base JSON-RPC:
 - Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Client responses remain subject to transport and authorization handling.
 - Invalid envelopes and unreadable bodies return `400`; bodies exceeding the configured limit return `413`.
 - Only a `POST` body is parsed as an MCP message. A request carrying a body on any other method (matched case-sensitively, so `post` is not `POST`) is rejected with `400` rather than forwarded unparsed: forwarding it would skip the request-level middleware that act on the parsed message. Bodyless `GET` (SSE stream), `DELETE` (session termination), and `OPTIONS` (CORS preflight) pass through unchanged; method-specific `405`/`Allow` responses stay with the transport handlers, which know the methods their endpoint serves.
+
+##### Upstream response validation
+
+When a POST carries a JSON-RPC request with an `id`, the proxy checks the
+backend's answer before forwarding it. A `200` response labeled
+`application/json` (media type matched case-insensitively, parameters ignored)
+must hold a single structurally valid JSON-RPC response, as checked by
+`mcp.ValidateResponse` with the envelope rules used for client messages: a
+leading UTF-8 BOM, string or integer ids, and an error response without an `id`
+are accepted, as is an explicit `null` for the member a response does not use
+(`"error":null` beside a result, or `"result":null` beside an error), which
+serializers that do not omit nulls emit. Invalid JSON, an empty body, batches, requests,
+notifications, `null` or fractional ids, and an envelope that repeats a member
+or aliases a reserved one by case are rejected. Only the envelope is checked:
+member names inside `result` and `error.data` may differ only by case, as JSON
+permits. A valid body is forwarded byte for byte, BOM included. The body is
+buffered up to 100 MiB, so a larger response that was previously streamed
+through is now rejected.
+
+A response that fails the check, exceeds the limit, cannot be read, or still
+carries a content coding is replaced with HTTP `502 Bad Gateway` and a JSON-RPC
+error that echoes the client's request `id`:
+
+```json
+{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"Invalid upstream JSON-RPC response"}}
+```
+
+The replacement carries none of the backend's headers (no `Mcp-Session-Id` or
+`Set-Cookie`), and the proxy logs one warning naming the cause, the method and
+the target. A rejected `initialize` response registers no proxy session and does
+not mark the server initialized. The proxy does not send the backend a `DELETE`
+for a session id that rejected response carried, so that backend session stays
+open until the backend's own idle timeout; clients never receive its id and
+cannot reuse it.
+
+So that the body can be read, the proxy forwards id-bearing requests without the
+client's `Accept-Encoding`. Go's transport then asks for gzip itself and decodes
+it, so the client receives an uncompressed response. A body that still arrives
+with a content coding (one the backend applied unprompted, or one the transport
+does not decode, such as `br` or `zstd`) is rejected rather than forwarded
+unchecked.
+
+Scope: SSE (`text/event-stream`) responses, non-`200` statuses, other media
+types, responses to notifications and client responses, bodiless `GET`/`DELETE`,
+and the requests replayed during backend session recovery are not validated.
+This is a best-effort structural check that keeps a broken backend's output
+from reaching clients as a successful response. It is not a security control:
+a well-formed response with malicious content passes.
 
 **Why transparent:**
 - Container already speaks HTTP
@@ -232,11 +281,25 @@ When stdio transport is selected, the proxy mode determines which HTTP protocol 
 
 ### Session Ownership
 
-Ordinary proxies use `pkg/auth/sessionbinding` to bind each session to the
-validated request identity's issuer and subject under `vmcp.identity.binding`.
-The complete bound record is inserted conditionally (memory/Redis SET NX) before
-publishing an ID or SSE endpoint. Refreshed tokens for the same principal work;
-changing either issuer or subject does not.
+Ordinary proxies and vMCP use `pkg/auth/sessionbinding` to bind sessions to the
+validated request identity under `vmcp.identity.binding`. Interactive and
+unspecified routes, including sessionless grants without the delegated-access
+marker (RFC 8693 token exchange and unmarked JWT-bearer), keep the two-field
+`iss + "\x00" + sub` binding. The delegated binding (`AdmissionRouteDelegated`)
+contains `iss`, `sub`, the `delegated` route tag, `client_id`, and, when present,
+the current actor's `act.iss` and `act.sub`. It excludes `jti`, `exp`, and
+`authorization_details`, so renewed tokens work if the full binding matches.
+Delegated sessions cannot be reused by interactive or unspecified callers, and
+vice versa, even for the same issuer and user. See the
+[admission route rules](17-token-exchange-delegation.md#delegated-access-marker)
+for the validator configuration this isolation requires.
+
+Tokens on unrecognised routes cannot create or use sessions. Delegated tokens
+with a missing or invalid `client_id`, a malformed `act` (including a malformed
+nested actor) or an explicit `act: null` are also refused. `client_id` must be a nonempty string without NUL
+bytes. An absent `act` is allowed; a present `act` requires nonempty `iss` and
+`sub` strings without NUL bytes. Ordinary proxies insert the complete bound
+record conditionally (memory/Redis SET NX) before publishing an ID or SSE endpoint.
 
 Ownership is checked after authentication, before forwarding, stream replacement,
 delete, or backend recovery. SSE-to-stdio uses the `session_id` query parameter;
@@ -255,11 +318,38 @@ actually absent identity uses the unauthenticated sentinel. Non-nil identities
 `iss` and `sub` claims without NUL bytes. Ownership never comes from outbound
 Authorization headers. Shared metadata does not replace live-stream affinity.
 
-vMCP applies the same check (`sessionbinding.Validate`) to every request carrying
-`Mcp-Session-Id`, with the shared carrier parsing. Its 404 is a plain-text
+vMCP applies the same check (`sessionbinding.Validate`) to every Legacy request
+carrying `Mcp-Session-Id`, with the shared carrier parsing. Its 404 is a plain-text
 `Session terminated` rather than the proxies' JSON-RPC body, so go-sdk clients
-re-initialize. See *Session
-Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
+re-initialize. See [vMCP Session Ownership](10-virtual-mcp-architecture.md#session-ownership).
+
+**Rolling upgrades.** Older replicas do not understand a delegated binding, and
+how they react depends on the version:
+
+- Ordinary proxies (streamable, transparent and HTTP+SSE) check session owners
+  only from v0.51.0. Before that they did not read the binding at all, so a
+  streamable `DELETE` removed a session without checking who owned it.
+- vMCP rejects an unparsable binding when it restores a session, and on each
+  per-operation check, since v0.29.0. It answers 404 to every session request
+  with such a binding only since v0.57.0.
+
+A proxy replica older than v0.51.0, or a vMCP replica older than v0.57.0, that
+shares the session store may serve, change or delete a delegated session. Do
+not serve delegated sessions from a store that such replicas share.
+
+In the other direction, an older replica that creates a session for a delegated
+token writes the two-field binding, the same one the user's interactive session
+has. Plan the rollout by case:
+
+1. First-time enablement: upgrade every replica before enabling delegated
+   subject resolution (`SubjectMode` set to `resolve`, a Go-only setting; see
+   [Subject mode](17-token-exchange-delegation.md#subject-mode-go-only)).
+2. Delegated subject resolution was already enabled while older replicas ran:
+   the sessions those replicas created for delegated tokens carry the two-field
+   binding, and an interactive token of the same user still matches it after the
+   upgrade. Invalidate those sessions, or wait for them to expire, before
+   relying on cross-route isolation. Do not rewrite two-field records as
+   delegated ones: the original route cannot be recovered.
 
 ### Middleware Integration
 
@@ -388,31 +478,26 @@ In Kubernetes, the operator projects each selected ConfigMap key as a read-only 
 | **Start/Stop/Restart** | Yes | Yes (proxy only) |
 | **Logs** | Container logs | N/A |
 | **Permission Profile** | Yes | N/A |
-| **Health Checks** | Always enabled | Disabled by default (opt-in via env var) |
+| **Health Checks** | Always enabled | Enabled by default (opt out with `TOOLHIVE_REMOTE_HEALTHCHECKS=false`) |
 
-### Health Checks for Remote Workloads
+### Health Checks
 
-**Implementation**: `pkg/transport/http.go:shouldEnableHealthCheck`
+**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go:monitorHealth`
 
-ToolHive performs health checks to verify that workloads are running and responding correctly. The behavior differs based on workload type:
+ToolHive performs health checks to verify that workloads are running and responding correctly. Health checks are **always enabled** for both local and remote workloads.
 
 **Local workloads (containers):**
-- Health checks are **always enabled**
-- Verifies container is running and responding
+- Verifies the container is running and responding
 - Critical for detecting container failures
 
 **Remote workloads:**
-- Health checks are **disabled by default**
-- Rationale: Avoid unnecessary network traffic to remote servers
-- Can be enabled with environment variable: `TOOLHIVE_REMOTE_HEALTHCHECKS=true` or `TOOLHIVE_REMOTE_HEALTHCHECKS=1`
-- Useful when you want to monitor remote server availability through ToolHive
-
-**Usage example:**
-```bash
-# Enable health checks for remote workloads
-export TOOLHIVE_REMOTE_HEALTHCHECKS=true
-thv proxy --remote-url https://example.com/mcp my-remote-server
-```
+- Verifies the upstream server is reachable and not answering with a 5xx status. The check goes to the remote URL's path and query, not the host's root, so a failing MCP endpoint on a shared host is detected; any status below 500, including 401, counts as healthy
+- Failures count from the first interval check, without waiting for initialization, because a remote server that keeps failing never completes it
+- After `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD` consecutive failures (default: 5), the workload transitions to `unhealthy` with the status context "Remote server failed health checks", but the proxy keeps running and checking, since ToolHive does not own the remote server's lifecycle
+- When a later check passes, the workload returns to `running` without a restart (for example, a scale-to-zero backend after a cold start)
+- The status is written only on these transitions. While the server stays unhealthy, each failed check re-reads the status and writes `unhealthy` again only if something else changed it. An `unauthenticated` status is kept, because a health check cannot tell that the credentials work again
+- `thv list` shows unhealthy remote workloads, with that context, without `-a`
+- Setting `TOOLHIVE_REMOTE_HEALTHCHECKS=false` (or `0`) turns the checks off for remote workloads, for a server that answers the health check request badly while serving MCP requests normally
 
 ### Proxy Request Timeout (Stdio Transport)
 
@@ -477,17 +562,17 @@ The transparent proxy health check behavior can be tuned via environment variabl
 | `TOOLHIVE_HEALTH_CHECK_INTERVAL` | How often to run health checks | `10s` | duration |
 | `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` | Timeout for each health check ping | `5s` | duration |
 | `TOOLHIVE_HEALTH_CHECK_RETRY_DELAY` | Delay between retry attempts after a failure | `5s` | duration |
-| `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD` | Consecutive failures before proxy shutdown | `5` | integer |
+| `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD` | Consecutive failures before the workload is marked unhealthy (and, for local workloads, the proxy shuts down) | `5` | integer |
 
 Duration values use Go's `time.ParseDuration` format (e.g., `10s`, `500ms`, `1m30s`). Invalid values are ignored with a warning log, and the default is used instead.
 
-**Threshold of 1**: Setting `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD=1` means the proxy shuts down on the first health check failure with no retries.
+**Threshold of 1**: Setting `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD=1` means the workload is marked unhealthy (and a local workload's proxy shuts down) on the first health check failure with no retries.
 
-**Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` before shutting down — approximately 60 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends. If `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` exceeds `TOOLHIVE_HEALTH_CHECK_INTERVAL`, each health check cycle takes longer than one interval tick, extending the failure window beyond what the formula predicts.
+**Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` before marking the workload unhealthy — approximately 60 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends. If `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` exceeds `TOOLHIVE_HEALTH_CHECK_INTERVAL`, each health check cycle takes longer than one interval tick, extending the failure window beyond what the formula predicts.
 
-**Before initialization**: The background monitor checks the backend when the proxy starts and on every interval tick from then on, but a failure counts toward the threshold only once the MCP server has been initialized: a successful `initialize` exchange, or, for a server on the stateless 2026-07-28 revision, its first successful request. Before that, the checks only keep the `/health` answer current.
+**Before initialization**: The background monitor checks the backend when the proxy starts and on every interval tick from then on, but for a local workload a failure counts toward the threshold only once the MCP server has been initialized: a successful `initialize` exchange, or, for a server on the stateless 2026-07-28 revision, its first successful request. Before that, the checks only keep the `/health` answer current. A remote workload's failures count from the first interval check; the check at startup only feeds `/health`.
 
-**What `/health` answers**: With health checks enabled, `/health` answers from the monitor's most recent check instead of pinging the backend for each request, so a backend that is slow to answer cannot hold a Kubernetes probe past its timeout, and the ping timeout no longer has to stay below the probe timeouts. The answer is at most about one interval plus one ping timeout old, or two ping timeouts if the ping timeout exceeds the interval; once the MCP server is initialized, a failed check that is retried can instead leave the answer up to two ping timeouts plus the retry delay old, whichever is longer (15 seconds with the defaults); its `timestamp` and `mcp.last_checked` members say when the check started. Until the first check completes, `/health` reports `healthy` without the `mcp` member. A failed check is reported as `degraded` with HTTP 200, as before. With health checks disabled, as for remote workloads by default, `/health` reports the proxy alone. The HTTP-SSE and streamable HTTP proxies, whose `/health` never waits on a backend, still build their answer per request.
+**What `/health` answers**: With health checks enabled, `/health` answers from the monitor's most recent check instead of pinging the backend for each request, so a backend that is slow to answer cannot hold a Kubernetes probe past its timeout, and the ping timeout no longer has to stay below the probe timeouts. The answer is at most about one interval plus one ping timeout old, or two ping timeouts if the ping timeout exceeds the interval; once failures count toward the threshold, a failed check that is retried can instead leave the answer up to two ping timeouts plus the retry delay old, whichever is longer (15 seconds with the defaults); its `timestamp` and `mcp.last_checked` members say when the check started. Until the first check completes, `/health` reports `healthy` without the `mcp` member. A failed check is reported as `degraded` with HTTP 200, as before. With health checks disabled, `/health` reports the proxy alone. The HTTP-SSE and streamable HTTP proxies, whose `/health` never waits on a backend, still build their answer per request.
 
 **Usage example** (increase tolerance for a flaky network):
 ```bash

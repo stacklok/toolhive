@@ -13,14 +13,15 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
-	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
@@ -158,6 +159,16 @@ type ServerConfig struct {
 	// core.Config.AuditSubjectEnricher so composite-tool workflow events carry
 	// them too. It has no effect when AuditConfig is nil.
 	AuditSubjectEnricher audit.SubjectEnricher
+
+	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// The vMCP always enforces a token that carries an authorization_details
+	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
+	// only the one tools/call its entry names, once. CallBinding adds the
+	// clients whose tokens must carry one, the maximum call duration, the
+	// single-use record, and the parameters of the 401 challenge. The zero
+	// value lists no client and keeps the record in memory, on this replica
+	// only. See callbinding.Config.
+	CallBinding callbinding.Config
 }
 
 // Serve is the transport-side entry point of the New/Serve split: it wraps an
@@ -187,8 +198,9 @@ type ServerConfig struct {
 // by the core (built/started in core.New, stopped in core.Close); Serve neither constructs
 // nor starts it, and the status reporter reads it back through the core (#5443 reversal).
 //
-// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
-// nil required collaborator (SessionManagerConfig or BackendRegistry). The session
+// Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, a
+// nil required collaborator (SessionManagerConfig or BackendRegistry), or an invalid
+// CallBinding (a negative MaxCallDuration or an empty client ID). The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
@@ -234,6 +246,20 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// mirrors the hooks' close-over-srv pattern. Setting the handler makes the shim
 	// auto-advertise the completions capability at initialize.
 	var srv *Server
+
+	// Validate call binding before anything that needs releasing is built. Its
+	// route closes over the late-assigned srv like the completion handler
+	// below, and runs only at request time.
+	callBinding, err := newCallBinding(cfg.CallBinding, func(
+		ctx context.Context, identity *auth.Identity, name string,
+	) (string, error) {
+		return srv.callBindingRoute(ctx, identity, name)
+	})
+	if err != nil {
+		return nil, err
+	}
+	warnCallBindingRecordPerReplica(cfg)
+
 	completionHandler := func(ctx context.Context, req mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 		return srv.coreCompletionHandler(ctx, req)
 	}
@@ -342,14 +368,16 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		sessionDataStorage: sessionDataStorage,
 		ready:              make(chan struct{}),
 		statusReporter:     cfg.StatusReporter,
+		callBinding:        callBinding,
 	}
 
-	sessionCfg := *cfg.SessionManagerConfig
-	if serveCfg.ScopeChallenge != nil && serveCfg.ScopeChallenge.ResponseMode == "auto" && sessionCfg.Base != nil {
-		sessionCfg.Base = vmcpsession.NewDecoratingFactory(sessionCfg.Base, captureScopeClient)
+	sessMgrCfg, err := withSharedEmbeddings(serveCfg.SessionStorage, cfg.SessionManagerConfig)
+	if err != nil {
+		return nil, err
 	}
+	sessionCfg := serveCfg.ScopeChallenge.sessionManagerConfig(sessMgrCfg)
 	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(
-		sessionDataStorage, &sessionCfg, cfg.BackendRegistry,
+		sessionDataStorage, sessionCfg, cfg.BackendRegistry,
 		sessionmanager.WithSweptSessionHook(srv.healthResync.remove),
 	)
 	if err != nil {
@@ -477,4 +505,16 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		Watcher:                 cfg.Watcher,
 		SessionStorage:          cfg.SessionStorage,
 	}
+}
+
+// warnCallBindingRecordPerReplica warns once at startup when sessions are
+// shared between replicas but call binding keeps its single-use record in
+// memory: a call-bound token can then start one call on each replica.
+func warnCallBindingRecordPerReplica(cfg *ServerConfig) {
+	if cfg.CallBinding.Record != nil || cfg.SessionStorage == nil || cfg.SessionStorage.Provider != "redis" {
+		return
+	}
+	slog.Warn("call binding: sessions are stored in Redis, but the single-use record of call-bound " +
+		"access tokens is in memory, so a call-bound token can start one call on each replica; " +
+		"set CallBinding.Record to a shared record to refuse the replay across replicas")
 }

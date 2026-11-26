@@ -69,6 +69,17 @@ func TestIsLocalValidationFailure(t *testing.T) {
 			cond: falseCond(mcpv1beta1.ConditionReasonInvalidCABundle, mirroredConditionMessage("auth", "")),
 			want: false,
 		},
+		{
+			name: "local MultiUpstreamNotSupported",
+			cond: falseCond(mcpv1beta1.ConditionReasonExternalAuthConfigMultiUpstream,
+				"MCPServer supports only one upstream provider (found 2); use VirtualMCPServer for multi-upstream"),
+			want: true,
+		},
+		{
+			name: "mirrored MultiUpstreamNotSupported",
+			cond: falseCond(mcpv1beta1.ConditionReasonExternalAuthConfigMultiUpstream, mirroredConditionMessage("auth", "")),
+			want: false,
+		},
 		{name: "other reason", cond: falseCond(testSourceInvalidReason, testSourceInvalidMessage), want: false},
 		{
 			name: "True condition",

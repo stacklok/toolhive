@@ -598,7 +598,8 @@ func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOpt
 // admission route (Identity.AdmissionRoute) to tokens validated for this
 // embedded authorization server. A bound validator assigns a route only to
 // tokens verified with the in-process key provider (WithKeyProvider), so one
-// bound without WithKeyProvider never assigns a route. This runtime-only value
+// bound without WithKeyProvider never assigns a route, and its Middleware
+// rejects every token carrying the delegated-access marker. This runtime-only value
 // is deliberately separate from TokenValidatorConfig, which is user
 // configuration.
 func WithEmbeddedAuthServerIssuer(issuer string) TokenValidatorOption {
@@ -617,7 +618,8 @@ func WithEmbeddedAuthServerIssuer(issuer string) TokenValidatorOption {
 //
 // Together with WithEmbeddedAuthServerIssuer, this is what lets the validator
 // assign an admission route: a token verified only through the HTTP JWKS
-// fallback gets no route.
+// fallback gets no route, and on a bound validator Middleware rejects it with
+// 401 if it carries the delegated-access marker.
 func WithKeyProvider(provider keys.PublicKeyProvider) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.keyProvider = provider
@@ -1319,22 +1321,45 @@ func (v *TokenValidator) validateToken(ctx context.Context, tokenString string) 
 }
 
 // buildWWWAuthenticate builds a RFC 6750 / RFC 9728 compliant value for the
-// WWW-Authenticate header. It always includes realm and, if set, resource_metadata.
-// When errorCode is non-empty ("invalid_request", "invalid_token", or "insufficient_scope"),
-// it appends the error and optional error_description.
+// WWW-Authenticate header from the validator's issuer, resource URL and scopes.
+// See BearerChallenge.Header.
 func (v *TokenValidator) buildWWWAuthenticate(errorCode string, errDescription string) string {
+	return BearerChallenge{Realm: v.issuer, ResourceURL: v.resourceURL, Scopes: v.scopes}.
+		Header(errorCode, errDescription)
+}
+
+// BearerChallenge holds the parameters a protected resource puts on its Bearer
+// WWW-Authenticate challenges (RFC 6750 §3, RFC 9728 §5.1). The token validator
+// builds its challenges from it, and so can another component of the same
+// resource that refuses a token, so that both challenges carry the same realm,
+// resource metadata and scope.
+type BearerChallenge struct {
+	// Realm is the issuer the resource accepts tokens from. Empty omits realm.
+	Realm string
+	// ResourceURL is the protected resource's URL. When set, the challenge
+	// carries the URL of its RFC 9728 metadata.
+	ResourceURL string
+	// Scopes are the scopes the resource asks for. Empty omits scope.
+	Scopes []string
+}
+
+// Header returns the WWW-Authenticate value. It always includes realm and, if
+// set, resource_metadata. When errorCode is non-empty ("invalid_request",
+// "invalid_token", or "insufficient_scope"), it appends the error and optional
+// error_description.
+func (c BearerChallenge) Header(errorCode string, errDescription string) string {
 	var parts []string
 
 	// realm (RFC 6750)
-	if v.issuer != "" {
-		parts = append(parts, fmt.Sprintf(`realm="%s"`, EscapeQuotes(v.issuer)))
+	if c.Realm != "" {
+		parts = append(parts, fmt.Sprintf(`realm="%s"`, EscapeQuotes(c.Realm)))
 	}
 
 	// resource_metadata (RFC 9728)
 	// Per RFC 9728 Section 3.1, the well-known URI is inserted between the host and path components
 	// Example: https://resource.example.com/resource1 -> https://resource.example.com/.well-known/oauth-protected-resource/resource1
-	if v.resourceURL != "" {
-		parsedURL, err := url.Parse(v.resourceURL)
+	if c.ResourceURL != "" {
+		parsedURL, err := url.Parse(c.ResourceURL)
 		if err == nil {
 			// Per RFC 9728 Section 3.1, remove any terminating slash from path
 			path := parsedURL.Path
@@ -1352,8 +1377,8 @@ func (v *TokenValidator) buildWWWAuthenticate(errorCode string, errDescription s
 	}
 
 	// scope (RFC 6750 §3) - only when explicitly configured
-	if len(v.scopes) > 0 {
-		parts = append(parts, fmt.Sprintf(`scope="%s"`, EscapeQuotes(strings.Join(v.scopes, " "))))
+	if len(c.Scopes) > 0 {
+		parts = append(parts, fmt.Sprintf(`scope="%s"`, EscapeQuotes(strings.Join(c.Scopes, " "))))
 	}
 
 	// error fields (RFC 6750 §3)
@@ -1364,6 +1389,14 @@ func (v *TokenValidator) buildWWWAuthenticate(errorCode string, errDescription s
 		}
 	}
 	return "Bearer " + strings.Join(parts, ", ")
+}
+
+// WriteInvalidToken answers 401 with an invalid_token challenge and an RFC 6750
+// error body, the way the token validator answers a token it refuses.
+// description must not carry the token or other secrets.
+func (c BearerChallenge) WriteInvalidToken(w http.ResponseWriter, description string) {
+	w.Header().Set("WWW-Authenticate", c.Header(OAuthErrInvalidToken, description))
+	writeOAuthError(w, OAuthErrInvalidToken, description)
 }
 
 // RFC 6750 error code constants for Bearer token authentication.
@@ -1414,16 +1447,45 @@ func (v *TokenValidator) writeUpstreamReauthRequired(w http.ResponseWriter) {
 // error (storage unavailable). A non-empty failed map means one or more
 // providers' tokens could not be refreshed; the caller should return HTTP 401
 // to trigger re-authentication.
+//
+// On a validator bound to the embedded authorization server the canonical-user
+// key of ctx is set from "sub" for an interactive route and shadowed with ""
+// for any other, so user-keyed storage never reads a row on behalf of a token
+// that did not log in through the embedded server. On a non-interactive route a
+// storage ErrNoCanonicalUser then means "no session of the embedded server" and
+// is not an error; on the interactive route it is one.
+//
+// An unbound validator leaves ctx untouched, so CanonicalUserFromContext keeps
+// falling back to the Identity in ctx. ErrNoCanonicalUser is an error there like
+// any other reader error: the fallback means it can only come from storage that
+// reads just the authorization server's own key (the in-tree user-keyed wrapper)
+// behind a validator not bound to the embedded issuer, a misconfiguration that
+// must surface as a 503 rather than as "no upstream tokens".
 func (v *TokenValidator) loadUpstreamTokens(
-	ctx context.Context, claims jwt.MapClaims,
+	ctx context.Context, claims jwt.MapClaims, route AdmissionRoute,
 ) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
 	tsid, ok := claims[claimnames.TokenSessionIDKey].(string)
 	if !ok || tsid == "" {
 		return nil, nil, nil
 	}
 
+	interactive := route == AdmissionRouteInteractive
+	if v.boundToEmbeddedIssuer() {
+		if interactive {
+			sub, _ := claims["sub"].(string)
+			ctx = WithPlatformUser(ctx, sub)
+		} else {
+			ctx = context.WithValue(ctx, PlatformUserContextKey{}, "")
+		}
+	}
+
 	creds, failed, err := v.upstreamTokenReader.GetAllUpstreamCredentials(ctx, tsid)
 	if err != nil {
+		if !interactive && v.boundToEmbeddedIssuer() && errors.Is(err, upstreamtoken.ErrNoCanonicalUser) {
+			slog.DebugContext(ctx, "no upstream credentials loaded on a non-interactive route",
+				"route", route)
+			return nil, nil, nil
+		}
 		// Log tsid at DEBUG only — it is credential-adjacent and must not
 		// leak into WARN-level logs or returned error strings.
 		slog.DebugContext(ctx, "load upstream credentials failed", "tsid", tsid, "error", err)
@@ -1445,11 +1507,22 @@ func (v *TokenValidator) loadUpstreamTokens(
 // to v.issuer makes "validated for the configured embedded authorization-server
 // issuer" true by construction instead of by deployment convention, and leaves the
 // claim comparison below as a redundant restatement of what validateClaims proved.
+//
+// With an upstream token reader configured, a token carrying a non-empty string
+// "tsid" is never sessionless, even with a proof. The load then ran for that
+// session and either filled UpstreamTokens or ended the request with a 401 or
+// 503, except when a non-interactive load on a bound validator tolerated
+// ErrNoCanonicalUser and left UpstreamTokens nil. Without this rule, a token with both a tsid and a proof
+// (which the embedded server never mints) would pass that case as sessionless.
+// Without a reader no load is attempted, so the rule does not apply.
 func (v *TokenValidator) isSessionlessGrant(identity *Identity, claims jwt.MapClaims, provenance tokenProvenance) bool {
 	if !provenance.signed() || !v.boundToEmbeddedIssuer() {
 		return false
 	}
 	if identity.UpstreamTokens != nil {
+		return false
+	}
+	if tsid, ok := claims[claimnames.TokenSessionIDKey].(string); ok && tsid != "" && v.upstreamTokenReader != nil {
 		return false
 	}
 	issuer, ok := claims["iss"].(string)
@@ -1491,7 +1564,8 @@ func sessionlessProof(identity *Identity, claims jwt.MapClaims) bool {
 // "aud" only when one is set, so without it a token minted for another resource
 // on the same authorization server would be admitted. Every token that is neither
 // interactive nor delegated, including one carrying both a tsid and the
-// delegated-access marker, is left unspecified.
+// delegated-access marker, is left unspecified; Middleware then rejects such a
+// marked token on a bound validator.
 func (v *TokenValidator) classifyRoute(identity *Identity, claims jwt.MapClaims, provenance tokenProvenance) AdmissionRoute {
 	if provenance != provenanceSignedEmbeddedKey || !v.boundToEmbeddedIssuer() {
 		return AdmissionRouteUnspecified
@@ -1556,18 +1630,31 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 
 		identity.AdmissionRoute = v.classifyRoute(identity, claims, provenance)
 
+		// A marked token must not fall back to ordinary admission when the
+		// validator is bound to the embedded issuer.
+		if _, marked := claims[claimnames.DelegatedAccessKey]; marked &&
+			v.boundToEmbeddedIssuer() && identity.AdmissionRoute != AdmissionRouteDelegated {
+			slog.WarnContext(r.Context(), "delegated-access marker present without delegated admission",
+				"reason", undelegatedMarkerReason(provenance, v.audience, claims))
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, "Invalid token"))
+			writeOAuthError(w, OAuthErrInvalidToken, "Invalid token")
+			return
+		}
+
 		// Enrich Identity with upstream provider tokens when an embedded auth
 		// server is active (reader configured via WithUpstreamTokenReader). The
 		// load runs against a temporary load-scoped context carrying the Identity,
 		// so storage layers invoked during the load can resolve the canonical user
-		// from context (via CanonicalUserFromContext, which falls back to the
-		// Identity's PlatformUserID on this request-serving path). The in-place
+		// from context. On a validator not bound to the embedded issuer,
+		// CanonicalUserFromContext falls back to the Identity's PlatformUserID; a
+		// bound validator sets the key explicitly in loadUpstreamTokens (sub for
+		// an interactive session, empty otherwise), which wins. The in-place
 		// UpstreamTokens mutation completes here, before the publicly-reachable
 		// context is built below — so the Identity placed in the served context is
 		// never mutated afterwards (see the UpstreamTokens doc comment in identity.go).
 		if v.upstreamTokenReader != nil {
 			loadCtx := WithIdentity(r.Context(), identity)
-			creds, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims)
+			creds, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims, identity.AdmissionRoute)
 			if loadErr != nil {
 				slog.WarnContext(loadCtx, "upstream token storage unavailable",
 					"error", loadErr,
@@ -1587,8 +1674,9 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			// Project the per-provider credential bundle onto the two
-			// consumer-facing Identity fields. creds is non-nil exactly when
-			// the token carried a tsid claim; without one both fields stay nil.
+			// consumer-facing Identity fields. creds is nil without a tsid claim,
+			// and also when a non-interactive load on a bound validator tolerated
+			// ErrNoCanonicalUser; then both fields stay nil.
 			if creds != nil {
 				accessTokens := make(map[string]string, len(creds))
 				idTokens := make(map[string]string, len(creds))
@@ -1700,4 +1788,21 @@ func NewAuthInfoHandler(issuer, resourceURL string, scopes []string) http.Handle
 			return
 		}
 	})
+}
+
+// undelegatedMarkerReason names why a marked token on a validator bound to the
+// embedded issuer was not admitted as delegated, mirroring the checks in
+// classifyRoute. It returns "unclassified" for a cause it does not know, so a
+// new classifyRoute condition cannot be misreported as an existing one.
+func undelegatedMarkerReason(provenance tokenProvenance, audience string, claims jwt.MapClaims) string {
+	switch {
+	case provenance != provenanceSignedEmbeddedKey:
+		return "not_verified_with_in_process_key"
+	case strings.TrimSpace(audience) == "":
+		return "no_audience"
+	case hasUsableTSID(claims):
+		return "token_session_present"
+	default:
+		return "unclassified"
+	}
 }

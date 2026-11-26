@@ -37,6 +37,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/callbinding"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -284,6 +285,16 @@ type Config struct {
 	// from the HTTP middleware. When non-nil, Name must be non-empty (the Cedar resource
 	// entity name).
 	Authz *authz.Config
+
+	// CallBinding sets up enforcement of access tokens bound to one MCP call.
+	// The vMCP always enforces a token that carries an authorization_details
+	// entry of type https://toolhive.dev/mcp_tool_call: such a token may start
+	// only the one tools/call its entry names, once. CallBinding adds the
+	// clients whose tokens must carry one, the maximum call duration, the
+	// single-use record, and the parameters of the 401 challenge. The zero
+	// value lists no client and keeps the record in memory, on this replica
+	// only. See callbinding.Config.
+	CallBinding callbinding.Config
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -305,6 +316,10 @@ type Server struct {
 	// cfg.Authz != nil after Serve builds the Server. It stays false for direct-Serve
 	// callers, which have no way to configure authorization and run allow-all cores.
 	authzGateEnabled bool
+
+	// callBinding enforces call-bound access tokens (call_binding.go). Serve
+	// always sets it.
+	callBinding *callBinding
 
 	// optimizerFactory builds a per-session optimizer over the core's advertised
 	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
@@ -413,28 +428,9 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		return nil, fmt.Errorf("unsupported session storage provider %q (supported: \"memory\", \"redis\")",
 			cfg.SessionStorage.Provider)
 	}
-	keyPrefix := cfg.SessionStorage.KeyPrefix
-	if keyPrefix == "" {
-		keyPrefix = "thv:vmcp:session:"
-	}
-	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
-	// A set-but-empty password is a misconfiguration (the operator injected the
-	// var from a passwordRef whose secret resolved empty), not a no-auth request.
-	// Fail loudly rather than silently downgrading a store that holds session data.
-	if passwordSet && password == "" {
-		return nil, fmt.Errorf(
-			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
-			vmcpconfig.RedisPasswordEnvVar)
-	}
-	tlsCfg, err := cfg.SessionStorage.TLS.Load()
+	redisCfg, keyPrefix, err := sessionRedisConfig(cfg.SessionStorage)
 	if err != nil {
-		return nil, fmt.Errorf("redis session storage TLS configuration: %w", err)
-	}
-	redisCfg := redisconn.Config{
-		Addr:     cfg.SessionStorage.Address,
-		Password: password,
-		DB:       int(cfg.SessionStorage.DB),
-		TLS:      tlsCfg,
+		return nil, err
 	}
 	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
 	// an unset password is an intended no-auth connection, but the downgrade
@@ -442,7 +438,9 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	// data, so name it either way. Both records carry a "store" attribute matching
 	// the embedded auth server's no-auth WARN (convertRedisRunConfig), so a single
 	// log-based alert can match one key across both Redis consumers.
-	if !passwordSet {
+	// sessionRedisConfig rejects a set-but-empty password, so an empty one here
+	// means the variable is unset.
+	if redisCfg.Password == "" {
 		slog.Warn("vMCP Redis session storage connecting without authentication "+
 			"(THV_SESSION_REDIS_PASSWORD is not set)",
 			"store", cfg.SessionStorage.Address,
@@ -459,6 +457,35 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		)
 	}
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
+}
+
+// sessionRedisConfig resolves the connection and key prefix of Redis session
+// storage, which the optimizer's shared embeddings reuse (withSharedEmbeddings).
+// The password comes from THV_SESSION_REDIS_PASSWORD.
+func sessionRedisConfig(storage *vmcpconfig.SessionStorageConfig) (redisconn.Config, string, error) {
+	keyPrefix := storage.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = "thv:vmcp:session:"
+	}
+	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
+	// A set-but-empty password is a misconfiguration (the operator injected the
+	// var from a passwordRef whose secret resolved empty), not a no-auth request.
+	// Fail loudly rather than silently downgrading a store that holds session data.
+	if passwordSet && password == "" {
+		return redisconn.Config{}, "", fmt.Errorf(
+			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
+			vmcpconfig.RedisPasswordEnvVar)
+	}
+	tlsCfg, err := storage.TLS.Load()
+	if err != nil {
+		return redisconn.Config{}, "", fmt.Errorf("redis session storage TLS configuration: %w", err)
+	}
+	return redisconn.Config{
+		Addr:     storage.Address,
+		Password: password,
+		DB:       int(storage.DB),
+		TLS:      tlsCfg,
+	}, keyPrefix, nil
 }
 
 // New creates a Virtual MCP Server by composing the domain core (core.New) with the
@@ -738,8 +765,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	//   recovery → body-limit → write-timeout → header-validation →
 	//   forwarded-header capture (if PassthroughHeaders is set) →
 	//   audit (if configured) → auth (if configured) → MCP-parsing →
-	//   telemetry (if configured) → host-guard → classification →
-	//   session ownership (Legacy only) → handler
+	//   telemetry (if configured) → host-guard → call binding →
+	//   classification → session ownership (Legacy only) → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
 	//
@@ -782,6 +809,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// dispatcher 403 is still recorded by the telemetry middleware instead of
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
+
+	// Enforce access tokens bound to one MCP call. It runs before
+	// classification, so Legacy and Modern requests both pass through it, and
+	// after auth and parsing, whose identity and parsed request it reads. It
+	// is installed whether or not authorization is configured, and runs before
+	// session ownership, the CallGate and Cedar: it can only refuse more. See
+	// call_binding.go.
+	mcpHandler = s.callBindingMiddleware(mcpHandler)
 
 	// DNS-rebinding protection for both MCP revisions. go-sdk's own localhost
 	// check only sees Legacy requests that reach StreamableHTTPHandler;

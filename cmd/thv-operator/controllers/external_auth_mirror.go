@@ -32,8 +32,8 @@ const fallbackInvalidReason = "InvalidExternalAuthConfig"
 // writes, marking it as mirrored rather than locally owned. A source can
 // surface the same Reason a consumer uses for its own validation failures (a
 // malformed obo config is Valid=False / InvalidConfig), so the Reason alone
-// cannot tell the two owners apart. No local writer of InvalidConfig or
-// InvalidCABundle may start its message with this prefix;
+// cannot tell the two owners apart. No local writer of InvalidConfig,
+// InvalidCABundle or MultiUpstreamNotSupported may start its message with this prefix;
 // TestMirroredMessagePrefix_NotUsedByLocalMessages checks the obo
 // incoming-auth message and the shared CA bundle format
 // (ctrlutil.InvalidCABundleMessage).
@@ -92,7 +92,7 @@ func ownedByLocalValidation(conditions []metav1.Condition, conditionType string)
 }
 
 // isLocalValidationFailure reports whether cond is a False condition written by
-// this operator's own validation of the consumer. Two kinds of owner qualify,
+// this operator's own validation of the consumer. Three kinds of owner qualify,
 // each with a fixed Reason:
 //
 //   - ConditionReasonInvalidConfig: handleInvalidEmbeddedAuthServerConfig, set
@@ -101,6 +101,10 @@ func ownedByLocalValidation(conditions []metav1.Condition, conditionType string)
 //     (ctrlutil.ValidateOBOIncomingAuth).
 //   - ConditionReasonInvalidCABundle: the CA bundle check, set when a
 //     referenced bundle ConfigMap is missing its key or holds non-PEM content.
+//   - ConditionReasonExternalAuthConfigMultiUpstream (the same string as
+//     ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream): the
+//     single-upstream check, set when an embedded auth server config lists
+//     more than one upstream.
 //
 // These re-derive the same condition after the mirror runs, so clearing it in
 // the mirror would force a fresh LastTransitionTime on every reconcile.
@@ -119,7 +123,26 @@ func isLocalValidationFailure(cond *metav1.Condition) bool {
 		return false
 	}
 	return cond.Reason == mcpv1beta1.ConditionReasonInvalidConfig ||
-		cond.Reason == mcpv1beta1.ConditionReasonInvalidCABundle
+		cond.Reason == mcpv1beta1.ConditionReasonInvalidCABundle ||
+		cond.Reason == mcpv1beta1.ConditionReasonExternalAuthConfigMultiUpstream
+}
+
+// clearStaleMirror removes conditions' entry for conditionType only when it is
+// a failure the mirror wrote on an earlier reconcile, so that failure does not
+// outlive its cause once the source has healed. The mirror only ever writes
+// Status=False, so a True entry (the consumer's own ExternalAuthConfigValid
+// success condition) is never a stale mirror, and neither is a False entry
+// that ownedByLocalValidation attributes to another owner. Removing either
+// would only have the consumer re-add it a few lines later with a fresh
+// LastTransitionTime, so every reconcile would write status, and that write
+// would trigger the next reconcile through the consumer's own watch.
+func clearStaleMirror(conditions *[]metav1.Condition, conditionType string) {
+	existing := meta.FindStatusCondition(*conditions, conditionType)
+	if existing == nil || existing.Status != metav1.ConditionFalse ||
+		ownedByLocalValidation(*conditions, conditionType) {
+		return
+	}
+	meta.RemoveStatusCondition(conditions, conditionType)
 }
 
 // mirroredConditionMessage builds the consumer condition Message for the
@@ -135,13 +158,13 @@ func mirroredConditionMessage(sourceName, sourceMessage string) string {
 // mirrorInvalidOnMCPServer mirrors the source's Valid=False condition onto the
 // MCPServer's ExternalAuthConfigValidated condition. When the source is healed
 // (Valid=True or absent), it clears any stale mirror so the condition does not
-// outlive its cause — unless the condition currently reflects a different
-// owner's failure (see ownedByLocalValidation). Clearing that condition here
-// would erase the other owner's terminal failure a step before it re-derives
-// the same failure, forcing a fresh LastTransitionTime on every reconcile even
-// though nothing changed. Returns (true, err) when a False
-// mirror was written so the caller can mark Phase=Failed; (false, nil)
-// otherwise.
+// outlive its cause — unless the condition is the healthy True condition or
+// currently reflects a different owner's failure (see clearStaleMirror).
+// Clearing either here would erase the condition a step before
+// handleExternalAuthConfig re-derives it unchanged, forcing a fresh
+// LastTransitionTime on every reconcile even though nothing changed. Returns
+// (true, err) when a False mirror was written so the caller can mark
+// Phase=Failed; (false, nil) otherwise.
 //
 // See package-level Status Condition Parity comment for the #5347 motivation.
 func mirrorInvalidOnMCPServer(
@@ -150,9 +173,7 @@ func mirrorInvalidOnMCPServer(
 ) (bool, error) {
 	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
 	if mirrored == nil {
-		if !ownedByLocalValidation(m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated) {
-			meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
-		}
+		clearStaleMirror(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		return false, nil
 	}
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
@@ -170,23 +191,21 @@ func mirrorInvalidOnMCPServer(
 // is healed, it clears any stale mirror defensively — the downstream True
 // writer in handleExternalAuthConfig also sets the success reason, but a
 // future early return between this site and that writer would otherwise leak
-// a stale False. It does NOT clear the condition when it currently reflects a
-// different owner's failure (see ownedByLocalValidation): removing it here
-// would erase that owner's terminal failure a step before it gets re-derived
-// unchanged, forcing setMCPRemoteProxyExternalAuthConfigValidCondition to
-// treat it as new and stamp a fresh LastTransitionTime on every reconcile
-// even though nothing changed. Returns (true, err) when a False mirror was
-// written so the caller can short-circuit; (false, nil) otherwise.
+// a stale False. It does NOT clear the condition when it is the healthy True
+// condition or currently reflects a different owner's failure (see
+// clearStaleMirror): removing it here would erase that condition a step
+// before it gets re-derived unchanged, forcing
+// setMCPRemoteProxyExternalAuthConfigValidCondition to treat it as new and
+// stamp a fresh LastTransitionTime on every reconcile even though nothing
+// changed. Returns (true, err) when a False mirror was written so the caller
+// can short-circuit; (false, nil) otherwise.
 func mirrorInvalidOnRemoteProxy(
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (bool, error) {
 	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
 	if mirrored == nil {
-		condType := mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated
-		if !ownedByLocalValidation(proxy.Status.Conditions, condType) {
-			meta.RemoveStatusCondition(&proxy.Status.Conditions, condType)
-		}
+		clearStaleMirror(&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
 		return false, nil
 	}
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{

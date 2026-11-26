@@ -16,6 +16,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
@@ -40,6 +41,14 @@ func (c *ScopeChallengeConfig) clone() *ScopeChallengeConfig {
 	cloned := *c
 	cloned.ToolResultClients = slices.Clone(c.ToolResultClients)
 	return &cloned
+}
+
+func (c *ScopeChallengeConfig) sessionManagerConfig(cfg *sessionmanager.FactoryConfig) *sessionmanager.FactoryConfig {
+	copied := *cfg
+	if c != nil && c.ResponseMode == "auto" && copied.Base != nil {
+		copied.Base = vmcpsession.NewDecoratingFactory(copied.Base, captureScopeClient)
+	}
+	return &copied
 }
 
 func (c *ScopeChallengeConfig) toolResult(client ScopeClientProfile) bool {

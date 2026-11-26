@@ -171,6 +171,19 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 			wantRefuse: true,
 		},
 		{
+			// A rotated refresh token that could not be saved: the refresher
+			// deletes the row and its error also matches storage.ErrNotFound.
+			// This used to be treated as transient and granted.
+			name: "rotated refresh token not persisted and row deleted is refused without revoking",
+			tsid: guardTestTSID,
+			rows: map[string]*storage.UpstreamTokens{"idp": guardTestRow(past, "rt")},
+			refreshErr: fmt.Errorf(
+				"failed to persist rotated upstream refresh token for provider %q; row deleted: %w: %w",
+				"idp", storage.ErrNotFound, errors.New("redis connection lost")),
+			refreshes:  1,
+			wantRefuse: true,
+		},
+		{
 			name:       "upstream invalid_grant after another replica rotated the row is granted",
 			tsid:       guardTestTSID,
 			rows:       map[string]*storage.UpstreamTokens{"idp": guardTestRow(past, "rt")},

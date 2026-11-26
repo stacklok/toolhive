@@ -276,7 +276,7 @@ An operator opt-in path that extracts identity claims directly from the token en
 
 **`UserResolver` interaction.** Because `Identity.Synthetic` is false, `callback.go` takes the normal path: `UserResolver.ResolveUser` runs, a row is created (or looked up) in `UserStorage`, a provider-identities entry is written, and `UpdateLastAuthenticated` is called. `UpstreamTokens.UserID` carries the resolved internal user UUID, not the raw operator-supplied subject string.
 
-**Reverse-index implication (Redis backend).** Stable user IDs mean `KeyTypeUserUpstream` works as designed — one set per user accumulates session IDs across re-authentications. No set churn.
+**Reverse-index implication (Redis backend).** Stable user IDs mean `KeyTypeUserUpstream` works as designed — one set per user accumulates that user's upstream row keys across re-authentications. No set churn.
 
 **Operator visibility.** The `IdentitySynthesized` condition does not fire for upstreams using `IdentityFromToken`. `SyntheticIdentityUpstreams()` (the controller-side predicate that drives the condition) skips upstreams where either `userInfo` or `identityFromToken` is configured — only the dual-unconfigured case is reported as synthesis-mode.
 
@@ -299,7 +299,7 @@ Reached when both `IdentityFromToken` is unconfigured AND `userInfo` is absent. 
 
 **`UserResolver` bypass.** The bypass is gated on `Identity.Synthetic` in `callback.go` — synthesis is the only path that sets this field. Synthetic identities skip `UserResolver.ResolveUser` entirely — no row is created in `UserStorage`, no entry is written to provider-identities, and `UpdateLastAuthenticated` is not called. The synthesized subject rotates per access token, so persisting it would create a fresh `users` row on every re-authentication. `UpstreamTokens.UserID` therefore carries the `tk-…` value directly rather than a stable internal UUID.
 
-**Reverse-index implication (Redis backend).** The `KeyTypeUserUpstream` secondary-index set under `thv:auth:{ns:name}:user:upstream:{userID}` is designed around stable user IDs — one set per user, holding all of that user's session IDs. Under synthesis the userID rotates with every re-authentication, so each session lands in its own one-element set. Reads continue to work, but set churn is much higher than under OIDC. The existing TODO in `pkg/authserver/storage/redis.go` (on `warnOnCleanupErr`) to scan and clean up stale secondary-index entries applies, and synthesis-mode workloads make a periodic scan more important.
+**Reverse-index implication (Redis backend).** The `KeyTypeUserUpstream` secondary-index set under `thv:auth:{ns:name}:user:upstream:{userID}` is designed around stable user IDs — one set per user, holding the keys of all of that user's upstream token rows (one per session and provider). Under synthesis the userID rotates with every re-authentication, so each session lands in its own one-element set. Reads continue to work, but set churn is much higher than under OIDC. The existing TODO in `pkg/authserver/storage/redis.go` (on `warnOnCleanupErr`) to scan and clean up stale secondary-index entries applies, and synthesis-mode workloads make a periodic scan more important.
 
 **Operator visibility.** When at least one configured OAuth2 upstream has both `userInfo` and `identityFromToken` unconfigured, the controller surfaces the `IdentitySynthesized` condition on the `MCPExternalAuthConfig` and `VirtualMCPServer` status (Reason `IdentitySynthesizedActive`, naming the affected upstreams). The condition flips to `False` (Reason `IdentitySynthesizedInactive`) once every upstream has either `userInfo` or `identityFromToken` configured.
 
@@ -433,7 +433,7 @@ Secondary indexes use Redis Sets to enable reverse lookups:
 
 ```
 thv:auth:{default:my-server}:reqid:access:{request-id}  → {sig1, sig2}
-thv:auth:{default:my-server}:user:upstream:{user-id}     → {session1, session2}
+thv:auth:{default:my-server}:user:upstream:{user-id}     → {thv:auth:{default:my-server}:upstream:session1:github, ...}
 ```
 
 ### Exchange grant storage
@@ -514,7 +514,9 @@ resurrect the deleted row.
 
 An upstream refresh fails in one of three ways. In a definitive rejection, the
 IdP answers with the OAuth `invalid_grant` code on anything but a 5xx or 429,
-and that upstream refresh token will never work again. In another structured
+and ToolHive treats that upstream refresh token as dead. Some IdPs also use
+the code for account or policy state that can clear without a new sign-in; see
+the [trade-offs](#remembered-rejections) below. In another structured
 verdict, the IdP answers with a different OAuth error code (for example
 `invalid_client`) on a 4xx: retrying will not help, but the refresh token is
 not what was rejected. Any other failure (a network error, a 5xx, a 429, a 4xx
@@ -532,6 +534,69 @@ lost race rather than a dead credential. The refresher and
 `errors.Is` on the error from `GetValidTokens`. It can also be detected on the
 per-provider errors that `GetAllUpstreamCredentials` returns in its `failed`
 map.
+
+#### Remembered rejections
+
+Each auth server process remembers the refresh tokens its IdP rejected with a
+definitive `invalid_grant` for 5 minutes (at most 10,000 entries). While an
+entry exists, the refresher answers a refresh of that token without calling
+the IdP, except when the [refresh grant guard](#upstream-refresh-guard) is
+asking: it skips the memory and asks the IdP (see the guard section for a
+refresh already in flight), and still adds a fresh rejection to the memory. Without the memory, a row that holds an expired access token and a
+dead refresh token would cost one IdP call on every request that reads it.
+After the first rejection, the refresh failures behind the repeated WARN lines
+are answered from this memory and do not reach the IdP; a DEBUG line says so.
+
+An entry is keyed on the storage row, a client registration generation, and a
+SHA-256 digest of the row's refresh token, access token and access token
+expiry. It stops matching when:
+
+- another replica or a new sign-in stores a different refresh token in the row;
+- another replica refreshes successfully without rotating the refresh token,
+  which stores a new access token, or the same access token with a new expiry,
+  next to the same refresh token;
+- the upstream's client registration is replaced through the server
+  (`UpdateUpstreamClientCredentials`, used by the DCR recheck), because an IdP
+  may answer `invalid_grant` for a refresh token issued to another client.
+  Replacing a registration directly on a provider does not do this.
+
+The generation is one counter for all providers, so a switch costs the other
+providers one IdP call each. Nothing removes entries by hand. The memory never
+writes to storage, so a replica that wins a refresh race after this one's
+rejection can still store its rotated token. Only definitive rejections are
+remembered: a 5xx, a 429, a network error, a storage error, or any other OAuth
+error code is not remembered and is retried on every request (the ID-token
+path has its own backoff). A rejection is also not remembered when the
+provider's error carries no `*oauth2.RetrieveError` with a response, which a
+third-party provider implementation may return.
+
+An entry keeps only the OAuth error code and the HTTP status, never the
+provider's error text or body. Each hit builds a new error that still matches
+`upstream.ErrGrantRejected` and carries a `*oauth2.RetrieveError` with that
+code and status, and its message says the rejection was remembered and the
+provider was not called, so logs tell it from a fresh rejection.
+
+Trade-offs:
+
+- Some IdPs answer `invalid_grant` for account or policy state, for example a
+  disabled account, a lockout, a Conditional Access block or missing consent
+  on Microsoft Entra. This can clear without a new sign-in. After an
+  administrator fixes it, bearer requests on the same replica can keep failing
+  for up to 5 minutes, where before they recovered on the next request. The
+  client's next refresh grant asks the IdP again (see
+  [Upstream refresh guard](#upstream-refresh-guard)), so a client that answers
+  the 401 with a refresh grant recovers as soon as the IdP accepts. Only a
+  client that never sends a refresh grant waits out the 5 minutes.
+- Losing an entry (eviction, restart, another replica) costs one more IdP
+  call, which remembers the rejection again.
+- Each bearer request in this state still logs three WARN lines for the failed
+  refresh: two from the token service (`upstream token refresh failed` where
+  it refreshes, and `upstream token refresh failed; provider will require
+  re-authentication` where it collects credentials) and one from the auth
+  middleware (`upstream token refresh failed; returning 401`). The error text
+  in the first two says the rejection was remembered.
+- GitHub answers a dead refresh token with HTTP 200 and `bad_refresh_token`,
+  which is not a definitive rejection, so nothing is remembered there.
 
 Every answer from the token endpoint, on refresh and on the authorization code
 exchange alike, also keeps its `*oauth2.RetrieveError` in the same chain,
@@ -577,7 +642,7 @@ other docs link here.
 | Rows exist but none holds an access token | Yes |
 | A row's access token is expired and its provider is no longer configured, so nothing can refresh it | No |
 | A row's access token is expired and the row has no refresh token | Yes |
-| The row was deleted while the guard refreshed it | No |
+| The row was deleted while the guard refreshed it, including by the refresher itself when the IdP rotated the refresh token and the new one could not be saved | No |
 | The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No (the session's upstream rows are deleted) |
 
 A revoking refusal also revokes the grant's access tokens, as an RFC 7009
@@ -618,19 +683,52 @@ to sign in again. Any other outcome is uncertain and grants the refresh, since
 the bearer validator answers those with 503 or a retryable 401 anyway:
 
 - a transient upstream failure (network, 5xx, 429);
-- a storage error;
+- a storage error, unless the refresher deleted the row because it could not
+  save a rotated refresh token (that is the deleted-row refusal above);
 - the request being cancelled; or
 - the check running past its 10-second budget. A refresh still in flight then
   completes in the background and stores its result.
 
 To tolerate the lost-race window described above, the guard does not refuse
-on the first rejection. It waits briefly (500ms) and re-reads the row, and a
-row now holding any different refresh token counts as live. This is a
+on the first rejection. It waits briefly (500ms) and re-reads the row. If the
+row has changed (a different refresh token, access token, ID token or access
+token expiry), it counts as live and the grant goes through. This is a
 heuristic: a winner whose write lands after the wait is missed. The client is
 refused and its rows deleted, so the winner's write fails, but it keeps its
-refresh token. A recheck that cannot
-complete (the request is cancelled, or the read fails) is uncertain too. A
-session without a `tsid` (a session-less grant) is not checked.
+refresh token. A recheck that cannot complete (the request is cancelled, or
+the read fails) is uncertain too. A session without a `tsid` (a session-less
+grant) is not checked.
+
+The guard refreshes through the shared refresher but skips its
+[remembered rejections](#remembered-rejections), so it asks the IdP (see
+below for a refresh already in flight).
+If the IdP used `invalid_grant` for an account or policy state that an
+administrator has since fixed, the client's next refresh grant picks the fix
+up. The refresh succeeds and stores a new row, the remembered rejection stops
+matching it, and bearer requests work again. A fresh rejection that the guard
+receives is remembered like any other, so bearer requests after it do not
+call the IdP. A guard call that joins a refresh already in flight for the
+same row gets that call's result, which may be a remembered rejection, because
+the call it joined was started by a request that does not skip the memory. The
+guard then refreshes once more, which reaches the IdP unless another such call
+is in flight again. If that answer is also remembered, the guard cannot tell
+whether the credential is dead and grants. The guard refuses and deletes rows
+only after a rejection the IdP just gave, never after a remembered one.
+Embedder handlers in
+`Config.RefreshGrantHandlers` that call the shared refresher do not skip the
+memory.
+
+The recheck covers the remaining race. After the IdP rejects the refresh, the
+guard re-reads the row and refuses and drops the session's rows only if the
+row is unchanged. If another replica refreshed successfully while the guard
+waited, without rotating the refresh token (for example once an administrator
+cleared an IdP-side block), the row keeps its refresh token but holds a new
+access token or expiry. In ToolHive's own storage, every write to a
+session's row under the same refresh token is a successful IdP refresh, so the
+IdP accepted that refresh token, and the guard grants and keeps the row. A
+storage layer that shares rows across sessions can also show a fresh access
+token from a new sign-in; the guard grants then too, because the row holds a
+usable access token, without that meaning the IdP accepted the refresh token.
 
 **Upgrade impact.** The guard is on by default. After an upgrade, a session
 whose upstream credential is already dead is refused on its first refresh
